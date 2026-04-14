@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 export default function TriagePanel({ onCountChange }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [sortBy, setSortBy] = useState("date_desc");
 
   const fetchTriage = async () => {
     try {
@@ -77,15 +78,42 @@ export default function TriagePanel({ onCountChange }) {
   const dupeCount = jobs.filter((j) => j.status === "possible_duplicate").length;
   const triageCount = jobs.length - dupeCount;
 
+  const sortedJobs = [...jobs].sort((a, b) => {
+    if (sortBy === "date_desc" || sortBy === "date_asc") {
+      const da = new Date(a.date_found || 0);
+      const db = new Date(b.date_found || 0);
+      return sortBy === "date_desc" ? db - da : da - db;
+    }
+    // confidence_score: possible_duplicate cards don't have one — sort them last
+    const ca = a.confidence_score ?? (a.status === "possible_duplicate" ? -1 : 50);
+    const cb = b.confidence_score ?? (b.status === "possible_duplicate" ? -1 : 50);
+    return sortBy === "confidence_desc" ? cb - ca : ca - cb;
+  });
+
   return (
     <div>
-      <p style={{ color: "var(--text-muted)", marginBottom: "16px", fontSize: "13px" }}>
-        {triageCount > 0 && `${triageCount} email${triageCount !== 1 ? "s" : ""} need review (low confidence)`}
-        {triageCount > 0 && dupeCount > 0 && " · "}
-        {dupeCount > 0 && `${dupeCount} possible duplicate${dupeCount !== 1 ? "s" : ""} to confirm`}
-      </p>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+        <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>
+          {triageCount > 0 && `${triageCount} email${triageCount !== 1 ? "s" : ""} need review (low confidence)`}
+          {triageCount > 0 && dupeCount > 0 && " · "}
+          {dupeCount > 0 && `${dupeCount} possible duplicate${dupeCount !== 1 ? "s" : ""} to confirm`}
+        </p>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>Sort:</label>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            style={sortSelectStyle}
+          >
+            <option value="date_desc">Newest first</option>
+            <option value="date_asc">Oldest first</option>
+            <option value="confidence_desc">Highest confidence</option>
+            <option value="confidence_asc">Lowest confidence</option>
+          </select>
+        </div>
+      </div>
 
-      {jobs.map((job) =>
+      {sortedJobs.map((job) =>
         job.status === "possible_duplicate" ? (
           <DuplicateCard
             key={job.id}
@@ -102,6 +130,7 @@ export default function TriagePanel({ onCountChange }) {
           />
         )
       )}
+
     </div>
   );
 }
@@ -134,7 +163,10 @@ function DuplicateCard({ job, onSameJob, onDifferentJob }) {
             <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
           )}
           {job.sender_email && (
-            <div style={{ color: "var(--text-muted)", fontSize: "11px" }}>{job.sender_email}</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" }}>
+              <span style={{ fontWeight: "500", color: "var(--text)" }}>From: </span>
+              {job.sender_email}
+            </div>
           )}
         </div>
       )}
@@ -203,7 +235,9 @@ function TriageCard({ job, onApprove, onReject }) {
     <div style={cardStyle}>
       {/* Meta */}
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
-        <span className="badge badge-yellow">Low confidence</span>
+        <span className="badge badge-yellow">
+          Low confidence{job.confidence_score != null ? ` · ${job.confidence_score}%` : ""}
+        </span>
         {job.source && <span className="badge badge-accent">{job.source}</span>}
         {job.date_found && <span className="badge badge-gray">{job.date_found}</span>}
       </div>
@@ -215,7 +249,10 @@ function TriageCard({ job, onApprove, onReject }) {
             <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
           )}
           {job.sender_email && (
-            <div style={{ color: "var(--text-muted)", fontSize: "11px" }}>{job.sender_email}</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" }}>
+              <span style={{ fontWeight: "500", color: "var(--text)" }}>From: </span>
+              {job.sender_email}
+            </div>
           )}
         </div>
       )}
@@ -291,30 +328,42 @@ function extractSubjectWords(text) {
     .join(" ");
 }
 
-const cardStyle = {
+const sortSelectStyle = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
-  padding: "16px",
+  color: "var(--text)",
+  fontSize: "12px",
+  padding: "4px 8px",
+  cursor: "pointer",
+};
+
+const cardStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  padding: "18px",
   marginBottom: "12px",
+  boxShadow: "var(--shadow-sm)",
+  transition: "box-shadow 0.2s, border-color 0.2s",
 };
 
 const emailMetaStyle = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
-  padding: "8px 12px",
+  padding: "9px 13px",
   fontSize: "12px",
-  marginBottom: "10px",
+  marginBottom: "12px",
 };
 
 const hintStyle = {
-  background: "rgba(180, 83, 9, 0.1)",
-  border: "1px solid rgba(180, 83, 9, 0.35)",
+  background: "var(--orange-light)",
+  border: "1px solid rgba(194,96,10,0.2)",
   borderRadius: "var(--radius)",
-  padding: "8px 12px",
+  padding: "9px 13px",
   fontSize: "12px",
-  color: "var(--text-muted)",
+  color: "var(--orange)",
   marginBottom: "4px",
 };
 
@@ -322,12 +371,13 @@ const snippetStyle = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
-  padding: "10px 12px",
+  padding: "10px 13px",
   fontSize: "12px",
   color: "var(--text-muted)",
   whiteSpace: "pre-wrap",
   wordBreak: "break-word",
   maxHeight: "120px",
   overflowY: "auto",
-  fontFamily: "monospace",
+  fontFamily: "ui-monospace, 'Cascadia Code', monospace",
+  lineHeight: "1.6",
 };

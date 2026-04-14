@@ -390,6 +390,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN sender_email TEXT")
     if "email_subject" not in existing:
         conn.execute("ALTER TABLE jobs ADD COLUMN email_subject TEXT")
+    if "confidence_score" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN confidence_score INTEGER")
     conn.commit()
 
     # Backfill scanned_emails from jobs so existing records are not re-processed.
@@ -424,7 +426,8 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             date_added_to_sheet TEXT,
             duplicate_hint      TEXT,
             sender_email        TEXT,
-            email_subject       TEXT
+            email_subject       TEXT,
+            confidence_score    INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS email_sources (

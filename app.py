@@ -267,6 +267,7 @@ def _run_scan() -> None:
                 "duplicate_hint": duplicate_hint,
                 "sender_email": sender,
                 "email_subject": subject,
+                "confidence_score": parsed.get("confidence_score", 50),
             }
 
             # Score high-confidence jobs immediately

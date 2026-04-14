@@ -22,6 +22,7 @@ class ParsedJob(TypedDict):
     url: str
     source: str
     confidence: str          # "high" | "low"
+    confidence_score: int    # 0–100 numeric certainty
     confidence_reason: str
 
 
@@ -49,6 +50,7 @@ Response schema (JSON only):
   "url": "<direct apply or job detail URL or empty string>",
   "source": "<job board name or sender domain>",
   "confidence": "high" | "low",
+  "confidence_score": <integer 0-100 representing certainty this is a single job posting>,
   "confidence_reason": "<one sentence explaining the confidence level>"
 }
 """
@@ -109,5 +111,11 @@ class EmailParser:
         if parsed.get("confidence") not in ("high", "low"):
             parsed["confidence"] = "low"
             parsed["confidence_reason"] = "Confidence value was missing or invalid."
+
+        # Clamp score to 0–100; default to 50 if missing or non-numeric
+        try:
+            parsed["confidence_score"] = max(0, min(100, int(parsed.get("confidence_score", 50))))  # type: ignore[misc]
+        except (TypeError, ValueError):
+            parsed["confidence_score"] = 50  # type: ignore[misc]
 
         return parsed

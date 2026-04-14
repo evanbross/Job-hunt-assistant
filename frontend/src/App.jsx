@@ -12,9 +12,8 @@ const styles = {
     minHeight: "100vh",
   },
   headerWrap: {
-    background: "var(--surface)",
-    borderBottom: "1px solid var(--border)",
-    boxShadow: "0 2px 8px rgba(30,34,69,0.06)",
+    background: "linear-gradient(135deg, var(--header-from) 0%, var(--header-to) 100%)",
+    boxShadow: "0 3px 14px rgba(45,58,158,0.35)",
     flexShrink: 0,
     position: "sticky",
     top: 0,
@@ -25,7 +24,7 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: "28px",
-    height: "58px",
+    height: "60px",
     maxWidth: "1200px",
     margin: "0 auto",
     width: "100%",
@@ -34,23 +33,23 @@ const styles = {
     width: "34px",
     height: "34px",
     borderRadius: "9px",
-    background: "linear-gradient(135deg, var(--accent) 0%, #8b9aff 100%)",
+    background: "rgba(255,255,255,0.2)",
+    border: "1px solid rgba(255,255,255,0.3)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     fontSize: "17px",
     flexShrink: 0,
-    boxShadow: "0 2px 6px rgba(91,108,245,0.4)",
   },
   logo: {
     fontSize: "15px",
     fontWeight: "700",
-    color: "var(--text)",
+    color: "#ffffff",
     letterSpacing: "-0.01em",
   },
   logoSub: {
     fontSize: "11px",
-    color: "var(--text-muted)",
+    color: "rgba(255,255,255,0.65)",
     fontWeight: "400",
     marginTop: "-1px",
   },
@@ -62,9 +61,9 @@ const styles = {
   tab: (active) => ({
     padding: "7px 18px",
     borderRadius: "var(--radius)",
-    background: active ? "var(--accent-light)" : "transparent",
-    color: active ? "var(--accent)" : "var(--text-muted)",
-    border: "none",
+    background: active ? "rgba(255,255,255,0.18)" : "transparent",
+    color: active ? "#ffffff" : "rgba(255,255,255,0.65)",
+    border: active ? "1px solid rgba(255,255,255,0.25)" : "1px solid transparent",
     cursor: "pointer",
     fontSize: "13px",
     fontWeight: active ? "600" : "400",
@@ -74,23 +73,19 @@ const styles = {
     transition: "background 0.15s, color 0.15s",
   }),
   countBadge: {
-    background: "var(--red)",
+    background: "#ff5c5c",
     color: "#fff",
     borderRadius: "999px",
     padding: "1px 7px",
     fontSize: "10px",
     fontWeight: "700",
-    boxShadow: "0 1px 3px rgba(214,59,59,0.4)",
+    boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
   },
   authBanner: {
     background: "var(--accent-light)",
-    border: "1px solid rgba(91,108,245,0.2)",
+    border: "1px solid rgba(74,92,247,0.25)",
     borderRadius: "var(--radius)",
     padding: "11px 18px",
-    margin: "16px 28px 0",
-    maxWidth: "1200px",
-    marginLeft: "auto",
-    marginRight: "auto",
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
@@ -158,35 +153,60 @@ export default function App() {
 
   return (
     <div style={styles.app}>
-      <header style={styles.header}>
-        <span style={styles.logo}>💼 Job Hunt Assistant</span>
-        <nav style={styles.tabBar}>
-          {TABS.map((tab, i) => (
-            <button
-              key={tab}
-              style={styles.tab(activeTab === i)}
-              onClick={() => {
-                setActiveTab(i);
-                if (i === 1) fetchTriageCount();
-              }}
-            >
-              {tab}
-              {i === 1 && triageCount > 0 && (
-                <span style={styles.countBadge}>{triageCount}</span>
-              )}
-            </button>
-          ))}
-        </nav>
-      </header>
+      <div style={styles.headerWrap}>
+        <header style={styles.header}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div style={styles.logoMark}>💼</div>
+            <div>
+              <div style={styles.logo}>Job Hunt Assistant</div>
+              <div style={styles.logoSub}>AI-powered inbox scanner</div>
+            </div>
+          </div>
+
+          <nav style={styles.tabBar}>
+            {TABS.map((tab, i) => (
+              <button
+                key={tab}
+                style={styles.tab(activeTab === i)}
+                onClick={() => {
+                  setActiveTab(i);
+                  if (i === 1) fetchTriageCount();
+                }}
+              >
+                {tab}
+                {i === 1 && triageCount > 0 && (
+                  <span style={styles.countBadge}>{triageCount}</span>
+                )}
+              </button>
+            ))}
+          </nav>
+
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+            {authStatus === true && (
+              <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.85)", fontWeight: "500", display: "flex", alignItems: "center", gap: "6px" }}>
+                <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#4ade80", display: "inline-block", boxShadow: "0 0 6px #4ade80" }} />
+                Connected
+              </span>
+            )}
+            {authStatus === false && (
+              <button style={{ fontSize: "12px", padding: "7px 16px", background: "rgba(255,255,255,0.15)", color: "#fff", border: "1px solid rgba(255,255,255,0.3)", borderRadius: "var(--radius)", cursor: "pointer", fontWeight: "500" }} onClick={handleAuthClick}>
+                Connect Google
+              </button>
+            )}
+          </div>
+        </header>
+      </div>
 
       {authStatus === false && (
-        <div style={styles.authBanner}>
-          <span style={{ color: "var(--accent)", fontSize: "13px" }}>
-            Google account not connected — scanning and sheet export are disabled.
-          </span>
-          <button className="btn-primary" style={{ flexShrink: 0 }} onClick={handleAuthClick}>
-            Connect Google Account
-          </button>
+        <div style={{ maxWidth: "1200px", margin: "0 auto", width: "100%", padding: "16px 28px 0 28px" }}>
+          <div style={styles.authBanner}>
+            <span style={{ color: "var(--accent)", fontSize: "13px" }}>
+              Connect your Google account to enable inbox scanning and sheet export.
+            </span>
+            <button className="btn-primary" style={{ flexShrink: 0 }} onClick={handleAuthClick}>
+              Connect Google Account
+            </button>
+          </div>
         </div>
       )}
 
@@ -235,10 +255,11 @@ function HistoryTable() {
   }
 
   const tdStyle = {
-    padding: "10px 12px",
+    padding: "11px 14px",
     borderBottom: "1px solid var(--border)",
     color: "var(--text)",
     verticalAlign: "middle",
+    fontSize: "13px",
   };
   const thStyle = {
     ...tdStyle,
@@ -246,12 +267,13 @@ function HistoryTable() {
     fontWeight: "600",
     fontSize: "11px",
     textTransform: "uppercase",
-    letterSpacing: "0.05em",
-    background: "var(--surface)",
+    letterSpacing: "0.06em",
+    background: "var(--surface2)",
+    borderBottom: "1.5px solid var(--border)",
   };
 
   return (
-    <div style={{ overflowX: "auto" }}>
+    <div style={{ overflowX: "auto", background: "var(--surface)", borderRadius: "var(--radius-lg)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border)" }}>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
           <tr>

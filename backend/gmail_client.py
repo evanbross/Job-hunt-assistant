@@ -98,7 +98,7 @@ class GmailClient:
         else:
             sender_query = ""
 
-        query = f"is:unread newer_than:{lookback_days}d {sender_query}".strip()
+        query = f"in:inbox is:unread newer_than:{lookback_days}d {sender_query}".strip()
         logger.info("Gmail query: %s", query)
 
         messages: list[dict] = []

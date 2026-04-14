@@ -154,7 +154,8 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated }) {
 const progressBox = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  padding: "14px 16px",
+  borderRadius: "var(--radius-lg)",
+  padding: "16px 18px",
   marginBottom: "16px",
+  boxShadow: "var(--shadow-sm)",
 };

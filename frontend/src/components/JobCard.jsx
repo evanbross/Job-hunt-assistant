@@ -108,8 +108,9 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
 const cardStyle = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  padding: "16px",
-  marginBottom: "10px",
-  transition: "border-color 0.15s",
+  borderRadius: "var(--radius-lg)",
+  padding: "18px",
+  marginBottom: "12px",
+  boxShadow: "var(--shadow-sm)",
+  transition: "box-shadow 0.2s, border-color 0.2s",
 };
