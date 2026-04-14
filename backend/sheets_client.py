@@ -10,7 +10,7 @@ import logging
 from datetime import date
 from typing import Any
 
-from google.auth.exceptions import TransportError
+from google.auth.exceptions import RefreshError, TransportError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -46,6 +46,12 @@ class SheetsClient:
                 try:
                     creds.refresh(Request())
                     GOOGLE_TOKEN_FILE.write_text(creds.to_json())
+                except RefreshError as exc:
+                    GOOGLE_TOKEN_FILE.unlink(missing_ok=True)
+                    raise NotAuthenticatedError(
+                        f"Token rejected by Google ({exc}). "
+                        "Re-authenticate via /api/auth/google."
+                    ) from exc
                 except TransportError as exc:
                     raise NotAuthenticatedError(
                         f"Token refresh failed: {exc}. Re-authenticate via /api/auth/google."
@@ -92,6 +98,39 @@ class SheetsClient:
         except HttpError as exc:
             logger.error("Sheets append error: %s", exc)
             raise
+
+    def read_jobs(self) -> list[dict[str, str]]:
+        """
+        Read all tracked jobs from the spreadsheet.
+        Returns a list of dicts with 'company' and 'job_title' keys.
+        Column layout: Company | Status | Source | Date | job_title | URL
+        """
+        if not GOOGLE_SHEETS_ID:
+            return []
+
+        try:
+            result = (
+                self._service.spreadsheets()
+                .values()
+                .get(
+                    spreadsheetId=GOOGLE_SHEETS_ID,
+                    range=f"{_SHEET_NAME}!A2:F",  # skip header row
+                )
+                .execute()
+            )
+            rows = result.get("values", [])
+            jobs = []
+            for row in rows:
+                # Pad short rows so index access is safe
+                padded = row + [""] * (6 - len(row))
+                company = padded[0].strip()
+                job_title = padded[4].strip()  # column E
+                if company or job_title:
+                    jobs.append({"company": company, "job_title": job_title})
+            return jobs
+        except HttpError as exc:
+            logger.warning("Could not read jobs from sheet: %s", exc)
+            return []
 
     def ensure_header_row(self) -> None:
         """Write column headers to A1:F1 if the sheet is empty. No-op in READ_ONLY_MODE."""

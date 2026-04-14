@@ -54,6 +54,13 @@ class IRelevanceFeedbackRepository(Protocol):
 
 
 @runtime_checkable
+class IScannedEmailRepository(Protocol):
+    def has_been_scanned(self, email_id: str) -> bool: ...
+    def is_duplicate_by_content(self, sender_email: str, subject: str, since_days: int) -> bool: ...
+    def mark_scanned(self, email_id: str, sender_email: str, subject: str) -> None: ...
+
+
+@runtime_checkable
 class IResumeRepository(Protocol):
     def get_latest(self) -> dict[str, Any] | None: ...
     def insert(self, resume: dict[str, Any]) -> int: ...
@@ -269,6 +276,47 @@ class SQLiteRelevanceFeedbackRepository:
         self._conn.commit()
 
 
+class SQLiteScannedEmailRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def has_been_scanned(self, email_id: str) -> bool:
+        cur = self._conn.execute(
+            "SELECT 1 FROM scanned_emails WHERE email_id = ?", (email_id,)
+        )
+        return cur.fetchone() is not None
+
+    def is_duplicate_by_content(
+        self, sender_email: str, subject: str, since_days: int
+    ) -> bool:
+        """
+        Returns True if an email with the same sender and subject was already
+        scanned within the last *since_days* days. Handles edge cases like
+        Gmail re-sending a message with a different ID.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT 1 FROM scanned_emails
+            WHERE sender_email = ?
+              AND email_subject = ?
+              AND scanned_at >= datetime('now', ?)
+            LIMIT 1
+            """,
+            (sender_email, subject, f"-{since_days} days"),
+        )
+        return cur.fetchone() is not None
+
+    def mark_scanned(self, email_id: str, sender_email: str, subject: str) -> None:
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO scanned_emails (email_id, sender_email, email_subject, scanned_at)
+            VALUES (?, ?, ?, datetime('now'))
+            """,
+            (email_id, sender_email, subject),
+        )
+        self._conn.commit()
+
+
 class SQLiteResumeRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -326,9 +374,36 @@ def init_db(db_path: str) -> None:
     conn = get_connection(db_path)
     try:
         _create_tables(conn)
+        _migrate(conn)
         _seed_data(conn)
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply incremental schema changes to existing databases."""
+    # Add duplicate_hint column if not present (added after initial release)
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "duplicate_hint" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN duplicate_hint TEXT")
+    if "sender_email" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN sender_email TEXT")
+    if "email_subject" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN email_subject TEXT")
+    conn.commit()
+
+    # Backfill scanned_emails from jobs so existing records are not re-processed.
+    # Uses INSERT OR IGNORE so it's safe to run repeatedly.
+    conn.execute("""
+        INSERT OR IGNORE INTO scanned_emails (email_id, sender_email, email_subject, scanned_at)
+        SELECT email_id,
+               COALESCE(sender_email, ''),
+               COALESCE(email_subject, ''),
+               COALESCE(date_found, datetime('now'))
+        FROM jobs
+        WHERE email_id IS NOT NULL
+    """)
+    conn.commit()
 
 
 def _create_tables(conn: sqlite3.Connection) -> None:
@@ -346,7 +421,10 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             status              TEXT,
             parser_confidence   TEXT,
             date_found          TEXT,
-            date_added_to_sheet TEXT
+            date_added_to_sheet TEXT,
+            duplicate_hint      TEXT,
+            sender_email        TEXT,
+            email_subject       TEXT
         );
 
         CREATE TABLE IF NOT EXISTS email_sources (
@@ -379,6 +457,15 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             content     TEXT,
             uploaded_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS scanned_emails (
+            email_id      TEXT PRIMARY KEY,
+            sender_email  TEXT,
+            email_subject TEXT,
+            scanned_at    TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_scanned_emails_content
+            ON scanned_emails (sender_email, email_subject, scanned_at);
     """)
     conn.commit()
 

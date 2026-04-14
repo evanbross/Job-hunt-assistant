@@ -74,21 +74,115 @@ export default function TriagePanel({ onCountChange }) {
     );
   }
 
+  const dupeCount = jobs.filter((j) => j.status === "possible_duplicate").length;
+  const triageCount = jobs.length - dupeCount;
+
   return (
     <div>
       <p style={{ color: "var(--text-muted)", marginBottom: "16px", fontSize: "13px" }}>
-        {jobs.length} email{jobs.length !== 1 ? "s" : ""} need your review. The AI wasn't confident
-        these are job postings.
+        {triageCount > 0 && `${triageCount} email${triageCount !== 1 ? "s" : ""} need review (low confidence)`}
+        {triageCount > 0 && dupeCount > 0 && " · "}
+        {dupeCount > 0 && `${dupeCount} possible duplicate${dupeCount !== 1 ? "s" : ""} to confirm`}
       </p>
 
-      {jobs.map((job) => (
-        <TriageCard
-          key={job.id}
-          job={job}
-          onApprove={() => handleApprove(job)}
-          onReject={() => handleReject(job)}
-        />
-      ))}
+      {jobs.map((job) =>
+        job.status === "possible_duplicate" ? (
+          <DuplicateCard
+            key={job.id}
+            job={job}
+            onSameJob={() => handleReject(job)}
+            onDifferentJob={() => handleApprove(job)}
+          />
+        ) : (
+          <TriageCard
+            key={job.id}
+            job={job}
+            onApprove={() => handleApprove(job)}
+            onReject={() => handleReject(job)}
+          />
+        )
+      )}
+    </div>
+  );
+}
+
+function DuplicateCard({ job, onSameJob, onDifferentJob }) {
+  const [loadingAction, setLoadingAction] = useState(null);
+
+  const act = async (fn, label) => {
+    setLoadingAction(label);
+    try {
+      await fn();
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  return (
+    <div style={{ ...cardStyle, borderColor: "var(--warning, #b45309)" }}>
+      {/* Meta */}
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
+        <span className="badge badge-orange">Possible duplicate</span>
+        {job.source && <span className="badge badge-accent">{job.source}</span>}
+        {job.date_found && <span className="badge badge-gray">{job.date_found}</span>}
+      </div>
+
+      {/* Email origin */}
+      {(job.sender_email || job.email_subject) && (
+        <div style={emailMetaStyle}>
+          {job.email_subject && (
+            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
+          )}
+          {job.sender_email && (
+            <div style={{ color: "var(--text-muted)", fontSize: "11px" }}>{job.sender_email}</div>
+          )}
+        </div>
+      )}
+
+      {/* Job details */}
+      <div style={{ marginBottom: "10px" }}>
+        {job.company && (
+          <div style={{ fontSize: "15px", fontWeight: "600" }}>{job.company}</div>
+        )}
+        {job.job_title && (
+          <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>{job.job_title}</div>
+        )}
+        {job.url && (
+          <a
+            href={job.url}
+            target="_blank"
+            rel="noreferrer"
+            style={{ fontSize: "12px", wordBreak: "break-all" }}
+          >
+            {job.url}
+          </a>
+        )}
+      </div>
+
+      {/* Duplicate hint */}
+      {job.duplicate_hint && (
+        <div style={hintStyle}>{job.duplicate_hint}</div>
+      )}
+
+      {/* Actions */}
+      <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+        <button
+          className="btn-danger"
+          onClick={() => act(onSameJob, "same")}
+          disabled={loadingAction !== null}
+          style={{ flex: 1 }}
+        >
+          {loadingAction === "same" ? "Removing…" : "Yes, same job — skip it"}
+        </button>
+        <button
+          className="btn-success"
+          onClick={() => act(onDifferentJob, "different")}
+          disabled={loadingAction !== null}
+          style={{ flex: 1 }}
+        >
+          {loadingAction === "different" ? "Moving…" : "No, it's a different role"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -113,6 +207,18 @@ function TriageCard({ job, onApprove, onReject }) {
         {job.source && <span className="badge badge-accent">{job.source}</span>}
         {job.date_found && <span className="badge badge-gray">{job.date_found}</span>}
       </div>
+
+      {/* Email origin */}
+      {(job.sender_email || job.email_subject) && (
+        <div style={emailMetaStyle}>
+          {job.email_subject && (
+            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
+          )}
+          {job.sender_email && (
+            <div style={{ color: "var(--text-muted)", fontSize: "11px" }}>{job.sender_email}</div>
+          )}
+        </div>
+      )}
 
       {/* AI guesses */}
       <div style={{ marginBottom: "10px" }}>
@@ -191,6 +297,25 @@ const cardStyle = {
   borderRadius: "var(--radius)",
   padding: "16px",
   marginBottom: "12px",
+};
+
+const emailMetaStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  padding: "8px 12px",
+  fontSize: "12px",
+  marginBottom: "10px",
+};
+
+const hintStyle = {
+  background: "rgba(180, 83, 9, 0.1)",
+  border: "1px solid rgba(180, 83, 9, 0.35)",
+  borderRadius: "var(--radius)",
+  padding: "8px 12px",
+  fontSize: "12px",
+  color: "var(--text-muted)",
+  marginBottom: "4px",
 };
 
 const snippetStyle = {

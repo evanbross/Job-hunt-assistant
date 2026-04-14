@@ -14,7 +14,7 @@ import logging
 from email import message_from_bytes
 from typing import Any
 
-from google.auth.exceptions import TransportError
+from google.auth.exceptions import RefreshError, TransportError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -51,6 +51,15 @@ class GmailClient:
                     creds.refresh(Request())
                     # Persist the refreshed token
                     GOOGLE_TOKEN_FILE.write_text(creds.to_json())
+                except RefreshError as exc:
+                    # Covers invalid_scope (scopes changed since token was issued),
+                    # revoked access, and other OAuth-level rejections.
+                    # Delete the bad token so auth status correctly shows unauthenticated.
+                    GOOGLE_TOKEN_FILE.unlink(missing_ok=True)
+                    raise NotAuthenticatedError(
+                        f"Token rejected by Google ({exc}). "
+                        "Re-authenticate via /api/auth/google."
+                    ) from exc
                 except TransportError as exc:
                     raise NotAuthenticatedError(
                         f"Token refresh failed: {exc}. Re-authenticate via /api/auth/google."

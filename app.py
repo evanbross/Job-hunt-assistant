@@ -27,13 +27,20 @@ from backend.db import (
     SQLitePenaltyRuleRepository,
     SQLiteRelevanceFeedbackRepository,
     SQLiteResumeRepository,
+    SQLiteScannedEmailRepository,
     get_connection,
     init_db,
 )
+from backend.duplicate_checker import DuplicateChecker
 from backend.email_parser import EmailParser
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.sheets_client import SheetsClient
+
+# Allow Google to return a superset of the requested OAuth scopes without
+# requests_oauthlib raising a scope-mismatch error. This happens when the
+# account previously granted broader scopes to this OAuth client.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,6 +137,7 @@ def _run_scan() -> None:
         conn = get_connection(config.DB_PATH)
         source_repo = SQLiteEmailSourceRepository(conn)
         job_repo = SQLiteJobRepository(conn)
+        scanned_repo = SQLiteScannedEmailRepository(conn)
         feedback_repo = SQLiteRelevanceFeedbackRepository(conn)
         resume_repo = SQLiteResumeRepository(conn)
 
@@ -158,15 +166,26 @@ def _run_scan() -> None:
 
         parser = EmailParser()
         scorer = FitScorer()
+        dup_checker = DuplicateChecker()
 
         penalty_repo = SQLitePenaltyRuleRepository(conn)
         penalty_rules = penalty_repo.get_enabled()
 
+        # Fetch existing sheet rows once for duplicate detection.
+        # Failures here are non-fatal — we just skip duplicate checking.
+        sheet_jobs: list[dict] = []
+        try:
+            sheet_jobs = SheetsClient().read_jobs()
+            logger.info("Loaded %d existing jobs from sheet for duplicate detection", len(sheet_jobs))
+        except Exception as exc:
+            logger.warning("Could not load sheet jobs for duplicate check: %s", exc)
+
         for idx, msg_stub in enumerate(messages):
             msg_id = msg_stub["id"]
 
-            # Skip already-processed emails
-            if job_repo.get_by_email_id(msg_id):
+            # Primary dedup: skip if this exact Gmail message ID was already processed.
+            # Uses scanned_emails table so rejected/deleted jobs are still remembered.
+            if scanned_repo.has_been_scanned(msg_id):
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
@@ -177,10 +196,18 @@ def _run_scan() -> None:
                 _update_scan(error=f"Failed to fetch message {msg_id}: {exc}")
                 continue
 
+            # Secondary dedup: same sender + subject seen within the lookback window.
+            # Catches edge cases like a message re-delivered with a different ID.
+            if scanned_repo.is_duplicate_by_content(sender, subject, lookback_days):
+                scanned_repo.mark_scanned(msg_id, sender, subject)
+                _update_scan(jobs_processed=idx + 1)
+                continue
+
             # Check relevance feedback — skip if known noise
             feedback = feedback_repo.find_match(sender, subject)
             if feedback and feedback["is_relevant"] == 0:
                 gmail.mark_as_read(msg_id)
+                scanned_repo.mark_scanned(msg_id, sender, subject)
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
@@ -201,7 +228,28 @@ def _run_scan() -> None:
             if feedback and feedback["is_relevant"] == 1:
                 confidence = "high"
 
-            status = "pending_review" if confidence == "high" else "triage"
+            # Check for fuzzy duplicate against already-tracked sheet entries
+            duplicate_hint: str | None = None
+            if sheet_jobs and parsed.get("company") and parsed.get("job_title"):
+                dup_match = dup_checker.check(
+                    job_title=parsed["job_title"],
+                    company=parsed["company"],
+                    sheet_jobs=sheet_jobs,
+                )
+                if dup_match:
+                    duplicate_hint = (
+                        f"Possible duplicate of \"{dup_match['sheet_title']}\" "
+                        f"at {dup_match['sheet_company']} already in your sheet "
+                        f"(title match: {dup_match['title_score']}%, "
+                        f"company match: {dup_match['company_score']}%)"
+                    )
+
+            if duplicate_hint:
+                status = "possible_duplicate"
+            elif confidence == "high":
+                status = "pending_review"
+            else:
+                status = "triage"
 
             job_data: dict = {
                 "email_id": msg_id,
@@ -216,6 +264,9 @@ def _run_scan() -> None:
                 "parser_confidence": confidence,
                 "date_found": date.today().isoformat(),
                 "date_added_to_sheet": None,
+                "duplicate_hint": duplicate_hint,
+                "sender_email": sender,
+                "email_subject": subject,
             }
 
             # Score high-confidence jobs immediately
@@ -234,6 +285,7 @@ def _run_scan() -> None:
                     logger.warning("Scoring failed for %s: %s", msg_id, exc)
 
             job_repo.insert(job_data)
+            scanned_repo.mark_scanned(msg_id, sender, subject)
             gmail.mark_as_read(msg_id)
 
             progress = 20 + int((idx + 1) / total * 75)
@@ -378,7 +430,7 @@ def get_jobs():
 @app.route("/api/jobs/triage")
 def get_triage_jobs():
     repos = _get_repos()
-    jobs = repos["jobs"].get_all_by_status("triage")
+    jobs = repos["jobs"].get_by_statuses(["triage", "possible_duplicate"])
     repos["conn"].close()
     return jsonify(jobs)
 
