@@ -1,0 +1,24 @@
+ Quick-start
+
+  cd job-hunt-assistant
+
+  # 1. Fill in .env (ANTHROPIC_API_KEY, GOOGLE_SHEETS_ID, FLASK_SECRET_KEY)
+  # 2. Drop google_credentials.json into credentials/
+
+  uv sync                          # install Python deps
+  uv run python app.py             # Flask on :5000
+
+  # In another terminal:
+  cd frontend && npm install && npm run dev   # Vite on :5173
+
+  Then open http://localhost:5173 and click "Connect Google Account."
+
+  A few things worth noting
+
+  - TriagePanel sender extraction — When approving/rejecting, the sender email is inferred from the source name (a best-effort heuristic). If you want precise
+  sender matching, the ideal fix is to store sender_email as its own column in the jobs table during the scan. That's a small schema/scan-pipeline addition when
+   you want tighter feedback learning.
+  - uv.lock — Not generated yet since we haven't run uv sync. Run it once to generate the lock file, then commit both pyproject.toml and uv.lock.
+  - NULLS LAST in SQLite — The ORDER BY fit_score DESC NULLS LAST in db.py requires SQLite 3.30+ (released 2019), which Python 3.11's bundled SQLite satisfies.
+  If you see an error there, SQLite is older than expected.
+

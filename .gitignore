@@ -1,0 +1,32 @@
+# Environment
+.env
+
+# Google OAuth credentials and tokens
+credentials/google_credentials.json
+credentials/token.json
+
+# Database
+data/jobhunt.db
+data/runtime_config.json
+
+# Uploaded files
+uploads/*.pdf
+uploads/*.PDF
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+.uv/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
