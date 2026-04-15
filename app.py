@@ -14,7 +14,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, UTC
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
@@ -65,6 +65,28 @@ config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Initialize DB on startup
 init_db(config.DB_PATH)
+
+
+# ─── Application-acknowledgement filter ──────────────────────────────────────
+# These phrases in an email subject indicate a confirmation that the user
+# *already applied* to a job — not a new job opening to review.
+_ACK_SUBJECT_PATTERNS: tuple[str, ...] = (
+    "your application was sent",
+    "your application has been sent",
+    "application was received",
+    "application has been received",
+    "we received your application",
+    "thanks for applying",
+    "thank you for applying",
+    "your application to",
+    "you applied to",
+)
+
+
+def _is_application_acknowledgement(subject: str) -> bool:
+    """Return True if the subject looks like an application confirmation, not a job posting."""
+    lower = subject.lower()
+    return any(pat in lower for pat in _ACK_SUBJECT_PATTERNS)
 
 
 # ─── Scan state (in-memory, protected by a lock) ──────────────────────────────
@@ -196,6 +218,13 @@ def _run_scan() -> None:
                 _update_scan(error=f"Failed to fetch message {msg_id}: {exc}")
                 continue
 
+            # Skip application-acknowledgement emails (e.g. "your application was sent to…")
+            if _is_application_acknowledgement(subject):
+                gmail.mark_as_read(msg_id)
+                scanned_repo.mark_scanned(msg_id, sender, subject)
+                _update_scan(jobs_processed=idx + 1)
+                continue
+
             # Secondary dedup: same sender + subject seen within the lookback window.
             # Catches edge cases like a message re-delivered with a different ID.
             if scanned_repo.is_duplicate_by_content(sender, subject, lookback_days):
@@ -211,9 +240,9 @@ def _run_scan() -> None:
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
-            # Parse the email
+            # Parse the email — returns a list (empty if not a job email)
             try:
-                parsed = parser.parse(subject, sender, body)
+                parsed_jobs = parser.parse(subject, sender, body)
             except Exception as exc:
                 _update_scan(
                     error=f"Parser error for message {msg_id}: {exc}",
@@ -221,78 +250,99 @@ def _run_scan() -> None:
                 )
                 continue
 
+            if not parsed_jobs:
+                # Not a job email — mark scanned and move on
+                scanned_repo.mark_scanned(msg_id, sender, subject)
+                gmail.mark_as_read(msg_id)
+                _update_scan(jobs_processed=idx + 1)
+                continue
+
             snippet = body[:300]
-            confidence = parsed.get("confidence", "low")
 
-            # Override confidence to high if feedback marks sender as relevant
-            if feedback and feedback["is_relevant"] == 1:
-                confidence = "high"
+            for job_idx, parsed in enumerate(parsed_jobs):
+                # First job keeps the raw msg_id; subsequent jobs get a suffix so the
+                # UNIQUE constraint on email_id is satisfied without a schema change.
+                job_email_id = msg_id if job_idx == 0 else f"{msg_id}:{job_idx}"
 
-            # Check for fuzzy duplicate against already-tracked sheet entries
-            duplicate_hint: str | None = None
-            if sheet_jobs and parsed.get("company") and parsed.get("job_title"):
-                dup_match = dup_checker.check(
-                    job_title=parsed["job_title"],
-                    company=parsed["company"],
-                    sheet_jobs=sheet_jobs,
-                )
-                if dup_match:
-                    duplicate_hint = (
-                        f"Possible duplicate of \"{dup_match['sheet_title']}\" "
-                        f"at {dup_match['sheet_company']} already in your sheet "
-                        f"(title match: {dup_match['title_score']}%, "
-                        f"company match: {dup_match['company_score']}%)"
+                confidence = parsed.get("confidence", "low")
+
+                # Override confidence to high if feedback marks sender as relevant
+                if feedback and feedback["is_relevant"] == 1:
+                    confidence = "high"
+
+                # Check for fuzzy duplicate against already-tracked sheet entries
+                duplicate_hint: str | None = None
+                if sheet_jobs and parsed.get("company") and parsed.get("job_title"):
+                    dup_match = dup_checker.check(
+                        job_title=parsed["job_title"],
+                        company=parsed["company"],
+                        sheet_jobs=sheet_jobs,
                     )
+                    if dup_match:
+                        duplicate_hint = (
+                            f"Possible duplicate of \"{dup_match['sheet_title']}\" "
+                            f"at {dup_match['sheet_company']} already in your sheet "
+                            f"(title match: {dup_match['title_score']}%, "
+                            f"company match: {dup_match['company_score']}%)"
+                        )
 
-            if duplicate_hint:
-                status = "possible_duplicate"
-            elif confidence == "high":
-                status = "pending_review"
-            else:
-                status = "triage"
+                if duplicate_hint:
+                    status = "possible_duplicate"
+                elif confidence == "high":
+                    status = "pending_review"
+                else:
+                    status = "triage"
 
-            job_data: dict = {
-                "email_id": msg_id,
-                "company": parsed.get("company", ""),
-                "job_title": parsed.get("job_title", ""),
-                "url": parsed.get("url", ""),
-                "source": parsed.get("source", ""),
-                "raw_email_snippet": snippet,
-                "fit_score": None,
-                "fit_reasoning": "",
-                "status": status,
-                "parser_confidence": confidence,
-                "date_found": date.today().isoformat(),
-                "date_added_to_sheet": None,
-                "duplicate_hint": duplicate_hint,
-                "sender_email": sender,
-                "email_subject": subject,
-                "confidence_score": parsed.get("confidence_score", 50),
-            }
+                job_data: dict = {
+                    "email_id": job_email_id,
+                    "company": parsed.get("company", ""),
+                    "job_title": parsed.get("job_title", ""),
+                    "url": parsed.get("url", ""),
+                    "source": parsed.get("source", ""),
+                    "raw_email_snippet": snippet,
+                    "fit_score": None,
+                    "fit_reasoning": "",
+                    "status": status,
+                    "parser_confidence": confidence,
+                    "date_found": date.today().isoformat(),
+                    "date_added_to_sheet": None,
+                    "duplicate_hint": duplicate_hint,
+                    "sender_email": sender,
+                    "email_subject": subject,
+                    "confidence_score": parsed.get("confidence_score", 50),
+                }
 
-            # Score high-confidence jobs immediately
-            if confidence == "high":
-                try:
-                    result = scorer.score(
-                        job_title=parsed.get("job_title", ""),
-                        company=parsed.get("company", ""),
-                        email_body=body,
-                        resume_text=resume_text,
-                        penalty_rules=penalty_rules,
-                    )
-                    job_data["fit_score"] = result["score"]
-                    job_data["fit_reasoning"] = result["reasoning"]
-                except Exception as exc:
-                    logger.warning("Scoring failed for %s: %s", msg_id, exc)
+                # Score high-confidence jobs immediately
+                if confidence == "high":
+                    try:
+                        score_result = scorer.score(
+                            job_title=parsed.get("job_title", ""),
+                            company=parsed.get("company", ""),
+                            email_body=body,
+                            resume_text=resume_text,
+                            penalty_rules=penalty_rules,
+                        )
+                        job_data["fit_score"] = score_result["score"]
+                        job_data["fit_reasoning"] = score_result["reasoning"]
+                    except Exception as exc:
+                        logger.warning("Scoring failed for %s job %d: %s", msg_id, job_idx, exc)
 
-            job_repo.insert(job_data)
+                job_repo.insert(job_data)
+
             scanned_repo.mark_scanned(msg_id, sender, subject)
             gmail.mark_as_read(msg_id)
 
+            n_found = len(parsed_jobs)
+            first = parsed_jobs[0]
             progress = 20 + int((idx + 1) / total * 75)
             _update_scan(
                 progress=progress,
-                message=f"Processed {idx + 1}/{total}: {parsed.get('job_title', 'unknown')} at {parsed.get('company', 'unknown')}",
+                message=(
+                    f"Processed {idx + 1}/{total}: "
+                    f"{n_found} job{'s' if n_found != 1 else ''} from "
+                    f"{first.get('source', 'unknown')} "
+                    f"({first.get('company', '')} …)"
+                ),
                 jobs_processed=idx + 1,
             )
 
@@ -539,6 +589,75 @@ def approve_triage_job(job_id: int):
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/jobs/<int:job_id>/reprocess", methods=["POST"])
+def reprocess_job(job_id: int):
+    """Re-fetch the original email from Gmail and re-run the parser.
+
+    Used when a triage entry is missing a confidence score (e.g. older rows
+    inserted before confidence_score was tracked).
+    """
+    repos = _get_repos()
+    job = repos["jobs"].get_by_id(job_id)
+    if not job:
+        repos["conn"].close()
+        return jsonify({"error": "Job not found"}), 404
+
+    if not job.get("email_id"):
+        repos["conn"].close()
+        return jsonify({"error": "Job has no email_id — cannot reprocess"}), 422
+
+    try:
+        gmail = GmailClient()
+    except NotAuthenticatedError as exc:
+        repos["conn"].close()
+        return jsonify({"error": str(exc)}), 401
+
+    # email_id may be suffixed (e.g. "abc123:2") for jobs beyond the first in a digest
+    base_email_id = job["email_id"].split(":")[0]
+    try:
+        full_msg = gmail.get_message(base_email_id)
+        subject, sender, body = gmail.extract_text(full_msg)
+    except Exception as exc:
+        logger.error("Reprocess: failed to fetch message %s: %s", base_email_id, exc)
+        repos["conn"].close()
+        return jsonify({"error": f"Failed to fetch email from Gmail: {exc}"}), 500
+
+    try:
+        parsed_jobs = EmailParser().parse(subject, sender, body)
+    except Exception as exc:
+        logger.error("Reprocess: parser error for job %d: %s", job_id, exc)
+        repos["conn"].close()
+        return jsonify({"error": f"Parser error: {exc}"}), 500
+
+    if not parsed_jobs:
+        repos["conn"].close()
+        return jsonify({"error": "Parser found no job postings in this email"}), 422
+
+    # For suffixed email_ids (e.g. "abc123:2"), use the matching index; fall back to first
+    try:
+        job_idx = int(job["email_id"].split(":")[1]) if ":" in job["email_id"] else 0
+    except (IndexError, ValueError):
+        job_idx = 0
+    parsed = parsed_jobs[job_idx] if job_idx < len(parsed_jobs) else parsed_jobs[0]
+
+    updates: dict = {
+        "confidence_score": parsed.get("confidence_score", 50),
+        "parser_confidence": parsed.get("confidence", "low"),
+        "sender_email": sender,
+        "email_subject": subject,
+        "raw_email_snippet": body[:300],
+    }
+    # Fill in parsed fields only if the stored value is empty
+    for field in ("company", "job_title", "url", "source"):
+        if not job.get(field) and parsed.get(field):
+            updates[field] = parsed[field]
+
+    repos["jobs"].update(job_id, updates)
+    updated = repos["jobs"].get_by_id(job_id)
+    repos["conn"].close()
+    return jsonify(updated)
+
+
 @app.route("/api/jobs/<int:job_id>/reject", methods=["POST"])
 def reject_triage_job(job_id: int):
     """Mark as irrelevant, save feedback pattern, and delete the job record."""
@@ -558,7 +677,7 @@ def reject_triage_job(job_id: int):
                 "subject_pattern": subject_pattern,
                 "is_relevant": 0,
                 "source_name": job.get("source", ""),
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             }
         )
 

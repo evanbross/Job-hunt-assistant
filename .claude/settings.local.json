@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(cmd.exe /c \".venv\\\\Scripts\\\\pip install rapidfuzz\")",
+      "Bash(cmd.exe:*)",
+      "Bash(ls F:/Evan-F/Projects/JobHuntAssistant/*.py)",
+      "Skill(update-config)"
+    ]
+  }
+}

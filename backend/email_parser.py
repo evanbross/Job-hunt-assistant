@@ -27,30 +27,32 @@ class ParsedJob(TypedDict):
 
 
 _SYSTEM_PROMPT = """\
-You are an email parser for a job application tracker. Your only task is to \
-extract structured job posting information from email content.
+You are an email parser for a job application tracker. Extract ALL job postings \
+found in the email and return them as a JSON array.
 
 Rules:
-1. Return ONLY valid JSON matching the schema below — no markdown, no commentary.
-2. Set "confidence" to "high" when the email clearly contains a single job posting \
-with at least a job title, company name, and an apply/view URL.
-3. Set "confidence" to "low" when:
-   - The job title or company is missing/ambiguous
-   - There is no direct apply/view URL
-   - The email looks like a newsletter, digest (multiple jobs), or profile/activity notification
-   - The email is a recruiter cold-outreach without a specific role
-4. "source" should be the job board name if identifiable (e.g. "LinkedIn", "Dice"), \
+1. Return ONLY a valid JSON array — no markdown, no commentary.
+2. Each element in the array represents one distinct job posting found in the email.
+3. If the email contains a single job posting, return an array with one element.
+4. If the email is a digest or alert with multiple jobs (e.g. a LinkedIn Jobs alert), \
+   return one element per job — do not collapse them into one.
+5. If the email is not a job posting at all (social notification, newsletter unrelated \
+   to jobs, etc.), return an empty array: [].
+6. Set "confidence" to "high" for a job when it has at least a job title, company \
+   name, and an apply/view URL.
+7. Set "confidence" to "low" when the job title, company, or URL is missing or ambiguous.
+8. "source" should be the job board name if identifiable (e.g. "LinkedIn", "Dice"), \
    otherwise the sender domain.
-5. Leave a field as an empty string if it cannot be determined; do not invent values.
+9. Leave a field as an empty string if it cannot be determined; do not invent values.
 
-Response schema (JSON only):
+Each element schema:
 {
   "company": "<company name or empty string>",
   "job_title": "<job title or empty string>",
   "url": "<direct apply or job detail URL or empty string>",
   "source": "<job board name or sender domain>",
   "confidence": "high" | "low",
-  "confidence_score": <integer 0-100 representing certainty this is a single job posting>,
+  "confidence_score": <integer 0-100 representing certainty this is a real job posting>,
   "confidence_reason": "<one sentence explaining the confidence level>"
 }
 """
@@ -64,21 +66,22 @@ class EmailParser:
             raise ValueError("ANTHROPIC_API_KEY is not set")
         self._client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    def parse(self, subject: str, sender: str, body_snippet: str) -> ParsedJob:
+    def parse(self, subject: str, sender: str, body_snippet: str) -> list[ParsedJob]:
         """
-        Extract job details from an email. Returns a ParsedJob dict.
+        Extract all job postings from an email. Returns a list of ParsedJob dicts
+        (empty list if the email contains no job postings).
         Raises ValueError if the API returns malformed JSON.
         """
         user_content = (
             f"From: {sender}\n"
             f"Subject: {subject}\n\n"
-            f"Body:\n{body_snippet[:4000]}"  # cap to avoid token waste
+            f"Body:\n{body_snippet[:6000]}"  # digests can be long
         )
 
         # Cache the system prompt across calls (it never changes).
         response = self._client.messages.create(
             model=PARSER_MODEL,
-            max_tokens=512,
+            max_tokens=2048,  # digests may contain many jobs
             system=[
                 {
                     "type": "text",
@@ -99,23 +102,30 @@ class EmailParser:
             raw = raw.strip()
 
         try:
-            parsed: ParsedJob = json.loads(raw)
+            result = json.loads(raw)
         except json.JSONDecodeError as exc:
             logger.error("Email parser returned non-JSON: %s", raw)
             raise ValueError(f"Parser returned invalid JSON: {exc}") from exc
 
-        # Ensure required keys exist with safe defaults
-        for key in ("company", "job_title", "url", "source", "confidence", "confidence_reason"):
-            parsed.setdefault(key, "")  # type: ignore[misc]
+        # Tolerate a single object (old-style response) by wrapping it
+        if isinstance(result, dict):
+            result = [result]
+        elif not isinstance(result, list):
+            return []
 
-        if parsed.get("confidence") not in ("high", "low"):
-            parsed["confidence"] = "low"
-            parsed["confidence_reason"] = "Confidence value was missing or invalid."
+        jobs: list[ParsedJob] = []
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            for key in ("company", "job_title", "url", "source", "confidence", "confidence_reason"):
+                item.setdefault(key, "")
+            if item.get("confidence") not in ("high", "low"):
+                item["confidence"] = "low"
+                item["confidence_reason"] = "Confidence value was missing or invalid."
+            try:
+                item["confidence_score"] = max(0, min(100, int(item.get("confidence_score", 50))))
+            except (TypeError, ValueError):
+                item["confidence_score"] = 50
+            jobs.append(item)  # type: ignore[arg-type]
 
-        # Clamp score to 0–100; default to 50 if missing or non-numeric
-        try:
-            parsed["confidence_score"] = max(0, min(100, int(parsed.get("confidence_score", 50))))  # type: ignore[misc]
-        except (TypeError, ValueError):
-            parsed["confidence_score"] = 50  # type: ignore[misc]
-
-        return parsed
+        return jobs

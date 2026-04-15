@@ -127,6 +127,9 @@ export default function TriagePanel({ onCountChange }) {
             job={job}
             onApprove={() => handleApprove(job)}
             onReject={() => handleReject(job)}
+            onReprocessed={(updated) =>
+              setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)))
+            }
           />
         )
       )}
@@ -219,8 +222,9 @@ function DuplicateCard({ job, onSameJob, onDifferentJob }) {
   );
 }
 
-function TriageCard({ job, onApprove, onReject }) {
+function TriageCard({ job, onApprove, onReject, onReprocessed }) {
   const [loadingAction, setLoadingAction] = useState(null);
+  const [reprocessError, setReprocessError] = useState(null);
 
   const act = async (fn, label) => {
     setLoadingAction(label);
@@ -231,13 +235,42 @@ function TriageCard({ job, onApprove, onReject }) {
     }
   };
 
+  const handleReprocess = async () => {
+    setLoadingAction("reprocess");
+    setReprocessError(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/reprocess`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setReprocessError(data.error || "Reprocess failed");
+      } else {
+        onReprocessed(data);
+      }
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
   return (
     <div style={cardStyle}>
       {/* Meta */}
-      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", marginBottom: "8px" }}>
         <span className="badge badge-yellow">
           Low confidence{job.confidence_score != null ? ` · ${job.confidence_score}%` : ""}
         </span>
+        {job.confidence_score == null && (
+          <button
+            className="btn-secondary"
+            style={{ fontSize: "11px", padding: "2px 8px" }}
+            onClick={handleReprocess}
+            disabled={loadingAction !== null}
+          >
+            {loadingAction === "reprocess" ? "Reprocessing…" : "Reprocess"}
+          </button>
+        )}
+        {reprocessError && (
+          <span style={{ fontSize: "11px", color: "var(--red)" }}>{reprocessError}</span>
+        )}
         {job.source && <span className="badge badge-accent">{job.source}</span>}
         {job.date_found && <span className="badge badge-gray">{job.date_found}</span>}
       </div>

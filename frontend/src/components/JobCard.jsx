@@ -55,6 +55,21 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
         </div>
       </div>
 
+      {/* Email origin */}
+      {(job.sender_email || job.email_subject) && (
+        <div style={emailMetaStyle}>
+          {job.email_subject && (
+            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
+          )}
+          {job.sender_email && (
+            <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" }}>
+              <span style={{ fontWeight: "500", color: "var(--text)" }}>From: </span>
+              {job.sender_email}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Reasoning (collapsible) */}
       {job.fit_reasoning && (
         <div style={{ marginTop: "10px" }}>
@@ -113,4 +128,14 @@ const cardStyle = {
   marginBottom: "12px",
   boxShadow: "var(--shadow-sm)",
   transition: "box-shadow 0.2s, border-color 0.2s",
+};
+
+const emailMetaStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  padding: "9px 13px",
+  fontSize: "12px",
+  marginTop: "10px",
+  marginBottom: "2px",
 };
