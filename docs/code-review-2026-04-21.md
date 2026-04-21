@@ -1,4 +1,4 @@
-# JobHuntAssistant Code Review Report
+/# JobHuntAssistant Code Review Report
 
 Date: 2026-04-21
 Reviewer: Codex (GPT-5)

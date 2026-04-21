@@ -10,7 +10,11 @@
       "Bash(.venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\('app.py', doraise=True\\); print\\('OK'\\)\")",
       "Read(//mnt/f/Evan-F/Projects/**)",
       "Bash(python3 -c ' *)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(git commit -m ' *)",
+      "Bash(python -m compileall app.py)",
+      "Bash(grep -n *)",
+      "Bash(git add *)"
     ]
   }
 }
