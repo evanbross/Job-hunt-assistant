@@ -20,6 +20,7 @@ class IJobRepository(Protocol):
     def get_by_statuses(self, statuses: list[str]) -> list[dict[str, Any]]: ...
     def get_by_id(self, job_id: int) -> dict[str, Any] | None: ...
     def get_by_email_id(self, email_id: str) -> dict[str, Any] | None: ...
+    def get_by_url(self, url: str) -> dict[str, Any] | None: ...
     def insert(self, job: dict[str, Any]) -> int: ...
     def update(self, job_id: int, fields: dict[str, Any]) -> None: ...
     def delete(self, job_id: int) -> None: ...
@@ -57,7 +58,19 @@ class IRelevanceFeedbackRepository(Protocol):
 class IScannedEmailRepository(Protocol):
     def has_been_scanned(self, email_id: str) -> bool: ...
     def is_duplicate_by_content(self, sender_email: str, subject: str, since_days: int) -> bool: ...
-    def mark_scanned(self, email_id: str, sender_email: str, subject: str) -> None: ...
+    def mark_scanned(self, email_id: str, sender_email: str, subject: str, disposition: str = "noise", email_date: str | None = None, raw_body: str | None = None, parser_error_msg: str | None = None) -> None: ...
+    def get_all_with_job_status(self) -> list[dict[str, Any]]: ...
+    def set_hidden(self, email_id: str, hidden: bool) -> None: ...
+    def delete(self, email_id: str) -> None: ...
+    def delete_all(self) -> None: ...
+
+
+@runtime_checkable
+class IApplicationStageRepository(Protocol):
+    def get_by_job_id(self, job_id: int) -> list[dict[str, Any]]: ...
+    def get_by_id(self, stage_id: int) -> dict[str, Any] | None: ...
+    def insert(self, stage: dict[str, Any]) -> int: ...
+    def delete(self, stage_id: int) -> None: ...
 
 
 @runtime_checkable
@@ -101,6 +114,11 @@ class SQLiteJobRepository:
 
     def get_by_email_id(self, email_id: str) -> dict[str, Any] | None:
         cur = self._conn.execute("SELECT * FROM jobs WHERE email_id = ?", (email_id,))
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def get_by_url(self, url: str) -> dict[str, Any] | None:
+        cur = self._conn.execute("SELECT * FROM jobs WHERE url = ?", (url,))
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
@@ -306,14 +324,111 @@ class SQLiteScannedEmailRepository:
         )
         return cur.fetchone() is not None
 
-    def mark_scanned(self, email_id: str, sender_email: str, subject: str) -> None:
+    def mark_scanned(
+        self,
+        email_id: str,
+        sender_email: str,
+        subject: str,
+        disposition: str = "noise",
+        email_date: str | None = None,
+        raw_body: str | None = None,
+        parser_error_msg: str | None = None,
+    ) -> None:
         self._conn.execute(
             """
-            INSERT OR IGNORE INTO scanned_emails (email_id, sender_email, email_subject, scanned_at)
-            VALUES (?, ?, ?, datetime('now'))
+            INSERT INTO scanned_emails
+                (email_id, sender_email, email_subject, scanned_at, disposition, email_date, raw_body, parser_error_msg)
+            VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?)
+            ON CONFLICT(email_id) DO UPDATE SET
+                disposition       = excluded.disposition,
+                email_date        = COALESCE(excluded.email_date, scanned_emails.email_date),
+                raw_body          = COALESCE(excluded.raw_body, scanned_emails.raw_body),
+                parser_error_msg  = COALESCE(excluded.parser_error_msg, scanned_emails.parser_error_msg)
             """,
-            (email_id, sender_email, subject),
+            (email_id, sender_email, subject, disposition, email_date, raw_body, parser_error_msg),
         )
+        self._conn.commit()
+
+    def get_all_with_job_status(self) -> list[dict[str, Any]]:
+        """Return all scanned emails with the primary associated job's status (if any)."""
+        cur = self._conn.execute("""
+            SELECT
+                se.email_id,
+                se.sender_email,
+                se.email_subject,
+                se.scanned_at,
+                se.email_date,
+                se.disposition,
+                se.raw_body,
+                se.parser_error_msg,
+                se.hidden,
+                (SELECT j.id        FROM jobs j WHERE j.email_id = se.email_id
+                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS job_id,
+                (SELECT j.company   FROM jobs j WHERE j.email_id = se.email_id
+                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS company,
+                (SELECT j.job_title FROM jobs j WHERE j.email_id = se.email_id
+                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS job_title,
+                (SELECT j.status    FROM jobs j WHERE j.email_id = se.email_id
+                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS job_status,
+                (SELECT j.fit_score FROM jobs j WHERE j.email_id = se.email_id
+                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS fit_score,
+                (SELECT j.skip_reason FROM jobs j WHERE j.email_id = se.email_id
+                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS skip_reason,
+                (SELECT COUNT(*)    FROM jobs j WHERE j.email_id = se.email_id
+                    OR j.email_id LIKE se.email_id || ':%') AS job_count
+            FROM scanned_emails se
+            ORDER BY se.scanned_at DESC
+        """)
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def set_hidden(self, email_id: str, hidden: bool) -> None:
+        self._conn.execute(
+            "UPDATE scanned_emails SET hidden = ? WHERE email_id = ?",
+            (1 if hidden else 0, email_id),
+        )
+        self._conn.commit()
+
+    def delete(self, email_id: str) -> None:
+        self._conn.execute(
+            "DELETE FROM scanned_emails WHERE email_id = ?", (email_id,)
+        )
+        self._conn.commit()
+
+    def delete_all(self) -> None:
+        self._conn.execute("DELETE FROM scanned_emails")
+        self._conn.commit()
+
+
+class SQLiteApplicationStageRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get_by_job_id(self, job_id: int) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT * FROM application_stages WHERE job_id = ? ORDER BY date ASC, id ASC",
+            (job_id,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_by_id(self, stage_id: int) -> dict[str, Any] | None:
+        cur = self._conn.execute(
+            "SELECT * FROM application_stages WHERE id = ?", (stage_id,)
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def insert(self, stage: dict[str, Any]) -> int:
+        columns = ", ".join(stage.keys())
+        placeholders = ", ".join("?" * len(stage))
+        cur = self._conn.execute(
+            f"INSERT INTO application_stages ({columns}) VALUES ({placeholders})",
+            list(stage.values()),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def delete(self, stage_id: int) -> None:
+        self._conn.execute("DELETE FROM application_stages WHERE id = ?", (stage_id,))
         self._conn.commit()
 
 
@@ -392,6 +507,29 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN email_subject TEXT")
     if "confidence_score" not in existing:
         conn.execute("ALTER TABLE jobs ADD COLUMN confidence_score INTEGER")
+    if "skip_reason" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN skip_reason TEXT")
+
+    se_existing = {row[1] for row in conn.execute("PRAGMA table_info(scanned_emails)").fetchall()}
+    if "email_date" not in se_existing:
+        conn.execute("ALTER TABLE scanned_emails ADD COLUMN email_date TEXT")
+    if "raw_body" not in se_existing:
+        conn.execute("ALTER TABLE scanned_emails ADD COLUMN raw_body TEXT")
+    if "parser_error_msg" not in se_existing:
+        conn.execute("ALTER TABLE scanned_emails ADD COLUMN parser_error_msg TEXT")
+    if "hidden" not in se_existing:
+        conn.execute("ALTER TABLE scanned_emails ADD COLUMN hidden INTEGER DEFAULT 0")
+    if "disposition" not in se_existing:
+        conn.execute("ALTER TABLE scanned_emails ADD COLUMN disposition TEXT DEFAULT 'noise'")
+        # Back-fill: emails that have a matching job row were obviously job_created
+        conn.execute("""
+            UPDATE scanned_emails SET disposition = 'job_created'
+            WHERE email_id IN (SELECT email_id FROM jobs)
+               OR email_id IN (
+                   SELECT SUBSTR(email_id, 1, INSTR(email_id, ':') - 1)
+                   FROM jobs WHERE INSTR(email_id, ':') > 0
+               )
+        """)
     conn.commit()
 
     # Backfill scanned_emails from jobs so existing records are not re-processed.
@@ -404,6 +542,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
                COALESCE(date_found, datetime('now'))
         FROM jobs
         WHERE email_id IS NOT NULL
+    """)
+    conn.commit()
+
+    # Backfill application_stages for existing added_to_sheet jobs.
+    # Safe to re-run: only inserts for jobs that have no stage record yet.
+    conn.execute("""
+        INSERT INTO application_stages (job_id, status, date)
+        SELECT id, 'applied', COALESCE(date_added_to_sheet, date_found, date('now'))
+        FROM jobs
+        WHERE status = 'added_to_sheet'
+          AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
     """)
     conn.commit()
 
@@ -427,7 +576,8 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             duplicate_hint      TEXT,
             sender_email        TEXT,
             email_subject       TEXT,
-            confidence_score    INTEGER
+            confidence_score    INTEGER,
+            skip_reason         TEXT
         );
 
         CREATE TABLE IF NOT EXISTS email_sources (
@@ -462,13 +612,28 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS scanned_emails (
-            email_id      TEXT PRIMARY KEY,
-            sender_email  TEXT,
-            email_subject TEXT,
-            scanned_at    TEXT
+            email_id         TEXT PRIMARY KEY,
+            sender_email     TEXT,
+            email_subject    TEXT,
+            scanned_at       TEXT,
+            disposition      TEXT DEFAULT 'noise',
+            email_date       TEXT,
+            raw_body         TEXT,
+            parser_error_msg TEXT,
+            hidden           INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_scanned_emails_content
             ON scanned_emails (sender_email, email_subject, scanned_at);
+
+        CREATE TABLE IF NOT EXISTS application_stages (
+            id      INTEGER PRIMARY KEY,
+            job_id  INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            status  TEXT NOT NULL,
+            date    TEXT NOT NULL,
+            notes   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_application_stages_job
+            ON application_stages (job_id);
     """)
     conn.commit()
 

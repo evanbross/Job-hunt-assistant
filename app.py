@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ from flask_cors import CORS
 
 import config
 from backend.db import (
+    SQLiteApplicationStageRepository,
     SQLiteEmailSourceRepository,
     SQLiteJobRepository,
     SQLitePenaltyRuleRepository,
@@ -31,10 +33,12 @@ from backend.db import (
     get_connection,
     init_db,
 )
+from backend.cover_letter_generator import CoverLetterGenerator
 from backend.duplicate_checker import DuplicateChecker
 from backend.email_parser import EmailParser
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
+from backend.job_board_searcher import JobBoardSearcher, url_to_email_id
 from backend.sheets_client import SheetsClient
 
 # Allow Google to return a superset of the requested OAuth scopes without
@@ -89,6 +93,22 @@ def _is_application_acknowledgement(subject: str) -> bool:
     return any(pat in lower for pat in _ACK_SUBJECT_PATTERNS)
 
 
+def _email_date_from_message(full_msg: dict) -> str | None:
+    """
+    Extract the email's send date from the Gmail message object.
+
+    Gmail exposes ``internalDate`` as a Unix timestamp in milliseconds.
+    Returns an ISO-8601 date string (YYYY-MM-DD) or None if not available.
+    """
+    raw = full_msg.get("internalDate")
+    if not raw:
+        return None
+    try:
+        return datetime.fromtimestamp(int(raw) / 1000, UTC).strftime("%Y-%m-%d")
+    except (ValueError, OSError):
+        return None
+
+
 # ─── Scan state (in-memory, protected by a lock) ──────────────────────────────
 
 @dataclass
@@ -98,11 +118,52 @@ class ScanState:
     message: str = "Idle"
     jobs_found: int = 0
     jobs_processed: int = 0
-    errors: list[str] = field(default_factory=list)
+    errors: list[dict] = field(default_factory=list)
 
 
 _scan_state = ScanState()
 _scan_lock = threading.Lock()
+
+
+# ─── Board-search state (in-memory, protected by its own lock) ─────────────────
+
+@dataclass
+class BoardSearchState:
+    running: bool = False
+    progress: int = 0
+    message: str = "Idle"
+    candidates_found: int = 0
+    candidates_processed: int = 0
+    jobs_added: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+_board_state = BoardSearchState()
+_board_lock = threading.Lock()
+
+
+def _update_board(
+    *,
+    progress: int | None = None,
+    message: str | None = None,
+    candidates_found: int | None = None,
+    candidates_processed: int | None = None,
+    jobs_added: int | None = None,
+    error: str | None = None,
+) -> None:
+    with _board_lock:
+        if progress is not None:
+            _board_state.progress = progress
+        if message is not None:
+            _board_state.message = message
+        if candidates_found is not None:
+            _board_state.candidates_found = candidates_found
+        if candidates_processed is not None:
+            _board_state.candidates_processed = candidates_processed
+        if jobs_added is not None:
+            _board_state.jobs_added = jobs_added
+        if error is not None:
+            _board_state.errors.append(error)
 
 
 def _update_scan(
@@ -112,6 +173,7 @@ def _update_scan(
     jobs_found: int | None = None,
     jobs_processed: int | None = None,
     error: str | None = None,
+    error_email_id: str | None = None,
 ) -> None:
     with _scan_lock:
         if progress is not None:
@@ -123,15 +185,18 @@ def _update_scan(
         if jobs_processed is not None:
             _scan_state.jobs_processed = jobs_processed
         if error is not None:
-            _scan_state.errors.append(error)
+            _scan_state.errors.append({"message": error, "email_id": error_email_id})
 
 
 # ─── Background scan thread ───────────────────────────────────────────────────
 
-def _run_scan() -> None:
+def _run_scan(rescan_all: bool = False) -> None:
     """
     Full email scan pipeline. Runs in a background thread so the POST /api/scan
     endpoint returns immediately. Progress is tracked via _scan_state.
+
+    rescan_all: when True, fetches all messages (not just unread) so that
+        previously-read emails are re-processed after a rescan-all wipe.
     """
     with _scan_lock:
         _scan_state.running = True
@@ -170,7 +235,7 @@ def _run_scan() -> None:
 
         _update_scan(progress=10, message=f"Fetching emails (last {lookback_days} days)...")
 
-        messages = gmail.list_unread_messages(lookback_days, enabled_sources)
+        messages = gmail.list_unread_messages(lookback_days, enabled_sources, unread_only=not rescan_all)
         total = len(messages)
         _update_scan(
             progress=20,
@@ -218,17 +283,19 @@ def _run_scan() -> None:
                 _update_scan(error=f"Failed to fetch message {msg_id}: {exc}")
                 continue
 
+            email_date = _email_date_from_message(full_msg)
+
             # Skip application-acknowledgement emails (e.g. "your application was sent to…")
             if _is_application_acknowledgement(subject):
                 gmail.mark_as_read(msg_id)
-                scanned_repo.mark_scanned(msg_id, sender, subject)
+                scanned_repo.mark_scanned(msg_id, sender, subject, disposition="ack", email_date=email_date)
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
             # Secondary dedup: same sender + subject seen within the lookback window.
             # Catches edge cases like a message re-delivered with a different ID.
             if scanned_repo.is_duplicate_by_content(sender, subject, lookback_days):
-                scanned_repo.mark_scanned(msg_id, sender, subject)
+                scanned_repo.mark_scanned(msg_id, sender, subject, disposition="duplicate", email_date=email_date)
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
@@ -236,7 +303,7 @@ def _run_scan() -> None:
             feedback = feedback_repo.find_match(sender, subject)
             if feedback and feedback["is_relevant"] == 0:
                 gmail.mark_as_read(msg_id)
-                scanned_repo.mark_scanned(msg_id, sender, subject)
+                scanned_repo.mark_scanned(msg_id, sender, subject, disposition="feedback_filtered", email_date=email_date)
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
@@ -244,15 +311,17 @@ def _run_scan() -> None:
             try:
                 parsed_jobs = parser.parse(subject, sender, body)
             except Exception as exc:
+                scanned_repo.mark_scanned(msg_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=body, parser_error_msg=str(exc))
                 _update_scan(
-                    error=f"Parser error for message {msg_id}: {exc}",
+                    error=f"Parser error: {exc}",
+                    error_email_id=msg_id,
                     jobs_processed=idx + 1,
                 )
                 continue
 
             if not parsed_jobs:
                 # Not a job email — mark scanned and move on
-                scanned_repo.mark_scanned(msg_id, sender, subject)
+                scanned_repo.mark_scanned(msg_id, sender, subject, disposition="noise", email_date=email_date)
                 gmail.mark_as_read(msg_id)
                 _update_scan(jobs_processed=idx + 1)
                 continue
@@ -329,7 +398,7 @@ def _run_scan() -> None:
 
                 job_repo.insert(job_data)
 
-            scanned_repo.mark_scanned(msg_id, sender, subject)
+            scanned_repo.mark_scanned(msg_id, sender, subject, disposition="job_created", email_date=email_date)
             gmail.mark_as_read(msg_id)
 
             n_found = len(parsed_jobs)
@@ -357,6 +426,225 @@ def _run_scan() -> None:
             _scan_state.running = False
 
 
+# ─── Board search helpers ─────────────────────────────────────────────────────
+
+_FALLBACK_QUERIES: list[str] = [
+    "senior software engineer python remote",
+    "principal software engineer AI LLM remote",
+    "staff engineer backend distributed systems remote",
+    "senior engineer machine learning remote",
+    "principal engineer fintech platform remote",
+]
+
+
+def _generate_board_search_queries() -> list[str]:
+    """Ask Claude to generate tailored search queries from the candidate profile."""
+    import anthropic
+    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    response = client.messages.create(
+        model=config.SCORER_MODEL,
+        max_tokens=200,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "List 5 short job search queries (one per line, no numbering, "
+                    "no quotes, 3–6 words each) to find strong matches on Remotive and "
+                    "similar remote-job boards for this candidate. Vary them across "
+                    "different skills and specialisations.\n\n"
+                    f"CANDIDATE PROFILE:\n{config.CANDIDATE_PROFILE}"
+                ),
+            }
+        ],
+    )
+    lines = [
+        ln.strip()
+        for ln in response.content[0].text.strip().splitlines()
+        if ln.strip()
+    ]
+    return lines[:6] if lines else _FALLBACK_QUERIES
+
+
+def _run_board_search() -> None:
+    """
+    Proactive job-board search pipeline.  Runs in a background thread so
+    POST /api/board-search returns immediately.  Progress is tracked via
+    _board_state.
+    """
+    with _board_lock:
+        _board_state.running = True
+        _board_state.progress = 0
+        _board_state.message = "Generating search queries…"
+        _board_state.candidates_found = 0
+        _board_state.candidates_processed = 0
+        _board_state.jobs_added = 0
+        _board_state.errors.clear()
+
+    try:
+        # ── 1. Build search queries ──────────────────────────────────────────
+        try:
+            search_queries = _generate_board_search_queries()
+            _update_board(
+                progress=10,
+                message=f"Searching boards with {len(search_queries)} queries…",
+            )
+        except Exception as exc:
+            logger.warning("Query generation failed, using defaults: %s", exc)
+            search_queries = _FALLBACK_QUERIES
+            _update_board(progress=10, message="Searching boards (default queries)…")
+
+        # ── 2. Open DB and load supporting data ──────────────────────────────
+        conn = get_connection(config.DB_PATH)
+        job_repo = SQLiteJobRepository(conn)
+        resume_repo = SQLiteResumeRepository(conn)
+        penalty_repo = SQLitePenaltyRuleRepository(conn)
+
+        resume_row = resume_repo.get_latest()
+        resume_text = resume_row["content"] if resume_row else ""
+        penalty_rules = penalty_repo.get_enabled()
+        scorer = FitScorer()
+        dup_checker = DuplicateChecker()
+
+        # ── 3. Load known jobs for duplicate detection ────────────────────────
+        sheet_jobs: list[dict] = []
+        try:
+            sheet_jobs = SheetsClient().read_jobs()
+        except Exception as exc:
+            logger.warning("Could not load sheet jobs for dedup: %s", exc)
+
+        all_statuses = [
+            "pending_review", "triage", "possible_duplicate",
+            "added_to_sheet", "skipped",
+        ]
+        db_jobs_for_dedup: list[dict] = [
+            {"company": j["company"], "job_title": j["job_title"]}
+            for j in job_repo.get_by_statuses(all_statuses)
+            if j.get("company") or j.get("job_title")
+        ]
+        all_known_jobs = sheet_jobs + db_jobs_for_dedup
+
+        _update_board(progress=20, message="Fetching job listings from boards…")
+
+        # ── 4. Fetch from boards ──────────────────────────────────────────────
+        searcher = JobBoardSearcher()
+        try:
+            candidates = searcher.search_all(search_queries)
+        except Exception as exc:
+            logger.error("Board search fetch failed: %s", exc)
+            _update_board(error=f"Board search failed: {exc}", message="Board search failed.")
+            conn.close()
+            return
+
+        total = len(candidates)
+        _update_board(
+            progress=40,
+            message=f"Found {total} candidates. Scoring and filtering…",
+            candidates_found=total,
+        )
+
+        if total == 0:
+            _update_board(progress=100, message="No listings found from boards.")
+            conn.close()
+            return
+
+        # ── 5. Score, dedup, and insert ───────────────────────────────────────
+        jobs_added = 0
+        for idx, candidate in enumerate(candidates):
+            url = candidate["url"]
+            title = candidate["title"]
+            company = candidate["company"]
+
+            # URL-exact dedup: skip if already tracked in this DB
+            if url and job_repo.get_by_url(url):
+                _update_board(candidates_processed=idx + 1)
+                continue
+
+            # Fuzzy company+title dedup against sheet and existing DB rows
+            if all_known_jobs and company and title:
+                if dup_checker.check(job_title=title, company=company, sheet_jobs=all_known_jobs):
+                    _update_board(candidates_processed=idx + 1)
+                    continue
+
+            # Score against candidate profile
+            try:
+                score_result = scorer.score(
+                    job_title=title,
+                    company=company,
+                    email_body=candidate["description"],
+                    resume_text=resume_text,
+                    penalty_rules=penalty_rules,
+                )
+                fit_score: int = score_result["score"]
+                fit_reasoning: str = score_result["reasoning"]
+            except Exception as exc:
+                logger.warning("Scoring failed for %s @ %s: %s", title, company, exc)
+                _update_board(candidates_processed=idx + 1)
+                continue
+
+            if fit_score < config.BOARD_SEARCH_MIN_SCORE:
+                _update_board(candidates_processed=idx + 1)
+                continue
+
+            status = "pending_review" if fit_score >= 70 else "triage"
+            email_id = url_to_email_id(url) if url else f"board:nurl:{idx}"
+
+            job_data: dict = {
+                "email_id": email_id,
+                "company": company,
+                "job_title": title,
+                "url": url,
+                "source": candidate["source"],
+                "raw_email_snippet": candidate["description"][:300],
+                "fit_score": fit_score,
+                "fit_reasoning": fit_reasoning,
+                "status": status,
+                "parser_confidence": "high",
+                "date_found": date.today().isoformat(),
+                "date_added_to_sheet": None,
+                "duplicate_hint": None,
+                "sender_email": None,
+                "email_subject": None,
+                "confidence_score": 100,
+            }
+
+            try:
+                job_repo.insert(job_data)
+                jobs_added += 1
+            except Exception as exc:
+                # UNIQUE constraint hit if the same URL appeared twice in results
+                logger.debug("Insert skipped for %s: %s", url, exc)
+
+            progress = 40 + int((idx + 1) / total * 55)
+            _update_board(
+                progress=progress,
+                message=(
+                    f"Scored {idx + 1}/{total}: {title} @ {company} → {fit_score}"
+                ),
+                candidates_processed=idx + 1,
+                jobs_added=jobs_added,
+            )
+
+        conn.close()
+        _update_board(
+            progress=100,
+            message=(
+                f"Done. {jobs_added} new matching job{'s' if jobs_added != 1 else ''} "
+                f"found from {total} candidates."
+            ),
+            jobs_added=jobs_added,
+        )
+
+    except Exception as exc:
+        logger.exception("Board search failed with unexpected error")
+        _update_board(
+            error=f"Board search failed: {exc}",
+            message="Board search failed with an error.",
+        )
+    finally:
+        with _board_lock:
+            _board_state.running = False
+
+
 # ─── Helper ───────────────────────────────────────────────────────────────────
 
 def _get_repos():
@@ -369,7 +657,16 @@ def _get_repos():
         "penalties": SQLitePenaltyRuleRepository(conn),
         "feedback": SQLiteRelevanceFeedbackRepository(conn),
         "resume": SQLiteResumeRepository(conn),
+        "stages": SQLiteApplicationStageRepository(conn),
     }
+
+
+# ─── Server-side PKCE store ───────────────────────────────────────────────────
+# Maps a random state token → code_verifier.  Using a server-side dict avoids
+# session-cookie issues when the Vite dev proxy is in the path: the cookie set
+# by Flask on :5004 isn't visible when the browser calls :5173, so the callback
+# (which hits :5004 directly from Google's redirect) would find an empty session.
+_pending_auths: dict[str, str] = {}
 
 
 # ─── Auth routes ─────────────────────────────────────────────────────────────
@@ -401,17 +698,20 @@ def auth_google_start():
         scopes=config.GMAIL_SCOPES,
         redirect_uri=config.GOOGLE_OAUTH_REDIRECT_URI,
     )
+
+    # Generate a random state token and store the PKCE code verifier server-side.
+    # This avoids relying on Flask session cookies, which don't survive the Vite
+    # dev-proxy hop (browser stores the cookie for :5173, but the OAuth callback
+    # hits :5004 directly, so the cookie is absent).
+    state = secrets.token_urlsafe(32)
     auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
         code_challenge_method="S256",
+        state=state,
     )
-    # Persist the PKCE code verifier so the callback can complete the exchange.
-    # Google Desktop app credentials now require PKCE; fetch_token on a fresh
-    # Flow object would fail with "Missing code verifier" without this.
-    from flask import session
-    session["oauth_code_verifier"] = flow.code_verifier
+    _pending_auths[state] = flow.code_verifier
     return jsonify({"auth_url": auth_url})
 
 
@@ -422,22 +722,34 @@ def auth_google_callback():
     if not code:
         return jsonify({"error": "Missing code parameter"}), 400
 
-    from google_auth_oauthlib.flow import Flow
+    state = request.args.get("state", "")
+    code_verifier = _pending_auths.pop(state, None)
+    if not code_verifier:
+        return jsonify({"error": "OAuth state mismatch — please try connecting again."}), 400
 
-    from flask import session
+    from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_secrets_file(
         str(config.GOOGLE_CREDENTIALS_FILE),
         scopes=config.GMAIL_SCOPES,
         redirect_uri=config.GOOGLE_OAUTH_REDIRECT_URI,
     )
-    flow.code_verifier = session.pop("oauth_code_verifier", None)
+    flow.code_verifier = code_verifier
     flow.fetch_token(code=code)
     creds = flow.credentials
     config.GOOGLE_TOKEN_FILE.write_text(creds.to_json())
 
-    # Redirect to the frontend root so the user ends up back in the app
-    return redirect("/?auth=success")
+    # In dev mode (no built frontend) Flask's catch-all returns JSON, so redirect
+    # to the Vite dev server instead.  In production both are on the same origin.
+    frontend_origin = "http://localhost:5174" if not config.FRONTEND_DIST.exists() else ""
+    return redirect(f"{frontend_origin}/?auth=success")
+
+
+@app.route("/api/auth/disconnect", methods=["POST"])
+def auth_disconnect():
+    """Delete the stored Google token so the user can re-authenticate."""
+    config.GOOGLE_TOKEN_FILE.unlink(missing_ok=True)
+    return jsonify({"status": "disconnected"})
 
 
 # ─── Scan routes ──────────────────────────────────────────────────────────────
@@ -468,6 +780,35 @@ def scan_status():
         )
 
 
+# ─── Board search routes ──────────────────────────────────────────────────────
+
+@app.route("/api/board-search", methods=["POST"])
+def start_board_search():
+    with _board_lock:
+        if _board_state.running:
+            return jsonify({"error": "A board search is already running"}), 409
+
+    thread = threading.Thread(target=_run_board_search, daemon=True)
+    thread.start()
+    return jsonify({"status": "started"}), 202
+
+
+@app.route("/api/board-search/status")
+def board_search_status():
+    with _board_lock:
+        return jsonify(
+            {
+                "running": _board_state.running,
+                "progress": _board_state.progress,
+                "message": _board_state.message,
+                "candidates_found": _board_state.candidates_found,
+                "candidates_processed": _board_state.candidates_processed,
+                "jobs_added": _board_state.jobs_added,
+                "errors": list(_board_state.errors),
+            }
+        )
+
+
 # ─── Job routes ───────────────────────────────────────────────────────────────
 
 @app.route("/api/jobs")
@@ -490,6 +831,8 @@ def get_triage_jobs():
 def get_history_jobs():
     repos = _get_repos()
     jobs = repos["jobs"].get_by_statuses(["added_to_sheet", "skipped"])
+    for job in jobs:
+        job["stages"] = repos["stages"].get_by_job_id(job["id"])
     repos["conn"].close()
     return jsonify(jobs)
 
@@ -522,8 +865,13 @@ def add_job_to_sheet(job_id: int):
     repos["jobs"].update(
         job_id, {"status": "added_to_sheet", "date_added_to_sheet": today}
     )
+    # Record the "applied" stage automatically
+    repos["stages"].insert({"job_id": job_id, "status": "applied", "date": today, "notes": None})
     repos["conn"].close()
     return jsonify({"status": "ok"})
+
+
+_VALID_SKIP_REASONS = frozenset({"rejected", "duplicate", "req_closed", "not_interested", "other"})
 
 
 @app.route("/api/jobs/<int:job_id>/skip", methods=["POST"])
@@ -534,9 +882,77 @@ def skip_job(job_id: int):
         repos["conn"].close()
         return jsonify({"error": "Job not found"}), 404
 
-    repos["jobs"].update(job_id, {"status": "skipped"})
+    body = request.get_json(silent=True) or {}
+    reason = body.get("reason", "other")
+    if reason not in _VALID_SKIP_REASONS:
+        reason = "other"
+
+    repos["jobs"].update(job_id, {"status": "skipped", "skip_reason": reason})
     repos["conn"].close()
     return jsonify({"status": "ok"})
+
+
+_VALID_STAGE_STATUSES = frozenset({
+    "applied", "waiting_call", "waiting_second", "eval_test",
+    "rejected", "job_filled", "ghosted",
+})
+
+
+@app.route("/api/jobs/<int:job_id>/stages", methods=["POST"])
+def add_application_stage(job_id: int):
+    repos = _get_repos()
+    if not repos["jobs"].get_by_id(job_id):
+        repos["conn"].close()
+        return jsonify({"error": "Job not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    status = data.get("status", "")
+    if status not in _VALID_STAGE_STATUSES:
+        repos["conn"].close()
+        return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(_VALID_STAGE_STATUSES))}"}), 400
+
+    stage_date = data.get("date") or date.today().isoformat()
+    notes = data.get("notes") or None
+
+    stage_id = repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
+    stage = repos["stages"].get_by_id(stage_id)
+    repos["conn"].close()
+    return jsonify(stage), 201
+
+
+@app.route("/api/jobs/<int:job_id>/stages/<int:stage_id>", methods=["DELETE"])
+def delete_application_stage(job_id: int, stage_id: int):
+    repos = _get_repos()
+    stage = repos["stages"].get_by_id(stage_id)
+    if not stage or stage["job_id"] != job_id:
+        repos["conn"].close()
+        return jsonify({"error": "Stage not found"}), 404
+
+    repos["stages"].delete(stage_id)
+    repos["conn"].close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/jobs/<int:job_id>/cover-letter", methods=["POST"])
+def generate_cover_letter(job_id: int):
+    repos = _get_repos()
+    job = repos["jobs"].get_by_id(job_id)
+    if not job:
+        repos["conn"].close()
+        return jsonify({"error": "Job not found"}), 404
+
+    resume_row = repos["resume"].get_latest()
+    resume_text = resume_row["content"] if resume_row else None
+    repos["conn"].close()
+
+    try:
+        generator = CoverLetterGenerator()
+        cover_letter = generator.generate(job, resume_text=resume_text)
+    except Exception as exc:
+        logger.error("Cover letter generation failed for job %d: %s", job_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"cover_letter": cover_letter})
 
 
 @app.route("/api/jobs/<int:job_id>/approve", methods=["POST"])
@@ -684,6 +1100,194 @@ def reject_triage_job(job_id: int):
     repos["jobs"].delete(job_id)
     repos["conn"].close()
     return jsonify({"status": "ok"})
+
+
+# ─── Scanned email routes ────────────────────────────────────────────────────
+
+@app.route("/api/emails")
+def get_scanned_emails():
+    """
+    Return all scanned emails enriched with their associated job status.
+
+    Optional query param ``filter``:
+      - ``acted``    — only emails whose job has status added_to_sheet or skipped
+      - ``potential`` — only emails whose job is still in pending_review / triage / possible_duplicate
+      - (omitted)    — all scanned emails
+    """
+    conn = get_connection(config.DB_PATH)
+    scanned_repo = SQLiteScannedEmailRepository(conn)
+    emails = scanned_repo.get_all_with_job_status()
+    conn.close()
+
+    filter_param = request.args.get("filter", "")
+    if filter_param == "acted":
+        emails = [
+            e for e in emails
+            if e.get("job_status") in ("added_to_sheet", "skipped")
+        ]
+    elif filter_param == "potential":
+        emails = [
+            e for e in emails
+            if e.get("job_status") in ("pending_review", "triage", "possible_duplicate")
+        ]
+
+    return jsonify(emails)
+
+
+@app.route("/api/emails/<email_id>/hide", methods=["POST"])
+def set_email_hidden(email_id: str):
+    """Set or clear the hidden flag on a scanned email."""
+    data = request.get_json(silent=True) or {}
+    hidden = bool(data.get("hidden", True))
+    conn = get_connection(config.DB_PATH)
+    SQLiteScannedEmailRepository(conn).set_hidden(email_id, hidden)
+    conn.close()
+    return jsonify({"hidden": hidden})
+
+
+@app.route("/api/emails/<email_id>/rescan", methods=["POST"])
+def rescan_email(email_id: str):
+    """
+    Re-fetch a single email from Gmail and re-run the parser on it.
+
+    Deletes the scanned_emails record and any associated jobs first so the
+    email is treated as fresh. Returns the newly created job(s) or an empty
+    list if the email produced no job postings.
+    """
+    conn = get_connection(config.DB_PATH)
+    scanned_repo = SQLiteScannedEmailRepository(conn)
+    job_repo = SQLiteJobRepository(conn)
+    resume_repo = SQLiteResumeRepository(conn)
+    penalty_repo = SQLitePenaltyRuleRepository(conn)
+    feedback_repo = SQLiteRelevanceFeedbackRepository(conn)
+
+    try:
+        gmail = GmailClient()
+    except NotAuthenticatedError as exc:
+        conn.close()
+        return jsonify({"error": str(exc)}), 401
+
+    # Remove prior scanned record so this email is treated as new
+    scanned_repo.delete(email_id)
+
+    # Delete any jobs produced from this email (base and suffixed)
+    existing_jobs = job_repo.get_by_statuses(
+        ["pending_review", "triage", "possible_duplicate", "added_to_sheet", "skipped"]
+    )
+    base_id = email_id.split(":")[0]
+    for job in existing_jobs:
+        eid = (job.get("email_id") or "")
+        if eid == email_id or eid.startswith(base_id + ":"):
+            job_repo.delete(job["id"])
+
+    # Re-fetch and re-parse
+    try:
+        full_msg = gmail.get_message(base_id)
+        subject, sender, body = gmail.extract_text(full_msg)
+    except Exception as exc:
+        conn.close()
+        return jsonify({"error": f"Failed to fetch email from Gmail: {exc}"}), 500
+
+    email_date = _email_date_from_message(full_msg)
+
+    if _is_application_acknowledgement(subject):
+        scanned_repo.mark_scanned(email_id, sender, subject, disposition="ack", email_date=email_date, raw_body=body)
+        conn.close()
+        return jsonify({"jobs": [], "message": "Acknowledged application email — no job extracted."})
+
+    try:
+        parsed_jobs = EmailParser().parse(subject, sender, body)
+    except Exception as exc:
+        scanned_repo.mark_scanned(email_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=body, parser_error_msg=str(exc))
+        conn.close()
+        return jsonify({"jobs": [], "message": f"Parser error: {exc}"})
+
+    if not parsed_jobs:
+        scanned_repo.mark_scanned(email_id, sender, subject, disposition="noise", email_date=email_date, raw_body=body)
+        conn.close()
+        return jsonify({"jobs": [], "message": "No job postings found in this email."})
+
+    snippet = body[:300]
+    resume_row = resume_repo.get_latest()
+    resume_text = resume_row["content"] if resume_row else ""
+    penalty_rules = penalty_repo.get_enabled()
+    scorer = FitScorer()
+    feedback = feedback_repo.find_match(sender, subject)
+
+    created: list[dict] = []
+    for job_idx, parsed in enumerate(parsed_jobs):
+        job_email_id = email_id if job_idx == 0 else f"{email_id}:{job_idx}"
+        confidence = parsed.get("confidence", "low")
+        if feedback and feedback["is_relevant"] == 1:
+            confidence = "high"
+
+        status = "pending_review" if confidence == "high" else "triage"
+        job_data: dict = {
+            "email_id": job_email_id,
+            "company": parsed.get("company", ""),
+            "job_title": parsed.get("job_title", ""),
+            "url": parsed.get("url", ""),
+            "source": parsed.get("source", ""),
+            "raw_email_snippet": snippet,
+            "fit_score": None,
+            "fit_reasoning": "",
+            "status": status,
+            "parser_confidence": confidence,
+            "date_found": date.today().isoformat(),
+            "date_added_to_sheet": None,
+            "duplicate_hint": None,
+            "sender_email": sender,
+            "email_subject": subject,
+            "confidence_score": parsed.get("confidence_score", 50),
+        }
+
+        if confidence == "high":
+            try:
+                result = scorer.score(
+                    job_title=parsed.get("job_title", ""),
+                    company=parsed.get("company", ""),
+                    email_body=body,
+                    resume_text=resume_text,
+                    penalty_rules=penalty_rules,
+                )
+                job_data["fit_score"] = result["score"]
+                job_data["fit_reasoning"] = result["reasoning"]
+            except Exception as exc:
+                logger.warning("Scoring failed during rescan: %s", exc)
+
+        new_id = job_repo.insert(job_data)
+        created.append(job_repo.get_by_id(new_id))
+
+    scanned_repo.mark_scanned(email_id, sender, subject, disposition="job_created", email_date=email_date, raw_body=body)
+    conn.close()
+    return jsonify({"jobs": created, "message": f"Rescanned — {len(created)} job(s) extracted."})
+
+
+@app.route("/api/emails/rescan-all", methods=["POST"])
+def rescan_all_emails():
+    """
+    Clear all scanned-email records and email-sourced jobs, then kick off a
+    fresh scan so every email is re-evaluated from scratch.
+
+    Board-search jobs (sender_email IS NULL) are left intact.
+    """
+    with _scan_lock:
+        if _scan_state.running:
+            return jsonify({"error": "A scan is already running"}), 409
+
+    conn = get_connection(config.DB_PATH)
+    scanned_repo = SQLiteScannedEmailRepository(conn)
+
+    # Remove all email-sourced jobs (board-search jobs have sender_email IS NULL)
+    conn.execute("DELETE FROM jobs WHERE sender_email IS NOT NULL")
+    conn.commit()
+    scanned_repo.delete_all()
+    conn.close()
+
+    # Kick off a fresh scan with unread_only=False so already-read emails are re-fetched
+    thread = threading.Thread(target=_run_scan, kwargs={"rescan_all": True}, daemon=True)
+    thread.start()
+    return jsonify({"status": "started"}), 202
 
 
 # ─── Email source routes ──────────────────────────────────────────────────────
@@ -947,7 +1551,65 @@ def serve_frontend(path: str):
     )
 
 
+# ─── Dev-server launcher ──────────────────────────────────────────────────────
+
+import atexit
+import subprocess as _subprocess
+
+_vite_proc: _subprocess.Popen | None = None
+
+
+def _start_vite() -> None:
+    """
+    Spawn `npm run dev` in frontend/ when no production build is present.
+
+    Werkzeug's debug reloader forks the process on every code change and sets
+    WERKZEUG_RUN_MAIN=true in the child.  We only want one Vite instance, so
+    we skip the spawn inside that fork.
+    """
+    global _vite_proc
+
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        return  # reloader fork — Vite already running from the parent
+
+    if config.FRONTEND_DIST.exists():
+        return  # production build present — serve it directly, no Vite needed
+
+    frontend_dir = config.BASE_DIR / "frontend"
+    if not (frontend_dir / "package.json").exists():
+        logger.warning("frontend/package.json not found — skipping Vite auto-start")
+        return
+
+    try:
+        _vite_proc = _subprocess.Popen(
+            "npm run dev",
+            cwd=str(frontend_dir),
+            shell=True,
+        )
+        atexit.register(_stop_vite)
+        logger.info(
+            "Vite dev server started (PID %s) → http://localhost:5173",
+            _vite_proc.pid,
+        )
+    except Exception as exc:
+        logger.warning("Could not start Vite dev server: %s", exc)
+
+
+def _stop_vite() -> None:
+    if _vite_proc and _vite_proc.poll() is None:
+        if sys.platform == "win32":
+            # terminate() only kills the cmd.exe shell; taskkill kills the full tree
+            _subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(_vite_proc.pid)],
+                capture_output=True,
+            )
+        else:
+            _vite_proc.terminate()
+        logger.info("Vite dev server stopped.")
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _start_vite()
     app.run(debug=True, host="0.0.0.0", port=5004, threaded=True)

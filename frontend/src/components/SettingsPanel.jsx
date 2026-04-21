@@ -134,7 +134,7 @@ function EmailSourcesSection() {
             <tr key={s.id}>
               <td style={tdStyle}>{s.name}</td>
               <td style={tdStyle}><span className="badge badge-gray">{s.match_type}</span></td>
-              <td style={tdStyle} style={{ ...tdStyle, fontFamily: "monospace", fontSize: "12px" }}>{s.match_value}</td>
+              <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: "12px" }}>{s.match_value}</td>
               <td style={tdStyle}>
                 <Toggle checked={!!s.enabled} onChange={() => toggleEnabled(s)} />
               </td>

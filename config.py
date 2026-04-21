@@ -32,7 +32,7 @@ GOOGLE_TOKEN_FILE: Path = CREDENTIALS_DIR / "token.json"
 
 # Set to False when ready to enable Gmail mark-as-read and Sheets writes.
 # While True, OAuth scopes are read-only and all write methods are no-ops.
-READ_ONLY_MODE: bool = True
+READ_ONLY_MODE: bool = False
 
 GMAIL_SCOPES: list[str] = (
     [
@@ -53,6 +53,9 @@ SCORER_MODEL: str = "claude-sonnet-4-20250514"
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 DEFAULT_EMAIL_LOOKBACK_DAYS: int = int(os.getenv("EMAIL_LOOKBACK_DAYS", "10"))
+# Minimum fit score (0-100) for a board-search result to be inserted into the DB.
+# Jobs scoring below this are silently discarded.
+BOARD_SEARCH_MIN_SCORE: int = int(os.getenv("BOARD_SEARCH_MIN_SCORE", "40"))
 
 # ─── Candidate profile (used in fit-scorer system prompt) ─────────────────────
 CANDIDATE_PROFILE: str = """

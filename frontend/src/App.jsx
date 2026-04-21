@@ -2,8 +2,10 @@ import React, { useEffect, useState } from "react";
 import JobQueue from "./components/JobQueue.jsx";
 import TriagePanel from "./components/TriagePanel.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
+import EmailsPanel from "./components/EmailsPanel.jsx";
+import HistoryPanel from "./components/HistoryPanel.jsx";
 
-const TABS = ["Job Queue", "Triage", "History", "Settings"];
+const TABS = ["Job Queue", "Triage", "History", "Emails", "Settings"];
 
 const styles = {
   app: {
@@ -100,10 +102,18 @@ const styles = {
   },
 };
 
+const EMAILS_TAB_INDEX = TABS.indexOf("Emails");
+
 export default function App() {
   const [activeTab, setActiveTab] = useState(0);
   const [triageCount, setTriageCount] = useState(0);
   const [authStatus, setAuthStatus] = useState(null); // null | true | false
+  const [emailFocusId, setEmailFocusId] = useState(null);
+
+  const navigateToEmails = (emailId) => {
+    setEmailFocusId(emailId);
+    setActiveTab(EMAILS_TAB_INDEX);
+  };
 
   useEffect(() => {
     fetchAuthStatus();
@@ -137,17 +147,31 @@ export default function App() {
     }
   };
 
+  const startGoogleAuth = async () => {
+    const res = await fetch("/api/auth/google");
+    const data = await res.json();
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+    window.location.href = data.auth_url;
+  };
+
   const handleAuthClick = async () => {
     try {
-      const res = await fetch("/api/auth/google");
-      const data = await res.json();
-      if (data.error) {
-        alert(data.error);
-        return;
-      }
-      window.location.href = data.auth_url;
+      await startGoogleAuth();
     } catch (e) {
       alert("Failed to start auth: " + e.message);
+    }
+  };
+
+  const handleReconnect = async () => {
+    if (!window.confirm("This will disconnect your Google account and re-run the auth flow to refresh permissions. Continue?")) return;
+    try {
+      await fetch("/api/auth/disconnect", { method: "POST" });
+      await startGoogleAuth();
+    } catch (e) {
+      alert("Failed to reconnect: " + e.message);
     }
   };
 
@@ -183,9 +207,18 @@ export default function App() {
 
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
             {authStatus === true && (
-              <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.85)", fontWeight: "500", display: "flex", alignItems: "center", gap: "6px" }}>
-                <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#4ade80", display: "inline-block", boxShadow: "0 0 6px #4ade80" }} />
-                Connected
+              <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.85)", fontWeight: "500", display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#4ade80", display: "inline-block", boxShadow: "0 0 6px #4ade80" }} />
+                  Connected
+                </span>
+                <button
+                  onClick={handleReconnect}
+                  style={{ fontSize: "11px", padding: "3px 10px", background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.7)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "var(--radius)", cursor: "pointer" }}
+                  title="Re-authenticate to refresh Google permissions"
+                >
+                  Reconnect
+                </button>
               </span>
             )}
             {authStatus === false && (
@@ -215,108 +248,23 @@ export default function App() {
           <JobQueue
             onTriageCountChange={setTriageCount}
             isAuthenticated={authStatus === true}
+            onNavigateToEmails={navigateToEmails}
           />
         )}
         {activeTab === 1 && (
           <TriagePanel onCountChange={setTriageCount} />
         )}
-        {activeTab === 2 && <HistoryTable />}
-        {activeTab === 3 && <SettingsPanel />}
+        {activeTab === 2 && <HistoryPanel />}
+        {activeTab === 3 && (
+          <EmailsPanel
+            isAuthenticated={authStatus === true}
+            onTriageCountChange={setTriageCount}
+            focusEmailId={emailFocusId}
+          />
+        )}
+        {activeTab === 4 && <SettingsPanel />}
       </main>
     </div>
   );
 }
 
-// ── History table (inline — simple enough not to need its own file) ───────────
-
-function HistoryTable() {
-  const [jobs, setJobs] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetch("/api/jobs/history")
-      .then((r) => r.json())
-      .then((data) => {
-        setJobs(Array.isArray(data) ? data : []);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
-
-  if (loading) return <p style={{ color: "var(--text-muted)" }}>Loading...</p>;
-
-  if (jobs.length === 0) {
-    return (
-      <div className="empty-state">
-        <p style={{ fontSize: "32px" }}>📋</p>
-        <p>No history yet.</p>
-      </div>
-    );
-  }
-
-  const tdStyle = {
-    padding: "11px 14px",
-    borderBottom: "1px solid var(--border)",
-    color: "var(--text)",
-    verticalAlign: "middle",
-    fontSize: "13px",
-  };
-  const thStyle = {
-    ...tdStyle,
-    color: "var(--text-muted)",
-    fontWeight: "600",
-    fontSize: "11px",
-    textTransform: "uppercase",
-    letterSpacing: "0.06em",
-    background: "var(--surface2)",
-    borderBottom: "1.5px solid var(--border)",
-  };
-
-  return (
-    <div style={{ overflowX: "auto", background: "var(--surface)", borderRadius: "var(--radius-lg)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border)" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead>
-          <tr>
-            {["Date", "Company", "Title", "Source", "Score", "Status"].map((h) => (
-              <th key={h} style={thStyle}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {jobs.map((job) => (
-            <tr key={job.id} style={{ background: "var(--surface)" }}>
-              <td style={tdStyle}>{job.date_found || "—"}</td>
-              <td style={tdStyle}>{job.company || "—"}</td>
-              <td style={tdStyle}>
-                {job.url ? (
-                  <a href={job.url} target="_blank" rel="noreferrer">{job.job_title || "—"}</a>
-                ) : (
-                  job.job_title || "—"
-                )}
-              </td>
-              <td style={tdStyle}>{job.source || "—"}</td>
-              <td style={tdStyle}>
-                <ScoreBadge score={job.fit_score} />
-              </td>
-              <td style={tdStyle}>
-                <span
-                  className={`badge ${job.status === "added_to_sheet" ? "badge-green" : "badge-gray"}`}
-                >
-                  {job.status === "added_to_sheet" ? "Added" : "Skipped"}
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function ScoreBadge({ score }) {
-  if (score === null || score === undefined) {
-    return <span className="badge badge-gray">—</span>;
-  }
-  const cls = score >= 70 ? "badge-green" : score >= 40 ? "badge-yellow" : "badge-red";
-  return <span className={`badge ${cls}`}>{score}</span>;
-}

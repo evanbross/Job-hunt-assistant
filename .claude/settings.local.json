@@ -5,7 +5,12 @@
       "Bash(cmd.exe /c \".venv\\\\Scripts\\\\pip install rapidfuzz\")",
       "Bash(cmd.exe:*)",
       "Bash(ls F:/Evan-F/Projects/JobHuntAssistant/*.py)",
-      "Skill(update-config)"
+      "Skill(update-config)",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\('app.py', doraise=True\\); print\\('OK'\\)\")",
+      "Read(//mnt/f/Evan-F/Projects/**)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 *)"
     ]
   }
 }

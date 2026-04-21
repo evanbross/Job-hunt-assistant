@@ -1,12 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
 
-export default function JobQueue({ onTriageCountChange, isAuthenticated }) {
+export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavigateToEmails }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [scanState, setScanState] = useState(null);
+  const [rescanAllRunning, setRescanAllRunning] = useState(false);
+  const [boardSearching, setBoardSearching] = useState(false);
+  const [boardState, setBoardState] = useState(null);
   const pollRef = useRef(null);
+  const boardPollRef = useRef(null);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -22,8 +26,35 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated }) {
 
   useEffect(() => {
     fetchJobs();
-    return () => clearInterval(pollRef.current);
+    return () => {
+      clearInterval(pollRef.current);
+      clearInterval(boardPollRef.current);
+    };
   }, [fetchJobs]);
+
+  const pollScanStatus = async (onDone) => {
+    try {
+      const res = await fetch("/api/scan/status");
+      const state = await res.json();
+      setScanState(state);
+
+      if (!state.running) {
+        clearInterval(pollRef.current);
+        onDone?.();
+        await fetchJobs();
+        try {
+          const t = await fetch("/api/jobs/triage");
+          const td = await t.json();
+          onTriageCountChange(Array.isArray(td) ? td.length : 0);
+        } catch {
+          /* no-op */
+        }
+      }
+    } catch {
+      clearInterval(pollRef.current);
+      onDone?.();
+    }
+  };
 
   const startScan = async () => {
     if (!isAuthenticated) {
@@ -39,32 +70,35 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated }) {
     }
 
     setScanning(true);
-    pollRef.current = setInterval(pollScanStatus, 1200);
+    pollRef.current = setInterval(() => pollScanStatus(() => setScanning(false)), 1200);
   };
 
-  const pollScanStatus = async () => {
-    try {
-      const res = await fetch("/api/scan/status");
-      const state = await res.json();
-      setScanState(state);
-
-      if (!state.running) {
-        clearInterval(pollRef.current);
-        setScanning(false);
-        // Refresh jobs and triage count
-        await fetchJobs();
-        try {
-          const t = await fetch("/api/jobs/triage");
-          const td = await t.json();
-          onTriageCountChange(Array.isArray(td) ? td.length : 0);
-        } catch {
-          /* no-op */
-        }
-      }
-    } catch {
-      clearInterval(pollRef.current);
-      setScanning(false);
+  const handleRescanAll = async () => {
+    if (!isAuthenticated) {
+      alert("Connect your Google account first (top banner).");
+      return;
     }
+    if (
+      !window.confirm(
+        "This will delete all email-sourced jobs and re-scan every email from scratch.\n\nBoard-search jobs are kept. Continue?"
+      )
+    ) {
+      return;
+    }
+
+    const res = await fetch("/api/emails/rescan-all", { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || "Failed to start rescan");
+      return;
+    }
+
+    setRescanAllRunning(true);
+    setScanState(null);
+    pollRef.current = setInterval(
+      () => pollScanStatus(() => setRescanAllRunning(false)),
+      1200
+    );
   };
 
   const handleAddToSheet = async (jobId) => {
@@ -77,24 +111,80 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated }) {
     setJobs((prev) => prev.filter((j) => j.id !== jobId));
   };
 
-  const handleSkip = async (jobId) => {
-    const res = await fetch(`/api/jobs/${jobId}/skip`, { method: "POST" });
+  const handleSkip = async (jobId, reason = "other") => {
+    const res = await fetch(`/api/jobs/${jobId}/skip`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    });
     if (res.ok) {
       setJobs((prev) => prev.filter((j) => j.id !== jobId));
     }
   };
 
+  const startBoardSearch = async () => {
+    const res = await fetch("/api/board-search", { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || "Failed to start board search");
+      return;
+    }
+    setBoardSearching(true);
+    boardPollRef.current = setInterval(pollBoardStatus, 1500);
+  };
+
+  const pollBoardStatus = async () => {
+    try {
+      const res = await fetch("/api/board-search/status");
+      const state = await res.json();
+      setBoardState(state);
+      if (!state.running) {
+        clearInterval(boardPollRef.current);
+        setBoardSearching(false);
+        await fetchJobs();
+        try {
+          const t = await fetch("/api/jobs/triage");
+          const td = await t.json();
+          onTriageCountChange(Array.isArray(td) ? td.length : 0);
+        } catch { /* no-op */ }
+      }
+    } catch {
+      clearInterval(boardPollRef.current);
+      setBoardSearching(false);
+    }
+  };
+
+  const anyScanRunning = scanning || rescanAllRunning;
+
   return (
     <div>
       {/* Toolbar */}
-      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px", flexWrap: "wrap" }}>
         <button
           className="btn-primary"
           onClick={startScan}
-          disabled={scanning}
+          disabled={anyScanRunning}
           style={{ padding: "8px 20px", fontSize: "14px" }}
         >
           {scanning ? "Scanning…" : "Scan Emails"}
+        </button>
+
+        <button
+          className="btn-secondary"
+          onClick={handleRescanAll}
+          disabled={anyScanRunning}
+          style={{ padding: "8px 20px", fontSize: "14px" }}
+        >
+          {rescanAllRunning ? "Rescanning All…" : "Rescan All Emails"}
+        </button>
+
+        <button
+          className="btn-secondary"
+          onClick={startBoardSearch}
+          disabled={boardSearching}
+          style={{ padding: "8px 20px", fontSize: "14px" }}
+        >
+          {boardSearching ? "Searching Boards…" : "Search Job Boards"}
         </button>
 
         {jobs.length > 0 && (
@@ -104,8 +194,8 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated }) {
         )}
       </div>
 
-      {/* Scan progress */}
-      {scanning && scanState && (
+      {/* Scan / rescan-all progress */}
+      {anyScanRunning && scanState && (
         <div style={progressBox}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
             <span>{scanState.message}</span>
@@ -114,18 +204,46 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated }) {
           <div className="loading-bar">
             <div className="loading-bar-fill" style={{ width: `${scanState.progress}%` }} />
           </div>
-          {scanState.errors?.length > 0 && (
+          <ErrorList errors={scanState.errors} onNavigateToEmails={onNavigateToEmails} />
+        </div>
+      )}
+
+      {/* Completed scan summary */}
+      {!anyScanRunning && scanState && scanState.progress === 100 && (
+        <div style={{ ...progressBox, background: "rgba(76,175,129,0.08)", borderColor: "rgba(76,175,129,0.25)", marginBottom: "16px" }}>
+          <p style={{ fontSize: "13px", color: "var(--green)" }}>{scanState.message}</p>
+          <ErrorList errors={scanState.errors} onNavigateToEmails={onNavigateToEmails} />
+        </div>
+      )}
+
+      {/* Board search progress */}
+      {boardSearching && boardState && (
+        <div style={progressBox}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
+            <span>{boardState.message}</span>
+            <span>{boardState.progress}%</span>
+          </div>
+          <div className="loading-bar">
+            <div className="loading-bar-fill" style={{ width: `${boardState.progress}%` }} />
+          </div>
+          {boardState.candidates_found > 0 && (
+            <p style={{ marginTop: "6px", fontSize: "11px", color: "var(--text-muted)" }}>
+              {boardState.candidates_processed}/{boardState.candidates_found} scored
+              {boardState.jobs_added > 0 && ` · ${boardState.jobs_added} added`}
+            </p>
+          )}
+          {boardState.errors?.length > 0 && (
             <ul style={{ marginTop: "8px", fontSize: "11px", color: "var(--red)", paddingLeft: "16px" }}>
-              {scanState.errors.map((e, i) => <li key={i}>{e}</li>)}
+              {boardState.errors.map((e, i) => <li key={i}>{e}</li>)}
             </ul>
           )}
         </div>
       )}
 
-      {/* Completed scan summary */}
-      {!scanning && scanState && scanState.progress === 100 && (
+      {/* Completed board search summary */}
+      {!boardSearching && boardState && boardState.progress === 100 && (
         <div style={{ ...progressBox, background: "rgba(76,175,129,0.08)", borderColor: "rgba(76,175,129,0.25)", marginBottom: "16px" }}>
-          <p style={{ fontSize: "13px", color: "var(--green)" }}>{scanState.message}</p>
+          <p style={{ fontSize: "13px", color: "var(--green)" }}>{boardState.message}</p>
         </div>
       )}
 
@@ -148,6 +266,41 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated }) {
         ))
       )}
     </div>
+  );
+}
+
+function ErrorList({ errors, onNavigateToEmails }) {
+  if (!errors?.length) return null;
+  return (
+    <ul style={{ marginTop: "8px", fontSize: "11px", color: "var(--red)", paddingLeft: "16px" }}>
+      {errors.map((e, i) => {
+        const message = typeof e === "string" ? e : e.message;
+        const emailId = typeof e === "object" ? e.email_id : null;
+        return (
+          <li key={i} style={{ marginBottom: "3px" }}>
+            {message}
+            {emailId && onNavigateToEmails && (
+              <button
+                onClick={() => onNavigateToEmails(emailId)}
+                style={{
+                  marginLeft: "8px",
+                  fontSize: "10px",
+                  padding: "1px 7px",
+                  borderRadius: "4px",
+                  border: "1px solid var(--red)",
+                  background: "transparent",
+                  color: "var(--red)",
+                  cursor: "pointer",
+                  verticalAlign: "middle",
+                }}
+              >
+                View email →
+              </button>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

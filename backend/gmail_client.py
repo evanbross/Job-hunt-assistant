@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import base64
 import logging
-from email import message_from_bytes
+import re
+from html.parser import HTMLParser
 from typing import Any
 
 from google.auth.exceptions import RefreshError, TransportError
@@ -74,13 +75,15 @@ class GmailClient:
     # ── Message fetching ──────────────────────────────────────────────────────
 
     def list_unread_messages(
-        self, lookback_days: int, sender_filters: list[dict]
+        self, lookback_days: int, sender_filters: list[dict], unread_only: bool = True
     ) -> list[dict[str, Any]]:
         """
-        Return unread messages from the last *lookback_days* days that match
-        at least one enabled email source filter.
+        Return messages from the last *lookback_days* days that match at least
+        one enabled email source filter.
 
         sender_filters: list of dicts with keys 'match_type' and 'match_value'.
+        unread_only: when False, includes already-read messages (needed for
+            rescan-all so previously processed emails are re-fetched).
         Returns list of {id, threadId} dicts.
         """
         # Build a search query combining lookback + OR of sender filters
@@ -98,7 +101,8 @@ class GmailClient:
         else:
             sender_query = ""
 
-        query = f"in:inbox is:unread newer_than:{lookback_days}d {sender_query}".strip()
+        unread_clause = "is:unread " if unread_only else ""
+        query = f"in:inbox {unread_clause}newer_than:{lookback_days}d {sender_query}".strip()
         logger.info("Gmail query: %s", query)
 
         messages: list[dict] = []
@@ -180,9 +184,8 @@ def _extract_body(payload: dict[str, Any]) -> str:
         return _b64decode(data)
 
     if mime_type == "text/html":
-        # Fall back to HTML only if no plain part is found
         data = payload.get("body", {}).get("data", "")
-        return _b64decode(data)
+        return _html_to_text(_b64decode(data))
 
     parts = payload.get("parts", [])
     # Prefer text/plain part
@@ -198,6 +201,46 @@ def _extract_body(payload: dict[str, Any]) -> str:
             return text
 
     return ""
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Converts HTML to readable plain text, skipping scripts/styles."""
+
+    _BLOCK_TAGS = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "article", "section"}
+    _SKIP_TAGS  = {"script", "style", "head"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        text = "".join(self._parts)
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _html_to_text(html: str) -> str:
+    """Strip HTML tags and decode entities to produce readable plain text."""
+    extractor = _HTMLTextExtractor()
+    try:
+        extractor.feed(html)
+        return extractor.get_text()
+    except Exception:
+        return html  # fall back to raw HTML if the parser itself fails
 
 
 def _b64decode(data: str) -> str:

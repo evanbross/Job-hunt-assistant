@@ -1,8 +1,20 @@
 import React, { useState } from "react";
 
+const SKIP_REASONS = [
+  { key: "rejected", label: "Rejected" },
+  { key: "duplicate", label: "Duplicate" },
+  { key: "req_closed", label: "Req Closed" },
+  { key: "not_interested", label: "Not Interested" },
+  { key: "other", label: "Other" },
+];
+
 export default function JobCard({ job, onAddToSheet, onSkip }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
-  const [loading, setLoading] = useState(null); // "sheet" | "skip" | null
+  const [loading, setLoading] = useState(null); // "sheet" | "skip:<reason>" | "cover" | null
+  const [showSkipMenu, setShowSkipMenu] = useState(false);
+  const [coverLetter, setCoverLetter] = useState(null);
+  const [coverLetterOpen, setCoverLetterOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const score = job.fit_score;
   const scoreCls =
@@ -23,14 +35,42 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
     }
   };
 
-  const handleSkip = async () => {
-    setLoading("skip");
+  const handleSkip = async (reason) => {
+    setLoading(`skip:${reason}`);
+    setShowSkipMenu(false);
     try {
-      await onSkip(job.id);
+      await onSkip(job.id, reason);
     } finally {
       setLoading(null);
     }
   };
+
+  const handleCoverLetter = async () => {
+    if (coverLetter) {
+      setCoverLetterOpen((o) => !o);
+      return;
+    }
+    setLoading("cover");
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Generation failed");
+      setCoverLetter(data.cover_letter);
+      setCoverLetterOpen(true);
+    } catch (e) {
+      alert("Cover letter generation failed: " + e.message);
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(coverLetter || "");
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const busy = loading !== null;
 
   return (
     <div style={cardStyle}>
@@ -89,33 +129,97 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
       )}
 
       {/* Action row */}
-      <div style={{ marginTop: "12px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+      <div style={{ marginTop: "12px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
         {job.url && (
           <a
             href={job.url}
             target="_blank"
             rel="noreferrer"
-            className="btn-primary"
-            style={{ display: "inline-flex", alignItems: "center", padding: "6px 14px", borderRadius: "var(--radius)", color: "#fff", background: "var(--accent)", fontSize: "13px" }}
+            className="btn-secondary"
+            style={{ display: "inline-flex", alignItems: "center", padding: "6px 14px", fontSize: "13px", textDecoration: "none" }}
           >
-            Apply ↗
+            View Job ↗
           </a>
         )}
         <button
+          className="btn-secondary"
+          onClick={handleCoverLetter}
+          disabled={busy}
+          style={{ fontSize: "13px" }}
+        >
+          {loading === "cover"
+            ? "Generating…"
+            : coverLetter
+            ? coverLetterOpen ? "Hide Cover Letter" : "Show Cover Letter"
+            : "Cover Letter"}
+        </button>
+        <button
           className="btn-success"
           onClick={handleAddToSheet}
-          disabled={loading !== null}
+          disabled={busy}
         >
           {loading === "sheet" ? "Adding…" : "Add to Sheet"}
         </button>
-        <button
-          className="btn-danger"
-          onClick={handleSkip}
-          disabled={loading !== null}
-        >
-          {loading === "skip" ? "Skipping…" : "Skip"}
-        </button>
+
+        {/* Skip with reason picker */}
+        <div style={{ position: "relative" }}>
+          <button
+            className="btn-danger"
+            onClick={() => setShowSkipMenu((v) => !v)}
+            disabled={busy}
+            style={{ display: "flex", alignItems: "center", gap: "5px" }}
+          >
+            {loading?.startsWith("skip:") ? "Skipping…" : "Skip"}
+            {!busy && <span style={{ fontSize: "10px", opacity: 0.7 }}>▾</span>}
+          </button>
+
+          {showSkipMenu && (
+            <div style={skipMenuStyle}>
+              {SKIP_REASONS.map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => handleSkip(key)}
+                  style={skipMenuItemStyle}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface2)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  {label}
+                </button>
+              ))}
+              <hr style={{ margin: "4px 0", border: "none", borderTop: "1px solid var(--border)" }} />
+              <button
+                onClick={() => setShowSkipMenu(false)}
+                style={{ ...skipMenuItemStyle, color: "var(--text-muted)", fontSize: "11px" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface2)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Cover letter panel */}
+      {coverLetterOpen && coverLetter && (
+        <div style={coverLetterPanelStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+            <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              Cover Letter
+            </span>
+            <button
+              className="btn-secondary"
+              onClick={handleCopy}
+              style={{ fontSize: "11px", padding: "3px 10px" }}
+            >
+              {copied ? "Copied!" : "Copy"}
+            </button>
+          </div>
+          <p style={{ fontSize: "13px", lineHeight: "1.7", color: "var(--text)", whiteSpace: "pre-wrap", margin: 0 }}>
+            {coverLetter}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -138,4 +242,39 @@ const emailMetaStyle = {
   fontSize: "12px",
   marginTop: "10px",
   marginBottom: "2px",
+};
+
+const coverLetterPanelStyle = {
+  marginTop: "14px",
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  padding: "14px 16px",
+};
+
+const skipMenuStyle = {
+  position: "absolute",
+  bottom: "calc(100% + 4px)",
+  left: 0,
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  boxShadow: "var(--shadow-sm)",
+  minWidth: "130px",
+  zIndex: 50,
+  padding: "4px",
+  display: "flex",
+  flexDirection: "column",
+};
+
+const skipMenuItemStyle = {
+  background: "transparent",
+  border: "none",
+  padding: "7px 10px",
+  fontSize: "13px",
+  textAlign: "left",
+  cursor: "pointer",
+  color: "var(--text)",
+  borderRadius: "4px",
+  width: "100%",
 };

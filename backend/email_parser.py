@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import TypedDict
 
 import anthropic
@@ -103,9 +104,19 @@ class EmailParser:
 
         try:
             result = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            logger.error("Email parser returned non-JSON: %s", raw)
-            raise ValueError(f"Parser returned invalid JSON: {exc}") from exc
+        except json.JSONDecodeError:
+            # Try to salvage a JSON array embedded in surrounding prose
+            match = re.search(r"\[.*\]", raw, re.DOTALL)
+            if match:
+                try:
+                    result = json.loads(match.group())
+                    logger.warning("Email parser: extracted JSON array from prose response")
+                except json.JSONDecodeError as exc:
+                    logger.error("Email parser returned non-JSON: %s", raw)
+                    raise ValueError(f"Parser returned invalid JSON: {exc}") from exc
+            else:
+                logger.error("Email parser returned non-JSON: %s", raw)
+                raise ValueError("Parser returned no JSON array in response")
 
         # Tolerate a single object (old-style response) by wrapping it
         if isinstance(result, dict):

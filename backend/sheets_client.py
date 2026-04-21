@@ -21,7 +21,7 @@ from backend.gmail_client import NotAuthenticatedError
 
 logger = logging.getLogger(__name__)
 
-_SHEET_NAME = "Job Hunt 2026"
+_SHEET_NAME = "Sheet1"
 _COLUMNS = ["Company", "Status", "Source", "Date of Application", "Contact/Notes", "URL"]
 
 
