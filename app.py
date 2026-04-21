@@ -61,7 +61,13 @@ app = Flask(
     static_url_path="",
 )
 app.secret_key = config.FLASK_SECRET_KEY
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+_cors_origins_env = os.environ.get("CORS_ORIGINS", "")
+_cors_origins = (
+    [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+    if _cors_origins_env
+    else ["http://localhost:5173", "http://localhost:5174"]
+)
+CORS(app, resources={r"/api/*": {"origins": _cors_origins}})
 
 # Ensure directories exist
 config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
@@ -206,6 +212,7 @@ def _run_scan(rescan_all: bool = False) -> None:
         _scan_state.jobs_processed = 0
         _scan_state.errors.clear()
 
+    conn = None
     try:
         _update_scan(progress=5, message="Connecting to Gmail...")
 
@@ -415,13 +422,14 @@ def _run_scan(rescan_all: bool = False) -> None:
                 jobs_processed=idx + 1,
             )
 
-        conn.close()
         _update_scan(progress=100, message=f"Scan complete. Processed {total} emails.")
 
     except Exception as exc:
         logger.exception("Scan failed with unexpected error")
         _update_scan(error=f"Scan failed: {exc}", message="Scan failed with an error.")
     finally:
+        if conn is not None:
+            conn.close()
         with _scan_lock:
             _scan_state.running = False
 
@@ -964,9 +972,9 @@ def approve_triage_job(job_id: int):
         repos["conn"].close()
         return jsonify({"error": "Job not found"}), 404
 
-    # Save relevance feedback
+    # Save relevance feedback — derive sender from the stored job record, not the client
     body = request.get_json(silent=True) or {}
-    sender = body.get("sender_email", "")
+    sender = job.get("sender_email", "")
     subject_pattern = body.get("subject_pattern", "")
     if sender:
         repos["feedback"].insert(
@@ -1084,7 +1092,7 @@ def reject_triage_job(job_id: int):
         return jsonify({"error": "Job not found"}), 404
 
     body = request.get_json(silent=True) or {}
-    sender = body.get("sender_email", "")
+    sender = job.get("sender_email", "")
     subject_pattern = body.get("subject_pattern", "")
     if sender:
         repos["feedback"].insert(
@@ -1544,7 +1552,7 @@ def serve_frontend(path: str):
             {
                 "message": "Flask API is running. "
                 "Start the Vite dev server (cd frontend && npm run dev) "
-                "and open http://localhost:5173"
+                "and open http://localhost:5174"
             }
         ),
         200,
@@ -1588,7 +1596,7 @@ def _start_vite() -> None:
         )
         atexit.register(_stop_vite)
         logger.info(
-            "Vite dev server started (PID %s) → http://localhost:5173",
+            "Vite dev server started (PID %s) → http://localhost:5174",
             _vite_proc.pid,
         )
     except Exception as exc:
@@ -1612,4 +1620,9 @@ def _stop_vite() -> None:
 
 if __name__ == "__main__":
     _start_vite()
-    app.run(debug=True, host="0.0.0.0", port=5004, threaded=True)
+    app.run(
+        debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",
+        host=os.environ.get("FLASK_HOST", "127.0.0.1"),
+        port=int(os.environ.get("FLASK_PORT", "5004")),
+        threaded=True,
+    )
