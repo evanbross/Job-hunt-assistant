@@ -21,6 +21,7 @@ class IJobRepository(Protocol):
     def get_by_id(self, job_id: int) -> dict[str, Any] | None: ...
     def get_by_email_id(self, email_id: str) -> dict[str, Any] | None: ...
     def get_by_url(self, url: str) -> dict[str, Any] | None: ...
+    def get_not_a_fit_with_feedback(self, limit: int = 20) -> list[dict[str, Any]]: ...
     def insert(self, job: dict[str, Any]) -> int: ...
     def update(self, job_id: int, fields: dict[str, Any]) -> None: ...
     def delete(self, job_id: int) -> None: ...
@@ -80,6 +81,12 @@ class IResumeRepository(Protocol):
     def delete_all(self) -> None: ...
 
 
+@runtime_checkable
+class IAppSettingsRepository(Protocol):
+    def get(self, key: str, default: str | None = None) -> str | None: ...
+    def set(self, key: str, value: str) -> None: ...
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -121,6 +128,19 @@ class SQLiteJobRepository:
         cur = self._conn.execute("SELECT * FROM jobs WHERE url = ?", (url,))
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
+
+    def get_not_a_fit_with_feedback(self, limit: int = 20) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            """SELECT job_title, company, fit_score, skip_feedback
+               FROM jobs
+               WHERE skip_reason = 'not_a_fit'
+                 AND skip_feedback IS NOT NULL
+                 AND skip_feedback != ''
+               ORDER BY id DESC
+               LIMIT ?""",
+            (limit,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
 
     def insert(self, job: dict[str, Any]) -> int:
         columns = ", ".join(job.keys())
@@ -458,6 +478,26 @@ class SQLiteResumeRepository:
         self._conn.commit()
 
 
+class SQLiteAppSettingsRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        cur = self._conn.execute(
+            "SELECT value FROM app_settings WHERE key = ?", (key,)
+        )
+        row = cur.fetchone()
+        return row[0] if row else default
+
+    def set(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self._conn.commit()
+
+
 # ─── Seed data ────────────────────────────────────────────────────────────────
 
 _SEED_SOURCES: list[tuple[str, str, str]] = [
@@ -509,6 +549,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN confidence_score INTEGER")
     if "skip_reason" not in existing:
         conn.execute("ALTER TABLE jobs ADD COLUMN skip_reason TEXT")
+    if "skip_feedback" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN skip_feedback TEXT")
 
     se_existing = {row[1] for row in conn.execute("PRAGMA table_info(scanned_emails)").fetchall()}
     if "email_date" not in se_existing:
@@ -577,7 +619,8 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             sender_email        TEXT,
             email_subject       TEXT,
             confidence_score    INTEGER,
-            skip_reason         TEXT
+            skip_reason         TEXT,
+            skip_feedback       TEXT
         );
 
         CREATE TABLE IF NOT EXISTS email_sources (
@@ -634,6 +677,11 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_application_stages_job
             ON application_stages (job_id);
+
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
     """)
     conn.commit()
 

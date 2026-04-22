@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import secrets
 import sys
 import threading
@@ -24,6 +25,7 @@ from flask_cors import CORS
 import config
 from backend.db import (
     SQLiteApplicationStageRepository,
+    SQLiteAppSettingsRepository,
     SQLiteEmailSourceRepository,
     SQLiteJobRepository,
     SQLitePenaltyRuleRepository,
@@ -264,6 +266,7 @@ def _run_scan(rescan_all: bool = False) -> None:
 
         penalty_repo = SQLitePenaltyRuleRepository(conn)
         penalty_rules = penalty_repo.get_enabled()
+        fit_feedback = job_repo.get_not_a_fit_with_feedback()
 
         # Fetch existing sheet rows once for duplicate detection.
         # Failures here are non-fatal — we just skip duplicate checking.
@@ -397,6 +400,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                             email_body=body,
                             resume_text=resume_text,
                             penalty_rules=penalty_rules,
+                            fit_feedback=fit_feedback,
                         )
                         job_data["fit_score"] = score_result["score"]
                         job_data["fit_reasoning"] = score_result["reasoning"]
@@ -510,6 +514,7 @@ def _run_board_search() -> None:
         resume_row = resume_repo.get_latest()
         resume_text = resume_row["content"] if resume_row else ""
         penalty_rules = penalty_repo.get_enabled()
+        fit_feedback = job_repo.get_not_a_fit_with_feedback()
         scorer = FitScorer()
         dup_checker = DuplicateChecker()
 
@@ -581,6 +586,7 @@ def _run_board_search() -> None:
                     email_body=candidate["description"],
                     resume_text=resume_text,
                     penalty_rules=penalty_rules,
+                    fit_feedback=fit_feedback,
                 )
                 fit_score: int = score_result["score"]
                 fit_reasoning: str = score_result["reasoning"]
@@ -666,6 +672,7 @@ def _get_repos():
         "feedback": SQLiteRelevanceFeedbackRepository(conn),
         "resume": SQLiteResumeRepository(conn),
         "stages": SQLiteApplicationStageRepository(conn),
+        "settings": SQLiteAppSettingsRepository(conn),
     }
 
 
@@ -879,7 +886,7 @@ def add_job_to_sheet(job_id: int):
     return jsonify({"status": "ok"})
 
 
-_VALID_SKIP_REASONS = frozenset({"rejected", "duplicate", "req_closed", "not_interested", "other"})
+_VALID_SKIP_REASONS = frozenset({"rejected", "duplicate", "req_closed", "not_a_fit", "not_interested", "other"})
 
 
 @app.route("/api/jobs/<int:job_id>/skip", methods=["POST"])
@@ -894,8 +901,12 @@ def skip_job(job_id: int):
     reason = body.get("reason", "other")
     if reason not in _VALID_SKIP_REASONS:
         reason = "other"
+    feedback = (body.get("feedback") or "").strip() or None
 
-    repos["jobs"].update(job_id, {"status": "skipped", "skip_reason": reason})
+    updates: dict = {"status": "skipped", "skip_reason": reason}
+    if feedback:
+        updates["skip_feedback"] = feedback
+    repos["jobs"].update(job_id, updates)
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -963,6 +974,129 @@ def generate_cover_letter(job_id: int):
     return jsonify({"cover_letter": cover_letter})
 
 
+@app.route("/api/cover-letter/save", methods=["POST"])
+def save_cover_letter():
+    import docx  # python-docx; imported here so startup doesn't fail if not yet installed
+
+    body = request.get_json(silent=True) or {}
+    text = (body.get("text") or "").strip()
+    job_title = (body.get("job_title") or "Cover Letter").strip()
+    company = (body.get("company") or "").strip()
+    folder_override = (body.get("folder") or "").strip() or None
+
+    if not text:
+        return jsonify({"error": "No cover letter text provided"}), 400
+
+    repos = _get_repos()
+    settings = repos["settings"]
+
+    if folder_override:
+        folder = Path(folder_override)
+        settings.set("cover_letter_folder", str(folder))
+    else:
+        saved = settings.get("cover_letter_folder")
+        folder = Path(saved) if saved else Path.home() / "Documents" / "Cover Letters"
+
+    repos["conn"].close()
+
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return jsonify({"error": f"Cannot create folder: {exc}"}), 500
+
+    # Sanitize filename components to remove characters illegal on Windows/macOS
+    _illegal = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+    safe_title = _illegal.sub("", job_title)[:60].strip()
+    safe_company = _illegal.sub("", company)[:30].strip()
+    filename_stem = safe_title
+    if safe_company:
+        filename_stem += f" - {safe_company}"
+    filename_stem = filename_stem or "Cover Letter"
+    filename = f"{filename_stem} Cover Letter.docx"
+
+    path = folder / filename
+
+    doc = docx.Document()
+    # Remove the default empty paragraph that python-docx adds
+    for para in doc.paragraphs:
+        p = para._element
+        p.getparent().remove(p)
+
+    # Add the cover letter as separate paragraphs, preserving line breaks
+    for block in text.split("\n"):
+        doc.add_paragraph(block)
+
+    doc.save(str(path))
+
+    return jsonify({"path": str(path), "filename": filename, "folder": str(folder)})
+
+
+@app.route("/api/jobs/<int:job_id>/cover-letter/chat", methods=["POST"])
+def cover_letter_chat(job_id: int):
+    import anthropic as _anthropic
+
+    repos = _get_repos()
+    job = repos["jobs"].get_by_id(job_id)
+    repos["conn"].close()
+
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    messages: list[dict] = body.get("messages", [])
+    cover_letter = (body.get("cover_letter") or "").strip()
+
+    if not messages:
+        return jsonify({"error": "No messages provided"}), 400
+
+    company = job.get("company") or "the company"
+    job_title = job.get("job_title") or "the position"
+
+    system_prompt = (
+        f"You are helping a job applicant refine their cover letter for the role of "
+        f"{job_title} at {company}.\n\n"
+        f"CURRENT COVER LETTER:\n{cover_letter}\n\n"
+        "Help the applicant improve it, answer questions about it, or make specific edits "
+        "they request. If you are providing a substantially rewritten or updated version "
+        "of the cover letter, wrap ONLY the new letter text (plain text, no preamble, "
+        "no sign-off commentary) inside <UPDATED_COVER_LETTER> and </UPDATED_COVER_LETTER> "
+        "tags so the applicant can apply the update with one click. "
+        "If you are only commenting, suggesting, or making small in-line suggestions, "
+        "do not include those tags."
+    )
+
+    client = _anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    try:
+        response = client.messages.create(
+            model=config.SCORER_MODEL,
+            max_tokens=1200,
+            system=system_prompt,
+            messages=messages,
+        )
+    except Exception as exc:
+        logger.error("Cover letter chat failed for job %d: %s", job_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+    reply_text: str = response.content[0].text.strip()
+
+    # Extract updated cover letter if the model wrapped one in tags
+    updated_cover_letter: str | None = None
+    tag_match = re.search(
+        r"<UPDATED_COVER_LETTER>(.*?)</UPDATED_COVER_LETTER>", reply_text, re.DOTALL
+    )
+    if tag_match:
+        updated_cover_letter = tag_match.group(1).strip()
+        # Replace the tagged block in the display text with a short notice
+        reply_text = re.sub(
+            r"\s*<UPDATED_COVER_LETTER>.*?</UPDATED_COVER_LETTER>\s*",
+            "\n\n[Updated version ready — click **Use this version** above to apply it.]\n\n",
+            reply_text,
+            flags=re.DOTALL,
+        ).strip()
+
+    return jsonify({"reply": reply_text, "updated_cover_letter": updated_cover_letter})
+
+
 @app.route("/api/jobs/<int:job_id>/approve", methods=["POST"])
 def approve_triage_job(job_id: int):
     """Move a triage job to pending_review; score it if not already scored."""
@@ -995,6 +1129,7 @@ def approve_triage_job(job_id: int):
             resume_row = repos["resume"].get_latest()
             resume_text = resume_row["content"] if resume_row else ""
             penalty_rules = repos["penalties"].get_enabled()
+            fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
             scorer = FitScorer()
             result = scorer.score(
                 job_title=job.get("job_title", ""),
@@ -1002,6 +1137,7 @@ def approve_triage_job(job_id: int):
                 email_body=job.get("raw_email_snippet", ""),
                 resume_text=resume_text,
                 penalty_rules=penalty_rules,
+                fit_feedback=fit_feedback,
             )
             updates["fit_score"] = result["score"]
             updates["fit_reasoning"] = result["reasoning"]
@@ -1219,6 +1355,7 @@ def rescan_email(email_id: str):
     resume_row = resume_repo.get_latest()
     resume_text = resume_row["content"] if resume_row else ""
     penalty_rules = penalty_repo.get_enabled()
+    fit_feedback = job_repo.get_not_a_fit_with_feedback()
     scorer = FitScorer()
     feedback = feedback_repo.find_match(sender, subject)
 
@@ -1257,6 +1394,7 @@ def rescan_email(email_id: str):
                     email_body=body,
                     resume_text=resume_text,
                     penalty_rules=penalty_rules,
+                    fit_feedback=fit_feedback,
                 )
                 job_data["fit_score"] = result["score"]
                 job_data["fit_reasoning"] = result["reasoning"]
@@ -1567,6 +1705,52 @@ import subprocess as _subprocess
 _vite_proc: _subprocess.Popen | None = None
 
 
+def _maybe_rebuild_frontend() -> None:
+    """
+    If frontend/dist exists but any file under frontend/src is newer than the
+    newest file in dist, run `npm run build` so the served assets are current.
+    Skipped inside Werkzeug's reloader fork to avoid double-builds.
+    """
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        return
+
+    frontend_dir = config.BASE_DIR / "frontend"
+    dist_dir = config.FRONTEND_DIST
+    src_dir = frontend_dir / "src"
+
+    if not dist_dir.exists() or not src_dir.exists():
+        return  # nothing built yet — _start_vite handles the no-dist case
+
+    def _newest_mtime(directory: Path) -> float:
+        return max(
+            (p.stat().st_mtime for p in directory.rglob("*") if p.is_file()),
+            default=0.0,
+        )
+
+    src_mtime = _newest_mtime(src_dir)
+    # Also check index.html and vite.config in the frontend root
+    for extra in ("index.html", "vite.config.js", "vite.config.ts"):
+        p = frontend_dir / extra
+        if p.exists():
+            src_mtime = max(src_mtime, p.stat().st_mtime)
+
+    dist_mtime = _newest_mtime(dist_dir)
+
+    if src_mtime <= dist_mtime:
+        return  # dist is up to date
+
+    logger.info("Frontend source is newer than dist — rebuilding…")
+    result = _subprocess.run(
+        "npm run build",
+        cwd=str(frontend_dir),
+        shell=True,
+    )
+    if result.returncode == 0:
+        logger.info("Frontend rebuild complete.")
+    else:
+        logger.warning("Frontend rebuild failed (exit %d) — serving stale dist.", result.returncode)
+
+
 def _start_vite() -> None:
     """
     Spawn `npm run dev` in frontend/ when no production build is present.
@@ -1619,6 +1803,7 @@ def _stop_vite() -> None:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _maybe_rebuild_frontend()
     _start_vite()
     app.run(
         debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",

@@ -35,14 +35,17 @@ class FitScorer:
         email_body: str,
         resume_text: str,
         penalty_rules: list[dict],
+        fit_feedback: list[dict] | None = None,
     ) -> ScoreResult:
         """
         Score a job against the candidate profile.
 
         penalty_rules: list of dicts with 'rule_text' and 'penalty_points' keys.
+        fit_feedback: recent "not a fit" skips with user-supplied reasons; injected
+                      into the prompt so the scorer learns from past rejections.
         Penalties are applied to the raw AI score and the result is clamped 0-100.
         """
-        system_prompt = self._build_system_prompt(resume_text, penalty_rules)
+        system_prompt = self._build_system_prompt(resume_text, penalty_rules, fit_feedback or [])
 
         user_content = (
             f"Job Title: {job_title}\n"
@@ -101,7 +104,7 @@ class FitScorer:
 
         return ScoreResult(score=final_score, reasoning=reasoning)
 
-    def _build_system_prompt(self, resume_text: str, penalty_rules: list[dict]) -> str:
+    def _build_system_prompt(self, resume_text: str, penalty_rules: list[dict], fit_feedback: list[dict]) -> str:
         penalty_list = "\n".join(
             f"  - '{r['rule_text']}' → -{r['penalty_points']} pts"
             for r in penalty_rules
@@ -112,6 +115,22 @@ class FitScorer:
             if resume_text
             else "CANDIDATE RESUME: Not yet uploaded."
         )
+
+        if fit_feedback:
+            feedback_lines = "\n".join(
+                f'  - "{r["job_title"]} at {r["company"]}"'
+                f' (AI score was {r["fit_score"] if r["fit_score"] is not None else "unscored"}): '
+                f'"{r["skip_feedback"]}"'
+                for r in fit_feedback
+            )
+            feedback_section = (
+                "PAST \"NOT A FIT\" FEEDBACK"
+                " (recent jobs I rejected with my reasons — use these to calibrate future scores):\n"
+                f"{feedback_lines}\n"
+                "Score similar roles lower. Identify the pattern in each rejection and apply it broadly."
+            )
+        else:
+            feedback_section = ""
 
         return f"""\
 You are a job fit evaluator for a senior software engineer.
@@ -138,6 +157,7 @@ SCORING INSTRUCTIONS:
 ACTIVE PENALTY RULES (for your awareness only — do not double-apply):
 {penalty_list}
 
+{feedback_section}
 Response schema (JSON only):
 {{
   "score": <integer 0-100 before penalties>,

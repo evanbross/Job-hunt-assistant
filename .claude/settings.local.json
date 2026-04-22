@@ -14,7 +14,12 @@
       "Bash(git commit -m ' *)",
       "Bash(python -m compileall app.py)",
       "Bash(grep -n *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(npm run *)",
+      "PowerShell(& \"F:\\\\Evan-F\\\\Projects\\\\JobHuntAssistant\\\\.venv\\\\Scripts\\\\pip.exe\" install python-docx 2>&1 | Select-Object -Last 5)",
+      "Bash(\"F:/Evan-F/Projects/JobHuntAssistant/.venv/Scripts/python.exe\" -m pip install python-docx)",
+      "Bash(uv --version)",
+      "Bash(uv add *)"
     ]
   }
 }

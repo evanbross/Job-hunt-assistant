@@ -82,7 +82,7 @@ class EmailParser:
         # Cache the system prompt across calls (it never changes).
         response = self._client.messages.create(
             model=PARSER_MODEL,
-            max_tokens=2048,  # digests may contain many jobs
+            max_tokens=8192,  # digests with many jobs + long tracking URLs can exceed 2048
             system=[
                 {
                     "type": "text",
@@ -92,6 +92,12 @@ class EmailParser:
             ],
             messages=[{"role": "user", "content": user_content}],
         )
+
+        if response.stop_reason == "max_tokens":
+            logger.warning(
+                "Email parser response was truncated (max_tokens reached). "
+                "Attempting partial parse; some jobs may be missing."
+            )
 
         raw = response.content[0].text.strip()
 
