@@ -7,6 +7,7 @@ export default function SettingsPanel() {
   const sections = [
     { id: "resume", label: "Resume" },
     { id: "sources", label: "Email Sources" },
+    { id: "career_sites", label: "Career Sites" },
     { id: "penalties", label: "Scoring Rules" },
     { id: "feedback", label: "Learned Patterns" },
     { id: "config", label: "Configuration" },
@@ -31,6 +32,7 @@ export default function SettingsPanel() {
       <div style={{ flex: 1 }}>
         {activeSection === "resume" && <ResumeUpload />}
         {activeSection === "sources" && <EmailSourcesSection />}
+        {activeSection === "career_sites" && <CareerSitesSection />}
         {activeSection === "penalties" && <PenaltiesSection />}
         {activeSection === "feedback" && <FeedbackSection />}
         {activeSection === "config" && <ConfigSection />}
@@ -142,6 +144,112 @@ function EmailSourcesSection() {
                 <div style={{ display: "flex", gap: "6px" }}>
                   <button className="btn-secondary" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={() => startEdit(s)}>Edit</button>
                   <button className="btn-danger" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={() => deleteSource(s.id)}>Delete</button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Career Site Sources ──────────────────────────────────────────────────────
+
+function CareerSitesSection() {
+  const [sites, setSites] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ name: "", url: "", enabled: true });
+  const [editId, setEditId] = useState(null);
+
+  useEffect(() => { fetchSites(); }, []);
+
+  const fetchSites = async () => {
+    const res = await fetch("/api/career-sites");
+    const data = await res.json();
+    setSites(Array.isArray(data) ? data : []);
+  };
+
+  const toggleEnabled = async (site) => {
+    await fetch(`/api/career-sites/${site.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !site.enabled }),
+    });
+    fetchSites();
+  };
+
+  const deleteSite = async (id) => {
+    if (!confirm("Delete this career site URL?")) return;
+    await fetch(`/api/career-sites/${id}`, { method: "DELETE" });
+    fetchSites();
+  };
+
+  const startEdit = (site) => {
+    setEditId(site.id);
+    setForm({ name: site.name, url: site.url, enabled: !!site.enabled });
+    setShowForm(true);
+  };
+
+  const submitForm = async () => {
+    if (!form.name || !form.url) return;
+    if (editId) {
+      await fetch(`/api/career-sites/${editId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+    } else {
+      await fetch("/api/career-sites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+    }
+    setShowForm(false);
+    setEditId(null);
+    setForm({ name: "", url: "", enabled: true });
+    fetchSites();
+  };
+
+  return (
+    <div>
+      <SectionHeader title="Career Site URLs" action={{ label: "Add Site", onClick: () => { setEditId(null); setForm({ name: "", url: "", enabled: true }); setShowForm(true); } }} />
+      <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
+        Add each company job/careers page URL here. The background scanner checks these while the app is running.
+      </p>
+
+      {showForm && (
+        <div style={formBox}>
+          <div style={formGrid}>
+            <label style={labelStyle}>Name
+              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Acme Careers" />
+            </label>
+            <label style={labelStyle}>URL
+              <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="https://company.com/careers" />
+            </label>
+          </div>
+          <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+            <button className="btn-primary" onClick={submitForm}>{editId ? "Save" : "Add"}</button>
+            <button className="btn-secondary" onClick={() => { setShowForm(false); setEditId(null); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <table style={tableStyle}>
+        <thead>
+          <tr>{["Name", "URL", "Enabled", "Actions"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+        </thead>
+        <tbody>
+          {sites.map((s) => (
+            <tr key={s.id}>
+              <td style={tdStyle}>{s.name}</td>
+              <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: "12px" }}>{s.url}</td>
+              <td style={tdStyle}><Toggle checked={!!s.enabled} onChange={() => toggleEnabled(s)} /></td>
+              <td style={tdStyle}>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <button className="btn-secondary" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={() => startEdit(s)}>Edit</button>
+                  <button className="btn-danger" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={() => deleteSite(s.id)}>Delete</button>
                 </div>
               </td>
             </tr>

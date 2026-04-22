@@ -15,9 +15,11 @@ import re
 import secrets
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, UTC
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
 from flask_cors import CORS
@@ -26,6 +28,9 @@ import config
 from backend.db import (
     SQLiteApplicationStageRepository,
     SQLiteAppSettingsRepository,
+    SQLiteCareerScanFailureRepository,
+    SQLiteCareerScanResultRepository,
+    SQLiteCareerSiteSourceRepository,
     SQLiteEmailSourceRepository,
     SQLiteJobRepository,
     SQLitePenaltyRuleRepository,
@@ -35,6 +40,7 @@ from backend.db import (
     get_connection,
     init_db,
 )
+from backend.career_site_scanner import CareerSiteScanner
 from backend.cover_letter_generator import CoverLetterGenerator
 from backend.duplicate_checker import DuplicateChecker
 from backend.email_parser import EmailParser
@@ -148,6 +154,96 @@ class BoardSearchState:
 
 _board_state = BoardSearchState()
 _board_lock = threading.Lock()
+
+
+@dataclass
+class CareerSiteScanState:
+    running: bool = False
+    progress: int = 0
+    message: str = "Idle"
+    sites_scanned: int = 0
+    jobs_found: int = 0
+    jobs_added: int = 0
+    last_run_at: str | None = None
+    last_trigger: str | None = None
+    errors: list[str] = field(default_factory=list)
+
+
+_career_state = CareerSiteScanState()
+_career_lock = threading.Lock()
+_career_scheduler_started = False
+_career_scheduler_lock = threading.Lock()
+
+
+def _platform_for_site_url(site_url: str) -> str:
+    host = site_url.lower()
+    if "greenhouse.io" in host:
+        return "greenhouse"
+    if "lever.co" in host:
+        return "lever"
+    if "myworkdayjobs.com" in host:
+        return "workday"
+    return "generic"
+
+
+def _parse_bool(value: object, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    raise ValueError("Invalid boolean value")
+
+
+def _extract_ashby_job_id(url: str) -> str | None:
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        if "ashbyhq.com" not in parsed.netloc.lower():
+            return None
+        params = parse_qs(parsed.query)
+        job_id = (params.get("jobId") or params.get("ashby_jid") or [None])[0]
+        return job_id.strip() if isinstance(job_id, str) and job_id.strip() else None
+    except Exception:
+        return None
+
+
+def _update_career_scan(
+    *,
+    progress: int | None = None,
+    message: str | None = None,
+    sites_scanned: int | None = None,
+    jobs_found: int | None = None,
+    jobs_added: int | None = None,
+    last_run_at: str | None = None,
+    last_trigger: str | None = None,
+    error: str | None = None,
+) -> None:
+    with _career_lock:
+        if progress is not None:
+            _career_state.progress = progress
+        if message is not None:
+            _career_state.message = message
+        if sites_scanned is not None:
+            _career_state.sites_scanned = sites_scanned
+        if jobs_found is not None:
+            _career_state.jobs_found = jobs_found
+        if jobs_added is not None:
+            _career_state.jobs_added = jobs_added
+        if last_run_at is not None:
+            _career_state.last_run_at = last_run_at
+        if last_trigger is not None:
+            _career_state.last_trigger = last_trigger
+        if error is not None:
+            _career_state.errors.append(error)
 
 
 def _update_board(
@@ -464,7 +560,7 @@ def _generate_board_search_queries() -> list[str]:
                     "no quotes, 3–6 words each) to find strong matches on Remotive and "
                     "similar remote-job boards for this candidate. Vary them across "
                     "different skills and specialisations.\n\n"
-                    f"CANDIDATE PROFILE:\n{config.CANDIDATE_PROFILE}"
+                    f"CANDIDATE PROFILE:\n{config.load_candidate_profile()}"
                 ),
             }
         ],
@@ -659,6 +755,330 @@ def _run_board_search() -> None:
             _board_state.running = False
 
 
+def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None) -> None:
+    with _career_lock:
+        _career_state.running = True
+        _career_state.progress = 0
+        _career_state.message = "Starting career-site scan..."
+        _career_state.sites_scanned = 0
+        _career_state.jobs_found = 0
+        _career_state.jobs_added = 0
+        _career_state.errors.clear()
+        _career_state.last_trigger = trigger
+
+    conn = None
+    try:
+        conn = get_connection(config.DB_PATH)
+        source_repo = SQLiteCareerSiteSourceRepository(conn)
+        results_repo = SQLiteCareerScanResultRepository(conn)
+        failures_repo = SQLiteCareerScanFailureRepository(conn)
+        resume_repo = SQLiteResumeRepository(conn)
+        penalties_repo = SQLitePenaltyRuleRepository(conn)
+        jobs_repo = SQLiteJobRepository(conn)
+
+        if source_id is not None:
+            source_row = source_repo.get_by_id(source_id)
+            target_sources = [source_row] if source_row else []
+            if not target_sources:
+                _update_career_scan(
+                    progress=100,
+                    message="Selected career site was not found.",
+                    last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
+                )
+                return
+        else:
+            target_sources = source_repo.get_enabled()
+
+        if not target_sources:
+            _update_career_scan(
+                progress=100,
+                message="No career-site URLs are enabled.",
+                last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            )
+            return
+
+        _update_career_scan(
+            progress=10,
+            message=f"Scanning {len(target_sources)} career site(s)...",
+        )
+
+        resume_row = resume_repo.get_latest()
+        resume_text = resume_row["content"] if resume_row else ""
+        penalty_rules = penalties_repo.get_enabled()
+        fit_feedback = jobs_repo.get_not_a_fit_with_feedback()
+        try:
+            scorer = FitScorer()
+        except Exception as exc:
+            msg = "Career-site scan skipped: Anthropic scoring unavailable."
+            logger.warning("%s %s", msg, exc)
+            failures_repo.insert(
+                {
+                    "site_source_id": None,
+                    "site_name": None,
+                    "site_url": None,
+                    "platform": "scoring",
+                    "error_message": str(exc),
+                    "trigger": trigger,
+                    "occurred_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                }
+            )
+            _update_career_scan(
+                progress=100,
+                message=msg,
+                last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
+                error="Anthropic scoring is not configured. Set ANTHROPIC_API_KEY.",
+            )
+            return
+        scanner = CareerSiteScanner()
+        dedup_checker = DuplicateChecker()
+        try:
+            sheet_jobs: list[dict] = SheetsClient().read_jobs()
+        except Exception as exc:
+            logger.warning("Could not load sheet jobs for career tracking: %s", exc)
+            sheet_jobs = []
+
+        scanned_sites = 0
+        jobs_found_total = 0
+        jobs_added_total = 0
+        source_count = len(target_sources)
+
+        for idx, source in enumerate(target_sources):
+            current_source_id = source["id"]
+            source_name = source["name"]
+            source_url = source["url"]
+            detected_platform = "generic"
+            _update_career_scan(
+                message=f"Scanning {source_name}...",
+                sites_scanned=scanned_sites,
+                jobs_found=jobs_found_total,
+                jobs_added=jobs_added_total,
+            )
+
+            if source_id is not None:
+                results_repo.delete_by_site_source_id(current_source_id)
+
+            try:
+                outcome = scanner.scan_site(site_name=source_name, site_url=source_url)
+                jobs = outcome["jobs"]
+                detected_platform = outcome["detected_platform"]
+                source_repo.update(
+                    current_source_id, {"detected_platform": detected_platform}
+                )
+            except Exception as exc:
+                logger.warning("Career-site scan failed for %s: %s", source_url, exc)
+                _update_career_scan(error=f"{source_name}: {exc.__class__.__name__}: {exc}")
+                failures_repo.insert(
+                    {
+                        "site_source_id": current_source_id,
+                        "site_name": source_name,
+                        "site_url": source_url,
+                        "platform": _platform_for_site_url(source_url),
+                        "error_message": f"{exc.__class__.__name__}: {exc}",
+                        "trigger": trigger,
+                        "occurred_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    }
+                )
+                scanned_sites += 1
+                progress = 20 + int((scanned_sites / source_count) * 75)
+                _update_career_scan(progress=progress, sites_scanned=scanned_sites)
+                continue
+
+            adapter_failures = scanner.pop_failures()
+            for failure in adapter_failures:
+                failures_repo.insert(
+                    {
+                        "site_source_id": current_source_id,
+                        "site_name": source_name,
+                        "site_url": source_url,
+                        "platform": failure["platform"],
+                        "error_message": (
+                            f"[{failure['stage']}] "
+                            f"{failure['error_type']}: {failure['error_message']}"
+                        ),
+                        "trigger": trigger,
+                        "occurred_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    }
+                )
+                _update_career_scan(
+                    error=(
+                        f"{source_name} ({failure['platform']}): "
+                        f"{failure['error_type']}: {failure['error_message']}"
+                    )
+                )
+
+            jobs_found_total += len(jobs)
+
+            for job in jobs:
+                sheet_status: str | None = None
+                tracking_source: str | None = None
+                current_job_url = (job.get("job_url") or "").strip()
+                current_ashby_job_id = _extract_ashby_job_id(current_job_url)
+
+                exact_sheet = next(
+                    (
+                        row
+                        for row in sheet_jobs
+                        if (row.get("url") or "").strip()
+                        and (
+                            (row.get("url") or "").strip().lower() == current_job_url.lower()
+                            or (
+                                current_ashby_job_id is not None
+                                and _extract_ashby_job_id((row.get("url") or "").strip())
+                                == current_ashby_job_id
+                            )
+                        )
+                    ),
+                    None,
+                )
+                if exact_sheet is not None:
+                    sheet_status = (exact_sheet.get("status") or "").strip() or "Tracked"
+                    tracking_source = "google_sheet_url"
+                elif (
+                    (job.get("site_name") or "").strip()
+                    and (job.get("job_title") or "").strip()
+                    and sheet_jobs
+                ):
+                    dup = dedup_checker.check(
+                        job_title=job["job_title"],
+                        company=job["site_name"],
+                        sheet_jobs=sheet_jobs,
+                    )
+                    if dup is not None:
+                        matched = next(
+                            (
+                                row
+                                for row in sheet_jobs
+                                if (row.get("company") or "") == dup["sheet_company"]
+                                and (row.get("job_title") or "") == dup["sheet_title"]
+                            ),
+                            None,
+                        )
+                        sheet_status = ((matched or {}).get("status") or "Tracked").strip()
+                        tracking_source = "google_sheet_fuzzy"
+
+                local_job = (
+                    jobs_repo.get_by_url(job["job_url"])
+                    if (job.get("job_url") or "").strip()
+                    else None
+                )
+                local_status = (local_job or {}).get("status")
+
+                if sheet_status and local_status:
+                    tracking_status = f"Sheet: {sheet_status} · Local: {local_status}"
+                elif sheet_status:
+                    tracking_status = f"Sheet: {sheet_status}"
+                elif local_status:
+                    tracking_status = f"Local: {local_status}"
+                else:
+                    tracking_status = "New"
+
+                try:
+                    score_result = scorer.score(
+                        job_title=job["job_title"],
+                        company=job["site_name"],
+                        email_body=job["job_text"],
+                        resume_text=resume_text,
+                        penalty_rules=penalty_rules,
+                        fit_feedback=fit_feedback,
+                    )
+                    match_score: int | None = score_result["score"]
+                    match_reasoning: str = score_result["reasoning"]
+                except Exception as exc:
+                    logger.warning(
+                        "Fit scoring failed for career job %s: %s",
+                        job["job_url"],
+                        exc,
+                    )
+                    match_score = None
+                    match_reasoning = f"Scoring failed: {exc}"
+
+                row_data = {
+                    "site_source_id": current_source_id,
+                    "site_name": job["site_name"],
+                    "site_url": job["site_url"],
+                    "job_title": job["job_title"],
+                    "job_url": job["job_url"],
+                    "job_text": job["job_text"],
+                    "confidence_level": job["confidence_level"],
+                    "confidence_score": job["confidence_score"],
+                    "match_score": match_score,
+                    "match_reasoning": match_reasoning,
+                    "tracking_status": tracking_status,
+                    "tracking_source": tracking_source,
+                    "scanned_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "posted_at": job["posted_at"],
+                }
+                existing_result = results_repo.get_by_job_url(job["job_url"])
+                try:
+                    if existing_result:
+                        results_repo.update(existing_result["id"], row_data)
+                    else:
+                        results_repo.insert(row_data)
+                        jobs_added_total += 1
+                except Exception as exc:
+                    logger.debug("Career-scan insert skipped for %s: %s", job["job_url"], exc)
+
+            scanned_sites += 1
+            progress = 20 + int((scanned_sites / source_count) * 75)
+            _update_career_scan(
+                progress=progress,
+                sites_scanned=scanned_sites,
+                jobs_found=jobs_found_total,
+                jobs_added=jobs_added_total,
+            )
+
+        _update_career_scan(
+            progress=100,
+            message=f"Career-site scan complete. {jobs_added_total} new job(s) added.",
+            sites_scanned=scanned_sites,
+            jobs_found=jobs_found_total,
+            jobs_added=jobs_added_total,
+            last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
+    except Exception as exc:
+        logger.exception("Career-site scan failed with unexpected error")
+        _update_career_scan(
+            error=f"Career-site scan failed: {exc}",
+            message="Career-site scan failed with an error.",
+            last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+        with _career_lock:
+            _career_state.running = False
+
+
+def _career_scheduler_loop() -> None:
+    while True:
+        # Sleep first so app startup is never blocked by an immediate scan.
+        interval_seconds = max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES) * 60
+        time.sleep(interval_seconds)
+        with _career_lock:
+            already_running = _career_state.running
+        if not already_running:
+            _run_career_site_scan(trigger="scheduled")
+
+
+def _start_career_site_scheduler() -> None:
+    global _career_scheduler_started
+
+    debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    if debug_mode and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return
+
+    with _career_scheduler_lock:
+        if _career_scheduler_started:
+            return
+        thread = threading.Thread(target=_career_scheduler_loop, daemon=True)
+        thread.start()
+        _career_scheduler_started = True
+        logger.info(
+            "Career-site scheduler started (interval: %s minute(s)).",
+            max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES),
+        )
+
+
 # ─── Helper ───────────────────────────────────────────────────────────────────
 
 def _get_repos():
@@ -673,6 +1093,9 @@ def _get_repos():
         "resume": SQLiteResumeRepository(conn),
         "stages": SQLiteApplicationStageRepository(conn),
         "settings": SQLiteAppSettingsRepository(conn),
+        "career_sites": SQLiteCareerSiteSourceRepository(conn),
+        "career_scan_results": SQLiteCareerScanResultRepository(conn),
+        "career_scan_failures": SQLiteCareerScanFailureRepository(conn),
     }
 
 
@@ -822,6 +1245,169 @@ def board_search_status():
                 "errors": list(_board_state.errors),
             }
         )
+
+
+# ─── Career-site scanner routes ───────────────────────────────────────────────
+
+@app.route("/api/career-sites")
+def get_career_sites():
+    repos = _get_repos()
+    rows = repos["career_sites"].get_all()
+    repos["conn"].close()
+    return jsonify(rows)
+
+
+@app.route("/api/career-sites", methods=["POST"])
+def create_career_site():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    url = (data.get("url") or "").strip()
+    try:
+        enabled = 1 if _parse_bool(data.get("enabled"), default=True) else 0
+    except ValueError:
+        return jsonify({"error": "enabled must be a boolean value"}), 400
+
+    if not name or not url:
+        return jsonify({"error": "name and url are required"}), 400
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        return jsonify({"error": "url must start with http:// or https://"}), 400
+
+    repos = _get_repos()
+    source_id = repos["career_sites"].insert(
+        {
+            "name": name,
+            "url": url,
+            "enabled": enabled,
+            "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+    )
+    row = repos["career_sites"].get_by_id(source_id)
+    repos["conn"].close()
+    return jsonify(row), 201
+
+
+@app.route("/api/career-sites/<int:source_id>", methods=["PUT"])
+def update_career_site(source_id: int):
+    data = request.get_json(silent=True) or {}
+    fields: dict[str, object] = {}
+
+    if "name" in data:
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name cannot be empty"}), 400
+        fields["name"] = name
+    if "url" in data:
+        url = (data.get("url") or "").strip()
+        if not url:
+            return jsonify({"error": "url cannot be empty"}), 400
+        if not re.match(r"^https?://", url, re.IGNORECASE):
+            return jsonify({"error": "url must start with http:// or https://"}), 400
+        fields["url"] = url
+    if "enabled" in data:
+        try:
+            fields["enabled"] = 1 if _parse_bool(data.get("enabled"), default=True) else 0
+        except ValueError:
+            return jsonify({"error": "enabled must be a boolean value"}), 400
+
+    repos = _get_repos()
+    existing = repos["career_sites"].get_by_id(source_id)
+    if not existing:
+        repos["conn"].close()
+        return jsonify({"error": "Career site not found"}), 404
+
+    repos["career_sites"].update(source_id, fields)
+    row = repos["career_sites"].get_by_id(source_id)
+    repos["conn"].close()
+    return jsonify(row)
+
+
+@app.route("/api/career-sites/<int:source_id>", methods=["DELETE"])
+def delete_career_site(source_id: int):
+    repos = _get_repos()
+    existing = repos["career_sites"].get_by_id(source_id)
+    if not existing:
+        repos["conn"].close()
+        return jsonify({"error": "Career site not found"}), 404
+    repos["career_sites"].delete(source_id)
+    repos["conn"].close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/career-sites/<int:source_id>/scan", methods=["POST"])
+def run_career_scan_for_site(source_id: int):
+    repos = _get_repos()
+    existing = repos["career_sites"].get_by_id(source_id)
+    repos["conn"].close()
+    if not existing:
+        return jsonify({"error": "Career site not found"}), 404
+
+    with _career_lock:
+        if _career_state.running:
+            return jsonify({"error": "Career-site scan is already running"}), 409
+
+    thread = threading.Thread(
+        target=_run_career_site_scan,
+        kwargs={"trigger": "manual_site", "source_id": source_id},
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({"status": "started"}), 202
+
+
+@app.route("/api/career-scan/run", methods=["POST"])
+def run_career_scan_now():
+    with _career_lock:
+        if _career_state.running:
+            return jsonify({"error": "Career-site scan is already running"}), 409
+
+    thread = threading.Thread(target=_run_career_site_scan, daemon=True)
+    thread.start()
+    return jsonify({"status": "started"}), 202
+
+
+@app.route("/api/career-scan/status")
+def career_scan_status():
+    with _career_lock:
+        return jsonify(
+            {
+                "running": _career_state.running,
+                "progress": _career_state.progress,
+                "message": _career_state.message,
+                "sites_scanned": _career_state.sites_scanned,
+                "jobs_found": _career_state.jobs_found,
+                "jobs_added": _career_state.jobs_added,
+                "last_run_at": _career_state.last_run_at,
+                "last_trigger": _career_state.last_trigger,
+                "errors": list(_career_state.errors),
+                "interval_minutes": max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES),
+            }
+        )
+
+
+@app.route("/api/career-scan/results")
+def get_career_scan_results():
+    repos = _get_repos()
+    rows = repos["career_scan_results"].get_all()
+    repos["conn"].close()
+    return jsonify(rows)
+
+
+@app.route("/api/career-scan/results", methods=["DELETE"])
+def clear_career_scan_results():
+    repos = _get_repos()
+    repos["career_scan_results"].delete_all()
+    repos["conn"].close()
+    return jsonify({"status": "cleared"})
+
+
+@app.route("/api/career-scan/failures")
+def get_career_scan_failures():
+    limit = request.args.get("limit", default=200, type=int)
+    limit = max(1, min(limit, 1000))
+    repos = _get_repos()
+    rows = repos["career_scan_failures"].get_recent(limit=limit)
+    repos["conn"].close()
+    return jsonify(rows)
 
 
 # ─── Job routes ───────────────────────────────────────────────────────────────
@@ -1008,9 +1594,8 @@ def save_cover_letter():
     _illegal = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
     safe_title = _illegal.sub("", job_title)[:60].strip()
     safe_company = _illegal.sub("", company)[:30].strip()
-    filename_stem = safe_title
-    if safe_company:
-        filename_stem += f" - {safe_company}"
+    filename_parts = [part for part in (safe_company, safe_title) if part]
+    filename_stem = " - ".join(filename_parts)
     filename_stem = filename_stem or "Cover Letter"
     filename = f"{filename_stem} Cover Letter.docx"
 
@@ -1029,6 +1614,36 @@ def save_cover_letter():
     doc.save(str(path))
 
     return jsonify({"path": str(path), "filename": filename, "folder": str(folder)})
+
+
+@app.route("/api/system/select-folder", methods=["POST"])
+def select_folder():
+    body = request.get_json(silent=True) or {}
+    initial_path = (body.get("initial_path") or "").strip()
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        return jsonify({"error": f"Folder picker is unavailable: {exc}"}), 500
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(
+            initialdir=initial_path or str(Path.home()),
+            title="Select cover letter folder",
+            mustexist=False,
+        )
+        root.destroy()
+    except Exception as exc:
+        return jsonify({"error": f"Could not open folder picker: {exc}"}), 500
+
+    if not selected:
+        return jsonify({"selected_path": None})
+
+    return jsonify({"selected_path": selected})
 
 
 @app.route("/api/jobs/<int:job_id>/cover-letter/chat", methods=["POST"])

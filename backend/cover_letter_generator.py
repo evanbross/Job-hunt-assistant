@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import anthropic
 
-from config import ANTHROPIC_API_KEY, CANDIDATE_PROFILE, SCORER_MODEL
+import config
+from config import ANTHROPIC_API_KEY, SCORER_MODEL
 
 
 class CoverLetterGenerator:
@@ -45,7 +46,7 @@ class CoverLetterGenerator:
         prompt = (
             f"Write a concise, professional cover letter for the following job.\n\n"
             f"TARGET ROLE: {job_title} at {company}{job_url_line}\n\n"
-            f"CANDIDATE PROFILE:\n{CANDIDATE_PROFILE}"
+            f"CANDIDATE PROFILE:\n{config.load_candidate_profile()}"
             f"{resume_section}"
             f"{fit_section}\n\n"
             "Instructions:\n"

@@ -87,6 +87,34 @@ class IAppSettingsRepository(Protocol):
     def set(self, key: str, value: str) -> None: ...
 
 
+@runtime_checkable
+class ICareerSiteSourceRepository(Protocol):
+    def get_all(self) -> list[dict[str, Any]]: ...
+    def get_enabled(self) -> list[dict[str, Any]]: ...
+    def get_by_id(self, source_id: int) -> dict[str, Any] | None: ...
+    def insert(self, source: dict[str, Any]) -> int: ...
+    def update(self, source_id: int, fields: dict[str, Any]) -> None: ...
+    def delete(self, source_id: int) -> None: ...
+
+
+@runtime_checkable
+class ICareerScanResultRepository(Protocol):
+    def get_all(self) -> list[dict[str, Any]]: ...
+    def exists_by_job_url(self, job_url: str) -> bool: ...
+    def get_by_job_url(self, job_url: str) -> dict[str, Any] | None: ...
+    def delete_by_site_source_id(self, site_source_id: int) -> None: ...
+    def insert(self, row: dict[str, Any]) -> int: ...
+    def update(self, row_id: int, fields: dict[str, Any]) -> None: ...
+    def delete_all(self) -> None: ...
+
+
+@runtime_checkable
+class ICareerScanFailureRepository(Protocol):
+    def get_recent(self, limit: int = 200) -> list[dict[str, Any]]: ...
+    def insert(self, row: dict[str, Any]) -> int: ...
+    def delete_all(self) -> None: ...
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -498,6 +526,139 @@ class SQLiteAppSettingsRepository:
         self._conn.commit()
 
 
+class SQLiteCareerSiteSourceRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get_all(self) -> list[dict[str, Any]]:
+        cur = self._conn.execute("SELECT * FROM career_site_sources ORDER BY name")
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_enabled(self) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT * FROM career_site_sources WHERE enabled = 1 ORDER BY name"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_by_id(self, source_id: int) -> dict[str, Any] | None:
+        cur = self._conn.execute(
+            "SELECT * FROM career_site_sources WHERE id = ?",
+            (source_id,),
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def insert(self, source: dict[str, Any]) -> int:
+        columns = ", ".join(source.keys())
+        placeholders = ", ".join("?" * len(source))
+        cur = self._conn.execute(
+            f"INSERT INTO career_site_sources ({columns}) VALUES ({placeholders})",
+            list(source.values()),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def update(self, source_id: int, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        self._conn.execute(
+            f"UPDATE career_site_sources SET {set_clause} WHERE id = ?",
+            [*fields.values(), source_id],
+        )
+        self._conn.commit()
+
+    def delete(self, source_id: int) -> None:
+        self._conn.execute(
+            "DELETE FROM career_site_sources WHERE id = ?",
+            (source_id,),
+        )
+        self._conn.commit()
+
+
+class SQLiteCareerScanResultRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get_all(self) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT * FROM career_scan_results ORDER BY scanned_at DESC, id DESC"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def exists_by_job_url(self, job_url: str) -> bool:
+        cur = self._conn.execute(
+            "SELECT 1 FROM career_scan_results WHERE job_url = ?",
+            (job_url,),
+        )
+        return cur.fetchone() is not None
+
+    def get_by_job_url(self, job_url: str) -> dict[str, Any] | None:
+        cur = self._conn.execute(
+            "SELECT * FROM career_scan_results WHERE job_url = ?",
+            (job_url,),
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def delete_by_site_source_id(self, site_source_id: int) -> None:
+        self._conn.execute(
+            "DELETE FROM career_scan_results WHERE site_source_id = ?",
+            (site_source_id,),
+        )
+        self._conn.commit()
+
+    def insert(self, row: dict[str, Any]) -> int:
+        columns = ", ".join(row.keys())
+        placeholders = ", ".join("?" * len(row))
+        cur = self._conn.execute(
+            f"INSERT INTO career_scan_results ({columns}) VALUES ({placeholders})",
+            list(row.values()),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def update(self, row_id: int, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        self._conn.execute(
+            f"UPDATE career_scan_results SET {set_clause} WHERE id = ?",
+            [*fields.values(), row_id],
+        )
+        self._conn.commit()
+
+    def delete_all(self) -> None:
+        self._conn.execute("DELETE FROM career_scan_results")
+        self._conn.commit()
+
+
+class SQLiteCareerScanFailureRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get_recent(self, limit: int = 200) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT * FROM career_scan_failures ORDER BY occurred_at DESC, id DESC LIMIT ?",
+            (limit,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def insert(self, row: dict[str, Any]) -> int:
+        columns = ", ".join(row.keys())
+        placeholders = ", ".join("?" * len(row))
+        cur = self._conn.execute(
+            f"INSERT INTO career_scan_failures ({columns}) VALUES ({placeholders})",
+            list(row.values()),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def delete_all(self) -> None:
+        self._conn.execute("DELETE FROM career_scan_failures")
+        self._conn.commit()
+
+
 # ─── Seed data ────────────────────────────────────────────────────────────────
 
 _SEED_SOURCES: list[tuple[str, str, str]] = [
@@ -572,6 +733,22 @@ def _migrate(conn: sqlite3.Connection) -> None:
                    FROM jobs WHERE INSTR(email_id, ':') > 0
                )
         """)
+    conn.commit()
+
+    csr_existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(career_scan_results)").fetchall()
+    }
+    if "tracking_status" not in csr_existing:
+        conn.execute("ALTER TABLE career_scan_results ADD COLUMN tracking_status TEXT")
+    if "tracking_source" not in csr_existing:
+        conn.execute("ALTER TABLE career_scan_results ADD COLUMN tracking_source TEXT")
+    conn.commit()
+
+    css_existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(career_site_sources)").fetchall()
+    }
+    if "detected_platform" not in css_existing:
+        conn.execute("ALTER TABLE career_site_sources ADD COLUMN detected_platform TEXT")
     conn.commit()
 
     # Backfill scanned_emails from jobs so existing records are not re-processed.
@@ -682,6 +859,48 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS career_site_sources (
+            id         INTEGER PRIMARY KEY,
+            name       TEXT NOT NULL,
+            url        TEXT NOT NULL,
+            enabled    INTEGER DEFAULT 1,
+            detected_platform TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS career_scan_results (
+            id               INTEGER PRIMARY KEY,
+            site_source_id   INTEGER REFERENCES career_site_sources(id) ON DELETE SET NULL,
+            site_name        TEXT NOT NULL,
+            site_url         TEXT NOT NULL,
+            job_title        TEXT NOT NULL,
+            job_url          TEXT NOT NULL UNIQUE,
+            job_text         TEXT,
+            confidence_level TEXT,
+            confidence_score INTEGER,
+            match_score      INTEGER,
+            match_reasoning  TEXT,
+            tracking_status  TEXT,
+            tracking_source  TEXT,
+            scanned_at       TEXT NOT NULL,
+            posted_at        TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_career_scan_results_scanned_at
+            ON career_scan_results (scanned_at DESC);
+
+        CREATE TABLE IF NOT EXISTS career_scan_failures (
+            id             INTEGER PRIMARY KEY,
+            site_source_id INTEGER REFERENCES career_site_sources(id) ON DELETE SET NULL,
+            site_name      TEXT,
+            site_url       TEXT,
+            platform       TEXT NOT NULL,
+            error_message  TEXT NOT NULL,
+            trigger        TEXT,
+            occurred_at    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_career_scan_failures_occurred_at
+            ON career_scan_failures (occurred_at DESC);
     """)
     conn.commit()
 

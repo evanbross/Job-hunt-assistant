@@ -25,6 +25,9 @@ CREDENTIALS_DIR: Path = BASE_DIR / "credentials"
 UPLOADS_DIR: Path = BASE_DIR / "uploads"
 FRONTEND_DIST: Path = BASE_DIR / "frontend" / "dist"
 RUNTIME_CONFIG_PATH: Path = BASE_DIR / "data" / "runtime_config.json"
+CANDIDATE_PROFILE_PATH: Path = Path(
+    os.getenv("CANDIDATE_PROFILE_PATH", str(BASE_DIR / "candidate_profile.md"))
+)
 
 # ─── Google OAuth ─────────────────────────────────────────────────────────────
 GOOGLE_CREDENTIALS_FILE: Path = CREDENTIALS_DIR / "google_credentials.json"
@@ -56,30 +59,10 @@ DEFAULT_EMAIL_LOOKBACK_DAYS: int = int(os.getenv("EMAIL_LOOKBACK_DAYS", "10"))
 # Minimum fit score (0-100) for a board-search result to be inserted into the DB.
 # Jobs scoring below this are silently discarded.
 BOARD_SEARCH_MIN_SCORE: int = int(os.getenv("BOARD_SEARCH_MIN_SCORE", "40"))
-
-# ─── Candidate profile (used in fit-scorer system prompt) ─────────────────────
-CANDIDATE_PROFILE: str = """
-Senior Software Engineer / Principal Engineer / Staff Engineer / Fractional roles.
-NOT seeking CTO titles, VP Engineering, or pure management positions.
-
-Technical Skills:
-- Languages: Python, Java, C, C++
-- Specializations: AI/LLM pipeline development, clinical trial systems,
-  fintech/trading systems, medical imaging, cloud/energy management,
-  consumer electronics
-- Cloud infrastructure, distributed systems, backend engineering
-
-Work Preferences:
-- Remote only — will not consider on-site or hybrid arrangements
-- Open to any industry / domain
-- Prefers hands-on technical work over people management
-- Open to changing industries
-
-Background Highlights:
-- Patent holder
-- Co-founder experience
-- Senior/principal level with 10+ years of industry experience
-""".strip()
+# Minutes between automatic career-site scans while the app is running.
+CAREER_SITE_SCAN_INTERVAL_MINUTES: int = int(
+    os.getenv("CAREER_SITE_SCAN_INTERVAL_MINUTES", "30")
+)
 
 
 # ─── Runtime config helpers ───────────────────────────────────────────────────
@@ -93,6 +76,16 @@ def load_runtime_config() -> dict:
         except (json.JSONDecodeError, OSError):
             pass
     return {"email_lookback_days": DEFAULT_EMAIL_LOOKBACK_DAYS}
+
+
+def load_candidate_profile() -> str:
+    """Load the external candidate profile markdown/text file."""
+    try:
+        return CANDIDATE_PROFILE_PATH.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not read candidate profile file at {CANDIDATE_PROFILE_PATH}: {exc}"
+        ) from exc
 
 
 def save_runtime_config(cfg: dict) -> None:

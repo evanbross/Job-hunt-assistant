@@ -10,7 +10,8 @@ from typing import TypedDict
 
 import anthropic
 
-from config import ANTHROPIC_API_KEY, CANDIDATE_PROFILE, SCORER_MODEL
+import config
+from config import ANTHROPIC_API_KEY, SCORER_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -136,14 +137,14 @@ class FitScorer:
 You are a job fit evaluator for a senior software engineer.
 
 CANDIDATE PROFILE:
-{CANDIDATE_PROFILE}
+{config.load_candidate_profile()}
 
 {resume_section}
 
 SCORING INSTRUCTIONS:
 - Score the job 0-100 based on fit with the candidate's skills and preferences.
-- 90-100: Near-perfect match; strong skills overlap, remote confirmed, senior level.
-- 70-89: Good match; most skills apply, remote likely or unstated, appropriate level.
+- 90-100: Near-perfect match; strong skills overlap, no office requirement stated or remote explicitly confirmed, senior level.
+- 70-89: Good match; most skills apply, location ambiguous with some uncertainty, or minor level mismatch.
 - 40-69: Partial match; some relevant skills, ambiguous location, or level concerns.
 - 0-39: Poor match; wrong skills, explicitly on-site/hybrid required, or wrong level.
 - IMPORTANT — location inference rule: a city or state name alone (e.g. "Redwood City, CA")

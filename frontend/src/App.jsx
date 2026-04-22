@@ -4,8 +4,9 @@ import TriagePanel from "./components/TriagePanel.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import EmailsPanel from "./components/EmailsPanel.jsx";
 import HistoryPanel from "./components/HistoryPanel.jsx";
+import CareerSiteResultsPanel from "./components/CareerSiteResultsPanel.jsx";
 
-const TABS = ["Job Queue", "Triage", "History", "Emails", "Settings"];
+const TABS = ["Job Queue", "Triage", "History", "Emails", "Career Sites", "Settings"];
 
 const styles = {
   app: {
@@ -262,9 +263,9 @@ export default function App() {
             focusEmailId={emailFocusId}
           />
         )}
-        {activeTab === 4 && <SettingsPanel />}
+        {activeTab === 4 && <CareerSiteResultsPanel />}
+        {activeTab === 5 && <SettingsPanel />}
       </main>
     </div>
   );
 }
-

@@ -127,6 +127,25 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
     }
   };
 
+  const handleBrowseFolder = async () => {
+    try {
+      const res = await fetch("/api/system/select-folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          initial_path: folderInput || saveStatus?.folder || "",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Folder picker failed");
+      if (data.selected_path) {
+        setFolderInput(data.selected_path);
+      }
+    } catch (e) {
+      alert("Browse failed: " + e.message);
+    }
+  };
+
   const handleChatSend = async () => {
     const text = chatInput.trim();
     if (!text || chatSending) return;
@@ -399,32 +418,40 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
 
           {/* Save confirmation */}
           {saveStatus && saveStatus !== "saving" && saveStatus !== "error" && (
-            <div style={{ marginBottom: "10px", fontSize: "11px", color: "var(--text-muted)" }}>
-              <span style={{ color: "var(--green)" }}>✓ Saved:</span> {saveStatus.path}
-              {" "}
+            <div style={saveStatusBoxStyle}>
+              <div style={{ fontSize: "12px", color: "var(--green)", fontWeight: "600", marginBottom: "4px" }}>
+                Saved as Word
+              </div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px", wordBreak: "break-all" }}>
+                {saveStatus.path}
+              </div>
               <button
                 onClick={() => {
                   setFolderEditOpen((o) => !o);
                   setFolderInput(saveStatus.folder);
                 }}
-                style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: "11px", padding: 0, textDecoration: "underline" }}
+                style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: "12px", padding: 0, textDecoration: "underline", fontWeight: "500" }}
               >
-                {folderEditOpen ? "cancel" : "change folder"}
+                {folderEditOpen ? "Cancel folder edit" : "Change save folder"}
               </button>
             </div>
           )}
 
           {/* Folder edit input */}
           {folderEditOpen && (
-            <div style={{ marginBottom: "10px", display: "flex", gap: "6px", alignItems: "center" }}>
+            <div style={{ marginBottom: "10px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
               <input
                 type="text"
                 value={folderInput}
                 onChange={(e) => setFolderInput(e.target.value)}
-                style={{ flex: 1, fontSize: "12px", padding: "4px 8px", borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontFamily: "monospace" }}
+                placeholder="Choose a folder for saved cover letters"
+                style={{ flex: 1, minWidth: "280px", fontSize: "12px", padding: "8px 10px", borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontFamily: "monospace" }}
                 onKeyDown={(e) => { if (e.key === "Enter") handleSave(folderInput); }}
               />
-              <button className="btn-secondary" onClick={() => handleSave(folderInput)} style={{ fontSize: "11px", padding: "4px 10px", whiteSpace: "nowrap" }}>
+              <button className="btn-secondary" onClick={handleBrowseFolder} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
+                Browse…
+              </button>
+              <button className="btn-secondary" onClick={() => handleSave(folderInput)} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
                 Save here
               </button>
             </div>
@@ -545,6 +572,14 @@ const coverLetterPanelStyle = {
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
   padding: "14px 16px",
+};
+
+const saveStatusBoxStyle = {
+  marginBottom: "10px",
+  padding: "10px 12px",
+  background: "rgba(76,175,129,0.08)",
+  border: "1px solid rgba(76,175,129,0.28)",
+  borderRadius: "var(--radius)",
 };
 
 const skipMenuStyle = {

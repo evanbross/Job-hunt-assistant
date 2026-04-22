@@ -102,7 +102,7 @@ class SheetsClient:
     def read_jobs(self) -> list[dict[str, str]]:
         """
         Read all tracked jobs from the spreadsheet.
-        Returns a list of dicts with 'company' and 'job_title' keys.
+        Returns a list of dicts with company/title/status/url metadata.
         Column layout: Company | Status | Source | Date | job_title | URL
         """
         if not GOOGLE_SHEETS_ID:
@@ -124,9 +124,22 @@ class SheetsClient:
                 # Pad short rows so index access is safe
                 padded = row + [""] * (6 - len(row))
                 company = padded[0].strip()
+                status = padded[1].strip()
+                source = padded[2].strip()
+                applied_date = padded[3].strip()
                 job_title = padded[4].strip()  # column E
+                url = padded[5].strip()
                 if company or job_title:
-                    jobs.append({"company": company, "job_title": job_title})
+                    jobs.append(
+                        {
+                            "company": company,
+                            "job_title": job_title,
+                            "status": status,
+                            "source": source,
+                            "date": applied_date,
+                            "url": url,
+                        }
+                    )
             return jobs
         except HttpError as exc:
             logger.warning("Could not read jobs from sheet: %s", exc)

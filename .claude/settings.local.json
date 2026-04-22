@@ -19,7 +19,8 @@
       "PowerShell(& \"F:\\\\Evan-F\\\\Projects\\\\JobHuntAssistant\\\\.venv\\\\Scripts\\\\pip.exe\" install python-docx 2>&1 | Select-Object -Last 5)",
       "Bash(\"F:/Evan-F/Projects/JobHuntAssistant/.venv/Scripts/python.exe\" -m pip install python-docx)",
       "Bash(uv --version)",
-      "Bash(uv add *)"
+      "Bash(uv add *)",
+      "Bash(python -m unittest tests/test_career_site_scanner.py -v)"
     ]
   }
 }
