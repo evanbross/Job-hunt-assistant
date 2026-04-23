@@ -119,9 +119,7 @@ class FitScorer:
 
         if fit_feedback:
             feedback_lines = "\n".join(
-                f'  - "{r["job_title"]} at {r["company"]}"'
-                f' (AI score was {r["fit_score"] if r["fit_score"] is not None else "unscored"}): '
-                f'"{r["skip_feedback"]}"'
+                self._format_fit_feedback_line(r)
                 for r in fit_feedback
             )
             feedback_section = (
@@ -152,6 +150,7 @@ SCORING INSTRUCTIONS:
   Only treat a role as non-remote if the posting explicitly uses words such as
   "on-site", "in-office", "hybrid", "must be local", or "no remote". If location
   is ambiguous, assume remote is possible and do not penalise for it.
+- When past rejection feedback includes structured mismatch reasons, treat them as high-signal preferences.
 - Return ONLY valid JSON — no markdown, no extra text.
 - Do NOT apply penalties yourself; they are handled by the caller.
 
@@ -165,3 +164,20 @@ Response schema (JSON only):
   "reasoning": "<2-3 sentence explanation of the score>"
 }}
 """
+
+    @staticmethod
+    def _format_fit_feedback_line(row: dict) -> str:
+        mismatch_reasons_raw = (row.get("skip_mismatch_reasons") or "").strip()
+        mismatch_reasons = [part.strip() for part in mismatch_reasons_raw.split("|") if part.strip()]
+        note = (row.get("skip_feedback") or "").strip()
+        details: list[str] = []
+        if mismatch_reasons:
+            details.append("Mismatch reasons: " + ", ".join(mismatch_reasons))
+        if note:
+            details.append(f'Note: "{note}"')
+        detail_text = " | ".join(details) if details else "No additional note provided."
+        return (
+            f'  - "{row["job_title"]} at {row["company"]}"'
+            f' (AI score was {row["fit_score"] if row["fit_score"] is not None else "unscored"}): '
+            f"{detail_text}"
+        )

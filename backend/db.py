@@ -20,6 +20,7 @@ class IJobRepository(Protocol):
     def get_by_statuses(self, statuses: list[str]) -> list[dict[str, Any]]: ...
     def get_by_id(self, job_id: int) -> dict[str, Any] | None: ...
     def get_by_email_id(self, email_id: str) -> dict[str, Any] | None: ...
+    def count_by_base_email_id_and_statuses(self, base_email_id: str, statuses: list[str]) -> int: ...
     def get_by_url(self, url: str) -> dict[str, Any] | None: ...
     def get_not_a_fit_with_feedback(self, limit: int = 20) -> list[dict[str, Any]]: ...
     def insert(self, job: dict[str, Any]) -> int: ...
@@ -152,6 +153,19 @@ class SQLiteJobRepository:
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    def count_by_base_email_id_and_statuses(self, base_email_id: str, statuses: list[str]) -> int:
+        placeholders = ",".join("?" * len(statuses))
+        cur = self._conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM jobs
+            WHERE (email_id = ? OR email_id LIKE ?)
+              AND status IN ({placeholders})
+            """,
+            [base_email_id, f"{base_email_id}:%", *statuses],
+        )
+        return int(cur.fetchone()[0])
+
     def get_by_url(self, url: str) -> dict[str, Any] | None:
         cur = self._conn.execute("SELECT * FROM jobs WHERE url = ?", (url,))
         row = cur.fetchone()
@@ -159,11 +173,13 @@ class SQLiteJobRepository:
 
     def get_not_a_fit_with_feedback(self, limit: int = 20) -> list[dict[str, Any]]:
         cur = self._conn.execute(
-            """SELECT job_title, company, fit_score, skip_feedback
+            """SELECT job_title, company, fit_score, skip_feedback, skip_mismatch_reasons
                FROM jobs
                WHERE skip_reason = 'not_a_fit'
-                 AND skip_feedback IS NOT NULL
-                 AND skip_feedback != ''
+                 AND (
+                     (skip_feedback IS NOT NULL AND skip_feedback != '')
+                     OR (skip_mismatch_reasons IS NOT NULL AND skip_mismatch_reasons != '')
+                 )
                ORDER BY id DESC
                LIMIT ?""",
             (limit,),
@@ -712,6 +728,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN skip_reason TEXT")
     if "skip_feedback" not in existing:
         conn.execute("ALTER TABLE jobs ADD COLUMN skip_feedback TEXT")
+    if "skip_mismatch_reasons" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN skip_mismatch_reasons TEXT")
 
     se_existing = {row[1] for row in conn.execute("PRAGMA table_info(scanned_emails)").fetchall()}
     if "email_date" not in se_existing:
@@ -797,7 +815,8 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             email_subject       TEXT,
             confidence_score    INTEGER,
             skip_reason         TEXT,
-            skip_feedback       TEXT
+            skip_feedback       TEXT,
+            skip_mismatch_reasons TEXT
         );
 
         CREATE TABLE IF NOT EXISTS email_sources (

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -25,7 +26,7 @@ CREDENTIALS_DIR: Path = BASE_DIR / "credentials"
 UPLOADS_DIR: Path = BASE_DIR / "uploads"
 FRONTEND_DIST: Path = BASE_DIR / "frontend" / "dist"
 RUNTIME_CONFIG_PATH: Path = BASE_DIR / "data" / "runtime_config.json"
-CANDIDATE_PROFILE_PATH: Path = Path(
+DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(
     os.getenv("CANDIDATE_PROFILE_PATH", str(BASE_DIR / "candidate_profile.md"))
 )
 
@@ -67,28 +68,43 @@ CAREER_SITE_SCAN_INTERVAL_MINUTES: int = int(
 
 # ─── Runtime config helpers ───────────────────────────────────────────────────
 
-def load_runtime_config() -> dict:
+def load_runtime_config() -> dict[str, Any]:
     """Load mutable runtime config, falling back to .env defaults."""
     if RUNTIME_CONFIG_PATH.exists():
         try:
             with open(RUNTIME_CONFIG_PATH) as fh:
-                return json.load(fh)
+                raw_cfg: dict[str, Any] = json.load(fh)
+                return {
+                    "email_lookback_days": raw_cfg.get("email_lookback_days", DEFAULT_EMAIL_LOOKBACK_DAYS),
+                    "candidate_profile_path": raw_cfg.get("candidate_profile_path", str(DEFAULT_CANDIDATE_PROFILE_PATH)),
+                }
         except (json.JSONDecodeError, OSError):
             pass
-    return {"email_lookback_days": DEFAULT_EMAIL_LOOKBACK_DAYS}
+    return {
+        "email_lookback_days": DEFAULT_EMAIL_LOOKBACK_DAYS,
+        "candidate_profile_path": str(DEFAULT_CANDIDATE_PROFILE_PATH),
+    }
+
+
+def get_candidate_profile_path() -> Path:
+    """Return the currently configured candidate profile path."""
+    cfg = load_runtime_config()
+    raw_path = str(cfg.get("candidate_profile_path") or "").strip()
+    return Path(raw_path) if raw_path else DEFAULT_CANDIDATE_PROFILE_PATH
 
 
 def load_candidate_profile() -> str:
     """Load the external candidate profile markdown/text file."""
+    candidate_profile_path = get_candidate_profile_path()
     try:
-        return CANDIDATE_PROFILE_PATH.read_text(encoding="utf-8").strip()
+        return candidate_profile_path.read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise RuntimeError(
-            f"Could not read candidate profile file at {CANDIDATE_PROFILE_PATH}: {exc}"
+            f"Could not read candidate profile file at {candidate_profile_path}: {exc}"
         ) from exc
 
 
-def save_runtime_config(cfg: dict) -> None:
+def save_runtime_config(cfg: dict[str, Any]) -> None:
     """Persist mutable runtime config."""
     RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(RUNTIME_CONFIG_PATH, "w") as fh:

@@ -111,11 +111,11 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     setJobs((prev) => prev.filter((j) => j.id !== jobId));
   };
 
-  const handleSkip = async (jobId, reason = "other", feedback = "") => {
+  const handleSkip = async (jobId, reason = "other", feedback = "", mismatchReasons = []) => {
     const res = await fetch(`/api/jobs/${jobId}/skip`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason, feedback }),
+      body: JSON.stringify({ reason, feedback, mismatch_reasons: mismatchReasons }),
     });
     if (res.ok) {
       setJobs((prev) => prev.filter((j) => j.id !== jobId));

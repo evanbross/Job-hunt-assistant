@@ -428,6 +428,8 @@ function FeedbackSection() {
 function ConfigSection() {
   const [cfg, setCfg] = useState(null);
   const [saved, setSaved] = useState(false);
+  const [saveSummary, setSaveSummary] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     fetch("/api/config")
@@ -436,14 +438,37 @@ function ConfigSection() {
   }, []);
 
   const save = async () => {
+    setSaving(true);
     const res = await fetch("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cfg),
     });
-    if (res.ok) {
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+    const data = await res.json();
+    setSaving(false);
+    if (!res.ok) {
+      alert(data.error || "Failed to save configuration");
+      return;
+    }
+    setCfg(data);
+    setSaveSummary(data);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  };
+
+  const browseCandidateProfile = async () => {
+    const res = await fetch("/api/system/select-file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initial_path: cfg?.candidate_profile_path || "" }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || "Failed to open file picker");
+      return;
+    }
+    if (data.selected_path) {
+      setCfg((prev) => ({ ...prev, candidate_profile_path: data.selected_path }));
     }
   };
 
@@ -453,7 +478,7 @@ function ConfigSection() {
     <div>
       <SectionHeader title="Configuration" />
 
-      <div style={{ maxWidth: "360px" }}>
+      <div style={{ maxWidth: "760px" }}>
         <label style={labelStyle}>
           Email Lookback (days)
           <input
@@ -468,10 +493,38 @@ function ConfigSection() {
           </span>
         </label>
 
-        <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px" }}>
-          <button className="btn-primary" onClick={save}>Save</button>
+        <label style={{ ...labelStyle, marginTop: "16px" }}>
+          Candidate Profile File
+          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              value={cfg.candidate_profile_path || ""}
+              onChange={(e) => setCfg({ ...cfg, candidate_profile_path: e.target.value })}
+              style={{ flex: 1, minWidth: "280px", fontFamily: "monospace", fontSize: "12px" }}
+            />
+            <button className="btn-secondary" onClick={browseCandidateProfile} style={{ whiteSpace: "nowrap" }}>
+              Browse…
+            </button>
+          </div>
+          <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", display: "block" }}>
+            Choose the markdown or text file used as the candidate profile for scoring and cover-letter prompts.
+          </span>
+        </label>
+
+        <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <button className="btn-primary" onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </button>
           {saved && <span style={{ color: "var(--green)", fontSize: "13px" }}>Saved!</span>}
         </div>
+
+        {saveSummary?.profile_changed && (
+          <div style={configNoticeStyle}>
+            Reevaluated {saveSummary.rescore_summary?.rescored ?? 0} queue job{saveSummary.rescore_summary?.rescored === 1 ? "" : "s"}
+            {saveSummary.rescore_summary?.failed
+              ? ` · ${saveSummary.rescore_summary.failed} failed`
+              : ""}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -597,4 +650,14 @@ const tdStyle = {
   borderBottom: "1px solid var(--border)",
   color: "var(--text)",
   verticalAlign: "middle",
+};
+
+const configNoticeStyle = {
+  marginTop: "12px",
+  padding: "10px 12px",
+  background: "rgba(76,175,129,0.08)",
+  border: "1px solid rgba(76,175,129,0.25)",
+  borderRadius: "var(--radius)",
+  color: "var(--green)",
+  fontSize: "12px",
 };

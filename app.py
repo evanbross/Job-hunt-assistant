@@ -173,6 +173,7 @@ _career_state = CareerSiteScanState()
 _career_lock = threading.Lock()
 _career_scheduler_started = False
 _career_scheduler_lock = threading.Lock()
+_ACTIVE_QUEUE_STATUSES: tuple[str, ...] = ("pending_review", "triage", "possible_duplicate")
 
 
 def _platform_for_site_url(site_url: str) -> str:
@@ -214,6 +215,77 @@ def _extract_ashby_job_id(url: str) -> str | None:
         return job_id.strip() if isinstance(job_id, str) and job_id.strip() else None
     except Exception:
         return None
+
+
+def _maybe_mark_source_email_read(job: dict[str, object], job_repo: SQLiteJobRepository) -> None:
+    """Mark the source Gmail message read once no active queue jobs remain for it."""
+    email_id = str(job.get("email_id") or "").strip()
+    sender_email = str(job.get("sender_email") or "").strip()
+    if not email_id or not sender_email:
+        return
+
+    base_email_id = email_id.split(":")[0]
+    remaining_active = job_repo.count_by_base_email_id_and_statuses(
+        base_email_id,
+        list(_ACTIVE_QUEUE_STATUSES),
+    )
+    if remaining_active > 0:
+        return
+
+    try:
+        GmailClient().mark_as_read(base_email_id)
+    except NotAuthenticatedError:
+        logger.warning("Could not mark email %s as read: Gmail is not authenticated", base_email_id)
+    except Exception as exc:
+        logger.warning("Could not mark email %s as read: %s", base_email_id, exc)
+
+
+def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
+    """Re-score active queue jobs after candidate profile changes."""
+    jobs_repo: SQLiteJobRepository = repos["jobs"]  # type: ignore[assignment]
+    resume_repo: SQLiteResumeRepository = repos["resume"]  # type: ignore[assignment]
+    penalties_repo: SQLitePenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
+
+    queue_jobs = jobs_repo.get_by_statuses(list(_ACTIVE_QUEUE_STATUSES))
+    resume_row = resume_repo.get_latest()
+    resume_text: str = resume_row["content"] if resume_row else ""
+    penalty_rules: list[dict] = penalties_repo.get_enabled()
+    fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback()
+    scorer = FitScorer()
+
+    rescored = 0
+    failed = 0
+
+    for job in queue_jobs:
+        try:
+            scoring_text = "\n".join(
+                part for part in [
+                    job.get("email_subject", ""),
+                    job.get("raw_email_snippet", ""),
+                ]
+                if part
+            )
+            result = scorer.score(
+                job_title=job.get("job_title", ""),
+                company=job.get("company", ""),
+                email_body=scoring_text,
+                resume_text=resume_text,
+                penalty_rules=penalty_rules,
+                fit_feedback=fit_feedback,
+            )
+            jobs_repo.update(
+                job["id"],
+                {
+                    "fit_score": result["score"],
+                    "fit_reasoning": result["reasoning"],
+                },
+            )
+            rescored += 1
+        except Exception as exc:
+            logger.warning("Queue re-score failed for job %s: %s", job.get("id"), exc)
+            failed += 1
+
+    return {"rescored": rescored, "failed": failed}
 
 
 def _update_career_scan(
@@ -506,7 +578,6 @@ def _run_scan(rescan_all: bool = False) -> None:
                 job_repo.insert(job_data)
 
             scanned_repo.mark_scanned(msg_id, sender, subject, disposition="job_created", email_date=email_date)
-            gmail.mark_as_read(msg_id)
 
             n_found = len(parsed_jobs)
             first = parsed_jobs[0]
@@ -1468,11 +1539,24 @@ def add_job_to_sheet(job_id: int):
     )
     # Record the "applied" stage automatically
     repos["stages"].insert({"job_id": job_id, "status": "applied", "date": today, "notes": None})
+    _maybe_mark_source_email_read(job, repos["jobs"])
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
 
 _VALID_SKIP_REASONS = frozenset({"rejected", "duplicate", "req_closed", "not_a_fit", "not_interested", "other"})
+_VALID_MISMATCH_REASONS = frozenset({
+    "Not Remote",
+    "Hybrid / On-Site",
+    "Wrong Level",
+    "Wrong Tech Stack",
+    "Too Management-Focused",
+    "Wrong Domain",
+    "Compensation Mismatch",
+    "Location Constraint",
+    "Contract / Temp",
+    "Other Mismatch",
+})
 
 
 @app.route("/api/jobs/<int:job_id>/skip", methods=["POST"])
@@ -1488,11 +1572,20 @@ def skip_job(job_id: int):
     if reason not in _VALID_SKIP_REASONS:
         reason = "other"
     feedback = (body.get("feedback") or "").strip() or None
+    mismatch_reasons_raw = body.get("mismatch_reasons") or []
+    mismatch_reasons = [
+        str(item).strip()
+        for item in mismatch_reasons_raw
+        if str(item).strip() in _VALID_MISMATCH_REASONS
+    ]
 
     updates: dict = {"status": "skipped", "skip_reason": reason}
     if feedback:
         updates["skip_feedback"] = feedback
+    if reason == "not_a_fit" and mismatch_reasons:
+        updates["skip_mismatch_reasons"] = "|".join(mismatch_reasons)
     repos["jobs"].update(job_id, updates)
+    _maybe_mark_source_email_read(job, repos["jobs"])
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -1639,6 +1732,39 @@ def select_folder():
         root.destroy()
     except Exception as exc:
         return jsonify({"error": f"Could not open folder picker: {exc}"}), 500
+
+    if not selected:
+        return jsonify({"selected_path": None})
+
+    return jsonify({"selected_path": selected})
+
+
+@app.route("/api/system/select-file", methods=["POST"])
+def select_file():
+    body = request.get_json(silent=True) or {}
+    initial_path = (body.get("initial_path") or "").strip()
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        return jsonify({"error": f"File picker is unavailable: {exc}"}), 500
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askopenfilename(
+            initialdir=str(Path(initial_path).parent) if initial_path else str(Path.home()),
+            title="Select candidate profile file",
+            filetypes=[
+                ("Markdown and text files", "*.md *.markdown *.txt"),
+                ("All files", "*.*"),
+            ],
+        )
+        root.destroy()
+    except Exception as exc:
+        return jsonify({"error": f"Could not open file picker: {exc}"}), 500
 
     if not selected:
         return jsonify({"selected_path": None})
@@ -1857,6 +1983,7 @@ def reject_triage_job(job_id: int):
         )
 
     repos["jobs"].delete(job_id)
+    _maybe_mark_source_email_read(job, repos["jobs"])
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -2273,18 +2400,45 @@ def get_config():
 
 @app.route("/api/config", methods=["PUT"])
 def update_config():
-    data = request.get_json()
+    data: dict[str, object] | None = request.get_json()
     if not data:
         return jsonify({"error": "No data provided"}), 400
 
     cfg = config.load_runtime_config()
-    allowed = {"email_lookback_days"}
-    for key in allowed:
-        if key in data:
-            cfg[key] = data[key]
+    previous_profile_path = str(cfg.get("candidate_profile_path") or "").strip()
+
+    if "email_lookback_days" in data:
+        cfg["email_lookback_days"] = data["email_lookback_days"]
+
+    if "candidate_profile_path" in data:
+        candidate_profile_path = str(data.get("candidate_profile_path") or "").strip()
+        if not candidate_profile_path:
+            return jsonify({"error": "candidate_profile_path cannot be empty"}), 400
+        candidate_profile_file = Path(candidate_profile_path)
+        if not candidate_profile_file.exists() or not candidate_profile_file.is_file():
+            return jsonify({"error": "candidate_profile_path must point to an existing file"}), 400
+        try:
+            candidate_profile_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            return jsonify({"error": f"Could not read candidate profile file: {exc}"}), 400
+        cfg["candidate_profile_path"] = str(candidate_profile_file)
 
     config.save_runtime_config(cfg)
-    return jsonify(cfg)
+
+    profile_changed = str(cfg.get("candidate_profile_path") or "").strip() != previous_profile_path
+    rescore_summary = {"rescored": 0, "failed": 0}
+    if profile_changed:
+        repos = _get_repos()
+        try:
+            rescore_summary = _rescore_active_queue_jobs(repos)
+        finally:
+            repos["conn"].close()
+
+    return jsonify({
+        **cfg,
+        "profile_changed": profile_changed,
+        "rescore_summary": rescore_summary,
+    })
 
 
 # ─── Frontend (SPA) catch-all ─────────────────────────────────────────────────

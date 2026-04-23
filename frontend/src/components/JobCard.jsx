@@ -9,6 +9,19 @@ const SKIP_REASONS = [
   { key: "other", label: "Other" },
 ];
 
+const MISMATCH_REASONS = [
+  "Not Remote",
+  "Hybrid / On-Site",
+  "Wrong Level",
+  "Wrong Tech Stack",
+  "Too Management-Focused",
+  "Wrong Domain",
+  "Compensation Mismatch",
+  "Location Constraint",
+  "Contract / Temp",
+  "Other Mismatch",
+];
+
 export default function JobCard({ job, onAddToSheet, onSkip }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [loading, setLoading] = useState(null); // "sheet" | "skip:<reason>" | "cover" | null
@@ -16,6 +29,7 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
   // skipConfirm: null | { key, label } — the selected reason awaiting confirmation
   const [skipConfirm, setSkipConfirm] = useState(null);
   const [skipNote, setSkipNote] = useState("");
+  const [skipMismatchReasons, setSkipMismatchReasons] = useState([]);
   const [coverLetter, setCoverLetter] = useState(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -62,19 +76,30 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
     setShowSkipMenu(false);
     setSkipConfirm(reason);
     setSkipNote("");
+    setSkipMismatchReasons([]);
   };
 
   const handleSkipConfirm = async () => {
     if (!skipConfirm) return;
     setLoading(`skip:${skipConfirm.key}`);
     const note = skipNote.trim();
+    const mismatchReasons = skipMismatchReasons;
     setSkipConfirm(null);
     setSkipNote("");
+    setSkipMismatchReasons([]);
     try {
-      await onSkip(job.id, skipConfirm.key, note);
+      await onSkip(job.id, skipConfirm.key, note, mismatchReasons);
     } finally {
       setLoading(null);
     }
+  };
+
+  const toggleMismatchReason = (reason) => {
+    setSkipMismatchReasons((prev) =>
+      prev.includes(reason)
+        ? prev.filter((item) => item !== reason)
+        : [...prev, reason]
+    );
   };
 
   const handleCoverLetter = async () => {
@@ -322,15 +347,37 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
           <p style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "8px" }}>
             Skip as <strong style={{ color: "var(--text)" }}>{skipConfirm.label}</strong>
             {skipConfirm.key === "not_a_fit" && (
-              <span style={{ opacity: 0.7 }}> — your note helps train future scoring</span>
+              <span style={{ opacity: 0.7 }}> — select one or more mismatch reasons to train future scoring</span>
             )}
           </p>
+          {skipConfirm.key === "not_a_fit" && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "10px" }}>
+              {MISMATCH_REASONS.map((reason) => {
+                const selected = skipMismatchReasons.includes(reason);
+                return (
+                  <button
+                    key={reason}
+                    type="button"
+                    onClick={() => toggleMismatchReason(reason)}
+                    style={{
+                      ...mismatchChipStyle,
+                      background: selected ? "var(--accent-light)" : "var(--surface)",
+                      borderColor: selected ? "rgba(74,92,247,0.35)" : "var(--border)",
+                      color: selected ? "var(--accent)" : "var(--text)",
+                    }}
+                  >
+                    {reason}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <input
             type="text"
             value={skipNote}
             onChange={(e) => setSkipNote(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") handleSkipConfirm(); if (e.key === "Escape") { setSkipConfirm(null); setSkipNote(""); } }}
-            placeholder="Optional note…"
+            onKeyDown={(e) => { if (e.key === "Enter") handleSkipConfirm(); if (e.key === "Escape") { setSkipConfirm(null); setSkipNote(""); setSkipMismatchReasons([]); } }}
+            placeholder={skipConfirm.key === "not_a_fit" ? "Optional note about the mismatch…" : "Optional note…"}
             autoFocus
             style={{
               width: "100%",
@@ -354,7 +401,7 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
             </button>
             <button
               className="btn-secondary"
-              onClick={() => { setSkipConfirm(null); setSkipNote(""); }}
+              onClick={() => { setSkipConfirm(null); setSkipNote(""); setSkipMismatchReasons([]); }}
               style={{ fontSize: "13px" }}
             >
               Cancel
@@ -572,6 +619,14 @@ const coverLetterPanelStyle = {
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
   padding: "14px 16px",
+};
+
+const mismatchChipStyle = {
+  border: "1px solid var(--border)",
+  borderRadius: "999px",
+  padding: "6px 10px",
+  fontSize: "12px",
+  cursor: "pointer",
 };
 
 const saveStatusBoxStyle = {
