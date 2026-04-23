@@ -15,7 +15,7 @@
 ## Target Role
 
 - **Titles sought:** Senior Software Engineer, Staff Software Engineer, Lead Software Engineer, Principal Engineer (hands-on technical, NOT executive)
-- **Explicitly NOT targeting:** CTO titles (including Fractional CTO in application materials — this causes executive-level filtering)
+- **Explicitly NOT targeting:** CTO, Manager, Director, Vice-President titles (including Fractional CTO in application materials — this causes executive-level filtering)
 - **Company size preference:** Small-to-medium, 20–200 employees
 - **Work arrangement:** Remote only
 - **Team dynamic:** Some team guidance responsibility is welcome; fully hands-on coding preferred over pure management

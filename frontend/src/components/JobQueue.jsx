@@ -9,6 +9,8 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   const [rescanAllRunning, setRescanAllRunning] = useState(false);
   const [boardSearching, setBoardSearching] = useState(false);
   const [boardState, setBoardState] = useState(null);
+  const [reEvaluating, setReEvaluating] = useState(false);
+  const [reEvaluateSummary, setReEvaluateSummary] = useState(null);
   const pollRef = useRef(null);
   const boardPollRef = useRef(null);
 
@@ -80,7 +82,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     }
     if (
       !window.confirm(
-        "This will delete all email-sourced jobs and re-scan every email from scratch.\n\nBoard-search jobs are kept. Continue?"
+        "This will delete the history of your applications and skipped jobs, then re-scan every email from scratch.\n\nAre you sure?"
       )
     ) {
       return;
@@ -122,6 +124,36 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     }
   };
 
+  const updateTriageCount = async () => {
+    try {
+      const t = await fetch("/api/jobs/triage");
+      const td = await t.json();
+      onTriageCountChange(Array.isArray(td) ? td.length : 0);
+    } catch {
+      /* no-op */
+    }
+  };
+
+  const handleReEvaluate = async () => {
+    if (!isAuthenticated) {
+      alert("Connect your Google account first (top banner).");
+      return;
+    }
+
+    setReEvaluating(true);
+    setReEvaluateSummary(null);
+    const res = await fetch("/api/jobs/re-evaluate", { method: "POST" });
+    const data = await res.json();
+    setReEvaluating(false);
+    if (!res.ok) {
+      alert(data.error || "Failed to re-evaluate jobs");
+      return;
+    }
+    setReEvaluateSummary(data);
+    await fetchJobs();
+    await updateTriageCount();
+  };
+
   const startBoardSearch = async () => {
     const res = await fetch("/api/board-search", { method: "POST" });
     if (!res.ok) {
@@ -155,6 +187,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   };
 
   const anyScanRunning = scanning || rescanAllRunning;
+  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating;
 
   return (
     <div>
@@ -163,7 +196,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         <button
           className="btn-primary"
           onClick={startScan}
-          disabled={anyScanRunning}
+          disabled={anyQueueActionRunning}
           style={{ padding: "8px 20px", fontSize: "14px" }}
         >
           {scanning ? "Scanning…" : "Scan Emails"}
@@ -172,19 +205,28 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         <button
           className="btn-secondary"
           onClick={handleRescanAll}
-          disabled={anyScanRunning}
+          disabled={anyQueueActionRunning}
           style={{ padding: "8px 20px", fontSize: "14px" }}
         >
-          {rescanAllRunning ? "Rescanning All…" : "Rescan All Emails"}
+          {rescanAllRunning ? "Purging…" : "Purge Queue"}
         </button>
 
         <button
           className="btn-secondary"
           onClick={startBoardSearch}
-          disabled={boardSearching}
+          disabled={anyQueueActionRunning}
           style={{ padding: "8px 20px", fontSize: "14px" }}
         >
           {boardSearching ? "Searching Boards…" : "Search Job Boards"}
+        </button>
+
+        <button
+          className="btn-secondary"
+          onClick={handleReEvaluate}
+          disabled={anyQueueActionRunning}
+          style={{ padding: "8px 20px", fontSize: "14px" }}
+        >
+          {reEvaluating ? "Re-evaluating…" : "Re-evaluate"}
         </button>
 
         {jobs.length > 0 && (
@@ -213,6 +255,18 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         <div style={{ ...progressBox, background: "rgba(76,175,129,0.08)", borderColor: "rgba(76,175,129,0.25)", marginBottom: "16px" }}>
           <p style={{ fontSize: "13px", color: "var(--green)" }}>{scanState.message}</p>
           <ErrorList errors={scanState.errors} onNavigateToEmails={onNavigateToEmails} />
+        </div>
+      )}
+
+      {reEvaluateSummary && (
+        <div style={{ ...progressBox, background: "rgba(76,175,129,0.08)", borderColor: "rgba(76,175,129,0.25)", marginBottom: "16px" }}>
+          <p style={{ fontSize: "13px", color: "var(--green)" }}>
+            Re-evaluated {reEvaluateSummary.evaluated ?? 0} active job{reEvaluateSummary.evaluated === 1 ? "" : "s"}.
+            {" "}{reEvaluateSummary.rescored ?? 0} rescored
+            {reEvaluateSummary.sheet_matches ? ` · ${reEvaluateSummary.sheet_matches} sheet match${reEvaluateSummary.sheet_matches === 1 ? "" : "es"}` : ""}
+            {reEvaluateSummary.status_changed ? ` · ${reEvaluateSummary.status_changed} moved` : ""}
+            {reEvaluateSummary.failed ? ` · ${reEvaluateSummary.failed} failed` : ""}
+          </p>
         </div>
       )}
 

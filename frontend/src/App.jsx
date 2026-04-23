@@ -106,7 +106,10 @@ const styles = {
 const EMAILS_TAB_INDEX = TABS.indexOf("Emails");
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = parseInt(localStorage.getItem("activeTab"), 10);
+    return Number.isFinite(saved) ? saved : 0;
+  });
   const [triageCount, setTriageCount] = useState(0);
   const [authStatus, setAuthStatus] = useState(null); // null | true | false
   const [emailFocusId, setEmailFocusId] = useState(null);
@@ -114,6 +117,7 @@ export default function App() {
   const navigateToEmails = (emailId) => {
     setEmailFocusId(emailId);
     setActiveTab(EMAILS_TAB_INDEX);
+    localStorage.setItem("activeTab", EMAILS_TAB_INDEX);
   };
 
   useEffect(() => {
@@ -195,6 +199,7 @@ export default function App() {
                 style={styles.tab(activeTab === i)}
                 onClick={() => {
                   setActiveTab(i);
+                  localStorage.setItem("activeTab", i);
                   if (i === 1) fetchTriageCount();
                 }}
               >

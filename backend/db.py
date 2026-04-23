@@ -63,6 +63,7 @@ class IScannedEmailRepository(Protocol):
     def mark_scanned(self, email_id: str, sender_email: str, subject: str, disposition: str = "noise", email_date: str | None = None, raw_body: str | None = None, parser_error_msg: str | None = None) -> None: ...
     def get_all_with_job_status(self) -> list[dict[str, Any]]: ...
     def set_hidden(self, email_id: str, hidden: bool) -> None: ...
+    def set_hidden_many(self, email_ids: list[str], hidden: bool) -> None: ...
     def delete(self, email_id: str) -> None: ...
     def delete_all(self) -> None: ...
 
@@ -101,6 +102,7 @@ class ICareerSiteSourceRepository(Protocol):
 @runtime_checkable
 class ICareerScanResultRepository(Protocol):
     def get_all(self) -> list[dict[str, Any]]: ...
+    def get_by_id(self, row_id: int) -> dict[str, Any] | None: ...
     def exists_by_job_url(self, job_url: str) -> bool: ...
     def get_by_job_url(self, job_url: str) -> dict[str, Any] | None: ...
     def delete_by_site_source_id(self, site_source_id: int) -> None: ...
@@ -116,6 +118,16 @@ class ICareerScanFailureRepository(Protocol):
     def delete_all(self) -> None: ...
 
 
+@runtime_checkable
+class ICareerRejectionRuleRepository(Protocol):
+    def get_all(self) -> list[dict[str, Any]]: ...
+    def get_enabled(self) -> list[dict[str, Any]]: ...
+    def get_by_id(self, rule_id: int) -> dict[str, Any] | None: ...
+    def insert(self, row: dict[str, Any]) -> int: ...
+    def update(self, rule_id: int, fields: dict[str, Any]) -> None: ...
+    def delete(self, rule_id: int) -> None: ...
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -125,6 +137,29 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 # ─── SQLite implementations ───────────────────────────────────────────────────
 
 class SQLiteJobRepository:
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "id",
+        "email_id",
+        "company",
+        "job_title",
+        "url",
+        "source",
+        "raw_email_snippet",
+        "fit_score",
+        "fit_reasoning",
+        "status",
+        "parser_confidence",
+        "date_found",
+        "date_added_to_sheet",
+        "duplicate_hint",
+        "sender_email",
+        "email_subject",
+        "confidence_score",
+        "skip_reason",
+        "skip_feedback",
+        "skip_mismatch_reasons",
+    })
+
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
@@ -187,6 +222,9 @@ class SQLiteJobRepository:
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def insert(self, job: dict[str, Any]) -> int:
+        unknown = set(job.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(job.keys())
         placeholders = ", ".join("?" * len(job))
         cur = self._conn.execute(
@@ -199,6 +237,9 @@ class SQLiteJobRepository:
     def update(self, job_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
+        unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         self._conn.execute(
             f"UPDATE jobs SET {set_clause} WHERE id = ?",
@@ -212,6 +253,14 @@ class SQLiteJobRepository:
 
 
 class SQLiteEmailSourceRepository:
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "id",
+        "name",
+        "match_type",
+        "match_value",
+        "enabled",
+    })
+
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
@@ -233,6 +282,9 @@ class SQLiteEmailSourceRepository:
         return _row_to_dict(row) if row else None
 
     def insert(self, source: dict[str, Any]) -> int:
+        unknown = set(source.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(source.keys())
         placeholders = ", ".join("?" * len(source))
         cur = self._conn.execute(
@@ -245,6 +297,9 @@ class SQLiteEmailSourceRepository:
     def update(self, source_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
+        unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         self._conn.execute(
             f"UPDATE email_sources SET {set_clause} WHERE id = ?",
@@ -258,6 +313,13 @@ class SQLiteEmailSourceRepository:
 
 
 class SQLitePenaltyRuleRepository:
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "id",
+        "rule_text",
+        "penalty_points",
+        "enabled",
+    })
+
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
@@ -279,6 +341,9 @@ class SQLitePenaltyRuleRepository:
         return _row_to_dict(row) if row else None
 
     def insert(self, rule: dict[str, Any]) -> int:
+        unknown = set(rule.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(rule.keys())
         placeholders = ", ".join("?" * len(rule))
         cur = self._conn.execute(
@@ -291,6 +356,9 @@ class SQLitePenaltyRuleRepository:
     def update(self, rule_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
+        unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         self._conn.execute(
             f"UPDATE penalty_rules SET {set_clause} WHERE id = ?",
@@ -304,6 +372,15 @@ class SQLitePenaltyRuleRepository:
 
 
 class SQLiteRelevanceFeedbackRepository:
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "id",
+        "sender_email",
+        "subject_pattern",
+        "is_relevant",
+        "source_name",
+        "created_at",
+    })
+
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
@@ -342,6 +419,9 @@ class SQLiteRelevanceFeedbackRepository:
         return None
 
     def insert(self, feedback: dict[str, Any]) -> int:
+        unknown = set(feedback.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(feedback.keys())
         placeholders = ", ".join("?" * len(feedback))
         cur = self._conn.execute(
@@ -452,6 +532,16 @@ class SQLiteScannedEmailRepository:
         )
         self._conn.commit()
 
+    def set_hidden_many(self, email_ids: list[str], hidden: bool) -> None:
+        if not email_ids:
+            return
+        placeholders = ", ".join("?" for _ in email_ids)
+        self._conn.execute(
+            f"UPDATE scanned_emails SET hidden = ? WHERE email_id IN ({placeholders})",
+            (1 if hidden else 0, *email_ids),
+        )
+        self._conn.commit()
+
     def delete(self, email_id: str) -> None:
         self._conn.execute(
             "DELETE FROM scanned_emails WHERE email_id = ?", (email_id,)
@@ -464,6 +554,14 @@ class SQLiteScannedEmailRepository:
 
 
 class SQLiteApplicationStageRepository:
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "id",
+        "job_id",
+        "status",
+        "date",
+        "notes",
+    })
+
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
@@ -482,6 +580,9 @@ class SQLiteApplicationStageRepository:
         return _row_to_dict(row) if row else None
 
     def insert(self, stage: dict[str, Any]) -> int:
+        unknown = set(stage.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(stage.keys())
         placeholders = ", ".join("?" * len(stage))
         cur = self._conn.execute(
@@ -497,6 +598,13 @@ class SQLiteApplicationStageRepository:
 
 
 class SQLiteResumeRepository:
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "id",
+        "filename",
+        "content",
+        "uploaded_at",
+    })
+
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
@@ -508,6 +616,9 @@ class SQLiteResumeRepository:
         return _row_to_dict(row) if row else None
 
     def insert(self, resume: dict[str, Any]) -> int:
+        unknown = set(resume.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(resume.keys())
         placeholders = ", ".join("?" * len(resume))
         cur = self._conn.execute(
@@ -543,6 +654,15 @@ class SQLiteAppSettingsRepository:
 
 
 class SQLiteCareerSiteSourceRepository:
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "id",
+        "name",
+        "url",
+        "enabled",
+        "detected_platform",
+        "created_at",
+    })
+
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
@@ -565,6 +685,9 @@ class SQLiteCareerSiteSourceRepository:
         return _row_to_dict(row) if row else None
 
     def insert(self, source: dict[str, Any]) -> int:
+        unknown = set(source.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(source.keys())
         placeholders = ", ".join("?" * len(source))
         cur = self._conn.execute(
@@ -577,6 +700,9 @@ class SQLiteCareerSiteSourceRepository:
     def update(self, source_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
+        unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         self._conn.execute(
             f"UPDATE career_site_sources SET {set_clause} WHERE id = ?",
@@ -593,6 +719,26 @@ class SQLiteCareerSiteSourceRepository:
 
 
 class SQLiteCareerScanResultRepository:
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "id",
+        "site_source_id",
+        "site_name",
+        "site_url",
+        "job_title",
+        "job_url",
+        "job_text",
+        "confidence_level",
+        "confidence_score",
+        "match_score",
+        "match_reasoning",
+        "tracking_status",
+        "tracking_source",
+        "rejection_reason",
+        "rejection_source",
+        "scanned_at",
+        "posted_at",
+    })
+
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
@@ -608,6 +754,14 @@ class SQLiteCareerScanResultRepository:
             (job_url,),
         )
         return cur.fetchone() is not None
+
+    def get_by_id(self, row_id: int) -> dict[str, Any] | None:
+        cur = self._conn.execute(
+            "SELECT * FROM career_scan_results WHERE id = ?",
+            (row_id,),
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
 
     def get_by_job_url(self, job_url: str) -> dict[str, Any] | None:
         cur = self._conn.execute(
@@ -625,6 +779,9 @@ class SQLiteCareerScanResultRepository:
         self._conn.commit()
 
     def insert(self, row: dict[str, Any]) -> int:
+        unknown = set(row.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(row.keys())
         placeholders = ", ".join("?" * len(row))
         cur = self._conn.execute(
@@ -637,6 +794,9 @@ class SQLiteCareerScanResultRepository:
     def update(self, row_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
+        unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         self._conn.execute(
             f"UPDATE career_scan_results SET {set_clause} WHERE id = ?",
@@ -650,6 +810,17 @@ class SQLiteCareerScanResultRepository:
 
 
 class SQLiteCareerScanFailureRepository:
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "id",
+        "site_source_id",
+        "site_name",
+        "site_url",
+        "platform",
+        "error_message",
+        "trigger",
+        "occurred_at",
+    })
+
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
@@ -661,6 +832,9 @@ class SQLiteCareerScanFailureRepository:
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def insert(self, row: dict[str, Any]) -> int:
+        unknown = set(row.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(row.keys())
         placeholders = ", ".join("?" * len(row))
         cur = self._conn.execute(
@@ -672,6 +846,72 @@ class SQLiteCareerScanFailureRepository:
 
     def delete_all(self) -> None:
         self._conn.execute("DELETE FROM career_scan_failures")
+        self._conn.commit()
+
+
+class SQLiteCareerRejectionRuleRepository:
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "id",
+        "rule_text",
+        "enabled",
+        "created_at",
+        "updated_at",
+    })
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get_all(self) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT * FROM career_rejection_rules ORDER BY updated_at DESC, id DESC"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_enabled(self) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT * FROM career_rejection_rules WHERE enabled = 1 ORDER BY updated_at DESC, id DESC"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_by_id(self, rule_id: int) -> dict[str, Any] | None:
+        cur = self._conn.execute(
+            "SELECT * FROM career_rejection_rules WHERE id = ?",
+            (rule_id,),
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def insert(self, row: dict[str, Any]) -> int:
+        unknown = set(row.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
+        columns = ", ".join(row.keys())
+        placeholders = ", ".join("?" * len(row))
+        cur = self._conn.execute(
+            f"INSERT INTO career_rejection_rules ({columns}) VALUES ({placeholders})",
+            list(row.values()),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def update(self, rule_id: int, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        self._conn.execute(
+            f"UPDATE career_rejection_rules SET {set_clause} WHERE id = ?",
+            [*fields.values(), rule_id],
+        )
+        self._conn.commit()
+
+    def delete(self, rule_id: int) -> None:
+        self._conn.execute(
+            "DELETE FROM career_rejection_rules WHERE id = ?",
+            (rule_id,),
+        )
         self._conn.commit()
 
 
@@ -760,6 +1000,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE career_scan_results ADD COLUMN tracking_status TEXT")
     if "tracking_source" not in csr_existing:
         conn.execute("ALTER TABLE career_scan_results ADD COLUMN tracking_source TEXT")
+    if "rejection_reason" not in csr_existing:
+        conn.execute("ALTER TABLE career_scan_results ADD COLUMN rejection_reason TEXT")
+    if "rejection_source" not in csr_existing:
+        conn.execute("ALTER TABLE career_scan_results ADD COLUMN rejection_source TEXT")
     conn.commit()
 
     css_existing = {
@@ -767,6 +1011,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     }
     if "detected_platform" not in css_existing:
         conn.execute("ALTER TABLE career_site_sources ADD COLUMN detected_platform TEXT")
+    conn.commit()
+
+    crr_existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(career_rejection_rules)").fetchall()
+    }
+    if crr_existing and "updated_at" not in crr_existing:
+        conn.execute("ALTER TABLE career_rejection_rules ADD COLUMN updated_at TEXT")
+        conn.execute(
+            "UPDATE career_rejection_rules SET updated_at = COALESCE(updated_at, created_at, datetime('now'))"
+        )
     conn.commit()
 
     # Backfill scanned_emails from jobs so existing records are not re-processed.
@@ -902,6 +1156,8 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             match_reasoning  TEXT,
             tracking_status  TEXT,
             tracking_source  TEXT,
+            rejection_reason TEXT,
+            rejection_source TEXT,
             scanned_at       TEXT NOT NULL,
             posted_at        TEXT
         );
@@ -920,6 +1176,14 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_career_scan_failures_occurred_at
             ON career_scan_failures (occurred_at DESC);
+
+        CREATE TABLE IF NOT EXISTS career_rejection_rules (
+            id         INTEGER PRIMARY KEY,
+            rule_text  TEXT NOT NULL,
+            enabled    INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        );
     """)
     conn.commit()
 

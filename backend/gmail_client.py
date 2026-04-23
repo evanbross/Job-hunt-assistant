@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
 
@@ -28,6 +29,12 @@ logger = logging.getLogger(__name__)
 
 class NotAuthenticatedError(RuntimeError):
     """Raised when no valid Google token exists. Auth must happen via /api/auth/google."""
+
+
+@dataclass(frozen=True)
+class GmailMessageState:
+    in_inbox: bool
+    is_unread: bool
 
 
 class GmailClient:
@@ -142,6 +149,33 @@ class GmailClient:
         except HttpError as exc:
             logger.error("Gmail get message %s error: %s", message_id, exc)
             raise
+
+    def get_message_state(self, message_id: str) -> GmailMessageState | None:
+        """Return inbox/read state for a message, or None if it no longer exists."""
+        try:
+            result = (
+                self._service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=message_id,
+                    format="metadata",
+                    metadataHeaders=[],
+                )
+                .execute()
+            )
+        except HttpError as exc:
+            status_code = getattr(exc.resp, "status", None)
+            if status_code == 404:
+                return None
+            logger.error("Gmail get message state %s error: %s", message_id, exc)
+            raise
+
+        label_ids = set(result.get("labelIds", []))
+        return GmailMessageState(
+            in_inbox="INBOX" in label_ids,
+            is_unread="UNREAD" in label_ids,
+        )
 
     def mark_as_read(self, message_id: str) -> None:
         """Remove the UNREAD label from a message. No-op in READ_ONLY_MODE."""

@@ -32,14 +32,23 @@ export default function CareerSiteResultsPanel() {
   const [rows, setRows] = useState([]);
   const [failures, setFailures] = useState([]);
   const [sites, setSites] = useState([]);
+  const [rejectionRules, setRejectionRules] = useState([]);
   const [showSiteForm, setShowSiteForm] = useState(false);
   const [siteForm, setSiteForm] = useState({ name: "", url: "", enabled: true });
   const [editingSiteId, setEditingSiteId] = useState(null);
+  const [showRuleForm, setShowRuleForm] = useState(false);
+  const [ruleForm, setRuleForm] = useState({ rule_text: "", enabled: true });
+  const [editingRuleId, setEditingRuleId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState(null);
   const [running, setRunning] = useState(false);
   const [selectedFailure, setSelectedFailure] = useState(null);
   const [selectedJobId, setSelectedJobId] = useState(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [addRejectRule, setAddRejectRule] = useState(true);
+  const [rejectingJob, setRejectingJob] = useState(false);
+  const [reEvaluating, setReEvaluating] = useState(false);
+  const [reEvaluateSummary, setReEvaluateSummary] = useState(null);
   const pollRef = useRef(null);
 
   const fetchRows = async () => {
@@ -79,26 +88,40 @@ export default function CareerSiteResultsPanel() {
     setSites(Array.isArray(data) ? data : []);
   };
 
+  const fetchRejectionRules = async () => {
+    const res = await fetch("/api/career-rejection-rules");
+    const data = await res.json();
+    setRejectionRules(Array.isArray(data) ? data : []);
+  };
+
   useEffect(() => {
+    let cancelled = false;
     fetchRows();
     fetchFailures();
     fetchSites();
+    fetchRejectionRules();
     fetchStatus().then((s) => {
+      if (cancelled) return;
       if (s.running) {
+        clearInterval(pollRef.current);
         pollRef.current = setInterval(pollStatus, 1500);
       }
     });
-    return () => clearInterval(pollRef.current);
+    return () => {
+      cancelled = true;
+      clearInterval(pollRef.current);
+    };
   }, []);
 
   useEffect(() => {
-    if (!rows.length) {
+    const visibleRows = rows.filter((row) => !isRejectedCareerRow(row));
+    if (!visibleRows.length) {
       setSelectedJobId(null);
       return;
     }
-    const selectedStillExists = rows.some((r) => r.id === selectedJobId);
+    const selectedStillExists = visibleRows.some((r) => r.id === selectedJobId);
     if (!selectedStillExists) {
-      setSelectedJobId(rows[0].id);
+      setSelectedJobId(visibleRows[0].id);
     }
   }, [rows, selectedJobId]);
 
@@ -124,6 +147,7 @@ export default function CareerSiteResultsPanel() {
       return;
     }
     setRunning(true);
+    clearInterval(pollRef.current);
     pollRef.current = setInterval(pollStatus, 1500);
   };
 
@@ -135,6 +159,7 @@ export default function CareerSiteResultsPanel() {
       return;
     }
     setRunning(true);
+    clearInterval(pollRef.current);
     pollRef.current = setInterval(pollStatus, 1500);
   };
 
@@ -145,6 +170,20 @@ export default function CareerSiteResultsPanel() {
       alert("Failed to clear results");
       return;
     }
+    await fetchRows();
+  };
+
+  const reEvaluateResults = async () => {
+    setReEvaluating(true);
+    setReEvaluateSummary(null);
+    const res = await fetch("/api/career-scan/results/re-evaluate", { method: "POST" });
+    const data = await res.json();
+    setReEvaluating(false);
+    if (!res.ok) {
+      alert(data.error || "Failed to re-evaluate career-site results");
+      return;
+    }
+    setReEvaluateSummary(data);
     await fetchRows();
   };
 
@@ -209,17 +248,106 @@ export default function CareerSiteResultsPanel() {
     await fetchSites();
   };
 
-  const selectedJob = rows.find((r) => r.id === selectedJobId) || null;
-  const groupedRows = groupRowsBySiteAndMatch(rows);
+  const rejectSelectedJob = async () => {
+    if (!selectedJob || !rejectReason.trim()) return;
+    setRejectingJob(true);
+    const res = await fetch(`/api/career-scan/results/${selectedJob.id}/reject`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        reason: rejectReason.trim(),
+        add_as_rule: !!addRejectRule,
+      }),
+    });
+    const data = await res.json();
+    setRejectingJob(false);
+    if (!res.ok) {
+      alert(data.error || "Failed to reject job");
+      return;
+    }
+    setRejectReason("");
+    setAddRejectRule(true);
+    await fetchRows();
+    if (data.created_rule) {
+      await fetchRejectionRules();
+    }
+  };
+
+  const startCreateRule = () => {
+    setEditingRuleId(null);
+    setRuleForm({ rule_text: "", enabled: true });
+    setShowRuleForm(true);
+  };
+
+  const startEditRule = (rule) => {
+    setEditingRuleId(rule.id);
+    setRuleForm({ rule_text: rule.rule_text || "", enabled: !!rule.enabled });
+    setShowRuleForm(true);
+  };
+
+  const submitRuleForm = async () => {
+    if (!ruleForm.rule_text.trim()) return;
+    const endpoint = editingRuleId ? `/api/career-rejection-rules/${editingRuleId}` : "/api/career-rejection-rules";
+    const method = editingRuleId ? "PUT" : "POST";
+    const res = await fetch(endpoint, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rule_text: ruleForm.rule_text.trim(),
+        enabled: !!ruleForm.enabled,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || "Failed to save rule");
+      return;
+    }
+    setShowRuleForm(false);
+    setEditingRuleId(null);
+    setRuleForm({ rule_text: "", enabled: true });
+    await fetchRejectionRules();
+  };
+
+  const toggleRuleEnabled = async (rule) => {
+    const res = await fetch(`/api/career-rejection-rules/${rule.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !rule.enabled }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || "Failed to update rule");
+      return;
+    }
+    await fetchRejectionRules();
+  };
+
+  const deleteRule = async (ruleId) => {
+    if (!window.confirm("Delete this career-site rejection rule?")) return;
+    const res = await fetch(`/api/career-rejection-rules/${ruleId}`, { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || "Failed to delete rule");
+      return;
+    }
+    await fetchRejectionRules();
+  };
+
+  const visibleRows = rows.filter((row) => !isRejectedCareerRow(row));
+  const selectedJob = visibleRows.find((r) => r.id === selectedJobId) || null;
+  const groupedRows = groupRowsBySiteAndMatch(visibleRows);
 
   return (
     <div>
       <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "14px", flexWrap: "wrap" }}>
-        <button className="btn-primary" onClick={runScanNow} disabled={running}>
+        <button className="btn-primary" onClick={runScanNow} disabled={running || reEvaluating}>
           {running ? "Scanning…" : "Run Scan Now"}
         </button>
         <button className="btn-secondary" onClick={fetchRows}>Refresh</button>
-        <button className="btn-danger" onClick={clearResults}>Clear Results</button>
+        <button className="btn-secondary" onClick={reEvaluateResults} disabled={running || reEvaluating}>
+          {reEvaluating ? "Re-evaluating…" : "Re-evaluate"}
+        </button>
+        <button className="btn-danger" onClick={clearResults} disabled={running || reEvaluating}>Clear Results</button>
         {status && (
           <span style={{ color: "var(--text-muted)", fontSize: "12px", marginLeft: "auto" }}>
             Manual scan mode
@@ -233,7 +361,7 @@ export default function CareerSiteResultsPanel() {
           <strong style={{ fontSize: "12px" }}>Career Sites</strong>
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
             <button className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={fetchSites}>Refresh Sites</button>
-            <button className="btn-primary" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={startCreateSite}>Add Site</button>
+            <button className="btn-primary" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={startCreateSite}>New Site</button>
           </div>
         </div>
 
@@ -293,7 +421,9 @@ export default function CareerSiteResultsPanel() {
                 {sites.map((site) => (
                   <tr key={site.id}>
                     <td style={tdStyle}>{site.name || "—"}</td>
-                    <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: "11px", whiteSpace: "normal" }}>{site.url || "—"}</td>
+                    <td style={{ ...tdStyle, maxWidth: "280px" }}>
+                      <div style={{ overflowX: "auto", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: "11px" }}>{site.url || "—"}</div>
+                    </td>
                     <td style={tdStyle}>{site.detected_platform || "—"}</td>
                     <td style={tdStyle}>
                       <button className="btn-secondary" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => toggleSiteEnabled(site)}>
@@ -306,7 +436,7 @@ export default function CareerSiteResultsPanel() {
                           className="btn-primary"
                           style={{ padding: "2px 9px", fontSize: "11px" }}
                           onClick={() => runScanForSite(site.id)}
-                          disabled={running}
+                          disabled={running || reEvaluating}
                         >
                           Rescan
                         </button>
@@ -342,12 +472,24 @@ export default function CareerSiteResultsPanel() {
         </div>
       )}
 
+      {reEvaluateSummary && (
+        <div style={{ ...progressBox, background: "rgba(76,175,129,0.08)", borderColor: "rgba(76,175,129,0.25)", marginBottom: "16px" }}>
+          <p style={{ fontSize: "13px", color: "var(--green)" }}>
+            Re-evaluated {reEvaluateSummary.evaluated ?? 0} career-site job{reEvaluateSummary.evaluated === 1 ? "" : "s"}.
+            {" "}{reEvaluateSummary.rescored ?? 0} rescored
+            {reEvaluateSummary.sheet_matches ? ` · ${reEvaluateSummary.sheet_matches} sheet match${reEvaluateSummary.sheet_matches === 1 ? "" : "es"}` : ""}
+            {reEvaluateSummary.rejected_by_rule ? ` · ${reEvaluateSummary.rejected_by_rule} rule rejection${reEvaluateSummary.rejected_by_rule === 1 ? "" : "s"}` : ""}
+            {reEvaluateSummary.failed ? ` · ${reEvaluateSummary.failed} failed` : ""}
+          </p>
+        </div>
+      )}
+
       {loading ? (
         <p style={{ color: "var(--text-muted)" }}>Loading results…</p>
-      ) : rows.length === 0 ? (
+      ) : visibleRows.length === 0 ? (
         <div className="empty-state">
           <p style={{ fontSize: "32px" }}>🌐</p>
-          <p>No career-site scan results yet.</p>
+          <p>No active career-site jobs to review.</p>
         </div>
       ) : (
         <div style={{ background: "var(--surface)", borderRadius: "var(--radius-lg)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border)", marginBottom: "14px", padding: "12px" }}>
@@ -441,10 +583,114 @@ export default function CareerSiteResultsPanel() {
               <div style={detailLabelStyle}>Match Reasoning</div>
               <div style={detailValueBlockStyle}>{selectedJob.match_reasoning || "—"}</div>
             </div>
+            <div style={{ marginBottom: "10px" }}>
+              <div style={detailLabelStyle}>Reject This Job</div>
+              <div style={{ display: "grid", gap: "8px" }}>
+                <input
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  placeholder='e.g. "manager" or "no manager jobs"'
+                />
+                <label style={{ display: "flex", gap: "6px", alignItems: "center", fontSize: "12px", color: "var(--text-muted)" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!addRejectRule}
+                    onChange={(e) => setAddRejectRule(e.target.checked)}
+                  />
+                  Add this as a future rejection rule
+                </label>
+                <div>
+                  <button className="btn-danger" onClick={rejectSelectedJob} disabled={rejectingJob || !rejectReason.trim()}>
+                    {rejectingJob ? "Rejecting…" : "Reject Job"}
+                  </button>
+                </div>
+              </div>
+            </div>
             <div>
               <div style={detailLabelStyle}>Description Snippet</div>
               <div style={detailValueBlockStyle}>{selectedJob.job_text || "—"}</div>
             </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ background: "var(--surface)", borderRadius: "var(--radius-lg)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border)", marginBottom: "14px" }}>
+        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <strong style={{ fontSize: "12px" }}>Career-Site Rejection Rules</strong>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <button className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={fetchRejectionRules}>Refresh Rules</button>
+            <button className="btn-primary" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={startCreateRule}>Add Rule</button>
+          </div>
+        </div>
+
+        {showRuleForm && (
+          <div style={{ padding: "12px", borderBottom: "1px solid var(--border)", display: "grid", gap: "10px" }}>
+            <input
+              value={ruleForm.rule_text}
+              onChange={(e) => setRuleForm((prev) => ({ ...prev, rule_text: e.target.value }))}
+              placeholder='Rule text to match, e.g. "manager"'
+            />
+            <label style={{ display: "flex", gap: "6px", alignItems: "center", fontSize: "12px", color: "var(--text-muted)" }}>
+              <input
+                type="checkbox"
+                checked={!!ruleForm.enabled}
+                onChange={(e) => setRuleForm((prev) => ({ ...prev, enabled: e.target.checked }))}
+              />
+              Enabled
+            </label>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button className="btn-primary" style={{ padding: "4px 12px", fontSize: "12px" }} onClick={submitRuleForm}>
+                {editingRuleId ? "Save Rule" : "Add Rule"}
+              </button>
+              <button
+                className="btn-secondary"
+                style={{ padding: "4px 12px", fontSize: "12px" }}
+                onClick={() => {
+                  setShowRuleForm(false);
+                  setEditingRuleId(null);
+                  setRuleForm({ rule_text: "", enabled: true });
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {rejectionRules.length === 0 ? (
+          <p style={{ margin: 0, padding: "12px", color: "var(--text-muted)", fontSize: "12px" }}>
+            No rejection rules yet.
+          </p>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  {["Rule", "Enabled", "Updated", "Actions"].map((h) => (
+                    <th key={h} style={thStyle}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rejectionRules.map((rule) => (
+                  <tr key={rule.id}>
+                    <td style={tdStyle}>{rule.rule_text || "—"}</td>
+                    <td style={tdStyle}>
+                      <button className="btn-secondary" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => toggleRuleEnabled(rule)}>
+                        {rule.enabled ? "On" : "Off"}
+                      </button>
+                    </td>
+                    <td style={tdStyle}>{formatTimestampLocal(rule.updated_at || rule.created_at)}</td>
+                    <td style={tdStyle}>
+                      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                        <button className="btn-secondary" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => startEditRule(rule)}>Edit</button>
+                        <button className="btn-danger" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => deleteRule(rule.id)}>Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
@@ -504,6 +750,10 @@ export default function CareerSiteResultsPanel() {
       )}
     </div>
   );
+}
+
+function isRejectedCareerRow(row) {
+  return row?.tracking_source === "career_rule" || row?.tracking_source === "manual_reject";
 }
 
 function FailureDetailsModal({ failure, onClose }) {

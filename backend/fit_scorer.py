@@ -69,6 +69,9 @@ class FitScorer:
             messages=[{"role": "user", "content": user_content}],
         )
 
+        if not response.content:
+            raise ValueError("Anthropic scorer returned an empty response (possible safety filter)")
+
         raw = response.content[0].text.strip()
 
         if raw.startswith("```"):

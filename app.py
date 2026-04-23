@@ -9,6 +9,7 @@ that background scan calls never trigger browser redirects.
 """
 from __future__ import annotations
 
+import anthropic
 import logging
 import os
 import re
@@ -23,12 +24,14 @@ from urllib.parse import parse_qs, urlparse
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
 from flask_cors import CORS
+from google_auth_oauthlib.flow import Flow
 
 import config
 from backend.db import (
     SQLiteApplicationStageRepository,
     SQLiteAppSettingsRepository,
     SQLiteCareerScanFailureRepository,
+    SQLiteCareerRejectionRuleRepository,
     SQLiteCareerScanResultRepository,
     SQLiteCareerSiteSourceRepository,
     SQLiteEmailSourceRepository,
@@ -43,6 +46,7 @@ from backend.db import (
 from backend.career_site_scanner import CareerSiteScanner
 from backend.cover_letter_generator import CoverLetterGenerator
 from backend.duplicate_checker import DuplicateChecker
+from backend.email_cleanup_service import EmailCleanupService
 from backend.email_parser import EmailParser
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
@@ -240,6 +244,110 @@ def _maybe_mark_source_email_read(job: dict[str, object], job_repo: SQLiteJobRep
         logger.warning("Could not mark email %s as read: %s", base_email_id, exc)
 
 
+def _career_rejection_rule_match(job: dict[str, object], rules: list[dict[str, object]]) -> dict[str, object] | None:
+    haystack = " ".join(
+        str(job.get(field) or "")
+        for field in ("job_title", "job_text", "site_name", "job_url", "site_url")
+    ).lower()
+    for rule in rules:
+        rule_text = str(rule.get("rule_text") or "").strip().lower()
+        if rule_text and rule_text in haystack:
+            return rule
+    return None
+
+
+def _sheet_match_for_job(
+    *,
+    job_title: str,
+    company: str,
+    job_url: str,
+    sheet_jobs: list[dict],
+    dedup_checker: DuplicateChecker,
+) -> tuple[str | None, str | None, str | None]:
+    current_job_url = job_url.strip()
+    current_ashby_job_id = _extract_ashby_job_id(current_job_url)
+
+    exact_sheet = next(
+        (
+            row
+            for row in sheet_jobs
+            if (row.get("url") or "").strip()
+            and (
+                (row.get("url") or "").strip().lower() == current_job_url.lower()
+                or (
+                    current_ashby_job_id is not None
+                    and _extract_ashby_job_id((row.get("url") or "").strip())
+                    == current_ashby_job_id
+                )
+            )
+        ),
+        None,
+    )
+    if exact_sheet is not None:
+        sheet_status = (exact_sheet.get("status") or "").strip() or "Tracked"
+        duplicate_hint = (
+            f"Already in your sheet as \"{exact_sheet.get('job_title') or job_title}\" "
+            f"at {exact_sheet.get('company') or company} with status \"{sheet_status}\"."
+        )
+        return sheet_status, "google_sheet_url", duplicate_hint
+
+    if not company.strip() or not job_title.strip() or not sheet_jobs:
+        return None, None, None
+
+    dup = dedup_checker.check(
+        job_title=job_title,
+        company=company,
+        sheet_jobs=sheet_jobs,
+    )
+    if dup is None:
+        return None, None, None
+
+    matched = next(
+        (
+            row
+            for row in sheet_jobs
+            if (row.get("company") or "") == dup["sheet_company"]
+            and (row.get("job_title") or "") == dup["sheet_title"]
+        ),
+        None,
+    )
+    sheet_status = ((matched or {}).get("status") or "Tracked").strip()
+    duplicate_hint = (
+        f"Possible duplicate of \"{dup['sheet_title']}\" "
+        f"at {dup['sheet_company']} already in your sheet "
+        f"(title match: {dup['title_score']}%, company match: {dup['company_score']}%)"
+    )
+    return sheet_status, "google_sheet_fuzzy", duplicate_hint
+
+
+def _tracking_status_for_career_job(
+    *,
+    job: dict[str, object],
+    sheet_jobs: list[dict],
+    jobs_repo: SQLiteJobRepository,
+    dedup_checker: DuplicateChecker,
+) -> tuple[str, str | None]:
+    sheet_status, tracking_source, _duplicate_hint = _sheet_match_for_job(
+        job_title=str(job.get("job_title") or ""),
+        company=str(job.get("site_name") or ""),
+        job_url=str(job.get("job_url") or ""),
+        sheet_jobs=sheet_jobs,
+        dedup_checker=dedup_checker,
+    )
+
+    job_url = str(job.get("job_url") or "").strip()
+    local_job = jobs_repo.get_by_url(job_url) if job_url else None
+    local_status = (local_job or {}).get("status")
+
+    if sheet_status and local_status:
+        return f"Sheet: {sheet_status} · Local: {local_status}", tracking_source
+    if sheet_status:
+        return f"Sheet: {sheet_status}", tracking_source
+    if local_status:
+        return f"Local: {local_status}", None
+    return "New", None
+
+
 def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
     """Re-score active queue jobs after candidate profile changes."""
     jobs_repo: SQLiteJobRepository = repos["jobs"]  # type: ignore[assignment]
@@ -286,6 +394,183 @@ def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
             failed += 1
 
     return {"rescored": rescored, "failed": failed}
+
+
+def _re_evaluate_active_queue_jobs(
+    repos: dict[str, object],
+    sheet_jobs: list[dict],
+) -> dict[str, int]:
+    jobs_repo: SQLiteJobRepository = repos["jobs"]  # type: ignore[assignment]
+    resume_repo: SQLiteResumeRepository = repos["resume"]  # type: ignore[assignment]
+    penalties_repo: SQLitePenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
+
+    queue_jobs = jobs_repo.get_by_statuses(list(_ACTIVE_QUEUE_STATUSES))
+    resume_row = resume_repo.get_latest()
+    resume_text: str = resume_row["content"] if resume_row else ""
+    penalty_rules: list[dict] = penalties_repo.get_enabled()
+    fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback()
+    scorer = FitScorer()
+    dedup_checker = DuplicateChecker()
+
+    rescored = 0
+    failed = 0
+    sheet_matches = 0
+    status_changed = 0
+
+    for job in queue_jobs:
+        previous_status = str(job.get("status") or "")
+        updates: dict[str, object] = {}
+        score: int | None = None
+
+        sheet_status, _tracking_source, duplicate_hint = _sheet_match_for_job(
+            job_title=str(job.get("job_title") or ""),
+            company=str(job.get("company") or ""),
+            job_url=str(job.get("url") or ""),
+            sheet_jobs=sheet_jobs,
+            dedup_checker=dedup_checker,
+        )
+        if duplicate_hint:
+            updates["duplicate_hint"] = duplicate_hint
+            updates["status"] = "possible_duplicate"
+            sheet_matches += 1
+        else:
+            updates["duplicate_hint"] = None
+
+        try:
+            scoring_text = "\n".join(
+                part for part in [
+                    job.get("email_subject", ""),
+                    job.get("raw_email_snippet", ""),
+                ]
+                if part
+            )
+            result = scorer.score(
+                job_title=str(job.get("job_title") or ""),
+                company=str(job.get("company") or ""),
+                email_body=scoring_text,
+                resume_text=resume_text,
+                penalty_rules=penalty_rules,
+                fit_feedback=fit_feedback,
+            )
+            score = result["score"]
+            updates["fit_score"] = score
+            updates["fit_reasoning"] = result["reasoning"]
+            rescored += 1
+        except Exception as exc:
+            logger.warning("Queue re-evaluation failed for job %s: %s", job.get("id"), exc)
+            failed += 1
+
+        score_for_status = score
+        if score_for_status is None and job.get("fit_score") is not None:
+            try:
+                score_for_status = int(job["fit_score"])
+            except (TypeError, ValueError):
+                score_for_status = None
+
+        if sheet_status is None and score_for_status is not None:
+            updates["status"] = "pending_review" if score_for_status >= 70 else "triage"
+
+        if updates.get("status") and updates["status"] != previous_status:
+            status_changed += 1
+
+        jobs_repo.update(job["id"], updates)
+
+    return {
+        "evaluated": len(queue_jobs),
+        "rescored": rescored,
+        "failed": failed,
+        "sheet_matches": sheet_matches,
+        "status_changed": status_changed,
+    }
+
+
+def _re_evaluate_career_scan_results(
+    repos: dict[str, object],
+    sheet_jobs: list[dict],
+) -> dict[str, int]:
+    jobs_repo: SQLiteJobRepository = repos["jobs"]  # type: ignore[assignment]
+    resume_repo: SQLiteResumeRepository = repos["resume"]  # type: ignore[assignment]
+    penalties_repo: SQLitePenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
+    results_repo: SQLiteCareerScanResultRepository = repos["career_scan_results"]  # type: ignore[assignment]
+    rejection_rules_repo: SQLiteCareerRejectionRuleRepository = repos["career_rejection_rules"]  # type: ignore[assignment]
+
+    rows = results_repo.get_all()
+    resume_row = resume_repo.get_latest()
+    resume_text: str = resume_row["content"] if resume_row else ""
+    penalty_rules: list[dict] = penalties_repo.get_enabled()
+    fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback()
+    rejection_rules = rejection_rules_repo.get_enabled()
+    scorer = FitScorer()
+    dedup_checker = DuplicateChecker()
+
+    rescored = 0
+    failed = 0
+    sheet_matches = 0
+    rejected_by_rule = 0
+
+    for row in rows:
+        updates: dict[str, object] = {}
+        if row.get("tracking_source") == "manual_reject":
+            tracking_status = "Rejected"
+            tracking_source = "manual_reject"
+            rejection_reason = row.get("rejection_reason")
+            rejection_source = row.get("rejection_source") or "manual"
+        else:
+            tracking_status, tracking_source = _tracking_status_for_career_job(
+                job=row,
+                sheet_jobs=sheet_jobs,
+                jobs_repo=jobs_repo,
+                dedup_checker=dedup_checker,
+            )
+            rejection_reason = None
+            rejection_source = None
+            if tracking_source in {"google_sheet_url", "google_sheet_fuzzy"}:
+                sheet_matches += 1
+
+            matched_rejection_rule = _career_rejection_rule_match(row, rejection_rules)
+            if matched_rejection_rule is not None:
+                tracking_status = "Rejected"
+                tracking_source = "career_rule"
+                rejection_reason = matched_rejection_rule["rule_text"]
+                rejection_source = "career_rule"
+                rejected_by_rule += 1
+
+        updates.update(
+            {
+                "tracking_status": tracking_status,
+                "tracking_source": tracking_source,
+                "rejection_reason": rejection_reason,
+                "rejection_source": rejection_source,
+            }
+        )
+
+        try:
+            result = scorer.score(
+                job_title=str(row.get("job_title") or ""),
+                company=str(row.get("site_name") or ""),
+                email_body=str(row.get("job_text") or ""),
+                resume_text=resume_text,
+                penalty_rules=penalty_rules,
+                fit_feedback=fit_feedback,
+            )
+            updates["match_score"] = result["score"]
+            updates["match_reasoning"] = result["reasoning"]
+            rescored += 1
+        except Exception as exc:
+            logger.warning("Career result re-evaluation failed for row %s: %s", row.get("id"), exc)
+            updates["match_score"] = None
+            updates["match_reasoning"] = f"Scoring failed: {exc}"
+            failed += 1
+
+        results_repo.update(row["id"], updates)
+
+    return {
+        "evaluated": len(rows),
+        "rescored": rescored,
+        "failed": failed,
+        "sheet_matches": sheet_matches,
+        "rejected_by_rule": rejected_by_rule,
+    }
 
 
 def _update_career_scan(
@@ -618,7 +903,6 @@ _FALLBACK_QUERIES: list[str] = [
 
 def _generate_board_search_queries() -> list[str]:
     """Ask Claude to generate tailored search queries from the candidate profile."""
-    import anthropic
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     response = client.messages.create(
         model=config.SCORER_MODEL,
@@ -843,6 +1127,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
         source_repo = SQLiteCareerSiteSourceRepository(conn)
         results_repo = SQLiteCareerScanResultRepository(conn)
         failures_repo = SQLiteCareerScanFailureRepository(conn)
+        rejection_rules_repo = SQLiteCareerRejectionRuleRepository(conn)
         resume_repo = SQLiteResumeRepository(conn)
         penalties_repo = SQLitePenaltyRuleRepository(conn)
         jobs_repo = SQLiteJobRepository(conn)
@@ -877,6 +1162,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
         resume_text = resume_row["content"] if resume_row else ""
         penalty_rules = penalties_repo.get_enabled()
         fit_feedback = jobs_repo.get_not_a_fit_with_feedback()
+        rejection_rules = rejection_rules_repo.get_enabled()
         try:
             scorer = FitScorer()
         except Exception as exc:
@@ -1042,6 +1328,14 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     tracking_status = f"Local: {local_status}"
                 else:
                     tracking_status = "New"
+                rejection_reason = None
+                rejection_source = None
+                matched_rejection_rule = _career_rejection_rule_match(job, rejection_rules)
+                if matched_rejection_rule is not None:
+                    tracking_status = "Rejected"
+                    tracking_source = "career_rule"
+                    rejection_reason = matched_rejection_rule["rule_text"]
+                    rejection_source = "career_rule"
 
                 try:
                     score_result = scorer.score(
@@ -1076,6 +1370,8 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     "match_reasoning": match_reasoning,
                     "tracking_status": tracking_status,
                     "tracking_source": tracking_source,
+                    "rejection_reason": rejection_reason,
+                    "rejection_source": rejection_source,
                     "scanned_at": datetime.now(UTC).isoformat(timespec="seconds"),
                     "posted_at": job["posted_at"],
                 }
@@ -1167,6 +1463,7 @@ def _get_repos():
         "career_sites": SQLiteCareerSiteSourceRepository(conn),
         "career_scan_results": SQLiteCareerScanResultRepository(conn),
         "career_scan_failures": SQLiteCareerScanFailureRepository(conn),
+        "career_rejection_rules": SQLiteCareerRejectionRuleRepository(conn),
     }
 
 
@@ -1199,8 +1496,6 @@ def auth_google_start():
             ),
             400,
         )
-
-    from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_secrets_file(
         str(config.GOOGLE_CREDENTIALS_FILE),
@@ -1235,8 +1530,6 @@ def auth_google_callback():
     code_verifier = _pending_auths.pop(state, None)
     if not code_verifier:
         return jsonify({"error": "OAuth state mismatch — please try connecting again."}), 400
-
-    from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_secrets_file(
         str(config.GOOGLE_CREDENTIALS_FILE),
@@ -1471,6 +1764,23 @@ def clear_career_scan_results():
     return jsonify({"status": "cleared"})
 
 
+@app.route("/api/career-scan/results/re-evaluate", methods=["POST"])
+def re_evaluate_career_scan_results():
+    repos = _get_repos()
+    try:
+        sheet_jobs = SheetsClient().read_jobs()
+        summary = _re_evaluate_career_scan_results(repos, sheet_jobs)
+    except NotAuthenticatedError as exc:
+        repos["conn"].close()
+        return jsonify({"error": str(exc)}), 401
+    except Exception as exc:
+        repos["conn"].close()
+        logger.warning("Career-site re-evaluation failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+    repos["conn"].close()
+    return jsonify(summary)
+
+
 @app.route("/api/career-scan/failures")
 def get_career_scan_failures():
     limit = request.args.get("limit", default=200, type=int)
@@ -1481,6 +1791,122 @@ def get_career_scan_failures():
     return jsonify(rows)
 
 
+@app.route("/api/career-rejection-rules")
+def get_career_rejection_rules():
+    repos = _get_repos()
+    rows = repos["career_rejection_rules"].get_all()
+    repos["conn"].close()
+    return jsonify(rows)
+
+
+@app.route("/api/career-rejection-rules", methods=["POST"])
+def create_career_rejection_rule():
+    data = request.get_json(silent=True) or {}
+    rule_text = (data.get("rule_text") or "").strip()
+    if not rule_text:
+        return jsonify({"error": "rule_text is required"}), 400
+    try:
+        enabled = 1 if _parse_bool(data.get("enabled"), default=True) else 0
+    except ValueError:
+        return jsonify({"error": "enabled must be a boolean value"}), 400
+
+    repos = _get_repos()
+    row_id = repos["career_rejection_rules"].insert(
+        {
+            "rule_text": rule_text,
+            "enabled": enabled,
+            "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+    )
+    row = repos["career_rejection_rules"].get_by_id(row_id)
+    repos["conn"].close()
+    return jsonify(row), 201
+
+
+@app.route("/api/career-rejection-rules/<int:rule_id>", methods=["PUT"])
+def update_career_rejection_rule(rule_id: int):
+    data = request.get_json(silent=True) or {}
+    fields: dict[str, object] = {}
+
+    if "rule_text" in data:
+        rule_text = (data.get("rule_text") or "").strip()
+        if not rule_text:
+            return jsonify({"error": "rule_text cannot be empty"}), 400
+        fields["rule_text"] = rule_text
+    if "enabled" in data:
+        try:
+            fields["enabled"] = 1 if _parse_bool(data.get("enabled"), default=True) else 0
+        except ValueError:
+            return jsonify({"error": "enabled must be a boolean value"}), 400
+    fields["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+
+    repos = _get_repos()
+    existing = repos["career_rejection_rules"].get_by_id(rule_id)
+    if not existing:
+        repos["conn"].close()
+        return jsonify({"error": "Career rejection rule not found"}), 404
+
+    repos["career_rejection_rules"].update(rule_id, fields)
+    row = repos["career_rejection_rules"].get_by_id(rule_id)
+    repos["conn"].close()
+    return jsonify(row)
+
+
+@app.route("/api/career-rejection-rules/<int:rule_id>", methods=["DELETE"])
+def delete_career_rejection_rule(rule_id: int):
+    repos = _get_repos()
+    existing = repos["career_rejection_rules"].get_by_id(rule_id)
+    if not existing:
+        repos["conn"].close()
+        return jsonify({"error": "Career rejection rule not found"}), 404
+    repos["career_rejection_rules"].delete(rule_id)
+    repos["conn"].close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/career-scan/results/<int:row_id>/reject", methods=["POST"])
+def reject_career_scan_result(row_id: int):
+    data = request.get_json(silent=True) or {}
+    reason = (data.get("reason") or "").strip()
+    add_as_rule = bool(data.get("add_as_rule"))
+
+    if not reason:
+        return jsonify({"error": "reason is required"}), 400
+
+    repos = _get_repos()
+    row = repos["career_scan_results"].get_by_id(row_id)
+    if not row:
+        repos["conn"].close()
+        return jsonify({"error": "Career scan result not found"}), 404
+
+    repos["career_scan_results"].update(
+        row_id,
+        {
+            "tracking_status": "Rejected",
+            "tracking_source": "manual_reject",
+            "rejection_reason": reason,
+            "rejection_source": "manual",
+        },
+    )
+
+    created_rule = None
+    if add_as_rule:
+        rule_id = repos["career_rejection_rules"].insert(
+            {
+                "rule_text": reason,
+                "enabled": 1,
+                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+        )
+        created_rule = repos["career_rejection_rules"].get_by_id(rule_id)
+
+    updated_row = repos["career_scan_results"].get_by_id(row_id)
+    repos["conn"].close()
+    return jsonify({"row": updated_row, "created_rule": created_rule})
+
+
 # ─── Job routes ───────────────────────────────────────────────────────────────
 
 @app.route("/api/jobs")
@@ -1489,6 +1915,23 @@ def get_jobs():
     jobs = repos["jobs"].get_all_by_status("pending_review")
     repos["conn"].close()
     return jsonify(jobs)
+
+
+@app.route("/api/jobs/re-evaluate", methods=["POST"])
+def re_evaluate_queue_jobs():
+    repos = _get_repos()
+    try:
+        sheet_jobs = SheetsClient().read_jobs()
+        summary = _re_evaluate_active_queue_jobs(repos, sheet_jobs)
+    except NotAuthenticatedError as exc:
+        repos["conn"].close()
+        return jsonify({"error": str(exc)}), 401
+    except Exception as exc:
+        repos["conn"].close()
+        logger.warning("Queue re-evaluation failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+    repos["conn"].close()
+    return jsonify(summary)
 
 
 @app.route("/api/jobs/triage")
@@ -1774,8 +2217,6 @@ def select_file():
 
 @app.route("/api/jobs/<int:job_id>/cover-letter/chat", methods=["POST"])
 def cover_letter_chat(job_id: int):
-    import anthropic as _anthropic
-
     repos = _get_repos()
     job = repos["jobs"].get_by_id(job_id)
     repos["conn"].close()
@@ -1806,7 +2247,7 @@ def cover_letter_chat(job_id: int):
         "do not include those tags."
     )
 
-    client = _anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     try:
         response = client.messages.create(
             model=config.SCORER_MODEL,
@@ -1858,7 +2299,7 @@ def approve_triage_job(job_id: int):
                 "subject_pattern": subject_pattern,
                 "is_relevant": 1,
                 "source_name": job.get("source", ""),
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             }
         )
 
@@ -2029,6 +2470,55 @@ def set_email_hidden(email_id: str):
     SQLiteScannedEmailRepository(conn).set_hidden(email_id, hidden)
     conn.close()
     return jsonify({"hidden": hidden})
+
+
+@app.route("/api/emails/clean", methods=["POST"])
+def clean_displayed_emails():
+    """Hide displayed emails that no longer exist in Gmail inbox or are already read."""
+    data = request.get_json(silent=True) or {}
+    raw_email_ids = data.get("email_ids")
+    if not isinstance(raw_email_ids, list):
+        return jsonify({"error": "email_ids must be a list"}), 400
+
+    email_ids = [
+        str(email_id).strip()
+        for email_id in raw_email_ids
+        if str(email_id).strip()
+    ]
+    if not email_ids:
+        return jsonify({"checked": 0, "hidden": 0, "hidden_email_ids": []})
+
+    conn = get_connection(config.DB_PATH)
+    scanned_repo = SQLiteScannedEmailRepository(conn)
+
+    try:
+        cleanup_service = EmailCleanupService(scanned_repo, GmailClient())
+    except NotAuthenticatedError as exc:
+        conn.close()
+        return jsonify({"error": str(exc)}), 401
+
+    visible_email_ids = set(email_ids)
+    displayed_emails = [
+        email_row
+        for email_row in scanned_repo.get_all_with_job_status()
+        if str(email_row.get("email_id") or "") in visible_email_ids
+    ]
+
+    try:
+        result = cleanup_service.hide_stale_or_read_emails(displayed_emails)
+    except Exception as exc:
+        logger.exception("Email cleanup failed")
+        conn.close()
+        return jsonify({"error": f"Failed to clean emails: {exc}"}), 500
+
+    conn.close()
+    return jsonify(
+        {
+            "checked": result.checked_count,
+            "hidden": result.hidden_count,
+            "hidden_email_ids": result.hidden_email_ids,
+        }
+    )
 
 
 @app.route("/api/emails/<email_id>/rescan", methods=["POST"])
@@ -2340,9 +2830,8 @@ def upload_resume():
     try:
         import fitz  # PyMuPDF
 
-        doc = fitz.open(str(save_path))
-        text = "\n".join(page.get_text() for page in doc)
-        doc.close()
+        with fitz.open(str(save_path)) as doc:
+            text = "\n".join(page.get_text() for page in doc)
     except Exception as exc:
         logger.error("PDF extraction failed: %s", exc)
         return jsonify({"error": f"PDF text extraction failed: {exc}"}), 500
@@ -2353,7 +2842,7 @@ def upload_resume():
         {
             "filename": file.filename,
             "content": text,
-            "uploaded_at": datetime.utcnow().isoformat(),
+            "uploaded_at": datetime.now(UTC).isoformat(),
         }
     )
     resume = repos["resume"].get_latest()

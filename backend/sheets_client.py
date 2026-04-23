@@ -47,11 +47,12 @@ class SheetsClient:
                     creds.refresh(Request())
                     GOOGLE_TOKEN_FILE.write_text(creds.to_json())
                 except RefreshError as exc:
-                    GOOGLE_TOKEN_FILE.unlink(missing_ok=True)
-                    raise NotAuthenticatedError(
-                        f"Token rejected by Google ({exc}). "
-                        "Re-authenticate via /api/auth/google."
-                    ) from exc
+                    if "invalid_grant" in str(exc).lower():
+                        GOOGLE_TOKEN_FILE.unlink(missing_ok=True)
+                        logger.warning("Google token invalidated (invalid_grant); re-auth required.")
+                    else:
+                        logger.warning("Google token refresh failed (transient?): %s", exc)
+                    raise NotAuthenticatedError("Google token refresh failed") from exc
                 except TransportError as exc:
                     raise NotAuthenticatedError(
                         f"Token refresh failed: {exc}. Re-authenticate via /api/auth/google."

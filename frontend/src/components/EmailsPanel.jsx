@@ -36,6 +36,22 @@ function statusSortKey(email) {
   return statusBadge(email).label;
 }
 
+function gmailReadIndicator(email) {
+  if (email.job_status && ["pending_review", "triage", "possible_duplicate"].includes(email.job_status)) {
+    return { label: "Keep unread", cls: "badge-yellow", canMarkRead: false };
+  }
+  if (email.job_status && ["added_to_sheet", "skipped"].includes(email.job_status)) {
+    return { label: "Can mark read", cls: "badge-green", canMarkRead: true };
+  }
+  if (["noise", "ack", "duplicate", "feedback_filtered"].includes(email.disposition)) {
+    return { label: "Can mark read", cls: "badge-green", canMarkRead: true };
+  }
+  if (email.disposition === "parser_error") {
+    return { label: "Review first", cls: "badge-red", canMarkRead: false };
+  }
+  return { label: "Review first", cls: "badge-gray", canMarkRead: false };
+}
+
 // ── Raw body modal ────────────────────────────────────────────────────────────
 
 function RawBodyModal({ email, onClose }) {
@@ -131,6 +147,7 @@ function RawBodyModal({ email, onClose }) {
 
 function DetailPanel({ email, rescanning, onRescan, onShowBody, onSetHidden }) {
   const { label, cls } = statusBadge(email);
+  const gmailIndicator = gmailReadIndicator(email);
   const isRescanning = rescanning[email.email_id];
   const isParserError = email.disposition === "parser_error";
 
@@ -178,6 +195,10 @@ function DetailPanel({ email, rescanning, onRescan, onShowBody, onSetHidden }) {
             <dt style={dtStyle}>Disposition</dt>
             <dd style={ddStyle}>
               {(DISPOSITION_INFO[email.disposition] || { label: email.disposition || "—" }).label}
+            </dd>
+            <dt style={dtStyle}>Gmail</dt>
+            <dd style={ddStyle}>
+              <span className={`badge ${gmailIndicator.cls}`}>{gmailIndicator.label}</span>
             </dd>
             <dt style={dtStyle}>Message ID</dt>
             <dd style={{ ...ddStyle, fontFamily: "monospace", fontSize: "11px", wordBreak: "break-all", color: "var(--text-muted)" }}>
@@ -265,6 +286,8 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
   const [selected, setSelected] = useState(null);
   const [rescanning, setRescanning] = useState({});
   const [rescanAllRunning, setRescanAllRunning] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanResult, setCleanResult] = useState(null);
   const [scanState, setScanState] = useState(null);
   const [sortCol, setSortCol] = useState("date");
   const [sortDir, setSortDir] = useState("desc");
@@ -362,9 +385,10 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
       alert("Connect your Google account first.");
       return;
     }
+    setCleanResult(null);
     if (
       !window.confirm(
-        "This will delete all email-sourced jobs and re-scan every email from scratch.\n\nBoard-search jobs are kept. Continue?"
+        "This will delete the history of your applications and skipped jobs, then re-scan every email from scratch.\n\nAre you sure?"
       )
     ) {
       return;
@@ -399,6 +423,36 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
         setRescanAllRunning(false);
       }
     }, 1200);
+  };
+
+  const handleCleanList = async () => {
+    if (!isAuthenticated) {
+      alert("Connect your Google account first.");
+      return;
+    }
+    setCleaning(true);
+    setCleanResult(null);
+    try {
+      const res = await fetch("/api/emails/clean", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email_ids: visibleEmails.map((email) => email.email_id) }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Clean failed");
+        return;
+      }
+      await fetchEmails(filter);
+      setCleanResult(data);
+      if (!showHidden && data.hidden_email_ids?.includes(selected)) {
+        setSelected(null);
+      }
+    } catch (e) {
+      alert("Clean failed: " + e.message);
+    } finally {
+      setCleaning(false);
+    }
   };
 
   const handleSetHidden = async (emailId, hidden) => {
@@ -468,14 +522,30 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
         <div style={{ marginLeft: "auto" }}>
           <button
             className="btn-secondary"
+            onClick={handleCleanList}
+            disabled={cleaning || loading || rescanAllRunning}
+            style={{ padding: "6px 16px", fontSize: "13px", marginRight: "8px" }}
+          >
+            {cleaning ? "Cleaning…" : "Clean List"}
+          </button>
+          <button
+            className="btn-secondary"
             onClick={handleRescanAll}
-            disabled={rescanAllRunning}
+            disabled={rescanAllRunning || cleaning}
             style={{ padding: "6px 16px", fontSize: "13px" }}
           >
-            {rescanAllRunning ? "Rescanning All…" : "Rescan All Emails"}
+            {rescanAllRunning ? "Purging…" : "Purge Queue"}
           </button>
         </div>
       </div>
+
+      {cleanResult && !rescanAllRunning && (
+        <div style={{ ...progressBox, marginBottom: "16px" }}>
+          <p style={{ fontSize: "13px", color: "var(--text)", margin: 0 }}>
+            Checked {cleanResult.checked} email{cleanResult.checked !== 1 ? "s" : ""}; hid {cleanResult.hidden}.
+          </p>
+        </div>
+      )}
 
       {/* Rescan-all progress */}
       {rescanAllRunning && scanState && (
@@ -523,12 +593,14 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
                   >
                     Status <SortIndicator col="status" />
                   </th>
+                  <th style={{ ...thStyle, position: "sticky", top: 0, zIndex: 1 }}>Gmail</th>
                 </tr>
               </thead>
               <tbody>
                 {sortedEmails.map((email) => {
                   const isSelected = email.email_id === selected;
                   const { label, cls } = statusBadge(email);
+                  const gmailIndicator = gmailReadIndicator(email);
                   const isParserError = email.disposition === "parser_error";
                   const isHidden = Boolean(email.hidden);
                   return (
@@ -549,10 +621,10 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
                       <td style={{ ...tdStyle, whiteSpace: "nowrap", fontSize: "12px", color: "var(--text-muted)" }}>
                         {email.email_date || "—"}
                       </td>
-                      <td style={{ ...tdStyle, maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "12px" }}>
+                      <td style={{ ...tdStyle, width: "160px", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "12px" }}>
                         {email.sender_email || "—"}
                       </td>
-                      <td style={{ ...tdStyle, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <td style={{ ...tdStyle, maxWidth: "320px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {email.email_subject || "—"}
                       </td>
                       <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
@@ -568,6 +640,14 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
                         ) : (
                           <span className={`badge ${cls}`}>{label}</span>
                         )}
+                      </td>
+                      <td style={{ ...tdStyle, whiteSpace: "nowrap", width: "140px" }}>
+                        <span
+                          className={`badge ${gmailIndicator.cls}`}
+                          title={gmailIndicator.canMarkRead ? "No active queue work remains for this email." : "This email still needs review or follow-up before marking it read."}
+                        >
+                          {gmailIndicator.label}
+                        </span>
                       </td>
                     </tr>
                   );

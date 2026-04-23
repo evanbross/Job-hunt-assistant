@@ -27,6 +27,12 @@ class CareerSiteScannerHelpersTests(unittest.TestCase):
         parsed = urlparse("https://boards.greenhouse.io/embed/job_board")
         self.assertIsNone(_greenhouse_board_token(parsed))
 
+    def test_greenhouse_token_absent_on_cross_company_search(self):
+        parsed = urlparse(
+            "https://my.greenhouse.io/jobs?query=software&salary=more_than_200k"
+        )
+        self.assertIsNone(_greenhouse_board_token(parsed))
+
     def test_workday_parts_extract_tenant_and_slug(self):
         parts = _workday_parts("https://acme.wd5.myworkdayjobs.com/en-US/External")
         self.assertEqual(parts, ("acme", "External"))
@@ -84,6 +90,21 @@ class CareerSiteScannerHelpersTests(unittest.TestCase):
         self.assertEqual(failures[0]["stage"], "adapter")
         self.assertEqual(failures[0]["error_type"], "TypeError")
         self.assertIn("bad parser", failures[0]["error_message"])
+
+    def test_greenhouse_search_url_skips_board_adapter_failure(self):
+        scanner = CareerSiteScanner()
+        site_url = (
+            "https://my.greenhouse.io/jobs?query=software&salary=more_than_200k"
+            "&work_type[]=remote&employment_type[]=full_time"
+        )
+        with patch.object(scanner, "_scan_greenhouse") as greenhouse_scan:
+            with patch.object(scanner, "_scan_generic", return_value=([], "generic")):
+                outcome = scanner.scan_site("Greenhouse", site_url)
+
+        self.assertEqual(outcome["jobs"], [])
+        self.assertEqual(outcome["detected_platform"], "generic")
+        greenhouse_scan.assert_not_called()
+        self.assertEqual(scanner.pop_failures(), [])
 
     def test_pop_failures_clears_internal_buffer(self):
         scanner = CareerSiteScanner()

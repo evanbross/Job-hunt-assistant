@@ -58,18 +58,26 @@ function EmailSourcesSection() {
   };
 
   const toggleEnabled = async (source) => {
-    await fetch(`/api/sources/${source.id}`, {
+    const res = await fetch(`/api/sources/${source.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: source.enabled ? 0 : 1 }),
     });
-    fetchSources();
+    if (!res.ok) {
+      window.alert(`Save failed (${res.status})`);
+      return;
+    }
+    await fetchSources();
   };
 
   const deleteSource = async (id) => {
-    if (!confirm("Delete this source?")) return;
-    await fetch(`/api/sources/${id}`, { method: "DELETE" });
-    fetchSources();
+    if (!window.confirm("Delete this source?")) return;
+    const res = await fetch(`/api/sources/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      window.alert(`Delete failed (${res.status})`);
+      return;
+    }
+    await fetchSources();
   };
 
   const startEdit = (source) => {
@@ -81,17 +89,25 @@ function EmailSourcesSection() {
   const submitForm = async () => {
     if (!form.name || !form.match_value) return;
     if (editId) {
-      await fetch(`/api/sources/${editId}`, {
+      const res = await fetch(`/api/sources/${editId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
+      if (!res.ok) {
+        window.alert(`Save failed (${res.status})`);
+        return;
+      }
     } else {
-      await fetch("/api/sources", {
+      const res = await fetch("/api/sources", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
+      if (!res.ok) {
+        window.alert(`Save failed (${res.status})`);
+        return;
+      }
     }
     setShowForm(false);
     setEditId(null);
@@ -171,18 +187,26 @@ function CareerSitesSection() {
   };
 
   const toggleEnabled = async (site) => {
-    await fetch(`/api/career-sites/${site.id}`, {
+    const res = await fetch(`/api/career-sites/${site.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: !site.enabled }),
     });
-    fetchSites();
+    if (!res.ok) {
+      window.alert(`Save failed (${res.status})`);
+      return;
+    }
+    await fetchSites();
   };
 
   const deleteSite = async (id) => {
-    if (!confirm("Delete this career site URL?")) return;
-    await fetch(`/api/career-sites/${id}`, { method: "DELETE" });
-    fetchSites();
+    if (!window.confirm("Delete this career site URL?")) return;
+    const res = await fetch(`/api/career-sites/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      window.alert(`Delete failed (${res.status})`);
+      return;
+    }
+    await fetchSites();
   };
 
   const startEdit = (site) => {
@@ -194,17 +218,25 @@ function CareerSitesSection() {
   const submitForm = async () => {
     if (!form.name || !form.url) return;
     if (editId) {
-      await fetch(`/api/career-sites/${editId}`, {
+      const res = await fetch(`/api/career-sites/${editId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
+      if (!res.ok) {
+        window.alert(`Save failed (${res.status})`);
+        return;
+      }
     } else {
-      await fetch("/api/career-sites", {
+      const res = await fetch("/api/career-sites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
+      if (!res.ok) {
+        window.alert(`Save failed (${res.status})`);
+        return;
+      }
     }
     setShowForm(false);
     setEditId(null);
@@ -244,7 +276,9 @@ function CareerSitesSection() {
           {sites.map((s) => (
             <tr key={s.id}>
               <td style={tdStyle}>{s.name}</td>
-              <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: "12px" }}>{s.url}</td>
+              <td style={{ ...tdStyle, maxWidth: "320px" }}>
+                <div style={{ overflowX: "auto", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: "12px" }}>{s.url}</div>
+              </td>
               <td style={tdStyle}><Toggle checked={!!s.enabled} onChange={() => toggleEnabled(s)} /></td>
               <td style={tdStyle}>
                 <div style={{ display: "flex", gap: "6px" }}>
@@ -277,18 +311,26 @@ function PenaltiesSection() {
   };
 
   const toggleEnabled = async (rule) => {
-    await fetch(`/api/penalties/${rule.id}`, {
+    const res = await fetch(`/api/penalties/${rule.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: rule.enabled ? 0 : 1 }),
     });
-    fetchRules();
+    if (!res.ok) {
+      window.alert(`Save failed (${res.status})`);
+      return;
+    }
+    await fetchRules();
   };
 
   const deleteRule = async (id) => {
-    if (!confirm("Delete this rule?")) return;
-    await fetch(`/api/penalties/${id}`, { method: "DELETE" });
-    fetchRules();
+    if (!window.confirm("Delete this rule?")) return;
+    const res = await fetch(`/api/penalties/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      window.alert(`Delete failed (${res.status})`);
+      return;
+    }
+    await fetchRules();
   };
 
   const startEdit = (rule) => {
@@ -301,17 +343,25 @@ function PenaltiesSection() {
     if (!form.rule_text || !form.penalty_points) return;
     const body = { rule_text: form.rule_text, penalty_points: parseInt(form.penalty_points, 10) };
     if (editId) {
-      await fetch(`/api/penalties/${editId}`, {
+      const res = await fetch(`/api/penalties/${editId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      if (!res.ok) {
+        window.alert(`Save failed (${res.status})`);
+        return;
+      }
     } else {
-      await fetch("/api/penalties", {
+      const res = await fetch("/api/penalties", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      if (!res.ok) {
+        window.alert(`Save failed (${res.status})`);
+        return;
+      }
     }
     setShowForm(false);
     setEditId(null);
@@ -379,7 +429,11 @@ function FeedbackSection() {
   }, []);
 
   const deleteFeedback = async (id) => {
-    await fetch(`/api/feedback/${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/feedback/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      window.alert(`Delete failed (${res.status})`);
+      return;
+    }
     setFeedback((prev) => prev.filter((f) => f.id !== id));
   };
 
@@ -438,11 +492,16 @@ function ConfigSection() {
   }, []);
 
   const save = async () => {
+    const days = parseInt(cfg.email_lookback_days, 10);
+    if (!Number.isFinite(days) || days < 1 || days > 90) {
+      window.alert("Lookback days must be a number between 1 and 90.");
+      return;
+    }
     setSaving(true);
     const res = await fetch("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(cfg),
+      body: JSON.stringify({ ...cfg, email_lookback_days: days }),
     });
     const data = await res.json();
     setSaving(false);
@@ -486,7 +545,7 @@ function ConfigSection() {
             min="1"
             max="90"
             value={cfg.email_lookback_days ?? 10}
-            onChange={(e) => setCfg({ ...cfg, email_lookback_days: parseInt(e.target.value, 10) })}
+            onChange={(e) => setCfg({ ...cfg, email_lookback_days: e.target.value })}
           />
           <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", display: "block" }}>
             Scan emails from the past N days (1–90).

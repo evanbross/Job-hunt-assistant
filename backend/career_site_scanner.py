@@ -221,12 +221,14 @@ def _canonical_url(url: str) -> str:
 
 
 def _extract_json_array_by_key(text: str, key: str) -> list[dict]:
-    marker = f'"{key}":['
-    start = text.find(marker)
-    if start < 0:
+    pattern = re.compile(
+        r'[{,]\s*"' + re.escape(key) + r'"\s*:\s*\['
+    )
+    match = pattern.search(text)
+    if not match:
         return []
 
-    i = start + len(marker) - 1  # points to '['
+    i = text.index("[", match.start())
     depth = 0
     in_str = False
     escaped = False
@@ -354,6 +356,10 @@ def _greenhouse_board_token(parsed: ParseResult) -> str | None:
     return segments[0]
 
 
+def _has_greenhouse_board_token(site_url: str) -> bool:
+    return _greenhouse_board_token(urlparse(site_url)) is not None
+
+
 def _workday_parts(site_url: str) -> tuple[str, str] | None:
     parsed = urlparse(site_url)
     host_parts = parsed.netloc.split(".")
@@ -425,7 +431,7 @@ class CareerSiteScanner:
         parsed = urlparse(site_url)
         host = parsed.netloc.lower()
 
-        if "greenhouse.io" in host:
+        if "greenhouse.io" in host and _has_greenhouse_board_token(site_url):
             try:
                 return ScanOutcome(
                     jobs=self._scan_greenhouse(site_name, site_url),
