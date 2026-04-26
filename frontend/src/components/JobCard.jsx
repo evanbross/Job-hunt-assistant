@@ -4,6 +4,7 @@ const SKIP_REASONS = [
   { key: "rejected", label: "Rejected" },
   { key: "duplicate", label: "Duplicate" },
   { key: "req_closed", label: "Req Closed" },
+  { key: "not_remote", label: "Not Remote" },
   { key: "not_a_fit", label: "Not a Fit" },
   { key: "not_interested", label: "Not Interested" },
   { key: "other", label: "Other" },
@@ -45,11 +46,11 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState(null); // updated cover letter from AI
-  const chatBottomRef = useRef(null);
+  const chatMessagesRef = useRef(null);
 
   useEffect(() => {
-    if (chatOpen && chatBottomRef.current) {
-      chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
+    if (chatOpen && chatMessagesRef.current) {
+      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
     }
   }, [chatMessages, chatOpen]);
 
@@ -518,7 +519,7 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
 
               {/* Message history */}
               {chatMessages.length > 0 && (
-                <div style={{ maxHeight: "300px", overflowY: "auto", marginBottom: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                <div ref={chatMessagesRef} style={{ maxHeight: "300px", overflowY: "auto", marginBottom: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
                   {chatMessages.map((msg, i) => (
                     <div
                       key={i}
@@ -543,7 +544,6 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
                       Thinking…
                     </div>
                   )}
-                  <div ref={chatBottomRef} />
                 </div>
               )}
 

@@ -14,9 +14,11 @@ import logging
 import os
 import re
 import secrets
+import socket
 import sys
 import threading
 import time
+import urllib.error
 from dataclasses import dataclass, field
 from datetime import date, datetime, UTC
 from pathlib import Path
@@ -44,6 +46,7 @@ from backend.db import (
     init_db,
 )
 from backend.career_site_scanner import CareerSiteScanner
+from backend.captured_page_import_service import CapturedPageImportService
 from backend.cover_letter_generator import CoverLetterGenerator
 from backend.duplicate_checker import DuplicateChecker
 from backend.email_cleanup_service import EmailCleanupService
@@ -51,6 +54,7 @@ from backend.email_parser import EmailParser
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.job_board_searcher import JobBoardSearcher, url_to_email_id
+from backend.manual_job_ingest_service import ManualJobIngestService
 from backend.sheets_client import SheetsClient
 
 # Allow Google to return a superset of the requested OAuth scopes without
@@ -86,7 +90,7 @@ config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
 config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Initialize DB on startup
-init_db(config.DB_PATH)
+init_db(config.DATABASE_URL)
 
 
 # ─── Application-acknowledgement filter ──────────────────────────────────────
@@ -191,6 +195,16 @@ def _platform_for_site_url(site_url: str) -> str:
     return "generic"
 
 
+def _platform_label(platform: str) -> str:
+    labels = {
+        "greenhouse": "Greenhouse",
+        "lever": "Lever",
+        "workday": "Workday",
+        "ashby": "Ashby",
+    }
+    return labels.get(platform.lower(), platform.title() or "Career Site")
+
+
 def _parse_bool(value: object, *, default: bool) -> bool:
     if value is None:
         return default
@@ -205,6 +219,18 @@ def _parse_bool(value: object, *, default: bool) -> bool:
         if normalized in {"0", "false", "no", "off", ""}:
             return False
     raise ValueError("Invalid boolean value")
+
+
+def _parse_positive_int(value: object, *, default: int, field_name: str) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return parsed
 
 
 def _extract_ashby_job_id(url: str) -> str | None:
@@ -683,7 +709,7 @@ def _run_scan(rescan_all: bool = False) -> None:
             "email_lookback_days", config.DEFAULT_EMAIL_LOOKBACK_DAYS
         )
 
-        conn = get_connection(config.DB_PATH)
+        conn = get_connection(config.DATABASE_URL)
         source_repo = SQLiteEmailSourceRepository(conn)
         job_repo = SQLiteJobRepository(conn)
         scanned_repo = SQLiteScannedEmailRepository(conn)
@@ -957,7 +983,7 @@ def _run_board_search() -> None:
             _update_board(progress=10, message="Searching boards (default queries)…")
 
         # ── 2. Open DB and load supporting data ──────────────────────────────
-        conn = get_connection(config.DB_PATH)
+        conn = get_connection(config.DATABASE_URL)
         job_repo = SQLiteJobRepository(conn)
         resume_repo = SQLiteResumeRepository(conn)
         penalty_repo = SQLitePenaltyRuleRepository(conn)
@@ -1123,7 +1149,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
 
     conn = None
     try:
-        conn = get_connection(config.DB_PATH)
+        conn = get_connection(config.DATABASE_URL)
         source_repo = SQLiteCareerSiteSourceRepository(conn)
         results_repo = SQLiteCareerScanResultRepository(conn)
         failures_repo = SQLiteCareerScanFailureRepository(conn)
@@ -1450,7 +1476,7 @@ def _start_career_site_scheduler() -> None:
 
 def _get_repos():
     """Return a dict of repository instances sharing one connection."""
-    conn = get_connection(config.DB_PATH)
+    conn = get_connection(config.DATABASE_URL)
     return {
         "conn": conn,
         "jobs": SQLiteJobRepository(conn),
@@ -1628,8 +1654,13 @@ def create_career_site():
     url = (data.get("url") or "").strip()
     try:
         enabled = 1 if _parse_bool(data.get("enabled"), default=True) else 0
+        recapture_interval_days = _parse_positive_int(
+            data.get("recapture_interval_days"),
+            default=4,
+            field_name="recapture_interval_days",
+        )
     except ValueError:
-        return jsonify({"error": "enabled must be a boolean value"}), 400
+        return jsonify({"error": "enabled must be a boolean value and recapture_interval_days must be positive"}), 400
 
     if not name or not url:
         return jsonify({"error": "name and url are required"}), 400
@@ -1642,6 +1673,8 @@ def create_career_site():
             "name": name,
             "url": url,
             "enabled": enabled,
+            "detected_platform": _platform_for_site_url(url),
+            "recapture_interval_days": recapture_interval_days,
             "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
     )
@@ -1672,6 +1705,15 @@ def update_career_site(source_id: int):
             fields["enabled"] = 1 if _parse_bool(data.get("enabled"), default=True) else 0
         except ValueError:
             return jsonify({"error": "enabled must be a boolean value"}), 400
+    if "recapture_interval_days" in data:
+        try:
+            fields["recapture_interval_days"] = _parse_positive_int(
+                data.get("recapture_interval_days"),
+                default=4,
+                field_name="recapture_interval_days",
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
 
     repos = _get_repos()
     existing = repos["career_sites"].get_by_id(source_id)
@@ -1683,6 +1725,14 @@ def update_career_site(source_id: int):
     row = repos["career_sites"].get_by_id(source_id)
     repos["conn"].close()
     return jsonify(row)
+
+
+@app.route("/api/career-sites/recapture-due")
+def get_recapture_due_sites():
+    repos = _get_repos()
+    rows = repos["career_sites"].get_due_recapture()
+    repos["conn"].close()
+    return jsonify(rows)
 
 
 @app.route("/api/career-sites/<int:source_id>", methods=["DELETE"])
@@ -1917,6 +1967,310 @@ def get_jobs():
     return jsonify(jobs)
 
 
+@app.route("/api/jobs/manual", methods=["POST"])
+def create_manual_job():
+    repos = _get_repos()
+    body = request.get_json(silent=True) or {}
+    listing_text = str(body.get("listing_text") or "").strip()
+    source_url = str(body.get("source_url") or "").strip()
+    source_name = str(body.get("source_name") or "").strip()
+    company_override = str(body.get("company_override") or "").strip()
+    job_title_override = str(body.get("job_title_override") or "").strip()
+
+    if not listing_text and not source_url:
+        repos["conn"].close()
+        return jsonify({"error": "Job listing text or a public job URL is required."}), 400
+
+    sheet_jobs: list[dict] = []
+    try:
+        sheet_jobs = SheetsClient().read_jobs()
+    except NotAuthenticatedError:
+        sheet_jobs = []
+    except Exception as exc:
+        logger.warning("Manual job ingest could not load sheet jobs: %s", exc)
+
+    service = ManualJobIngestService(
+        repos["jobs"],
+        repos["resume"],
+        repos["penalties"],
+    )
+
+    try:
+        result = service.ingest(
+            listing_text,
+            source_url=source_url,
+            source_name=source_name,
+            company_override=company_override,
+            job_title_override=job_title_override,
+            sheet_jobs=sheet_jobs,
+        )
+    except ValueError as exc:
+        repos["conn"].close()
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        repos["conn"].close()
+        logger.error("Manual job ingest failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+    repos["conn"].close()
+    return jsonify({"job": result.job, "parsed_job_count": result.parsed_job_count}), 201
+
+
+def _capture_source_suggestions(repos: dict[str, object], query: str) -> list[dict]:
+    career_sites_repo = repos["career_sites"]
+    matches = career_sites_repo.find_matches(query)
+    if matches:
+        return matches
+
+    normalized = query.strip().lower()
+    platform_defaults = {
+        "greenhouse": {
+            "name": "Greenhouse",
+            "url": "https://my.greenhouse.io",
+            "detected_platform": "greenhouse",
+        },
+        "lever": {
+            "name": "Lever",
+            "url": "https://jobs.lever.co",
+            "detected_platform": "lever",
+        },
+        "ashby": {
+            "name": "Ashby",
+            "url": "https://jobs.ashbyhq.com",
+            "detected_platform": "ashby",
+        },
+        "workday": {
+            "name": "Workday",
+            "url": "https://myworkdayjobs.com",
+            "detected_platform": "workday",
+        },
+    }
+    for platform_key, suggestion in platform_defaults.items():
+        if normalized in platform_key or platform_key in normalized:
+            return [suggestion]
+    return []
+
+
+def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source: dict | None) -> tuple[dict | None, dict | None]:
+    career_sites_repo = repos["career_sites"]
+    interval_days = _parse_positive_int(
+        body.get("recapture_interval_days"),
+        default=4,
+        field_name="recapture_interval_days",
+    )
+
+    source_id = body.get("capture_source_id")
+    if source_id not in {None, ""}:
+        try:
+            parsed_source_id = int(source_id)
+        except (TypeError, ValueError):
+            return None, ({"error": "capture_source_id must be an integer"}, 400)
+        source = career_sites_repo.get_by_id(parsed_source_id)
+        if not source:
+            return None, ({"error": "Capture source was not found"}, 404)
+        return source, None
+
+    source_query = str(body.get("capture_source_query") or "").strip()
+    source_url = str(body.get("capture_source_url") or "").strip()
+    source_name = str(body.get("capture_source_name") or "").strip()
+
+    if guessed_source and not source_query and not source_url and not source_name:
+        guessed_url = str(guessed_source.get("url") or "").strip()
+        existing = career_sites_repo.get_by_url(guessed_url) if guessed_url else None
+        if existing:
+            return existing, None
+        source_id = career_sites_repo.insert(
+            {
+                "name": str(guessed_source.get("name") or "Captured Job Board").strip(),
+                "url": guessed_url,
+                "enabled": 1,
+                "detected_platform": str(guessed_source.get("platform") or _platform_for_site_url(guessed_url)),
+                "recapture_interval_days": interval_days,
+                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+        )
+        return career_sites_repo.get_by_id(source_id), None
+
+    if source_query and not source_url:
+        suggestions = _capture_source_suggestions(repos, source_query)
+        if len(suggestions) == 1:
+            return None, (
+                {
+                    "error": "Confirm capture source",
+                    "source_match_required": True,
+                    "query": source_query,
+                    "suggestions": suggestions,
+                },
+                409,
+            )
+        if len(suggestions) > 1:
+            return None, (
+                {
+                    "error": "Choose capture source",
+                    "source_match_required": True,
+                    "query": source_query,
+                    "suggestions": suggestions,
+                },
+                409,
+            )
+        return None, (
+            {
+                "error": "Enter the full captured job-board URL.",
+                "source_required": True,
+                "query": source_query,
+                "suggestions": [],
+            },
+            409,
+        )
+
+    if source_url:
+        if not re.match(r"^https?://", source_url, re.IGNORECASE):
+            return None, ({"error": "capture_source_url must start with http:// or https://"}, 400)
+        existing = career_sites_repo.get_by_url(source_url)
+        if existing:
+            return existing, None
+        source_id = career_sites_repo.insert(
+            {
+                "name": source_name or _platform_label(_platform_for_site_url(source_url)),
+                "url": source_url,
+                "enabled": 1,
+                "detected_platform": _platform_for_site_url(source_url),
+                "recapture_interval_days": interval_days,
+                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+        )
+        return career_sites_repo.get_by_id(source_id), None
+
+    return None, (
+        {
+            "error": "Capture source could not be inferred. Enter the source site.",
+            "source_required": True,
+            "suggestions": [],
+        },
+        409,
+    )
+
+
+def _record_capture_source(source: dict | None, repos: dict[str, object], body: dict) -> None:
+    if not source:
+        return
+    fields: dict[str, object] = {
+        "last_captured_at": datetime.now(UTC).isoformat(timespec="seconds")
+    }
+    interval_value = body.get("recapture_interval_days")
+    if interval_value is not None and interval_value != "":
+        fields["recapture_interval_days"] = _parse_positive_int(
+            interval_value,
+            default=4,
+            field_name="recapture_interval_days",
+        )
+    repos["career_sites"].update(source["id"], fields)
+
+
+@app.route("/api/import/job-urls", methods=["POST"])
+def extract_imported_job_urls():
+    body = request.get_json(silent=True) or {}
+    raw_content = str(body.get("content") or "")
+    content_format = str(body.get("format") or "html")
+
+    try:
+        analysis = CapturedPageImportService().analyze_capture(raw_content, content_format)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.error("Captured page import failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify(analysis)
+
+
+@app.route("/api/import/queue-all", methods=["POST"])
+def import_and_queue_all_jobs():
+    repos = _get_repos()
+    body = request.get_json(silent=True) or {}
+    raw_content = str(body.get("content") or "")
+    content_format = str(body.get("format") or "html")
+
+    try:
+        analysis = CapturedPageImportService().analyze_capture(raw_content, content_format)
+        extracted = analysis["urls"]
+    except ValueError as exc:
+        repos["conn"].close()
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        repos["conn"].close()
+        logger.error("Captured page import failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+    if not extracted:
+        repos["conn"].close()
+        return jsonify({"queued": 0, "skipped": 0, "failed": 0, "jobs": []})
+
+    try:
+        capture_source, source_error = _resolve_capture_source(repos, body, analysis["source"])
+    except ValueError as exc:
+        repos["conn"].close()
+        return jsonify({"error": str(exc)}), 400
+    if source_error:
+        payload, status_code = source_error
+        repos["conn"].close()
+        return jsonify(payload), status_code
+
+    sheet_jobs: list[dict] = []
+    try:
+        sheet_jobs = SheetsClient().read_jobs()
+    except NotAuthenticatedError:
+        sheet_jobs = []
+    except Exception as exc:
+        logger.warning("Bulk import could not load sheet jobs: %s", exc)
+
+    service = ManualJobIngestService(repos["jobs"], repos["resume"], repos["penalties"])
+
+    queued_jobs: list[dict] = []
+    skipped = 0
+    failed = 0
+
+    for url_row in extracted:
+        url = url_row["url"]
+        platform = url_row["platform"]
+
+        if repos["jobs"].get_by_url(url) is not None:
+            skipped += 1
+            continue
+
+        try:
+            result = service.ingest(
+                "",
+                source_url=url,
+                source_name=platform,
+                sheet_jobs=sheet_jobs,
+            )
+            queued_jobs.append(result.job)
+        except (ValueError, urllib.error.URLError, TimeoutError, socket.error) as exc:
+            logger.warning("Bulk import skipped %s: %s", url, exc)
+            failed += 1
+        except Exception as exc:
+            logger.error("Bulk import error for %s: %s", url, exc)
+            failed += 1
+
+    try:
+        _record_capture_source(capture_source, repos, body)
+    except ValueError as exc:
+        repos["conn"].close()
+        return jsonify({"error": str(exc)}), 400
+
+    repos["conn"].close()
+    return jsonify(
+        {
+            "queued": len(queued_jobs),
+            "skipped": skipped,
+            "failed": failed,
+            "jobs": queued_jobs,
+            "capture_source": capture_source,
+        }
+    ), 201
+
+
 @app.route("/api/jobs/re-evaluate", methods=["POST"])
 def re_evaluate_queue_jobs():
     repos = _get_repos()
@@ -1987,7 +2341,15 @@ def add_job_to_sheet(job_id: int):
     return jsonify({"status": "ok"})
 
 
-_VALID_SKIP_REASONS = frozenset({"rejected", "duplicate", "req_closed", "not_a_fit", "not_interested", "other"})
+_VALID_SKIP_REASONS = frozenset({
+    "rejected",
+    "duplicate",
+    "req_closed",
+    "not_remote",
+    "not_a_fit",
+    "not_interested",
+    "other",
+})
 _VALID_MISMATCH_REASONS = frozenset({
     "Not Remote",
     "Hybrid / On-Site",
@@ -2441,7 +2803,7 @@ def get_scanned_emails():
       - ``potential`` — only emails whose job is still in pending_review / triage / possible_duplicate
       - (omitted)    — all scanned emails
     """
-    conn = get_connection(config.DB_PATH)
+    conn = get_connection(config.DATABASE_URL)
     scanned_repo = SQLiteScannedEmailRepository(conn)
     emails = scanned_repo.get_all_with_job_status()
     conn.close()
@@ -2466,7 +2828,7 @@ def set_email_hidden(email_id: str):
     """Set or clear the hidden flag on a scanned email."""
     data = request.get_json(silent=True) or {}
     hidden = bool(data.get("hidden", True))
-    conn = get_connection(config.DB_PATH)
+    conn = get_connection(config.DATABASE_URL)
     SQLiteScannedEmailRepository(conn).set_hidden(email_id, hidden)
     conn.close()
     return jsonify({"hidden": hidden})
@@ -2488,7 +2850,7 @@ def clean_displayed_emails():
     if not email_ids:
         return jsonify({"checked": 0, "hidden": 0, "hidden_email_ids": []})
 
-    conn = get_connection(config.DB_PATH)
+    conn = get_connection(config.DATABASE_URL)
     scanned_repo = SQLiteScannedEmailRepository(conn)
 
     try:
@@ -2530,7 +2892,7 @@ def rescan_email(email_id: str):
     email is treated as fresh. Returns the newly created job(s) or an empty
     list if the email produced no job postings.
     """
-    conn = get_connection(config.DB_PATH)
+    conn = get_connection(config.DATABASE_URL)
     scanned_repo = SQLiteScannedEmailRepository(conn)
     job_repo = SQLiteJobRepository(conn)
     resume_repo = SQLiteResumeRepository(conn)
@@ -2653,7 +3015,7 @@ def rescan_all_emails():
         if _scan_state.running:
             return jsonify({"error": "A scan is already running"}), 409
 
-    conn = get_connection(config.DB_PATH)
+    conn = get_connection(config.DATABASE_URL)
     scanned_repo = SQLiteScannedEmailRepository(conn)
 
     # Remove all email-sourced jobs (board-search jobs have sender_email IS NULL)

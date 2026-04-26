@@ -1,18 +1,24 @@
 # Codex Agent Instructions — Job Hunt Assistant
 
-## Shared coding standards
+## Standards Files — Read These First
 
-Read and follow **COMMON_CODING_STANDARDS.md** located at:
-`F:\Evan-F\Projects\Dev-Standards\COMMON_CODING_STANDARDS.md`
+At the start of every session, re-read this file and each standards file below before
+making any changes.
 
-It is the authoritative source for coding rules shared across all projects.
+- `../Dev-Standards/COMMON_CODING_STANDARDS.md`
+- `../Dev-Standards/PYTHON_STANDARDS.md`
+- `../Dev-Standards/DATABASE_STANDARDS.md`
+- `../Dev-Standards/REACT_STANDARDS.md`
+- `../Dev-Standards/TESTING_STANDARDS.md`
+- `../Dev-Standards/INFRASTRUCTURE_STANDARDS.md`
+- `../Dev-Standards/CODEX_CODING_STANDARDS.md`
 
 ---
 
-## Project overview
+## Project Overview
 
 Flask backend (`app.py`) + React/Vite frontend (`frontend/src/`).
-SQLite today; migrating to Neon Postgres soon — all DB access goes through
+SQLite today; migrating to Neon Postgres — all DB access goes through
 repository classes in `backend/db.py`. Do not add raw queries to route handlers.
 
 Key files:

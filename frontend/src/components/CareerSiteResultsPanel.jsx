@@ -34,7 +34,7 @@ export default function CareerSiteResultsPanel() {
   const [sites, setSites] = useState([]);
   const [rejectionRules, setRejectionRules] = useState([]);
   const [showSiteForm, setShowSiteForm] = useState(false);
-  const [siteForm, setSiteForm] = useState({ name: "", url: "", enabled: true });
+  const [siteForm, setSiteForm] = useState({ name: "", url: "", enabled: true, recapture_interval_days: "4" });
   const [editingSiteId, setEditingSiteId] = useState(null);
   const [showRuleForm, setShowRuleForm] = useState(false);
   const [ruleForm, setRuleForm] = useState({ rule_text: "", enabled: true });
@@ -189,18 +189,28 @@ export default function CareerSiteResultsPanel() {
 
   const startCreateSite = () => {
     setEditingSiteId(null);
-    setSiteForm({ name: "", url: "", enabled: true });
+    setSiteForm({ name: "", url: "", enabled: true, recapture_interval_days: "4" });
     setShowSiteForm(true);
   };
 
   const startEditSite = (site) => {
     setEditingSiteId(site.id);
-    setSiteForm({ name: site.name || "", url: site.url || "", enabled: !!site.enabled });
+    setSiteForm({
+      name: site.name || "",
+      url: site.url || "",
+      enabled: !!site.enabled,
+      recapture_interval_days: String(site.recapture_interval_days || 4),
+    });
     setShowSiteForm(true);
   };
 
   const submitSiteForm = async () => {
     if (!siteForm.name.trim() || !siteForm.url.trim()) return;
+    const intervalDays = parseInt(siteForm.recapture_interval_days, 10);
+    if (!Number.isFinite(intervalDays) || intervalDays < 1) {
+      alert("Reminder interval must be a positive number of days.");
+      return;
+    }
     const endpoint = editingSiteId ? `/api/career-sites/${editingSiteId}` : "/api/career-sites";
     const method = editingSiteId ? "PUT" : "POST";
     const res = await fetch(endpoint, {
@@ -210,6 +220,7 @@ export default function CareerSiteResultsPanel() {
         name: siteForm.name.trim(),
         url: siteForm.url.trim(),
         enabled: !!siteForm.enabled,
+        recapture_interval_days: intervalDays,
       }),
     });
     if (!res.ok) {
@@ -219,7 +230,7 @@ export default function CareerSiteResultsPanel() {
     }
     setShowSiteForm(false);
     setEditingSiteId(null);
-    setSiteForm({ name: "", url: "", enabled: true });
+    setSiteForm({ name: "", url: "", enabled: true, recapture_interval_days: "4" });
     await fetchSites();
   };
 
@@ -378,6 +389,13 @@ export default function CareerSiteResultsPanel() {
                 onChange={(e) => setSiteForm((prev) => ({ ...prev, url: e.target.value }))}
                 placeholder="https://company.com/careers"
               />
+              <input
+                type="number"
+                min="1"
+                value={siteForm.recapture_interval_days}
+                onChange={(e) => setSiteForm((prev) => ({ ...prev, recapture_interval_days: e.target.value }))}
+                placeholder="Reminder interval days"
+              />
             </div>
             <label style={{ display: "flex", gap: "6px", alignItems: "center", fontSize: "12px", color: "var(--text-muted)" }}>
               <input
@@ -412,7 +430,7 @@ export default function CareerSiteResultsPanel() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
-                  {["Name", "URL", "Platform", "Enabled", "Actions"].map((h) => (
+                  {["Name", "URL", "Platform", "Last Capture", "Reminder", "Enabled", "Actions"].map((h) => (
                     <th key={h} style={thStyle}>{h}</th>
                   ))}
                 </tr>
@@ -425,6 +443,8 @@ export default function CareerSiteResultsPanel() {
                       <div style={{ overflowX: "auto", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: "11px" }}>{site.url || "—"}</div>
                     </td>
                     <td style={tdStyle}>{site.detected_platform || "—"}</td>
+                    <td style={tdStyle}>{site.last_captured_at?.slice(0, 10) || "—"}</td>
+                    <td style={tdStyle}>{site.recapture_interval_days || 4} days</td>
                     <td style={tdStyle}>
                       <button className="btn-secondary" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => toggleSiteEnabled(site)}>
                         {site.enabled ? "On" : "Off"}

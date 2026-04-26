@@ -175,7 +175,7 @@ function EmailSourcesSection() {
 function CareerSitesSection() {
   const [sites, setSites] = useState([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", url: "", enabled: true });
+  const [form, setForm] = useState({ name: "", url: "", enabled: true, recapture_interval_days: "4" });
   const [editId, setEditId] = useState(null);
 
   useEffect(() => { fetchSites(); }, []);
@@ -211,17 +211,28 @@ function CareerSitesSection() {
 
   const startEdit = (site) => {
     setEditId(site.id);
-    setForm({ name: site.name, url: site.url, enabled: !!site.enabled });
+    setForm({
+      name: site.name,
+      url: site.url,
+      enabled: !!site.enabled,
+      recapture_interval_days: String(site.recapture_interval_days || 4),
+    });
     setShowForm(true);
   };
 
   const submitForm = async () => {
     if (!form.name || !form.url) return;
+    const intervalDays = parseInt(form.recapture_interval_days, 10);
+    if (!Number.isFinite(intervalDays) || intervalDays < 1) {
+      window.alert("Reminder interval must be a positive number of days.");
+      return;
+    }
+    const payload = { ...form, recapture_interval_days: intervalDays };
     if (editId) {
       const res = await fetch(`/api/career-sites/${editId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         window.alert(`Save failed (${res.status})`);
@@ -231,7 +242,7 @@ function CareerSitesSection() {
       const res = await fetch("/api/career-sites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         window.alert(`Save failed (${res.status})`);
@@ -240,13 +251,13 @@ function CareerSitesSection() {
     }
     setShowForm(false);
     setEditId(null);
-    setForm({ name: "", url: "", enabled: true });
+    setForm({ name: "", url: "", enabled: true, recapture_interval_days: "4" });
     fetchSites();
   };
 
   return (
     <div>
-      <SectionHeader title="Career Site URLs" action={{ label: "Add Site", onClick: () => { setEditId(null); setForm({ name: "", url: "", enabled: true }); setShowForm(true); } }} />
+      <SectionHeader title="Career Site URLs" action={{ label: "Add Site", onClick: () => { setEditId(null); setForm({ name: "", url: "", enabled: true, recapture_interval_days: "4" }); setShowForm(true); } }} />
       <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
         Add each company job/careers page URL here. The background scanner checks these while the app is running.
       </p>
@@ -260,6 +271,9 @@ function CareerSitesSection() {
             <label style={labelStyle}>URL
               <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="https://company.com/careers" />
             </label>
+            <label style={labelStyle}>Reminder Interval Days
+              <input type="number" min="1" value={form.recapture_interval_days} onChange={(e) => setForm({ ...form, recapture_interval_days: e.target.value })} placeholder="4" />
+            </label>
           </div>
           <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
             <button className="btn-primary" onClick={submitForm}>{editId ? "Save" : "Add"}</button>
@@ -270,7 +284,7 @@ function CareerSitesSection() {
 
       <table style={tableStyle}>
         <thead>
-          <tr>{["Name", "URL", "Enabled", "Actions"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+          <tr>{["Name", "URL", "Last Capture", "Reminder", "Enabled", "Actions"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
         </thead>
         <tbody>
           {sites.map((s) => (
@@ -279,6 +293,8 @@ function CareerSitesSection() {
               <td style={{ ...tdStyle, maxWidth: "320px" }}>
                 <div style={{ overflowX: "auto", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: "12px" }}>{s.url}</div>
               </td>
+              <td style={tdStyle}>{s.last_captured_at?.slice(0, 10) || "—"}</td>
+              <td style={tdStyle}>{s.recapture_interval_days || 4} days</td>
               <td style={tdStyle}><Toggle checked={!!s.enabled} onChange={() => toggleEnabled(s)} /></td>
               <td style={tdStyle}>
                 <div style={{ display: "flex", gap: "6px" }}>

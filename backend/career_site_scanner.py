@@ -345,19 +345,49 @@ def _greenhouse_board_token(parsed: ParseResult) -> str | None:
     segments = [s for s in parsed.path.split("/") if s]
     if not segments:
         return None
+    generic_segments = {"embed", "job_board", "jobs", "boards"}
     if segments[0].lower() == "boards" and len(segments) > 1:
         return segments[1]
     if segments[0].lower() == "embed":
         if len(segments) > 1 and segments[1].lower() not in {"job_board", "jobs"}:
             return segments[1]
+        if len(segments) > 2 and segments[2].lower() not in generic_segments:
+            return segments[2]
         return None
     if segments[0].lower() in {"job_board", "jobs"}:
+        if len(segments) > 1 and segments[1].lower() not in generic_segments:
+            return segments[1]
         return None
+    if len(segments) > 1 and segments[1].lower() in {"job_board", "jobs"}:
+        return segments[0]
     return segments[0]
 
 
 def _has_greenhouse_board_token(site_url: str) -> bool:
     return _greenhouse_board_token(urlparse(site_url)) is not None
+
+
+def _is_greenhouse_single_job_url(parsed: ParseResult) -> bool:
+    if "greenhouse.io" not in parsed.netloc.lower():
+        return False
+    segments = [s for s in parsed.path.split("/") if s]
+    if not segments:
+        return False
+    for idx, segment in enumerate(segments):
+        if segment.lower() != "jobs":
+            continue
+        return idx < len(segments) - 1
+    return False
+
+
+def _is_unsupported_greenhouse_search_url(parsed: ParseResult) -> bool:
+    host = parsed.netloc.lower()
+    segments = [s for s in parsed.path.split("/") if s]
+    if host != "my.greenhouse.io":
+        return False
+    if not segments:
+        return False
+    return segments[0].lower() == "jobs"
 
 
 def _workday_parts(site_url: str) -> tuple[str, str] | None:
@@ -431,7 +461,16 @@ class CareerSiteScanner:
         parsed = urlparse(site_url)
         host = parsed.netloc.lower()
 
-        if "greenhouse.io" in host and _has_greenhouse_board_token(site_url):
+        if "greenhouse.io" in host and _is_greenhouse_single_job_url(parsed):
+            try:
+                return ScanOutcome(
+                    jobs=[self.scan_single_job_url(site_name, site_url)],
+                    detected_platform="greenhouse",
+                )
+            except Exception as exc:
+                self._record_failure(platform="greenhouse", stage="adapter", exc=exc)
+                logger.warning("Greenhouse single-job adapter failed for %s: %s", site_url, exc)
+        elif "greenhouse.io" in host and _has_greenhouse_board_token(site_url):
             try:
                 return ScanOutcome(
                     jobs=self._scan_greenhouse(site_name, site_url),
@@ -440,6 +479,12 @@ class CareerSiteScanner:
             except Exception as exc:
                 self._record_failure(platform="greenhouse", stage="adapter", exc=exc)
                 logger.warning("Greenhouse adapter failed for %s: %s", site_url, exc)
+        elif "greenhouse.io" in host and _is_unsupported_greenhouse_search_url(parsed):
+            raise ValueError(
+                "This MyGreenhouse search URL redirects to sign-in and is not a public job board. "
+                "Use a public Greenhouse board URL such as https://boards.greenhouse.io/<company> "
+                "or https://job-boards.greenhouse.io/<company>/jobs."
+            )
         elif "lever.co" in host:
             try:
                 return ScanOutcome(
@@ -480,6 +525,10 @@ class CareerSiteScanner:
             self._record_failure(platform="generic", stage="fallback", exc=exc)
             raise
 
+    def scan_single_job_url(self, site_name: str, job_url: str) -> CareerSiteJob:
+        page_html = _fetch_html(job_url)
+        return self._job_from_detail_page(site_name, job_url, page_html)
+
     def _scan_greenhouse(self, site_name: str, site_url: str) -> list[CareerSiteJob]:
         parsed = urlparse(site_url)
         token = _greenhouse_board_token(parsed)
@@ -512,6 +561,28 @@ class CareerSiteScanner:
                 )
             )
         return _unique_jobs(jobs)
+
+    def _job_from_detail_page(self, site_name: str, job_url: str, page_html: str) -> CareerSiteJob:
+        details = _TextParser()
+        details.feed(page_html)
+
+        page_title = _clean_text(" ".join(details.title_chunks)) or "Untitled Job"
+        page_text = _clean_text(" ".join(details.text_chunks))
+        if not page_text:
+            raise ValueError("No job text found on page")
+
+        posted_at = _extract_posted_date(page_text, details.time_datetimes)
+        confidence_level, confidence_score = _confidence_for(page_title, page_text)
+        return CareerSiteJob(
+            site_name=site_name,
+            site_url=job_url,
+            job_title=page_title[:300],
+            job_url=job_url,
+            job_text=page_text[:8000],
+            posted_at=posted_at,
+            confidence_level=confidence_level,
+            confidence_score=confidence_score,
+        )
 
     def _scan_lever(self, site_name: str, site_url: str) -> list[CareerSiteJob]:
         parsed = urlparse(site_url)

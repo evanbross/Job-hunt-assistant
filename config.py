@@ -21,10 +21,23 @@ GOOGLE_SHEETS_ID: str = os.getenv("GOOGLE_SHEETS_ID", "")
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR: Path = Path(__file__).parent
-DB_PATH: str = str(BASE_DIR / "data" / "jobhunt.db")
 CREDENTIALS_DIR: Path = BASE_DIR / "credentials"
 UPLOADS_DIR: Path = BASE_DIR / "uploads"
 FRONTEND_DIST: Path = BASE_DIR / "frontend" / "dist"
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+_pg_host: str = os.getenv("POSTGRES_HOST", "")
+_pg_port: str = os.getenv("POSTGRES_PORT", "5432")
+_pg_db: str = os.getenv("POSTGRES_DB", "")
+_pg_user: str = os.getenv("POSTGRES_USER", "")
+_pg_password: str = os.getenv("POSTGRES_PASSWORD", "")
+_pg_sslmode: str = os.getenv("POSTGRES_SSLMODE", "require")
+
+DATABASE_URL: str = os.getenv("DATABASE_URL", "") or (
+    f"postgresql://{_pg_user}:{_pg_password}@{_pg_host}:{_pg_port}/{_pg_db}?sslmode={_pg_sslmode}"
+    if _pg_host and _pg_db and _pg_user
+    else ""
+)
 RUNTIME_CONFIG_PATH: Path = BASE_DIR / "data" / "runtime_config.json"
 DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(
     os.getenv("CANDIDATE_PROFILE_PATH", str(BASE_DIR / "candidate_profile.md"))

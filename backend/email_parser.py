@@ -27,6 +27,13 @@ class ParsedJob(TypedDict):
     confidence_reason: str
 
 
+_UNKNOWN_COMPANY_VALUES = {"", "unknown", "unknown company"}
+_JOB_APPLICATION_PREFIX_RE = re.compile(
+    r"^\s*(?:job\s+application\s+for|application\s+for|job\s+posting\s+for)\s+",
+    re.IGNORECASE,
+)
+
+
 _SYSTEM_PROMPT = """\
 You are an email parser for a job application tracker. Extract ALL job postings \
 found in the email and return them as a JSON array.
@@ -143,6 +150,62 @@ class EmailParser:
                 item["confidence_score"] = max(0, min(100, int(item.get("confidence_score", 50))))
             except (TypeError, ValueError):
                 item["confidence_score"] = 50
+            _normalize_title_company(item, subject, body_snippet)
             jobs.append(item)  # type: ignore[arg-type]
 
         return jobs
+
+
+def _normalize_title_company(item: dict, subject: str, body_snippet: str = "") -> None:
+    company = str(item.get("company") or "").strip()
+    if company.lower() not in _UNKNOWN_COMPANY_VALUES:
+        return
+
+    raw_title = str(item.get("job_title") or "").strip()
+    raw_source = str(item.get("source") or "").strip()
+    for candidate in _title_company_candidates(raw_title, raw_source, subject, body_snippet):
+        parsed = _extract_title_company(candidate)
+        if not parsed:
+            continue
+        extracted_title, extracted_company = parsed
+        item["company"] = extracted_company
+        if not raw_title or raw_title == candidate:
+            item["job_title"] = extracted_title
+        elif raw_title.lower().startswith("job application for "):
+            item["job_title"] = extracted_title
+        return
+
+
+def _title_company_candidates(
+    raw_title: str,
+    raw_source: str,
+    subject: str,
+    body_snippet: str,
+) -> list[str]:
+    candidates = [raw_title, raw_source, subject.strip()]
+    for line in body_snippet.splitlines():
+        normalized_line = line.strip()
+        if len(normalized_line) <= 300:
+            candidates.append(normalized_line)
+    return candidates
+
+
+def _extract_title_company(value: str) -> tuple[str, str] | None:
+    cleaned = _JOB_APPLICATION_PREFIX_RE.sub("", value).strip()
+    if " at " not in cleaned:
+        return None
+
+    extracted_title, extracted_company = cleaned.rsplit(" at ", 1)
+    extracted_title = extracted_title.strip(" -–—\t\r\n")
+    extracted_company = _trim_company_tail(extracted_company)
+    if not extracted_title or not extracted_company:
+        return None
+    if extracted_company.lower() in _UNKNOWN_COMPANY_VALUES:
+        return None
+    return extracted_title, extracted_company
+
+
+def _trim_company_tail(value: str) -> str:
+    for delimiter in (" | ", " — ", " – "):
+        value = value.split(delimiter, 1)[0]
+    return value.strip(" -–—\t\r\n")

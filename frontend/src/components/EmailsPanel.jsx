@@ -21,6 +21,7 @@ const SKIP_REASON_LABELS = {
   rejected:       "Rejected",
   duplicate:      "Duplicate",
   req_closed:     "Req Closed",
+  not_remote:     "Not Remote",
   not_interested: "Not Interested",
   other:          "Other",
 };

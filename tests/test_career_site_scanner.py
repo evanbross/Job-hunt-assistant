@@ -7,6 +7,8 @@ from backend.career_site_scanner import (
     _detect_embedded_ashby_base_url,
     _extract_json_array_by_key,
     _greenhouse_board_token,
+    _is_greenhouse_single_job_url,
+    _is_unsupported_greenhouse_search_url,
     _normalize_date,
     _unique_jobs,
     _workday_job_url,
@@ -23,6 +25,18 @@ class CareerSiteScannerHelpersTests(unittest.TestCase):
         parsed = urlparse("https://boards.greenhouse.io/acme")
         self.assertEqual(_greenhouse_board_token(parsed), "acme")
 
+    def test_greenhouse_token_from_company_jobs_path(self):
+        parsed = urlparse("https://job-boards.greenhouse.io/acme/jobs")
+        self.assertEqual(_greenhouse_board_token(parsed), "acme")
+
+    def test_greenhouse_token_from_jobs_prefix_path(self):
+        parsed = urlparse("https://job-boards.greenhouse.io/jobs/acme")
+        self.assertEqual(_greenhouse_board_token(parsed), "acme")
+
+    def test_greenhouse_token_from_embed_jobs_path(self):
+        parsed = urlparse("https://boards.greenhouse.io/embed/jobs/acme")
+        self.assertEqual(_greenhouse_board_token(parsed), "acme")
+
     def test_greenhouse_token_absent_on_generic_embed_path(self):
         parsed = urlparse("https://boards.greenhouse.io/embed/job_board")
         self.assertIsNone(_greenhouse_board_token(parsed))
@@ -32,6 +46,20 @@ class CareerSiteScannerHelpersTests(unittest.TestCase):
             "https://my.greenhouse.io/jobs?query=software&salary=more_than_200k"
         )
         self.assertIsNone(_greenhouse_board_token(parsed))
+
+    def test_greenhouse_search_url_marked_unsupported(self):
+        parsed = urlparse(
+            "https://my.greenhouse.io/jobs?query=software&salary=more_than_200k"
+        )
+        self.assertTrue(_is_unsupported_greenhouse_search_url(parsed))
+
+    def test_greenhouse_single_job_url_is_detected(self):
+        parsed = urlparse("https://job-boards.greenhouse.io/acme/jobs/12345")
+        self.assertTrue(_is_greenhouse_single_job_url(parsed))
+
+    def test_greenhouse_board_url_is_not_single_job(self):
+        parsed = urlparse("https://job-boards.greenhouse.io/acme/jobs")
+        self.assertFalse(_is_greenhouse_single_job_url(parsed))
 
     def test_workday_parts_extract_tenant_and_slug(self):
         parts = _workday_parts("https://acme.wd5.myworkdayjobs.com/en-US/External")
@@ -98,11 +126,9 @@ class CareerSiteScannerHelpersTests(unittest.TestCase):
             "&work_type[]=remote&employment_type[]=full_time"
         )
         with patch.object(scanner, "_scan_greenhouse") as greenhouse_scan:
-            with patch.object(scanner, "_scan_generic", return_value=([], "generic")):
-                outcome = scanner.scan_site("Greenhouse", site_url)
+            with self.assertRaisesRegex(ValueError, "not a public job board"):
+                scanner.scan_site("Greenhouse", site_url)
 
-        self.assertEqual(outcome["jobs"], [])
-        self.assertEqual(outcome["detected_platform"], "generic")
         greenhouse_scan.assert_not_called()
         self.assertEqual(scanner.pop_failures(), [])
 
@@ -127,6 +153,25 @@ class CareerSiteScannerHelpersTests(unittest.TestCase):
             _detect_embedded_ashby_base_url(html),
             "https://jobs.ashbyhq.com/change",
         )
+
+    def test_scan_site_uses_single_greenhouse_job_adapter(self):
+        scanner = CareerSiteScanner()
+        expected_job = {
+            "site_name": "Acme",
+            "site_url": "https://job-boards.greenhouse.io/acme/jobs/12345",
+            "job_title": "Senior Engineer",
+            "job_url": "https://job-boards.greenhouse.io/acme/jobs/12345",
+            "job_text": "Full description",
+            "posted_at": None,
+            "confidence_level": "high",
+            "confidence_score": 88,
+        }
+        with patch.object(scanner, "scan_single_job_url", return_value=expected_job) as single_scan:
+            outcome = scanner.scan_site("Acme", "https://job-boards.greenhouse.io/acme/jobs/12345")
+
+        single_scan.assert_called_once()
+        self.assertEqual(outcome["detected_platform"], "greenhouse")
+        self.assertEqual(outcome["jobs"], [expected_job])
 
 
 if __name__ == "__main__":

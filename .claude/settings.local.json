@@ -20,7 +20,15 @@
       "Bash(\"F:/Evan-F/Projects/JobHuntAssistant/.venv/Scripts/python.exe\" -m pip install python-docx)",
       "Bash(uv --version)",
       "Bash(uv add *)",
-      "Bash(python -m unittest tests/test_career_site_scanner.py -v)"
+      "Bash(python -m unittest tests/test_career_site_scanner.py -v)",
+      "Bash(git *)",
+      "Bash(pip install *)",
+      "Bash(python -c ' *)",
+      "Bash(python -m pip install psycopg2-binary)",
+      "Bash(.venv/Scripts/python.exe --version)",
+      "Bash(.venv/Scripts/pip.exe install *)",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(uv pip *)"
     ]
   }
 }
