@@ -55,7 +55,7 @@ from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.job_board_searcher import JobBoardSearcher, url_to_email_id
 from backend.manual_job_ingest_service import ManualJobIngestService
-from backend.sheets_client import SheetsClient
+
 
 # Allow Google to return a superset of the requested OAuth scopes without
 # requests_oauthlib raising a scope-mismatch error. This happens when the
@@ -282,21 +282,21 @@ def _career_rejection_rule_match(job: dict[str, object], rules: list[dict[str, o
     return None
 
 
-def _sheet_match_for_job(
+def _db_match_for_job(
     *,
     job_title: str,
     company: str,
     job_url: str,
-    sheet_jobs: list[dict],
+    known_jobs: list[dict],
     dedup_checker: DuplicateChecker,
 ) -> tuple[str | None, str | None, str | None]:
     current_job_url = job_url.strip()
     current_ashby_job_id = _extract_ashby_job_id(current_job_url)
 
-    exact_sheet = next(
+    exact_match = next(
         (
             row
-            for row in sheet_jobs
+            for row in known_jobs
             if (row.get("url") or "").strip()
             and (
                 (row.get("url") or "").strip().lower() == current_job_url.lower()
@@ -309,21 +309,21 @@ def _sheet_match_for_job(
         ),
         None,
     )
-    if exact_sheet is not None:
-        sheet_status = (exact_sheet.get("status") or "").strip() or "Tracked"
+    if exact_match is not None:
+        tracked_status = (exact_match.get("status") or "").strip() or "Tracked"
         duplicate_hint = (
-            f"Already in your sheet as \"{exact_sheet.get('job_title') or job_title}\" "
-            f"at {exact_sheet.get('company') or company} with status \"{sheet_status}\"."
+            f"Already tracked as \"{exact_match.get('job_title') or job_title}\" "
+            f"at {exact_match.get('company') or company} with status \"{tracked_status}\"."
         )
-        return sheet_status, "google_sheet_url", duplicate_hint
+        return tracked_status, "db_url", duplicate_hint
 
-    if not company.strip() or not job_title.strip() or not sheet_jobs:
+    if not company.strip() or not job_title.strip() or not known_jobs:
         return None, None, None
 
     dup = dedup_checker.check(
         job_title=job_title,
         company=company,
-        sheet_jobs=sheet_jobs,
+        sheet_jobs=known_jobs,
     )
     if dup is None:
         return None, None, None
@@ -331,33 +331,33 @@ def _sheet_match_for_job(
     matched = next(
         (
             row
-            for row in sheet_jobs
+            for row in known_jobs
             if (row.get("company") or "") == dup["sheet_company"]
             and (row.get("job_title") or "") == dup["sheet_title"]
         ),
         None,
     )
-    sheet_status = ((matched or {}).get("status") or "Tracked").strip()
+    tracked_status = ((matched or {}).get("status") or "Tracked").strip()
     duplicate_hint = (
         f"Possible duplicate of \"{dup['sheet_title']}\" "
-        f"at {dup['sheet_company']} already in your sheet "
+        f"at {dup['sheet_company']} already tracked "
         f"(title match: {dup['title_score']}%, company match: {dup['company_score']}%)"
     )
-    return sheet_status, "google_sheet_fuzzy", duplicate_hint
+    return tracked_status, "db_fuzzy", duplicate_hint
 
 
 def _tracking_status_for_career_job(
     *,
     job: dict[str, object],
-    sheet_jobs: list[dict],
+    known_jobs: list[dict],
     jobs_repo: SQLiteJobRepository,
     dedup_checker: DuplicateChecker,
 ) -> tuple[str, str | None]:
-    sheet_status, tracking_source, _duplicate_hint = _sheet_match_for_job(
+    sheet_status, tracking_source, _duplicate_hint = _db_match_for_job(
         job_title=str(job.get("job_title") or ""),
         company=str(job.get("site_name") or ""),
         job_url=str(job.get("job_url") or ""),
-        sheet_jobs=sheet_jobs,
+        known_jobs=known_jobs,
         dedup_checker=dedup_checker,
     )
 
@@ -424,13 +424,13 @@ def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
 
 def _re_evaluate_active_queue_jobs(
     repos: dict[str, object],
-    sheet_jobs: list[dict],
 ) -> dict[str, int]:
     jobs_repo: SQLiteJobRepository = repos["jobs"]  # type: ignore[assignment]
     resume_repo: SQLiteResumeRepository = repos["resume"]  # type: ignore[assignment]
     penalties_repo: SQLitePenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
 
     queue_jobs = jobs_repo.get_by_statuses(list(_ACTIVE_QUEUE_STATUSES))
+    known_jobs = jobs_repo.get_all_ordered()
     resume_row = resume_repo.get_latest()
     resume_text: str = resume_row["content"] if resume_row else ""
     penalty_rules: list[dict] = penalties_repo.get_enabled()
@@ -440,7 +440,7 @@ def _re_evaluate_active_queue_jobs(
 
     rescored = 0
     failed = 0
-    sheet_matches = 0
+    db_matches = 0
     status_changed = 0
 
     for job in queue_jobs:
@@ -448,17 +448,17 @@ def _re_evaluate_active_queue_jobs(
         updates: dict[str, object] = {}
         score: int | None = None
 
-        sheet_status, _tracking_source, duplicate_hint = _sheet_match_for_job(
+        tracked_status, _tracking_source, duplicate_hint = _db_match_for_job(
             job_title=str(job.get("job_title") or ""),
             company=str(job.get("company") or ""),
             job_url=str(job.get("url") or ""),
-            sheet_jobs=sheet_jobs,
+            known_jobs=known_jobs,
             dedup_checker=dedup_checker,
         )
         if duplicate_hint:
             updates["duplicate_hint"] = duplicate_hint
             updates["status"] = "possible_duplicate"
-            sheet_matches += 1
+            db_matches += 1
         else:
             updates["duplicate_hint"] = None
 
@@ -493,7 +493,7 @@ def _re_evaluate_active_queue_jobs(
             except (TypeError, ValueError):
                 score_for_status = None
 
-        if sheet_status is None and score_for_status is not None:
+        if tracked_status is None and score_for_status is not None:
             updates["status"] = "pending_review" if score_for_status >= 70 else "triage"
 
         if updates.get("status") and updates["status"] != previous_status:
@@ -505,14 +505,13 @@ def _re_evaluate_active_queue_jobs(
         "evaluated": len(queue_jobs),
         "rescored": rescored,
         "failed": failed,
-        "sheet_matches": sheet_matches,
+        "db_matches": db_matches,
         "status_changed": status_changed,
     }
 
 
 def _re_evaluate_career_scan_results(
     repos: dict[str, object],
-    sheet_jobs: list[dict],
 ) -> dict[str, int]:
     jobs_repo: SQLiteJobRepository = repos["jobs"]  # type: ignore[assignment]
     resume_repo: SQLiteResumeRepository = repos["resume"]  # type: ignore[assignment]
@@ -520,6 +519,7 @@ def _re_evaluate_career_scan_results(
     results_repo: SQLiteCareerScanResultRepository = repos["career_scan_results"]  # type: ignore[assignment]
     rejection_rules_repo: SQLiteCareerRejectionRuleRepository = repos["career_rejection_rules"]  # type: ignore[assignment]
 
+    known_jobs = jobs_repo.get_all_ordered()
     rows = results_repo.get_all()
     resume_row = resume_repo.get_latest()
     resume_text: str = resume_row["content"] if resume_row else ""
@@ -531,7 +531,7 @@ def _re_evaluate_career_scan_results(
 
     rescored = 0
     failed = 0
-    sheet_matches = 0
+    db_matches = 0
     rejected_by_rule = 0
 
     for row in rows:
@@ -544,14 +544,14 @@ def _re_evaluate_career_scan_results(
         else:
             tracking_status, tracking_source = _tracking_status_for_career_job(
                 job=row,
-                sheet_jobs=sheet_jobs,
+                known_jobs=known_jobs,
                 jobs_repo=jobs_repo,
                 dedup_checker=dedup_checker,
             )
             rejection_reason = None
             rejection_source = None
-            if tracking_source in {"google_sheet_url", "google_sheet_fuzzy"}:
-                sheet_matches += 1
+            if tracking_source in {"db_url", "db_fuzzy"}:
+                db_matches += 1
 
             matched_rejection_rule = _career_rejection_rule_match(row, rejection_rules)
             if matched_rejection_rule is not None:
@@ -594,7 +594,7 @@ def _re_evaluate_career_scan_results(
         "evaluated": len(rows),
         "rescored": rescored,
         "failed": failed,
-        "sheet_matches": sheet_matches,
+        "db_matches": db_matches,
         "rejected_by_rule": rejected_by_rule,
     }
 
@@ -747,14 +747,8 @@ def _run_scan(rescan_all: bool = False) -> None:
         penalty_rules = penalty_repo.get_enabled()
         fit_feedback = job_repo.get_not_a_fit_with_feedback()
 
-        # Fetch existing sheet rows once for duplicate detection.
-        # Failures here are non-fatal — we just skip duplicate checking.
-        sheet_jobs: list[dict] = []
-        try:
-            sheet_jobs = SheetsClient().read_jobs()
-            logger.info("Loaded %d existing jobs from sheet for duplicate detection", len(sheet_jobs))
-        except Exception as exc:
-            logger.warning("Could not load sheet jobs for duplicate check: %s", exc)
+        # Load all known jobs once for duplicate detection.
+        known_jobs: list[dict] = job_repo.get_all_ordered()
 
         for idx, msg_stub in enumerate(messages):
             msg_id = msg_stub["id"]
@@ -828,18 +822,18 @@ def _run_scan(rescan_all: bool = False) -> None:
                 if feedback and feedback["is_relevant"] == 1:
                     confidence = "high"
 
-                # Check for fuzzy duplicate against already-tracked sheet entries
+                # Check for fuzzy duplicate against already-tracked jobs
                 duplicate_hint: str | None = None
-                if sheet_jobs and parsed.get("company") and parsed.get("job_title"):
+                if known_jobs and parsed.get("company") and parsed.get("job_title"):
                     dup_match = dup_checker.check(
                         job_title=parsed["job_title"],
                         company=parsed["company"],
-                        sheet_jobs=sheet_jobs,
+                        sheet_jobs=known_jobs,
                     )
                     if dup_match:
                         duplicate_hint = (
                             f"Possible duplicate of \"{dup_match['sheet_title']}\" "
-                            f"at {dup_match['sheet_company']} already in your sheet "
+                            f"at {dup_match['sheet_company']} already tracked "
                             f"(title match: {dup_match['title_score']}%, "
                             f"company match: {dup_match['company_score']}%)"
                         )
@@ -996,22 +990,7 @@ def _run_board_search() -> None:
         dup_checker = DuplicateChecker()
 
         # ── 3. Load known jobs for duplicate detection ────────────────────────
-        sheet_jobs: list[dict] = []
-        try:
-            sheet_jobs = SheetsClient().read_jobs()
-        except Exception as exc:
-            logger.warning("Could not load sheet jobs for dedup: %s", exc)
-
-        all_statuses = [
-            "pending_review", "triage", "possible_duplicate",
-            "added_to_sheet", "skipped",
-        ]
-        db_jobs_for_dedup: list[dict] = [
-            {"company": j["company"], "job_title": j["job_title"]}
-            for j in job_repo.get_by_statuses(all_statuses)
-            if j.get("company") or j.get("job_title")
-        ]
-        all_known_jobs = sheet_jobs + db_jobs_for_dedup
+        all_known_jobs: list[dict] = job_repo.get_all_ordered()
 
         _update_board(progress=20, message="Fetching job listings from boards…")
 
@@ -1214,11 +1193,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
             return
         scanner = CareerSiteScanner()
         dedup_checker = DuplicateChecker()
-        try:
-            sheet_jobs: list[dict] = SheetsClient().read_jobs()
-        except Exception as exc:
-            logger.warning("Could not load sheet jobs for career tracking: %s", exc)
-            sheet_jobs = []
+        known_jobs: list[dict] = jobs_repo.get_all_ordered()
 
         scanned_sites = 0
         jobs_found_total = 0
@@ -1297,10 +1272,10 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 current_job_url = (job.get("job_url") or "").strip()
                 current_ashby_job_id = _extract_ashby_job_id(current_job_url)
 
-                exact_sheet = next(
+                exact_match = next(
                     (
                         row
-                        for row in sheet_jobs
+                        for row in known_jobs
                         if (row.get("url") or "").strip()
                         and (
                             (row.get("url") or "").strip().lower() == current_job_url.lower()
@@ -1313,31 +1288,31 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     ),
                     None,
                 )
-                if exact_sheet is not None:
-                    sheet_status = (exact_sheet.get("status") or "").strip() or "Tracked"
-                    tracking_source = "google_sheet_url"
+                if exact_match is not None:
+                    sheet_status = (exact_match.get("status") or "").strip() or "Tracked"
+                    tracking_source = "db_url"
                 elif (
                     (job.get("site_name") or "").strip()
                     and (job.get("job_title") or "").strip()
-                    and sheet_jobs
+                    and known_jobs
                 ):
                     dup = dedup_checker.check(
                         job_title=job["job_title"],
                         company=job["site_name"],
-                        sheet_jobs=sheet_jobs,
+                        sheet_jobs=known_jobs,
                     )
                     if dup is not None:
                         matched = next(
                             (
                                 row
-                                for row in sheet_jobs
+                                for row in known_jobs
                                 if (row.get("company") or "") == dup["sheet_company"]
                                 and (row.get("job_title") or "") == dup["sheet_title"]
                             ),
                             None,
                         )
                         sheet_status = ((matched or {}).get("status") or "Tracked").strip()
-                        tracking_source = "google_sheet_fuzzy"
+                        tracking_source = "db_fuzzy"
 
                 local_job = (
                     jobs_repo.get_by_url(job["job_url"])
@@ -1580,6 +1555,142 @@ def auth_disconnect():
     return jsonify({"status": "disconnected"})
 
 
+_TRACKING_COLUMNS: list[dict] = [
+    {"index": 0, "label": "Company",   "hidden": False},
+    {"index": 1, "label": "Status",    "hidden": False},
+    {"index": 2, "label": "Source",    "hidden": False},
+    {"index": 3, "label": "Date",      "hidden": False},
+    {"index": 4, "label": "Job Title", "hidden": False},  # index 4 relied on by frontend
+    {"index": 5, "label": "URL",       "hidden": False},
+    {"index": 6, "label": "Notes",     "hidden": False},
+]
+
+
+def _tracking_payload() -> dict[str, str]:
+    data = request.get_json(silent=True) or {}
+    return {
+        "company":   str(data.get("company")   or "").strip(),
+        "status":    str(data.get("status")    or "").strip(),
+        "source":    str(data.get("source")    or "").strip(),
+        "date":      str(data.get("date")      or "").strip(),
+        "job_title": str(data.get("job_title") or "").strip(),
+        "url":       str(data.get("url")       or "").strip(),
+        "notes":     str(data.get("notes")     or "").strip(),
+    }
+
+
+@app.route("/api/sheet/applications")
+def get_application_sheet():
+    """Return all tracked job applications as a grid for the Sheet panel."""
+    repos = _get_repos()
+    try:
+        jobs = repos["jobs"].get_all_ordered()
+    finally:
+        repos["conn"].close()
+
+    def _make_row(job: dict) -> dict:
+        values = [
+            job.get("company") or "",
+            job.get("status") or "",
+            job.get("source") or "",
+            job.get("date_added_to_sheet") or "",
+            job.get("job_title") or "",
+            job.get("url") or "",
+            job.get("notes") or "",
+        ]
+        return {
+            "row_number": job["id"],
+            "cells": [{"column_index": i, "value": v} for i, v in enumerate(values)],
+        }
+
+    return jsonify({
+        "sheet_name": "Applications",
+        "columns": _TRACKING_COLUMNS,
+        "rows": [_make_row(j) for j in jobs],
+    })
+
+
+@app.route("/api/sheet/applications", methods=["POST"])
+def add_application_sheet_row():
+    """Insert a new job application row into the database."""
+    row = _tracking_payload()
+    if not row["company"] and not row["job_title"]:
+        return jsonify({"error": "company or job_title is required"}), 400
+    job_data: dict = {
+        k: v for k, v in {
+            "company":             row["company"] or None,
+            "status":              row["status"] or None,
+            "source":              row["source"] or None,
+            "date_added_to_sheet": row["date"] or datetime.now(UTC).date().isoformat(),
+            "job_title":           row["job_title"] or None,
+            "url":                 row["url"] or None,
+            "notes":               row["notes"] or None,
+        }.items() if v is not None
+    }
+    repos = _get_repos()
+    try:
+        repos["jobs"].insert(job_data)
+    except Exception as exc:
+        logger.warning("Error inserting tracking row: %s", exc)
+        return jsonify({"error": "Failed to save application"}), 500
+    finally:
+        repos["conn"].close()
+    return jsonify({"status": "ok"}), 201
+
+
+@app.route("/api/sheet/applications/<int:job_id>", methods=["PUT"])
+def update_application_sheet_row(job_id: int):
+    """Update an existing job application row in the database."""
+    row = _tracking_payload()
+    if not row["company"] and not row["job_title"]:
+        return jsonify({"error": "company or job_title is required"}), 400
+    fields: dict = {
+        k: v for k, v in {
+            "company":             row["company"] or None,
+            "status":              row["status"] or None,
+            "source":              row["source"] or None,
+            "date_added_to_sheet": row["date"] or None,
+            "job_title":           row["job_title"] or None,
+            "url":                 row["url"] or None,
+            "notes":               row["notes"] or None,
+        }.items() if v is not None
+    }
+    if not fields:
+        return jsonify({"error": "No fields to update"}), 400
+    repos = _get_repos()
+    try:
+        repos["jobs"].update(job_id, fields)
+    except Exception as exc:
+        logger.warning("Error updating tracking row %s: %s", job_id, exc)
+        return jsonify({"error": "Failed to update application"}), 500
+    finally:
+        repos["conn"].close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/sheet/applications/<int:job_id>/stages", methods=["POST"])
+def add_application_sheet_stage(job_id: int):
+    """Add a stage entry and update the job status."""
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status") or "").strip()
+    stage_date = str(data.get("date") or "").strip()
+    notes = str(data.get("notes") or "").strip()
+    if not status:
+        return jsonify({"error": "status is required"}), 400
+    if not stage_date:
+        return jsonify({"error": "date is required"}), 400
+    repos = _get_repos()
+    try:
+        repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
+        repos["jobs"].update(job_id, {"status": status})
+    except Exception as exc:
+        logger.warning("Error adding stage for job %s: %s", job_id, exc)
+        return jsonify({"error": "Failed to save stage"}), 500
+    finally:
+        repos["conn"].close()
+    return jsonify({"status": "ok"}), 201
+
+
 # ─── Scan routes ──────────────────────────────────────────────────────────────
 
 @app.route("/api/scan", methods=["POST"])
@@ -1818,11 +1929,7 @@ def clear_career_scan_results():
 def re_evaluate_career_scan_results():
     repos = _get_repos()
     try:
-        sheet_jobs = SheetsClient().read_jobs()
-        summary = _re_evaluate_career_scan_results(repos, sheet_jobs)
-    except NotAuthenticatedError as exc:
-        repos["conn"].close()
-        return jsonify({"error": str(exc)}), 401
+        summary = _re_evaluate_career_scan_results(repos)
     except Exception as exc:
         repos["conn"].close()
         logger.warning("Career-site re-evaluation failed: %s", exc)
@@ -1981,14 +2088,7 @@ def create_manual_job():
         repos["conn"].close()
         return jsonify({"error": "Job listing text or a public job URL is required."}), 400
 
-    sheet_jobs: list[dict] = []
-    try:
-        sheet_jobs = SheetsClient().read_jobs()
-    except NotAuthenticatedError:
-        sheet_jobs = []
-    except Exception as exc:
-        logger.warning("Manual job ingest could not load sheet jobs: %s", exc)
-
+    known_jobs: list[dict] = repos["jobs"].get_all_ordered()
     service = ManualJobIngestService(
         repos["jobs"],
         repos["resume"],
@@ -2002,7 +2102,7 @@ def create_manual_job():
             source_name=source_name,
             company_override=company_override,
             job_title_override=job_title_override,
-            sheet_jobs=sheet_jobs,
+            sheet_jobs=known_jobs,
         )
     except ValueError as exc:
         repos["conn"].close()
@@ -2216,14 +2316,7 @@ def import_and_queue_all_jobs():
         repos["conn"].close()
         return jsonify(payload), status_code
 
-    sheet_jobs: list[dict] = []
-    try:
-        sheet_jobs = SheetsClient().read_jobs()
-    except NotAuthenticatedError:
-        sheet_jobs = []
-    except Exception as exc:
-        logger.warning("Bulk import could not load sheet jobs: %s", exc)
-
+    known_jobs: list[dict] = repos["jobs"].get_all_ordered()
     service = ManualJobIngestService(repos["jobs"], repos["resume"], repos["penalties"])
 
     queued_jobs: list[dict] = []
@@ -2243,7 +2336,7 @@ def import_and_queue_all_jobs():
                 "",
                 source_url=url,
                 source_name=platform,
-                sheet_jobs=sheet_jobs,
+                sheet_jobs=known_jobs,
             )
             queued_jobs.append(result.job)
         except (ValueError, urllib.error.URLError, TimeoutError, socket.error) as exc:
@@ -2275,11 +2368,7 @@ def import_and_queue_all_jobs():
 def re_evaluate_queue_jobs():
     repos = _get_repos()
     try:
-        sheet_jobs = SheetsClient().read_jobs()
-        summary = _re_evaluate_active_queue_jobs(repos, sheet_jobs)
-    except NotAuthenticatedError as exc:
-        repos["conn"].close()
-        return jsonify({"error": str(exc)}), 401
+        summary = _re_evaluate_active_queue_jobs(repos)
     except Exception as exc:
         repos["conn"].close()
         logger.warning("Queue re-evaluation failed: %s", exc)
@@ -2307,34 +2396,18 @@ def get_history_jobs():
 
 
 @app.route("/api/jobs/<int:job_id>/add-to-sheet", methods=["POST"])
-def add_job_to_sheet(job_id: int):
+@app.route("/api/jobs/<int:job_id>/approve", methods=["POST"])
+def approve_job(job_id: int):
     repos = _get_repos()
     job = repos["jobs"].get_by_id(job_id)
     if not job:
         repos["conn"].close()
         return jsonify({"error": "Job not found"}), 404
 
-    try:
-        sheets = SheetsClient()
-        sheets.append_job(
-            company=job.get("company", ""),
-            source=job.get("source", ""),
-            job_title=job.get("job_title", ""),
-            url=job.get("url", ""),
-        )
-    except NotAuthenticatedError as exc:
-        repos["conn"].close()
-        return jsonify({"error": str(exc)}), 401
-    except Exception as exc:
-        repos["conn"].close()
-        logger.error("Sheets append error: %s", exc)
-        return jsonify({"error": str(exc)}), 500
-
     today = date.today().isoformat()
     repos["jobs"].update(
         job_id, {"status": "added_to_sheet", "date_added_to_sheet": today}
     )
-    # Record the "applied" stage automatically
     repos["stages"].insert({"job_id": job_id, "status": "applied", "date": today, "notes": None})
     _maybe_mark_source_email_read(job, repos["jobs"])
     repos["conn"].close()

@@ -23,9 +23,9 @@ const MISMATCH_REASONS = [
   "Other Mismatch",
 ];
 
-export default function JobCard({ job, onAddToSheet, onSkip }) {
+export default function JobCard({ job, onApprove, onSkip }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
-  const [loading, setLoading] = useState(null); // "sheet" | "skip:<reason>" | "cover" | null
+  const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
   // skipConfirm: null | { key, label } — the selected reason awaiting confirmation
   const [skipConfirm, setSkipConfirm] = useState(null);
@@ -64,10 +64,10 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
       ? "badge-yellow"
       : "badge-red";
 
-  const handleAddToSheet = async () => {
-    setLoading("sheet");
+  const handleApprove = async () => {
+    setLoading("approve");
     try {
-      await onAddToSheet(job.id);
+      await onApprove(job.id);
     } finally {
       setLoading(null);
     }
@@ -297,10 +297,10 @@ export default function JobCard({ job, onAddToSheet, onSkip }) {
         </button>
         <button
           className="btn-success"
-          onClick={handleAddToSheet}
+          onClick={handleApprove}
           disabled={busy}
         >
-          {loading === "sheet" ? "Applying…" : "Applied"}
+          {loading === "approve" ? "Applying…" : "Applied"}
         </button>
 
         {/* Skip with reason picker */}

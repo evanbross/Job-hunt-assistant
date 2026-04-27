@@ -497,7 +497,7 @@ export default function CareerSiteResultsPanel() {
           <p style={{ fontSize: "13px", color: "var(--green)" }}>
             Re-evaluated {reEvaluateSummary.evaluated ?? 0} career-site job{reEvaluateSummary.evaluated === 1 ? "" : "s"}.
             {" "}{reEvaluateSummary.rescored ?? 0} rescored
-            {reEvaluateSummary.sheet_matches ? ` · ${reEvaluateSummary.sheet_matches} sheet match${reEvaluateSummary.sheet_matches === 1 ? "" : "es"}` : ""}
+            {reEvaluateSummary.db_matches ? ` · ${reEvaluateSummary.db_matches} duplicate${reEvaluateSummary.db_matches === 1 ? "" : "s"} flagged` : ""}
             {reEvaluateSummary.rejected_by_rule ? ` · ${reEvaluateSummary.rejected_by_rule} rule rejection${reEvaluateSummary.rejected_by_rule === 1 ? "" : "s"}` : ""}
             {reEvaluateSummary.failed ? ` · ${reEvaluateSummary.failed} failed` : ""}
           </p>

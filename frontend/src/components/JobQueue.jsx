@@ -130,11 +130,11 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     );
   };
 
-  const handleAddToSheet = async (jobId) => {
-    const res = await fetch(`/api/jobs/${jobId}/add-to-sheet`, { method: "POST" });
+  const handleApprove = async (jobId) => {
+    const res = await fetch(`/api/jobs/${jobId}/approve`, { method: "POST" });
     if (!res.ok) {
       const err = await res.json();
-      alert(err.error || "Failed to add to sheet");
+      alert(err.error || "Failed to approve job");
       return;
     }
     setJobs((prev) => prev.filter((j) => j.id !== jobId));
@@ -162,11 +162,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   };
 
   const handleReEvaluate = async () => {
-    if (!isAuthenticated) {
-      alert("Connect your Google account first (top banner).");
-      return;
-    }
-
     setReEvaluating(true);
     setReEvaluateSummary(null);
     const res = await fetch("/api/jobs/re-evaluate", { method: "POST" });
@@ -627,7 +622,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           <p style={{ fontSize: "13px", color: "var(--green)" }}>
             Re-evaluated {reEvaluateSummary.evaluated ?? 0} active job{reEvaluateSummary.evaluated === 1 ? "" : "s"}.
             {" "}{reEvaluateSummary.rescored ?? 0} rescored
-            {reEvaluateSummary.sheet_matches ? ` · ${reEvaluateSummary.sheet_matches} sheet match${reEvaluateSummary.sheet_matches === 1 ? "" : "es"}` : ""}
+            {reEvaluateSummary.db_matches ? ` · ${reEvaluateSummary.db_matches} duplicate${reEvaluateSummary.db_matches === 1 ? "" : "s"} flagged` : ""}
             {reEvaluateSummary.status_changed ? ` · ${reEvaluateSummary.status_changed} moved` : ""}
             {reEvaluateSummary.failed ? ` · ${reEvaluateSummary.failed} failed` : ""}
           </p>
@@ -678,7 +673,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           <JobCard
             key={job.id}
             job={job}
-            onAddToSheet={handleAddToSheet}
+            onApprove={handleApprove}
             onSkip={handleSkip}
           />
         ))

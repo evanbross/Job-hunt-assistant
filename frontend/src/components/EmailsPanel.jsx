@@ -13,7 +13,7 @@ const JOB_STATUS_INFO = {
   pending_review:     { label: "Pending review",    cls: "badge-yellow" },
   triage:             { label: "Triage",             cls: "badge-gray" },
   possible_duplicate: { label: "Possible duplicate", cls: "badge-gray" },
-  added_to_sheet:     { label: "Added to sheet",    cls: "badge-green" },
+  added_to_sheet:     { label: "Applied",            cls: "badge-green" },
   skipped:            { label: "Skipped",            cls: "badge-gray" },
 };
 

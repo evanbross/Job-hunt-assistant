@@ -4,3 +4,4 @@
 @../Dev-Standards/REACT_STANDARDS.md
 @../Dev-Standards/TESTING_STANDARDS.md
 @../Dev-Standards/INFRASTRUCTURE_STANDARDS.md
+@../Dev-Standards/GOOGLE_CODING_STANDARDS.md

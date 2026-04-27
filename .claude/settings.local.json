@@ -28,7 +28,9 @@
       "Bash(.venv/Scripts/python.exe --version)",
       "Bash(.venv/Scripts/pip.exe install *)",
       "Bash(.venv/Scripts/python.exe -c \"import sys; print\\(sys.executable\\)\")",
-      "Bash(uv pip *)"
+      "Bash(uv pip *)",
+      "Bash(python migrate_sheet_csv.py)",
+      "Bash(python -c \"import app\")"
     ]
   }
 }

@@ -12,6 +12,7 @@ making any changes.
 - `../Dev-Standards/TESTING_STANDARDS.md`
 - `../Dev-Standards/INFRASTRUCTURE_STANDARDS.md`
 - `../Dev-Standards/CODEX_CODING_STANDARDS.md`
+- `../Dev-Standards/GOOGLE_CODING_STANDARDS.md`
 
 ---
 

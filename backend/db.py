@@ -186,6 +186,7 @@ class PostgresJobRepository(_BaseRepo):
         "skip_reason",
         "skip_feedback",
         "skip_mismatch_reasons",
+        "notes",
     })
 
     def get_all_by_status(self, status: str) -> list[dict[str, Any]]:
@@ -243,6 +244,12 @@ class PostgresJobRepository(_BaseRepo):
                ORDER BY id DESC
                LIMIT %s""",
             (limit,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_all_ordered(self) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM jobs ORDER BY date_added_to_sheet DESC NULLS LAST, id DESC"
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
@@ -1039,6 +1046,7 @@ def _migrate(conn: Any) -> None:
         ("skip_reason", "TEXT"),
         ("skip_feedback", "TEXT"),
         ("skip_mismatch_reasons", "TEXT"),
+        ("notes", "TEXT"),
     ]:
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {defn}")
 

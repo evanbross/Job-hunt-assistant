@@ -8,6 +8,7 @@ credentials/token.json
 # Database
 data/jobhunt.db
 data/runtime_config.json
+server.log
 
 # Uploaded files
 uploads/*.pdf
@@ -36,3 +37,6 @@ Thumbs.db
 /data/xjobhunt.db
 /data/xjob_hunt.db
 /data/jobhunt.before-company-backfill.20260425-162259.db
+/Job Hunt 2026 - Sheet1.csv
+/Status Colors.jpg
+/migrate_sheet_csv.py

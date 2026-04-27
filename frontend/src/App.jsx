@@ -4,9 +4,10 @@ import TriagePanel from "./components/TriagePanel.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import EmailsPanel from "./components/EmailsPanel.jsx";
 import HistoryPanel from "./components/HistoryPanel.jsx";
+import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
 import CareerSiteResultsPanel from "./components/CareerSiteResultsPanel.jsx";
 
-const TABS = ["Job Queue", "Triage", "History", "Emails", "Career Sites", "Settings"];
+const TABS = ["Job Queue", "Triage", "History", "Tracki0ng", "Emails", "Career Sites", "Settings"];
 
 const styles = {
   app: {
@@ -261,15 +262,16 @@ export default function App() {
           <TriagePanel onCountChange={setTriageCount} />
         )}
         {activeTab === 2 && <HistoryPanel />}
-        {activeTab === 3 && (
+        {activeTab === 3 && <ApplicationSheetPanel />}
+        {activeTab === 4 && (
           <EmailsPanel
             isAuthenticated={authStatus === true}
             onTriageCountChange={setTriageCount}
             focusEmailId={emailFocusId}
           />
         )}
-        {activeTab === 4 && <CareerSiteResultsPanel />}
-        {activeTab === 5 && <SettingsPanel />}
+        {activeTab === 5 && <CareerSiteResultsPanel />}
+        {activeTab === 6 && <SettingsPanel />}
       </main>
     </div>
   );
