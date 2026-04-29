@@ -401,6 +401,15 @@ def _has_greenhouse_board_token(site_url: str) -> bool:
     return _greenhouse_board_token(urlparse(site_url)) is not None
 
 
+def _greenhouse_single_job_parts(path: str) -> tuple[str, str] | None:
+    """Return (board_token, job_id) from a Greenhouse single-job URL path."""
+    segments = [s for s in path.split("/") if s]
+    for idx, segment in enumerate(segments):
+        if segment.lower() == "jobs" and idx > 0 and idx < len(segments) - 1:
+            return segments[idx - 1], segments[idx + 1]
+    return None
+
+
 def _is_greenhouse_single_job_url(parsed: ParseResult) -> bool:
     if "greenhouse.io" not in parsed.netloc.lower():
         return False
@@ -560,8 +569,40 @@ class CareerSiteScanner:
             raise
 
     def scan_single_job_url(self, site_name: str, job_url: str) -> CareerSiteJob:
+        parsed = urlparse(job_url)
+        if "greenhouse.io" in parsed.netloc.lower() and _is_greenhouse_single_job_url(parsed):
+            try:
+                return self._greenhouse_single_job_from_api(site_name, job_url, parsed)
+            except Exception as exc:
+                logger.debug("Greenhouse API failed for %s, falling back to HTML: %s", job_url, exc)
         page_html = _fetch_html(job_url)
         return self._job_from_detail_page(site_name, job_url, page_html)
+
+    def _greenhouse_single_job_from_api(
+        self, site_name: str, job_url: str, parsed: ParseResult
+    ) -> CareerSiteJob:
+        parts = _greenhouse_single_job_parts(parsed.path)
+        if not parts:
+            raise ValueError(f"Cannot extract board token/job ID from {job_url}")
+        token, job_id = parts
+        data = _fetch_json(
+            f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{job_id}"
+        )
+        title = _clean_text(data.get("title", "")) or "Untitled Job"
+        content = _clean_text(data.get("content", ""))
+        location = _clean_text((data.get("location") or {}).get("name", ""))
+        text = f"Location: {location}. {content}" if location else content
+        confidence_level, confidence_score = _confidence_for(title, text)
+        return CareerSiteJob(
+            site_name=site_name,
+            site_url=job_url,
+            job_title=title[:300],
+            job_url=job_url,
+            job_text=text[:8000],
+            posted_at=_normalize_date(data.get("updated_at") or data.get("created_at")),
+            confidence_level=confidence_level,
+            confidence_score=confidence_score,
+        )
 
     def _scan_greenhouse(self, site_name: str, site_url: str) -> list[CareerSiteJob]:
         parsed = urlparse(site_url)

@@ -383,6 +383,7 @@ class PostgresPenaltyRuleRepository(_BaseRepo):
         "rule_text",
         "penalty_points",
         "enabled",
+        "scope",
     })
 
     def get_all(self) -> list[dict[str, Any]]:

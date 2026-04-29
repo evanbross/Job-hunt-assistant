@@ -46,6 +46,7 @@ export default function TriagePanel({ onCountChange }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState("date_desc");
+  const [reEvaluatePopup, setReEvaluatePopup] = useState(null);
 
   const fetchTriage = async () => {
     try {
@@ -118,22 +119,91 @@ export default function TriagePanel({ onCountChange }) {
     }
   };
 
+  const handleRefreshFromUrl = async (job) => {
+    setReEvaluatePopup({
+      action: "Re-fetch",
+      runningText: "Fetching job details and scoring…",
+      company: job.company || "",
+      jobTitle: job.job_title || "",
+      phase: "running",
+      previousScore: job.fit_score,
+    });
+
+    const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setReEvaluatePopup({
+        action: "Re-fetch",
+        company: job.company || "",
+        error: data.error || "Failed to re-fetch job",
+        jobTitle: job.job_title || "",
+        phase: "error",
+        previousScore: job.fit_score,
+      });
+      throw new Error(data.error || "Failed to re-fetch job");
+    }
+
+    setReEvaluatePopup({
+      action: "Re-fetch",
+      company: data.company || job.company || "",
+      jobTitle: data.job_title || job.job_title || "",
+      newScore: data.fit_score,
+      phase: "done",
+      previousScore: job.fit_score,
+      status: data.status,
+    });
+
+    const triageStatuses = new Set(["triage", "possible_duplicate"]);
+    if (triageStatuses.has(data.status)) {
+      setJobs((prev) => prev.map((j) => (j.id === data.id ? data : j)));
+    } else {
+      const remaining = jobs.filter((j) => j.id !== job.id);
+      setJobs(remaining);
+      onCountChange(remaining.length);
+    }
+  };
+
   const handleReEvaluateFit = async (job) => {
+    setReEvaluatePopup({
+      company: job.company || "",
+      jobTitle: job.job_title || "",
+      phase: "running",
+      previousScore: job.fit_score,
+    });
+
     const res = await fetch(`/api/jobs/${job.id}/re-evaluate-fit`, { method: "POST" });
     const data = await res.json();
 
     if (!res.ok) {
+      setReEvaluatePopup({
+        company: job.company || "",
+        error: data.error || "Failed to re-evaluate fit",
+        jobTitle: job.job_title || "",
+        phase: "error",
+        previousScore: job.fit_score,
+      });
       throw new Error(data.error || "Failed to re-evaluate fit");
     }
 
+    setReEvaluatePopup({
+      company: data.company || job.company || "",
+      jobTitle: data.job_title || job.job_title || "",
+      newScore: data.fit_score,
+      phase: "done",
+      previousScore: job.fit_score,
+      status: data.status,
+    });
+
     if (data.status === "triage") {
       setJobs((prev) => prev.map((j) => (j.id === data.id ? data : j)));
-      return;
+      return data;
     }
 
     const updated = jobs.filter((j) => j.id !== job.id);
     setJobs(updated);
     onCountChange(updated.length);
+    return data;
   };
 
   if (loading) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
@@ -186,6 +256,13 @@ export default function TriagePanel({ onCountChange }) {
         </div>
       </div>
 
+      {reEvaluatePopup && (
+        <ReEvaluatePopup
+          popup={reEvaluatePopup}
+          onClose={() => setReEvaluatePopup(null)}
+        />
+      )}
+
       {sortedJobs.map((job) =>
         job.status === "possible_duplicate" ? (
           <DuplicateCard
@@ -202,6 +279,7 @@ export default function TriagePanel({ onCountChange }) {
             onApprove={() => handleApprove(job)}
             onReject={() => handleReject(job)}
             onReEvaluate={() => handleReEvaluateFit(job)}
+            onRefreshFromUrl={() => handleRefreshFromUrl(job)}
             onReprocessed={(updated) =>
               setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)))
             }
@@ -306,7 +384,7 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique }) {
   );
 }
 
-function TriageCard({ job, onApprove, onReject, onReEvaluate, onReprocessed }) {
+function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, onReprocessed }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [reprocessError, setReprocessError] = useState(null);
   const [reEvaluateError, setReEvaluateError] = useState(null);
@@ -318,6 +396,7 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onReprocessed }) {
   const [chatSending, setChatSending] = useState(false);
   const chatMessagesRef = useRef(null);
   const triageReasoning = triageReasoningForJob(job);
+  const penaltiesApplied = penaltiesAppliedForJob(job);
   const salaryRange = salaryRangeForJob(job);
 
   useEffect(() => {
@@ -358,6 +437,18 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onReprocessed }) {
       } else {
         onReprocessed(data);
       }
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const handleRefreshFromUrl = async () => {
+    setLoadingAction("refresh");
+    setReprocessError(null);
+    try {
+      await onRefreshFromUrl();
+    } catch (err) {
+      setReprocessError(err.message || "Re-fetch failed");
     } finally {
       setLoadingAction(null);
     }
@@ -430,22 +521,42 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onReprocessed }) {
             onClick={handleReEvaluateClick}
             disabled={loadingAction !== null}
           >
-            {loadingAction === "reevaluate" ? "Re-evaluating..." : "Re-evaluate Fit"}
+            {loadingAction === "reevaluate" ? (
+              <span style={buttonSpinnerContentStyle}>
+                <span className="inline-spinner" />
+                Re-evaluating...
+              </span>
+            ) : (
+              "Re-evaluate Fit"
+            )}
           </button>
         </div>
       </div>
 
-      {job.confidence_score == null && (
-        <div style={{ marginBottom: "10px" }}>
-          <button
-            className="btn-secondary"
-            style={{ fontSize: "11px", padding: "2px 8px" }}
-            type="button"
-            onClick={handleReprocess}
-            disabled={loadingAction !== null}
-          >
-            {loadingAction === "reprocess" ? "Reprocessing..." : "Reprocess parser details"}
-          </button>
+      {(job.confidence_score == null || job.url) && (
+        <div style={{ display: "flex", gap: "6px", marginBottom: "10px", flexWrap: "wrap" }}>
+          {job.confidence_score == null && (
+            <button
+              className="btn-secondary"
+              style={{ fontSize: "11px", padding: "2px 8px" }}
+              type="button"
+              onClick={handleReprocess}
+              disabled={loadingAction !== null}
+            >
+              {loadingAction === "reprocess" ? "Reprocessing..." : "Reprocess parser details"}
+            </button>
+          )}
+          {job.url && (
+            <button
+              className="btn-secondary"
+              style={{ fontSize: "11px", padding: "2px 8px" }}
+              type="button"
+              onClick={handleRefreshFromUrl}
+              disabled={loadingAction !== null}
+            >
+              {loadingAction === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
+            </button>
+          )}
         </div>
       )}
 
@@ -509,15 +620,23 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onReprocessed }) {
         </button>
         {reasoningOpen && (
           <div style={reasoningBoxStyle}>
-            <dl style={metricGridStyle}>
-              <dt style={metricLabelStyle}>Parser confidence</dt>
-              <dd style={metricValueStyle}>{parserConfidenceLabel(job)}</dd>
-              <dt style={metricLabelStyle}>Fit confidence</dt>
-              <dd style={metricValueStyle}>{fitConfidenceLabel(job)}</dd>
-              <dt style={metricLabelStyle}>Fit percentage</dt>
-              <dd style={metricValueStyle}>{fitPercentageLabel(job)}</dd>
-            </dl>
-            <p style={reasoningTextStyle}>{triageReasoning}</p>
+            <ul style={reasoningListStyle}>
+              {triageReasoningBullets(triageReasoning).map((item, index) => (
+                <li key={`${item}-${index}`}>{item}</li>
+              ))}
+            </ul>
+            {penaltiesApplied.length > 0 && (
+              <div style={penaltiesBoxStyle}>
+                <div style={penaltiesHeadingStyle}>Penalties applied</div>
+                <ul style={penaltiesListStyle}>
+                  {penaltiesApplied.map((penalty, index) => (
+                    <li key={`${penalty.ruleText}-${index}`}>
+                      <strong>-{penalty.points}</strong> for {penalty.ruleText}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -640,6 +759,60 @@ function FitChatPanel({
       <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "5px" }}>
         Enter to send · Shift+Enter for new line
       </p>
+    </div>
+  );
+}
+
+function ReEvaluatePopup({ popup, onClose }) {
+  const title = popup.jobTitle || "Job";
+  const companyText = popup.company ? ` at ${popup.company}` : "";
+  const isRunning = popup.phase === "running";
+  const isError = popup.phase === "error";
+  const action = popup.action || "Re-evaluation";
+  const runningText = popup.runningText || "Applying current scoring rules…";
+
+  return (
+    <div style={popupBackdropStyle}>
+      <div style={popupPanelStyle}>
+        <div style={popupHeaderStyle}>
+          <div>
+            <div style={popupTitleStyle}>
+              {isRunning ? `${action} in progress` : isError ? `${action} failed` : `${action} complete`}
+            </div>
+            <div style={popupSubtitleStyle}>{title}{companyText}</div>
+          </div>
+          {!isRunning && (
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ padding: "4px 10px", fontSize: "12px" }}
+              onClick={onClose}
+            >
+              Close
+            </button>
+          )}
+        </div>
+
+        {isRunning ? (
+          <div style={popupBodyStyle}>
+            <span className="inline-spinner" style={popupSpinnerStyle} />
+            <span>{runningText}</span>
+          </div>
+        ) : isError ? (
+          <div style={{ ...popupBodyStyle, color: "var(--red)" }}>
+            {popup.error || "Failed to re-evaluate fit."}
+          </div>
+        ) : (
+          <div style={popupResultStyle}>
+            <span>{scoreLabel(popup.previousScore)}</span>
+            <span style={{ color: "var(--text-muted)" }}>→</span>
+            <span>{scoreLabel(popup.newScore)}</span>
+            {popup.status === "pending_review" && (
+              <span style={popupMovedStyle}>Moved to job queue</span>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -772,12 +945,47 @@ function triageReasoningForJob(job) {
     parts.push("This was put in triage because the parser did not classify it as a high-confidence job posting.");
   }
   if (job.fit_score != null && Number(job.fit_score) < 70) {
-    parts.push(`Fit score is ${job.fit_score}, below the pending-review threshold of 70.`);
+    parts.push(`Fit score is ${job.fit_score}.`);
   }
   if (job.fit_reasoning) {
-    parts.push(job.fit_reasoning);
+    parts.push(reasoningWithoutPenaltySummary(job.fit_reasoning));
   }
   return parts.join(" ") || "No detailed triage reasoning was stored for this row. Reprocess the job to capture newer confidence details.";
+}
+
+function penaltiesAppliedForJob(job) {
+  const reasoning = String(job.fit_reasoning || "");
+  const match = reasoning.match(/Penalties applied:\s*(.+?)\.\s*$/i);
+  if (!match) return [];
+  return match[1]
+    .split(/\s*,\s*/)
+    .map((item) => item.match(/-(\d+)\s+for\s+'([^']+)'/i))
+    .filter(Boolean)
+    .map((matchItem) => ({
+      points: Number(matchItem[1]),
+      ruleText: matchItem[2],
+    }));
+}
+
+function reasoningWithoutPenaltySummary(reasoning) {
+  return String(reasoning || "")
+    .replace(/\s*Penalties applied:\s*.+?\.\s*$/i, "")
+    .trim();
+}
+
+function triageReasoningBullets(reasoning) {
+  const text = String(reasoning || "").trim();
+  if (!text) return [];
+  const bulletMatches = text.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s+.+/g);
+  if (bulletMatches) {
+    return bulletMatches
+      .map((item) => item.replace(/^\s*(?:[-*•]|\d+\.)\s+/, "").trim())
+      .filter(Boolean);
+  }
+  return text
+    .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function parserConfidenceLabel(job) {
@@ -793,6 +1001,10 @@ function fitConfidenceLabel(job) {
 
 function fitPercentageLabel(job) {
   return job.fit_score == null ? "Not scored" : `${job.fit_score}%`;
+}
+
+function scoreLabel(score) {
+  return score === null || score === undefined ? "not scored" : `${score}%`;
 }
 
 function fitScoreClass(job) {
@@ -898,6 +1110,86 @@ const sourceLinkStyle = {
   overflowWrap: "anywhere",
 };
 
+const buttonSpinnerContentStyle = {
+  alignItems: "center",
+  display: "inline-flex",
+  gap: "6px",
+};
+
+const popupBackdropStyle = {
+  alignItems: "center",
+  background: "rgba(24,28,58,0.38)",
+  display: "flex",
+  inset: 0,
+  justifyContent: "center",
+  padding: "24px",
+  position: "fixed",
+  zIndex: 1100,
+};
+
+const popupPanelStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  boxShadow: "var(--shadow)",
+  maxWidth: "460px",
+  padding: "18px",
+  width: "100%",
+};
+
+const popupHeaderStyle = {
+  alignItems: "flex-start",
+  display: "flex",
+  gap: "12px",
+  justifyContent: "space-between",
+  marginBottom: "14px",
+};
+
+const popupTitleStyle = {
+  color: "var(--text)",
+  fontSize: "16px",
+  fontWeight: 700,
+};
+
+const popupSubtitleStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "3px",
+};
+
+const popupBodyStyle = {
+  alignItems: "center",
+  color: "var(--text-muted)",
+  display: "flex",
+  fontSize: "14px",
+  gap: "10px",
+};
+
+const popupSpinnerStyle = {
+  color: "var(--accent)",
+  height: "18px",
+  width: "18px",
+};
+
+const popupResultStyle = {
+  alignItems: "center",
+  color: "var(--text)",
+  display: "flex",
+  flexWrap: "wrap",
+  fontSize: "22px",
+  fontWeight: 700,
+  gap: "10px",
+};
+
+const popupMovedStyle = {
+  background: "var(--green-light)",
+  borderRadius: "999px",
+  color: "var(--green)",
+  fontSize: "12px",
+  fontWeight: 700,
+  padding: "4px 9px",
+};
+
 const emailMetaStyle = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
@@ -921,31 +1213,38 @@ const reasoningBoxStyle = {
   marginTop: "8px",
 };
 
-const metricGridStyle = {
-  display: "grid",
-  gridTemplateColumns: "max-content 1fr",
-  columnGap: "14px",
-  rowGap: "5px",
-  margin: "0 0 8px 0",
-};
-
-const metricLabelStyle = {
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  fontWeight: 700,
-};
-
-const metricValueStyle = {
-  color: "var(--text)",
-  fontSize: "12px",
+const reasoningListStyle = {
+  columns: "2 260px",
+  columnGap: "28px",
+  paddingLeft: "18px",
   margin: 0,
-};
-
-const reasoningTextStyle = {
   color: "var(--text-muted)",
   fontSize: "13px",
   lineHeight: "1.6",
+};
+
+const penaltiesBoxStyle = {
+  marginTop: "12px",
+  paddingTop: "10px",
+  borderTop: "1px solid var(--border)",
+};
+
+const penaltiesHeadingStyle = {
+  color: "var(--text)",
+  fontSize: "12px",
+  fontWeight: 700,
+  marginBottom: "6px",
+};
+
+const penaltiesListStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+  gap: "5px 16px",
+  paddingLeft: "18px",
   margin: 0,
+  color: "var(--red)",
+  fontSize: "13px",
+  lineHeight: "1.5",
 };
 
 const chatPanelStyle = {

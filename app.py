@@ -3185,6 +3185,73 @@ def approve_triage_job(job_id: int):
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/jobs/<int:job_id>/refresh-from-url", methods=["POST"])
+def refresh_job_from_url(job_id: int):
+    """Re-fetch a job's description from its stored URL and re-score it.
+
+    Useful when the originally captured text was incomplete (e.g. location metadata
+    missing from a Greenhouse page that renders via JavaScript).
+    """
+    logger.info(f'refresh_job_from_url for job_id {job_id}')
+    repos = _get_repos()
+    job = repos["jobs"].get_by_id(job_id)
+    if not job:
+        repos["conn"].close()
+        return jsonify({"error": "Job not found"}), 404
+
+    logger.info(f'refresh_job_from_url stripping url')
+    url = (job.get("url") or "").strip()
+    if not url:
+        repos["conn"].close()
+        return jsonify({"error": "Job has no URL — cannot re-fetch"}), 422
+
+    try:
+        scanner = CareerSiteScanner()
+        logger.info(f'refresh_job_from_url calling scan_single_job_url')
+        fetched = scanner.scan_single_job_url(job.get("source") or "", url)
+    except Exception as exc:
+        logger.warning("refresh-from-url: fetch failed for job %d (%s): %s", job_id, url, exc)
+        repos["conn"].close()
+        return jsonify({"error": f"Failed to fetch job from URL: {exc}"}), 500
+
+    logger.info(f'refresh_job_from_url reload returned')
+    new_text = fetched["job_text"]
+
+    resume_row = repos["resume"].get_latest()
+    resume_text = str(resume_row.get("content") or "") if resume_row else ""
+    penalty_rules = repos["penalties"].get_enabled()
+    fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+
+    try:
+        score_result = FitScorer().score(
+            job_title=job.get("job_title") or "",
+            company=job.get("company") or "",
+            email_body=new_text,
+            resume_text=resume_text,
+            penalty_rules=penalty_rules,
+            fit_feedback=fit_feedback,
+        )
+    except Exception as exc:
+        logger.warning("refresh-from-url: scoring failed for job %d: %s", job_id, exc)
+        repos["conn"].close()
+        return jsonify({"error": f"Scoring failed: {exc}"}), 500
+
+    fit_score = score_result["score"]
+    current_status = job.get("status", "triage")
+    if current_status not in {"possible_duplicate", "skipped", "added_to_sheet"}:
+        current_status = "pending_review" if fit_score >= 70 else "triage"
+
+    repos["jobs"].update(job_id, {
+        "raw_email_snippet": new_text[:6000],
+        "fit_score": fit_score,
+        "fit_reasoning": score_result["reasoning"],
+        "status": current_status,
+    })
+    updated_job = repos["jobs"].get_by_id(job_id)
+    repos["conn"].close()
+    return jsonify(updated_job)
+
+
 @app.route("/api/jobs/<int:job_id>/reprocess", methods=["POST"])
 def reprocess_job(job_id: int):
     """Re-fetch the original email from Gmail and re-run the parser.
@@ -3626,6 +3693,7 @@ def create_penalty():
             "rule_text": data["rule_text"],
             "penalty_points": int(data["penalty_points"]),
             "enabled": data.get("enabled", 1),
+            "scope": data.get("scope", "any"),
         }
     )
     rule = repos["penalties"].get_by_id(rule_id)
@@ -3639,7 +3707,7 @@ def update_penalty(rule_id: int):
     if not data:
         return jsonify({"error": "No data provided"}), 400
 
-    allowed = {"rule_text", "penalty_points", "enabled"}
+    allowed = {"rule_text", "penalty_points", "enabled", "scope"}
     updates = {k: v for k, v in data.items() if k in allowed}
     if "penalty_points" in updates:
         updates["penalty_points"] = int(updates["penalty_points"])

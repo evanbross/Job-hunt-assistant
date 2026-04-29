@@ -127,11 +127,23 @@ class FitScorer:
         # Apply penalty deductions for matching rules
         total_penalty = 0
         penalties_applied: list[str] = []
-        body_lower = (job_title + " " + company + " " + email_body).lower()
+        scope_text: dict[str, str] = {
+            "title":   job_title.lower(),
+            "company": company.lower(),
+            "body":    email_body.lower(),
+            "any":     (job_title + " " + company + " " + email_body).lower(),
+        }
 
+        full_body = email_body.lower()
         for rule in penalty_rules:
             rule_text = str(rule.get("rule_text", "")).strip().lower()
-            if self._penalty_rule_matches(rule_text, body_lower):
+            scope = str(rule.get("scope") or "any").strip().lower()
+            haystack = scope_text.get(scope, scope_text["any"])
+            if (
+                self._penalty_rule_matches(rule_text, haystack)
+                and not self._penalty_match_has_remote_exception(rule_text, full_body)
+                and not self._penalty_match_has_senior_title_exception(rule_text, job_title)
+            ):
                 pts = int(rule.get("penalty_points", 0))
                 total_penalty += pts
                 penalties_applied.append(f"-{pts} for '{rule_text}'")
@@ -185,9 +197,15 @@ SCORING INSTRUCTIONS:
 - 0-39: Poor match; wrong skills, explicitly on-site/hybrid required, or wrong level.
 - IMPORTANT — location inference rule: a city or state name alone (e.g. "Redwood City, CA")
   does NOT mean the role is on-site. Many remote jobs list the company's HQ address.
-  Only treat a role as non-remote if the posting explicitly uses words such as
-  "on-site", "in-office", "hybrid", "must be local", or "no remote". If location
-  is ambiguous, assume remote is possible and do not penalise for it.
+  If the job header or early description explicitly states the role is remote (e.g.
+  "Remote - United States", "Fully Remote", "Remote-first", "100% remote"), treat it
+  as remote and do NOT penalise for location — even if "hybrid" or "in-office" appears
+  later in the description (those phrases likely refer to the company's general culture
+  or other roles, not this job's requirement).
+  Only treat a role as non-remote if it lacks any remote indicator AND uses explicit
+  requirement language such as "on-site required", "must be local", "hybrid required",
+  "X days per week in office", or "in-office position". If location is ambiguous,
+  assume remote is possible and do not penalise for it.
 - When past rejection feedback includes structured mismatch reasons, treat them as high-signal preferences.
 - Return ONLY valid JSON — no markdown, no extra text.
 - Do NOT apply penalties yourself; they are handled by the caller.
@@ -210,6 +228,60 @@ Response schema (JSON only):
 
         pattern = rf"(?<![A-Za-z0-9]){re.escape(rule_text)}(?![A-Za-z0-9])"
         return re.search(pattern, body_text, flags=re.IGNORECASE) is not None
+
+    # Location penalty terms that should be suppressed when the job is explicitly remote
+    _LOCATION_PENALTY_TERMS: frozenset[str] = frozenset({
+        "hybrid", "hybrid-remote", "on-site", "on site", "onsite",
+        "in-office", "in office", "in person", "in-person",
+    })
+
+    # Level penalty terms that should be suppressed when the job title is senior-level
+    _LEVEL_PENALTY_TERMS: frozenset[str] = frozenset({
+        "junior", "entry level", "intern",
+    })
+
+    _SENIOR_TITLE_INDICATORS: frozenset[str] = frozenset({
+        "senior", "sr.", "lead", "staff", "principal", "director",
+        "vp", "vice president", "head of", "manager", "architect",
+    })
+
+    @staticmethod
+    def _penalty_match_has_remote_exception(rule_text: str, body_text: str) -> bool:
+        if rule_text not in FitScorer._LOCATION_PENALTY_TERMS:
+            return False
+
+        # Job must explicitly state it is remote
+        remote_positive_pattern = (
+            r"\b(remote|fully remote|remote-first|work remotely|"
+            r"remote work|remote position|remote role|remote opportunity|"
+            r"option to work remotely|remote or hybrid|hybrid-remote)\b"
+        )
+        if not re.search(remote_positive_pattern, body_text, flags=re.IGNORECASE):
+            return False
+
+        # Only suppress if the text does NOT explicitly require hybrid/on-site attendance.
+        # Avoid matching general office/culture mentions ("our hybrid-friendly offices").
+        required_onsite_pattern = (
+            r"("
+            r"hybrid\s+(role|schedule|position|required|requirement|mandatory)|"
+            r"on[\s-]site\s+(role|position|required|requirement|mandatory)|"
+            r"(required|requires|must|mandatory)\s+.{0,60}\b(hybrid|on[\s-]site|in[\s-]office|in[\s-]person)\b|"
+            r"\b(hybrid|on[\s-]site|in[\s-]office)\b.{0,60}\b(required|requires|must|mandatory|days per week|days a week)\b"
+            r")"
+        )
+        return re.search(required_onsite_pattern, body_text, flags=re.IGNORECASE) is None
+
+    @staticmethod
+    def _penalty_match_has_senior_title_exception(rule_text: str, job_title: str) -> bool:
+        """Suppress level-demoting penalties when the job title is explicitly senior-level.
+
+        A description may mention "junior" in passing (e.g. "we mentor junior engineers")
+        without the role itself being junior. The job title is the authoritative signal.
+        """
+        if rule_text not in FitScorer._LEVEL_PENALTY_TERMS:
+            return False
+        title_lower = job_title.lower()
+        return any(indicator in title_lower for indicator in FitScorer._SENIOR_TITLE_INDICATORS)
 
     @staticmethod
     def _format_fit_feedback_line(row: dict) -> str:

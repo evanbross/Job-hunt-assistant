@@ -44,7 +44,13 @@
       "Bash(F:/Evan-F/Projects/JobHuntAssistant/.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('F:/Evan-F/Projects/JobHuntAssistant/app.py'\\).read\\(\\)\\); print\\('app.py OK'\\)\")",
       "Bash(F:/Evan-F/Projects/JobHuntAssistant/.venv/Scripts/python.exe *)",
       "Bash(node *)",
-      "Bash(python -c \"import sys; [print\\(l.encode\\('ascii','replace'\\).decode\\(\\)\\) for l in sys.stdin]\")"
+      "Bash(python -c \"import sys; [print\\(l.encode\\('ascii','replace'\\).decode\\(\\)\\) for l in sys.stdin]\")",
+      "Bash(python -m pytest tests/test_fit_scorer.py -v)",
+      "Bash(.venv/Scripts/pytest tests/test_fit_scorer.py -v)",
+      "Bash(.venv/Scripts/python.exe -m pip install pytest -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_fit_scorer.py -v)",
+      "Bash(python -m pytest --version)",
+      "Bash(pip3 show *)"
     ]
   }
 }

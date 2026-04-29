@@ -349,7 +349,7 @@ function CareerSitesSection() {
 function PenaltiesSection() {
   const [rules, setRules] = useState([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ rule_text: "", penalty_points: "" });
+  const [form, setForm] = useState({ rule_text: "", penalty_points: "", scope: "any" });
   const [editId, setEditId] = useState(null);
 
   useEffect(() => { fetchRules(); }, []);
@@ -385,13 +385,13 @@ function PenaltiesSection() {
 
   const startEdit = (rule) => {
     setEditId(rule.id);
-    setForm({ rule_text: rule.rule_text, penalty_points: String(rule.penalty_points) });
+    setForm({ rule_text: rule.rule_text, penalty_points: String(rule.penalty_points), scope: rule.scope || "any" });
     setShowForm(true);
   };
 
   const submitForm = async () => {
     if (!form.rule_text || !form.penalty_points) return;
-    const body = { rule_text: form.rule_text, penalty_points: parseInt(form.penalty_points, 10) };
+    const body = { rule_text: form.rule_text, penalty_points: parseInt(form.penalty_points, 10), scope: form.scope || "any" };
     if (editId) {
       const res = await fetch(`/api/penalties/${editId}`, {
         method: "PUT",
@@ -415,13 +415,13 @@ function PenaltiesSection() {
     }
     setShowForm(false);
     setEditId(null);
-    setForm({ rule_text: "", penalty_points: "" });
+    setForm({ rule_text: "", penalty_points: "", scope: "any" });
     fetchRules();
   };
 
   return (
     <div>
-      <SectionHeader title="Scoring Penalties" action={{ label: "Add Rule", onClick: () => { setEditId(null); setForm({ rule_text: "", penalty_points: "" }); setShowForm(true); } }} />
+      <SectionHeader title="Scoring Penalties" action={{ label: "Add Rule", onClick: () => { setEditId(null); setForm({ rule_text: "", penalty_points: "", scope: "any" }); setShowForm(true); } }} />
       <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
         If a rule's text appears in a job email, that many points are deducted from the fit score.
       </p>
@@ -435,6 +435,14 @@ function PenaltiesSection() {
             <label style={labelStyle}>Points to Deduct
               <input type="number" min="1" max="100" value={form.penalty_points} onChange={(e) => setForm({ ...form, penalty_points: e.target.value })} placeholder="40" />
             </label>
+            <label style={labelStyle}>Match Against
+              <select value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })}>
+                <option value="any">Anywhere (title + company + body)</option>
+                <option value="title">Job title only</option>
+                <option value="body">Job body only</option>
+                <option value="company">Company name only</option>
+              </select>
+            </label>
           </div>
           <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
             <button className="btn-primary" onClick={submitForm}>{editId ? "Save" : "Add"}</button>
@@ -445,12 +453,13 @@ function PenaltiesSection() {
 
       <table style={tableStyle}>
         <thead>
-          <tr>{["Phrase", "Penalty", "Enabled", "Actions"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+          <tr>{["Phrase", "Scope", "Penalty", "Enabled", "Actions"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
         </thead>
         <tbody>
           {rules.map((r) => (
             <tr key={r.id}>
               <td style={tdStyle}><code style={{ background: "var(--surface2)", padding: "2px 6px", borderRadius: "4px", fontSize: "12px" }}>{r.rule_text}</code></td>
+              <td style={tdStyle}><span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{r.scope || "any"}</span></td>
               <td style={tdStyle}><span className="badge badge-red">-{r.penalty_points} pts</span></td>
               <td style={tdStyle}><Toggle checked={!!r.enabled} onChange={() => toggleEnabled(r)} /></td>
               <td style={tdStyle}>
