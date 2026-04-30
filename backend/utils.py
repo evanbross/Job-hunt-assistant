@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import parse_qs, urlparse
 
 from flask import request
 
@@ -142,6 +143,95 @@ def _ai_error_http_status(exc: BaseException, fallback_status: int = 500) -> int
     if isinstance(status_code, int) and 400 <= status_code <= 599:
         return 502
     return fallback_status
+
+
+def extract_ashby_job_id(url: str) -> str | None:
+    """Return the Ashby job ID from an ashbyhq.com URL, or None for any other URL."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        if "ashbyhq.com" not in parsed.netloc.lower():
+            return None
+        params = parse_qs(parsed.query)
+        job_id = (params.get("jobId") or params.get("ashby_jid") or [None])[0]
+        return job_id.strip() if isinstance(job_id, str) and job_id.strip() else None
+    except Exception:
+        return None
+
+
+def db_match_for_job(
+    *,
+    job_title: str,
+    company: str,
+    job_url: str,
+    known_jobs: list[dict],
+    dedup_checker: DuplicateChecker,
+    exclude_id: int | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Check known_jobs for an exact URL match or fuzzy title/company duplicate.
+
+    Returns (tracked_status, source_key, duplicate_hint), all None when no match.
+    """
+    current_job_url = job_url.strip()
+    current_ashby_job_id = extract_ashby_job_id(current_job_url)
+
+    exact_match = next(
+        (
+            row
+            for row in known_jobs
+            if (exclude_id is None or row.get("id") != exclude_id)
+            and (row.get("url") or "").strip()
+            and (
+                (row.get("url") or "").strip().lower() == current_job_url.lower()
+                or (
+                    current_ashby_job_id is not None
+                    and extract_ashby_job_id((row.get("url") or "").strip())
+                    == current_ashby_job_id
+                )
+            )
+        ),
+        None,
+    )
+    if exact_match is not None:
+        tracked_status = (exact_match.get("status") or "").strip() or "Tracked"
+        if tracked_status in _ACTIVE_QUEUE_STATUSES:
+            return None, None, None
+        duplicate_hint = (
+            f"Already tracked as \"{exact_match.get('job_title') or job_title}\" "
+            f"at {exact_match.get('company') or company} with status \"{tracked_status}\"."
+        )
+        return tracked_status, "db_url", duplicate_hint
+
+    if not company.strip() or not job_title.strip() or not known_jobs:
+        return None, None, None
+
+    dup = dedup_checker.check(
+        job_title=job_title,
+        company=company,
+        sheet_jobs=known_jobs,
+    )
+    if dup is None:
+        return None, None, None
+
+    matched = next(
+        (
+            row
+            for row in known_jobs
+            if (row.get("company") or "") == dup["sheet_company"]
+            and (row.get("job_title") or "") == dup["sheet_title"]
+        ),
+        None,
+    )
+    tracked_status = ((matched or {}).get("status") or "Tracked").strip()
+    if tracked_status in _ACTIVE_QUEUE_STATUSES:
+        return None, None, None
+    duplicate_hint = (
+        f"Possible duplicate of \"{dup['sheet_title']}\" "
+        f"at {dup['sheet_company']} already tracked "
+        f"(title match: {dup['title_score']}%, company match: {dup['company_score']}%)"
+    )
+    return tracked_status, "db_fuzzy", duplicate_hint
 
 
 def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:

@@ -53,8 +53,8 @@ from backend.utils import (
     _ai_error_http_status,
     _get_repos,
     _safe_error_message,
+    db_match_for_job,
 )
-from routes.career_sites import _db_match_for_job
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ def _run_re_evaluate() -> None:
             updates: dict[str, object] = {}
             score: int | None = None
 
-            tracked_status, _tracking_source, duplicate_hint = _db_match_for_job(
+            tracked_status, _tracking_source, duplicate_hint = db_match_for_job(
                 job_title=title,
                 company=company,
                 job_url=str(job.get("url") or ""),
