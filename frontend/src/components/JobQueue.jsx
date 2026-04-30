@@ -864,6 +864,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
             onReclassified={handleReclassified}
             onReEvaluate={handleJobReEvaluate}
             onSkip={handleSkip}
+            onUpdate={(jobId, fields) => setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...fields } : j))}
           />
         ))
       )}

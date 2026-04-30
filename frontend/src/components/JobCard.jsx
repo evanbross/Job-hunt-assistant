@@ -58,7 +58,7 @@ const MISMATCH_REASONS = [
   "Other Mismatch",
 ];
 
-export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, onSkip }) {
+export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, onSkip, onUpdate }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
@@ -66,6 +66,8 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
   const [skipConfirm, setSkipConfirm] = useState(null);
   const [skipNote, setSkipNote] = useState("");
   const [skipMismatchReasons, setSkipMismatchReasons] = useState([]);
+  const [editingCompany, setEditingCompany] = useState(false);
+  const [companyDraft, setCompanyDraft] = useState("");
   const [coverLetter, setCoverLetter] = useState(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -344,9 +346,48 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
           <div style={{ fontSize: "15px", fontWeight: "600", color: "var(--text)", lineHeight: "1.4" }}>
             {job.job_title || <em style={{ color: "var(--text-muted)" }}>Unknown Title</em>}
             <span style={{ fontWeight: "400", color: "var(--text-muted)", margin: "0 5px" }}>at</span>
-            <span style={{ fontWeight: "600", color: "var(--text)" }}>
-              {job.company || <em style={{ fontWeight: "400" }}>Unknown Company</em>}
-            </span>
+            {editingCompany ? (
+              <input
+                autoFocus
+                value={companyDraft}
+                onChange={(e) => setCompanyDraft(e.target.value)}
+                onBlur={async () => {
+                  setEditingCompany(false);
+                  const value = companyDraft.trim();
+                  if (value === (job.company || "")) return;
+                  const res = await fetch(`/api/jobs/${job.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ company: value }),
+                  });
+                  if (res.ok) onUpdate?.(job.id, { company: value });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.target.blur();
+                  if (e.key === "Escape") setEditingCompany(false);
+                }}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: "1px solid var(--accent)",
+                  color: "var(--text)",
+                  font: "inherit",
+                  fontSize: "15px",
+                  fontWeight: 600,
+                  outline: "none",
+                  padding: "0",
+                  width: "160px",
+                }}
+              />
+            ) : (
+              <span
+                style={{ fontWeight: "600", color: "var(--text)", cursor: "text" }}
+                title="Click to edit company name"
+                onClick={() => { setCompanyDraft(job.company || ""); setEditingCompany(true); }}
+              >
+                {job.company || <em style={{ fontWeight: "400", color: "var(--text-muted)" }}>Unknown Company</em>}
+              </span>
+            )}
           </div>
           {sourceSummary && (
             <div style={sourceSummaryStyle}>
