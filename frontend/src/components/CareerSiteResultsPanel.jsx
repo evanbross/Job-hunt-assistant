@@ -77,6 +77,7 @@ export default function CareerSiteResultsPanel() {
   const [status, setStatus] = useState(null);
   const [running, setRunning] = useState(false);
   const [selectedFailure, setSelectedFailure] = useState(null);
+  const [bookmarkletSite, setBookmarkletSite] = useState(null);
   const [selectedJobId, setSelectedJobId] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
   const [addRejectRule, setAddRejectRule] = useState(true);
@@ -512,6 +513,7 @@ export default function CareerSiteResultsPanel() {
                           Rescan
                         </button>
                         <button className="btn-secondary" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => startEditSite(site)}>Edit</button>
+                        <button className="btn-secondary" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => setBookmarkletSite(site)}>Capture JS</button>
                         <button className="btn-danger" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => deleteSite(site.id)}>Delete</button>
                       </div>
                     </td>
@@ -851,6 +853,13 @@ export default function CareerSiteResultsPanel() {
           onClose={() => setSelectedFailure(null)}
         />
       )}
+
+      {bookmarkletSite && (
+        <BookmarkletModal
+          site={bookmarkletSite}
+          onClose={() => setBookmarkletSite(null)}
+        />
+      )}
     </div>
   );
 }
@@ -861,37 +870,100 @@ function isRejectedCareerRow(row) {
   );
 }
 
+function BookmarkletModal({ site, onClose }) {
+  const [copied, setCopied] = useState(false);
+  const bookmarklet = buildCaptureBookmarklet(site);
+  const isWellfound = isWellfoundSite(site);
+
+  const copyBookmarklet = async () => {
+    try {
+      await navigator.clipboard.writeText(bookmarklet);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      window.alert("Copy failed. Select the script text and copy it manually.");
+    }
+  };
+
+  return (
+    <div onClick={onClose} style={modalBackdropStyle}>
+      <div onClick={(e) => e.stopPropagation()} style={{ ...modalPanelStyle, maxWidth: "820px" }}>
+        <div style={modalHeaderStyle}>
+          <div>
+            <strong style={{ fontSize: "13px" }}>Capture Bookmarklet</strong>
+            <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
+              {site.name || site.url || "Career site"}
+            </div>
+          </div>
+          <button className="btn-secondary" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div style={{ padding: "12px 14px", display: "grid", gap: "12px" }}>
+          <div style={{ display: "grid", gap: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
+            <p style={{ margin: 0 }}>
+              Create a browser bookmark named <strong style={{ color: "var(--text)" }}>Capture Jobs</strong>, paste this script as the bookmark URL, then click it while viewing the job board.
+            </p>
+            <p style={{ margin: 0 }}>
+              {isWellfound
+                ? "This exporter reads visible Wellfound job cards and downloads a JSON file that Import Job Posts can upload."
+                : "This generic exporter reads visible supported job links and downloads JSON that Import Job Posts can upload."}
+            </p>
+          </div>
+          <a
+            href={bookmarklet}
+            onClick={(e) => e.preventDefault()}
+            style={{
+              justifySelf: "start",
+              display: "inline-flex",
+              alignItems: "center",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              padding: "7px 12px",
+              background: "var(--surface2)",
+              fontSize: "12px",
+              fontWeight: 700,
+            }}
+            title="Drag this link to the bookmarks bar"
+          >
+            Capture Jobs
+          </a>
+          <textarea
+            readOnly
+            value={bookmarklet}
+            style={{
+              minHeight: "170px",
+              fontFamily: "monospace",
+              fontSize: "11px",
+              resize: "vertical",
+            }}
+            onFocus={(e) => e.target.select()}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: "12px", color: copied ? "var(--green)" : "var(--text-muted)" }}>
+              {copied ? "Copied." : "After export, upload the JSON file from Job Queue > Import Job Posts."}
+            </span>
+            <button className="btn-primary" style={{ padding: "7px 14px", fontSize: "12px" }} onClick={copyBookmarklet}>
+              Copy Script
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FailureDetailsModal({ failure, onClose }) {
   return (
     <div
       onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 1000,
-        background: "rgba(0,0,0,0.55)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "24px",
-      }}
+      style={modalBackdropStyle}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "var(--surface)",
-          border: "1px solid var(--border)",
-          borderRadius: "var(--radius-lg)",
-          boxShadow: "var(--shadow-lg)",
-          width: "100%",
-          maxWidth: "760px",
-          maxHeight: "80vh",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
+        style={{ ...modalPanelStyle, maxWidth: "760px" }}
       >
-        <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+        <div style={modalHeaderStyle}>
           <strong style={{ fontSize: "13px" }}>Failure Details</strong>
           <button className="btn-secondary" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={onClose}>
             Close
@@ -972,6 +1044,17 @@ function groupRowsBySiteAndMatch(rows) {
   }));
 }
 
+function isWellfoundSite(site) {
+  const value = `${site?.url || ""} ${site?.detected_platform || ""}`.toLowerCase();
+  return value.includes("wellfound");
+}
+
+function buildCaptureBookmarklet(site) {
+  const sourceName = JSON.stringify(site?.name || "Captured Job Board");
+  const script = `(()=>{const SOURCE_NAME=${sourceName};const SUPPORTED=[["greenhouse.io","Greenhouse"],["lever.co","Lever"],["ashbyhq.com","Ashby"],["myworkdayjobs.com","Workday"],["wellfound.com","Wellfound"]];const platformFor=(host)=>{const row=SUPPORTED.find(([suffix])=>host.includes(suffix));return row?row[1]:"";};const clean=(value)=>(value||"").replace(/\\s+/g," ").trim();const titleCaseSlug=(slug)=>clean(slug.replace(/-/g," ").replace(/\\b\\w/g,(char)=>char.toUpperCase()));const cleanCompany=(value)=>{let company=clean(value);["Actively Hiring","Promoted","Recently Funded","Employees"].some((marker)=>{const index=company.indexOf(marker);if(index>0){company=company.slice(0,index).trim();return true;}return false;});return company;};const normalize=(href)=>{try{const u=new URL(href,location.href);const platform=platformFor(u.hostname.toLowerCase());if(!platform)return null;if(platform==="Wellfound"){const existing=u.searchParams.get("job_listing_slug");const match=u.pathname.match(/^\\/jobs\\/(\\d+[-/][^/?#]+)/);const slug=existing||(match&&match[1]);if(!slug)return null;return{url:u.origin+"/jobs?job_listing_slug="+encodeURIComponent(slug),platform};}u.hash="";return{url:u.href,platform};}catch{return null;}};const companyFromTitle=(title)=>{const match=clean(title).match(/\\bat\\s+(.+)$/i);return match?cleanCompany(match[1]):"";};const companyFromUrl=(node)=>{const href=node&&node.getAttribute("href");if(!href)return"";try{const parts=new URL(href,location.href).pathname.split("/").filter(Boolean);return parts[0]==="company"&&parts[1]?titleCaseSlug(parts[1]):"";}catch{return"";}};const wellfoundCompany=(anchor,title)=>{const card=anchor.closest('[data-test="StartupResult"]')||anchor.closest('[data-testid="startup-card"]')||anchor.closest("article")||anchor.closest("li");const companyLink=card&&card.querySelector('a[href*="/company/"]');const heading=companyLink&&companyLink.querySelector("h1,h2,h3");const company=cleanCompany((heading&&heading.textContent)||companyFromUrl(companyLink));return company||companyFromTitle(title);};const rows=[];const seen=new Set();document.querySelectorAll("a[href]").forEach((anchor)=>{const normalized=normalize(anchor.getAttribute("href"));if(!normalized||seen.has(normalized.url))return;const text=(anchor.innerText||anchor.textContent||"").split(/\\n+/).map(clean).filter(Boolean);if(normalized.platform==="Wellfound"&&!text.length)return;const title=text[0]||clean(anchor.getAttribute("aria-label"))||document.title||"";const company=normalized.platform==="Wellfound"?wellfoundCompany(anchor,title):"";const listing=[title,company?"Company: "+company:"","URL: "+normalized.url,...text.slice(1)].filter(Boolean).join("\\n");seen.add(normalized.url);rows.push({url:normalized.url,platform:normalized.platform,company,job_title:title,listing_text:listing});});if(!rows.length){alert("No supported job links found on this page.");return;}const payload={captured_at:new Date().toISOString(),source:{name:SOURCE_NAME,url:location.href,platform:platformFor(location.hostname.toLowerCase())},jobs:rows};const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="job-capture-"+new Date().toISOString().slice(0,10)+".json";document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);})();`;
+  return `javascript:${script}`;
+}
+
 const tdStyle = {
   padding: "10px 12px",
   borderBottom: "1px solid var(--border)",
@@ -999,6 +1082,38 @@ const progressBox = {
   padding: "16px 18px",
   marginBottom: "16px",
   boxShadow: "var(--shadow-sm)",
+};
+
+const modalBackdropStyle = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 1000,
+  background: "rgba(0,0,0,0.55)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "24px",
+};
+
+const modalPanelStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  boxShadow: "var(--shadow-lg)",
+  width: "100%",
+  maxHeight: "80vh",
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+};
+
+const modalHeaderStyle = {
+  padding: "12px 14px",
+  borderBottom: "1px solid var(--border)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "8px",
 };
 
 const modalDtStyle = {

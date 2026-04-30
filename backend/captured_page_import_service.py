@@ -35,17 +35,22 @@
 from __future__ import annotations
 
 import email
+import json
+import re
 from email import policy
 from html import unescape
 from html.parser import HTMLParser
-from typing import TypedDict
-from urllib.parse import urlparse
+from typing import NotRequired, TypedDict
+from urllib.parse import ParseResult, parse_qs, urlencode, urlparse
 
 
 class ExtractedJobUrl(TypedDict):
     url: str
     platform: str
     host: str
+    company: NotRequired[str]
+    job_title: NotRequired[str]
+    listing_text: NotRequired[str]
 
 
 class CapturedSourceGuess(TypedDict):
@@ -63,9 +68,12 @@ class _DocumentParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.hrefs: list[str] = []
+        self.anchor_parts_by_href: dict[str, list[str]] = {}
         self.source_candidates: list[str] = []
         self._in_title = False
         self.title_parts: list[str] = []
+        self._active_anchor_href: str | None = None
+        self._active_anchor_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized_tag = tag.lower()
@@ -78,6 +86,8 @@ class _DocumentParser(HTMLParser):
             href = attr_map.get("href")
             if href:
                 self.hrefs.append(unescape(href))
+                self._active_anchor_href = unescape(href)
+                self._active_anchor_parts = []
             return
         if normalized_tag == "base" and attr_map.get("href"):
             self.source_candidates.append(unescape(attr_map["href"]))
@@ -96,10 +106,20 @@ class _DocumentParser(HTMLParser):
             self._in_title = True
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "title":
+        normalized_tag = tag.lower()
+        if normalized_tag == "a" and self._active_anchor_href:
+            existing = self.anchor_parts_by_href.setdefault(self._active_anchor_href, [])
+            existing.extend(self._active_anchor_parts)
+            self._active_anchor_href = None
+            self._active_anchor_parts = []
+            return
+        if normalized_tag == "title":
             self._in_title = False
 
     def handle_data(self, data: str) -> None:
+        normalized_data = data.strip()
+        if self._active_anchor_href and normalized_data:
+            self._active_anchor_parts.append(normalized_data)
         if self._in_title and data.strip():
             self.title_parts.append(data.strip())
 
@@ -110,6 +130,7 @@ class CapturedPageImportService:
         ("lever.co", "Lever"),
         ("ashbyhq.com", "Ashby"),
         ("myworkdayjobs.com", "Workday"),
+        ("wellfound.com", "Wellfound"),
     )
 
     def extract_public_job_urls(self, raw_content: str, content_format: str) -> list[ExtractedJobUrl]:
@@ -119,6 +140,10 @@ class CapturedPageImportService:
         normalized = raw_content.strip()
         if not normalized:
             raise ValueError("Captured page content is required.")
+
+        normalized_format = content_format.strip().lower() or "html"
+        if normalized_format == "json":
+            return self._analyze_json_capture(normalized)
 
         html_documents = self._extract_html_documents(normalized, content_format)
         seen: set[str] = set()
@@ -135,15 +160,102 @@ class CapturedPageImportService:
                 seen.add(public_url)
                 parsed = urlparse(public_url)
                 platform = self._platform_for_host(parsed.netloc.lower())
-                results.append(
-                    ExtractedJobUrl(
-                        url=public_url,
-                        platform=platform,
-                        host=parsed.netloc.lower(),
-                    )
+                result = ExtractedJobUrl(
+                    url=public_url,
+                    platform=platform,
+                    host=parsed.netloc.lower(),
                 )
+                if platform == "Wellfound":
+                    result.update(
+                        self._wellfound_listing_fields(
+                            public_url,
+                            parser.anchor_parts_by_href.get(href, []),
+                        )
+                    )
+                results.append(result)
         source = self._guess_capture_source(source_candidates, results)
         return CaptureAnalysis(urls=results, source=source)
+
+    def _analyze_json_capture(self, raw_content: str) -> CaptureAnalysis:
+        try:
+            payload = json.loads(raw_content)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Captured JSON could not be parsed.") from exc
+
+        if isinstance(payload, list):
+            raw_jobs = payload
+            raw_source = None
+        elif isinstance(payload, dict):
+            raw_jobs = payload.get("jobs") or payload.get("urls") or []
+            raw_source = payload.get("source")
+        else:
+            raise ValueError("Captured JSON must be an object or an array.")
+
+        if not isinstance(raw_jobs, list):
+            raise ValueError("Captured JSON jobs must be a list.")
+
+        seen: set[str] = set()
+        results: list[ExtractedJobUrl] = []
+        for raw_job in raw_jobs:
+            if not isinstance(raw_job, dict):
+                continue
+            raw_url = str(raw_job.get("url") or "").strip()
+            public_url = self._normalize_public_job_url(raw_url)
+            if not public_url or public_url in seen:
+                continue
+            seen.add(public_url)
+            parsed = urlparse(public_url)
+            platform = (
+                str(raw_job.get("platform") or "").strip()
+                or self._platform_for_host(parsed.netloc.lower())
+            )
+            result = ExtractedJobUrl(
+                url=public_url,
+                platform=platform,
+                host=parsed.netloc.lower(),
+            )
+            job_title = str(raw_job.get("job_title") or raw_job.get("title") or "").strip()
+            listing_text = str(
+                raw_job.get("listing_text")
+                or raw_job.get("description")
+                or raw_job.get("text")
+                or ""
+            ).strip()
+            company = self._clean_wellfound_company(
+                str(raw_job.get("company") or "").strip()
+            ) if platform == "Wellfound" else str(raw_job.get("company") or "").strip()
+            if not company and platform == "Wellfound":
+                company = self._company_from_wellfound_text(job_title, listing_text)
+            if company:
+                result["company"] = company
+            if job_title:
+                result["job_title"] = job_title
+            if listing_text:
+                result["listing_text"] = listing_text
+            results.append(result)
+
+        source = self._source_from_json(raw_source)
+        if source is None:
+            source = self._guess_capture_source([], results)
+        return CaptureAnalysis(urls=results, source=source)
+
+    def _source_from_json(self, raw_source: object) -> CapturedSourceGuess | None:
+        if not isinstance(raw_source, dict):
+            return None
+        raw_url = str(raw_source.get("url") or "").strip()
+        board_url = self._board_root_url(raw_url)
+        if not board_url:
+            return None
+        parsed = urlparse(board_url)
+        platform = (
+            str(raw_source.get("platform") or "").strip()
+            or self._platform_for_host(parsed.netloc.lower())
+        )
+        name = str(raw_source.get("name") or "").strip() or self._source_name_for_url(
+            board_url,
+            platform,
+        )
+        return CapturedSourceGuess(name=name, url=board_url, platform=platform)
 
     def _extract_html_documents(self, raw_content: str, content_format: str) -> list[str]:
         normalized_format = content_format.strip().lower() or "html"
@@ -196,8 +308,68 @@ class CapturedPageImportService:
         platform = self._platform_for_host(host)
         if not platform:
             return None
+        if platform == "Wellfound":
+            return self._normalize_wellfound_job_url(parsed)
         cleaned = parsed._replace(fragment="", query=parsed.query)
         return cleaned.geturl()
+
+    def _normalize_wellfound_job_url(self, parsed: ParseResult) -> str | None:
+        query_values = parse_qs(parsed.query)
+        query_slug = (query_values.get("job_listing_slug") or [""])[0].strip()
+        path_match = re.match(r"^/jobs/(\d+[-/][^/?#]+)", parsed.path)
+        slug = query_slug or (path_match.group(1) if path_match else "")
+        if not slug:
+            return None
+        return parsed._replace(
+            path="/jobs",
+            query=urlencode({"job_listing_slug": slug}),
+            fragment="",
+        ).geturl()
+
+    def _wellfound_listing_fields(self, public_url: str, anchor_parts: list[str]) -> dict[str, str]:
+        title = anchor_parts[0].strip() if anchor_parts else ""
+        company = self._company_from_wellfound_title(title)
+        detail_lines = [part.strip() for part in anchor_parts[1:] if part.strip()]
+        listing_lines = [
+            line
+            for line in [
+                title,
+                f"Company: {company}" if company else "",
+                f"URL: {public_url}",
+                *detail_lines,
+            ]
+            if line
+        ]
+        return {
+            "company": company,
+            "job_title": title,
+            "listing_text": "\n".join(listing_lines),
+        }
+
+    @staticmethod
+    def _company_from_wellfound_title(title: str) -> str:
+        match = re.search(r"\bat\s+(.+)$", title)
+        return match.group(1).strip() if match else ""
+
+    def _company_from_wellfound_text(self, title: str, listing_text: str) -> str:
+        company_match = re.search(r"(?im)^Company:\s*(.+)$", listing_text)
+        if company_match:
+            return self._clean_wellfound_company(company_match.group(1).strip())
+        return self._company_from_wellfound_title(title)
+
+    @staticmethod
+    def _clean_wellfound_company(company: str) -> str:
+        cleaned = company.strip()
+        for marker in (
+            "Actively Hiring",
+            "Promoted",
+            "Recently Funded",
+            "Employees",
+        ):
+            marker_index = cleaned.find(marker)
+            if marker_index > 0:
+                cleaned = cleaned[:marker_index].strip()
+        return cleaned
 
     def _platform_for_host(self, host: str) -> str:
         for suffix, label in self._SUPPORTED_HOSTS:
@@ -255,6 +427,8 @@ class CapturedPageImportService:
             return parsed._replace(path=f"/{path_parts[0]}", query="", fragment="").geturl()
         if "myworkdayjobs.com" in host:
             return parsed._replace(query="", fragment="").geturl()
+        if host == "wellfound.com" and path_parts and path_parts[0] == "jobs":
+            return parsed._replace(path="/jobs", query="", fragment="").geturl()
         return None
 
     def _source_name_for_url(self, source_url: str, platform: str) -> str:

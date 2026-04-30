@@ -60,6 +60,7 @@ const MISMATCH_REASONS = [
 
 export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, onSkip, onUpdate }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
   // skipConfirm: null | { key, label } — the selected reason awaiting confirmation
@@ -120,6 +121,8 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
   const reasoningText = reasoningWithoutPenaltySummary(job.fit_reasoning);
   const reasoningBullets = fitReasoningBullets(reasoningText);
   const penaltiesApplied = penaltiesAppliedForJob(job);
+  const showEmailOrigin = shouldShowEmailOrigin(job);
+  const jobDescription = String(job.raw_email_snippet || "").trim();
 
   const handleApprove = async () => {
     setLoading("approve");
@@ -381,7 +384,7 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
               />
             ) : (
               <span
-                style={{ fontWeight: "600", color: "var(--text)", cursor: "text" }}
+                style={editableCompanyStyle}
                 title="Click to edit company name"
                 onClick={() => { setCompanyDraft(job.company || ""); setEditingCompany(true); }}
               >
@@ -411,7 +414,7 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
       </div>
 
       {/* Email origin */}
-      {(job.sender_email || job.email_subject) && (
+      {showEmailOrigin && (
         <div style={emailMetaStyle}>
           {job.email_subject && (
             <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
@@ -471,6 +474,15 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
           >
             View Job ↗
           </a>
+        )}
+        {jobDescription && (
+          <button
+            className="btn-secondary"
+            onClick={() => setDescriptionOpen((open) => !open)}
+            style={{ fontSize: "13px" }}
+          >
+            {descriptionOpen ? "Hide Description" : "Job Description"}
+          </button>
         )}
         <button
           className="btn-secondary"
@@ -550,6 +562,12 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
           )}
         </div>
       </div>
+
+      {descriptionOpen && jobDescription && (
+        <div style={descriptionBoxStyle}>
+          {jobDescription}
+        </div>
+      )}
 
       {/* Skip confirmation panel */}
       {skipConfirm && (
@@ -968,6 +986,11 @@ function isManualJob(job) {
   );
 }
 
+function shouldShowEmailOrigin(job) {
+  if (!job.sender_email && !job.email_subject) return false;
+  return !isManualJob(job);
+}
+
 function platformLabelForUrl(rawUrl) {
   const normalizedUrl = String(rawUrl || "").trim().toLowerCase();
   if (!normalizedUrl) return "";
@@ -1057,6 +1080,18 @@ const sourceLinkStyle = {
   textDecoration: "none",
 };
 
+const editableCompanyStyle = {
+  background: "var(--accent-light)",
+  border: "1px solid rgba(74,92,247,0.28)",
+  borderRadius: "6px",
+  color: "var(--text)",
+  cursor: "text",
+  display: "inline-block",
+  fontWeight: 600,
+  lineHeight: 1.25,
+  padding: "1px 6px",
+};
+
 const emailMetaStyle = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
@@ -1069,6 +1104,20 @@ const emailMetaStyle = {
 
 const reasoningBoxStyle = {
   marginTop: "8px",
+};
+
+const descriptionBoxStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  color: "var(--text)",
+  fontSize: "13px",
+  lineHeight: 1.6,
+  marginTop: "12px",
+  maxHeight: "360px",
+  overflowY: "auto",
+  padding: "12px 14px",
+  whiteSpace: "pre-wrap",
 };
 
 const reasoningListStyle = {

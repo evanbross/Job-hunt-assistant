@@ -60,6 +60,7 @@ from routes.scan import _email_date_from_message, _is_application_acknowledgemen
 logger = logging.getLogger(__name__)
 
 emails_bp = Blueprint("emails", __name__)
+SCANNED_EMAIL_LABEL = ".Job Hunt 2025/Scanned By Assistant"
 
 
 # ─── Scanned email routes ────────────────────────────────────────────────────
@@ -121,6 +122,42 @@ def mark_email_read(email_id: str):
         return jsonify({"error": "Failed to mark email as read"}), 500
 
     return jsonify({"status": "ok", "email_id": email_id})
+
+
+@emails_bp.route("/emails/move-scanned", methods=["POST"])
+def move_scanned_emails():
+    """Move selected Gmail messages out of the inbox and into the scanned label."""
+    data = request.get_json(silent=True) or {}
+    raw_email_ids = data.get("email_ids")
+    if not isinstance(raw_email_ids, list):
+        return jsonify({"error": "email_ids must be a list"}), 400
+
+    email_ids = list(
+        dict.fromkeys(
+            str(email_id).split(":")[0].strip()
+            for email_id in raw_email_ids
+            if str(email_id).strip()
+        )
+    )
+    if not email_ids:
+        return jsonify({"error": "Select at least one email"}), 400
+
+    try:
+        moved_count = GmailClient().move_messages_to_label(email_ids, SCANNED_EMAIL_LABEL)
+    except NotAuthenticatedError as exc:
+        return jsonify({"error": str(exc)}), 401
+    except Exception:
+        logger.exception("Failed to move scanned emails")
+        return jsonify({"error": "Failed to move selected emails"}), 500
+
+    return jsonify(
+        {
+            "status": "ok",
+            "label": SCANNED_EMAIL_LABEL,
+            "moved": moved_count,
+            "email_ids": email_ids,
+        }
+    )
 
 
 @emails_bp.route("/emails/clean", methods=["POST"])

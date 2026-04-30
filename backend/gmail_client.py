@@ -225,6 +225,66 @@ class GmailClient:
         except HttpError as exc:
             logger.warning("Could not mark message %s as read: %s", message_id, exc)
 
+    def move_messages_to_label(self, message_ids: list[str], label_name: str) -> int:
+        """
+        Remove messages from the inbox and apply the requested Gmail label.
+
+        Gmail labels are additive; removing INBOX archives the message while the
+        custom label keeps it findable in the configured folder.
+        """
+        unique_message_ids = list(dict.fromkeys(message_id for message_id in message_ids if message_id))
+        if not unique_message_ids:
+            return 0
+        if READ_ONLY_MODE:
+            logger.debug("READ_ONLY_MODE: skipping move of %d messages to %s", len(unique_message_ids), label_name)
+            return 0
+
+        label_id = self._get_or_create_label_id(label_name)
+        moved_count = 0
+        for start in range(0, len(unique_message_ids), 1000):
+            batch = unique_message_ids[start:start + 1000]
+            try:
+                self._service.users().messages().batchModify(
+                    userId="me",
+                    body={
+                        "ids": batch,
+                        "addLabelIds": [label_id],
+                        "removeLabelIds": ["INBOX"],
+                    },
+                ).execute()
+                moved_count += len(batch)
+            except HttpError as exc:
+                logger.warning("Could not move %d messages to %s: %s", len(batch), label_name, exc)
+                raise
+        return moved_count
+
+    def _get_or_create_label_id(self, label_name: str) -> str:
+        labels = (
+            self._service.users()
+            .labels()
+            .list(userId="me")
+            .execute()
+            .get("labels", [])
+        )
+        for label_row in labels:
+            if label_row.get("name") == label_name:
+                return label_row["id"]
+
+        created_label = (
+            self._service.users()
+            .labels()
+            .create(
+                userId="me",
+                body={
+                    "name": label_name,
+                    "labelListVisibility": "labelShow",
+                    "messageListVisibility": "show",
+                },
+            )
+            .execute()
+        )
+        return created_label["id"]
+
     # ── Message parsing helpers ───────────────────────────────────────────────
 
     @staticmethod

@@ -219,6 +219,7 @@ def _run_scan(rescan_all: bool = False) -> None:
         new_jobs: int = 0
         emails_with_jobs: int = 0
         jobs_by_source: dict[str, int] = {}
+        successful_emails: list[dict[str, object]] = []
 
         # Load all known jobs once for duplicate detection.
         known_jobs: list[dict] = job_repo.get_all_ordered()
@@ -361,6 +362,15 @@ def _run_scan(rescan_all: bool = False) -> None:
 
             emails_with_jobs += 1
             scanned_repo.mark_scanned(msg_id, sender, subject, disposition="job_created", email_date=email_date)
+            successful_emails.append(
+                {
+                    "email_id": msg_id,
+                    "sender_email": sender,
+                    "email_subject": subject,
+                    "email_date": email_date,
+                    "job_count": len(parsed_jobs),
+                }
+            )
 
             n_found = len(parsed_jobs)
             first = parsed_jobs[0]
@@ -383,6 +393,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                 "emails_scanned": total,
                 "new_jobs": new_jobs,
                 "emails_with_jobs": emails_with_jobs,
+                "successful_emails": successful_emails,
                 "sources_with_jobs": len(jobs_by_source),
                 "by_source": sorted(
                     [{"source": k, "count": v} for k, v in jobs_by_source.items()],

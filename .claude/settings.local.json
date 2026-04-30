@@ -51,7 +51,10 @@
       "Bash(.venv/Scripts/python.exe -m pytest tests/test_fit_scorer.py -v)",
       "Bash(python -m pytest --version)",
       "Bash(pip3 show *)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(sed 's/@app.route//')",
+      "Bash(python -c \"import ast, sys; files = ['app.py', 'backend/utils.py', 'routes/__init__.py', 'routes/auth.py', 'routes/scan.py', 'routes/board_search.py', 'routes/career_sites.py', 'routes/fit.py', 'routes/jobs.py', 'routes/cover_letter.py', 'routes/emails.py', 'routes/import_.py', 'routes/sheet.py', 'routes/settings.py', 'routes/system.py']; errs=[]; [errs.append\\(\\(f, str\\(e\\)\\)\\) or None for f in files for e in [None] if \\(open\\(f\\).read\\(\\), ast.parse\\(open\\(f\\).read\\(\\)\\)\\) and False] or print\\('all ok'\\) if not errs else print\\(errs\\)\")",
+      "Bash(python -c \"import app; print\\('Import OK'\\)\")"
     ]
   }
 }

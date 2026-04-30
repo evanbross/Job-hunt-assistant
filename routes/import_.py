@@ -48,6 +48,7 @@ from flask import Blueprint, jsonify, request
 
 import config
 from backend.captured_page_import_service import CapturedPageImportService
+from backend.import_repair import repair_existing_job_company
 from backend.manual_job_ingest_service import ManualJobIngestService
 from backend.utils import (
     _get_repos,
@@ -241,6 +242,7 @@ def _run_import(extracted: list[dict], capture_source: dict | None, body: dict) 
         service = ManualJobIngestService(repos["jobs"], repos["resume"], repos["penalties"])
         queued = 0
         skipped = 0
+        repaired = 0
         failed = 0
 
         for i, url_row in enumerate(extracted):
@@ -250,12 +252,22 @@ def _run_import(extracted: list[dict], capture_source: dict | None, body: dict) 
                 _import_state.progress = round((i / total) * 100)
                 _import_state.message = f"Job {i + 1} of {total} — {platform}…"
 
-            if repos["jobs"].get_by_url(url) is not None:
+            existing_job = repos["jobs"].get_by_url(url)
+            if existing_job is not None:
+                if repair_existing_job_company(repos["jobs"], existing_job, url_row):
+                    repaired += 1
                 skipped += 1
                 continue
 
             try:
-                service.ingest("", source_url=url, source_name=platform, sheet_jobs=known_jobs)
+                service.ingest(
+                    str(url_row.get("listing_text") or ""),
+                    source_url=url,
+                    source_name=platform,
+                    company_override=str(url_row.get("company") or ""),
+                    job_title_override=str(url_row.get("job_title") or ""),
+                    sheet_jobs=known_jobs,
+                )
                 queued += 1
             except (ValueError, urllib.error.URLError, TimeoutError, socket.error) as exc:
                 logger.warning("Bulk import skipped %s: %s", url, exc)
@@ -272,11 +284,12 @@ def _run_import(extracted: list[dict], capture_source: dict | None, body: dict) 
         with _import_lock:
             _import_state.progress = 100
             _import_state.message = (
-                f"Done — {queued} queued, {skipped} skipped, {failed} failed."
+                f"Done — {queued} queued, {skipped} skipped, {repaired} repaired, {failed} failed."
             )
             _import_state.result = {
                 "queued": queued,
                 "skipped": skipped,
+                "repaired": repaired,
                 "failed": failed,
                 "capture_source": capture_source,
             }

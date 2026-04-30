@@ -108,6 +108,104 @@ def test_analyzes_capture_source_from_mhtml_content_location() -> None:
     assert analysis["source"]["platform"] == "Lever"
 
 
+def test_normalizes_wellfound_job_links_to_listing_slug_url() -> None:
+    service = CapturedPageImportService()
+    html = """
+    <html><body>
+    <a href="https://wellfound.com/jobs/4085464-game-engineer-at-spawn">
+        <span>Game Engineer at Spawn</span>
+        <span>Onsite or remote</span>
+        <span>$200k - $250k</span>
+    </a>
+    <a href="https://wellfound.com/jobs/home">Ignore navigation</a>
+    </body></html>
+    """
+
+    rows = service.extract_public_job_urls(html, "html")
+
+    assert len(rows) == 1
+    assert rows[0]["url"] == (
+        "https://wellfound.com/jobs?job_listing_slug=4085464-game-engineer-at-spawn"
+    )
+    assert rows[0]["platform"] == "Wellfound"
+    assert rows[0]["job_title"] == "Game Engineer at Spawn"
+    assert rows[0]["company"] == "Spawn"
+    assert rows[0]["listing_text"].startswith("Game Engineer at Spawn")
+
+
+def test_analyzes_bookmarklet_json_capture() -> None:
+    service = CapturedPageImportService()
+    payload = """
+    {
+      "source": {
+        "name": "Wellfound Jobs",
+        "url": "https://wellfound.com/jobs",
+        "platform": "Wellfound"
+      },
+      "jobs": [
+        {
+          "url": "https://wellfound.com/jobs/4085464-game-engineer-at-spawn",
+          "platform": "Wellfound",
+          "company": "Spawn",
+          "job_title": "Game Engineer at Spawn",
+          "listing_text": "Game Engineer at Spawn\\nCompany: Spawn"
+        }
+      ]
+    }
+    """
+
+    analysis = service.analyze_capture(payload, "json")
+
+    assert len(analysis["urls"]) == 1
+    assert analysis["urls"][0]["url"] == (
+        "https://wellfound.com/jobs?job_listing_slug=4085464-game-engineer-at-spawn"
+    )
+    assert analysis["urls"][0]["company"] == "Spawn"
+    assert analysis["urls"][0]["job_title"] == "Game Engineer at Spawn"
+    assert analysis["source"]["url"] == "https://wellfound.com/jobs"
+
+
+def test_recovers_wellfound_company_from_bookmarklet_text() -> None:
+    service = CapturedPageImportService()
+    payload = """
+    {
+      "jobs": [
+        {
+          "url": "https://wellfound.com/jobs/4085464-game-engineer-at-spawn",
+          "platform": "Wellfound",
+          "job_title": "Game Engineer at Spawn",
+          "listing_text": "Game Engineer at Spawn\\nURL: https://wellfound.com/jobs?job_listing_slug=4085464-game-engineer-at-spawn"
+        }
+      ]
+    }
+    """
+
+    analysis = service.analyze_capture(payload, "json")
+
+    assert analysis["urls"][0]["company"] == "Spawn"
+
+
+def test_cleans_overcaptured_wellfound_company_text() -> None:
+    service = CapturedPageImportService()
+    payload = """
+    {
+      "jobs": [
+        {
+          "url": "https://wellfound.com/jobs/1234567-engineer-at-softrip",
+          "platform": "Wellfound",
+          "company": "SoftripActively HiringPromotedAI-powered operations platform for multi-day tour operators11-50 Employees",
+          "job_title": "Engineer at Softrip",
+          "listing_text": "Engineer at Softrip"
+        }
+      ]
+    }
+    """
+
+    analysis = service.analyze_capture(payload, "json")
+
+    assert analysis["urls"][0]["company"] == "Softrip"
+
+
 def test_rejects_empty_content() -> None:
     service = CapturedPageImportService()
 

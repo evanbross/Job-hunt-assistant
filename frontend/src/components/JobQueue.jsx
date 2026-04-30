@@ -56,14 +56,14 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   const [manualJobTitleOverride, setManualJobTitleOverride] = useState("");
   const [manualSubmitting, setManualSubmitting] = useState(false);
   const [manualResult, setManualResult] = useState(null);
-  const [manualExpanded, setManualExpanded] = useState(false);
   const [importContent, setImportContent] = useState("");
   const [importFormat, setImportFormat] = useState("html");
   const [importRecaptureIntervalDays, setImportRecaptureIntervalDays] = useState("4");
   const [importSubmitting, setImportSubmitting] = useState(false);
   const [importSummary, setImportSummary] = useState(null);
   const [importState, setImportState] = useState(null);
-  const [importExpanded, setImportExpanded] = useState(false);
+  const [importPanelOpen, setImportPanelOpen] = useState(false);
+  const [importMode, setImportMode] = useState("text");
   const [recaptureDueSites, setRecaptureDueSites] = useState([]);
   const pollRef = useRef(null);
   const boardPollRef = useRef(null);
@@ -405,7 +405,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         return;
       }
       setImportContent(text);
-      setImportFormat("html");
+      setImportFormat(detectImportFormatFromText(text, "html"));
     } catch {
       window.alert("Clipboard read failed. Your browser may require permission.");
     }
@@ -417,7 +417,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     try {
       const text = await file.text();
       setImportContent(text);
-      setImportFormat(file.name.toLowerCase().endsWith(".mhtml") || file.name.toLowerCase().endsWith(".mht") ? "mhtml" : "html");
+      setImportFormat(detectImportFormatFromText(text, detectImportFormatFromName(file.name)));
     } catch {
       window.alert("Failed to read file.");
     } finally {
@@ -558,6 +558,15 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           {reEvaluating ? "Re-evaluating…" : "Re-evaluate"}
         </button>
 
+        <button
+          className="btn-primary"
+          onClick={() => setImportPanelOpen(true)}
+          disabled={anyQueueActionRunning}
+          style={{ padding: "8px 20px", fontSize: "14px" }}
+        >
+          Import Jobs
+        </button>
+
         {jobs.length > 0 && (
           <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
             {jobs.length} job{jobs.length !== 1 ? "s" : ""} ready to review
@@ -575,197 +584,173 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         </div>
       )}
 
-      <div style={manualBox}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap", marginBottom: manualExpanded ? "12px" : 0 }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: "15px", color: "var(--text)" }}>Paste Job Listing</h3>
-            <p style={{ margin: "4px 0 0 0", fontSize: "12px", color: "var(--text-muted)" }}>
-              Paste a public job description or provide a public job URL. If parsing misses fields, fill them in below.
-            </p>
-          </div>
-          <button
-            className="btn-secondary"
-            onClick={() => setManualExpanded((prev) => !prev)}
-            style={{ padding: "8px 18px", fontSize: "14px", alignSelf: "flex-start" }}
+      {importPanelOpen && (
+        <div style={popupBackdropStyle} onClick={() => !importSubmitting && !manualSubmitting && setImportPanelOpen(false)}>
+          <div
+            style={importDialogPanelStyle}
+            onClick={(e) => e.stopPropagation()}
           >
-            {manualExpanded ? "Collapse" : "Expand"}
-          </button>
-        </div>
-
-        {manualExpanded && (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px", marginBottom: "10px" }}>
-              <input
-                type="text"
-                value={manualCompanyOverride}
-                onChange={(e) => setManualCompanyOverride(e.target.value)}
-                placeholder="Optional company fallback"
-                style={inputStyle}
-              />
-              <input
-                type="text"
-                value={manualJobTitleOverride}
-                onChange={(e) => setManualJobTitleOverride(e.target.value)}
-                placeholder="Optional job title fallback"
-                style={inputStyle}
-              />
-              <input
-                type="text"
-                value={manualSourceName}
-                onChange={(e) => setManualSourceName(e.target.value)}
-                placeholder="Optional source name"
-                style={inputStyle}
-              />
-              <input
-                type="url"
-                value={manualSourceUrl}
-                onChange={(e) => setManualSourceUrl(e.target.value)}
-                placeholder="Optional job URL"
-                style={inputStyle}
-              />
-            </div>
-
-            <textarea
-              value={manualListingText}
-              onChange={(e) => setManualListingText(e.target.value)}
-              placeholder="Paste the full job listing text here..."
-              style={textareaStyle}
-            />
-
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "10px" }}>
-              <button
-                className="btn-primary"
-                onClick={handleManualSubmit}
-                disabled={anyQueueActionRunning}
-                style={{ padding: "8px 18px", fontSize: "14px" }}
-              >
-                {manualSubmitting ? "Evaluating…" : "Evaluate & Queue"}
-              </button>
-            </div>
-
-            {manualResult && (
-              <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--green)" }}>
-                Queued {manualResult.job_title || "job"} at {manualResult.company || "unknown company"} as{" "}
-                <strong>{manualResult.status}</strong>
-                {manualResult.fit_score != null ? ` with fit score ${manualResult.fit_score}` : ""}.
-              </p>
-            )}
-          </>
-        )}
-      </div>
-
-      <div style={manualBox}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap", marginBottom: importExpanded ? "12px" : 0 }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: "15px", color: "var(--text)" }}>Import Captured HTML</h3>
-            <p style={{ margin: "4px 0 0 0", fontSize: "12px", color: "var(--text-muted)" }}>
-              Paste captured page HTML or upload `.html` / `.mhtml`. All recognized job links will be categorized and merged into the queue automatically.
-            </p>
-          </div>
-          <button
-            className="btn-secondary"
-            onClick={() => setImportExpanded((prev) => !prev)}
-            style={{ padding: "8px 18px", fontSize: "14px", alignSelf: "flex-start" }}
-          >
-            {importExpanded ? "Collapse" : "Expand"}
-          </button>
-        </div>
-
-        {importExpanded && (
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".html,.htm,.mhtml,.mht,text/html,message/rfc822,multipart/related"
-              onChange={handleImportFileChange}
-              style={{ display: "none" }}
-            />
-
-            <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
-              <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                Format
-              </label>
-              <select value={importFormat} onChange={(e) => setImportFormat(e.target.value)} style={selectStyle}>
-                <option value="html">HTML</option>
-                <option value="mhtml">MHTML</option>
-              </select>
-              <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                Remind every
-              </label>
-              <input
-                type="number"
-                min="1"
-                value={importRecaptureIntervalDays}
-                onChange={(e) => setImportRecaptureIntervalDays(e.target.value)}
-                style={{ ...inputStyle, width: "80px" }}
-              />
-              <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>days</span>
-            </div>
-
-            <textarea
-              value={importContent}
-              onChange={(e) => setImportContent(e.target.value)}
-              placeholder="Paste captured HTML here, or use Paste Clipboard / Upload HTML/MHTML."
-              style={textareaStyle}
-            />
-
-            <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", flexWrap: "wrap", marginTop: "10px" }}>
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                <button
-                  className="btn-secondary"
-                  onClick={handlePasteClipboard}
-                  disabled={importSubmitting}
-                  style={{ padding: "8px 16px", fontSize: "13px" }}
-                >
-                  Paste Clipboard
-                </button>
-                <button
-                  className="btn-secondary"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={importSubmitting}
-                  style={{ padding: "8px 16px", fontSize: "13px" }}
-                >
-                  Upload HTML/MHTML
-                </button>
+            <div style={popupHeaderStyle}>
+              <div>
+                <div style={popupTitleStyle}>Import Jobs</div>
+                <div style={popupSubtitleStyle}>Paste a listing, upload captured HTML/MHTML, or import bookmarklet JSON.</div>
               </div>
               <button
-                className="btn-primary"
-                onClick={handleExtractAndQueueAll}
-                disabled={importSubmitting}
-                style={{ padding: "8px 16px", fontSize: "13px" }}
+                className="btn-secondary"
+                onClick={() => setImportPanelOpen(false)}
+                disabled={importSubmitting || manualSubmitting}
+                style={{ padding: "4px 10px", fontSize: "12px" }}
               >
-                {importSubmitting ? "Importing…" : "Extract & Queue All"}
+                Close
               </button>
             </div>
 
-          </>
-        )}
-      </div>
+            <div style={modeToggleStyle}>
+              <button
+                className={importMode === "text" ? "btn-primary" : "btn-secondary"}
+                onClick={() => setImportMode("text")}
+                style={modeButtonStyle}
+              >
+                Paste Text / URL
+              </button>
+              <button
+                className={importMode === "html" ? "btn-primary" : "btn-secondary"}
+                onClick={() => setImportMode("html")}
+                style={modeButtonStyle}
+              >
+                Import HTML / JSON
+              </button>
+            </div>
 
-      {/* Import progress */}
-      {importSubmitting && importState && (
-        <div style={progressBox}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
-            <span>{importState.message}</span>
-            <span>{importState.progress}%</span>
-          </div>
-          <div className="loading-bar">
-            <div className="loading-bar-fill" style={{ width: `${importState.progress}%` }} />
-          </div>
-        </div>
-      )}
+            {importMode === "text" ? (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px", marginBottom: "10px" }}>
+                  <input
+                    type="text"
+                    value={manualCompanyOverride}
+                    onChange={(e) => setManualCompanyOverride(e.target.value)}
+                    placeholder="Optional company fallback"
+                    style={inputStyle}
+                  />
+                  <input
+                    type="text"
+                    value={manualJobTitleOverride}
+                    onChange={(e) => setManualJobTitleOverride(e.target.value)}
+                    placeholder="Optional job title fallback"
+                    style={inputStyle}
+                  />
+                  <input
+                    type="text"
+                    value={manualSourceName}
+                    onChange={(e) => setManualSourceName(e.target.value)}
+                    placeholder="Optional source name"
+                    style={inputStyle}
+                  />
+                  <input
+                    type="url"
+                    value={manualSourceUrl}
+                    onChange={(e) => setManualSourceUrl(e.target.value)}
+                    placeholder="Optional job URL"
+                    style={inputStyle}
+                  />
+                </div>
 
-      {/* Scan / rescan-all progress */}
-      {anyScanRunning && scanState && (
-        <div style={progressBox}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
-            <span>{scanState.message}</span>
-            <span>{scanState.progress}%</span>
+                <textarea
+                  value={manualListingText}
+                  onChange={(e) => setManualListingText(e.target.value)}
+                  placeholder="Paste the full job listing text here..."
+                  style={textareaStyle}
+                />
+
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "10px" }}>
+                  <button
+                    className="btn-primary"
+                    onClick={handleManualSubmit}
+                    disabled={anyQueueActionRunning}
+                    style={{ padding: "8px 18px", fontSize: "14px" }}
+                  >
+                    {manualSubmitting ? "Evaluating…" : "Evaluate & Queue"}
+                  </button>
+                </div>
+
+                {manualResult && (
+                  <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--green)" }}>
+                    Queued {manualResult.job_title || "job"} at {manualResult.company || "unknown company"} as{" "}
+                    <strong>{manualResult.status}</strong>
+                    {manualResult.fit_score != null ? ` with fit score ${manualResult.fit_score}` : ""}.
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".html,.htm,.mhtml,.mht,.json,text/html,application/json,message/rfc822,multipart/related"
+                  onChange={handleImportFileChange}
+                  style={{ display: "none" }}
+                />
+
+                <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
+                  <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                    Format
+                  </label>
+                  <select value={importFormat} onChange={(e) => setImportFormat(e.target.value)} style={selectStyle}>
+                    <option value="html">HTML</option>
+                    <option value="mhtml">MHTML</option>
+                    <option value="json">JSON</option>
+                  </select>
+                  <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                    Remind every
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={importRecaptureIntervalDays}
+                    onChange={(e) => setImportRecaptureIntervalDays(e.target.value)}
+                    style={{ ...inputStyle, width: "80px" }}
+                  />
+                  <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>days</span>
+                </div>
+
+                <textarea
+                  value={importContent}
+                  onChange={(e) => setImportContent(e.target.value)}
+                  placeholder="Paste captured HTML or bookmarklet JSON here, or use Paste Clipboard / Upload File."
+                  style={textareaStyle}
+                />
+
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", flexWrap: "wrap", marginTop: "10px" }}>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    <button
+                      className="btn-secondary"
+                      onClick={handlePasteClipboard}
+                      disabled={importSubmitting}
+                      style={{ padding: "8px 16px", fontSize: "13px" }}
+                    >
+                      Paste Clipboard
+                    </button>
+                    <button
+                      className="btn-secondary"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={importSubmitting}
+                      style={{ padding: "8px 16px", fontSize: "13px" }}
+                    >
+                      Upload File
+                    </button>
+                  </div>
+                  <button
+                    className="btn-primary"
+                    onClick={handleExtractAndQueueAll}
+                    disabled={importSubmitting}
+                    style={{ padding: "8px 16px", fontSize: "13px" }}
+                  >
+                    {importSubmitting ? "Importing…" : "Extract & Queue All"}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
-          <div className="loading-bar">
-            <div className="loading-bar-fill" style={{ width: `${scanState.progress}%` }} />
-          </div>
-          <ErrorList errors={scanState.errors} onNavigateToEmails={onNavigateToEmails} />
         </div>
       )}
 
@@ -774,18 +759,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         <div style={{ ...progressBox, background: "rgba(76,175,129,0.08)", borderColor: "rgba(76,175,129,0.25)", marginBottom: "16px" }}>
           <p style={{ fontSize: "13px", color: "var(--green)" }}>{scanState.message}</p>
           <ErrorList errors={scanState.errors} onNavigateToEmails={onNavigateToEmails} />
-        </div>
-      )}
-
-      {reEvaluating && (
-        <div style={progressBox}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
-            <span>{reEvaluateMessage || "Re-evaluating…"}</span>
-            <span>{reEvaluateProgress}%</span>
-          </div>
-          <div className="loading-bar">
-            <div className="loading-bar-fill" style={{ width: `${reEvaluateProgress}%` }} />
-          </div>
         </div>
       )}
 
@@ -798,30 +771,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
             {reEvaluateSummary.status_changed ? ` · ${reEvaluateSummary.status_changed} moved` : ""}
             {reEvaluateSummary.failed ? ` · ${reEvaluateSummary.failed} failed` : ""}
           </p>
-        </div>
-      )}
-
-      {/* Board search progress */}
-      {boardSearching && boardState && (
-        <div style={progressBox}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
-            <span>{boardState.message}</span>
-            <span>{boardState.progress}%</span>
-          </div>
-          <div className="loading-bar">
-            <div className="loading-bar-fill" style={{ width: `${boardState.progress}%` }} />
-          </div>
-          {boardState.candidates_found > 0 && (
-            <p style={{ marginTop: "6px", fontSize: "11px", color: "var(--text-muted)" }}>
-              {boardState.candidates_processed}/{boardState.candidates_found} scored
-              {boardState.jobs_added > 0 && ` · ${boardState.jobs_added} added`}
-            </p>
-          )}
-          {boardState.errors?.length > 0 && (
-            <ul style={{ marginTop: "8px", fontSize: "11px", color: "var(--red)", paddingLeft: "16px" }}>
-              {boardState.errors.map((e, i) => <li key={i}>{e}</li>)}
-            </ul>
-          )}
         </div>
       )}
 
@@ -839,6 +788,52 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
 
       {importSummary && (
         <ImportSummaryPopup summary={importSummary} onClose={() => setImportSummary(null)} />
+      )}
+
+      {importSubmitting && importState && (
+        <ProgressPopup
+          title="Importing Job Posts"
+          message={importState.message}
+          progress={importState.progress}
+        />
+      )}
+
+      {anyScanRunning && scanState && (
+        <ProgressPopup
+          title={rescanAllRunning ? "Purging Queue" : "Scanning Emails"}
+          message={scanState.message}
+          progress={scanState.progress}
+        >
+          <ErrorList errors={scanState.errors} onNavigateToEmails={onNavigateToEmails} />
+        </ProgressPopup>
+      )}
+
+      {reEvaluating && (
+        <ProgressPopup
+          title="Re-evaluating Jobs"
+          message={reEvaluateMessage || "Re-evaluating..."}
+          progress={reEvaluateProgress}
+        />
+      )}
+
+      {boardSearching && boardState && (
+        <ProgressPopup
+          title="Searching Job Boards"
+          message={boardState.message}
+          progress={boardState.progress}
+        >
+          {boardState.candidates_found > 0 && (
+            <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--text-muted)" }}>
+              {boardState.candidates_processed}/{boardState.candidates_found} scored
+              {boardState.jobs_added > 0 && ` · ${boardState.jobs_added} added`}
+            </p>
+          )}
+          {boardState.errors?.length > 0 && (
+            <ul style={{ marginTop: "8px", fontSize: "11px", color: "var(--red)", paddingLeft: "16px" }}>
+              {boardState.errors.map((e, i) => <li key={i}>{e}</li>)}
+            </ul>
+          )}
+        </ProgressPopup>
       )}
 
       {jobReEvaluatePopup && (
@@ -907,8 +902,36 @@ function ErrorList({ errors, onNavigateToEmails }) {
   );
 }
 
+function ProgressPopup({ title, message, progress, children }) {
+  const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
+  return (
+    <div style={popupBackdropStyle}>
+      <div style={{ ...popupPanelStyle, maxWidth: "520px" }}>
+        <div style={popupHeaderStyle}>
+          <div>
+            <div style={popupTitleStyle}>{title}</div>
+            <div style={popupSubtitleStyle}>{message || "Working..."}</div>
+          </div>
+          <span className="inline-spinner" style={popupSpinnerStyle} />
+        </div>
+
+        <div style={{ paddingTop: "4px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
+            <span>Progress</span>
+            <span>{safeProgress}%</span>
+          </div>
+          <div className="loading-bar">
+            <div className="loading-bar-fill" style={{ width: `${safeProgress}%` }} />
+          </div>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ImportSummaryPopup({ summary, onClose }) {
-  const { queued, skipped, failed } = summary;
+  const { queued, skipped, repaired = 0, failed } = summary;
   const sourceName = summary.capture_source?.name;
   return (
     <div style={popupBackdropStyle}>
@@ -939,10 +962,16 @@ function ImportSummaryPopup({ summary, onClose }) {
               <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>already in queue</div>
             </div>
           )}
+          {repaired > 0 && (
+            <div>
+              <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--green)" }}>{repaired}</div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>company fixed</div>
+            </div>
+          )}
           {failed > 0 && (
             <div>
               <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--red)" }}>{failed}</div>
-              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>failed to fetch</div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>failed</div>
             </div>
           )}
         </div>
@@ -1010,9 +1039,44 @@ function JobReEvaluatePopup({ popup, onClose }) {
 
 function ScanSummaryPopup({ summary, onClose }) {
   const { emails_scanned, new_jobs, sources_with_jobs, by_source } = summary;
+  const successfulEmails = Array.isArray(summary.successful_emails) ? summary.successful_emails : [];
+  const [selectedEmailIds, setSelectedEmailIds] = useState(() => successfulEmails.map((email) => email.email_id));
+  const [movingEmails, setMovingEmails] = useState(false);
+  const [moveResult, setMoveResult] = useState(null);
+  const selectedCount = selectedEmailIds.length;
+
+  const toggleEmail = (emailId) => {
+    setSelectedEmailIds((currentIds) =>
+      currentIds.includes(emailId)
+        ? currentIds.filter((currentId) => currentId !== emailId)
+        : [...currentIds, emailId]
+    );
+  };
+
+  const moveSelectedEmails = async () => {
+    if (selectedEmailIds.length === 0 || movingEmails) return;
+    setMovingEmails(true);
+    setMoveResult(null);
+    try {
+      const res = await fetch("/api/emails/move-scanned", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email_ids: selectedEmailIds }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to move emails");
+      setMoveResult(data);
+      setSelectedEmailIds([]);
+    } catch (error) {
+      window.alert(`Failed to move emails: ${error.message}`);
+    } finally {
+      setMovingEmails(false);
+    }
+  };
+
   return (
     <div style={popupBackdropStyle}>
-      <div style={{ ...popupPanelStyle, maxWidth: "480px" }}>
+      <div style={{ ...popupPanelStyle, maxWidth: "680px" }}>
         <div style={popupHeaderStyle}>
           <div style={popupTitleStyle}>Scan complete</div>
           <button
@@ -1025,7 +1089,7 @@ function ScanSummaryPopup({ summary, onClose }) {
           </button>
         </div>
 
-        <div style={{ display: "flex", gap: "28px", marginBottom: by_source.length > 0 ? "16px" : 0 }}>
+        <div style={{ display: "flex", gap: "28px", marginBottom: by_source.length > 0 || successfulEmails.length > 0 ? "16px" : 0 }}>
           <div>
             <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--text)" }}>{emails_scanned}</div>
             <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>emails scanned</div>
@@ -1052,6 +1116,77 @@ function ScanSummaryPopup({ summary, onClose }) {
             ))}
           </div>
         )}
+
+        {successfulEmails.length > 0 && (
+          <div style={emailChecklistStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text)" }}>
+                  Parsed emails
+                </div>
+                <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                  {selectedCount} of {successfulEmails.length} selected
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ padding: "4px 10px", fontSize: "12px" }}
+                  onClick={() => setSelectedEmailIds(successfulEmails.map((email) => email.email_id))}
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ padding: "4px 10px", fontSize: "12px" }}
+                  onClick={() => setSelectedEmailIds([])}
+                >
+                  Deselect all
+                </button>
+              </div>
+            </div>
+
+            <div style={emailChecklistRowsStyle}>
+              {successfulEmails.map((email) => (
+                <label key={email.email_id} style={emailChecklistRowStyle}>
+                  <input
+                    type="checkbox"
+                    checked={selectedEmailIds.includes(email.email_id)}
+                    onChange={() => toggleEmail(email.email_id)}
+                    style={{ width: "auto", marginTop: "2px" }}
+                  />
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: "block", color: "var(--text)", fontSize: "13px", fontWeight: 600, overflowWrap: "anywhere" }}>
+                      {email.email_subject || "(no subject)"}
+                    </span>
+                    <span style={{ display: "block", color: "var(--text-muted)", fontSize: "12px", overflowWrap: "anywhere" }}>
+                      {email.sender_email || "Unknown sender"} · {email.email_date || "No date"} · {email.job_count || 1} job{email.job_count === 1 ? "" : "s"}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginTop: "12px", flexWrap: "wrap" }}>
+              <div style={{ fontSize: "12px", color: moveResult ? "var(--green)" : "var(--text-muted)" }}>
+                {moveResult
+                  ? `Moved ${moveResult.moved} email${moveResult.moved === 1 ? "" : "s"} to ${moveResult.label}.`
+                  : "Move selected emails out of the inbox after confirming the parse."}
+              </div>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={moveSelectedEmails}
+                disabled={movingEmails || selectedCount === 0}
+                style={{ padding: "7px 12px", fontSize: "12px" }}
+              >
+                {movingEmails ? "Moving..." : "Move Selected to Scanned Folder"}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1068,6 +1203,20 @@ function scoreDeltaLabel(previousScore, newScore) {
   const delta = Number(newScore) - Number(previousScore);
   if (delta === 0) return "no change";
   return `${delta > 0 ? "+" : ""}${delta}`;
+}
+
+function detectImportFormatFromName(fileName) {
+  const normalized = String(fileName || "").toLowerCase();
+  if (normalized.endsWith(".mhtml") || normalized.endsWith(".mht")) return "mhtml";
+  if (normalized.endsWith(".json")) return "json";
+  return "html";
+}
+
+function detectImportFormatFromText(text, fallback) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return fallback;
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) return "json";
+  return fallback;
 }
 
 const progressBox = {
@@ -1098,6 +1247,13 @@ const popupPanelStyle = {
   maxWidth: "460px",
   padding: "18px",
   width: "100%",
+};
+
+const importDialogPanelStyle = {
+  ...popupPanelStyle,
+  maxHeight: "86vh",
+  maxWidth: "820px",
+  overflowY: "auto",
 };
 
 const popupHeaderStyle = {
@@ -1159,6 +1315,28 @@ const popupMovedStyle = {
   padding: "4px 9px",
 };
 
+const emailChecklistStyle = {
+  borderTop: "1px solid var(--border)",
+  marginTop: "14px",
+  paddingTop: "12px",
+};
+
+const emailChecklistRowsStyle = {
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  maxHeight: "260px",
+  overflowY: "auto",
+};
+
+const emailChecklistRowStyle = {
+  alignItems: "flex-start",
+  borderBottom: "1px solid var(--border)",
+  cursor: "pointer",
+  display: "flex",
+  gap: "10px",
+  padding: "9px 11px",
+};
+
 const manualBox = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
@@ -1166,6 +1344,18 @@ const manualBox = {
   padding: "16px 18px",
   marginBottom: "16px",
   boxShadow: "var(--shadow-sm)",
+};
+
+const modeToggleStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px",
+  marginBottom: "12px",
+};
+
+const modeButtonStyle = {
+  padding: "7px 14px",
+  fontSize: "13px",
 };
 
 const inputStyle = {
