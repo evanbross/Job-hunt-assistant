@@ -543,6 +543,8 @@ function ConfigSection() {
   const [saved, setSaved] = useState(false);
   const [saveSummary, setSaveSummary] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [ollamaTest, setOllamaTest] = useState(null);
+  const [testingOllama, setTestingOllama] = useState(false);
 
   useEffect(() => {
     fetch("/api/config")
@@ -590,6 +592,19 @@ function ConfigSection() {
     }
   };
 
+  const testOllamaConnection = async () => {
+    setTestingOllama(true);
+    setOllamaTest(null);
+    const res = await fetch("/api/config/test-ollama", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ollama_base_url: cfg.ollama_base_url, ollama_model: cfg.ollama_model }),
+    });
+    const data = await res.json();
+    setOllamaTest(data);
+    setTestingOllama(false);
+  };
+
   if (!cfg) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
 
   return (
@@ -627,6 +642,78 @@ function ConfigSection() {
             Choose the markdown or text file used as the candidate profile for scoring and cover-letter prompts.
           </span>
         </label>
+
+        <div style={{ marginTop: "16px" }}>
+          <label style={labelStyle}>
+            AI Provider
+            <select
+              value={cfg.ai_provider || "anthropic"}
+              onChange={(e) => setCfg({ ...cfg, ai_provider: e.target.value })}
+            >
+              <option value="anthropic">Claude / Anthropic</option>
+              <option value="openai">OpenAI</option>
+              <option value="ollama">Ollama (local)</option>
+            </select>
+          </label>
+
+          {cfg.ai_provider === "anthropic" && (
+            <label style={{ ...labelStyle, marginTop: "12px" }}>
+              Claude Model
+              <input
+                value={cfg.anthropic_model || ""}
+                onChange={(e) => setCfg({ ...cfg, anthropic_model: e.target.value })}
+                placeholder="claude-sonnet-4-20250514"
+              />
+            </label>
+          )}
+
+          {cfg.ai_provider === "openai" && (
+            <label style={{ ...labelStyle, marginTop: "12px" }}>
+              OpenAI Model
+              <input
+                value={cfg.openai_model || ""}
+                onChange={(e) => setCfg({ ...cfg, openai_model: e.target.value })}
+                placeholder="gpt-4.1"
+              />
+              <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", display: "block" }}>
+                Uses OPENAI_API_KEY from your environment.
+              </span>
+            </label>
+          )}
+
+          {cfg.ai_provider === "ollama" && (
+            <div>
+              <div style={formGrid}>
+                <label style={labelStyle}>
+                  Ollama URL
+                  <input
+                    value={cfg.ollama_base_url || ""}
+                    onChange={(e) => { setCfg({ ...cfg, ollama_base_url: e.target.value }); setOllamaTest(null); }}
+                    placeholder="http://localhost:11434"
+                  />
+                </label>
+                <label style={labelStyle}>
+                  Ollama Model
+                  <input
+                    value={cfg.ollama_model || ""}
+                    onChange={(e) => { setCfg({ ...cfg, ollama_model: e.target.value }); setOllamaTest(null); }}
+                    placeholder="qwen2.5:32b"
+                  />
+                </label>
+              </div>
+              <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "10px" }}>
+                <button className="btn-secondary" onClick={testOllamaConnection} disabled={testingOllama}>
+                  {testingOllama ? "Testing…" : "Test Connection"}
+                </button>
+                {ollamaTest && (
+                  <span style={{ fontSize: "13px", color: ollamaTest.ok ? "var(--green)" : "var(--red)" }}>
+                    {ollamaTest.message}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <button className="btn-primary" onClick={save} disabled={saving}>

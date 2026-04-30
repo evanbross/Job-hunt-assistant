@@ -58,7 +58,7 @@ const MISMATCH_REASONS = [
   "Other Mismatch",
 ];
 
-export default function JobCard({ job, onApprove, onReclassified, onSkip }) {
+export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, onSkip }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
@@ -114,6 +114,10 @@ export default function JobCard({ job, onApprove, onReclassified, onSkip }) {
       ? "badge-yellow"
       : "badge-red";
   const salaryRange = salaryRangeForJob(job);
+  const sourceSummary = sourceSummaryForJob(job);
+  const reasoningText = reasoningWithoutPenaltySummary(job.fit_reasoning);
+  const reasoningBullets = fitReasoningBullets(reasoningText);
+  const penaltiesApplied = penaltiesAppliedForJob(job);
 
   const handleApprove = async () => {
     setLoading("approve");
@@ -255,6 +259,18 @@ export default function JobCard({ job, onApprove, onReclassified, onSkip }) {
     }
   };
 
+  const handleReEvaluate = async () => {
+    if (!onReEvaluate) return;
+    setLoading("reevaluate");
+    try {
+      await onReEvaluate(job);
+    } catch {
+      /* Error details are shown in the re-evaluation popup. */
+    } finally {
+      setLoading(null);
+    }
+  };
+
   const handleFitChatSend = async () => {
     const text = fitChatInput.trim();
     if (!text || fitChatSending) return;
@@ -271,7 +287,7 @@ export default function JobCard({ job, onApprove, onReclassified, onSkip }) {
         body: JSON.stringify({ messages: newMessages }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Fit chat failed");
+      if (!res.ok) throw new Error(data.error ? `${data.error} (${res.status})` : `Fit chat failed (${res.status})`);
 
       setFitChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       if (data.reclassification) {
@@ -332,6 +348,18 @@ export default function JobCard({ job, onApprove, onReclassified, onSkip }) {
               {job.company || <em style={{ fontWeight: "400" }}>Unknown Company</em>}
             </span>
           </div>
+          {sourceSummary && (
+            <div style={sourceSummaryStyle}>
+              <span style={{ fontWeight: 600, color: "var(--text)" }}>Source: </span>
+              {job.url ? (
+                <a href={job.url} target="_blank" rel="noreferrer" style={sourceLinkStyle}>
+                  {sourceSummary}
+                </a>
+              ) : (
+                <span>{sourceSummary}</span>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
@@ -367,9 +395,25 @@ export default function JobCard({ job, onApprove, onReclassified, onSkip }) {
             {reasoningOpen ? "Hide reasoning" : "Show reasoning"}
           </button>
           {reasoningOpen && (
-            <p style={{ marginTop: "8px", color: "var(--text-muted)", fontSize: "13px", lineHeight: "1.6" }}>
-              {job.fit_reasoning}
-            </p>
+            <div style={reasoningBoxStyle}>
+              <ul style={reasoningListStyle}>
+                {reasoningBullets.map((item, index) => (
+                  <li key={`${item}-${index}`}>{item}</li>
+                ))}
+              </ul>
+              {penaltiesApplied.length > 0 && (
+                <div style={penaltiesBoxStyle}>
+                  <div style={penaltiesHeadingStyle}>Penalties applied</div>
+                  <ul style={penaltiesListStyle}>
+                    {penaltiesApplied.map((penalty, index) => (
+                      <li key={`${penalty.ruleText}-${index}`}>
+                        <strong>-{penalty.points}</strong> for {penalty.ruleText}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -410,6 +454,14 @@ export default function JobCard({ job, onApprove, onReclassified, onSkip }) {
           style={{ fontSize: "13px" }}
         >
           {fitChatOpen ? "Close Fit Chat" : "Review Fit with AI"}
+        </button>
+        <button
+          className="btn-secondary"
+          onClick={handleReEvaluate}
+          disabled={busy}
+          style={{ fontSize: "13px" }}
+        >
+          {loading === "reevaluate" ? "Re-evaluating..." : "Re-evaluate Fit"}
         </button>
         <button
           className="btn-success"
@@ -838,6 +890,109 @@ function classificationLabel(status) {
   return status;
 }
 
+function sourceSummaryForJob(job) {
+  const source = String(job.source || "").trim();
+  const platform = platformLabelForUrl(job.url);
+  const manual = isManualJob(job);
+  const sourceLabel = source ? titleCaseKnownSource(source) : "";
+  const manualPlatform = manualPlatformFromSource(sourceLabel);
+
+  if (manualPlatform) {
+    return `Manual paste - ${manualPlatform}`;
+  }
+
+  if (manual && sourceLabel && !isManualSourceLabel(sourceLabel)) {
+    return `Manual paste - ${sourceLabel}`;
+  }
+  if (manual && platform) {
+    return `Manual paste - ${platform}`;
+  }
+  if (manual) {
+    return "Manual paste";
+  }
+  if (sourceLabel && platform && !sourceLabel.toLowerCase().includes(platform.toLowerCase())) {
+    return `${sourceLabel} - ${platform}`;
+  }
+  return sourceLabel || platform || "";
+}
+
+function isManualJob(job) {
+  const emailSubject = String(job.email_subject || "").toLowerCase();
+  const emailId = String(job.email_id || "").toLowerCase();
+  const source = String(job.source || "").toLowerCase();
+  return (
+    emailSubject.includes("manual pasted job listing") ||
+    emailId.startsWith("manual:") ||
+    source.includes("manual paste")
+  );
+}
+
+function platformLabelForUrl(rawUrl) {
+  const normalizedUrl = String(rawUrl || "").trim().toLowerCase();
+  if (!normalizedUrl) return "";
+  if (normalizedUrl.includes("greenhouse.io")) return "Greenhouse";
+  if (normalizedUrl.includes("lever.co")) return "Lever";
+  if (normalizedUrl.includes("ashbyhq.com")) return "Ashby";
+  if (normalizedUrl.includes("myworkdayjobs.com")) return "Workday";
+  return "";
+}
+
+function titleCaseKnownSource(source) {
+  const normalizedSource = source.trim().toLowerCase();
+  if (normalizedSource === "greenhouse") return "Greenhouse";
+  if (normalizedSource === "lever") return "Lever";
+  if (normalizedSource === "ashby") return "Ashby";
+  if (normalizedSource === "workday") return "Workday";
+  if (normalizedSource === "manual paste") return "Manual paste";
+  if (normalizedSource === "manual pasted job listing") return "Manual paste";
+  if (normalizedSource === "manual url") return "Manual URL";
+  return source;
+}
+
+function isManualSourceLabel(source) {
+  return ["manual paste", "manual url"].includes(source.trim().toLowerCase());
+}
+
+function manualPlatformFromSource(source) {
+  const match = source.trim().match(/^manual\s+(?:paste|url)\s*-\s*(.+)$/i);
+  return match ? titleCaseKnownSource(match[1].trim()) : "";
+}
+
+function penaltiesAppliedForJob(job) {
+  const reasoning = String(job.fit_reasoning || "");
+  const match = reasoning.match(/Penalties applied:\s*(.+?)\.\s*$/i);
+  if (!match) return [];
+  return match[1]
+    .split(/\s*,\s*/)
+    .map((item) => item.match(/-(\d+)\s+for\s+'([^']+)'/i))
+    .filter(Boolean)
+    .map((matchItem) => ({
+      points: Number(matchItem[1]),
+      ruleText: matchItem[2],
+    }));
+}
+
+function reasoningWithoutPenaltySummary(reasoning) {
+  return String(reasoning || "")
+    .replace(/\s*Penalties applied:\s*.+?\.\s*$/i, "")
+    .trim();
+}
+
+function fitReasoningBullets(reasoning) {
+  const text = String(reasoning || "").trim();
+  if (!text) return [];
+  const bulletMatches = text.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s+.+/g);
+  if (bulletMatches) {
+    return bulletMatches
+      .map((item) => item.replace(/^\s*(?:[-*•]|\d+\.)\s+/, "").trim())
+      .filter(Boolean);
+  }
+  return text
+    .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 const cardStyle = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
@@ -848,6 +1003,19 @@ const cardStyle = {
   transition: "box-shadow 0.2s, border-color 0.2s",
 };
 
+const sourceSummaryStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  lineHeight: 1.5,
+  marginTop: "4px",
+  overflowWrap: "anywhere",
+};
+
+const sourceLinkStyle = {
+  color: "var(--accent)",
+  textDecoration: "none",
+};
+
 const emailMetaStyle = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
@@ -856,6 +1024,44 @@ const emailMetaStyle = {
   fontSize: "12px",
   marginTop: "10px",
   marginBottom: "2px",
+};
+
+const reasoningBoxStyle = {
+  marginTop: "8px",
+};
+
+const reasoningListStyle = {
+  columns: "2 260px",
+  columnGap: "28px",
+  paddingLeft: "18px",
+  margin: 0,
+  color: "var(--text-muted)",
+  fontSize: "13px",
+  lineHeight: "1.6",
+};
+
+const penaltiesBoxStyle = {
+  marginTop: "12px",
+  paddingTop: "10px",
+  borderTop: "1px solid var(--border)",
+};
+
+const penaltiesHeadingStyle = {
+  color: "var(--text)",
+  fontSize: "12px",
+  fontWeight: 700,
+  marginBottom: "6px",
+};
+
+const penaltiesListStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+  gap: "5px 16px",
+  paddingLeft: "18px",
+  margin: 0,
+  color: "var(--red)",
+  fontSize: "13px",
+  lineHeight: "1.5",
 };
 
 const coverLetterPanelStyle = {

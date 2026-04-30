@@ -47,6 +47,7 @@ export default function TriagePanel({ onCountChange }) {
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState("date_desc");
   const [reEvaluatePopup, setReEvaluatePopup] = useState(null);
+  const [batchRefreshPopup, setBatchRefreshPopup] = useState(null);
 
   const fetchTriage = async () => {
     try {
@@ -206,6 +207,76 @@ export default function TriagePanel({ onCountChange }) {
     return data;
   };
 
+  const handleBatchRefreshFromUrls = async () => {
+    const refreshableJobs = jobs.filter((job) => job.status !== "possible_duplicate" && job.url);
+    if (refreshableJobs.length === 0) return;
+
+    const results = [];
+    let nextJobs = [...jobs];
+
+    setBatchRefreshPopup({
+      currentIndex: 0,
+      currentJob: refreshableJobs[0],
+      phase: "running",
+      results: [],
+      total: refreshableJobs.length,
+    });
+
+    for (let index = 0; index < refreshableJobs.length; index += 1) {
+      const job = refreshableJobs[index];
+      setBatchRefreshPopup((popup) => ({
+        ...popup,
+        currentIndex: index,
+        currentJob: job,
+      }));
+
+      try {
+        const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to re-fetch job");
+
+        results.push({
+          company: data.company || job.company || "",
+          error: "",
+          jobTitle: data.job_title || job.job_title || "",
+          newScore: data.fit_score,
+          previousScore: job.fit_score,
+          status: data.status,
+        });
+
+        const triageStatuses = new Set(["triage", "possible_duplicate"]);
+        if (triageStatuses.has(data.status)) {
+          nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
+        } else {
+          nextJobs = nextJobs.filter((item) => item.id !== job.id);
+        }
+        setJobs(nextJobs);
+        onCountChange(nextJobs.length);
+      } catch (err) {
+        results.push({
+          company: job.company || "",
+          error: err.message || "Failed to re-fetch job",
+          jobTitle: job.job_title || "",
+          newScore: null,
+          previousScore: job.fit_score,
+          status: "error",
+        });
+      }
+
+      setBatchRefreshPopup((popup) => ({
+        ...popup,
+        currentIndex: index + 1,
+        results: [...results],
+      }));
+    }
+
+    setBatchRefreshPopup({
+      phase: "done",
+      results,
+      total: refreshableJobs.length,
+    });
+  };
+
   if (loading) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
 
   if (jobs.length === 0) {
@@ -220,12 +291,17 @@ export default function TriagePanel({ onCountChange }) {
 
   const dupeCount = jobs.filter((j) => j.status === "possible_duplicate").length;
   const triageCount = jobs.length - dupeCount;
+  const refreshableCount = jobs.filter((job) => job.status !== "possible_duplicate" && job.url).length;
+  const isBatchRefreshing = batchRefreshPopup?.phase === "running";
 
   const sortedJobs = [...jobs].sort((a, b) => {
     if (sortBy === "date_desc" || sortBy === "date_asc") {
       const da = new Date(a.date_found || 0);
       const db = new Date(b.date_found || 0);
       return sortBy === "date_desc" ? db - da : da - db;
+    }
+    if (sortBy === "fit_desc" || sortBy === "fit_asc") {
+      return compareNullableScores(a.fit_score, b.fit_score, sortBy === "fit_desc" ? "desc" : "asc");
     }
     // confidence_score: possible_duplicate cards don't have one — sort them last
     const ca = a.confidence_score ?? (a.status === "possible_duplicate" ? -1 : 50);
@@ -241,7 +317,23 @@ export default function TriagePanel({ onCountChange }) {
           {triageCount > 0 && dupeCount > 0 && " · "}
           {dupeCount > 0 && `${dupeCount} possible duplicate${dupeCount !== 1 ? "s" : ""} to confirm`}
         </p>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+        <div style={topActionsStyle}>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleBatchRefreshFromUrls}
+            disabled={isBatchRefreshing || refreshableCount === 0}
+            style={{ fontSize: "12px", padding: "5px 11px", whiteSpace: "nowrap" }}
+          >
+            {isBatchRefreshing ? (
+              <span style={buttonSpinnerContentStyle}>
+                <span className="inline-spinner" />
+                Re-fetching...
+              </span>
+            ) : (
+              `Re-fetch all${refreshableCount > 0 ? ` (${refreshableCount})` : ""}`
+            )}
+          </button>
           <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>Sort:</label>
           <select
             value={sortBy}
@@ -252,6 +344,8 @@ export default function TriagePanel({ onCountChange }) {
             <option value="date_asc">Oldest first</option>
             <option value="confidence_desc">Highest confidence</option>
             <option value="confidence_asc">Lowest confidence</option>
+            <option value="fit_desc">Highest fit</option>
+            <option value="fit_asc">Lowest fit</option>
           </select>
         </div>
       </div>
@@ -260,6 +354,13 @@ export default function TriagePanel({ onCountChange }) {
         <ReEvaluatePopup
           popup={reEvaluatePopup}
           onClose={() => setReEvaluatePopup(null)}
+        />
+      )}
+
+      {batchRefreshPopup && (
+        <BatchRefreshPopup
+          popup={batchRefreshPopup}
+          onClose={() => setBatchRefreshPopup(null)}
         />
       )}
 
@@ -470,7 +571,7 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
         body: JSON.stringify({ messages: newMessages }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Chat failed");
+      if (!res.ok) throw new Error(data.error ? `${data.error} (${res.status})` : `Chat failed (${res.status})`);
 
       setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
     } catch (err) {
@@ -817,6 +918,80 @@ function ReEvaluatePopup({ popup, onClose }) {
   );
 }
 
+function BatchRefreshPopup({ popup, onClose }) {
+  const results = popup.results || [];
+  const isRunning = popup.phase === "running";
+  const currentJob = popup.currentJob || {};
+  const processedCount = Math.min(popup.currentIndex || 0, popup.total || 0);
+  const successCount = results.filter((result) => !result.error).length;
+  const movedCount = results.filter((result) => result.status === "pending_review").length;
+  const errorCount = results.filter((result) => result.error).length;
+
+  return (
+    <div style={popupBackdropStyle}>
+      <div style={batchPopupPanelStyle}>
+        <div style={popupHeaderStyle}>
+          <div>
+            <div style={popupTitleStyle}>
+              {isRunning ? "Re-fetch all in progress" : "Re-fetch all complete"}
+            </div>
+            <div style={popupSubtitleStyle}>
+              {isRunning
+                ? `${processedCount} of ${popup.total} complete`
+                : `${successCount} refreshed, ${movedCount} moved to job queue, ${errorCount} failed`}
+            </div>
+          </div>
+          {!isRunning && (
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ padding: "4px 10px", fontSize: "12px" }}
+              onClick={onClose}
+            >
+              Close
+            </button>
+          )}
+        </div>
+
+        {isRunning && (
+          <div style={{ ...popupBodyStyle, marginBottom: "14px" }}>
+            <span className="inline-spinner" style={popupSpinnerStyle} />
+            <span>{jobDisplayName(currentJob)}</span>
+          </div>
+        )}
+
+        <div style={batchSummaryListStyle}>
+          {results.length === 0 && isRunning ? (
+            <div style={batchEmptyTextStyle}>Starting first re-fetch...</div>
+          ) : (
+            results.map((result, index) => (
+              <div key={`${result.jobTitle}-${result.company}-${index}`} style={batchSummaryRowStyle}>
+                <div style={batchSummaryMainStyle}>
+                  <div style={batchSummaryTitleStyle}>{jobDisplayName(result)}</div>
+                  {result.error ? (
+                    <div style={batchSummaryErrorStyle}>{result.error}</div>
+                  ) : (
+                    <div style={batchSummaryMetaStyle}>
+                      {scoreLabel(result.previousScore)} to {scoreLabel(result.newScore)}
+                      {scoreDeltaLabel(result.previousScore, result.newScore)}
+                    </div>
+                  )}
+                </div>
+                <span
+                  className={`badge ${result.error ? "badge-red" : result.status === "pending_review" ? "badge-green" : "badge-yellow"}`}
+                  style={batchStatusBadgeStyle}
+                >
+                  {result.error ? "Failed" : dispositionLabel(result.status)}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function SourceBadge({ job }) {
@@ -1007,6 +1182,40 @@ function scoreLabel(score) {
   return score === null || score === undefined ? "not scored" : `${score}%`;
 }
 
+function scoreDeltaLabel(previousScore, newScore) {
+  if (previousScore === null || previousScore === undefined || newScore === null || newScore === undefined) {
+    return "";
+  }
+  const delta = Number(newScore) - Number(previousScore);
+  if (delta === 0) return " (no change)";
+  return ` (${delta > 0 ? "+" : ""}${delta})`;
+}
+
+function compareNullableScores(leftScore, rightScore, direction) {
+  const leftMissing = leftScore === null || leftScore === undefined;
+  const rightMissing = rightScore === null || rightScore === undefined;
+  if (leftMissing && rightMissing) return 0;
+  if (leftMissing) return 1;
+  if (rightMissing) return -1;
+  const comparison = Number(leftScore) - Number(rightScore);
+  return direction === "desc" ? -comparison : comparison;
+}
+
+function dispositionLabel(status) {
+  if (status === "pending_review") return "Job queue";
+  if (status === "triage") return "Still triage";
+  if (status === "possible_duplicate") return "Duplicate review";
+  if (status === "skipped") return "Skipped";
+  if (status === "added_to_sheet") return "On sheet";
+  return status || "Updated";
+}
+
+function jobDisplayName(job) {
+  const title = job.jobTitle || job.job_title || "Job";
+  const company = job.company ? ` at ${job.company}` : "";
+  return `${title}${company}`;
+}
+
 function fitScoreClass(job) {
   if (job.fit_score == null) return "badge-gray";
   const score = Number(job.fit_score);
@@ -1053,6 +1262,14 @@ const sortSelectStyle = {
   fontSize: "12px",
   padding: "4px 8px",
   cursor: "pointer",
+};
+
+const topActionsStyle = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "6px",
+  justifyContent: "flex-end",
 };
 
 const cardStyle = {
@@ -1137,6 +1354,11 @@ const popupPanelStyle = {
   width: "100%",
 };
 
+const batchPopupPanelStyle = {
+  ...popupPanelStyle,
+  maxWidth: "680px",
+};
+
 const popupHeaderStyle = {
   alignItems: "flex-start",
   display: "flex",
@@ -1188,6 +1410,59 @@ const popupMovedStyle = {
   fontSize: "12px",
   fontWeight: 700,
   padding: "4px 9px",
+};
+
+const batchSummaryListStyle = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "8px",
+  maxHeight: "420px",
+  overflowY: "auto",
+};
+
+const batchSummaryRowStyle = {
+  alignItems: "flex-start",
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  display: "flex",
+  gap: "12px",
+  justifyContent: "space-between",
+  padding: "10px 12px",
+};
+
+const batchSummaryMainStyle = {
+  minWidth: 0,
+};
+
+const batchSummaryTitleStyle = {
+  color: "var(--text)",
+  fontSize: "13px",
+  fontWeight: 600,
+  overflowWrap: "anywhere",
+};
+
+const batchSummaryMetaStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "3px",
+};
+
+const batchSummaryErrorStyle = {
+  color: "var(--red)",
+  fontSize: "12px",
+  marginTop: "3px",
+  overflowWrap: "anywhere",
+};
+
+const batchStatusBadgeStyle = {
+  flexShrink: 0,
+  whiteSpace: "nowrap",
+};
+
+const batchEmptyTextStyle = {
+  color: "var(--text-muted)",
+  fontSize: "13px",
 };
 
 const emailMetaStyle = {

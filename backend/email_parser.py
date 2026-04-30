@@ -44,9 +44,7 @@ import logging
 import re
 from typing import TypedDict
 
-import anthropic
-
-from config import ANTHROPIC_API_KEY, PARSER_MODEL
+from backend.ai_provider import AIMessage, AIProviderClient
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +102,7 @@ class EmailParser:
     """Parses job emails using the Anthropic API."""
 
     def __init__(self) -> None:
-        if not ANTHROPIC_API_KEY:
-            raise ValueError("ANTHROPIC_API_KEY is not set")
-        self._client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self._client = AIProviderClient()
 
     def parse(self, subject: str, sender: str, body_snippet: str) -> list[ParsedJob]:
         """
@@ -120,27 +116,12 @@ class EmailParser:
             f"Body:\n{body_snippet[:6000]}"  # digests can be long
         )
 
-        # Cache the system prompt across calls (it never changes).
-        response = self._client.messages.create(
-            model=PARSER_MODEL,
-            max_tokens=8192,  # digests with many jobs + long tracking URLs can exceed 2048
-            system=[
-                {
-                    "type": "text",
-                    "text": _SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_content}],
+        raw = self._client.complete(
+            system=_SYSTEM_PROMPT,
+            messages=[AIMessage(role="user", content=user_content)],
+            max_tokens=8192,
+            json_response=True,
         )
-
-        if response.stop_reason == "max_tokens":
-            logger.warning(
-                "Email parser response was truncated (max_tokens reached). "
-                "Attempting partial parse; some jobs may be missing."
-            )
-
-        raw = response.content[0].text.strip()
 
         # Strip accidental markdown fences
         if raw.startswith("```"):

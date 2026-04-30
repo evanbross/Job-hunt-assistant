@@ -60,7 +60,7 @@ function defaultEmptyForm() {
     company: "",
     status: "Applied",
     source: "",
-    date: new Date().toISOString().slice(0, 10),
+    date: new Date().toLocaleDateString('en-CA'),
     job_title: "",
     url: "",
     notes: "",
@@ -70,7 +70,7 @@ function defaultEmptyForm() {
 function defaultStageForm() {
   return {
     status: "Waiting for Call",
-    date: new Date().toISOString().slice(0, 10),
+    date: new Date().toLocaleDateString('en-CA'),
     notes: "",
   };
 }
@@ -139,6 +139,24 @@ function statusColor(cell) {
   };
 }
 
+function stageSelectStyle(status) {
+  const colors = statusColor({ value: status });
+  return {
+    ...stageControlStyle,
+    background: colors.background,
+    color: colors.color,
+    fontWeight: 700,
+  };
+}
+
+function stageOptionStyle(status) {
+  const colors = statusColor({ value: status });
+  return {
+    backgroundColor: colors.background,
+    color: colors.color,
+  };
+}
+
 function StatusIndicator({ cell }) {
   const colors = statusColor(cell);
   const value = String(cell.value || "").trim() || "-";
@@ -152,6 +170,52 @@ function StatusIndicator({ cell }) {
     >
       {value}
     </span>
+  );
+}
+
+function GhostDialog({ result, onClose }) {
+  const marked = Array.isArray(result.marked) ? result.marked : [];
+  return (
+    <div style={modalBackdropStyle}>
+      <div style={modalPanelStyle}>
+        <div style={modalHeaderStyle}>
+          <div>
+            <div style={modalTitleStyle}>Mark Ghosts Complete</div>
+            <div style={modalSubtitleStyle}>
+              {marked.length === 0
+                ? `No applications were Applied for 30+ days as of ${result.cutoff_date || "the cutoff"}.`
+                : `${marked.length} application${marked.length === 1 ? "" : "s"} marked as Ghosted.`}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onClose}
+            style={{ fontSize: "12px", padding: "4px 10px" }}
+          >
+            Close
+          </button>
+        </div>
+        {marked.length > 0 && (
+          <div style={ghostListStyle}>
+            {marked.map((job) => (
+              <div key={job.id} style={ghostRowStyle}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={ghostTitleStyle}>
+                    {job.job_title || "Untitled role"}
+                    {job.company && <span style={ghostCompanyStyle}> at {job.company}</span>}
+                  </div>
+                  <div style={ghostMetaStyle}>
+                    Applied {job.applied_date} · {job.days_applied} days
+                  </div>
+                </div>
+                <StatusIndicator cell={{ value: "ghosted" }} />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -207,6 +271,8 @@ export default function ApplicationSheetPanel() {
   const [sortConfig, setSortConfig] = useState({ key: "company", direction: "asc" });
   const [newRow, setNewRow] = useState(defaultEmptyForm());
   const [showAddApplication, setShowAddApplication] = useState(false);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [ghostDialog, setGhostDialog] = useState(null);
   const [editingRows, setEditingRows] = useState({});
   const [stageRows, setStageRows] = useState({});
   const [savingKey, setSavingKey] = useState("");
@@ -339,6 +405,23 @@ export default function ApplicationSheetPanel() {
     }
   };
 
+  const markGhosts = async () => {
+    setActionMenuOpen(false);
+    setSavingKey("ghosts");
+    try {
+      const res = await fetch("/api/sheet/applications/mark-ghosts", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        window.alert(data.error || `Mark ghosts failed (${res.status})`);
+        return;
+      }
+      setGhostDialog(data);
+      await loadSheet();
+    } finally {
+      setSavingKey("");
+    }
+  };
+
   const startEditing = (row) => {
     setEditingRows((previousRows) => ({
       ...previousRows,
@@ -445,16 +528,51 @@ export default function ApplicationSheetPanel() {
             onChange={(event) => setSearch(event.target.value)}
             style={searchStyle}
           />
-          <button
-            className="btn-primary"
-            onClick={() => setShowAddApplication(true)}
-            disabled={showAddApplication}
-          >
-            Add Application
-          </button>
+          <div style={actionMenuWrapStyle}>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setActionMenuOpen((open) => !open)}
+              aria-label="Application tracking actions"
+              aria-expanded={actionMenuOpen}
+              style={kebabButtonStyle}
+            >
+              &#8942;
+            </button>
+            {actionMenuOpen && (
+              <div style={actionMenuStyle}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddApplication(true);
+                    setActionMenuOpen(false);
+                  }}
+                  disabled={showAddApplication}
+                  style={actionMenuItemStyle}
+                >
+                  Add Application
+                </button>
+                <button
+                  type="button"
+                  onClick={markGhosts}
+                  disabled={savingKey === "ghosts"}
+                  style={actionMenuItemStyle}
+                >
+                  {savingKey === "ghosts" ? "Marking..." : "Mark Ghosts"}
+                </button>
+              </div>
+            )}
+          </div>
           <button className="btn-secondary" onClick={loadSheet}>Refresh</button>
         </div>
       </div>
+
+      {ghostDialog && (
+        <GhostDialog
+          result={ghostDialog}
+          onClose={() => setGhostDialog(null)}
+        />
+      )}
 
       {showAddApplication && (
         <div className="card" style={addCardStyle}>
@@ -664,20 +782,23 @@ export default function ApplicationSheetPanel() {
                           <select
                             value={(stageRows[row.row_number]?.status) || "Waiting for Call"}
                             onChange={(event) => updateStageRow(row.row_number, "status", event.target.value)}
+                            style={stageSelectStyle((stageRows[row.row_number]?.status) || "Waiting for Call")}
                           >
                             {STATUS_OPTIONS.map((status) => (
-                              <option key={status} value={status}>{status}</option>
+                              <option key={status} value={status} style={stageOptionStyle(status)}>{status}</option>
                             ))}
                           </select>
                           <input
                             type="date"
-                            value={(stageRows[row.row_number]?.date) || new Date().toISOString().slice(0, 10)}
+                            value={(stageRows[row.row_number]?.date) || new Date().toLocaleDateString('en-CA')}
                             onChange={(event) => updateStageRow(row.row_number, "date", event.target.value)}
+                            style={stageControlStyle}
                           />
                           <input
                             value={(stageRows[row.row_number]?.notes) || ""}
                             onChange={(event) => updateStageRow(row.row_number, "notes", event.target.value)}
                             placeholder="Stage notes"
+                            style={stageControlStyle}
                           />
                           <button className="btn-primary" onClick={() => addStage(row.row_number)} disabled={savingKey === `stage:${row.row_number}`}>
                             Add Stage
@@ -710,6 +831,45 @@ const toolbarActionsStyle = {
   gap: "8px",
   flex: "1",
   justifyContent: "flex-end",
+};
+
+const actionMenuWrapStyle = {
+  position: "relative",
+};
+
+const kebabButtonStyle = {
+  fontSize: "20px",
+  lineHeight: 1,
+  minHeight: "34px",
+  padding: "4px 10px",
+};
+
+const actionMenuStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  boxShadow: "var(--shadow-sm)",
+  display: "flex",
+  flexDirection: "column",
+  gap: "2px",
+  minWidth: "170px",
+  padding: "5px",
+  position: "absolute",
+  right: 0,
+  top: "calc(100% + 6px)",
+  zIndex: 20,
+};
+
+const actionMenuItemStyle = {
+  background: "transparent",
+  border: "none",
+  borderRadius: "4px",
+  color: "var(--text)",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: "13px",
+  padding: "8px 10px",
+  textAlign: "left",
 };
 
 const titleStyle = {
@@ -880,6 +1040,93 @@ const stageFormStyle = {
   marginTop: "12px",
   paddingTop: "12px",
   borderTop: "1px solid var(--border)",
+};
+
+const stageControlStyle = {
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  fontFamily: "inherit",
+  fontSize: "13px",
+  minHeight: "34px",
+  padding: "6px 9px",
+};
+
+const modalBackdropStyle = {
+  alignItems: "center",
+  background: "rgba(24,28,58,0.38)",
+  display: "flex",
+  inset: 0,
+  justifyContent: "center",
+  padding: "24px",
+  position: "fixed",
+  zIndex: 1100,
+};
+
+const modalPanelStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  boxShadow: "var(--shadow)",
+  maxWidth: "640px",
+  padding: "18px",
+  width: "100%",
+};
+
+const modalHeaderStyle = {
+  alignItems: "flex-start",
+  display: "flex",
+  gap: "12px",
+  justifyContent: "space-between",
+  marginBottom: "14px",
+};
+
+const modalTitleStyle = {
+  color: "var(--text)",
+  fontSize: "16px",
+  fontWeight: 700,
+};
+
+const modalSubtitleStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "3px",
+};
+
+const ghostListStyle = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "8px",
+  maxHeight: "420px",
+  overflowY: "auto",
+};
+
+const ghostRowStyle = {
+  alignItems: "center",
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  display: "flex",
+  gap: "12px",
+  justifyContent: "space-between",
+  padding: "10px 12px",
+};
+
+const ghostTitleStyle = {
+  color: "var(--text)",
+  fontSize: "13px",
+  fontWeight: 600,
+  overflowWrap: "anywhere",
+};
+
+const ghostCompanyStyle = {
+  color: "var(--text-muted)",
+  fontWeight: 500,
+};
+
+const ghostMetaStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "3px",
 };
 
 const detailItemStyle = {

@@ -40,6 +40,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [scanState, setScanState] = useState(null);
+  const [scanSummary, setScanSummary] = useState(null);
   const [rescanAllRunning, setRescanAllRunning] = useState(false);
   const [boardSearching, setBoardSearching] = useState(false);
   const [boardState, setBoardState] = useState(null);
@@ -47,6 +48,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   const [reEvaluateProgress, setReEvaluateProgress] = useState(0);
   const [reEvaluateMessage, setReEvaluateMessage] = useState("");
   const [reEvaluateSummary, setReEvaluateSummary] = useState(null);
+  const [jobReEvaluatePopup, setJobReEvaluatePopup] = useState(null);
   const [manualListingText, setManualListingText] = useState("");
   const [manualSourceUrl, setManualSourceUrl] = useState("");
   const [manualSourceName, setManualSourceName] = useState("");
@@ -113,6 +115,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
       if (!state.running) {
         clearInterval(pollRef.current);
         onDone?.();
+        if (state.summary) setScanSummary(state.summary);
         await fetchJobs();
         try {
           const t = await fetch("/api/jobs/triage");
@@ -201,6 +204,47 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
       return;
     }
     setJobs((prev) => prev.map((job) => (job.id === updatedJob.id ? updatedJob : job)));
+  };
+
+  const handleJobReEvaluate = async (job) => {
+    setJobReEvaluatePopup({
+      company: job.company || "",
+      jobTitle: job.job_title || "",
+      phase: "running",
+      previousScore: job.fit_score,
+    });
+
+    const res = await fetch(`/api/jobs/${job.id}/re-evaluate-fit`, { method: "POST" });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setJobReEvaluatePopup({
+        company: job.company || "",
+        error: data.error || "Failed to re-evaluate fit",
+        jobTitle: job.job_title || "",
+        phase: "error",
+        previousScore: job.fit_score,
+      });
+      throw new Error(data.error || "Failed to re-evaluate fit");
+    }
+
+    setJobReEvaluatePopup({
+      company: data.company || job.company || "",
+      jobTitle: data.job_title || job.job_title || "",
+      newScore: data.fit_score,
+      phase: "done",
+      previousScore: job.fit_score,
+      status: data.status,
+    });
+
+    if (data.status === "pending_review") {
+      setJobs((prev) => prev.map((queuedJob) => (queuedJob.id === data.id ? data : queuedJob)));
+    } else {
+      setJobs((prev) => prev.filter((queuedJob) => queuedJob.id !== job.id));
+      await updateTriageCount();
+    }
+
+    return data;
   };
 
   const updateTriageCount = async () => {
@@ -694,14 +738,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
               </button>
             </div>
 
-            {importSummary && (
-              <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--green)" }}>
-                {importSummary.queued} job{importSummary.queued !== 1 ? "s" : ""} queued
-                {importSummary.skipped > 0 ? `, ${importSummary.skipped} already in queue (skipped)` : ""}
-                {importSummary.failed > 0 ? `, ${importSummary.failed} failed to fetch` : ""}
-                {importSummary.capture_source?.name ? ` from ${importSummary.capture_source.name}` : ""}.
-              </p>
-            )}
           </>
         )}
       </div>
@@ -797,6 +833,21 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
       )}
 
       {/* Job cards */}
+      {scanSummary && (
+        <ScanSummaryPopup summary={scanSummary} onClose={() => setScanSummary(null)} />
+      )}
+
+      {importSummary && (
+        <ImportSummaryPopup summary={importSummary} onClose={() => setImportSummary(null)} />
+      )}
+
+      {jobReEvaluatePopup && (
+        <JobReEvaluatePopup
+          popup={jobReEvaluatePopup}
+          onClose={() => setJobReEvaluatePopup(null)}
+        />
+      )}
+
       {loading ? (
         <p style={{ color: "var(--text-muted)" }}>Loading jobs…</p>
       ) : jobs.length === 0 ? (
@@ -811,6 +862,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
             job={job}
             onApprove={handleApprove}
             onReclassified={handleReclassified}
+            onReEvaluate={handleJobReEvaluate}
             onSkip={handleSkip}
           />
         ))
@@ -854,6 +906,169 @@ function ErrorList({ errors, onNavigateToEmails }) {
   );
 }
 
+function ImportSummaryPopup({ summary, onClose }) {
+  const { queued, skipped, failed } = summary;
+  const sourceName = summary.capture_source?.name;
+  return (
+    <div style={popupBackdropStyle}>
+      <div style={{ ...popupPanelStyle, maxWidth: "480px" }}>
+        <div style={popupHeaderStyle}>
+          <div>
+            <div style={popupTitleStyle}>Import complete</div>
+            {sourceName && <div style={popupSubtitleStyle}>{sourceName}</div>}
+          </div>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ padding: "4px 10px", fontSize: "12px" }}
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: "28px" }}>
+          <div>
+            <div style={{ fontSize: "28px", fontWeight: 700, color: queued > 0 ? "var(--green)" : "var(--text-muted)" }}>{queued}</div>
+            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>queued</div>
+          </div>
+          {skipped > 0 && (
+            <div>
+              <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--text-muted)" }}>{skipped}</div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>already in queue</div>
+            </div>
+          )}
+          {failed > 0 && (
+            <div>
+              <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--red)" }}>{failed}</div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>failed to fetch</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function JobReEvaluatePopup({ popup, onClose }) {
+  const title = popup.jobTitle || "Job";
+  const companyText = popup.company ? ` at ${popup.company}` : "";
+  const isRunning = popup.phase === "running";
+  const isError = popup.phase === "error";
+
+  return (
+    <div style={popupBackdropStyle}>
+      <div style={popupPanelStyle}>
+        <div style={popupHeaderStyle}>
+          <div>
+            <div style={popupTitleStyle}>
+              {isRunning ? "Re-evaluation in progress" : isError ? "Re-evaluation failed" : "Re-evaluation complete"}
+            </div>
+            <div style={popupSubtitleStyle}>{title}{companyText}</div>
+          </div>
+          {!isRunning && (
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ padding: "4px 10px", fontSize: "12px" }}
+              onClick={onClose}
+            >
+              Close
+            </button>
+          )}
+        </div>
+
+        {isRunning ? (
+          <div style={popupBodyStyle}>
+            <span className="inline-spinner" style={popupSpinnerStyle} />
+            <span>Applying current scoring rules...</span>
+          </div>
+        ) : isError ? (
+          <div style={{ ...popupBodyStyle, color: "var(--red)" }}>
+            {popup.error || "Failed to re-evaluate fit."}
+          </div>
+        ) : (
+          <div style={popupResultStyle}>
+            <span>{scoreLabel(popup.previousScore)}</span>
+            <span style={{ color: "var(--text-muted)" }}>to</span>
+            <span>{scoreLabel(popup.newScore)}</span>
+            {scoreDeltaLabel(popup.previousScore, popup.newScore) && (
+              <span style={popupDeltaStyle}>
+                {scoreDeltaLabel(popup.previousScore, popup.newScore)}
+              </span>
+            )}
+            {popup.status === "triage" && (
+              <span style={popupMovedStyle}>Moved to triage</span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScanSummaryPopup({ summary, onClose }) {
+  const { emails_scanned, new_jobs, sources_with_jobs, by_source } = summary;
+  return (
+    <div style={popupBackdropStyle}>
+      <div style={{ ...popupPanelStyle, maxWidth: "480px" }}>
+        <div style={popupHeaderStyle}>
+          <div style={popupTitleStyle}>Scan complete</div>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ padding: "4px 10px", fontSize: "12px" }}
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: "28px", marginBottom: by_source.length > 0 ? "16px" : 0 }}>
+          <div>
+            <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--text)" }}>{emails_scanned}</div>
+            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>emails scanned</div>
+          </div>
+          <div>
+            <div style={{ fontSize: "28px", fontWeight: 700, color: new_jobs > 0 ? "var(--green)" : "var(--text-muted)" }}>{new_jobs}</div>
+            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>new jobs</div>
+          </div>
+          {new_jobs > 0 && (
+            <div>
+              <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--text)" }}>{sources_with_jobs}</div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{sources_with_jobs === 1 ? "source" : "sources"}</div>
+            </div>
+          )}
+        </div>
+
+        {by_source.length > 0 && (
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
+            {by_source.map(({ source, count }) => (
+              <div key={source} style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", padding: "3px 0" }}>
+                <span style={{ color: "var(--text-muted)" }}>{source}</span>
+                <span style={{ fontWeight: 500 }}>{count} job{count !== 1 ? "s" : ""}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function scoreLabel(score) {
+  return score === null || score === undefined ? "not scored" : `${score}%`;
+}
+
+function scoreDeltaLabel(previousScore, newScore) {
+  if (previousScore === null || previousScore === undefined || newScore === null || newScore === undefined) {
+    return "";
+  }
+  const delta = Number(newScore) - Number(previousScore);
+  if (delta === 0) return "no change";
+  return `${delta > 0 ? "+" : ""}${delta}`;
+}
+
 const progressBox = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
@@ -861,6 +1076,86 @@ const progressBox = {
   padding: "16px 18px",
   marginBottom: "16px",
   boxShadow: "var(--shadow-sm)",
+};
+
+const popupBackdropStyle = {
+  alignItems: "center",
+  background: "rgba(24,28,58,0.38)",
+  display: "flex",
+  inset: 0,
+  justifyContent: "center",
+  padding: "24px",
+  position: "fixed",
+  zIndex: 1100,
+};
+
+const popupPanelStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  boxShadow: "var(--shadow)",
+  maxWidth: "460px",
+  padding: "18px",
+  width: "100%",
+};
+
+const popupHeaderStyle = {
+  alignItems: "flex-start",
+  display: "flex",
+  gap: "12px",
+  justifyContent: "space-between",
+  marginBottom: "14px",
+};
+
+const popupTitleStyle = {
+  color: "var(--text)",
+  fontSize: "16px",
+  fontWeight: 700,
+};
+
+const popupSubtitleStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "3px",
+};
+
+const popupBodyStyle = {
+  alignItems: "center",
+  color: "var(--text-muted)",
+  display: "flex",
+  fontSize: "14px",
+  gap: "10px",
+};
+
+const popupSpinnerStyle = {
+  color: "var(--accent)",
+  height: "18px",
+  width: "18px",
+};
+
+const popupResultStyle = {
+  alignItems: "center",
+  color: "var(--text)",
+  display: "flex",
+  flexWrap: "wrap",
+  fontSize: "22px",
+  fontWeight: 700,
+  gap: "10px",
+};
+
+const popupDeltaStyle = {
+  color: "var(--text-muted)",
+  fontSize: "13px",
+  fontWeight: 700,
+};
+
+const popupMovedStyle = {
+  background: "var(--yellow-light)",
+  borderRadius: "999px",
+  color: "var(--yellow)",
+  fontSize: "12px",
+  fontWeight: 700,
+  padding: "4px 9px",
 };
 
 const manualBox = {

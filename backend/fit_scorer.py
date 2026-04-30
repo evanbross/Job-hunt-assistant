@@ -43,10 +43,8 @@ import logging
 import re
 from typing import TypedDict
 
-import anthropic
-
 import config
-from config import ANTHROPIC_API_KEY, SCORER_MODEL
+from backend.ai_provider import AIMessage, AIProviderClient
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +58,7 @@ class FitScorer:
     """Scores job postings against the candidate profile using the Anthropic API."""
 
     def __init__(self) -> None:
-        if not ANTHROPIC_API_KEY:
-            raise ValueError("ANTHROPIC_API_KEY is not set")
-        self._client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self._client = AIProviderClient()
 
     def score(
         self,
@@ -89,25 +85,12 @@ class FitScorer:
             f"Email / Job Description:\n{email_body[:6000]}"
         )
 
-        # Cache both the static system content blocks so repeated scoring calls
-        # within a session reuse the cached tokens.
-        response = self._client.messages.create(
-            model=SCORER_MODEL,
+        raw = self._client.complete(
+            system=system_prompt,
+            messages=[AIMessage(role="user", content=user_content)],
             max_tokens=512,
-            system=[
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_content}],
+            json_response=True,
         )
-
-        if not response.content:
-            raise ValueError("Anthropic scorer returned an empty response (possible safety filter)")
-
-        raw = response.content[0].text.strip()
 
         if raw.startswith("```"):
             raw = raw.split("```")[1]

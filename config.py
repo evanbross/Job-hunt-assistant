@@ -50,6 +50,7 @@ load_dotenv()
 
 # ─── API Keys ─────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY", "change-this-in-production")
 GOOGLE_SHEETS_ID: str = os.getenv("GOOGLE_SHEETS_ID", "")
 
@@ -99,8 +100,12 @@ GMAIL_SCOPES: list[str] = (
 GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:5004/api/auth/google/callback"
 
 # ─── AI Models ────────────────────────────────────────────────────────────────
+AI_PROVIDER: str = os.getenv("AI_PROVIDER", "anthropic")
 PARSER_MODEL: str = "claude-sonnet-4-20250514"
 SCORER_MODEL: str = "claude-sonnet-4-20250514"
+OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1")
+OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5:32b")
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 DEFAULT_EMAIL_LOOKBACK_DAYS: int = int(os.getenv("EMAIL_LOOKBACK_DAYS", "10"))
@@ -124,12 +129,22 @@ def load_runtime_config() -> dict[str, Any]:
                 return {
                     "email_lookback_days": raw_cfg.get("email_lookback_days", DEFAULT_EMAIL_LOOKBACK_DAYS),
                     "candidate_profile_path": raw_cfg.get("candidate_profile_path", str(DEFAULT_CANDIDATE_PROFILE_PATH)),
+                    "ai_provider": raw_cfg.get("ai_provider", AI_PROVIDER),
+                    "anthropic_model": raw_cfg.get("anthropic_model", SCORER_MODEL),
+                    "openai_model": raw_cfg.get("openai_model", OPENAI_MODEL),
+                    "ollama_base_url": raw_cfg.get("ollama_base_url", OLLAMA_BASE_URL),
+                    "ollama_model": raw_cfg.get("ollama_model", OLLAMA_MODEL),
                 }
         except (json.JSONDecodeError, OSError):
             pass
     return {
         "email_lookback_days": DEFAULT_EMAIL_LOOKBACK_DAYS,
         "candidate_profile_path": str(DEFAULT_CANDIDATE_PROFILE_PATH),
+        "ai_provider": AI_PROVIDER,
+        "anthropic_model": SCORER_MODEL,
+        "openai_model": OPENAI_MODEL,
+        "ollama_base_url": OLLAMA_BASE_URL,
+        "ollama_model": OLLAMA_MODEL,
     }
 
 

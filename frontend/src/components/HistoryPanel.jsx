@@ -88,7 +88,7 @@ function ScoreBadge({ score }) {
 // ── Add-stage inline form ─────────────────────────────────────────────────────
 
 function AddStageForm({ jobId, onAdded }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date().toLocaleDateString('en-CA');
   const [status, setStatus] = useState(STAGE_STATUSES[1].key); // default: waiting_call
   const [stageDate, setStageDate] = useState(today);
   const [saving, setSaving] = useState(false);

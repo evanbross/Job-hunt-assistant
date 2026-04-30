@@ -39,15 +39,13 @@ cover letter for a specific job posting based on the candidate's profile and
 """
 from __future__ import annotations
 
-import anthropic
-
 import config
-from config import ANTHROPIC_API_KEY, SCORER_MODEL
+from backend.ai_provider import AIMessage, AIProviderClient
 
 
 class CoverLetterGenerator:
     def __init__(self) -> None:
-        self._client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self._client = AIProviderClient()
 
     def generate(self, job: dict, resume_text: str | None = None) -> str:
         """
@@ -85,7 +83,11 @@ class CoverLetterGenerator:
             f"{fit_section}\n\n"
             "Instructions:\n"
             "- 3–4 short paragraphs, no salutation or sign-off (the caller will add those).\n"
-            "- Opening: one sentence expressing genuine interest in this specific role/company.\n"
+            "- Opening: use a specific hook based on the company, role, product, mission, "
+            "or a relevant candidate strength. Vary the sentence structure across generations.\n"
+            "- Do not use generic openings such as \"I am excited about\", "
+            "\"I am writing to express\", or \"I am thrilled to apply\".\n"
+            "- Avoid the exact phrase \"<job title> opportunity at <company>\".\n"
             "- Body: 1–2 paragraphs highlighting 2–3 concrete experiences or skills that are "
             "most relevant to THIS job. Be specific — use real details from the profile/resume, "
             "not generic claims.\n"
@@ -94,9 +96,7 @@ class CoverLetterGenerator:
             "- Output plain text only — no markdown, no bullet points, no headers."
         )
 
-        response = self._client.messages.create(
-            model=SCORER_MODEL,
+        return self._client.complete(
+            messages=[AIMessage(role="user", content=prompt)],
             max_tokens=600,
-            messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text.strip()

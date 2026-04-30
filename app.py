@@ -43,7 +43,6 @@ that background scan calls never trigger browser redirects.
 """
 from __future__ import annotations
 
-import anthropic
 import json
 import logging
 import os
@@ -54,16 +53,28 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
-from datetime import date, datetime, UTC
+from datetime import date, datetime, timedelta, UTC
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import flask
+import flask.json as flask_json
+from markupsafe import Markup
+
+if not hasattr(flask, "Markup"):
+    flask.Markup = Markup
+if not hasattr(flask_json, "JSONEncoder"):
+    flask_json.JSONEncoder = json.JSONEncoder
+
+from flasgger import Swagger
 from flask import Flask, jsonify, redirect, request, send_from_directory
 from flask_cors import CORS
 from google_auth_oauthlib.flow import Flow
 
 import config
+from backend.ai_provider import AIMessage, AIProviderClient, AIProviderError
 from backend.db import (
     SQLiteApplicationStageRepository,
     SQLiteAppSettingsRepository,
@@ -176,6 +187,7 @@ class ScanState:
     jobs_found: int = 0
     jobs_processed: int = 0
     errors: list[dict] = field(default_factory=list)
+    summary: dict | None = None
 
 
 _scan_state = ScanState()
@@ -216,6 +228,113 @@ _career_state = CareerSiteScanState()
 _career_lock = threading.Lock()
 _career_scheduler_started = False
 _career_scheduler_lock = threading.Lock()
+
+
+# ─── Swagger / OpenAPI docs ──────────────────────────────────────────────────
+
+_FLASK_PATH_PARAM_RE = re.compile(
+    r"<(?:(?P<converter>[a-zA-Z_][a-zA-Z0-9_]*):)?(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)>"
+)
+_SWAGGER_EXCLUDED_METHODS = frozenset({"HEAD", "OPTIONS"})
+_SWAGGER_BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
+
+def _swagger_parameter_type(converter: str | None) -> tuple[str, str | None]:
+    if converter == "int":
+        return "integer", "int32"
+    if converter == "float":
+        return "number", "float"
+    return "string", None
+
+
+def _swagger_path_for_rule(rule_path: str) -> tuple[str, list[dict[str, object]]]:
+    parameters: list[dict[str, object]] = []
+
+    def _replace_path_param(path_match: re.Match[str]) -> str:
+        param_name = path_match.group("name")
+        param_type, param_format = _swagger_parameter_type(path_match.group("converter"))
+        parameter: dict[str, object] = {
+            "name": param_name,
+            "in": "path",
+            "required": True,
+            "type": param_type,
+        }
+        if param_format:
+            parameter["format"] = param_format
+        parameters.append(parameter)
+        return f"{{{param_name}}}"
+
+    return _FLASK_PATH_PARAM_RE.sub(_replace_path_param, rule_path), parameters
+
+
+def _swagger_tag_for_rule(rule_path: str) -> str:
+    segments = [segment for segment in rule_path.split("/") if segment]
+    if len(segments) < 2:
+        return "API"
+    return segments[1].replace("-", " ").title()
+
+
+def _swagger_operation_for_rule(
+    endpoint: str,
+    method: str,
+    rule_path: str,
+    path_parameters: list[dict[str, object]],
+) -> dict[str, object]:
+    parameters = list(path_parameters)
+    if method in _SWAGGER_BODY_METHODS:
+        parameters.append(
+            {
+                "name": "body",
+                "in": "body",
+                "required": False,
+                "schema": {"type": "object"},
+            }
+        )
+
+    operation: dict[str, object] = {
+        "tags": [_swagger_tag_for_rule(rule_path)],
+        "summary": endpoint.replace("_", " ").title(),
+        "operationId": f"{endpoint}_{method.lower()}",
+        "responses": {
+            "200": {"description": "Successful response"},
+            "400": {"description": "Invalid request"},
+            "500": {"description": "Server error"},
+        },
+    }
+    if parameters:
+        operation["parameters"] = parameters
+    return operation
+
+
+def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
+    paths: dict[str, dict[str, object]] = {}
+    for url_rule in sorted(flask_app.url_map.iter_rules(), key=lambda route_rule: route_rule.rule):
+        if not url_rule.rule.startswith("/api/"):
+            continue
+
+        swagger_path, path_parameters = _swagger_path_for_rule(url_rule.rule)
+        path_item = paths.setdefault(swagger_path, {})
+        for method in sorted(url_rule.methods - _SWAGGER_EXCLUDED_METHODS):
+            path_item[method.lower()] = _swagger_operation_for_rule(
+                endpoint=url_rule.endpoint,
+                method=method,
+                rule_path=url_rule.rule,
+                path_parameters=path_parameters,
+            )
+
+    return {
+        "swagger": "2.0",
+        "info": {
+            "title": "Job Hunt Assistant API",
+            "description": "HTTP API for the Job Hunt Assistant Flask backend.",
+            "version": "0.1.0",
+        },
+        "basePath": "/",
+        "schemes": ["http", "https"],
+        "consumes": ["application/json"],
+        "produces": ["application/json"],
+        "paths": paths,
+    }
 
 
 # ─── Import state (in-memory, protected by a lock) ────────────────────────────
@@ -495,7 +614,7 @@ def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
             )
             rescored += 1
         except Exception as exc:
-            logger.warning("Queue re-score failed for job %s: %s", job.get("id"), exc)
+            logger.warning("Queue re-score failed for job %s: %s", job.get("id"), exc, exc_info=True)
             failed += 1
 
     return {"rescored": rescored, "failed": failed}
@@ -701,9 +820,9 @@ def _re_evaluate_career_scan_results(
             updates["match_reasoning"] = result["reasoning"]
             rescored += 1
         except Exception as exc:
-            logger.warning("Career result re-evaluation failed for row %s: %s", row.get("id"), exc)
+            logger.warning("Career result re-evaluation failed for row %s: %s", row.get("id"), exc, exc_info=True)
             updates["match_score"] = None
-            updates["match_reasoning"] = f"Scoring failed: {exc}"
+            updates["match_reasoning"] = f"Scoring failed: {_safe_error_message(exc, 'Anthropic scoring failed')}"
             failed += 1
 
         results_repo.update(row["id"], updates)
@@ -779,6 +898,7 @@ def _update_scan(
     jobs_processed: int | None = None,
     error: str | None = None,
     error_email_id: str | None = None,
+    summary: dict | None = None,
 ) -> None:
     with _scan_lock:
         if progress is not None:
@@ -791,6 +911,8 @@ def _update_scan(
             _scan_state.jobs_processed = jobs_processed
         if error is not None:
             _scan_state.errors.append({"message": error, "email_id": error_email_id})
+        if summary is not None:
+            _scan_state.summary = summary
 
 
 # ─── Background scan thread ───────────────────────────────────────────────────
@@ -810,6 +932,7 @@ def _run_scan(rescan_all: bool = False) -> None:
         _scan_state.jobs_found = 0
         _scan_state.jobs_processed = 0
         _scan_state.errors.clear()
+        _scan_state.summary = None
 
     conn = None
     try:
@@ -864,6 +987,10 @@ def _run_scan(rescan_all: bool = False) -> None:
         penalty_repo = SQLitePenaltyRuleRepository(conn)
         penalty_rules = penalty_repo.get_enabled()
         fit_feedback = job_repo.get_not_a_fit_with_feedback()
+
+        new_jobs: int = 0
+        emails_with_jobs: int = 0
+        jobs_by_source: dict[str, int] = {}
 
         # Load all known jobs once for duplicate detection.
         known_jobs: list[dict] = job_repo.get_all_ordered()
@@ -1000,7 +1127,11 @@ def _run_scan(rescan_all: bool = False) -> None:
                         logger.warning("Scoring failed for %s job %d: %s", msg_id, job_idx, exc)
 
                 job_repo.insert(job_data)
+                new_jobs += 1
+                source_key = (parsed.get("source") or "Unknown").strip() or "Unknown"
+                jobs_by_source[source_key] = jobs_by_source.get(source_key, 0) + 1
 
+            emails_with_jobs += 1
             scanned_repo.mark_scanned(msg_id, sender, subject, disposition="job_created", email_date=email_date)
 
             n_found = len(parsed_jobs)
@@ -1017,7 +1148,21 @@ def _run_scan(rescan_all: bool = False) -> None:
                 jobs_processed=idx + 1,
             )
 
-        _update_scan(progress=100, message=f"Scan complete. Processed {total} emails.")
+        _update_scan(
+            progress=100,
+            message=f"Scan complete. Processed {total} emails.",
+            summary={
+                "emails_scanned": total,
+                "new_jobs": new_jobs,
+                "emails_with_jobs": emails_with_jobs,
+                "sources_with_jobs": len(jobs_by_source),
+                "by_source": sorted(
+                    [{"source": k, "count": v} for k, v in jobs_by_source.items()],
+                    key=lambda x: x["count"],
+                    reverse=True,
+                ),
+            },
+        )
 
     except Exception as exc:
         logger.exception("Scan failed with unexpected error")
@@ -1042,26 +1187,24 @@ _FALLBACK_QUERIES: list[str] = [
 
 def _generate_board_search_queries() -> list[str]:
     """Ask Claude to generate tailored search queries from the candidate profile."""
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    response = client.messages.create(
-        model=config.SCORER_MODEL,
+    response_text = AIProviderClient().complete(
         max_tokens=200,
         messages=[
-            {
-                "role": "user",
-                "content": (
+            AIMessage(
+                role="user",
+                content=(
                     "List 5 short job search queries (one per line, no numbering, "
-                    "no quotes, 3–6 words each) to find strong matches on Remotive and "
+                    "no quotes, 3-6 words each) to find strong matches on Remotive and "
                     "similar remote-job boards for this candidate. Vary them across "
-                    "different skills and specialisations.\n\n"
+                    "different skills and specializations.\n\n"
                     f"CANDIDATE PROFILE:\n{config.load_candidate_profile()}"
                 ),
-            }
+            )
         ],
     )
     lines = [
         ln.strip()
-        for ln in response.content[0].text.strip().splitlines()
+        for ln in response_text.splitlines()
         if ln.strip()
     ]
     return lines[:6] if lines else _FALLBACK_QUERIES
@@ -1308,7 +1451,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 progress=100,
                 message=msg,
                 last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
-                error="Anthropic scoring is not configured. Set ANTHROPIC_API_KEY.",
+                error=str(exc),
             )
             return
         scanner = CareerSiteScanner()
@@ -1803,22 +1946,92 @@ def update_application_sheet_row(job_id: int):
 def add_application_sheet_stage(job_id: int):
     """Add a stage entry to an application."""
     data = request.get_json(silent=True) or {}
-    status = str(data.get("status") or "").strip()
+    status = _normalize_stage_status(data.get("status"))
     stage_date = str(data.get("date") or "").strip()
     notes = str(data.get("notes") or "").strip()
     if not status:
         return jsonify({"error": "status is required"}), 400
+    if status not in _VALID_STAGE_STATUSES:
+        return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(_VALID_STAGE_STATUSES))}"}), 400
     if not stage_date:
         return jsonify({"error": "date is required"}), 400
     repos = _get_repos()
     try:
         repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
     except Exception as exc:
-        logger.warning("Error adding stage for job %s: %s", job_id, exc)
+        logger.warning("Error adding stage for job %s: %s", job_id, exc, exc_info=True)
         return jsonify({"error": "Failed to save stage"}), 500
     finally:
         repos["conn"].close()
     return jsonify({"status": "ok"}), 201
+
+
+@app.route("/api/sheet/applications/mark-ghosts", methods=["POST"])
+def mark_ghost_applications():
+    """Mark applications whose latest state has been Applied for 30+ days as ghosted."""
+    cutoff_date = date.today() - timedelta(days=30)
+    today = date.today().isoformat()
+    repos = _get_repos()
+    marked: list[dict[str, object]] = []
+    try:
+        jobs = repos["jobs"].get_all_ordered()
+        all_stages = repos["stages"].get_all()
+        stages_by_job_id: dict[int, list[dict]] = {}
+        for stage in all_stages:
+            stages_by_job_id.setdefault(stage["job_id"], []).append(stage)
+
+        for job in jobs:
+            stages = stages_by_job_id.get(job["id"], [])
+            latest_stage = stages[-1] if stages else None
+            latest_status = _normalize_stage_status(
+                (latest_stage or {}).get("status") or job.get("status")
+            )
+            latest_date = str(
+                (latest_stage or {}).get("date")
+                or job.get("date_added_to_sheet")
+                or job.get("date_found")
+                or ""
+            ).strip()
+
+            if latest_status != "applied" or not latest_date:
+                continue
+            try:
+                applied_date = date.fromisoformat(latest_date[:10])
+            except ValueError:
+                logger.warning(
+                    "Skipping ghost check for job %s with invalid date %s",
+                    job.get("id"),
+                    latest_date,
+                )
+                continue
+            if applied_date > cutoff_date:
+                continue
+
+            days_applied = (date.today() - applied_date).days
+            repos["stages"].insert(
+                {
+                    "job_id": job["id"],
+                    "status": "ghosted",
+                    "date": today,
+                    "notes": f"Marked ghosted after {days_applied} days in Applied.",
+                }
+            )
+            marked.append(
+                {
+                    "id": job["id"],
+                    "company": job.get("company") or "",
+                    "job_title": job.get("job_title") or "",
+                    "applied_date": applied_date.isoformat(),
+                    "days_applied": days_applied,
+                }
+            )
+    except Exception as exc:
+        logger.warning("Error marking ghost applications: %s", exc, exc_info=True)
+        return jsonify({"error": "Failed to mark ghosts"}), 500
+    finally:
+        repos["conn"].close()
+
+    return jsonify({"marked": marked, "count": len(marked), "cutoff_date": cutoff_date.isoformat()})
 
 
 # ─── Scan routes ──────────────────────────────────────────────────────────────
@@ -1845,6 +2058,7 @@ def scan_status():
                 "jobs_found": _scan_state.jobs_found,
                 "jobs_processed": _scan_state.jobs_processed,
                 "errors": list(_scan_state.errors),
+                "summary": _scan_state.summary,
             }
         )
 
@@ -2651,23 +2865,15 @@ def fit_chat(job_id: int):
         f"JOB DESCRIPTION / EMAIL SNIPPET:\n{str(job.get('raw_email_snippet') or '')[:6000]}"
     )
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     try:
-        response = client.messages.create(
-            model=config.SCORER_MODEL,
-            max_tokens=1000,
+        reply_text = AIProviderClient().complete(
             system=system_prompt,
-            messages=messages,
+            messages=[AIMessage(role=message["role"], content=message["content"]) for message in messages],
+            max_tokens=1000,
         )
     except Exception as exc:
-        logger.warning("Fit chat failed for job %d: %s", job_id, exc)
-        return jsonify({"error": "Fit chat failed"}), 500
-
-    if not response.content:
-        logger.warning("Fit chat returned an empty response for job %d", job_id)
-        return jsonify({"error": "Fit chat returned no response"}), 502
-
-    reply_text = response.content[0].text.strip()
+        logger.warning("Fit chat failed for job %d: %s", job_id, exc, exc_info=True)
+        return jsonify({"error": _safe_error_message(exc, "Fit chat failed")}), _ai_error_http_status(exc)
     reclassification = None
     tag_match = re.search(
         r"<FIT_RECLASSIFICATION>(.*?)</FIT_RECLASSIFICATION>",
@@ -2696,6 +2902,25 @@ def fit_chat(job_id: int):
         ).strip()
 
     return jsonify({"reply": reply_text, "reclassification": reclassification})
+
+
+def _ai_error_http_status(exc: BaseException, fallback_status: int = 500) -> int:
+    if isinstance(exc, AIProviderError):
+        status_code = exc.status_code
+        if status_code == 429:
+            return 429
+        if isinstance(status_code, int) and 400 <= status_code <= 599:
+            return 502
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 429:
+        return 429
+    if isinstance(status_code, int) and 400 <= status_code <= 599:
+        return 502
+    return fallback_status
+
+
+def _safe_error_message(exc: BaseException, fallback: str) -> str:
+    return str(exc) or fallback
 
 
 @app.route("/api/jobs/<int:job_id>/fit-classification", methods=["POST"])
@@ -2766,8 +2991,8 @@ def re_evaluate_job_fit(job_id: int):
         )
     except Exception as exc:
         repos["conn"].close()
-        logger.warning("Fit re-evaluation failed for job %d: %s", job_id, exc)
-        return jsonify({"error": "Fit re-evaluation failed"}), 500
+        logger.warning("Fit re-evaluation failed for job %d: %s", job_id, exc, exc_info=True)
+        return jsonify({"error": _safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
 
     score = int(result["score"])
     new_status = "pending_review" if score >= 70 else "triage"
@@ -2893,6 +3118,32 @@ _VALID_STAGE_STATUSES = frozenset({
 })
 
 
+def _normalize_stage_status(raw_status: object) -> str:
+    status = str(raw_status or "").strip()
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    aliases = {
+        "applied": "applied",
+        "added_to_sheet": "applied",
+        "rejected": "rejected",
+        "employer_rejected": "rejected",
+        "waiting": "waiting_call",
+        "waiting_for_call": "waiting_call",
+        "waiting_call": "waiting_call",
+        "waiting_for_2nd": "waiting_second",
+        "waiting_2nd": "waiting_second",
+        "waiting_for_second": "waiting_second",
+        "waiting_second": "waiting_second",
+        "need_to_do_eval": "eval_test",
+        "eval": "eval_test",
+        "eval_test": "eval_test",
+        "job_was_filled": "job_filled",
+        "job_filled": "job_filled",
+        "filled": "job_filled",
+        "ghosted": "ghosted",
+    }
+    return aliases.get(normalized, normalized)
+
+
 @app.route("/api/jobs/<int:job_id>/stages", methods=["POST"])
 def add_application_stage(job_id: int):
     repos = _get_repos()
@@ -2901,7 +3152,7 @@ def add_application_stage(job_id: int):
         return jsonify({"error": "Job not found"}), 404
 
     data = request.get_json(silent=True) or {}
-    status = data.get("status", "")
+    status = _normalize_stage_status(data.get("status"))
     if status not in _VALID_STAGE_STATUSES:
         repos["conn"].close()
         return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(_VALID_STAGE_STATUSES))}"}), 400
@@ -2944,8 +3195,8 @@ def generate_cover_letter(job_id: int):
         generator = CoverLetterGenerator()
         cover_letter = generator.generate(job, resume_text=resume_text)
     except Exception as exc:
-        logger.error("Cover letter generation failed for job %d: %s", job_id, exc)
-        return jsonify({"error": str(exc)}), 500
+        logger.error("Cover letter generation failed for job %d: %s", job_id, exc, exc_info=True)
+        return jsonify({"error": _safe_error_message(exc, "Cover letter generation failed")}), _ai_error_http_status(exc)
 
     return jsonify({"cover_letter": cover_letter})
 
@@ -3101,19 +3352,25 @@ def cover_letter_chat(job_id: int):
         "do not include those tags."
     )
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     try:
-        response = client.messages.create(
-            model=config.SCORER_MODEL,
-            max_tokens=1200,
+        reply_text = AIProviderClient().complete(
             system=system_prompt,
-            messages=messages,
+            messages=[
+                AIMessage(
+                    role=str(message.get("role") or ""),
+                    content=str(message.get("content") or ""),
+                )
+                for message in messages
+                if isinstance(message, dict)
+                and message.get("role") in {"user", "assistant"}
+                and isinstance(message.get("content"), str)
+                and str(message.get("content") or "").strip()
+            ],
+            max_tokens=1200,
         )
     except Exception as exc:
-        logger.error("Cover letter chat failed for job %d: %s", job_id, exc)
-        return jsonify({"error": str(exc)}), 500
-
-    reply_text: str = response.content[0].text.strip()
+        logger.error("Cover letter chat failed for job %d: %s", job_id, exc, exc_info=True)
+        return jsonify({"error": _safe_error_message(exc, "Cover letter chat failed")}), _ai_error_http_status(exc)
 
     # Extract updated cover letter if the model wrapped one in tags
     updated_cover_letter: str | None = None
@@ -3234,7 +3491,7 @@ def refresh_job_from_url(job_id: int):
     except Exception as exc:
         logger.warning("refresh-from-url: scoring failed for job %d: %s", job_id, exc)
         repos["conn"].close()
-        return jsonify({"error": f"Scoring failed: {exc}"}), 500
+        return jsonify({"error": _safe_error_message(exc, "Scoring failed")}), _ai_error_http_status(exc)
 
     fit_score = score_result["score"]
     current_status = job.get("status", "triage")
@@ -3854,6 +4111,19 @@ def update_config():
             return jsonify({"error": f"Could not read candidate profile file: {exc}"}), 400
         cfg["candidate_profile_path"] = str(candidate_profile_file)
 
+    if "ai_provider" in data:
+        ai_provider = str(data.get("ai_provider") or "").strip().lower()
+        if ai_provider not in {"anthropic", "openai", "ollama"}:
+            return jsonify({"error": "ai_provider must be anthropic, openai, or ollama"}), 400
+        cfg["ai_provider"] = ai_provider
+
+    for key in ("anthropic_model", "openai_model", "ollama_model", "ollama_base_url"):
+        if key in data:
+            value = str(data.get(key) or "").strip()
+            if not value:
+                return jsonify({"error": f"{key} cannot be empty"}), 400
+            cfg[key] = value
+
     config.save_runtime_config(cfg)
 
     profile_changed = str(cfg.get("candidate_profile_path") or "").strip() != previous_profile_path
@@ -3870,6 +4140,39 @@ def update_config():
         "profile_changed": profile_changed,
         "rescore_summary": rescore_summary,
     })
+
+
+@app.route("/api/config/test-ollama", methods=["POST"])
+def test_ollama_connection():
+    data: dict[str, object] | None = request.get_json()
+    base_url = str((data or {}).get("ollama_base_url") or config.OLLAMA_BASE_URL).strip().rstrip("/")
+    model = str((data or {}).get("ollama_model") or config.OLLAMA_MODEL).strip()
+
+    tags_url = f"{base_url}/api/tags"
+    req = urllib.request.Request(tags_url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return jsonify({"ok": False, "message": f"Could not connect: {exc}"})
+    except json.JSONDecodeError:
+        return jsonify({"ok": False, "message": "Connected but received an unexpected response from Ollama."})
+
+    available = [m.get("name", "") for m in body.get("models", [])]
+    if model in available:
+        return jsonify({"ok": True, "message": f"Connected. Model '{model}' is available."})
+    if available:
+        return jsonify({"ok": False, "message": f"Connected, but model '{model}' was not found. Available: {', '.join(available)}"})
+    return jsonify({"ok": False, "message": f"Connected, but model '{model}' was not found (no models installed)."})
+
+
+# Register generated Swagger docs after API routes are loaded and before the SPA
+# catch-all. The UI is available at /apidocs/ and the JSON spec at /apispec_1.json.
+app.config["SWAGGER"] = {
+    "title": "Job Hunt Assistant API",
+    "uiversion": 3,
+}
+_swagger = Swagger(app, template=_build_swagger_template(app))
 
 
 # ─── Frontend (SPA) catch-all ─────────────────────────────────────────────────

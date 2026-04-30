@@ -50,7 +50,8 @@
       "Bash(.venv/Scripts/python.exe -m pip install pytest -q)",
       "Bash(.venv/Scripts/python.exe -m pytest tests/test_fit_scorer.py -v)",
       "Bash(python -m pytest --version)",
-      "Bash(pip3 show *)"
+      "Bash(pip3 show *)",
+      "WebSearch"
     ]
   }
 }
