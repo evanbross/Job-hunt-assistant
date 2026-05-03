@@ -37,10 +37,8 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
 
@@ -49,14 +47,12 @@ from flask import Blueprint, jsonify, request
 import config
 from backend.career_site_scanner import CareerSiteScanner
 from backend.db import (
-    SQLiteCareerRejectionRuleRepository,
-    SQLiteCareerScanFailureRepository,
-    SQLiteCareerScanResultRepository,
-    SQLiteCareerSiteSourceRepository,
-    SQLiteJobRepository,
-    SQLitePenaltyRuleRepository,
-    SQLiteResumeRepository,
-    get_connection,
+    ICareerRejectionRuleRepository,
+    ICareerScanResultRepository,
+    IJobRepository,
+    IPenaltyRuleRepository,
+    IResumeRepository,
+    open_repositories,
 )
 from backend.duplicate_checker import DuplicateChecker
 from backend.fit_scorer import FitScorer
@@ -66,8 +62,10 @@ from backend.utils import (
     _parse_bool,
     _parse_positive_int,
     _safe_error_message,
+    configure_career_site_scheduler,
     db_match_for_job,
     extract_ashby_job_id,
+    platform_for_site_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,31 +90,9 @@ class CareerSiteScanState:
 
 _career_state = CareerSiteScanState()
 _career_lock = threading.Lock()
-_career_scheduler_started = False
-_career_scheduler_lock = threading.Lock()
 
 
 # ─── Career-site helpers ──────────────────────────────────────────────────────
-
-def _platform_for_site_url(site_url: str) -> str:
-    host = site_url.lower()
-    if "greenhouse.io" in host:
-        return "greenhouse"
-    if "lever.co" in host:
-        return "lever"
-    if "myworkdayjobs.com" in host:
-        return "workday"
-    return "generic"
-
-
-def _platform_label(platform: str) -> str:
-    labels = {
-        "greenhouse": "Greenhouse",
-        "lever": "Lever",
-        "workday": "Workday",
-        "ashby": "Ashby",
-    }
-    return labels.get(platform.lower(), platform.title() or "Career Site")
 
 
 def _career_rejection_rule_match(job: dict[str, object], rules: list[dict[str, object]]) -> dict[str, object] | None:
@@ -135,7 +111,7 @@ def _tracking_status_for_career_job(
     *,
     job: dict[str, object],
     known_jobs: list[dict],
-    jobs_repo: SQLiteJobRepository,
+    jobs_repo: IJobRepository,
     dedup_checker: DuplicateChecker,
 ) -> tuple[str, str | None]:
     sheet_status, tracking_source, _duplicate_hint = db_match_for_job(
@@ -197,11 +173,11 @@ def _update_career_scan(
 def _re_evaluate_career_scan_results(
     repos: dict[str, object],
 ) -> dict[str, int]:
-    jobs_repo: SQLiteJobRepository = repos["jobs"]  # type: ignore[assignment]
-    resume_repo: SQLiteResumeRepository = repos["resume"]  # type: ignore[assignment]
-    penalties_repo: SQLitePenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
-    results_repo: SQLiteCareerScanResultRepository = repos["career_scan_results"]  # type: ignore[assignment]
-    rejection_rules_repo: SQLiteCareerRejectionRuleRepository = repos["career_rejection_rules"]  # type: ignore[assignment]
+    jobs_repo: IJobRepository = repos["jobs"]  # type: ignore[assignment]
+    resume_repo: IResumeRepository = repos["resume"]  # type: ignore[assignment]
+    penalties_repo: IPenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
+    results_repo: ICareerScanResultRepository = repos["career_scan_results"]  # type: ignore[assignment]
+    rejection_rules_repo: ICareerRejectionRuleRepository = repos["career_rejection_rules"]  # type: ignore[assignment]
 
     known_jobs = jobs_repo.get_all_ordered()
     rows = results_repo.get_all()
@@ -295,16 +271,18 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
         _career_state.errors.clear()
         _career_state.last_trigger = trigger
 
+    repos = None
     conn = None
     try:
-        conn = get_connection(config.DATABASE_URL)
-        source_repo = SQLiteCareerSiteSourceRepository(conn)
-        results_repo = SQLiteCareerScanResultRepository(conn)
-        failures_repo = SQLiteCareerScanFailureRepository(conn)
-        rejection_rules_repo = SQLiteCareerRejectionRuleRepository(conn)
-        resume_repo = SQLiteResumeRepository(conn)
-        penalties_repo = SQLitePenaltyRuleRepository(conn)
-        jobs_repo = SQLiteJobRepository(conn)
+        repos = open_repositories(config.DATABASE_URL)
+        conn = repos["conn"]
+        source_repo = repos["career_sites"]
+        results_repo = repos["career_scan_results"]
+        failures_repo = repos["career_scan_failures"]
+        rejection_rules_repo = repos["career_rejection_rules"]
+        resume_repo = repos["resume"]
+        penalties_repo = repos["penalties"]
+        jobs_repo = repos["jobs"]
 
         if source_id is not None:
             source_row = source_repo.get_by_id(source_id)
@@ -353,6 +331,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     "occurred_at": datetime.now(UTC).isoformat(timespec="seconds"),
                 }
             )
+            conn.commit()
             _update_career_scan(
                 progress=100,
                 message=msg,
@@ -383,6 +362,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
 
             if source_id is not None:
                 results_repo.delete_by_site_source_id(current_source_id)
+                conn.commit()
 
             try:
                 outcome = scanner.scan_site(site_name=source_name, site_url=source_url)
@@ -391,6 +371,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 source_repo.update(
                     current_source_id, {"detected_platform": detected_platform}
                 )
+                conn.commit()
             except Exception as exc:
                 logger.warning("Career-site scan failed for %s: %s", source_url, exc)
                 _update_career_scan(error=f"{source_name}: {exc.__class__.__name__}: {exc}")
@@ -399,12 +380,13 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                         "site_source_id": current_source_id,
                         "site_name": source_name,
                         "site_url": source_url,
-                        "platform": _platform_for_site_url(source_url),
+                        "platform": platform_for_site_url(source_url),
                         "error_message": f"{exc.__class__.__name__}: {exc}",
                         "trigger": trigger,
                         "occurred_at": datetime.now(UTC).isoformat(timespec="seconds"),
                     }
                 )
+                conn.commit()
                 scanned_sites += 1
                 progress = 20 + int((scanned_sites / source_count) * 75)
                 _update_career_scan(progress=progress, sites_scanned=scanned_sites)
@@ -426,6 +408,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                         "occurred_at": datetime.now(UTC).isoformat(timespec="seconds"),
                     }
                 )
+                conn.commit()
                 _update_career_scan(
                     error=(
                         f"{source_name} ({failure['platform']}): "
@@ -556,7 +539,9 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     else:
                         results_repo.insert(row_data)
                         jobs_added_total += 1
+                    conn.commit()
                 except Exception as exc:
+                    conn.rollback()
                     logger.debug("Career-scan insert skipped for %s: %s", job["job_url"], exc)
 
             scanned_sites += 1
@@ -584,40 +569,21 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
     finally:
-        if conn is not None:
-            conn.close()
+        if repos is not None:
+            repos["conn"].close()
         with _career_lock:
             _career_state.running = False
 
 
-def _career_scheduler_loop() -> None:
-    while True:
-        # Sleep first so app startup is never blocked by an immediate scan.
-        interval_seconds = max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES) * 60
-        time.sleep(interval_seconds)
-        with _career_lock:
-            already_running = _career_state.running
-        if not already_running:
-            _run_career_site_scan(trigger="scheduled")
+def is_career_site_scan_running() -> bool:
+    with _career_lock:
+        return _career_state.running
 
 
-def _start_career_site_scheduler() -> None:
-    global _career_scheduler_started
-
-    debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
-    if debug_mode and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
-        return
-
-    with _career_scheduler_lock:
-        if _career_scheduler_started:
-            return
-        thread = threading.Thread(target=_career_scheduler_loop, daemon=True)
-        thread.start()
-        _career_scheduler_started = True
-        logger.info(
-            "Career-site scheduler started (interval: %s minute(s)).",
-            max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES),
-        )
+configure_career_site_scheduler(
+    is_running=is_career_site_scan_running,
+    run_scan=_run_career_site_scan,
+)
 
 
 # ─── Career-site scanner routes ───────────────────────────────────────────────
@@ -656,12 +622,13 @@ def create_career_site():
             "name": name,
             "url": url,
             "enabled": enabled,
-            "detected_platform": _platform_for_site_url(url),
+            "detected_platform": platform_for_site_url(url),
             "recapture_interval_days": recapture_interval_days,
             "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
     )
     row = repos["career_sites"].get_by_id(source_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(row), 201
 
@@ -706,6 +673,7 @@ def update_career_site(source_id: int):
 
     repos["career_sites"].update(source_id, fields)
     row = repos["career_sites"].get_by_id(source_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(row)
 
@@ -726,6 +694,7 @@ def delete_career_site(source_id: int):
         repos["conn"].close()
         return jsonify({"error": "Career site not found"}), 404
     repos["career_sites"].delete(source_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -793,6 +762,7 @@ def get_career_scan_results():
 def clear_career_scan_results():
     repos = _get_repos()
     repos["career_scan_results"].delete_all()
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "cleared"})
 
@@ -802,6 +772,7 @@ def re_evaluate_career_scan_results():
     repos = _get_repos()
     try:
         summary = _re_evaluate_career_scan_results(repos)
+        repos["conn"].commit()
     except Exception as exc:
         repos["conn"].close()
         logger.warning("Career-site re-evaluation failed: %s", exc)
@@ -849,6 +820,7 @@ def create_career_rejection_rule():
         }
     )
     row = repos["career_rejection_rules"].get_by_id(row_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(row), 201
 
@@ -878,6 +850,7 @@ def update_career_rejection_rule(rule_id: int):
 
     repos["career_rejection_rules"].update(rule_id, fields)
     row = repos["career_rejection_rules"].get_by_id(rule_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(row)
 
@@ -890,6 +863,7 @@ def delete_career_rejection_rule(rule_id: int):
         repos["conn"].close()
         return jsonify({"error": "Career rejection rule not found"}), 404
     repos["career_rejection_rules"].delete(rule_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -932,6 +906,7 @@ def reject_career_scan_result(row_id: int):
         created_rule = repos["career_rejection_rules"].get_by_id(rule_id)
 
     updated_row = repos["career_scan_results"].get_by_id(row_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"row": updated_row, "created_rule": created_rule})
 
@@ -962,6 +937,7 @@ def set_career_scan_result_tracking_status(row_id: int):
             },
         )
         updated = repos["career_scan_results"].get_by_id(row_id)
+        repos["conn"].commit()
         return jsonify(updated)
     except Exception as exc:
         logger.warning("Unexpected error setting tracking status for career result %s: %s", row_id, exc)

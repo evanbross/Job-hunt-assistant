@@ -73,18 +73,18 @@ function statusSortKey(email) {
 
 function gmailReadIndicator(email) {
   if (email.job_status && ["pending_review", "triage", "possible_duplicate"].includes(email.job_status)) {
-    return { label: "Keep unread", cls: "badge-yellow", canMarkRead: false };
+    return { label: "Keep unread", cls: "badge-yellow", canMoveToScanned: false };
   }
   if (email.job_status && ["added_to_sheet", "skipped"].includes(email.job_status)) {
-    return { label: "Can mark read", cls: "badge-green", canMarkRead: true };
+    return { label: "Move To Scanned", cls: "badge-green", canMoveToScanned: true };
   }
   if (["noise", "ack", "duplicate", "feedback_filtered"].includes(email.disposition)) {
-    return { label: "Can mark read", cls: "badge-green", canMarkRead: true };
+    return { label: "Move To Scanned", cls: "badge-green", canMoveToScanned: true };
   }
   if (email.disposition === "parser_error") {
-    return { label: "Review first", cls: "badge-red", canMarkRead: false };
+    return { label: "Review first", cls: "badge-red", canMoveToScanned: false };
   }
-  return { label: "Review first", cls: "badge-gray", canMarkRead: false };
+  return { label: "Review first", cls: "badge-gray", canMoveToScanned: false };
 }
 
 // ── Raw body modal ────────────────────────────────────────────────────────────
@@ -180,10 +180,10 @@ function RawBodyModal({ email, onClose }) {
 
 // ── Detail panel shown when a row is selected ─────────────────────────────────
 
-function DetailPanel({ email, markingRead, onMarkRead, rescanning, onRescan, onShowBody, onSetHidden }) {
+function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRescan, onShowBody, onSetHidden }) {
   const { label, cls } = statusBadge(email);
   const gmailIndicator = gmailReadIndicator(email);
-  const isMarkingRead = markingRead[email.email_id];
+  const isMovingToScanned = movingToScanned[email.email_id];
   const isRescanning = rescanning[email.email_id];
   const isParserError = email.disposition === "parser_error";
 
@@ -234,15 +234,15 @@ function DetailPanel({ email, markingRead, onMarkRead, rescanning, onRescan, onS
             </dd>
             <dt style={dtStyle}>Gmail</dt>
             <dd style={ddStyle}>
-              {gmailIndicator.canMarkRead ? (
+              {gmailIndicator.canMoveToScanned ? (
                 <button
                   className={`badge ${gmailIndicator.cls}`}
-                  onClick={() => onMarkRead(email.email_id)}
-                  disabled={isMarkingRead}
+                  onClick={() => onMoveToScanned(email.email_id)}
+                  disabled={isMovingToScanned}
                   style={badgeButtonStyle}
-                  title="Mark this email as read in Gmail"
+                  title="Move this email from Inbox to the configured Processed Email Label in Gmail"
                 >
-                  {isMarkingRead ? "Marking read..." : gmailIndicator.label}
+                  {isMovingToScanned ? "Moving..." : gmailIndicator.label}
                 </button>
               ) : (
                 <span className={`badge ${gmailIndicator.cls}`}>{gmailIndicator.label}</span>
@@ -335,7 +335,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
   const [rescanning, setRescanning] = useState({});
   const [rescanAllRunning, setRescanAllRunning] = useState(false);
   const [cleaning, setCleaning] = useState(false);
-  const [markingRead, setMarkingRead] = useState({});
+  const [movingToScanned, setMovingToScanned] = useState({});
   const [cleanResult, setCleanResult] = useState(null);
   const [scanState, setScanState] = useState(null);
   const [sortCol, setSortCol] = useState("date");
@@ -504,26 +504,28 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
     }
   };
 
-  const handleMarkRead = async (emailId) => {
+  const handleMoveToScanned = async (emailId) => {
     if (!isAuthenticated) {
       alert("Connect your Google account first.");
       return;
     }
-    setMarkingRead((prev) => ({ ...prev, [emailId]: true }));
+    setMovingToScanned((prev) => ({ ...prev, [emailId]: true }));
     try {
-      const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/mark-read`, {
+      const res = await fetch("/api/emails/move-scanned", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email_ids: [emailId] }),
       });
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || "Failed to mark email as read");
+        alert(data.error || "Failed to move email to scanned label");
         return;
       }
       await fetchEmails(filter);
     } catch (e) {
-      alert("Failed to mark email as read: " + e.message);
+      alert("Failed to move email to scanned label: " + e.message);
     } finally {
-      setMarkingRead((prev) => ({ ...prev, [emailId]: false }));
+      setMovingToScanned((prev) => ({ ...prev, [emailId]: false }));
     }
   };
 
@@ -714,18 +716,18 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
                         )}
                       </td>
                       <td style={{ ...tdStyle, whiteSpace: "nowrap", width: "140px" }}>
-                        {gmailIndicator.canMarkRead ? (
+                        {gmailIndicator.canMoveToScanned ? (
                           <button
                             className={`badge ${gmailIndicator.cls}`}
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleMarkRead(email.email_id);
+                              handleMoveToScanned(email.email_id);
                             }}
-                            disabled={markingRead[email.email_id]}
+                            disabled={movingToScanned[email.email_id]}
                             style={badgeButtonStyle}
-                            title="Mark this email as read in Gmail"
+                            title="Move this email from Inbox to the configured Processed Email Label in Gmail"
                           >
-                            {markingRead[email.email_id] ? "Marking read..." : gmailIndicator.label}
+                            {movingToScanned[email.email_id] ? "Moving..." : gmailIndicator.label}
                           </button>
                         ) : (
                           <span
@@ -761,8 +763,8 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
         {selectedEmail ? (
           <DetailPanel
             email={selectedEmail}
-            markingRead={markingRead}
-            onMarkRead={handleMarkRead}
+            movingToScanned={movingToScanned}
+            onMoveToScanned={handleMoveToScanned}
             rescanning={rescanning}
             onRescan={handleRescan}
             onShowBody={() => setErrorModalEmail(selectedEmail)}

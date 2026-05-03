@@ -43,6 +43,7 @@ import urllib.request
 from datetime import datetime, UTC
 from pathlib import Path
 
+import fitz
 from flask import Blueprint, jsonify, request
 
 import config
@@ -73,6 +74,12 @@ def update_config():
     if "email_lookback_days" in data:
         cfg["email_lookback_days"] = data["email_lookback_days"]
 
+    if "scanned_email_label" in data:
+        scanned_email_label = str(data.get("scanned_email_label") or "").strip()
+        if not scanned_email_label:
+            return jsonify({"error": "scanned_email_label cannot be empty"}), 400
+        cfg["scanned_email_label"] = scanned_email_label
+
     if "candidate_profile_path" in data:
         candidate_profile_path = str(data.get("candidate_profile_path") or "").strip()
         if not candidate_profile_path:
@@ -99,6 +106,43 @@ def update_config():
                 return jsonify({"error": f"{key} cannot be empty"}), 400
             cfg[key] = value
 
+    if "job_import_listener_enabled" in data:
+        try:
+            cfg["job_import_listener_enabled"] = _parse_bool_setting(
+                data.get("job_import_listener_enabled")
+            )
+        except ValueError:
+            return jsonify({"error": "job_import_listener_enabled must be a boolean"}), 400
+
+    if "job_import_listener_host" in data:
+        listener_host = str(data.get("job_import_listener_host") or "").strip()
+        if not listener_host:
+            return jsonify({"error": "job_import_listener_host cannot be empty"}), 400
+        cfg["job_import_listener_host"] = listener_host
+
+    if "job_import_listener_port" in data:
+        try:
+            listener_port = int(data.get("job_import_listener_port") or 0)
+        except (TypeError, ValueError):
+            return jsonify({"error": "job_import_listener_port must be a number"}), 400
+        if listener_port < 1 or listener_port > 65535:
+            return jsonify({"error": "job_import_listener_port must be between 1 and 65535"}), 400
+        cfg["job_import_listener_port"] = listener_port
+
+    if "job_import_listener_token" in data:
+        cfg["job_import_listener_token"] = str(
+            data.get("job_import_listener_token") or ""
+        ).strip()
+
+    if "job_import_listener_max_bytes" in data:
+        try:
+            max_bytes = int(data.get("job_import_listener_max_bytes") or 0)
+        except (TypeError, ValueError):
+            return jsonify({"error": "job_import_listener_max_bytes must be a number"}), 400
+        if max_bytes < 1024:
+            return jsonify({"error": "job_import_listener_max_bytes must be at least 1024"}), 400
+        cfg["job_import_listener_max_bytes"] = max_bytes
+
     config.save_runtime_config(cfg)
 
     profile_changed = str(cfg.get("candidate_profile_path") or "").strip() != previous_profile_path
@@ -107,6 +151,7 @@ def update_config():
         repos = _get_repos()
         try:
             rescore_summary = _rescore_active_queue_jobs(repos)
+            repos["conn"].commit()
         finally:
             repos["conn"].close()
 
@@ -115,6 +160,20 @@ def update_config():
         "profile_changed": profile_changed,
         "rescore_summary": rescore_summary,
     })
+
+
+def _parse_bool_setting(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    raise ValueError("Invalid boolean setting")
 
 
 @settings_bp.route("/config/test-ollama", methods=["POST"])
@@ -167,6 +226,7 @@ def create_penalty():
         }
     )
     rule = repos["penalties"].get_by_id(rule_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(rule), 201
 
@@ -189,6 +249,7 @@ def update_penalty(rule_id: int):
 
     repos["penalties"].update(rule_id, updates)
     rule = repos["penalties"].get_by_id(rule_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(rule)
 
@@ -201,6 +262,7 @@ def delete_penalty(rule_id: int):
         return jsonify({"error": "Rule not found"}), 404
 
     repos["penalties"].delete(rule_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -219,6 +281,80 @@ def get_feedback():
 def delete_feedback(feedback_id: int):
     repos = _get_repos()
     repos["feedback"].delete(feedback_id)
+    repos["conn"].commit()
+    repos["conn"].close()
+    return jsonify({"status": "ok"})
+
+
+# ─── Email subject rule routes ────────────────────────────────────────────────
+
+@settings_bp.route("/email-subject-rules")
+def get_email_subject_rules():
+    repos = _get_repos()
+    rules = repos["email_subject_rules"].get_all()
+    repos["conn"].close()
+    return jsonify(rules)
+
+
+@settings_bp.route("/email-subject-rules", methods=["POST"])
+def create_email_subject_rule():
+    data = request.get_json()
+    pattern = str((data or {}).get("pattern") or "").strip().lower()
+    if not pattern:
+        return jsonify({"error": "pattern is required"}), 400
+
+    rule_type = str((data or {}).get("rule_type") or "blacklist").strip().lower()
+    if rule_type not in {"blacklist", "whitelist"}:
+        return jsonify({"error": "rule_type must be blacklist or whitelist"}), 400
+
+    repos = _get_repos()
+    rule_id = repos["email_subject_rules"].insert(
+        {"pattern": pattern, "enabled": 1, "rule_type": rule_type}
+    )
+    row = repos["email_subject_rules"].get_by_id(rule_id)
+    repos["conn"].commit()
+    repos["conn"].close()
+    return jsonify(row), 201
+
+
+@settings_bp.route("/email-subject-rules/<int:rule_id>", methods=["PUT"])
+def update_email_subject_rule(rule_id: int):
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    allowed = {"pattern", "enabled", "rule_type"}
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if "pattern" in updates:
+        updates["pattern"] = str(updates["pattern"]).strip().lower()
+        if not updates["pattern"]:
+            return jsonify({"error": "pattern cannot be empty"}), 400
+    if "rule_type" in updates:
+        updates["rule_type"] = str(updates["rule_type"]).strip().lower()
+        if updates["rule_type"] not in {"blacklist", "whitelist"}:
+            return jsonify({"error": "rule_type must be blacklist or whitelist"}), 400
+
+    repos = _get_repos()
+    if not repos["email_subject_rules"].get_by_id(rule_id):
+        repos["conn"].close()
+        return jsonify({"error": "Rule not found"}), 404
+
+    repos["email_subject_rules"].update(rule_id, updates)
+    row = repos["email_subject_rules"].get_by_id(rule_id)
+    repos["conn"].commit()
+    repos["conn"].close()
+    return jsonify(row)
+
+
+@settings_bp.route("/email-subject-rules/<int:rule_id>", methods=["DELETE"])
+def delete_email_subject_rule(rule_id: int):
+    repos = _get_repos()
+    if not repos["email_subject_rules"].get_by_id(rule_id):
+        repos["conn"].close()
+        return jsonify({"error": "Rule not found"}), 404
+
+    repos["email_subject_rules"].delete(rule_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -240,8 +376,6 @@ def upload_resume():
 
     # Extract text with PyMuPDF
     try:
-        import fitz  # PyMuPDF
-
         with fitz.open(str(save_path)) as doc:
             text = "\n".join(page.get_text() for page in doc)
     except Exception as exc:
@@ -258,6 +392,7 @@ def upload_resume():
         }
     )
     resume = repos["resume"].get_latest()
+    repos["conn"].commit()
     repos["conn"].close()
 
     # Return without full content (it can be large)

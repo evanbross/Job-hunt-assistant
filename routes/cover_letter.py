@@ -40,8 +40,10 @@ import logging
 import re
 from pathlib import Path
 
+import docx
 from flask import Blueprint, jsonify, request
 
+import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.cover_letter_generator import CoverLetterGenerator
 from backend.utils import (
@@ -79,8 +81,6 @@ def generate_cover_letter(job_id: int):
 
 @cover_letter_bp.route("/cover-letter/save", methods=["POST"])
 def save_cover_letter():
-    import docx  # python-docx; imported here so startup doesn't fail if not yet installed
-
     body = request.get_json(silent=True) or {}
     text = (body.get("text") or "").strip()
     job_title = (body.get("job_title") or "Cover Letter").strip()
@@ -100,6 +100,7 @@ def save_cover_letter():
         saved = settings.get("cover_letter_folder")
         folder = Path(saved) if saved else Path.home() / "Documents" / "Cover Letters"
 
+    repos["conn"].commit()
     repos["conn"].close()
 
     try:
@@ -152,9 +153,12 @@ def cover_letter_chat(job_id: int):
     company = job.get("company") or "the company"
     job_title = job.get("job_title") or "the position"
 
+    candidate_profile = config.load_candidate_profile()
+
     system_prompt = (
         f"You are helping a job applicant refine their cover letter for the role of "
         f"{job_title} at {company}.\n\n"
+        f"CANDIDATE PROFILE:\n{candidate_profile}\n\n"
         f"CURRENT COVER LETTER:\n{cover_letter}\n\n"
         "Help the applicant improve it, answer questions about it, or make specific edits "
         "they request. If you are providing a substantially rewritten or updated version "

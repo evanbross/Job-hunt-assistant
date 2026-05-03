@@ -41,7 +41,15 @@ import HistoryPanel from "./components/HistoryPanel.jsx";
 import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
 import CareerSiteResultsPanel from "./components/CareerSiteResultsPanel.jsx";
 
-const TABS = ["Job Queue", "Triage", "History", "Tracking", "Emails", "Career Sites", "Settings"];
+const TABS = [
+  { key: "queue", label: "Job Queue" },
+  { key: "triage", label: "Triage" },
+  { key: "applications", label: "Application\nTracking" },
+  { key: "emails", label: "Emails Scanning\nHistory" },
+  { key: "career", label: "Career Sites" },
+  { key: "settings", label: "Settings" },
+];
+const LEGACY_TAB_KEYS = ["queue", "triage", "history", "applications", "emails", "career", "settings"];
 
 const styles = {
   app: {
@@ -62,7 +70,7 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: "28px",
-    height: "60px",
+    minHeight: "64px",
     maxWidth: "1200px",
     margin: "0 auto",
     width: "100%",
@@ -97,17 +105,23 @@ const styles = {
     marginLeft: "8px",
   },
   tab: (active) => ({
-    padding: "7px 18px",
+    padding: "6px 14px",
+    minHeight: "44px",
+    minWidth: "74px",
     borderRadius: "var(--radius)",
     background: active ? "rgba(255,255,255,0.18)" : "transparent",
     color: active ? "#ffffff" : "rgba(255,255,255,0.65)",
     border: active ? "1px solid rgba(255,255,255,0.25)" : "1px solid transparent",
     cursor: "pointer",
     fontSize: "13px",
+    lineHeight: "1.15",
     fontWeight: active ? "600" : "400",
     display: "flex",
     alignItems: "center",
+    justifyContent: "center",
     gap: "7px",
+    whiteSpace: "pre-line",
+    textAlign: "center",
     transition: "background 0.15s, color 0.15s",
   }),
   countBadge: {
@@ -138,21 +152,36 @@ const styles = {
   },
 };
 
-const EMAILS_TAB_INDEX = TABS.indexOf("Emails");
+const EMAILS_TAB_KEY = "emails";
+const HISTORY_TAB_KEY = "history";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState(() => {
-    const saved = parseInt(localStorage.getItem("activeTab"), 10);
-    return Number.isFinite(saved) ? saved : 0;
+    const saved = localStorage.getItem("activeTab");
+    const legacyIndex = parseInt(saved, 10);
+    if (Number.isFinite(legacyIndex) && LEGACY_TAB_KEYS[legacyIndex]) {
+      return LEGACY_TAB_KEYS[legacyIndex];
+    }
+    if (saved === HISTORY_TAB_KEY || TABS.some((tab) => tab.key === saved)) {
+      return saved;
+    }
+    return "queue";
   });
   const [triageCount, setTriageCount] = useState(0);
   const [authStatus, setAuthStatus] = useState(null); // null | true | false
   const [emailFocusId, setEmailFocusId] = useState(null);
+  const [listenerImportState, setListenerImportState] = useState(null);
+  const [listenerImportDismissedAt, setListenerImportDismissedAt] = useState("");
 
   const navigateToEmails = (emailId) => {
     setEmailFocusId(emailId);
-    setActiveTab(EMAILS_TAB_INDEX);
-    localStorage.setItem("activeTab", EMAILS_TAB_INDEX);
+    setActiveTab(EMAILS_TAB_KEY);
+    localStorage.setItem("activeTab", EMAILS_TAB_KEY);
+  };
+
+  const navigateToHistory = () => {
+    setActiveTab(HISTORY_TAB_KEY);
+    localStorage.setItem("activeTab", HISTORY_TAB_KEY);
   };
 
   useEffect(() => {
@@ -165,6 +194,32 @@ export default function App() {
       window.history.replaceState({}, "", "/");
       fetchAuthStatus();
     }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const pollListenerImportStatus = async () => {
+      try {
+        const res = await fetch("/api/import/status");
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.trigger === "listener" && (data.running || data.result)) {
+          setListenerImportState(data);
+          if (data.running) {
+            setListenerImportDismissedAt("");
+          }
+        }
+      } catch {
+        /* no-op */
+      }
+    };
+
+    pollListenerImportStatus();
+    const intervalId = setInterval(pollListenerImportStatus, 1200);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
   }, []);
 
   const fetchAuthStatus = async () => {
@@ -228,18 +283,18 @@ export default function App() {
           </div>
 
           <nav style={styles.tabBar}>
-            {TABS.map((tab, i) => (
+            {TABS.map((tab) => (
               <button
-                key={tab}
-                style={styles.tab(activeTab === i)}
+                key={tab.key}
+                style={styles.tab(activeTab === tab.key)}
                 onClick={() => {
-                  setActiveTab(i);
-                  localStorage.setItem("activeTab", i);
-                  if (i === 1) fetchTriageCount();
+                  setActiveTab(tab.key);
+                  localStorage.setItem("activeTab", tab.key);
+                  if (tab.key === "triage") fetchTriageCount();
                 }}
               >
-                {tab}
-                {i === 1 && triageCount > 0 && (
+                {tab.label}
+                {tab.key === "triage" && triageCount > 0 && (
                   <span style={styles.countBadge}>{triageCount}</span>
                 )}
               </button>
@@ -285,28 +340,218 @@ export default function App() {
       )}
 
       <main style={styles.content}>
-        {activeTab === 0 && (
+        {activeTab === "queue" && (
           <JobQueue
             onTriageCountChange={setTriageCount}
             isAuthenticated={authStatus === true}
             onNavigateToEmails={navigateToEmails}
+            onNavigateToHistory={navigateToHistory}
           />
         )}
-        {activeTab === 1 && (
+        {activeTab === "triage" && (
           <TriagePanel onCountChange={setTriageCount} />
         )}
-        {activeTab === 2 && <HistoryPanel />}
-        {activeTab === 3 && <ApplicationSheetPanel />}
-        {activeTab === 4 && (
+        {activeTab === HISTORY_TAB_KEY && <HistoryPanel />}
+        {activeTab === "applications" && <ApplicationSheetPanel />}
+        {activeTab === "emails" && (
           <EmailsPanel
             isAuthenticated={authStatus === true}
             onTriageCountChange={setTriageCount}
             focusEmailId={emailFocusId}
           />
         )}
-        {activeTab === 5 && <CareerSiteResultsPanel />}
-        {activeTab === 6 && <SettingsPanel />}
+        {activeTab === "career" && <CareerSiteResultsPanel />}
+        {activeTab === "settings" && <SettingsPanel />}
       </main>
+
+      {listenerImportState
+        && listenerImportState.started_at !== listenerImportDismissedAt
+        && (
+          <ListenerImportDialog
+            state={listenerImportState}
+            onClose={() => setListenerImportDismissedAt(listenerImportState.started_at || "")}
+          />
+        )}
     </div>
   );
 }
+
+function ListenerImportDialog({ state, onClose }) {
+  const running = !!state.running;
+  const safeProgress = Math.max(0, Math.min(100, Number(state.progress) || 0));
+  const result = state.result || {};
+  const sourceName = state.capture_source?.name || state.capture_source?.url || "";
+  const phaseLabel = listenerImportPhaseLabel(state.phase);
+
+  return (
+    <div style={listenerDialogBackdropStyle}>
+      <div style={listenerDialogPanelStyle}>
+        <div style={listenerDialogHeaderStyle}>
+          <div>
+            <div style={listenerDialogTitleStyle}>
+              {running ? "Receiving Job Listings" : "Job Listing Import Complete"}
+            </div>
+            <div style={listenerDialogSubtitleStyle}>
+              {phaseLabel}{sourceName ? ` · ${sourceName}` : ""}
+            </div>
+          </div>
+          {!running && (
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ padding: "4px 10px", fontSize: "12px" }}
+              onClick={onClose}
+            >
+              Close
+            </button>
+          )}
+        </div>
+
+        <div style={listenerDialogBodyStyle}>
+          {running && <span className="inline-spinner" style={listenerSpinnerStyle} />}
+          <span>{state.message || "Processing captured job-board HTML..."}</span>
+        </div>
+
+        <div style={{ marginTop: "14px" }}>
+          <div style={listenerProgressHeaderStyle}>
+            <span>{state.total ? `${state.total} job link${state.total === 1 ? "" : "s"}` : "Waiting for job links"}</span>
+            <span>{safeProgress}%</span>
+          </div>
+          <div className="loading-bar">
+            <div className="loading-bar-fill" style={{ width: `${safeProgress}%` }} />
+          </div>
+        </div>
+
+        {state.current_job_url && (
+          <div style={listenerCurrentJobStyle}>
+            <div style={listenerCurrentJobLabelStyle}>
+              {state.current_platform || "Current job"}
+            </div>
+            <a href={state.current_job_url} target="_blank" rel="noreferrer">
+              {state.current_job_url}
+            </a>
+          </div>
+        )}
+
+        {!running && state.result && (
+          <div style={listenerResultGridStyle}>
+            <ImportResultMetric label="queued" value={result.queued || 0} tone="green" />
+            <ImportResultMetric label="skipped" value={result.skipped || 0} />
+            <ImportResultMetric label="repaired" value={result.repaired || 0} tone="green" />
+            <ImportResultMetric label="failed" value={result.failed || 0} tone={result.failed ? "red" : ""} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ImportResultMetric({ label, value, tone = "" }) {
+  const color = tone === "green" ? "var(--green)" : tone === "red" ? "var(--red)" : "var(--text-muted)";
+  return (
+    <div>
+      <div style={{ color, fontSize: "24px", fontWeight: 700 }}>{value}</div>
+      <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>{label}</div>
+    </div>
+  );
+}
+
+function listenerImportPhaseLabel(phase) {
+  if (phase === "receiving") return "Receiving HTML";
+  if (phase === "analyzing") return "Extracting job links";
+  if (phase === "resolving_source") return "Resolving job board";
+  if (phase === "processing") return "Fetching and evaluating jobs";
+  if (phase === "done") return "Finished";
+  if (phase === "error") return "Import failed";
+  return "Import listener";
+}
+
+const listenerDialogBackdropStyle = {
+  alignItems: "center",
+  background: "rgba(24,28,58,0.38)",
+  display: "flex",
+  inset: 0,
+  justifyContent: "center",
+  padding: "24px",
+  position: "fixed",
+  zIndex: 1200,
+};
+
+const listenerDialogPanelStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  boxShadow: "var(--shadow)",
+  maxWidth: "560px",
+  padding: "18px",
+  width: "100%",
+};
+
+const listenerDialogHeaderStyle = {
+  alignItems: "flex-start",
+  display: "flex",
+  gap: "12px",
+  justifyContent: "space-between",
+  marginBottom: "14px",
+};
+
+const listenerDialogTitleStyle = {
+  color: "var(--text)",
+  fontSize: "16px",
+  fontWeight: 700,
+};
+
+const listenerDialogSubtitleStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "3px",
+};
+
+const listenerDialogBodyStyle = {
+  alignItems: "center",
+  color: "var(--text)",
+  display: "flex",
+  fontSize: "14px",
+  gap: "10px",
+};
+
+const listenerSpinnerStyle = {
+  color: "var(--accent)",
+  height: "18px",
+  width: "18px",
+};
+
+const listenerProgressHeaderStyle = {
+  color: "var(--text-muted)",
+  display: "flex",
+  fontSize: "12px",
+  justifyContent: "space-between",
+  marginBottom: "8px",
+};
+
+const listenerCurrentJobStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  fontSize: "12px",
+  marginTop: "14px",
+  overflowWrap: "anywhere",
+  padding: "10px 12px",
+};
+
+const listenerCurrentJobLabelStyle = {
+  color: "var(--text-muted)",
+  fontSize: "11px",
+  fontWeight: 700,
+  marginBottom: "4px",
+  textTransform: "uppercase",
+};
+
+const listenerResultGridStyle = {
+  borderTop: "1px solid var(--border)",
+  display: "grid",
+  gap: "18px",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  marginTop: "16px",
+  paddingTop: "14px",
+};

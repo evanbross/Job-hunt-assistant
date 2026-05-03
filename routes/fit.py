@@ -176,6 +176,7 @@ def _run_re_evaluate() -> None:
 
             jobs_repo.update(job["id"], updates)
 
+        repos["conn"].commit()
         with _re_eval_lock:
             _re_eval_state.progress = 100
             _re_eval_state.message = (
@@ -356,6 +357,7 @@ def update_fit_classification(job_id: int):
         updates["skip_reason"] = "not_a_fit"
     repos["jobs"].update(job_id, updates)
     updated_job = repos["jobs"].get_by_id(job_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(updated_job)
 
@@ -406,5 +408,6 @@ def re_evaluate_job_fit(job_id: int):
         },
     )
     updated_job = repos["jobs"].get_by_id(job_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(updated_job)

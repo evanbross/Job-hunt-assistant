@@ -45,12 +45,7 @@ from flask import Blueprint, jsonify
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.db import (
-    SQLiteJobRepository,
-    SQLitePenaltyRuleRepository,
-    SQLiteResumeRepository,
-    get_connection,
-)
+from backend.db import open_repositories
 from backend.duplicate_checker import DuplicateChecker
 from backend.fit_scorer import FitScorer
 from backend.job_board_searcher import JobBoardSearcher, url_to_email_id
@@ -164,10 +159,11 @@ def _run_board_search() -> None:
             _update_board(progress=10, message="Searching boards (default queries)…")
 
         # ── 2. Open DB and load supporting data ──────────────────────────────
-        conn = get_connection(config.DATABASE_URL)
-        job_repo = SQLiteJobRepository(conn)
-        resume_repo = SQLiteResumeRepository(conn)
-        penalty_repo = SQLitePenaltyRuleRepository(conn)
+        repos = open_repositories(config.DATABASE_URL)
+        conn = repos["conn"]
+        job_repo = repos["jobs"]
+        resume_repo = repos["resume"]
+        penalty_repo = repos["penalties"]
 
         resume_row = resume_repo.get_latest()
         resume_text = resume_row["content"] if resume_row else ""
@@ -267,8 +263,10 @@ def _run_board_search() -> None:
 
             try:
                 job_repo.insert(job_data)
+                conn.commit()
                 jobs_added += 1
             except Exception as exc:
+                conn.rollback()
                 # UNIQUE constraint hit if the same URL appeared twice in results
                 logger.debug("Insert skipped for %s: %s", url, exc)
 

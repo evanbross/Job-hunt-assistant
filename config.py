@@ -59,8 +59,18 @@ BASE_DIR: Path = Path(__file__).parent
 CREDENTIALS_DIR: Path = BASE_DIR / "credentials"
 UPLOADS_DIR: Path = BASE_DIR / "uploads"
 FRONTEND_DIST: Path = BASE_DIR / "frontend" / "dist"
+DATA_DIR: Path = BASE_DIR / "data"
 
 # ─── Database ─────────────────────────────────────────────────────────────────
+DATABASE_BACKEND: str = os.getenv("DATABASE_BACKEND", "postgres").strip().lower()
+_sqlite_database_path = Path(
+    os.getenv("SQLITE_DATABASE_PATH", str(DATA_DIR / "job_hunt_assistant.sqlite3"))
+)
+SQLITE_DATABASE_PATH: Path = (
+    _sqlite_database_path
+    if _sqlite_database_path.is_absolute()
+    else BASE_DIR / _sqlite_database_path
+)
 _pg_host: str = os.getenv("POSTGRES_HOST", "")
 _pg_port: str = os.getenv("POSTGRES_PORT", "5432")
 _pg_db: str = os.getenv("POSTGRES_DB", "")
@@ -68,12 +78,20 @@ _pg_user: str = os.getenv("POSTGRES_USER", "")
 _pg_password: str = os.getenv("POSTGRES_PASSWORD", "")
 _pg_sslmode: str = os.getenv("POSTGRES_SSLMODE", "require")
 
-DATABASE_URL: str = os.getenv("DATABASE_URL", "") or (
-    f"postgresql://{_pg_user}:{_pg_password}@{_pg_host}:{_pg_port}/{_pg_db}?sslmode={_pg_sslmode}"
+_postgres_database_url: str = os.getenv("DATABASE_URL", "") or (
+    (
+        f"postgresql://{_pg_user}:{_pg_password}@{_pg_host}:{_pg_port}/{_pg_db}"
+        f"?sslmode={_pg_sslmode}"
+    )
     if _pg_host and _pg_db and _pg_user
     else ""
 )
-RUNTIME_CONFIG_PATH: Path = BASE_DIR / "data" / "runtime_config.json"
+DATABASE_URL: str = (
+    f"sqlite:///{SQLITE_DATABASE_PATH}"
+    if DATABASE_BACKEND == "sqlite"
+    else _postgres_database_url
+)
+RUNTIME_CONFIG_PATH: Path = DATA_DIR / "runtime_config.json"
 DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(
     os.getenv("CANDIDATE_PROFILE_PATH", str(BASE_DIR / "candidate_profile.md"))
 )
@@ -109,12 +127,26 @@ OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5:32b")
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 DEFAULT_EMAIL_LOOKBACK_DAYS: int = int(os.getenv("EMAIL_LOOKBACK_DAYS", "10"))
+DEFAULT_SCANNED_EMAIL_LABEL: str = os.getenv(
+    "SCANNED_EMAIL_LABEL",
+    ".Job Hunt 2025/Scanned By Assistant",
+)
 # Minimum fit score (0-100) for a board-search result to be inserted into the DB.
 # Jobs scoring below this are silently discarded.
 BOARD_SEARCH_MIN_SCORE: int = int(os.getenv("BOARD_SEARCH_MIN_SCORE", "40"))
 # Minutes between automatic career-site scans while the app is running.
 CAREER_SITE_SCAN_INTERVAL_MINUTES: int = int(
     os.getenv("CAREER_SITE_SCAN_INTERVAL_MINUTES", "30")
+)
+DEFAULT_JOB_IMPORT_LISTENER_ENABLED: bool = (
+    os.getenv("JOB_IMPORT_LISTENER_ENABLED", "true").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+DEFAULT_JOB_IMPORT_LISTENER_HOST: str = os.getenv("JOB_IMPORT_LISTENER_HOST", "127.0.0.1")
+DEFAULT_JOB_IMPORT_LISTENER_PORT: int = int(os.getenv("JOB_IMPORT_LISTENER_PORT", "8765"))
+DEFAULT_JOB_IMPORT_LISTENER_TOKEN: str = os.getenv("JOB_IMPORT_LISTENER_TOKEN", "")
+DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES: int = int(
+    os.getenv("JOB_IMPORT_LISTENER_MAX_BYTES", str(15 * 1024 * 1024))
 )
 
 
@@ -128,23 +160,50 @@ def load_runtime_config() -> dict[str, Any]:
                 raw_cfg: dict[str, Any] = json.load(fh)
                 return {
                     "email_lookback_days": raw_cfg.get("email_lookback_days", DEFAULT_EMAIL_LOOKBACK_DAYS),
+                    "scanned_email_label": raw_cfg.get("scanned_email_label", DEFAULT_SCANNED_EMAIL_LABEL),
                     "candidate_profile_path": raw_cfg.get("candidate_profile_path", str(DEFAULT_CANDIDATE_PROFILE_PATH)),
                     "ai_provider": raw_cfg.get("ai_provider", AI_PROVIDER),
                     "anthropic_model": raw_cfg.get("anthropic_model", SCORER_MODEL),
                     "openai_model": raw_cfg.get("openai_model", OPENAI_MODEL),
                     "ollama_base_url": raw_cfg.get("ollama_base_url", OLLAMA_BASE_URL),
                     "ollama_model": raw_cfg.get("ollama_model", OLLAMA_MODEL),
+                    "job_import_listener_enabled": raw_cfg.get(
+                        "job_import_listener_enabled",
+                        DEFAULT_JOB_IMPORT_LISTENER_ENABLED,
+                    ),
+                    "job_import_listener_host": raw_cfg.get(
+                        "job_import_listener_host",
+                        DEFAULT_JOB_IMPORT_LISTENER_HOST,
+                    ),
+                    "job_import_listener_port": raw_cfg.get(
+                        "job_import_listener_port",
+                        DEFAULT_JOB_IMPORT_LISTENER_PORT,
+                    ),
+                    "job_import_listener_token": raw_cfg.get(
+                        "job_import_listener_token",
+                        DEFAULT_JOB_IMPORT_LISTENER_TOKEN,
+                    ),
+                    "job_import_listener_max_bytes": raw_cfg.get(
+                        "job_import_listener_max_bytes",
+                        DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
+                    ),
                 }
         except (json.JSONDecodeError, OSError):
             pass
     return {
         "email_lookback_days": DEFAULT_EMAIL_LOOKBACK_DAYS,
+        "scanned_email_label": DEFAULT_SCANNED_EMAIL_LABEL,
         "candidate_profile_path": str(DEFAULT_CANDIDATE_PROFILE_PATH),
         "ai_provider": AI_PROVIDER,
         "anthropic_model": SCORER_MODEL,
         "openai_model": OPENAI_MODEL,
         "ollama_base_url": OLLAMA_BASE_URL,
         "ollama_model": OLLAMA_MODEL,
+        "job_import_listener_enabled": DEFAULT_JOB_IMPORT_LISTENER_ENABLED,
+        "job_import_listener_host": DEFAULT_JOB_IMPORT_LISTENER_HOST,
+        "job_import_listener_port": DEFAULT_JOB_IMPORT_LISTENER_PORT,
+        "job_import_listener_token": DEFAULT_JOB_IMPORT_LISTENER_TOKEN,
+        "job_import_listener_max_bytes": DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
     }
 
 
@@ -153,6 +212,13 @@ def get_candidate_profile_path() -> Path:
     cfg = load_runtime_config()
     raw_path = str(cfg.get("candidate_profile_path") or "").strip()
     return Path(raw_path) if raw_path else DEFAULT_CANDIDATE_PROFILE_PATH
+
+
+def get_scanned_email_label() -> str:
+    """Return the Gmail label used when moving processed emails."""
+    cfg = load_runtime_config()
+    scanned_email_label = str(cfg.get("scanned_email_label") or "").strip()
+    return scanned_email_label or DEFAULT_SCANNED_EMAIL_LABEL
 
 
 def load_candidate_profile() -> str:
@@ -164,6 +230,50 @@ def load_candidate_profile() -> str:
         raise RuntimeError(
             f"Could not read candidate profile file at {candidate_profile_path}: {exc}"
         ) from exc
+
+
+def get_job_import_listener_config() -> dict[str, Any]:
+    """Return listener settings, using runtime overrides over .env defaults."""
+    cfg = load_runtime_config()
+    return {
+        "enabled": _config_bool(
+            cfg.get("job_import_listener_enabled"),
+            DEFAULT_JOB_IMPORT_LISTENER_ENABLED,
+        ),
+        "host": str(cfg.get("job_import_listener_host") or DEFAULT_JOB_IMPORT_LISTENER_HOST),
+        "port": _config_int(
+            cfg.get("job_import_listener_port"),
+            DEFAULT_JOB_IMPORT_LISTENER_PORT,
+        ),
+        "token": str(cfg.get("job_import_listener_token") or ""),
+        "max_bytes": _config_int(
+            cfg.get("job_import_listener_max_bytes"),
+            DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
+        ),
+    }
+
+
+def _config_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
+def _config_int(value: object, default: int) -> int:
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
 
 
 def save_runtime_config(cfg: dict[str, Any]) -> None:

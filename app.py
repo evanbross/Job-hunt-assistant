@@ -67,6 +67,8 @@ from flask_cors import CORS
 
 import config
 from backend.db import init_db
+from backend.import_listener import start_job_import_listener
+from backend.utils import start_career_site_scheduler
 
 # Allow Google to return a superset of the requested OAuth scopes without
 # requests_oauthlib raising a scope-mismatch error. This happens when the
@@ -215,11 +217,11 @@ def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
 
 from routes.auth import auth_bp
 from routes.board_search import board_search_bp
-from routes.career_sites import career_sites_bp, _start_career_site_scheduler
+from routes.career_sites import career_sites_bp
 from routes.cover_letter import cover_letter_bp
 from routes.emails import emails_bp
 from routes.fit import fit_bp
-from routes.import_ import import_bp
+from routes.import_ import import_bp, queue_import_capture
 from routes.jobs import jobs_bp
 from routes.scan import scan_bp
 from routes.settings import settings_bp
@@ -240,7 +242,8 @@ app.register_blueprint(sheet_bp, url_prefix="/api")
 app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /api/system/*
 
 # Start the career-site background scheduler
-_start_career_site_scheduler()
+start_career_site_scheduler()
+start_job_import_listener(queue_import_capture)
 
 # Register generated Swagger docs after API routes are loaded and before the SPA
 # catch-all. The UI is available at /apidocs/ and the JSON spec at /apispec_1.json.

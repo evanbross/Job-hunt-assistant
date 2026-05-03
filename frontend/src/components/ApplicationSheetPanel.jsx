@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const STATUS_FALLBACKS = {
   applied: { background: "#d9ead3", color: "#274e13" },
@@ -54,6 +54,17 @@ const STATUS_OPTIONS = [
   "Job was filled",
   "Ghosted",
 ];
+
+const DEFAULT_COLUMN_WIDTHS = {
+  company: 220,
+  job_title: 330,
+  status: 165,
+  source: 165,
+  date: 135,
+};
+
+const MIN_COLUMN_WIDTH = 90;
+const ROW_CONTROL_WIDTH = 42;
 
 function defaultEmptyForm() {
   return {
@@ -219,12 +230,53 @@ function GhostDialog({ result, onClose }) {
   );
 }
 
-function cellStyle(isHeader = false) {
+function StatusSummaryDialog({ counts, total, onClose }) {
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  return (
+    <div style={modalBackdropStyle}>
+      <div style={{ ...modalPanelStyle, maxWidth: "360px" }}>
+        <div style={modalHeaderStyle}>
+          <div>
+            <div style={modalTitleStyle}>Status Summary</div>
+            <div style={modalSubtitleStyle}>{total} application{total !== 1 ? "s" : ""} total</div>
+          </div>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onClose}
+            style={{ fontSize: "12px", padding: "4px 10px" }}
+          >
+            Close
+          </button>
+        </div>
+        <div style={{ padding: "12px 0 4px" }}>
+          {entries.map(([status, count]) => (
+            <div key={status} style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "6px 16px",
+              borderBottom: "1px solid var(--border)",
+              fontSize: "14px",
+            }}>
+              <span style={{ color: "var(--text)" }}>{status}</span>
+              <span style={{ fontWeight: 600, color: "var(--text-muted)", minWidth: "2em", textAlign: "right" }}>{count}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function cellStyle(isHeader = false, width = null) {
   return {
     ...baseCellStyle,
+    ...(isHeader ? headerCellStyle : {}),
     background: isHeader ? "var(--surface2)" : "transparent",
     color: isHeader ? "var(--text-muted)" : "var(--text)",
     fontWeight: isHeader ? 700 : 400,
+    ...(width ? { width: `${width}px`, minWidth: `${width}px`, maxWidth: `${width}px` } : {}),
   };
 }
 
@@ -273,9 +325,12 @@ export default function ApplicationSheetPanel() {
   const [showAddApplication, setShowAddApplication] = useState(false);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [ghostDialog, setGhostDialog] = useState(null);
+  const [showStatusSummary, setShowStatusSummary] = useState(false);
   const [editingRows, setEditingRows] = useState({});
   const [stageRows, setStageRows] = useState({});
   const [savingKey, setSavingKey] = useState("");
+  const [columnWidths, setColumnWidths] = useState(DEFAULT_COLUMN_WIDTHS);
+  const resizeCleanupRef = useRef(null);
 
   const loadSheet = async () => {
     setLoading(true);
@@ -300,6 +355,10 @@ export default function ApplicationSheetPanel() {
   };
 
   useEffect(() => { loadSheet(); }, []);
+
+  useEffect(() => () => {
+    resizeCleanupRef.current?.();
+  }, []);
 
   const trackingColumns = useMemo(() => {
     const company = findColumn(sheet.columns, ["company"]);
@@ -342,6 +401,14 @@ export default function ApplicationSheetPanel() {
     });
   }, [parentColumns, search, sheet.rows, sortConfig]);
 
+  const statusCounts = useMemo(() => {
+    return sheet.rows.reduce((acc, row) => {
+      const value = (getCell(row, trackingColumns.status).value || "Unknown").trim() || "Unknown";
+      acc[value] = (acc[value] || 0) + 1;
+      return acc;
+    }, {});
+  }, [sheet.rows, trackingColumns.status]);
+
   const toggleSort = (key) => {
     setSortConfig((previousConfig) => {
       if (!previousConfig || previousConfig.key !== key) {
@@ -352,6 +419,34 @@ export default function ApplicationSheetPanel() {
       }
       return null;
     });
+  };
+
+  const startColumnResize = (event, key) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    resizeCleanupRef.current?.();
+    const startX = event.clientX;
+    const startWidth = columnWidths[key] || DEFAULT_COLUMN_WIDTHS[key] || 160;
+
+    const handlePointerMove = (moveEvent) => {
+      const nextWidth = Math.max(MIN_COLUMN_WIDTH, startWidth + moveEvent.clientX - startX);
+      setColumnWidths((previousWidths) => ({ ...previousWidths, [key]: nextWidth }));
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      resizeCleanupRef.current = null;
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    resizeCleanupRef.current = handlePointerUp;
   };
 
   const toggleRow = (rowNumber) => {
@@ -513,6 +608,11 @@ export default function ApplicationSheetPanel() {
     );
   }
 
+  const tableWidth = ROW_CONTROL_WIDTH + parentColumns.reduce(
+    (totalWidth, entry) => totalWidth + (columnWidths[entry.key] || DEFAULT_COLUMN_WIDTHS[entry.key] || 160),
+    0,
+  );
+
   return (
     <div>
       <div style={toolbarStyle}>
@@ -560,6 +660,16 @@ export default function ApplicationSheetPanel() {
                 >
                   {savingKey === "ghosts" ? "Marking..." : "Mark Ghosts"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowStatusSummary(true);
+                    setActionMenuOpen(false);
+                  }}
+                  style={actionMenuItemStyle}
+                >
+                  Status Summary
+                </button>
               </div>
             )}
           </div>
@@ -571,6 +681,14 @@ export default function ApplicationSheetPanel() {
         <GhostDialog
           result={ghostDialog}
           onClose={() => setGhostDialog(null)}
+        />
+      )}
+
+      {showStatusSummary && (
+        <StatusSummaryDialog
+          counts={statusCounts}
+          total={sheet.rows.length}
+          onClose={() => setShowStatusSummary(false)}
         />
       )}
 
@@ -640,14 +758,23 @@ export default function ApplicationSheetPanel() {
       )}
 
       <div style={tableWrapStyle}>
-        <table style={tableStyle}>
+        <table style={{ ...tableStyle, width: `${tableWidth}px` }}>
+          <colgroup>
+            <col style={{ width: `${ROW_CONTROL_WIDTH}px` }} />
+            {parentColumns.map((entry) => (
+              <col
+                key={entry.key}
+                style={{ width: `${columnWidths[entry.key] || DEFAULT_COLUMN_WIDTHS[entry.key] || 160}px` }}
+              />
+            ))}
+          </colgroup>
           <thead>
             <tr>
-              <th style={{ ...headerCellStyle, minWidth: "42px", width: "42px" }} />
+              <th style={{ ...headerCellStyle, minWidth: `${ROW_CONTROL_WIDTH}px`, width: `${ROW_CONTROL_WIDTH}px` }} />
               {parentColumns.map((entry) => (
                 <th
                   key={entry.key}
-                  style={cellStyle(true)}
+                  style={cellStyle(true, columnWidths[entry.key] || DEFAULT_COLUMN_WIDTHS[entry.key] || 160)}
                   aria-sort={
                     sortConfig?.key === entry.key
                       ? (sortConfig.direction === "asc" ? "ascending" : "descending")
@@ -664,9 +791,16 @@ export default function ApplicationSheetPanel() {
                     <span style={sortIndicatorStyle}>
                       {sortConfig?.key === entry.key
                         ? (sortConfig.direction === "asc" ? "^" : "v")
-                        : ""}
+                      : ""}
                     </span>
                   </button>
+                  <span
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={`Resize ${entry.label} column`}
+                    onPointerDown={(event) => startColumnResize(event, entry.key)}
+                    style={columnResizeHandleStyle}
+                  />
                 </th>
               ))}
             </tr>
@@ -688,7 +822,10 @@ export default function ApplicationSheetPanel() {
                     {parentColumns.map((entry) => {
                       const cell = getCell(row, entry.column);
                       return (
-                        <td key={`${row.row_number}-${entry.key}`} style={cellStyle()}>
+                        <td
+                          key={`${row.row_number}-${entry.key}`}
+                          style={cellStyle(false, columnWidths[entry.key] || DEFAULT_COLUMN_WIDTHS[entry.key] || 160)}
+                        >
                           {entry.key === "status" ? (
                             <StatusIndicator cell={cell} />
                           ) : (
@@ -917,9 +1054,9 @@ const tableWrapStyle = {
 };
 
 const tableStyle = {
-  width: "100%",
   borderCollapse: "separate",
   borderSpacing: 0,
+  minWidth: "100%",
   tableLayout: "fixed",
 };
 
@@ -929,6 +1066,7 @@ const headerCellStyle = {
   zIndex: 2,
   background: "var(--surface2)",
   borderBottom: "1px solid var(--border)",
+  overflow: "visible",
 };
 
 const baseCellStyle = {
@@ -961,6 +1099,17 @@ const sortButtonStyle = {
   cursor: "pointer",
   font: "inherit",
   textAlign: "left",
+};
+
+const columnResizeHandleStyle = {
+  bottom: 0,
+  cursor: "col-resize",
+  position: "absolute",
+  right: "-4px",
+  top: 0,
+  touchAction: "none",
+  width: "8px",
+  zIndex: 4,
 };
 
 const sortIndicatorStyle = {

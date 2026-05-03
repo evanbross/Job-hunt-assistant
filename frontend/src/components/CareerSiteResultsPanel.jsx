@@ -457,10 +457,7 @@ export default function CareerSiteResultsPanel() {
               />
               Enabled
             </label>
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button className="btn-primary" style={{ padding: "4px 12px", fontSize: "12px" }} onClick={submitSiteForm}>
-                {editingSiteId ? "Save Site" : "Add Site"}
-              </button>
+            <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
               <button
                 className="btn-secondary"
                 style={{ padding: "4px 12px", fontSize: "12px" }}
@@ -470,6 +467,9 @@ export default function CareerSiteResultsPanel() {
                 }}
               >
                 Cancel
+              </button>
+              <button className="btn-primary" style={{ padding: "4px 12px", fontSize: "12px" }} onClick={submitSiteForm}>
+                {editingSiteId ? "Save Site" : "Save"}
               </button>
             </div>
           </div>

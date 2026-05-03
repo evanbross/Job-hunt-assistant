@@ -58,9 +58,14 @@ const MISMATCH_REASONS = [
   "Other Mismatch",
 ];
 
-export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, onSkip, onUpdate }) {
+export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
+  const [descriptionEditOpen, setDescriptionEditOpen] = useState(false);
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [descriptionSaving, setDescriptionSaving] = useState(false);
+  const [descriptionError, setDescriptionError] = useState("");
+  const [descriptionSaved, setDescriptionSaved] = useState(false);
   const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
   // skipConfirm: null | { key, label } — the selected reason awaiting confirmation
@@ -92,7 +97,6 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
   const [fitChatInput, setFitChatInput] = useState("");
   const [fitChatSending, setFitChatSending] = useState(false);
   const [pendingReclassification, setPendingReclassification] = useState(null);
-  const [reclassificationApplying, setReclassificationApplying] = useState(false);
   const fitChatMessagesRef = useRef(null);
 
   useEffect(() => {
@@ -276,16 +280,66 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
     }
   };
 
-  const handleFitChatSend = async () => {
+  const updateJobDescription = async (description) => {
+    const res = await fetch(`/api/jobs/${job.id}/description`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Description update failed (${res.status})`);
+    }
+    onUpdate?.(job.id, data);
+    return data;
+  };
+
+  const handleDescriptionSave = async () => {
+    const description = descriptionDraft.trim();
+    if (description.length < 80) {
+      setDescriptionError("Paste a more complete job description before re-evaluating.");
+      return;
+    }
+
+    setDescriptionSaving(true);
+    setDescriptionError("");
+    setDescriptionSaved(false);
+    try {
+      await updateJobDescription(description);
+      setDescriptionEditOpen(false);
+      setDescriptionDraft("");
+      setDescriptionSaved(true);
+    } catch (e) {
+      setDescriptionError(e.message || "Description update failed");
+    } finally {
+      setDescriptionSaving(false);
+    }
+  };
+
+  const handleFitChatSend = async ({ saveAsDescription = false } = {}) => {
     const text = fitChatInput.trim();
     if (!text || fitChatSending) return;
 
-    const newMessages = [...fitChatMessages, { role: "user", content: text }];
+    if (saveAsDescription && text.length < 80) {
+      setFitChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "Paste a more complete job description before saving it." },
+      ]);
+      return;
+    }
+
+    const userContent = saveAsDescription
+      ? `I updated the stored job description to this text. Please review the fit based on the updated description:\n\n${text}`
+      : text;
+    const newMessages = [...fitChatMessages, { role: "user", content: userContent }];
     setFitChatMessages(newMessages);
     setFitChatInput("");
     setFitChatSending(true);
 
     try {
+      if (saveAsDescription) {
+        await updateJobDescription(text);
+      }
       const res = await fetch(`/api/jobs/${job.id}/fit-chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -308,31 +362,28 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
     }
   };
 
-  const applyPendingReclassification = async () => {
-    if (!pendingReclassification || reclassificationApplying) return;
-    setReclassificationApplying(true);
-    try {
-      const res = await fetch(`/api/jobs/${job.id}/fit-classification`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pendingReclassification),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Reclassification failed");
-      setPendingReclassification(null);
-      onReclassified?.(data);
-    } catch (e) {
-      alert("Reclassification failed: " + e.message);
-    } finally {
-      setReclassificationApplying(false);
-    }
-  };
-
   const applyPendingUpdate = () => {
     setCoverLetter(pendingUpdate);
     setPendingUpdate(null);
     // Reset save status since the letter changed
     setSaveStatus(null);
+  };
+
+  const saveCompanyEdit = async () => {
+    setEditingCompany(false);
+    const value = companyDraft.trim();
+    if (value === (job.company || "")) return;
+    const res = await fetch(`/api/jobs/${job.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ company: value }),
+    });
+    if (!res.ok) {
+      window.alert(`Company update failed (${res.status})`);
+      return;
+    }
+    const updated = await res.json();
+    onUpdate?.(job.id, updated);
   };
 
   const busy = loading !== null;
@@ -354,17 +405,7 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
                 autoFocus
                 value={companyDraft}
                 onChange={(e) => setCompanyDraft(e.target.value)}
-                onBlur={async () => {
-                  setEditingCompany(false);
-                  const value = companyDraft.trim();
-                  if (value === (job.company || "")) return;
-                  const res = await fetch(`/api/jobs/${job.id}`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ company: value }),
-                  });
-                  if (res.ok) onUpdate?.(job.id, { company: value });
-                }}
+                onBlur={saveCompanyEdit}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") e.target.blur();
                   if (e.key === "Escape") setEditingCompany(false);
@@ -442,7 +483,12 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
             <div style={reasoningBoxStyle}>
               <ul style={reasoningListStyle}>
                 {reasoningBullets.map((item, index) => (
-                  <li key={`${item}-${index}`}>{item}</li>
+                  <li
+                    key={`${item}-${index}`}
+                    style={negativeReasoningBulletStyleFor(item)}
+                  >
+                    {item}
+                  </li>
                 ))}
               </ul>
               {penaltiesApplied.length > 0 && (
@@ -450,8 +496,8 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
                   <div style={penaltiesHeadingStyle}>Penalties applied</div>
                   <ul style={penaltiesListStyle}>
                     {penaltiesApplied.map((penalty, index) => (
-                      <li key={`${penalty.ruleText}-${index}`}>
-                        <strong>-{penalty.points}</strong> for {penalty.ruleText}
+                      <li key={`${penalty.ruleText}-${index}`} style={penaltyListItemStyle}>
+                        <strong style={penaltyValueStyle}>-{penalty.points}</strong> for {penalty.ruleText}
                       </li>
                     ))}
                   </ul>
@@ -568,6 +614,88 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
           {jobDescription}
         </div>
       )}
+      {descriptionOpen && (
+        <div style={descriptionToolsStyle}>
+          {!descriptionEditOpen ? (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                setDescriptionDraft(jobDescription);
+                setDescriptionError("");
+                setDescriptionSaved(false);
+                setDescriptionEditOpen(true);
+              }}
+              disabled={descriptionSaving || busy}
+              style={{ fontSize: "12px", padding: "5px 11px" }}
+            >
+              Update Description
+            </button>
+          ) : (
+            <div style={descriptionEditorStyle}>
+              <textarea
+                value={descriptionDraft}
+                onChange={(event) => {
+                  setDescriptionDraft(event.target.value);
+                  setDescriptionError("");
+                  setDescriptionSaved(false);
+                }}
+                rows={8}
+                disabled={descriptionSaving}
+                style={descriptionTextareaStyle}
+              />
+              <input
+                type="file"
+                accept=".txt,.md,.html,.htm,text/plain,text/html,text/markdown"
+                disabled={descriptionSaving}
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    setDescriptionDraft(await file.text());
+                    setDescriptionError("");
+                    setDescriptionSaved(false);
+                  } catch {
+                    setDescriptionError("Failed to read uploaded description file.");
+                  } finally {
+                    event.target.value = "";
+                  }
+                }}
+                style={descriptionFileInputStyle}
+              />
+              <div style={descriptionEditorFooterStyle}>
+                <span style={{ color: descriptionDraft.trim().length >= 80 ? "var(--text-muted)" : "var(--red)", fontSize: "12px" }}>
+                  {descriptionDraft.trim().length} characters
+                </span>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setDescriptionEditOpen(false);
+                    setDescriptionDraft("");
+                    setDescriptionError("");
+                  }}
+                  disabled={descriptionSaving}
+                  style={{ fontSize: "12px", padding: "5px 11px" }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleDescriptionSave}
+                  disabled={descriptionSaving || descriptionDraft.trim().length < 80}
+                  style={{ fontSize: "12px", padding: "5px 11px" }}
+                >
+                  {descriptionSaving ? "Saving..." : "Save & Re-score"}
+                </button>
+              </div>
+            </div>
+          )}
+          {descriptionError && <div style={descriptionErrorStyle}>{descriptionError}</div>}
+          {descriptionSaved && <div style={descriptionSavedStyle}>Job description updated and fit score refreshed.</div>}
+        </div>
+      )}
 
       {/* Skip confirmation panel */}
       {skipConfirm && (
@@ -645,12 +773,11 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
           fitChatMessages={fitChatMessages}
           fitChatMessagesRef={fitChatMessagesRef}
           fitChatSending={fitChatSending}
-          onApplyReclassification={applyPendingReclassification}
           onDismissReclassification={() => setPendingReclassification(null)}
           onInputChange={setFitChatInput}
           onSend={handleFitChatSend}
+          onSaveDescriptionAndSend={() => handleFitChatSend({ saveAsDescription: true })}
           pendingReclassification={pendingReclassification}
-          reclassificationApplying={reclassificationApplying}
         />
       )}
 
@@ -699,7 +826,7 @@ export default function JobCard({ job, onApprove, onReclassified, onReEvaluate, 
                 AI suggested an updated version of your cover letter.
               </span>
               <button className="btn-success" onClick={applyPendingUpdate} style={{ fontSize: "11px", padding: "3px 10px", whiteSpace: "nowrap" }}>
-                Use this version
+                Use updated version
               </button>
               <button className="btn-secondary" onClick={() => setPendingUpdate(null)} style={{ fontSize: "11px", padding: "3px 10px" }}>
                 Dismiss
@@ -842,13 +969,14 @@ function FitReviewPanel({
   fitChatMessages,
   fitChatMessagesRef,
   fitChatSending,
-  onApplyReclassification,
   onDismissReclassification,
   onInputChange,
   onSend,
+  onSaveDescriptionAndSend,
   pendingReclassification,
-  reclassificationApplying,
 }) {
+  const canSaveDescription = fitChatInput.trim().length >= 80;
+
   return (
     <div style={fitReviewPanelStyle}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "10px" }}>
@@ -869,17 +997,8 @@ function FitReviewPanel({
             </div>
           </div>
           <button
-            className="btn-success"
-            onClick={onApplyReclassification}
-            disabled={reclassificationApplying}
-            style={{ fontSize: "11px", padding: "3px 10px", whiteSpace: "nowrap" }}
-          >
-            {reclassificationApplying ? "Applying…" : "Apply"}
-          </button>
-          <button
             className="btn-secondary"
             onClick={onDismissReclassification}
-            disabled={reclassificationApplying}
             style={{ fontSize: "11px", padding: "3px 10px" }}
           >
             Dismiss
@@ -911,7 +1030,7 @@ function FitReviewPanel({
         </div>
       )}
 
-      <div style={{ display: "flex", gap: "6px" }}>
+      <div style={{ display: "flex", gap: "6px", alignItems: "flex-end" }}>
         <textarea
           value={fitChatInput}
           onChange={(event) => onInputChange(event.target.value)}
@@ -933,6 +1052,16 @@ function FitReviewPanel({
           style={{ fontSize: "13px", padding: "7px 14px", alignSelf: "flex-end" }}
         >
           Send
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={onSaveDescriptionAndSend}
+          disabled={fitChatSending || !canSaveDescription}
+          style={{ fontSize: "12px", padding: "7px 11px", alignSelf: "flex-end", whiteSpace: "nowrap" }}
+          title="Stores the text in this box as the current job description, re-scores the job, then asks AI to review the fit."
+        >
+          Save JD & Review
         </button>
       </div>
       <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "5px" }}>
@@ -1057,6 +1186,16 @@ function fitReasoningBullets(reasoning) {
     .filter(Boolean);
 }
 
+function negativeReasoningBulletStyleFor(item) {
+  return isNegativeReasoningBullet(item) ? negativeReasoningBulletStyle : undefined;
+}
+
+function isNegativeReasoningBullet(item) {
+  return /\b(penalt|deduct|below|low|missing|uncertain|not|no|failed|mismatch|triage)\b/i.test(
+    String(item || "")
+  );
+}
+
 const cardStyle = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
@@ -1120,6 +1259,59 @@ const descriptionBoxStyle = {
   whiteSpace: "pre-wrap",
 };
 
+const descriptionToolsStyle = {
+  marginTop: "8px",
+};
+
+const descriptionEditorStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  padding: "10px",
+};
+
+const descriptionTextareaStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  boxSizing: "border-box",
+  color: "var(--text)",
+  fontFamily: "inherit",
+  fontSize: "13px",
+  lineHeight: 1.5,
+  padding: "9px 10px",
+  resize: "vertical",
+  width: "100%",
+};
+
+const descriptionEditorFooterStyle = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px",
+  justifyContent: "flex-end",
+  marginTop: "8px",
+};
+
+const descriptionFileInputStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "8px",
+  width: "100%",
+};
+
+const descriptionErrorStyle = {
+  color: "var(--red)",
+  fontSize: "12px",
+  marginTop: "6px",
+};
+
+const descriptionSavedStyle = {
+  color: "var(--green)",
+  fontSize: "12px",
+  marginTop: "6px",
+};
+
 const reasoningListStyle = {
   columns: "2 260px",
   columnGap: "28px",
@@ -1128,6 +1320,10 @@ const reasoningListStyle = {
   color: "var(--text-muted)",
   fontSize: "13px",
   lineHeight: "1.6",
+};
+
+const negativeReasoningBulletStyle = {
+  color: "var(--red)",
 };
 
 const penaltiesBoxStyle = {
@@ -1152,6 +1348,14 @@ const penaltiesListStyle = {
   color: "var(--red)",
   fontSize: "13px",
   lineHeight: "1.5",
+};
+
+const penaltyListItemStyle = {
+  color: "var(--red)",
+};
+
+const penaltyValueStyle = {
+  color: "var(--red)",
 };
 
 const coverLetterPanelStyle = {

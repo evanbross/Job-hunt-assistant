@@ -42,25 +42,20 @@ from datetime import date
 from flask import Blueprint, jsonify, request
 
 import config
-from backend.db import (
-    SQLiteJobRepository,
-    SQLitePenaltyRuleRepository,
-    SQLiteRelevanceFeedbackRepository,
-    SQLiteResumeRepository,
-    SQLiteScannedEmailRepository,
-    get_connection,
-)
 from backend.email_cleanup_service import EmailCleanupService
 from backend.email_parser import EmailParser
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
-from backend.utils import _get_repos
-from routes.scan import _email_date_from_message, _is_application_acknowledgement
+from backend.utils import (
+    _get_repos,
+    email_date_from_message,
+    get_subject_rule_match,
+    is_application_acknowledgement,
+)
 
 logger = logging.getLogger(__name__)
 
 emails_bp = Blueprint("emails", __name__)
-SCANNED_EMAIL_LABEL = ".Job Hunt 2025/Scanned By Assistant"
 
 
 # ─── Scanned email routes ────────────────────────────────────────────────────
@@ -75,10 +70,10 @@ def get_scanned_emails():
       - ``potential`` — only emails whose job is still in pending_review / triage / possible_duplicate
       - (omitted)    — all scanned emails
     """
-    conn = get_connection(config.DATABASE_URL)
-    scanned_repo = SQLiteScannedEmailRepository(conn)
+    repos = _get_repos()
+    scanned_repo = repos["scanned_emails"]
     emails = scanned_repo.get_all_with_job_status()
-    conn.close()
+    repos["conn"].close()
 
     filter_param = request.args.get("filter", "")
     if filter_param == "acted":
@@ -100,9 +95,10 @@ def set_email_hidden(email_id: str):
     """Set or clear the hidden flag on a scanned email."""
     data = request.get_json(silent=True) or {}
     hidden = bool(data.get("hidden", True))
-    conn = get_connection(config.DATABASE_URL)
-    SQLiteScannedEmailRepository(conn).set_hidden(email_id, hidden)
-    conn.close()
+    repos = _get_repos()
+    repos["scanned_emails"].set_hidden(email_id, hidden)
+    repos["conn"].commit()
+    repos["conn"].close()
     return jsonify({"hidden": hidden})
 
 
@@ -142,8 +138,9 @@ def move_scanned_emails():
     if not email_ids:
         return jsonify({"error": "Select at least one email"}), 400
 
+    scanned_email_label = config.get_scanned_email_label()
     try:
-        moved_count = GmailClient().move_messages_to_label(email_ids, SCANNED_EMAIL_LABEL)
+        moved_count = GmailClient().move_messages_to_label(email_ids, scanned_email_label)
     except NotAuthenticatedError as exc:
         return jsonify({"error": str(exc)}), 401
     except Exception:
@@ -153,7 +150,7 @@ def move_scanned_emails():
     return jsonify(
         {
             "status": "ok",
-            "label": SCANNED_EMAIL_LABEL,
+            "label": scanned_email_label,
             "moved": moved_count,
             "email_ids": email_ids,
         }
@@ -176,13 +173,13 @@ def clean_displayed_emails():
     if not email_ids:
         return jsonify({"checked": 0, "hidden": 0, "hidden_email_ids": []})
 
-    conn = get_connection(config.DATABASE_URL)
-    scanned_repo = SQLiteScannedEmailRepository(conn)
+    repos = _get_repos()
+    scanned_repo = repos["scanned_emails"]
 
     try:
         cleanup_service = EmailCleanupService(scanned_repo, GmailClient())
     except NotAuthenticatedError as exc:
-        conn.close()
+        repos["conn"].close()
         return jsonify({"error": str(exc)}), 401
 
     visible_email_ids = set(email_ids)
@@ -194,12 +191,13 @@ def clean_displayed_emails():
 
     try:
         result = cleanup_service.hide_stale_or_read_emails(displayed_emails)
+        repos["conn"].commit()
     except Exception as exc:
         logger.exception("Email cleanup failed")
-        conn.close()
+        repos["conn"].close()
         return jsonify({"error": f"Failed to clean emails: {exc}"}), 500
 
-    conn.close()
+    repos["conn"].close()
     return jsonify(
         {
             "checked": result.checked_count,
@@ -218,17 +216,17 @@ def rescan_email(email_id: str):
     email is treated as fresh. Returns the newly created job(s) or an empty
     list if the email produced no job postings.
     """
-    conn = get_connection(config.DATABASE_URL)
-    scanned_repo = SQLiteScannedEmailRepository(conn)
-    job_repo = SQLiteJobRepository(conn)
-    resume_repo = SQLiteResumeRepository(conn)
-    penalty_repo = SQLitePenaltyRuleRepository(conn)
-    feedback_repo = SQLiteRelevanceFeedbackRepository(conn)
+    repos = _get_repos()
+    scanned_repo = repos["scanned_emails"]
+    job_repo = repos["jobs"]
+    resume_repo = repos["resume"]
+    penalty_repo = repos["penalties"]
+    feedback_repo = repos["feedback"]
 
     try:
         gmail = GmailClient()
     except NotAuthenticatedError as exc:
-        conn.close()
+        repos["conn"].close()
         return jsonify({"error": str(exc)}), 401
 
     # Remove prior scanned record so this email is treated as new
@@ -249,26 +247,31 @@ def rescan_email(email_id: str):
         full_msg = gmail.get_message(base_id)
         subject, sender, body = gmail.extract_text(full_msg)
     except Exception as exc:
-        conn.close()
+        repos["conn"].close()
         return jsonify({"error": f"Failed to fetch email from Gmail: {exc}"}), 500
 
-    email_date = _email_date_from_message(full_msg)
+    email_date = email_date_from_message(full_msg)
 
-    if _is_application_acknowledgement(subject):
+    subject_rules = repos["email_subject_rules"].get_enabled()
+    subject_rule = get_subject_rule_match(subject, subject_rules)
+    if subject_rule == "blacklist":
         scanned_repo.mark_scanned(email_id, sender, subject, disposition="ack", email_date=email_date, raw_body=body)
-        conn.close()
+        repos["conn"].commit()
+        repos["conn"].close()
         return jsonify({"jobs": [], "message": "Acknowledged application email — no job extracted."})
 
     try:
         parsed_jobs = EmailParser().parse(subject, sender, body)
     except Exception as exc:
         scanned_repo.mark_scanned(email_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=body, parser_error_msg=str(exc))
-        conn.close()
+        repos["conn"].commit()
+        repos["conn"].close()
         return jsonify({"jobs": [], "message": f"Parser error: {exc}"})
 
     if not parsed_jobs:
         scanned_repo.mark_scanned(email_id, sender, subject, disposition="noise", email_date=email_date, raw_body=body)
-        conn.close()
+        repos["conn"].commit()
+        repos["conn"].close()
         return jsonify({"jobs": [], "message": "No job postings found in this email."})
 
     snippet = body[:300]
@@ -284,6 +287,8 @@ def rescan_email(email_id: str):
         job_email_id = email_id if job_idx == 0 else f"{email_id}:{job_idx}"
         confidence = parsed.get("confidence", "low")
         if feedback and feedback["is_relevant"] == 1:
+            confidence = "high"
+        if subject_rule == "whitelist":
             confidence = "high"
 
         status = "pending_review" if confidence == "high" else "triage"
@@ -326,7 +331,8 @@ def rescan_email(email_id: str):
         created.append(job_repo.get_by_id(new_id))
 
     scanned_repo.mark_scanned(email_id, sender, subject, disposition="job_created", email_date=email_date, raw_body=body)
-    conn.close()
+    repos["conn"].commit()
+    repos["conn"].close()
     return jsonify({"jobs": created, "message": f"Rescanned — {len(created)} job(s) extracted."})
 
 
@@ -356,6 +362,7 @@ def create_source():
         }
     )
     source = repos["sources"].get_by_id(source_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(source), 201
 
@@ -376,6 +383,7 @@ def update_source(source_id: int):
 
     repos["sources"].update(source_id, updates)
     source = repos["sources"].get_by_id(source_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(source)
 
@@ -388,5 +396,6 @@ def delete_source(source_id: int):
         return jsonify({"error": "Source not found"}), 404
 
     repos["sources"].delete(source_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})

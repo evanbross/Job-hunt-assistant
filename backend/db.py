@@ -33,16 +33,20 @@
 # =============================================================================
 
 """
-Database layer — PostgreSQL with repository pattern.
+Database layer — PostgreSQL or SQLite with repository pattern.
 
 Each repository exposes a stable interface (defined as a Protocol) so business
 logic and routes never touch raw SQL. Concrete implementations accept an injected
-psycopg2 connection so tests can swap in a test database connection.
+connection so tests can swap in a test database connection.
 """
 from __future__ import annotations
 
+import re
+import sqlite3
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import urlparse, unquote
 
 import psycopg2
 import psycopg2.extras
@@ -59,9 +63,12 @@ class IJobRepository(Protocol):
     def count_by_base_email_id_and_statuses(self, base_email_id: str, statuses: list[str]) -> int: ...
     def get_by_url(self, url: str) -> dict[str, Any] | None: ...
     def get_not_a_fit_with_feedback(self, limit: int = 20) -> list[dict[str, Any]]: ...
+    def get_with_missing_company(self, limit: int = 15) -> list[dict[str, Any]]: ...
+    def count_with_missing_company(self) -> int: ...
     def insert(self, job: dict[str, Any]) -> int: ...
     def update(self, job_id: int, fields: dict[str, Any]) -> None: ...
     def delete(self, job_id: int) -> None: ...
+    def delete_email_sourced(self) -> None: ...
 
 
 @runtime_checkable
@@ -168,11 +175,22 @@ class ICareerRejectionRuleRepository(Protocol):
     def delete(self, rule_id: int) -> None: ...
 
 
+@runtime_checkable
+class IEmailSubjectRuleRepository(Protocol):
+    def get_all(self) -> list[dict[str, Any]]: ...
+    def get_enabled(self) -> list[dict[str, Any]]: ...
+    def get_by_id(self, rule_id: int) -> dict[str, Any] | None: ...
+    def insert(self, row: dict[str, Any]) -> int: ...
+    def update(self, rule_id: int, fields: dict[str, Any]) -> None: ...
+    def delete(self, rule_id: int) -> None: ...
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
     result = {}
-    for key, val in row.items():
+    row_items = row.items() if hasattr(row, "items") else zip(row.keys(), row)
+    for key, val in row_items:
         if isinstance(val, datetime):
             result[key] = val.isoformat(timespec="seconds")
         elif isinstance(val, date):
@@ -180,6 +198,81 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         else:
             result[key] = val
     return result
+
+
+class _SQLiteCursor:
+    def __init__(self, cursor: sqlite3.Cursor) -> None:
+        self._cursor = cursor
+
+    def execute(self, sql: str, params: tuple | list = ()) -> "_SQLiteCursor":
+        self._cursor.execute(_sqlite_sql(sql), tuple(params))
+        return self
+
+    def executemany(self, sql: str, seq_of_params: list | tuple) -> "_SQLiteCursor":
+        self._cursor.executemany(_sqlite_sql(sql), seq_of_params)
+        return self
+
+    def fetchone(self) -> dict[str, Any] | None:
+        row = self._cursor.fetchone()
+        return _row_to_dict(row) if row is not None else None
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return [_row_to_dict(row) for row in self._cursor.fetchall()]
+
+
+class _SQLiteConnection:
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self.autocommit = False
+        self.backend = "sqlite"
+
+    def cursor(self) -> _SQLiteCursor:
+        return _SQLiteCursor(self._conn.cursor())
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+def _sqlite_sql(sql: str) -> str:
+    translated = sql.replace("%s", "?")
+    translated = translated.replace("NOW()::text", "datetime('now')")
+    translated = translated.replace("NOW()", "datetime('now')")
+    translated = translated.replace("CURRENT_DATE::text", "date('now')")
+    translated = re.sub(
+        r"scanned_at::timestamptz\s*>=\s*datetime\('now'\)\s*-\s*\(\?\s*\*\s*INTERVAL '1 day'\)",
+        "datetime(scanned_at) >= datetime('now', '-' || ? || ' days')",
+        translated,
+    )
+    translated = translated.replace("TIMESTAMPTZ", "TEXT")
+    translated = re.sub(r"\bSERIAL\s+PRIMARY\s+KEY\b", "INTEGER PRIMARY KEY AUTOINCREMENT", translated)
+    return translated
+
+
+def _is_sqlite_connection(conn: Any) -> bool:
+    return getattr(conn, "backend", "") == "sqlite"
+
+
+def _sqlite_path_from_dsn(dsn: str) -> Path:
+    if dsn.startswith("sqlite:///"):
+        parsed = urlparse(dsn)
+        raw_path = unquote(parsed.path)
+        if re.match(r"^/[A-Za-z]:[\\/]", raw_path):
+            raw_path = raw_path[1:]
+        return Path(raw_path)
+    if dsn.startswith("sqlite://"):
+        parsed = urlparse(dsn)
+        raw_path = unquote(parsed.path or parsed.netloc)
+        return Path(raw_path)
+    return Path(dsn)
 
 
 # ─── Base repository ──────────────────────────────────────────────────────────
@@ -289,6 +382,23 @@ class PostgresJobRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
+    _MISSING_COMPANY_SQL = (
+        "COALESCE(TRIM(LOWER(company)), '') IN ('', 'unknown', 'unknown company', 'null', 'none')"
+    )
+
+    def get_with_missing_company(self, limit: int = 15) -> list[dict[str, Any]]:
+        cur = self._execute(
+            f"SELECT * FROM jobs WHERE {self._MISSING_COMPANY_SQL} ORDER BY id DESC LIMIT %s",
+            (limit,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def count_with_missing_company(self) -> int:
+        cur = self._execute(
+            f"SELECT COUNT(*) AS n FROM jobs WHERE {self._MISSING_COMPANY_SQL}"
+        )
+        return int(cur.fetchone()["n"])
+
     def insert(self, job: dict[str, Any]) -> int:
         unknown = set(job.keys()) - self._ALLOWED_COLUMNS
         if unknown:
@@ -299,7 +409,6 @@ class PostgresJobRepository(_BaseRepo):
             f"INSERT INTO jobs ({columns}) VALUES ({placeholders}) RETURNING id",
             list(job.values()),
         )
-        self._conn.commit()
         return cur.fetchone()["id"]
 
     def update(self, job_id: int, fields: dict[str, Any]) -> None:
@@ -313,11 +422,12 @@ class PostgresJobRepository(_BaseRepo):
             f"UPDATE jobs SET {set_clause} WHERE id = %s",
             [*fields.values(), job_id],
         )
-        self._conn.commit()
 
     def delete(self, job_id: int) -> None:
         self._execute("DELETE FROM jobs WHERE id = %s", (job_id,))
-        self._conn.commit()
+
+    def delete_email_sourced(self) -> None:
+        self._execute("DELETE FROM jobs WHERE sender_email IS NOT NULL")
 
 
 class PostgresEmailSourceRepository(_BaseRepo):
@@ -356,7 +466,6 @@ class PostgresEmailSourceRepository(_BaseRepo):
             f"INSERT INTO email_sources ({columns}) VALUES ({placeholders}) RETURNING id",
             list(source.values()),
         )
-        self._conn.commit()
         return cur.fetchone()["id"]
 
     def update(self, source_id: int, fields: dict[str, Any]) -> None:
@@ -370,11 +479,9 @@ class PostgresEmailSourceRepository(_BaseRepo):
             f"UPDATE email_sources SET {set_clause} WHERE id = %s",
             [*fields.values(), source_id],
         )
-        self._conn.commit()
 
     def delete(self, source_id: int) -> None:
         self._execute("DELETE FROM email_sources WHERE id = %s", (source_id,))
-        self._conn.commit()
 
 
 class PostgresPenaltyRuleRepository(_BaseRepo):
@@ -413,7 +520,6 @@ class PostgresPenaltyRuleRepository(_BaseRepo):
             f"INSERT INTO penalty_rules ({columns}) VALUES ({placeholders}) RETURNING id",
             list(rule.values()),
         )
-        self._conn.commit()
         return cur.fetchone()["id"]
 
     def update(self, rule_id: int, fields: dict[str, Any]) -> None:
@@ -427,11 +533,9 @@ class PostgresPenaltyRuleRepository(_BaseRepo):
             f"UPDATE penalty_rules SET {set_clause} WHERE id = %s",
             [*fields.values(), rule_id],
         )
-        self._conn.commit()
 
     def delete(self, rule_id: int) -> None:
         self._execute("DELETE FROM penalty_rules WHERE id = %s", (rule_id,))
-        self._conn.commit()
 
 
 class PostgresRelevanceFeedbackRepository(_BaseRepo):
@@ -486,14 +590,12 @@ class PostgresRelevanceFeedbackRepository(_BaseRepo):
             f"INSERT INTO relevance_feedback ({columns}) VALUES ({placeholders}) RETURNING id",
             list(feedback.values()),
         )
-        self._conn.commit()
         return cur.fetchone()["id"]
 
     def delete(self, feedback_id: int) -> None:
         self._execute(
             "DELETE FROM relevance_feedback WHERE id = %s", (feedback_id,)
         )
-        self._conn.commit()
 
 
 class PostgresScannedEmailRepository(_BaseRepo):
@@ -541,7 +643,6 @@ class PostgresScannedEmailRepository(_BaseRepo):
             """,
             (email_id, sender_email, subject, disposition, email_date, raw_body, parser_error_msg),
         )
-        self._conn.commit()
 
     def get_all_with_job_status(self) -> list[dict[str, Any]]:
         # Literal % in LIKE patterns — no params passed so psycopg2 won't interpret them.
@@ -580,7 +681,6 @@ class PostgresScannedEmailRepository(_BaseRepo):
             "UPDATE scanned_emails SET hidden = %s WHERE email_id = %s",
             (1 if hidden else 0, email_id),
         )
-        self._conn.commit()
 
     def set_hidden_many(self, email_ids: list[str], hidden: bool) -> None:
         if not email_ids:
@@ -590,17 +690,14 @@ class PostgresScannedEmailRepository(_BaseRepo):
             f"UPDATE scanned_emails SET hidden = %s WHERE email_id IN ({placeholders})",
             (1 if hidden else 0, *email_ids),
         )
-        self._conn.commit()
 
     def delete(self, email_id: str) -> None:
         self._execute(
             "DELETE FROM scanned_emails WHERE email_id = %s", (email_id,)
         )
-        self._conn.commit()
 
     def delete_all(self) -> None:
         self._execute("DELETE FROM scanned_emails")
-        self._conn.commit()
 
 
 class PostgresApplicationStageRepository(_BaseRepo):
@@ -643,12 +740,10 @@ class PostgresApplicationStageRepository(_BaseRepo):
             f"INSERT INTO application_stages ({columns}) VALUES ({placeholders}) RETURNING id",
             list(stage.values()),
         )
-        self._conn.commit()
         return cur.fetchone()["id"]
 
     def delete(self, stage_id: int) -> None:
         self._execute("DELETE FROM application_stages WHERE id = %s", (stage_id,))
-        self._conn.commit()
 
 
 class PostgresResumeRepository(_BaseRepo):
@@ -676,12 +771,10 @@ class PostgresResumeRepository(_BaseRepo):
             f"INSERT INTO resume ({columns}) VALUES ({placeholders}) RETURNING id",
             list(resume.values()),
         )
-        self._conn.commit()
         return cur.fetchone()["id"]
 
     def delete_all(self) -> None:
         self._execute("DELETE FROM resume")
-        self._conn.commit()
 
 
 class PostgresAppSettingsRepository(_BaseRepo):
@@ -698,7 +791,6 @@ class PostgresAppSettingsRepository(_BaseRepo):
             " ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value",
             (key, value),
         )
-        self._conn.commit()
 
 
 class PostgresCareerSiteSourceRepository(_BaseRepo):
@@ -791,7 +883,6 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             f"INSERT INTO career_site_sources ({columns}) VALUES ({placeholders}) RETURNING id",
             list(source.values()),
         )
-        self._conn.commit()
         return cur.fetchone()["id"]
 
     def update(self, source_id: int, fields: dict[str, Any]) -> None:
@@ -805,13 +896,33 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             f"UPDATE career_site_sources SET {set_clause} WHERE id = %s",
             [*fields.values(), source_id],
         )
-        self._conn.commit()
 
     def delete(self, source_id: int) -> None:
         self._execute(
             "DELETE FROM career_site_sources WHERE id = %s", (source_id,)
         )
-        self._conn.commit()
+
+
+class SQLiteCareerSiteSourceRepository(PostgresCareerSiteSourceRepository):
+    def get_due_recapture(self) -> list[dict[str, Any]]:
+        if not _is_sqlite_connection(self._conn):
+            return super().get_due_recapture()
+
+        cur = self._execute(
+            """
+            SELECT *,
+                   datetime(last_captured_at, '+' || recapture_interval_days || ' days')
+                       AS next_capture_due_at
+            FROM career_site_sources
+            WHERE last_captured_at IS NOT NULL
+              AND recapture_interval_days IS NOT NULL
+              AND recapture_interval_days > 0
+              AND datetime(last_captured_at, '+' || recapture_interval_days || ' days')
+                  <= datetime('now')
+            ORDER BY next_capture_due_at ASC, name ASC
+            """
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
 
 
 class PostgresCareerScanResultRepository(_BaseRepo):
@@ -866,7 +977,6 @@ class PostgresCareerScanResultRepository(_BaseRepo):
             "DELETE FROM career_scan_results WHERE site_source_id = %s",
             (site_source_id,),
         )
-        self._conn.commit()
 
     def insert(self, row: dict[str, Any]) -> int:
         unknown = set(row.keys()) - self._ALLOWED_COLUMNS
@@ -878,7 +988,6 @@ class PostgresCareerScanResultRepository(_BaseRepo):
             f"INSERT INTO career_scan_results ({columns}) VALUES ({placeholders}) RETURNING id",
             list(row.values()),
         )
-        self._conn.commit()
         return cur.fetchone()["id"]
 
     def update(self, row_id: int, fields: dict[str, Any]) -> None:
@@ -892,11 +1001,9 @@ class PostgresCareerScanResultRepository(_BaseRepo):
             f"UPDATE career_scan_results SET {set_clause} WHERE id = %s",
             [*fields.values(), row_id],
         )
-        self._conn.commit()
 
     def delete_all(self) -> None:
         self._execute("DELETE FROM career_scan_results")
-        self._conn.commit()
 
 
 class PostgresCareerScanFailureRepository(_BaseRepo):
@@ -928,12 +1035,10 @@ class PostgresCareerScanFailureRepository(_BaseRepo):
             f"INSERT INTO career_scan_failures ({columns}) VALUES ({placeholders}) RETURNING id",
             list(row.values()),
         )
-        self._conn.commit()
         return cur.fetchone()["id"]
 
     def delete_all(self) -> None:
         self._execute("DELETE FROM career_scan_failures")
-        self._conn.commit()
 
 
 class PostgresCareerRejectionRuleRepository(_BaseRepo):
@@ -974,7 +1079,6 @@ class PostgresCareerRejectionRuleRepository(_BaseRepo):
             f"INSERT INTO career_rejection_rules ({columns}) VALUES ({placeholders}) RETURNING id",
             list(row.values()),
         )
-        self._conn.commit()
         return cur.fetchone()["id"]
 
     def update(self, rule_id: int, fields: dict[str, Any]) -> None:
@@ -988,13 +1092,59 @@ class PostgresCareerRejectionRuleRepository(_BaseRepo):
             f"UPDATE career_rejection_rules SET {set_clause} WHERE id = %s",
             [*fields.values(), rule_id],
         )
-        self._conn.commit()
 
     def delete(self, rule_id: int) -> None:
         self._execute(
             "DELETE FROM career_rejection_rules WHERE id = %s", (rule_id,)
         )
-        self._conn.commit()
+
+
+class PostgresEmailSubjectRuleRepository(_BaseRepo):
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({"id", "pattern", "enabled", "rule_type"})
+
+    def get_all(self) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM ack_patterns ORDER BY rule_type DESC, pattern"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_enabled(self) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM ack_patterns WHERE enabled = 1 ORDER BY rule_type DESC, pattern"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_by_id(self, rule_id: int) -> dict[str, Any] | None:
+        cur = self._execute("SELECT * FROM ack_patterns WHERE id = %s", (rule_id,))
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def insert(self, row: dict[str, Any]) -> int:
+        unknown = set(row.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
+        columns = ", ".join(row.keys())
+        placeholders = ", ".join(["%s"] * len(row))
+        cur = self._execute(
+            f"INSERT INTO ack_patterns ({columns}) VALUES ({placeholders}) RETURNING id",
+            list(row.values()),
+        )
+        return cur.fetchone()["id"]
+
+    def update(self, rule_id: int, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
+        set_clause = ", ".join(f"{k} = %s" for k in fields)
+        self._execute(
+            f"UPDATE ack_patterns SET {set_clause} WHERE id = %s",
+            [*fields.values(), rule_id],
+        )
+
+    def delete(self, rule_id: int) -> None:
+        self._execute("DELETE FROM ack_patterns WHERE id = %s", (rule_id,))
 
 
 # ─── Backward-compat aliases (app.py imports these names) ────────────────────
@@ -1007,10 +1157,10 @@ SQLiteScannedEmailRepository = PostgresScannedEmailRepository
 SQLiteApplicationStageRepository = PostgresApplicationStageRepository
 SQLiteResumeRepository = PostgresResumeRepository
 SQLiteAppSettingsRepository = PostgresAppSettingsRepository
-SQLiteCareerSiteSourceRepository = PostgresCareerSiteSourceRepository
 SQLiteCareerScanResultRepository = PostgresCareerScanResultRepository
 SQLiteCareerScanFailureRepository = PostgresCareerScanFailureRepository
 SQLiteCareerRejectionRuleRepository = PostgresCareerRejectionRuleRepository
+SQLiteEmailSubjectRuleRepository = PostgresEmailSubjectRuleRepository
 
 
 # ─── Seed data ────────────────────────────────────────────────────────────────
@@ -1022,6 +1172,19 @@ _SEED_SOURCES: list[tuple[str, str, str]] = [
     ("Welcome to the Jungle", "sender_domain", "welcometothejungle.com"),
     ("Microsoft", "sender_domain", "microsoft.com"),
     ("Google", "sender_domain", "google.com"),
+]
+
+_SEED_EMAIL_SUBJECT_RULES: list[tuple[str, str]] = [
+    ("your application was sent", "blacklist"),
+    ("your application has been sent", "blacklist"),
+    ("application was received", "blacklist"),
+    ("application has been received", "blacklist"),
+    ("we received your application", "blacklist"),
+    ("thanks for applying", "blacklist"),
+    ("thank you for applying", "blacklist"),
+    ("your application to", "blacklist"),
+    ("you applied to", "blacklist"),
+    ("successfully submitted", "blacklist"),
 ]
 
 _SEED_PENALTIES: list[tuple[str, int]] = [
@@ -1042,8 +1205,12 @@ def init_db(dsn: str) -> None:
     """Create all tables and seed reference data if the DB is new."""
     conn = get_connection(dsn)
     try:
-        _create_tables(conn)
-        _migrate(conn)
+        if _is_sqlite_connection(conn):
+            _create_tables_sqlite(conn)
+            _migrate_sqlite(conn)
+        else:
+            _create_tables(conn)
+            _migrate(conn)
         _seed_data(conn)
     finally:
         conn.close()
@@ -1158,12 +1325,119 @@ def _migrate(conn: Any) -> None:
         "ALTER TABLE application_stages ADD COLUMN IF NOT EXISTS"
         " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
     )
+    cur.execute(
+        "ALTER TABLE ack_patterns ADD COLUMN IF NOT EXISTS"
+        " rule_type TEXT NOT NULL DEFAULT 'blacklist'"
+    )
     conn.commit()
 
     # Backfill application_stages for existing applied jobs
     cur.execute("""
         INSERT INTO application_stages (job_id, status, date)
         SELECT id, 'applied', COALESCE(date_added_to_sheet, date_found, CURRENT_DATE::text)
+        FROM jobs
+        WHERE status = 'added_to_sheet'
+          AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
+    """)
+
+    conn.commit()
+
+
+def _sqlite_has_column(cur: Any, table: str, column: str) -> bool:
+    cur.execute(f"PRAGMA table_info({table})")
+    return any(row["name"] == column for row in cur.fetchall())
+
+
+def _sqlite_add_column_if_missing(cur: Any, table: str, column: str, definition: str) -> None:
+    if not _sqlite_has_column(cur, table, column):
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _migrate_sqlite(conn: Any) -> None:
+    """Apply incremental schema changes for SQLite databases."""
+    cur = conn.cursor()
+
+    for col, defn in [
+        ("duplicate_hint", "TEXT"),
+        ("sender_email", "TEXT"),
+        ("email_subject", "TEXT"),
+        ("confidence_score", "INTEGER"),
+        ("confidence_reason", "TEXT"),
+        ("skip_reason", "TEXT"),
+        ("skip_feedback", "TEXT"),
+        ("skip_mismatch_reasons", "TEXT"),
+        ("notes", "TEXT"),
+    ]:
+        _sqlite_add_column_if_missing(cur, "jobs", col, defn)
+
+    for col, defn in [
+        ("email_date", "TEXT"),
+        ("raw_body", "TEXT"),
+        ("parser_error_msg", "TEXT"),
+        ("hidden", "INTEGER DEFAULT 0"),
+        ("disposition", "TEXT DEFAULT 'noise'"),
+    ]:
+        _sqlite_add_column_if_missing(cur, "scanned_emails", col, defn)
+
+    cur.execute("""
+        UPDATE scanned_emails SET disposition = 'job_created'
+        WHERE disposition = 'noise'
+          AND (
+            email_id IN (SELECT email_id FROM jobs)
+            OR email_id IN (
+                SELECT substr(email_id, 1, instr(email_id, ':') - 1)
+                FROM jobs WHERE instr(email_id, ':') > 0
+            )
+          )
+    """)
+
+    for col, defn in [
+        ("tracking_status", "TEXT"),
+        ("tracking_source", "TEXT"),
+        ("rejection_reason", "TEXT"),
+        ("rejection_source", "TEXT"),
+    ]:
+        _sqlite_add_column_if_missing(cur, "career_scan_results", col, defn)
+
+    for col, defn in [
+        ("detected_platform", "TEXT"),
+        ("last_captured_at", "TEXT"),
+        ("recapture_interval_days", "INTEGER DEFAULT 4"),
+    ]:
+        _sqlite_add_column_if_missing(cur, "career_site_sources", col, defn)
+
+    _sqlite_add_column_if_missing(cur, "career_rejection_rules", "updated_at", "TEXT")
+    cur.execute(
+        "UPDATE career_rejection_rules SET updated_at = COALESCE(updated_at, created_at, datetime('now'))"
+        " WHERE updated_at IS NULL"
+    )
+
+    cur.execute("""
+        INSERT INTO scanned_emails (email_id, sender_email, email_subject, scanned_at)
+        SELECT email_id,
+               COALESCE(sender_email, ''),
+               COALESCE(email_subject, ''),
+               COALESCE(date_found, datetime('now'))
+        FROM jobs
+        WHERE email_id IS NOT NULL
+        ON CONFLICT (email_id) DO NOTHING
+    """)
+
+    _sqlite_add_column_if_missing(
+        cur,
+        "application_stages",
+        "created_at",
+        "TEXT",
+    )
+    cur.execute(
+        "UPDATE application_stages SET created_at = COALESCE(created_at, datetime('now'))"
+        " WHERE created_at IS NULL"
+    )
+    _sqlite_add_column_if_missing(cur, "ack_patterns", "rule_type", "TEXT NOT NULL DEFAULT 'blacklist'")
+
+    cur.execute("""
+        INSERT INTO application_stages (job_id, status, date)
+        SELECT id, 'applied', COALESCE(date_added_to_sheet, date_found, date('now'))
         FROM jobs
         WHERE status = 'added_to_sheet'
           AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
@@ -1334,6 +1608,191 @@ def _create_tables(conn: Any) -> None:
             updated_at TEXT
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS ack_patterns (
+            id        SERIAL PRIMARY KEY,
+            pattern   TEXT NOT NULL,
+            enabled   INTEGER DEFAULT 1,
+            rule_type TEXT NOT NULL DEFAULT 'blacklist'
+        )
+        """,
+    ]:
+        cur.execute(stmt)
+    conn.commit()
+
+
+def _create_tables_sqlite(conn: Any) -> None:
+    cur = conn.cursor()
+    for stmt in [
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            email_id              TEXT UNIQUE,
+            company               TEXT,
+            job_title             TEXT,
+            url                   TEXT,
+            source                TEXT,
+            raw_email_snippet     TEXT,
+            fit_score             INTEGER,
+            fit_reasoning         TEXT,
+            status                TEXT,
+            parser_confidence     TEXT,
+            confidence_reason     TEXT,
+            date_found            TEXT,
+            date_added_to_sheet   TEXT,
+            duplicate_hint        TEXT,
+            sender_email          TEXT,
+            email_subject         TEXT,
+            confidence_score      INTEGER,
+            skip_reason           TEXT,
+            skip_feedback         TEXT,
+            skip_mismatch_reasons TEXT,
+            notes                 TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS email_sources (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT,
+            match_type  TEXT,
+            match_value TEXT,
+            enabled     INTEGER DEFAULT 1
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS penalty_rules (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_text      TEXT,
+            penalty_points INTEGER,
+            enabled        INTEGER DEFAULT 1,
+            scope          TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS relevance_feedback (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_email    TEXT,
+            subject_pattern TEXT,
+            is_relevant     INTEGER,
+            source_name     TEXT,
+            created_at      TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS resume (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename    TEXT,
+            content     TEXT,
+            uploaded_at TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scanned_emails (
+            email_id         TEXT PRIMARY KEY,
+            sender_email     TEXT,
+            email_subject    TEXT,
+            scanned_at       TEXT,
+            disposition      TEXT DEFAULT 'noise',
+            email_date       TEXT,
+            raw_body         TEXT,
+            parser_error_msg TEXT,
+            hidden           INTEGER DEFAULT 0
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_scanned_emails_content
+            ON scanned_emails (sender_email, email_subject, scanned_at)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS application_stages (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id     INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            status     TEXT NOT NULL,
+            date       TEXT NOT NULL,
+            notes      TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_application_stages_job
+            ON application_stages (job_id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS career_site_sources (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            name                    TEXT NOT NULL,
+            url                     TEXT NOT NULL,
+            enabled                 INTEGER DEFAULT 1,
+            detected_platform       TEXT,
+            last_captured_at        TEXT,
+            recapture_interval_days INTEGER DEFAULT 4,
+            created_at              TEXT DEFAULT (datetime('now'))
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS career_scan_results (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            site_source_id   INTEGER REFERENCES career_site_sources(id) ON DELETE SET NULL,
+            site_name        TEXT NOT NULL,
+            site_url         TEXT NOT NULL,
+            job_title        TEXT NOT NULL,
+            job_url          TEXT NOT NULL UNIQUE,
+            job_text         TEXT,
+            confidence_level TEXT,
+            confidence_score INTEGER,
+            match_score      INTEGER,
+            match_reasoning  TEXT,
+            tracking_status  TEXT,
+            tracking_source  TEXT,
+            rejection_reason TEXT,
+            rejection_source TEXT,
+            scanned_at       TEXT NOT NULL,
+            posted_at        TEXT
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_career_scan_results_scanned_at
+            ON career_scan_results (scanned_at DESC)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS career_scan_failures (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            site_source_id INTEGER REFERENCES career_site_sources(id) ON DELETE SET NULL,
+            site_name      TEXT,
+            site_url       TEXT,
+            platform       TEXT NOT NULL,
+            error_message  TEXT NOT NULL,
+            trigger        TEXT,
+            occurred_at    TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_career_scan_failures_occurred_at
+            ON career_scan_failures (occurred_at DESC)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS career_rejection_rules (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_text  TEXT NOT NULL,
+            enabled    INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ack_patterns (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern   TEXT NOT NULL,
+            enabled   INTEGER DEFAULT 1,
+            rule_type TEXT NOT NULL DEFAULT 'blacklist'
+        )
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()
@@ -1355,11 +1814,53 @@ def _seed_data(conn: Any) -> None:
             _SEED_PENALTIES,
         )
 
+    cur.execute("SELECT COUNT(*) AS cnt FROM ack_patterns")
+    if cur.fetchone()["cnt"] == 0:
+        cur.executemany(
+            "INSERT INTO ack_patterns (pattern, rule_type) VALUES (%s, %s)",
+            _SEED_EMAIL_SUBJECT_RULES,
+        )
+
     conn.commit()
 
 
 def get_connection(dsn: str) -> Any:
-    """Open a PostgreSQL connection using RealDictCursor as the default cursor factory."""
+    """Open a database connection for the configured backend."""
+    if dsn.startswith("sqlite://") or dsn.endswith(".sqlite") or dsn.endswith(".sqlite3"):
+        return _SQLiteConnection(_sqlite_path_from_dsn(dsn))
+
     conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
     conn.autocommit = False
     return conn
+
+
+def open_repositories(dsn: str) -> dict[str, Any]:
+    """
+    Open the configured database and return repository interfaces.
+
+    This is the application-facing abstraction boundary. Route and service code
+    should depend on these repository keys/protocols, not concrete SQLite or
+    PostgreSQL repository classes.
+    """
+    conn = get_connection(dsn)
+    if _is_sqlite_connection(conn):
+        career_site_source_cls = SQLiteCareerSiteSourceRepository
+    else:
+        career_site_source_cls = PostgresCareerSiteSourceRepository
+
+    return {
+        "conn": conn,
+        "jobs": PostgresJobRepository(conn),
+        "sources": PostgresEmailSourceRepository(conn),
+        "penalties": PostgresPenaltyRuleRepository(conn),
+        "feedback": PostgresRelevanceFeedbackRepository(conn),
+        "scanned_emails": PostgresScannedEmailRepository(conn),
+        "resume": PostgresResumeRepository(conn),
+        "stages": PostgresApplicationStageRepository(conn),
+        "settings": PostgresAppSettingsRepository(conn),
+        "career_sites": career_site_source_cls(conn),
+        "career_scan_results": PostgresCareerScanResultRepository(conn),
+        "career_scan_failures": PostgresCareerScanFailureRepository(conn),
+        "career_rejection_rules": PostgresCareerRejectionRuleRepository(conn),
+        "email_subject_rules": PostgresEmailSubjectRuleRepository(conn),
+    }

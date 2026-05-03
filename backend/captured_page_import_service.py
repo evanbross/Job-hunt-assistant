@@ -41,7 +41,7 @@ from email import policy
 from html import unescape
 from html.parser import HTMLParser
 from typing import NotRequired, TypedDict
-from urllib.parse import ParseResult, parse_qs, urlencode, urlparse
+from urllib.parse import ParseResult, parse_qs, urlencode, urljoin, urlparse
 
 
 class ExtractedJobUrl(TypedDict):
@@ -65,7 +65,7 @@ class CaptureAnalysis(TypedDict):
 
 
 class _DocumentParser(HTMLParser):
-    def __init__(self) -> None:
+    def __init__(self, base_url: str | None = None) -> None:
         super().__init__()
         self.hrefs: list[str] = []
         self.anchor_parts_by_href: dict[str, list[str]] = {}
@@ -74,6 +74,7 @@ class _DocumentParser(HTMLParser):
         self.title_parts: list[str] = []
         self._active_anchor_href: str | None = None
         self._active_anchor_parts: list[str] = []
+        self._base_url: str | None = base_url
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized_tag = tag.lower()
@@ -85,12 +86,18 @@ class _DocumentParser(HTMLParser):
         if normalized_tag == "a":
             href = attr_map.get("href")
             if href:
-                self.hrefs.append(unescape(href))
-                self._active_anchor_href = unescape(href)
+                raw = unescape(href)
+                if self._base_url and not urlparse(raw).scheme:
+                    raw = urljoin(self._base_url, raw)
+                self.hrefs.append(raw)
+                self._active_anchor_href = raw
                 self._active_anchor_parts = []
             return
         if normalized_tag == "base" and attr_map.get("href"):
-            self.source_candidates.append(unescape(attr_map["href"]))
+            base_href = unescape(attr_map["href"])
+            self.source_candidates.append(base_href)
+            if not self._base_url:
+                self._base_url = base_href
             return
         if normalized_tag == "link" and attr_map.get("rel") and attr_map.get("href"):
             rel_values = {part.strip().lower() for part in attr_map["rel"].split()}
@@ -131,12 +138,13 @@ class CapturedPageImportService:
         ("ashbyhq.com", "Ashby"),
         ("myworkdayjobs.com", "Workday"),
         ("wellfound.com", "Wellfound"),
+        ("linkedin.com", "LinkedIn"),
     )
 
-    def extract_public_job_urls(self, raw_content: str, content_format: str) -> list[ExtractedJobUrl]:
-        return self.analyze_capture(raw_content, content_format)["urls"]
+    def extract_public_job_urls(self, raw_content: str, content_format: str, *, base_url: str | None = None) -> list[ExtractedJobUrl]:
+        return self.analyze_capture(raw_content, content_format, base_url=base_url)["urls"]
 
-    def analyze_capture(self, raw_content: str, content_format: str) -> CaptureAnalysis:
+    def analyze_capture(self, raw_content: str, content_format: str, *, base_url: str | None = None) -> CaptureAnalysis:
         normalized = raw_content.strip()
         if not normalized:
             raise ValueError("Captured page content is required.")
@@ -150,7 +158,7 @@ class CapturedPageImportService:
         results: list[ExtractedJobUrl] = []
         source_candidates: list[str] = []
         for html_text in html_documents:
-            parser = _DocumentParser()
+            parser = _DocumentParser(base_url=base_url)
             parser.feed(html_text)
             source_candidates.extend(parser.source_candidates)
             for href in parser.hrefs:
@@ -168,6 +176,13 @@ class CapturedPageImportService:
                 if platform == "Wellfound":
                     result.update(
                         self._wellfound_listing_fields(
+                            public_url,
+                            parser.anchor_parts_by_href.get(href, []),
+                        )
+                    )
+                elif platform == "LinkedIn":
+                    result.update(
+                        self._linkedin_listing_fields(
                             public_url,
                             parser.anchor_parts_by_href.get(href, []),
                         )
@@ -310,6 +325,8 @@ class CapturedPageImportService:
             return None
         if platform == "Wellfound":
             return self._normalize_wellfound_job_url(parsed)
+        if platform == "LinkedIn":
+            return self._normalize_linkedin_job_url(parsed)
         cleaned = parsed._replace(fragment="", query=parsed.query)
         return cleaned.geturl()
 
@@ -325,6 +342,26 @@ class CapturedPageImportService:
             query=urlencode({"job_listing_slug": slug}),
             fragment="",
         ).geturl()
+
+    def _linkedin_listing_fields(self, public_url: str, anchor_parts: list[str]) -> dict[str, str]:
+        combined = " ".join(part.strip() for part in anchor_parts if part.strip())
+        if not combined:
+            return {}
+        match = re.search(r"^(.+?)\s+at\s+([^.]+)", combined)
+        if match:
+            job_title = match.group(1).strip()
+            company = match.group(2).strip()
+            return {
+                "job_title": job_title,
+                "company": company,
+                "listing_text": f"{job_title}\nCompany: {company}\nURL: {public_url}",
+            }
+        return {"job_title": combined[:200]}
+
+    def _normalize_linkedin_job_url(self, parsed: ParseResult) -> str | None:
+        if not re.match(r"^/jobs/view/\d+", parsed.path):
+            return None
+        return parsed._replace(query="", fragment="").geturl()
 
     def _wellfound_listing_fields(self, public_url: str, anchor_parts: list[str]) -> dict[str, str]:
         title = anchor_parts[0].strip() if anchor_parts else ""
@@ -428,6 +465,8 @@ class CapturedPageImportService:
         if "myworkdayjobs.com" in host:
             return parsed._replace(query="", fragment="").geturl()
         if host == "wellfound.com" and path_parts and path_parts[0] == "jobs":
+            return parsed._replace(path="/jobs", query="", fragment="").geturl()
+        if "linkedin.com" in host:
             return parsed._replace(path="/jobs", query="", fragment="").geturl()
         return None
 

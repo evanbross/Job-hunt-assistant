@@ -39,67 +39,25 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import date, datetime, UTC
+from datetime import date
 
 from flask import Blueprint, jsonify
 
 import config
-from backend.db import (
-    SQLiteEmailSourceRepository,
-    SQLiteJobRepository,
-    SQLitePenaltyRuleRepository,
-    SQLiteRelevanceFeedbackRepository,
-    SQLiteResumeRepository,
-    SQLiteScannedEmailRepository,
-    get_connection,
-)
+from backend.db import open_repositories
 from backend.duplicate_checker import DuplicateChecker
 from backend.email_parser import EmailParser
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
-from backend.utils import _ACTIVE_QUEUE_STATUSES
+from backend.utils import (
+    _ACTIVE_QUEUE_STATUSES,
+    email_date_from_message,
+    get_subject_rule_match,
+)
 
 logger = logging.getLogger(__name__)
 
 scan_bp = Blueprint("scan", __name__)
-
-# ─── Application-acknowledgement filter ──────────────────────────────────────
-# These phrases in an email subject indicate a confirmation that the user
-# *already applied* to a job — not a new job opening to review.
-_ACK_SUBJECT_PATTERNS: tuple[str, ...] = (
-    "your application was sent",
-    "your application has been sent",
-    "application was received",
-    "application has been received",
-    "we received your application",
-    "thanks for applying",
-    "thank you for applying",
-    "your application to",
-    "you applied to",
-)
-
-
-def _is_application_acknowledgement(subject: str) -> bool:
-    """Return True if the subject looks like an application confirmation, not a job posting."""
-    lower = subject.lower()
-    return any(pat in lower for pat in _ACK_SUBJECT_PATTERNS)
-
-
-def _email_date_from_message(full_msg: dict) -> str | None:
-    """
-    Extract the email's send date from the Gmail message object.
-
-    Gmail exposes ``internalDate`` as a Unix timestamp in milliseconds.
-    Returns an ISO-8601 date string (YYYY-MM-DD) or None if not available.
-    """
-    raw = full_msg.get("internalDate")
-    if not raw:
-        return None
-    try:
-        return datetime.fromtimestamp(int(raw) / 1000, UTC).strftime("%Y-%m-%d")
-    except (ValueError, OSError):
-        return None
-
 
 # ─── Scan state (in-memory, protected by a lock) ──────────────────────────────
 
@@ -162,7 +120,7 @@ def _run_scan(rescan_all: bool = False) -> None:
         _scan_state.errors.clear()
         _scan_state.summary = None
 
-    conn = None
+    repos = None
     try:
         _update_scan(progress=5, message="Connecting to Gmail...")
 
@@ -178,12 +136,14 @@ def _run_scan(rescan_all: bool = False) -> None:
             "email_lookback_days", config.DEFAULT_EMAIL_LOOKBACK_DAYS
         )
 
-        conn = get_connection(config.DATABASE_URL)
-        source_repo = SQLiteEmailSourceRepository(conn)
-        job_repo = SQLiteJobRepository(conn)
-        scanned_repo = SQLiteScannedEmailRepository(conn)
-        feedback_repo = SQLiteRelevanceFeedbackRepository(conn)
-        resume_repo = SQLiteResumeRepository(conn)
+        repos = open_repositories(config.DATABASE_URL)
+        conn = repos["conn"]
+        source_repo = repos["sources"]
+        job_repo = repos["jobs"]
+        scanned_repo = repos["scanned_emails"]
+        feedback_repo = repos["feedback"]
+        resume_repo = repos["resume"]
+        subject_rules = repos["email_subject_rules"].get_enabled()
 
         enabled_sources = source_repo.get_enabled()
         if not enabled_sources:
@@ -212,7 +172,7 @@ def _run_scan(rescan_all: bool = False) -> None:
         scorer = FitScorer()
         dup_checker = DuplicateChecker()
 
-        penalty_repo = SQLitePenaltyRuleRepository(conn)
+        penalty_repo = repos["penalties"]
         penalty_rules = penalty_repo.get_enabled()
         fit_feedback = job_repo.get_not_a_fit_with_feedback()
 
@@ -240,12 +200,15 @@ def _run_scan(rescan_all: bool = False) -> None:
                 _update_scan(error=f"Failed to fetch message {msg_id}: {exc}")
                 continue
 
-            email_date = _email_date_from_message(full_msg)
+            email_date = email_date_from_message(full_msg)
 
-            # Skip application-acknowledgement emails (e.g. "your application was sent to…")
-            if _is_application_acknowledgement(subject):
+            subject_rule = get_subject_rule_match(subject, subject_rules)
+
+            # Blacklist: skip application-acknowledgement emails
+            if subject_rule == "blacklist":
                 gmail.mark_as_read(msg_id)
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="ack", email_date=email_date)
+                conn.commit()
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
@@ -253,6 +216,7 @@ def _run_scan(rescan_all: bool = False) -> None:
             # Catches edge cases like a message re-delivered with a different ID.
             if scanned_repo.is_duplicate_by_content(sender, subject, lookback_days):
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="duplicate", email_date=email_date)
+                conn.commit()
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
@@ -261,6 +225,7 @@ def _run_scan(rescan_all: bool = False) -> None:
             if feedback and feedback["is_relevant"] == 0:
                 gmail.mark_as_read(msg_id)
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="feedback_filtered", email_date=email_date)
+                conn.commit()
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
@@ -269,6 +234,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                 parsed_jobs = parser.parse(subject, sender, body)
             except Exception as exc:
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=body, parser_error_msg=str(exc))
+                conn.commit()
                 _update_scan(
                     error=f"Parser error: {exc}",
                     error_email_id=msg_id,
@@ -280,6 +246,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                 # Not a job email — mark scanned and move on
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="noise", email_date=email_date)
                 gmail.mark_as_read(msg_id)
+                conn.commit()
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
@@ -294,6 +261,10 @@ def _run_scan(rescan_all: bool = False) -> None:
 
                 # Override confidence to high if feedback marks sender as relevant
                 if feedback and feedback["is_relevant"] == 1:
+                    confidence = "high"
+
+                # Whitelist match: this subject is explicitly flagged as a job listing
+                if subject_rule == "whitelist":
                     confidence = "high"
 
                 # Check for fuzzy duplicate against already-tracked jobs
@@ -362,6 +333,7 @@ def _run_scan(rescan_all: bool = False) -> None:
 
             emails_with_jobs += 1
             scanned_repo.mark_scanned(msg_id, sender, subject, disposition="job_created", email_date=email_date)
+            conn.commit()
             successful_emails.append(
                 {
                     "email_id": msg_id,
@@ -407,8 +379,8 @@ def _run_scan(rescan_all: bool = False) -> None:
         logger.exception("Scan failed with unexpected error")
         _update_scan(error=f"Scan failed: {exc}", message="Scan failed with an error.")
     finally:
-        if conn is not None:
-            conn.close()
+        if repos is not None:
+            repos["conn"].close()
         with _scan_lock:
             _scan_state.running = False
 
@@ -454,14 +426,16 @@ def rescan_all_emails():
         if _scan_state.running:
             return jsonify({"error": "A scan is already running"}), 409
 
-    conn = get_connection(config.DATABASE_URL)
-    scanned_repo = SQLiteScannedEmailRepository(conn)
+    repos = open_repositories(config.DATABASE_URL)
+    scanned_repo = repos["scanned_emails"]
+    job_repo = repos["jobs"]
 
     # Remove all email-sourced jobs (board-search jobs have sender_email IS NULL)
-    conn.execute("DELETE FROM jobs WHERE sender_email IS NOT NULL")
-    conn.commit()
+    job_repo.delete_email_sourced()
+    repos["conn"].commit()
     scanned_repo.delete_all()
-    conn.close()
+    repos["conn"].commit()
+    repos["conn"].close()
 
     # Kick off a fresh scan with unread_only=False so already-read emails are re-fetched
     thread = threading.Thread(target=_run_scan, kwargs={"rescan_all": True}, daemon=True)

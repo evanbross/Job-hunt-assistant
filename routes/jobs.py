@@ -37,13 +37,13 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import date, datetime, UTC
 
 from flask import Blueprint, jsonify, request
 
 import config
 from backend.career_site_scanner import CareerSiteScanner
+from backend.duplicate_checker import DuplicateChecker
 from backend.email_parser import EmailParser
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
@@ -53,6 +53,9 @@ from backend.utils import (
     _ai_error_http_status,
     _get_repos,
     _safe_error_message,
+    db_match_for_job,
+    normalize_stage_status,
+    VALID_STAGE_STATUSES,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,12 +83,6 @@ _VALID_MISMATCH_REASONS = frozenset({
     "Contract / Temp",
     "Other Mismatch",
 })
-_VALID_STAGE_STATUSES = frozenset({
-    "applied", "waiting_call", "waiting_second", "eval_test",
-    "rejected", "job_filled", "ghosted",
-})
-
-
 def _maybe_mark_source_email_read(job: dict[str, object], job_repo) -> None:
     """Mark the source Gmail message read once no active queue jobs remain for it."""
     email_id = str(job.get("email_id") or "").strip()
@@ -107,32 +104,6 @@ def _maybe_mark_source_email_read(job: dict[str, object], job_repo) -> None:
         logger.warning("Could not mark email %s as read: Gmail is not authenticated", base_email_id)
     except Exception as exc:
         logger.warning("Could not mark email %s as read: %s", base_email_id, exc)
-
-
-def _normalize_stage_status(raw_status: object) -> str:
-    status = str(raw_status or "").strip()
-    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    aliases = {
-        "applied": "applied",
-        "added_to_sheet": "applied",
-        "rejected": "rejected",
-        "employer_rejected": "rejected",
-        "waiting": "waiting_call",
-        "waiting_for_call": "waiting_call",
-        "waiting_call": "waiting_call",
-        "waiting_for_2nd": "waiting_second",
-        "waiting_2nd": "waiting_second",
-        "waiting_for_second": "waiting_second",
-        "waiting_second": "waiting_second",
-        "need_to_do_eval": "eval_test",
-        "eval": "eval_test",
-        "eval_test": "eval_test",
-        "job_was_filled": "job_filled",
-        "job_filled": "job_filled",
-        "filled": "job_filled",
-        "ghosted": "ghosted",
-    }
-    return aliases.get(normalized, normalized)
 
 
 # ─── Job routes ───────────────────────────────────────────────────────────────
@@ -183,6 +154,7 @@ def create_manual_job():
         logger.error("Manual job ingest failed: %s", exc)
         return jsonify({"error": str(exc)}), 500
 
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"job": result.job, "parsed_job_count": result.parsed_job_count}), 201
 
@@ -196,13 +168,45 @@ def patch_job(job_id: int):
         return jsonify({"error": "No valid fields to update"}), 400
     repos = _get_repos()
     try:
+        job = repos["jobs"].get_by_id(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+
         repos["jobs"].update(job_id, fields)
+        updated_job = repos["jobs"].get_by_id(job_id)
+        if updated_job is None:
+            return jsonify({"error": "Job not found"}), 404
+
+        known_jobs: list[dict] = repos["jobs"].get_all_ordered()
+        _tracked_status, _tracking_source, duplicate_hint = db_match_for_job(
+            job_title=str(updated_job.get("job_title") or ""),
+            company=str(updated_job.get("company") or ""),
+            job_url=str(updated_job.get("url") or ""),
+            known_jobs=known_jobs,
+            dedup_checker=DuplicateChecker(),
+            exclude_id=job_id,
+        )
+
+        duplicate_updates: dict[str, object] = {}
+        if duplicate_hint:
+            duplicate_updates["duplicate_hint"] = duplicate_hint
+            duplicate_updates["status"] = "possible_duplicate"
+        elif updated_job.get("duplicate_hint") or updated_job.get("status") == "possible_duplicate":
+            fit_score = int(updated_job.get("fit_score") or 0)
+            duplicate_updates["duplicate_hint"] = None
+            duplicate_updates["status"] = "pending_review" if fit_score >= 70 else "triage"
+
+        if duplicate_updates:
+            repos["jobs"].update(job_id, duplicate_updates)
+            updated_job = repos["jobs"].get_by_id(job_id)
+
+        repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error patching job %s: %s", job_id, exc)
         return jsonify({"error": "Failed to update job"}), 500
     finally:
         repos["conn"].close()
-    return jsonify({"status": "ok"})
+    return jsonify(updated_job)
 
 
 @jobs_bp.route("/jobs/<int:job_id>/skip", methods=["POST"])
@@ -232,6 +236,7 @@ def skip_job(job_id: int):
         updates["skip_mismatch_reasons"] = "|".join(mismatch_reasons)
     repos["jobs"].update(job_id, updates)
     _maybe_mark_source_email_read(job, repos["jobs"])
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -260,6 +265,7 @@ def approve_job(job_id: int):
     )
     repos["stages"].insert({"job_id": job_id, "status": "applied", "date": today, "notes": None})
     _maybe_mark_source_email_read(job, repos["jobs"])
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -281,6 +287,7 @@ def dismiss_duplicate(job_id: int):
             "duplicate_hint": None,
         },
     )
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -333,6 +340,7 @@ def approve_triage_job(job_id: int):
             logger.warning("Scoring failed during approval: %s", exc)
 
     repos["jobs"].update(job_id, updates)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -400,6 +408,64 @@ def refresh_job_from_url(job_id: int):
         "status": current_status,
     })
     updated_job = repos["jobs"].get_by_id(job_id)
+    repos["conn"].commit()
+    repos["conn"].close()
+    return jsonify(updated_job)
+
+
+@jobs_bp.route("/jobs/<int:job_id>/description", methods=["POST"])
+def update_job_description(job_id: int):
+    """Replace a job's description with pasted text and re-score the job."""
+    repos = _get_repos()
+    job = repos["jobs"].get_by_id(job_id)
+    if not job:
+        repos["conn"].close()
+        return jsonify({"error": "Job not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    description = str(body.get("description") or "").strip()
+    if not description:
+        repos["conn"].close()
+        return jsonify({"error": "Description text is required"}), 400
+    if len(description) < 80:
+        repos["conn"].close()
+        return jsonify({"error": "Paste a more complete job description before re-evaluating."}), 400
+
+    resume_row = repos["resume"].get_latest()
+    resume_text = str(resume_row.get("content") or "") if resume_row else ""
+    penalty_rules = repos["penalties"].get_enabled()
+    fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+
+    try:
+        score_result = FitScorer().score(
+            job_title=job.get("job_title") or "",
+            company=job.get("company") or "",
+            email_body=description,
+            resume_text=resume_text,
+            penalty_rules=penalty_rules,
+            fit_feedback=fit_feedback,
+        )
+    except Exception as exc:
+        logger.warning("description update: scoring failed for job %d: %s", job_id, exc)
+        repos["conn"].close()
+        return jsonify({"error": _safe_error_message(exc, "Scoring failed")}), _ai_error_http_status(exc)
+
+    fit_score = score_result["score"]
+    current_status = job.get("status", "triage")
+    if current_status not in {"possible_duplicate", "skipped", "added_to_sheet"}:
+        current_status = "pending_review" if fit_score >= 70 else "triage"
+
+    repos["jobs"].update(
+        job_id,
+        {
+            "raw_email_snippet": description[:6000],
+            "fit_score": fit_score,
+            "fit_reasoning": score_result["reasoning"],
+            "status": current_status,
+        },
+    )
+    updated_job = repos["jobs"].get_by_id(job_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(updated_job)
 
@@ -470,6 +536,7 @@ def reprocess_job(job_id: int):
 
     repos["jobs"].update(job_id, updates)
     updated = repos["jobs"].get_by_id(job_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(updated)
 
@@ -499,6 +566,7 @@ def reject_triage_job(job_id: int):
 
     repos["jobs"].delete(job_id)
     _maybe_mark_source_email_read(job, repos["jobs"])
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
 
@@ -511,16 +579,17 @@ def add_application_stage(job_id: int):
         return jsonify({"error": "Job not found"}), 404
 
     data = request.get_json(silent=True) or {}
-    status = _normalize_stage_status(data.get("status"))
-    if status not in _VALID_STAGE_STATUSES:
+    status = normalize_stage_status(data.get("status"))
+    if status not in VALID_STAGE_STATUSES:
         repos["conn"].close()
-        return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(_VALID_STAGE_STATUSES))}"}), 400
+        return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(VALID_STAGE_STATUSES))}"}), 400
 
     stage_date = data.get("date") or date.today().isoformat()
     notes = data.get("notes") or None
 
     stage_id = repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
     stage = repos["stages"].get_by_id(stage_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify(stage), 201
 
@@ -534,5 +603,6 @@ def delete_application_stage(job_id: int, stage_id: int):
         return jsonify({"error": "Stage not found"}), 404
 
     repos["stages"].delete(stage_id)
+    repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})

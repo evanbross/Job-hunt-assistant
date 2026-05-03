@@ -34,9 +34,11 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
+import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 
-export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavigateToEmails }) {
+export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavigateToEmails, onNavigateToHistory }) {
   const [jobs, setJobs] = useState([]);
+  const [searchText, setSearchText] = useState("");
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [scanState, setScanState] = useState(null);
@@ -65,12 +67,15 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   const [importPanelOpen, setImportPanelOpen] = useState(false);
   const [importMode, setImportMode] = useState("text");
   const [recaptureDueSites, setRecaptureDueSites] = useState([]);
+  const [moreToolsOpen, setMoreToolsOpen] = useState(false);
+  const [fixingCompanies, setFixingCompanies] = useState(false);
   const pollRef = useRef(null);
   const boardPollRef = useRef(null);
   const importPollRef = useRef(null);
   const reEvalPollRef = useRef(null);
   const reEvaluateResetTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
+  const moreToolsRef = useRef(null);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -176,6 +181,43 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     );
   };
 
+  const handleFixUnknownCompanies = async () => {
+    setFixingCompanies(true);
+    try {
+      let totalFixed = 0;
+      let remaining = 0;
+      let lastFixed = -1;
+      while (lastFixed !== 0) {
+        const res = await fetch("/api/repair/fix-unknown-companies", { method: "POST" });
+        if (!res.ok) {
+          alert("Fix Unknown Companies failed. Check the server log.");
+          break;
+        }
+        const data = await res.json();
+        totalFixed += data.fixed;
+        remaining = data.remaining;
+        lastFixed = data.fixed;
+        if (remaining === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      await fetchJobs();
+      if (totalFixed > 0) {
+        const tail = remaining > 0
+          ? ` ${remaining} could not be repaired automatically.`
+          : " All unknown companies resolved.";
+        alert(`Fixed ${totalFixed} job${totalFixed !== 1 ? "s" : ""}.${tail}`);
+      } else {
+        alert(
+          remaining > 0
+            ? `${remaining} job${remaining !== 1 ? "s" : ""} still have unknown companies but couldn't be repaired automatically.`
+            : "No jobs with unknown companies found."
+        );
+      }
+    } finally {
+      setFixingCompanies(false);
+    }
+  };
+
   const handleApprove = async (jobId) => {
     const res = await fetch(`/api/jobs/${jobId}/add-to-sheet`, { method: "POST" });
     if (!res.ok) {
@@ -195,15 +237,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     if (res.ok) {
       setJobs((prev) => prev.filter((j) => j.id !== jobId));
     }
-  };
-
-  const handleReclassified = (updatedJob) => {
-    if (!updatedJob?.id) return;
-    if (updatedJob.status !== "pending_review") {
-      setJobs((prev) => prev.filter((job) => job.id !== updatedJob.id));
-      return;
-    }
-    setJobs((prev) => prev.map((job) => (job.id === updatedJob.id ? updatedJob : job)));
   };
 
   const handleJobReEvaluate = async (job) => {
@@ -354,7 +387,8 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   };
 
   const anyScanRunning = scanning || rescanAllRunning;
-  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting;
+  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies;
+  const filteredJobs = jobs.filter((job) => jobMatchesSearch(job, searchText));
 
   const handleManualSubmit = async () => {
     if (!manualListingText.trim() && !manualSourceUrl.trim()) {
@@ -518,6 +552,17 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     }
   };
 
+  useEffect(() => {
+    if (!moreToolsOpen) return;
+    const handleOutsideClick = (e) => {
+      if (moreToolsRef.current && !moreToolsRef.current.contains(e.target)) {
+        setMoreToolsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [moreToolsOpen]);
+
   return (
     <div>
       {/* Toolbar */}
@@ -529,15 +574,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           style={{ padding: "8px 20px", fontSize: "14px" }}
         >
           {scanning ? "Scanning…" : "Scan Emails"}
-        </button>
-
-        <button
-          className="btn-secondary"
-          onClick={handleRescanAll}
-          disabled={anyQueueActionRunning}
-          style={{ padding: "8px 20px", fontSize: "14px" }}
-        >
-          {rescanAllRunning ? "Purging…" : "Purge Queue"}
         </button>
 
         <button
@@ -567,8 +603,88 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           Import Jobs
         </button>
 
+        <button
+          className="btn-secondary"
+          onClick={onNavigateToHistory}
+          style={{ padding: "8px 20px", fontSize: "14px" }}
+        >
+          History
+        </button>
+
+        <div ref={moreToolsRef} style={{ position: "relative", marginLeft: "auto" }}>
+          <button
+            className="btn-secondary"
+            onClick={() => setMoreToolsOpen((o) => !o)}
+            disabled={anyQueueActionRunning}
+            style={{ padding: "8px 14px", fontSize: "14px" }}
+          >
+            More ▾
+          </button>
+          {moreToolsOpen && (
+            <div style={{
+              position: "absolute",
+              right: 0,
+              top: "calc(100% + 4px)",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+              minWidth: "160px",
+              zIndex: 100,
+              overflow: "hidden",
+            }}>
+              <button
+                onClick={() => { setMoreToolsOpen(false); handleFixUnknownCompanies(); }}
+                disabled={anyQueueActionRunning}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 14px",
+                  fontSize: "13px",
+                  background: "none",
+                  border: "none",
+                  color: "var(--text)",
+                  cursor: anyQueueActionRunning ? "not-allowed" : "pointer",
+                  opacity: anyQueueActionRunning ? 0.5 : 1,
+                }}
+              >
+                {fixingCompanies ? "Fixing…" : "Fix Unknown Companies"}
+              </button>
+              <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
+              <button
+                onClick={() => { setMoreToolsOpen(false); handleRescanAll(); }}
+                disabled={anyQueueActionRunning}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 14px",
+                  fontSize: "13px",
+                  background: "none",
+                  border: "none",
+                  color: "var(--red)",
+                  cursor: anyQueueActionRunning ? "not-allowed" : "pointer",
+                  opacity: anyQueueActionRunning ? 0.5 : 1,
+                }}
+              >
+                {rescanAllRunning ? "Purging…" : "Purge Queue"}
+              </button>
+            </div>
+          )}
+        </div>
+
+        <input
+          type="search"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          placeholder="Search queued jobs"
+          style={queueSearchInputStyle}
+        />
+
         {jobs.length > 0 && (
           <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+            {filteredJobs.length !== jobs.length && `${filteredJobs.length} of `}
             {jobs.length} job{jobs.length !== 1 ? "s" : ""} ready to review
           </span>
         )}
@@ -850,16 +966,26 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           <p style={{ fontSize: "32px" }}>🎯</p>
           <p>No jobs queued. Click "Scan Emails" to check your inbox.</p>
         </div>
+      ) : filteredJobs.length === 0 ? (
+        <div className="empty-state">
+          <p>No queued jobs match your search.</p>
+        </div>
       ) : (
-        jobs.map((job) => (
+        filteredJobs.map((job) => (
           <JobCard
             key={job.id}
             job={job}
             onApprove={handleApprove}
-            onReclassified={handleReclassified}
             onReEvaluate={handleJobReEvaluate}
             onSkip={handleSkip}
-            onUpdate={(jobId, fields) => setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...fields } : j))}
+            onUpdate={(jobId, updatedJob) => {
+              if (updatedJob.status === "pending_review") {
+                setJobs((prev) => prev.map((j) => (j.id === jobId ? updatedJob : j)));
+                return;
+              }
+              setJobs((prev) => prev.filter((j) => j.id !== jobId));
+              updateTriageCount();
+            }}
           />
         ))
       )}
@@ -1366,6 +1492,13 @@ const inputStyle = {
   border: "1px solid var(--border)",
   background: "var(--bg-elevated)",
   color: "var(--text)",
+};
+
+const queueSearchInputStyle = {
+  ...inputStyle,
+  flex: "1 1 260px",
+  marginLeft: "auto",
+  maxWidth: "420px",
 };
 
 const selectStyle = {

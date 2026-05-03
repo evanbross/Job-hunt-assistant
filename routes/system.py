@@ -37,7 +37,9 @@
 from __future__ import annotations
 
 import logging
+import tkinter as tk
 from pathlib import Path
+from tkinter import filedialog
 
 from flask import Blueprint, jsonify, request, send_from_directory
 
@@ -52,12 +54,6 @@ system_bp = Blueprint("system", __name__)
 def select_folder():
     body = request.get_json(silent=True) or {}
     initial_path = (body.get("initial_path") or "").strip()
-
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception as exc:
-        return jsonify({"error": f"Folder picker is unavailable: {exc}"}), 500
 
     try:
         root = tk.Tk()
@@ -82,12 +78,6 @@ def select_folder():
 def select_file():
     body = request.get_json(silent=True) or {}
     initial_path = (body.get("initial_path") or "").strip()
-
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception as exc:
-        return jsonify({"error": f"File picker is unavailable: {exc}"}), 500
 
     try:
         root = tk.Tk()

@@ -41,8 +41,12 @@ from datetime import date, datetime, timedelta, UTC
 
 from flask import Blueprint, jsonify, request
 
-from backend.utils import _get_repos, _tracking_payload
-from routes.jobs import _normalize_stage_status, _VALID_STAGE_STATUSES
+from backend.utils import (
+    _get_repos,
+    _tracking_payload,
+    normalize_stage_status,
+    VALID_STAGE_STATUSES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +121,7 @@ def add_application_sheet_row():
     repos = _get_repos()
     try:
         repos["jobs"].insert(job_data)
+        repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error inserting tracking row: %s", exc)
         return jsonify({"error": "Failed to save application"}), 500
@@ -147,6 +152,7 @@ def update_application_sheet_row(job_id: int):
     repos = _get_repos()
     try:
         repos["jobs"].update(job_id, fields)
+        repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error updating tracking row %s: %s", job_id, exc)
         return jsonify({"error": "Failed to update application"}), 500
@@ -159,18 +165,19 @@ def update_application_sheet_row(job_id: int):
 def add_application_sheet_stage(job_id: int):
     """Add a stage entry to an application."""
     data = request.get_json(silent=True) or {}
-    status = _normalize_stage_status(data.get("status"))
+    status = normalize_stage_status(data.get("status"))
     stage_date = str(data.get("date") or "").strip()
     notes = str(data.get("notes") or "").strip()
     if not status:
         return jsonify({"error": "status is required"}), 400
-    if status not in _VALID_STAGE_STATUSES:
-        return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(_VALID_STAGE_STATUSES))}"}), 400
+    if status not in VALID_STAGE_STATUSES:
+        return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(VALID_STAGE_STATUSES))}"}), 400
     if not stage_date:
         return jsonify({"error": "date is required"}), 400
     repos = _get_repos()
     try:
         repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
+        repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error adding stage for job %s: %s", job_id, exc, exc_info=True)
         return jsonify({"error": "Failed to save stage"}), 500
@@ -196,7 +203,7 @@ def mark_ghost_applications():
         for job in jobs:
             stages = stages_by_job_id.get(job["id"], [])
             latest_stage = stages[-1] if stages else None
-            latest_status = _normalize_stage_status(
+            latest_status = normalize_stage_status(
                 (latest_stage or {}).get("status") or job.get("status")
             )
             latest_date = str(
@@ -238,6 +245,7 @@ def mark_ghost_applications():
                     "days_applied": days_applied,
                 }
             )
+        repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error marking ghost applications: %s", exc, exc_info=True)
         return jsonify({"error": "Failed to mark ghosts"}), 500

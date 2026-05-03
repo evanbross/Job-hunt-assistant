@@ -40,8 +40,10 @@ export default function SettingsPanel() {
 
   const sections = [
     { id: "resume", label: "Resume" },
-    { id: "sources", label: "Email Sources" },
+    { id: "sources", label: "Email" },
+    { id: "email_subject_rules", label: "Subject Rules" },
     { id: "career_sites", label: "Career Sites" },
+    { id: "import_listener", label: "Import Listener" },
     { id: "penalties", label: "Scoring Rules" },
     { id: "feedback", label: "Learned Patterns" },
     { id: "config", label: "Configuration" },
@@ -66,7 +68,9 @@ export default function SettingsPanel() {
       <div style={{ flex: 1 }}>
         {activeSection === "resume" && <ResumeUpload />}
         {activeSection === "sources" && <EmailSourcesSection />}
+        {activeSection === "email_subject_rules" && <EmailSubjectRulesSection />}
         {activeSection === "career_sites" && <CareerSitesSection />}
+        {activeSection === "import_listener" && <ImportListenerSection />}
         {activeSection === "penalties" && <PenaltiesSection />}
         {activeSection === "feedback" && <FeedbackSection />}
         {activeSection === "config" && <ConfigSection />}
@@ -75,20 +79,230 @@ export default function SettingsPanel() {
   );
 }
 
+// ── Email Subject Rules ────────────────────────────────────────────────────────
+
+function SubjectRuleList({ ruleType, title, description, rules, onRefresh }) {
+  const [newPattern, setNewPattern] = useState("");
+  const [editId, setEditId] = useState(null);
+  const [editValue, setEditValue] = useState("");
+
+  const startEdit = (rule) => {
+    setEditId(rule.id);
+    setEditValue(rule.pattern);
+  };
+
+  const cancelEdit = () => {
+    setEditId(null);
+    setEditValue("");
+  };
+
+  const saveEdit = async (id) => {
+    const trimmed = editValue.trim().toLowerCase();
+    if (!trimmed) return;
+    const res = await fetch(`/api/email-subject-rules/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pattern: trimmed }),
+    });
+    if (!res.ok) { window.alert(`Save failed (${res.status})`); return; }
+    setEditId(null);
+    setEditValue("");
+    await onRefresh();
+  };
+
+  const toggleEnabled = async (rule) => {
+    const res = await fetch(`/api/email-subject-rules/${rule.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: rule.enabled ? 0 : 1 }),
+    });
+    if (!res.ok) { window.alert(`Save failed (${res.status})`); return; }
+    await onRefresh();
+  };
+
+  const deleteRule = async (id) => {
+    if (!window.confirm("Delete this rule?")) return;
+    const res = await fetch(`/api/email-subject-rules/${id}`, { method: "DELETE" });
+    if (!res.ok) { window.alert(`Delete failed (${res.status})`); return; }
+    await onRefresh();
+  };
+
+  const addRule = async () => {
+    const trimmed = newPattern.trim().toLowerCase();
+    if (!trimmed) return;
+    const res = await fetch("/api/email-subject-rules", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pattern: trimmed, rule_type: ruleType }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      window.alert(data.error || `Save failed (${res.status})`);
+      return;
+    }
+    setNewPattern("");
+    await onRefresh();
+  };
+
+  return (
+    <div style={{ marginBottom: "28px" }}>
+      <h3 style={{ fontSize: "14px", fontWeight: 700, margin: "0 0 4px 0" }}>{title}</h3>
+      <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "10px" }}>{description}</p>
+
+      <div style={formBox}>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <input
+            value={newPattern}
+            onChange={(e) => setNewPattern(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addRule(); }}
+            placeholder="e.g. successfully submitted"
+            style={{ flex: 1 }}
+          />
+          <button className="btn-primary" onClick={addRule} disabled={!newPattern.trim()}>
+            Add
+          </button>
+        </div>
+      </div>
+
+      {rules.length === 0 ? (
+        <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>None defined.</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          {rules.map((rule) => (
+            <div
+              key={rule.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "6px 10px",
+                background: "var(--surface2)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                opacity: rule.enabled ? 1 : 0.55,
+              }}
+            >
+              {editId === rule.id ? (
+                <input
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveEdit(rule.id);
+                    if (e.key === "Escape") cancelEdit();
+                  }}
+                  style={{ flex: 1, fontSize: "13px" }}
+                  autoFocus
+                />
+              ) : (
+                <code style={{ flex: 1, fontSize: "13px", background: "none" }}>{rule.pattern}</code>
+              )}
+              {editId === rule.id ? (
+                <>
+                  <button className="btn-primary" style={{ fontSize: "11px", padding: "2px 8px" }} onClick={() => saveEdit(rule.id)}>Save</button>
+                  <button className="btn-secondary" style={{ fontSize: "11px", padding: "2px 8px" }} onClick={cancelEdit}>Cancel</button>
+                </>
+              ) : (
+                <>
+                  <button className="btn-secondary" style={{ fontSize: "11px", padding: "2px 8px" }} onClick={() => startEdit(rule)} disabled={editId !== null}>Edit</button>
+                  <button className="btn-secondary" style={{ fontSize: "11px", padding: "2px 8px" }} onClick={() => toggleEnabled(rule)}>
+                    {rule.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <button className="btn-danger" style={{ fontSize: "11px", padding: "2px 8px" }} onClick={() => deleteRule(rule.id)}>Delete</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmailSubjectRulesSection() {
+  const [rules, setRules] = useState([]);
+
+  useEffect(() => { fetchRules(); }, []);
+
+  const fetchRules = async () => {
+    const res = await fetch("/api/email-subject-rules");
+    const data = await res.json();
+    setRules(Array.isArray(data) ? data : []);
+  };
+
+  const blacklist = rules.filter((r) => r.rule_type === "blacklist");
+  const whitelist = rules.filter((r) => r.rule_type === "whitelist");
+
+  return (
+    <div>
+      <SectionHeader title="Email Subject Rules" />
+      <SubjectRuleList
+        ruleType="blacklist"
+        title="Skip (Blacklist)"
+        description="If a subject contains this phrase, the email is marked as an acknowledgement and skipped — no job is extracted."
+        rules={blacklist}
+        onRefresh={fetchRules}
+      />
+      <SubjectRuleList
+        ruleType="whitelist"
+        title="Force Job (Whitelist)"
+        description="If a subject contains this phrase, the email is always treated as a job listing at high confidence. Takes precedence over blacklist."
+        rules={whitelist}
+        onRefresh={fetchRules}
+      />
+    </div>
+  );
+}
+
 // ── Email Sources ─────────────────────────────────────────────────────────────
 
 function EmailSourcesSection() {
   const [sources, setSources] = useState([]);
+  const [cfg, setCfg] = useState(null);
+  const [configSaved, setConfigSaved] = useState(false);
+  const [configSaving, setConfigSaving] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", match_type: "sender_domain", match_value: "" });
   const [editId, setEditId] = useState(null);
 
-  useEffect(() => { fetchSources(); }, []);
+  useEffect(() => {
+    fetchConfig();
+    fetchSources();
+  }, []);
+
+  const fetchConfig = async () => {
+    const res = await fetch("/api/config");
+    const data = await res.json();
+    setCfg(data);
+  };
 
   const fetchSources = async () => {
     const res = await fetch("/api/sources");
     const data = await res.json();
     setSources(Array.isArray(data) ? data : []);
+  };
+
+  const saveConfig = async () => {
+    const scannedEmailLabel = String(cfg?.scanned_email_label || "").trim();
+    if (!scannedEmailLabel) {
+      window.alert("Processed email label cannot be empty.");
+      return;
+    }
+
+    setConfigSaving(true);
+    const res = await fetch("/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scanned_email_label: scannedEmailLabel }),
+    });
+    const data = await res.json();
+    setConfigSaving(false);
+    if (!res.ok) {
+      window.alert(data.error || "Failed to save email configuration");
+      return;
+    }
+    setCfg(data);
+    setConfigSaved(true);
+    setTimeout(() => setConfigSaved(false), 2500);
   };
 
   const toggleEnabled = async (source) => {
@@ -151,6 +365,35 @@ function EmailSourcesSection() {
 
   return (
     <div>
+      <SectionHeader title="Email" />
+
+      <h3 style={sectionSubheadingStyle}>Configuration</h3>
+      <div style={formBox}>
+        {cfg ? (
+          <>
+            <label style={labelStyle}>
+              Processed Email Label
+              <input
+                value={cfg.scanned_email_label || ""}
+                onChange={(e) => setCfg({ ...cfg, scanned_email_label: e.target.value })}
+                placeholder=".Job Hunt 2025/Scanned By Assistant"
+              />
+              <span style={helpTextStyle}>
+                Gmail label used when moving processed emails out of the inbox.
+              </span>
+            </label>
+            <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              <button className="btn-primary" onClick={saveConfig} disabled={configSaving}>
+                {configSaving ? "Saving..." : "Save Configuration"}
+              </button>
+              {configSaved && <span style={{ color: "var(--green)", fontSize: "13px" }}>Saved!</span>}
+            </div>
+          </>
+        ) : (
+          <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>Loading...</p>
+        )}
+      </div>
+
       <SectionHeader title="Email Sources" action={{ label: "Add Source", onClick: () => { setEditId(null); setForm({ name: "", match_type: "sender_domain", match_value: "" }); setShowForm(true); } }} />
 
       {showForm && (
@@ -340,6 +583,158 @@ function CareerSitesSection() {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ── Import Listener ──────────────────────────────────────────────────────────
+
+function ImportListenerSection() {
+  const [cfg, setCfg] = useState(null);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/config")
+      .then((response) => response.json())
+      .then((data) => setCfg(data));
+  }, []);
+
+  const save = async () => {
+    const port = parseInt(cfg.job_import_listener_port, 10);
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+      window.alert("Listener port must be a number between 1 and 65535.");
+      return;
+    }
+
+    const maxBytes = parseInt(cfg.job_import_listener_max_bytes, 10);
+    if (!Number.isFinite(maxBytes) || maxBytes < 1024) {
+      window.alert("Max request size must be at least 1024 bytes.");
+      return;
+    }
+
+    setSaving(true);
+    const res = await fetch("/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job_import_listener_enabled: !!cfg.job_import_listener_enabled,
+        job_import_listener_host: cfg.job_import_listener_host,
+        job_import_listener_port: port,
+        job_import_listener_token: cfg.job_import_listener_token || "",
+        job_import_listener_max_bytes: maxBytes,
+      }),
+    });
+    const data = await res.json();
+    setSaving(false);
+    if (!res.ok) {
+      window.alert(data.error || "Failed to save import listener settings");
+      return;
+    }
+    setCfg(data);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  };
+
+  if (!cfg) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+
+  const listenerUrl = `http://${cfg.job_import_listener_host || "127.0.0.1"}:${cfg.job_import_listener_port || 8765}/import`;
+
+  return (
+    <div>
+      <SectionHeader title="Import Listener" />
+      <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
+        Accept captured job-board HTML or JSON from a local browser extension, bookmarklet, or script.
+        Listener changes are saved here and take effect after restarting the app.
+      </p>
+
+      <div style={{ maxWidth: "760px" }}>
+        <div style={listenerStatusBoxStyle}>
+          <div style={{ color: "var(--text-muted)", fontSize: "11px", fontWeight: 700, textTransform: "uppercase" }}>
+            Current endpoint after restart
+          </div>
+          <code style={listenerEndpointStyle}>{listenerUrl}</code>
+        </div>
+
+        <label style={{ ...labelStyle, marginTop: "16px" }}>
+          Enabled
+          <div>
+            <Toggle
+              checked={!!cfg.job_import_listener_enabled}
+              onChange={() =>
+                setCfg({
+                  ...cfg,
+                  job_import_listener_enabled: !cfg.job_import_listener_enabled,
+                })
+              }
+            />
+          </div>
+        </label>
+
+        <div style={{ ...formGrid, marginTop: "16px" }}>
+          <label style={labelStyle}>
+            Host
+            <input
+              value={cfg.job_import_listener_host || ""}
+              onChange={(event) =>
+                setCfg({ ...cfg, job_import_listener_host: event.target.value })
+              }
+              placeholder="127.0.0.1"
+            />
+            <span style={helpTextStyle}>
+              Keep this as 127.0.0.1 unless you intentionally want network access.
+            </span>
+          </label>
+
+          <label style={labelStyle}>
+            Port
+            <input
+              type="number"
+              min="1"
+              max="65535"
+              value={cfg.job_import_listener_port ?? 8765}
+              onChange={(event) =>
+                setCfg({ ...cfg, job_import_listener_port: event.target.value })
+              }
+              placeholder="8765"
+            />
+          </label>
+
+          <label style={labelStyle}>
+            Max Request Bytes
+            <input
+              type="number"
+              min="1024"
+              value={cfg.job_import_listener_max_bytes ?? 15728640}
+              onChange={(event) =>
+                setCfg({ ...cfg, job_import_listener_max_bytes: event.target.value })
+              }
+              placeholder="15728640"
+            />
+          </label>
+        </div>
+
+        <label style={{ ...labelStyle, marginTop: "16px" }}>
+          Optional Token
+          <input
+            value={cfg.job_import_listener_token || ""}
+            onChange={(event) =>
+              setCfg({ ...cfg, job_import_listener_token: event.target.value })
+            }
+            placeholder="Leave blank to allow local requests without a token"
+          />
+          <span style={helpTextStyle}>
+            If set, send it as the X-Job-Import-Token header or token query parameter.
+          </span>
+        </label>
+
+        <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <button className="btn-primary" onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save Listener Settings"}
+          </button>
+          {saved && <span style={{ color: "var(--green)", fontSize: "13px" }}>Saved. Restart the app to apply listener changes.</span>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -813,6 +1208,38 @@ const labelStyle = {
   fontWeight: "600",
   textTransform: "uppercase",
   letterSpacing: "0.04em",
+};
+
+const helpTextStyle = {
+  color: "var(--text-muted)",
+  display: "block",
+  fontSize: "11px",
+  fontWeight: 400,
+  letterSpacing: 0,
+  marginTop: "4px",
+  textTransform: "none",
+};
+
+const sectionSubheadingStyle = {
+  color: "var(--text)",
+  fontSize: "13px",
+  fontWeight: 700,
+  margin: "0 0 10px 0",
+};
+
+const listenerStatusBoxStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  padding: "12px 14px",
+};
+
+const listenerEndpointStyle = {
+  color: "var(--text)",
+  display: "block",
+  fontSize: "13px",
+  marginTop: "6px",
+  overflowWrap: "anywhere",
 };
 
 const formBox = {

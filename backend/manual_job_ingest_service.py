@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import date
@@ -129,9 +130,12 @@ class ManualJobIngestService:
                 parsed = self._select_best_match(parsed_jobs)
         elif normalized_source_url:
             fetched_job = self._career_site_scanner.scan_single_job_url("Manual URL", normalized_source_url)
+            inferred_company, clean_title = self._company_and_title_from_fetched(
+                normalized_source_url, fetched_job["job_title"]
+            )
             parsed = ParsedJob(
-                company="",
-                job_title=fetched_job["job_title"],
+                company=inferred_company,
+                job_title=clean_title,
                 url=fetched_job["job_url"],
                 source=source_name.strip() or self._source_name_for_url(normalized_source_url),
                 confidence="high",
@@ -254,6 +258,17 @@ class ManualJobIngestService:
         if "myworkdayjobs.com" in lowered:
             return "Workday"
         return "Manual URL"
+
+    @staticmethod
+    def _company_and_title_from_fetched(source_url: str, page_title: str) -> tuple[str, str]:
+        """For aggregator boards like LinkedIn, parse 'Title at Company | Site' page titles."""
+        if "linkedin.com" not in source_url.lower():
+            return "", page_title
+        clean = re.sub(r"\s*\|\s*LinkedIn\s*$", "", page_title, flags=re.IGNORECASE).strip()
+        match = re.search(r"^(.+?)\s+at\s+(.+)$", clean)
+        if match:
+            return match.group(2).strip(), match.group(1).strip()
+        return "", clean
 
     @staticmethod
     def _is_manual_source(source: str) -> bool:

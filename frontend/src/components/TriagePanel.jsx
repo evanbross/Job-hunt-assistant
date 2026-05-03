@@ -34,6 +34,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
+import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 
 const PLATFORM_LABELS = {
   greenhouse: "Greenhouse",
@@ -46,6 +47,7 @@ export default function TriagePanel({ onCountChange }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState("date_desc");
+  const [searchText, setSearchText] = useState("");
   const [reEvaluatePopup, setReEvaluatePopup] = useState(null);
   const [batchRefreshPopup, setBatchRefreshPopup] = useState(null);
 
@@ -289,12 +291,13 @@ export default function TriagePanel({ onCountChange }) {
     );
   }
 
-  const dupeCount = jobs.filter((j) => j.status === "possible_duplicate").length;
-  const triageCount = jobs.length - dupeCount;
+  const filteredJobs = jobs.filter((job) => jobMatchesSearch(job, searchText));
+  const visibleDupeCount = filteredJobs.filter((j) => j.status === "possible_duplicate").length;
+  const visibleTriageCount = filteredJobs.length - visibleDupeCount;
   const refreshableCount = jobs.filter((job) => job.status !== "possible_duplicate" && job.url).length;
   const isBatchRefreshing = batchRefreshPopup?.phase === "running";
 
-  const sortedJobs = [...jobs].sort((a, b) => {
+  const sortedJobs = [...filteredJobs].sort((a, b) => {
     if (sortBy === "date_desc" || sortBy === "date_asc") {
       const da = new Date(a.date_found || 0);
       const db = new Date(b.date_found || 0);
@@ -311,11 +314,19 @@ export default function TriagePanel({ onCountChange }) {
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+      <div style={triageToolbarStyle}>
+        <input
+          type="search"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          placeholder="Search triage jobs"
+          style={triageSearchInputStyle}
+        />
         <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>
-          {triageCount > 0 && `${triageCount} email${triageCount !== 1 ? "s" : ""} need review (low confidence)`}
-          {triageCount > 0 && dupeCount > 0 && " · "}
-          {dupeCount > 0 && `${dupeCount} possible duplicate${dupeCount !== 1 ? "s" : ""} to confirm`}
+          {searchText.trim() && `${filteredJobs.length} of ${jobs.length} shown · `}
+          {visibleTriageCount > 0 && `${visibleTriageCount} email${visibleTriageCount !== 1 ? "s" : ""} need review (low confidence)`}
+          {visibleTriageCount > 0 && visibleDupeCount > 0 && " · "}
+          {visibleDupeCount > 0 && `${visibleDupeCount} possible duplicate${visibleDupeCount !== 1 ? "s" : ""} to confirm`}
         </p>
         <div style={topActionsStyle}>
           <button
@@ -364,7 +375,11 @@ export default function TriagePanel({ onCountChange }) {
         />
       )}
 
-      {sortedJobs.map((job) =>
+      {sortedJobs.length === 0 ? (
+        <div className="empty-state">
+          <p>No triage jobs match your search.</p>
+        </div>
+      ) : sortedJobs.map((job) =>
         job.status === "possible_duplicate" ? (
           <DuplicateCard
             key={job.id}
@@ -381,9 +396,18 @@ export default function TriagePanel({ onCountChange }) {
             onReject={() => handleReject(job)}
             onReEvaluate={() => handleReEvaluateFit(job)}
             onRefreshFromUrl={() => handleRefreshFromUrl(job)}
-            onReprocessed={(updated) =>
-              setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)))
-            }
+            onReprocessed={(updated) => {
+              const triageStatuses = new Set(["triage", "possible_duplicate"]);
+              if (triageStatuses.has(updated.status)) {
+                setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
+                return;
+              }
+              setJobs((prev) => {
+                const nextJobs = prev.filter((j) => j.id !== updated.id);
+                onCountChange(nextJobs.length);
+                return nextJobs;
+              });
+            }}
           />
         )
       )}
@@ -487,10 +511,15 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique }) {
 
 function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, onReprocessed }) {
   const [loadingAction, setLoadingAction] = useState(null);
+  const [editingCompany, setEditingCompany] = useState(false);
+  const [companyDraft, setCompanyDraft] = useState("");
   const [reprocessError, setReprocessError] = useState(null);
   const [reEvaluateError, setReEvaluateError] = useState(null);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
+  const [descriptionPasteOpen, setDescriptionPasteOpen] = useState(false);
+  const [descriptionUpdatePopup, setDescriptionUpdatePopup] = useState(null);
+  const [pastedDescription, setPastedDescription] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
@@ -555,6 +584,45 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
     }
   };
 
+  const handleDescriptionSubmit = async () => {
+    const description = pastedDescription.trim();
+    if (description.length < 80) {
+      setReprocessError("Paste a more complete job description before re-evaluating.");
+      return;
+    }
+
+    setLoadingAction("description");
+    setReprocessError(null);
+    setReEvaluateError(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/description`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setReprocessError(data.error || "Description update failed");
+        return;
+      }
+      onReprocessed(data);
+      setDescriptionUpdatePopup({
+        company: data.company || job.company || "",
+        jobTitle: data.job_title || job.job_title || "",
+        newScore: data.fit_score,
+        newStatus: data.status,
+        previousScore: job.fit_score,
+        previousStatus: job.status,
+      });
+      setPastedDescription("");
+      setDescriptionPasteOpen(false);
+    } catch (err) {
+      setReprocessError(err.message || "Description update failed");
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
   const handleChatSend = async () => {
     const text = chatInput.trim();
     if (!text || chatSending) return;
@@ -584,6 +652,29 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
     }
   };
 
+  const startCompanyEdit = () => {
+    setCompanyDraft(job.company || "");
+    setEditingCompany(true);
+  };
+
+  const saveCompanyEdit = async () => {
+    setEditingCompany(false);
+    const value = companyDraft.trim();
+    if (value === (job.company || "")) return;
+
+    const res = await fetch(`/api/jobs/${job.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ company: value }),
+    });
+    if (!res.ok) {
+      setReprocessError(`Company update failed (${res.status})`);
+      return;
+    }
+    const updated = await res.json();
+    onReprocessed(updated);
+  };
+
   return (
     <div style={cardStyle}>
       {/* Header row */}
@@ -596,9 +687,27 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
           <div style={triageTitleStyle}>
             {job.job_title || <em style={{ color: "var(--text-muted)" }}>Unknown Title</em>}
             <span style={{ fontWeight: "400", color: "var(--text-muted)", margin: "0 5px" }}>at</span>
-            <span style={{ fontWeight: "600", color: "var(--text)" }}>
-              {job.company || <em style={{ fontWeight: "400" }}>Unknown Company</em>}
-            </span>
+            {editingCompany ? (
+              <input
+                autoFocus
+                value={companyDraft}
+                onChange={(event) => setCompanyDraft(event.target.value)}
+                onBlur={saveCompanyEdit}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                  if (event.key === "Escape") setEditingCompany(false);
+                }}
+                style={editableCompanyInputStyle}
+              />
+            ) : (
+              <span
+                style={editableCompanyStyle}
+                title="Click to edit company name"
+                onClick={startCompanyEdit}
+              >
+                {job.company || <em style={{ fontWeight: "400", color: "var(--text-muted)" }}>Unknown Company</em>}
+              </span>
+            )}
           </div>
           <div style={triageMetaTextStyle}>
             <SourceText job={job} />
@@ -607,6 +716,30 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
             <span>Fit: {fitPercentageLabel(job)}</span>
             {salaryRange && <span>Salary: {salaryRange}</span>}
           </div>
+          {isManualPastedJob(job) && (
+            <div style={compactOriginStyle}>{job.email_subject || "Manual pasted job listing"}</div>
+          )}
+          {job.url && (
+            <div style={triageUrlRowStyle}>
+              <a
+                href={job.url}
+                target="_blank"
+                rel="noreferrer"
+                style={triageUrlLinkStyle}
+              >
+                {job.url}
+              </a>
+              <button
+                className="btn-secondary"
+                style={{ fontSize: "11px", padding: "2px 8px", flexShrink: 0 }}
+                type="button"
+                onClick={handleRefreshFromUrl}
+                disabled={loadingAction !== null}
+              >
+                {loadingAction === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
+              </button>
+            </div>
+          )}
           {(reprocessError || reEvaluateError) && (
             <div style={{ marginTop: "5px", fontSize: "11px", color: "var(--red)" }}>
               {reprocessError || reEvaluateError}
@@ -634,35 +767,22 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
         </div>
       </div>
 
-      {(job.confidence_score == null || job.url) && (
-        <div style={{ display: "flex", gap: "6px", marginBottom: "10px", flexWrap: "wrap" }}>
-          {job.confidence_score == null && (
-            <button
-              className="btn-secondary"
-              style={{ fontSize: "11px", padding: "2px 8px" }}
-              type="button"
-              onClick={handleReprocess}
-              disabled={loadingAction !== null}
-            >
-              {loadingAction === "reprocess" ? "Reprocessing..." : "Reprocess parser details"}
-            </button>
-          )}
-          {job.url && (
-            <button
-              className="btn-secondary"
-              style={{ fontSize: "11px", padding: "2px 8px" }}
-              type="button"
-              onClick={handleRefreshFromUrl}
-              disabled={loadingAction !== null}
-            >
-              {loadingAction === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
-            </button>
-          )}
-        </div>
-      )}
+      <div style={{ display: "flex", gap: "6px", marginBottom: "10px", flexWrap: "wrap" }}>
+        {job.confidence_score == null && (
+          <button
+            className="btn-secondary"
+            style={{ fontSize: "11px", padding: "2px 8px" }}
+            type="button"
+            onClick={handleReprocess}
+            disabled={loadingAction !== null}
+          >
+            {loadingAction === "reprocess" ? "Reprocessing..." : "Reprocess parser details"}
+          </button>
+        )}
+      </div>
 
       {/* Email origin */}
-      {(job.sender_email || job.email_subject) && (
+      {(job.sender_email || job.email_subject) && !isManualPastedJob(job) && (
         <div style={emailMetaStyle}>
           {job.email_subject && (
             <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
@@ -675,31 +795,6 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
           )}
         </div>
       )}
-
-      {/* AI guesses */}
-      <div style={{ marginBottom: "10px" }}>
-        {job.company && (
-          <div style={{ fontSize: "15px", fontWeight: "600" }}>{job.company}</div>
-        )}
-        {job.job_title && (
-          <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>{job.job_title}</div>
-        )}
-        {job.url && (
-          <a
-            href={job.url}
-            target="_blank"
-            rel="noreferrer"
-            style={{ fontSize: "12px", wordBreak: "break-all" }}
-          >
-            {job.url}
-          </a>
-        )}
-        {!job.company && !job.job_title && (
-          <span style={{ color: "var(--text-muted)", fontSize: "13px", fontStyle: "italic" }}>
-            No job details detected
-          </span>
-        )}
-      </div>
 
       <div style={{ marginBottom: "10px" }}>
         <button
@@ -723,7 +818,12 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
           <div style={reasoningBoxStyle}>
             <ul style={reasoningListStyle}>
               {triageReasoningBullets(triageReasoning).map((item, index) => (
-                <li key={`${item}-${index}`}>{item}</li>
+                <li
+                  key={`${item}-${index}`}
+                  style={negativeReasoningBulletStyleFor(item)}
+                >
+                  {item}
+                </li>
               ))}
             </ul>
             {penaltiesApplied.length > 0 && (
@@ -731,8 +831,8 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
                 <div style={penaltiesHeadingStyle}>Penalties applied</div>
                 <ul style={penaltiesListStyle}>
                   {penaltiesApplied.map((penalty, index) => (
-                    <li key={`${penalty.ruleText}-${index}`}>
-                      <strong>-{penalty.points}</strong> for {penalty.ruleText}
+                    <li key={`${penalty.ruleText}-${index}`} style={penaltyListItemStyle}>
+                      <strong style={penaltyValueStyle}>-{penalty.points}</strong> for {penalty.ruleText}
                     </li>
                   ))}
                 </ul>
@@ -756,13 +856,26 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
       {/* Snippet */}
       {job.raw_email_snippet && (
         <div>
-          <div style={{ marginBottom: "8px" }}>
+          <div style={descriptionActionRowStyle}>
             <button
               className="btn-secondary"
               style={{ fontSize: "12px", padding: "4px 10px" }}
               onClick={() => setDescriptionOpen(true)}
             >
               View formatted description
+            </button>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: "12px", padding: "4px 10px" }}
+              type="button"
+              onClick={() => {
+                setPastedDescription("");
+                setDescriptionPasteOpen(true);
+                setReprocessError(null);
+              }}
+              disabled={loadingAction !== null}
+            >
+              Add detailed description
             </button>
           </div>
           <pre style={snippetStyle}>{job.raw_email_snippet}</pre>
@@ -793,6 +906,24 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
         <DescriptionModal
           job={job}
           onClose={() => setDescriptionOpen(false)}
+        />
+      )}
+
+      {descriptionPasteOpen && (
+        <DescriptionPasteModal
+          job={job}
+          value={pastedDescription}
+          saving={loadingAction === "description"}
+          onChange={setPastedDescription}
+          onClose={() => setDescriptionPasteOpen(false)}
+          onSubmit={handleDescriptionSubmit}
+        />
+      )}
+
+      {descriptionUpdatePopup && (
+        <DescriptionUpdatePopup
+          popup={descriptionUpdatePopup}
+          onClose={() => setDescriptionUpdatePopup(null)}
         />
       )}
     </div>
@@ -1057,6 +1188,119 @@ function DescriptionModal({ job, onClose }) {
   );
 }
 
+function DescriptionPasteModal({ job, value, saving, onChange, onClose, onSubmit }) {
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape" && !saving) onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, saving]);
+
+  const charCount = value.trim().length;
+  const canSubmit = charCount >= 80 && !saving;
+
+  return (
+    <div style={modalBackdropStyle} onClick={() => !saving && onClose()}>
+      <div style={descriptionPastePanelStyle} onClick={(event) => event.stopPropagation()}>
+        <div style={modalHeaderStyle}>
+          <div style={{ minWidth: 0 }}>
+            <div style={modalTitleStyle}>Add Detailed Description</div>
+            <div style={modalSubtitleStyle}>
+              {(job.job_title || "Job")}{job.company ? ` at ${job.company}` : ""}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            style={modalCloseButtonStyle}
+            aria-label="Close description paste dialog"
+          >
+            &#x2715;
+          </button>
+        </div>
+
+        <div style={descriptionPasteBodyStyle}>
+          <textarea
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder="Paste the full job description here..."
+            style={descriptionPasteTextareaStyle}
+            disabled={saving}
+          />
+          <div style={descriptionPasteFooterStyle}>
+            <span style={{ color: canSubmit ? "var(--text-muted)" : "var(--red)", fontSize: "12px" }}>
+              {charCount} characters
+            </span>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={onSubmit}
+              disabled={!canSubmit}
+              style={{ padding: "7px 14px", fontSize: "13px" }}
+            >
+              {saving ? (
+                <span style={buttonSpinnerContentStyle}>
+                  <span className="inline-spinner" />
+                  Re-evaluating...
+                </span>
+              ) : (
+                "Save & Re-evaluate"
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DescriptionUpdatePopup({ popup, onClose }) {
+  const title = popup.jobTitle || "Job";
+  const companyText = popup.company ? ` at ${popup.company}` : "";
+  const movedToQueue = popup.newStatus === "pending_review" && popup.previousStatus !== "pending_review";
+  const stayedInTriage = popup.newStatus === "triage";
+
+  return (
+    <div style={popupBackdropStyle}>
+      <div style={popupPanelStyle}>
+        <div style={popupHeaderStyle}>
+          <div>
+            <div style={popupTitleStyle}>Description Re-evaluated</div>
+            <div style={popupSubtitleStyle}>{title}{companyText}</div>
+          </div>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ padding: "4px 10px", fontSize: "12px" }}
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+
+        <div style={popupResultStyle}>
+          <span>{scoreLabel(popup.previousScore)}</span>
+          <span style={{ color: "var(--text-muted)" }}>to</span>
+          <span>{scoreLabel(popup.newScore)}</span>
+          {scoreDeltaLabel(popup.previousScore, popup.newScore) && (
+            <span style={{ color: "var(--text-muted)", fontSize: "13px", fontWeight: 700 }}>
+              {scoreDeltaLabel(popup.previousScore, popup.newScore)}
+            </span>
+          )}
+        </div>
+
+        <div style={descriptionUpdateStatusStyle}>
+          {movedToQueue && "Moved to job queue"}
+          {stayedInTriage && "Still in triage"}
+          {!movedToQueue && !stayedInTriage && dispositionLabel(popup.newStatus)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function sourceLabel(job) {
   const source = String(job.source || "").trim();
   const platform = platformLabelForUrl(job.url);
@@ -1081,6 +1325,13 @@ function isManualSource(source) {
     "manual pasted job listing",
     "manual url",
   ].includes(normalizedSource);
+}
+
+function isManualPastedJob(job) {
+  return (
+    String(job.email_subject || "").trim().toLowerCase() === "manual pasted job listing"
+    || isManualSource(String(job.source || ""))
+  );
 }
 
 function platformLabelForUrl(rawUrl) {
@@ -1161,6 +1412,16 @@ function triageReasoningBullets(reasoning) {
     .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function negativeReasoningBulletStyleFor(item) {
+  return isNegativeReasoningBullet(item) ? negativeReasoningBulletStyle : undefined;
+}
+
+function isNegativeReasoningBullet(item) {
+  return /\b(penalt|deduct|below|low|missing|uncertain|not|no|failed|mismatch|triage)\b/i.test(
+    String(item || "")
+  );
 }
 
 function parserConfidenceLabel(job) {
@@ -1264,6 +1525,27 @@ const sortSelectStyle = {
   cursor: "pointer",
 };
 
+const triageToolbarStyle = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "10px 14px",
+  justifyContent: "space-between",
+  marginBottom: "16px",
+};
+
+const triageSearchInputStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  color: "var(--text)",
+  flex: "1 1 260px",
+  fontSize: "13px",
+  maxWidth: "420px",
+  minWidth: 0,
+  padding: "8px 11px",
+};
+
 const topActionsStyle = {
   alignItems: "center",
   display: "flex",
@@ -1320,6 +1602,48 @@ const triageMetaTextStyle = {
   color: "var(--text-muted)",
   fontSize: "12px",
   lineHeight: 1.5,
+};
+
+const editableCompanyStyle = {
+  borderBottom: "1px dotted var(--text-muted)",
+  color: "var(--text)",
+  cursor: "text",
+  fontWeight: 600,
+};
+
+const editableCompanyInputStyle = {
+  background: "transparent",
+  border: "none",
+  borderBottom: "1px solid var(--accent)",
+  color: "var(--text)",
+  font: "inherit",
+  fontSize: "15px",
+  fontWeight: 600,
+  outline: "none",
+  padding: 0,
+  width: "170px",
+};
+
+const compactOriginStyle = {
+  color: "var(--text-muted)",
+  fontSize: "11px",
+  lineHeight: 1.4,
+  marginTop: "3px",
+};
+
+const triageUrlRowStyle = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px",
+  marginTop: "4px",
+};
+
+const triageUrlLinkStyle = {
+  color: "var(--accent)",
+  fontSize: "12px",
+  minWidth: 0,
+  overflowWrap: "anywhere",
 };
 
 const sourceLinkStyle = {
@@ -1412,6 +1736,17 @@ const popupMovedStyle = {
   padding: "4px 9px",
 };
 
+const descriptionUpdateStatusStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  color: "var(--text)",
+  fontSize: "13px",
+  fontWeight: 700,
+  marginTop: "14px",
+  padding: "9px 12px",
+};
+
 const batchSummaryListStyle = {
   display: "flex",
   flexDirection: "column",
@@ -1498,6 +1833,10 @@ const reasoningListStyle = {
   lineHeight: "1.6",
 };
 
+const negativeReasoningBulletStyle = {
+  color: "var(--red)",
+};
+
 const penaltiesBoxStyle = {
   marginTop: "12px",
   paddingTop: "10px",
@@ -1520,6 +1859,21 @@ const penaltiesListStyle = {
   color: "var(--red)",
   fontSize: "13px",
   lineHeight: "1.5",
+};
+
+const penaltyListItemStyle = {
+  color: "var(--red)",
+};
+
+const penaltyValueStyle = {
+  color: "var(--red)",
+};
+
+const descriptionActionRowStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px",
+  marginBottom: "8px",
 };
 
 const chatPanelStyle = {
@@ -1592,6 +1946,11 @@ const modalPanelStyle = {
   overflow: "hidden",
 };
 
+const descriptionPastePanelStyle = {
+  ...modalPanelStyle,
+  width: "min(820px, 100%)",
+};
+
 const modalHeaderStyle = {
   display: "flex",
   alignItems: "flex-start",
@@ -1626,6 +1985,34 @@ const modalCloseButtonStyle = {
 const modalBodyStyle = {
   overflowY: "auto",
   padding: "18px 22px",
+};
+
+const descriptionPasteBodyStyle = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "10px",
+  padding: "16px 20px",
+};
+
+const descriptionPasteTextareaStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  color: "var(--text)",
+  fontFamily: "inherit",
+  fontSize: "13px",
+  lineHeight: 1.55,
+  minHeight: "360px",
+  padding: "12px",
+  resize: "vertical",
+  width: "100%",
+};
+
+const descriptionPasteFooterStyle = {
+  alignItems: "center",
+  display: "flex",
+  gap: "12px",
+  justifyContent: "space-between",
 };
 
 const formattedDescriptionStyle = {

@@ -34,7 +34,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Protocol
+
+from backend.career_site_scanner import CareerSiteScanner
+from backend.duplicate_checker import DuplicateChecker
 
 
 class JobUpdater(Protocol):
@@ -44,6 +48,53 @@ class JobUpdater(Protocol):
 def is_missing_company(value: object) -> bool:
     normalized = str(value or "").strip().lower()
     return normalized in {"", "unknown", "unknown company", "null", "none"}
+
+
+def repair_linkedin_company(
+    jobs_repo: JobUpdater,
+    existing_job: dict[str, Any],
+    url: str,
+) -> bool:
+    if not is_missing_company(existing_job.get("company")):
+        return False
+    try:
+        fetched = CareerSiteScanner().scan_single_job_url("LinkedIn", url)
+        raw_title = fetched["job_title"]
+    except Exception:
+        return False
+    clean = re.sub(r"\s*\|\s*LinkedIn\s*$", "", raw_title, flags=re.IGNORECASE).strip()
+    match = re.search(r"^.+?\s+at\s+(.+)$", clean)
+    if not match:
+        return False
+    company = match.group(1).strip()
+    if not company:
+        return False
+    jobs_repo.update(int(existing_job["id"]), {"company": company})
+    return True
+
+
+def post_repair_duplicate_check(
+    jobs_repo: JobUpdater,
+    fixed_job: dict[str, Any],
+    all_jobs: list[dict[str, Any]],
+) -> bool:
+    job_id = int(fixed_job["id"])
+    job_title = str(fixed_job.get("job_title") or "")
+    company = str(fixed_job.get("company") or "")
+    if not job_title or not company:
+        return False
+    candidates = [j for j in all_jobs if int(j.get("id", -1)) != job_id]
+    match = DuplicateChecker().check(job_title=job_title, company=company, sheet_jobs=candidates)
+    if not match:
+        return False
+    hint = (
+        f'Possible duplicate of "{match["sheet_title"]}" '
+        f'at {match["sheet_company"]} already in your sheet '
+        f'(title match: {match["title_score"]}%, '
+        f'company match: {match["company_score"]}%)'
+    )
+    jobs_repo.update(job_id, {"duplicate_hint": hint, "status": "possible_duplicate"})
+    return True
 
 
 def repair_existing_job_company(

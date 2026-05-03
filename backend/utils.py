@@ -37,6 +37,12 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
+import threading
+import time
+from collections.abc import Callable
+from datetime import datetime, UTC
 from urllib.parse import parse_qs, urlparse
 
 from flask import request
@@ -44,19 +50,10 @@ from flask import request
 import config
 from backend.ai_provider import AIProviderError
 from backend.db import (
-    SQLiteApplicationStageRepository,
-    SQLiteAppSettingsRepository,
-    SQLiteCareerRejectionRuleRepository,
-    SQLiteCareerScanFailureRepository,
-    SQLiteCareerScanResultRepository,
-    SQLiteCareerSiteSourceRepository,
-    SQLiteEmailSourceRepository,
-    SQLiteJobRepository,
-    SQLitePenaltyRuleRepository,
-    SQLiteRelevanceFeedbackRepository,
-    SQLiteResumeRepository,
-    SQLiteScannedEmailRepository,
-    get_connection,
+    IJobRepository,
+    IPenaltyRuleRepository,
+    IResumeRepository,
+    open_repositories,
 )
 from backend.duplicate_checker import DuplicateChecker
 from backend.fit_scorer import FitScorer
@@ -64,25 +61,27 @@ from backend.fit_scorer import FitScorer
 logger = logging.getLogger(__name__)
 
 _ACTIVE_QUEUE_STATUSES: tuple[str, ...] = ("pending_review", "triage", "possible_duplicate")
+ACK_SUBJECT_PATTERNS: tuple[str, ...] = (
+    "your application was sent",
+    "your application has been sent",
+    "application was received",
+    "application has been received",
+    "we received your application",
+    "thanks for applying",
+    "thank you for applying",
+    "your application to",
+    "you applied to",
+    "successfully submitted",  # Wellfound: "Application to <company> successfully submitted"
+)
+VALID_STAGE_STATUSES: frozenset[str] = frozenset({
+    "applied", "waiting_call", "waiting_second", "eval_test",
+    "rejected", "job_filled", "ghosted",
+})
 
 
 def _get_repos() -> dict:
     """Return a dict of repository instances sharing one connection."""
-    conn = get_connection(config.DATABASE_URL)
-    return {
-        "conn": conn,
-        "jobs": SQLiteJobRepository(conn),
-        "sources": SQLiteEmailSourceRepository(conn),
-        "penalties": SQLitePenaltyRuleRepository(conn),
-        "feedback": SQLiteRelevanceFeedbackRepository(conn),
-        "resume": SQLiteResumeRepository(conn),
-        "stages": SQLiteApplicationStageRepository(conn),
-        "settings": SQLiteAppSettingsRepository(conn),
-        "career_sites": SQLiteCareerSiteSourceRepository(conn),
-        "career_scan_results": SQLiteCareerScanResultRepository(conn),
-        "career_scan_failures": SQLiteCareerScanFailureRepository(conn),
-        "career_rejection_rules": SQLiteCareerRejectionRuleRepository(conn),
-    }
+    return open_repositories(config.DATABASE_URL)
 
 
 def _parse_bool(value: object, *, default: bool) -> bool:
@@ -128,6 +127,136 @@ def _tracking_payload() -> dict[str, str]:
 
 def _safe_error_message(exc: BaseException, fallback: str) -> str:
     return str(exc) or fallback
+
+
+def get_subject_rule_match(subject: str, rules: list[dict]) -> str | None:
+    """Check *subject* against enabled email subject rules from the DB.
+
+    Returns 'whitelist', 'blacklist', or None. Whitelist takes immediate
+    precedence — if any whitelist pattern matches, the result is 'whitelist'
+    regardless of blacklist matches.
+    """
+    lower = subject.lower()
+    matched_blacklist = False
+    for rule in rules:
+        if rule.get("pattern", "").lower() in lower:
+            if rule.get("rule_type") == "whitelist":
+                return "whitelist"
+            matched_blacklist = True
+    return "blacklist" if matched_blacklist else None
+
+
+def is_application_acknowledgement(subject: str, patterns: list[str] | None = None) -> bool:
+    """Return True if the subject matches an application-acknowledgement pattern.
+
+    Pass *patterns* (from the DB) to override the hardcoded defaults.
+    """
+    lower = subject.lower()
+    effective = patterns if patterns is not None else list(ACK_SUBJECT_PATTERNS)
+    return any(p.lower() in lower for p in effective)
+
+
+def email_date_from_message(full_msg: dict) -> str | None:
+    """Extract the Gmail message send date as YYYY-MM-DD when available."""
+    raw = full_msg.get("internalDate")
+    if not raw:
+        return None
+    try:
+        return datetime.fromtimestamp(int(raw) / 1000, UTC).strftime("%Y-%m-%d")
+    except (ValueError, OSError):
+        return None
+
+
+def normalize_stage_status(raw_status: object) -> str:
+    status = str(raw_status or "").strip()
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    aliases = {
+        "applied": "applied",
+        "added_to_sheet": "applied",
+        "rejected": "rejected",
+        "employer_rejected": "rejected",
+        "waiting": "waiting_call",
+        "waiting_for_call": "waiting_call",
+        "waiting_call": "waiting_call",
+        "waiting_for_2nd": "waiting_second",
+        "waiting_2nd": "waiting_second",
+        "waiting_for_second": "waiting_second",
+        "waiting_second": "waiting_second",
+        "need_to_do_eval": "eval_test",
+        "eval": "eval_test",
+        "eval_test": "eval_test",
+        "job_was_filled": "job_filled",
+        "job_filled": "job_filled",
+        "filled": "job_filled",
+        "ghosted": "ghosted",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def platform_for_site_url(site_url: str) -> str:
+    host = site_url.lower()
+    if "greenhouse.io" in host:
+        return "greenhouse"
+    if "lever.co" in host:
+        return "lever"
+    if "myworkdayjobs.com" in host:
+        return "workday"
+    return "generic"
+
+
+def platform_label(platform: str) -> str:
+    labels = {
+        "greenhouse": "Greenhouse",
+        "lever": "Lever",
+        "workday": "Workday",
+        "ashby": "Ashby",
+    }
+    return labels.get(platform.lower(), platform.title() or "Career Site")
+
+
+_career_scheduler_lock = threading.Lock()
+_career_scheduler_started = False
+_career_scheduler_is_running: Callable[[], bool] | None = None
+_career_scheduler_run_scan: Callable[..., None] | None = None
+
+
+def configure_career_site_scheduler(
+    *,
+    is_running: Callable[[], bool],
+    run_scan: Callable[..., None],
+) -> None:
+    global _career_scheduler_is_running, _career_scheduler_run_scan
+    _career_scheduler_is_running = is_running
+    _career_scheduler_run_scan = run_scan
+
+
+def start_career_site_scheduler() -> None:
+    global _career_scheduler_started
+
+    debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    if debug_mode and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return
+
+    with _career_scheduler_lock:
+        if _career_scheduler_started:
+            return
+        if _career_scheduler_is_running is None or _career_scheduler_run_scan is None:
+            raise RuntimeError("Career-site scheduler has not been configured.")
+
+        def career_scheduler_loop() -> None:
+            while True:
+                interval_seconds = max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES) * 60
+                time.sleep(interval_seconds)
+                if not _career_scheduler_is_running():
+                    _career_scheduler_run_scan(trigger="scheduled")
+
+        thread = threading.Thread(target=career_scheduler_loop, daemon=True)
+        thread.start()
+        _career_scheduler_started = True
+        logger.info(
+            "Career-site scheduler started (interval: %s minute(s)).",
+            max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES),
+        )
 
 
 def _ai_error_http_status(exc: BaseException, fallback_status: int = 500) -> int:
@@ -236,9 +365,9 @@ def db_match_for_job(
 
 def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
     """Re-score active queue jobs after candidate profile changes."""
-    jobs_repo: SQLiteJobRepository = repos["jobs"]  # type: ignore[assignment]
-    resume_repo: SQLiteResumeRepository = repos["resume"]  # type: ignore[assignment]
-    penalties_repo: SQLitePenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
+    jobs_repo: IJobRepository = repos["jobs"]  # type: ignore[assignment]
+    resume_repo: IResumeRepository = repos["resume"]  # type: ignore[assignment]
+    penalties_repo: IPenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
 
     queue_jobs = jobs_repo.get_by_statuses(list(_ACTIVE_QUEUE_STATUSES))
     resume_row = resume_repo.get_latest()
@@ -274,8 +403,10 @@ def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
                     "fit_reasoning": result["reasoning"],
                 },
             )
+            repos["conn"].commit()
             rescored += 1
         except Exception as exc:
+            repos["conn"].rollback()
             logger.warning("Queue re-score failed for job %s: %s", job.get("id"), exc, exc_info=True)
             failed += 1
 
