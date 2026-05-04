@@ -37,9 +37,7 @@
 from __future__ import annotations
 
 import logging
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog
 
 from flask import Blueprint, jsonify, request, send_from_directory
 
@@ -56,6 +54,8 @@ def select_folder():
     initial_path = (body.get("initial_path") or "").strip()
 
     try:
+        import tkinter as tk
+        from tkinter import filedialog
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
@@ -80,6 +80,8 @@ def select_file():
     initial_path = (body.get("initial_path") or "").strip()
 
     try:
+        import tkinter as tk
+        from tkinter import filedialog
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)

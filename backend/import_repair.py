@@ -63,14 +63,29 @@ def repair_linkedin_company(
     except Exception:
         return False
     clean = re.sub(r"\s*\|\s*LinkedIn\s*$", "", raw_title, flags=re.IGNORECASE).strip()
-    match = re.search(r"^.+?\s+at\s+(.+)$", clean)
-    if not match:
-        return False
-    company = match.group(1).strip()
-    if not company:
-        return False
-    jobs_repo.update(int(existing_job["id"]), {"company": company})
-    return True
+
+    # Format A: "Job Title at Company Name"
+    at_match = re.search(r"^.+?\s+at\s+(.+)$", clean)
+    if at_match:
+        company = at_match.group(1).strip()
+        if company:
+            jobs_repo.update(int(existing_job["id"]), {"company": company})
+            return True
+
+    # Format B: "Company Name hiring Job Title in Location"
+    if " hiring " in clean:
+        company, _, rest = clean.partition(" hiring ")
+        company = company.strip()
+        # Strip trailing " in <Location>" — location is always last in this format
+        job_title = re.sub(r"\s+in\s+.+$", "", rest).strip() or rest.strip()
+        if company:
+            updates: dict[str, Any] = {"company": company}
+            if job_title:
+                updates["job_title"] = job_title
+            jobs_repo.update(int(existing_job["id"]), updates)
+            return True
+
+    return False
 
 
 def post_repair_duplicate_check(

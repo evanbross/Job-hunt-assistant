@@ -253,3 +253,35 @@ def mark_ghost_applications():
         repos["conn"].close()
 
     return jsonify({"marked": marked, "count": len(marked), "cutoff_date": cutoff_date.isoformat()})
+
+
+@sheet_bp.route("/sheet/stage-statuses")
+def get_stage_statuses():
+    """Return all rows from the stage_statuses table, ordered by sort_order."""
+    repos = _get_repos()
+    try:
+        return jsonify(repos["stage_statuses"].get_all())
+    finally:
+        repos["conn"].close()
+
+
+@sheet_bp.route("/sheet/repair/normalize-stage-statuses", methods=["POST"])
+def normalize_stage_statuses():
+    """One-time migration: normalise all stage status values to snake_case lowercase."""
+    repos = _get_repos()
+    try:
+        stages = repos["stages"].get_all()
+        fixed = 0
+        for stage in stages:
+            normalized = normalize_stage_status(stage.get("status"))
+            if normalized != stage.get("status"):
+                repos["stages"].update(int(stage["id"]), {"status": normalized})
+                fixed += 1
+        repos["conn"].commit()
+        return jsonify({"fixed": fixed})
+    except Exception as exc:
+        repos["conn"].rollback()
+        logger.error("normalize-stage-statuses failed: %s", exc)
+        return jsonify({"error": "Repair failed"}), 500
+    finally:
+        repos["conn"].close()

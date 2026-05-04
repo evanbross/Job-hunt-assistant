@@ -36,6 +36,46 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 
+function FixCompaniesDialog({ progress, onClose }) {
+  const { totalFixed, remaining, done, error } = progress;
+  return (
+    <div style={popupBackdropStyle}>
+      <div style={{ ...popupPanelStyle, maxWidth: "380px" }}>
+        <div style={popupHeaderStyle}>
+          <div>
+            <div style={popupTitleStyle}>Fix Unknown Companies</div>
+            <div style={popupSubtitleStyle}>{done ? (error ? "Stopped — check server log." : "Complete") : "Running…"}</div>
+          </div>
+          {done && (
+            <button type="button" className="btn-secondary" onClick={onClose} style={{ fontSize: "12px", padding: "4px 10px" }}>
+              Close
+            </button>
+          )}
+        </div>
+        <div style={{ fontSize: "14px", color: "var(--text)", lineHeight: 1.6 }}>
+          {!done ? (
+            <p style={{ margin: 0 }}>
+              {totalFixed > 0 ? `Fixed ${totalFixed} so far` : "Searching…"}
+              {remaining !== null ? ` · ${remaining} remaining` : ""}
+            </p>
+          ) : error ? (
+            <p style={{ margin: 0, color: "var(--red)" }}>An error occurred. {totalFixed > 0 && `${totalFixed} fixed before the error.`}</p>
+          ) : (
+            <p style={{ margin: 0 }}>
+              {totalFixed > 0
+                ? `Fixed ${totalFixed} company name${totalFixed !== 1 ? "s" : ""}.`
+                : "No fixable jobs found."}
+              {remaining > 0
+                ? ` ${remaining} could not be repaired automatically.`
+                : totalFixed > 0 ? " All unknown companies resolved." : ""}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavigateToEmails, onNavigateToHistory }) {
   const [jobs, setJobs] = useState([]);
   const [searchText, setSearchText] = useState("");
@@ -69,6 +109,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   const [recaptureDueSites, setRecaptureDueSites] = useState([]);
   const [moreToolsOpen, setMoreToolsOpen] = useState(false);
   const [fixingCompanies, setFixingCompanies] = useState(false);
+  const [fixProgress, setFixProgress] = useState(null);
   const pollRef = useRef(null);
   const boardPollRef = useRef(null);
   const importPollRef = useRef(null);
@@ -183,6 +224,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
 
   const handleFixUnknownCompanies = async () => {
     setFixingCompanies(true);
+    setFixProgress({ totalFixed: 0, remaining: null, done: false });
     try {
       let totalFixed = 0;
       let remaining = 0;
@@ -190,29 +232,19 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
       while (lastFixed !== 0) {
         const res = await fetch("/api/repair/fix-unknown-companies", { method: "POST" });
         if (!res.ok) {
-          alert("Fix Unknown Companies failed. Check the server log.");
+          setFixProgress((p) => ({ ...p, done: true, error: true }));
           break;
         }
         const data = await res.json();
         totalFixed += data.fixed;
         remaining = data.remaining;
         lastFixed = data.fixed;
+        setFixProgress({ totalFixed, remaining, done: false });
         if (remaining === 0) break;
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
       await fetchJobs();
-      if (totalFixed > 0) {
-        const tail = remaining > 0
-          ? ` ${remaining} could not be repaired automatically.`
-          : " All unknown companies resolved.";
-        alert(`Fixed ${totalFixed} job${totalFixed !== 1 ? "s" : ""}.${tail}`);
-      } else {
-        alert(
-          remaining > 0
-            ? `${remaining} job${remaining !== 1 ? "s" : ""} still have unknown companies but couldn't be repaired automatically.`
-            : "No jobs with unknown companies found."
-        );
-      }
+      setFixProgress((p) => ({ ...p, done: true }));
     } finally {
       setFixingCompanies(false);
     }
@@ -611,14 +643,31 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           History
         </button>
 
+        <input
+          type="search"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          placeholder="Search queued jobs"
+          style={queueSearchInputStyle}
+        />
+
+        {jobs.length > 0 && (
+          <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+            {filteredJobs.length !== jobs.length && `${filteredJobs.length} of `}
+            {jobs.length} job{jobs.length !== 1 ? "s" : ""} ready to review
+          </span>
+        )}
+
         <div ref={moreToolsRef} style={{ position: "relative", marginLeft: "auto" }}>
           <button
             className="btn-secondary"
             onClick={() => setMoreToolsOpen((o) => !o)}
             disabled={anyQueueActionRunning}
-            style={{ padding: "8px 14px", fontSize: "14px" }}
+            aria-label="More actions"
+            aria-expanded={moreToolsOpen}
+            style={{ fontSize: "20px", lineHeight: 1, minHeight: "34px", padding: "4px 10px" }}
           >
-            More ▾
+            &#8942;
           </button>
           {moreToolsOpen && (
             <div style={{
@@ -673,21 +722,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
             </div>
           )}
         </div>
-
-        <input
-          type="search"
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          placeholder="Search queued jobs"
-          style={queueSearchInputStyle}
-        />
-
-        {jobs.length > 0 && (
-          <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
-            {filteredJobs.length !== jobs.length && `${filteredJobs.length} of `}
-            {jobs.length} job{jobs.length !== 1 ? "s" : ""} ready to review
-          </span>
-        )}
       </div>
 
       {recaptureDueSites.length > 0 && (
@@ -698,6 +732,13 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
             {recaptureDueSites.map((site) => site.name || site.url).join(", ")}
           </p>
         </div>
+      )}
+
+      {fixProgress && (
+        <FixCompaniesDialog
+          progress={fixProgress}
+          onClose={() => setFixProgress(null)}
+        />
       )}
 
       {importPanelOpen && (
@@ -878,18 +919,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         </div>
       )}
 
-      {reEvaluateSummary && (
-        <div style={{ ...progressBox, background: "rgba(76,175,129,0.08)", borderColor: "rgba(76,175,129,0.25)", marginBottom: "16px" }}>
-          <p style={{ fontSize: "13px", color: "var(--green)" }}>
-            Re-evaluated {reEvaluateSummary.evaluated ?? 0} active job{reEvaluateSummary.evaluated === 1 ? "" : "s"}.
-            {" "}{reEvaluateSummary.rescored ?? 0} rescored
-            {reEvaluateSummary.db_matches ? ` · ${reEvaluateSummary.db_matches} duplicate${reEvaluateSummary.db_matches === 1 ? "" : "s"} flagged` : ""}
-            {reEvaluateSummary.status_changed ? ` · ${reEvaluateSummary.status_changed} moved` : ""}
-            {reEvaluateSummary.failed ? ` · ${reEvaluateSummary.failed} failed` : ""}
-          </p>
-        </div>
-      )}
-
       {/* Completed board search summary */}
       {!boardSearching && boardState && boardState.progress === 100 && (
         <div style={{ ...progressBox, background: "rgba(76,175,129,0.08)", borderColor: "rgba(76,175,129,0.25)", marginBottom: "16px" }}>
@@ -929,6 +958,13 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           title="Re-evaluating Jobs"
           message={reEvaluateMessage || "Re-evaluating..."}
           progress={reEvaluateProgress}
+        />
+      )}
+
+      {!reEvaluating && reEvaluateSummary && (
+        <ReEvaluateSummaryPopup
+          summary={reEvaluateSummary}
+          onClose={() => setReEvaluateSummary(null)}
         />
       )}
 
@@ -1102,6 +1138,60 @@ function ImportSummaryPopup({ summary, onClose }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ReEvaluateSummaryPopup({ summary, onClose }) {
+  const evaluated = summary.evaluated ?? 0;
+  const rescored = summary.rescored ?? 0;
+  const duplicates = summary.db_matches ?? 0;
+  const moved = summary.status_changed ?? 0;
+  const failed = summary.failed ?? 0;
+
+  return (
+    <div style={popupBackdropStyle}>
+      <div style={{ ...popupPanelStyle, maxWidth: "520px" }}>
+        <div style={popupHeaderStyle}>
+          <div>
+            <div style={popupTitleStyle}>Re-evaluation complete</div>
+            <div style={popupSubtitleStyle}>
+              Re-evaluated {evaluated} active job{evaluated === 1 ? "" : "s"}.
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ padding: "4px 10px", fontSize: "12px" }}
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+
+        <div style={summaryMetricGridStyle}>
+          <SummaryMetric label="rescored" value={rescored} tone="green" />
+          {duplicates > 0 && <SummaryMetric label="duplicates flagged" value={duplicates} />}
+          {moved > 0 && <SummaryMetric label="moved" value={moved} tone="yellow" />}
+          {failed > 0 && <SummaryMetric label="failed" value={failed} tone="red" />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SummaryMetric({ label, value, tone = "muted" }) {
+  const colorByTone = {
+    green: "var(--green)",
+    muted: "var(--text-muted)",
+    red: "var(--red)",
+    yellow: "var(--yellow)",
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: "28px", fontWeight: 700, color: colorByTone[tone] || colorByTone.muted }}>{value}</div>
+      <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{label}</div>
     </div>
   );
 }
@@ -1439,6 +1529,12 @@ const popupMovedStyle = {
   fontSize: "12px",
   fontWeight: 700,
   padding: "4px 9px",
+};
+
+const summaryMetricGridStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "28px",
 };
 
 const emailChecklistStyle = {

@@ -35,17 +35,23 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const STATUS_FALLBACKS = {
-  applied: { background: "#d9ead3", color: "#274e13" },
-  rejected: { background: "#cc0000", color: "#ffffff" },
-  waiting_call: { background: "#cfe8f3", color: "#134f5c" },
-  waiting_second: { background: "#f4c7b3", color: "#783f04" },
-  eval_test: { background: "#16875b", color: "#ffffff" },
-  job_filled: { background: "#cc0000", color: "#ffffff" },
-  ghosted: { background: "#e8710a", color: "#ffffff" },
-  skipped: { background: "#f3f4f6", color: "#6b7280" },
+  applied:            { background: "#d9ead3", color: "#274e13" },
+  rejected:           { background: "#cc0000", color: "#ffffff" },
+  waiting_call:       { background: "#cfe8f3", color: "#134f5c" },
+  waiting_second:     { background: "#f4c7b3", color: "#783f04" },
+  eval_test:          { background: "#16875b", color: "#ffffff" },
+  job_filled:         { background: "#cc0000", color: "#ffffff" },
+  ghosted:            { background: "#e8710a", color: "#ffffff" },
+  skipped:            { background: "#f3f4f6", color: "#6b7280" },
+  triage:             { background: "#fff2cc", color: "#6b4500" },
+  pending_review:     { background: "#e8d5f5", color: "#4a1d96" },
+  possible_duplicate: { background: "#fde8c8", color: "#7c2d00" },
+  not_a_fit:          { background: "#fce8e6", color: "#9a0007" },
+  added_to_sheet:     { background: "#ccf0e8", color: "#00574a" },
 };
 
-const STATUS_OPTIONS = [
+// Fallback option list shown before the DB loads (or if the table is empty).
+const DEFAULT_STATUS_OPTIONS = [
   "Applied",
   "Rejected",
   "Waiting for Call",
@@ -54,6 +60,16 @@ const STATUS_OPTIONS = [
   "Job was filled",
   "Ghosted",
 ];
+
+// Job-queue statuses that live on jobs.status (not application_stages) and are
+// therefore not expected to be in the stage_statuses DB table.
+const FALLBACK_DISPLAY_NAMES = {
+  triage:             "Triage",
+  pending_review:     "Pending Review",
+  possible_duplicate: "Possible Duplicate",
+  not_a_fit:          "Not a Fit",
+  added_to_sheet:     "Added to Sheet",
+};
 
 const DEFAULT_COLUMN_WIDTHS = {
   company: 220,
@@ -90,8 +106,9 @@ function normalizeStatus(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function getStatusStyle(value) {
+function getStatusStyle(value, colorMap = {}) {
   const normalizedValue = normalizeStatus(value);
+  if (colorMap[normalizedValue]) return colorMap[normalizedValue];
   if (STATUS_FALLBACKS[normalizedValue]) return STATUS_FALLBACKS[normalizedValue];
   if (normalizedValue.includes("2nd") || normalizedValue.includes("second")) {
     return STATUS_FALLBACKS.waiting_second;
@@ -140,8 +157,8 @@ function isDefaultBackground(color) {
   return !normalizedColor || normalizedColor === "#ffffff";
 }
 
-function statusColor(cell) {
-  const fallbackStyle = getStatusStyle(cell.value);
+function statusColor(cell, colorMap = {}) {
+  const fallbackStyle = getStatusStyle(cell.value, colorMap);
   return {
     background: isDefaultBackground(cell.background_color)
       ? fallbackStyle?.background || "var(--surface2)"
@@ -150,8 +167,8 @@ function statusColor(cell) {
   };
 }
 
-function stageSelectStyle(status) {
-  const colors = statusColor({ value: status });
+function stageSelectStyle(status, colorMap = {}) {
+  const colors = statusColor({ value: status }, colorMap);
   return {
     ...stageControlStyle,
     background: colors.background,
@@ -160,17 +177,18 @@ function stageSelectStyle(status) {
   };
 }
 
-function stageOptionStyle(status) {
-  const colors = statusColor({ value: status });
+function stageOptionStyle(status, colorMap = {}) {
+  const colors = statusColor({ value: status }, colorMap);
   return {
     backgroundColor: colors.background,
     color: colors.color,
   };
 }
 
-function StatusIndicator({ cell }) {
-  const colors = statusColor(cell);
-  const value = String(cell.value || "").trim() || "-";
+function StatusIndicator({ cell, colorMap = {}, labelMap = {} }) {
+  const colors = statusColor(cell, colorMap);
+  const raw = String(cell.value || "").trim();
+  const display = (raw && labelMap[normalizeStatus(raw)]) || raw || "-";
   return (
     <span
       style={{
@@ -179,12 +197,12 @@ function StatusIndicator({ cell }) {
         color: colors.color,
       }}
     >
-      {value}
+      {display}
     </span>
   );
 }
 
-function GhostDialog({ result, onClose }) {
+function GhostDialog({ result, onClose, labelMap = {} }) {
   const marked = Array.isArray(result.marked) ? result.marked : [];
   return (
     <div style={modalBackdropStyle}>
@@ -220,7 +238,7 @@ function GhostDialog({ result, onClose }) {
                     Applied {job.applied_date} · {job.days_applied} days
                   </div>
                 </div>
-                <StatusIndicator cell={{ value: "ghosted" }} />
+                <StatusIndicator cell={{ value: "ghosted" }} labelMap={labelMap} />
               </div>
             ))}
           </div>
@@ -230,7 +248,7 @@ function GhostDialog({ result, onClose }) {
   );
 }
 
-function StatusSummaryDialog({ counts, total, onClose }) {
+function StatusSummaryDialog({ counts, total, onClose, labelMap = {} }) {
   const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
   return (
     <div style={modalBackdropStyle}>
@@ -259,7 +277,7 @@ function StatusSummaryDialog({ counts, total, onClose }) {
               borderBottom: "1px solid var(--border)",
               fontSize: "14px",
             }}>
-              <span style={{ color: "var(--text)" }}>{status}</span>
+              <span style={{ color: "var(--text)" }}>{labelMap[status] || status.charAt(0).toUpperCase() + status.slice(1)}</span>
               <span style={{ fontWeight: 600, color: "var(--text-muted)", minWidth: "2em", textAlign: "right" }}>{count}</span>
             </div>
           ))}
@@ -316,6 +334,7 @@ function compareCellValues(leftValue, rightValue, key) {
 
 export default function ApplicationSheetPanel() {
   const [sheet, setSheet] = useState({ sheet_name: "", columns: [], rows: [] });
+  const [stageStatuses, setStageStatuses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [expandedRows, setExpandedRows] = useState(new Set());
@@ -354,7 +373,14 @@ export default function ApplicationSheetPanel() {
     }
   };
 
-  useEffect(() => { loadSheet(); }, []);
+  useEffect(() => {
+    loadSheet();
+    fetch("/api/sheet/repair/normalize-stage-statuses", { method: "POST" }).catch(() => {});
+    fetch("/api/sheet/stage-statuses")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => { if (Array.isArray(data)) setStageStatuses(data); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => () => {
     resizeCleanupRef.current?.();
@@ -403,11 +429,35 @@ export default function ApplicationSheetPanel() {
 
   const statusCounts = useMemo(() => {
     return sheet.rows.reduce((acc, row) => {
-      const value = (getCell(row, trackingColumns.status).value || "Unknown").trim() || "Unknown";
-      acc[value] = (acc[value] || 0) + 1;
+      const raw = (getCell(row, trackingColumns.status).value || "").trim();
+      const key = normalizeStatus(raw) || "unknown";
+      acc[key] = (acc[key] || 0) + 1;
       return acc;
     }, {});
   }, [sheet.rows, trackingColumns.status]);
+
+  const statusLabelMap = useMemo(() => {
+    const map = { ...FALLBACK_DISPLAY_NAMES };
+    stageStatuses.forEach((s) => { map[s.key] = s.label; });
+    return map;
+  }, [stageStatuses]);
+
+  const statusOptions = useMemo(() => {
+    if (stageStatuses.length === 0) return DEFAULT_STATUS_OPTIONS;
+    return [...stageStatuses]
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      .map((s) => s.label);
+  }, [stageStatuses]);
+
+  const statusColorMap = useMemo(() => {
+    const map = {};
+    stageStatuses.forEach((s) => {
+      if (s.color_bg || s.color_fg) {
+        map[s.key] = { background: s.color_bg || undefined, color: s.color_fg || undefined };
+      }
+    });
+    return map;
+  }, [stageStatuses]);
 
   const toggleSort = (key) => {
     setSortConfig((previousConfig) => {
@@ -681,6 +731,7 @@ export default function ApplicationSheetPanel() {
         <GhostDialog
           result={ghostDialog}
           onClose={() => setGhostDialog(null)}
+          labelMap={statusLabelMap}
         />
       )}
 
@@ -689,6 +740,7 @@ export default function ApplicationSheetPanel() {
           counts={statusCounts}
           total={sheet.rows.length}
           onClose={() => setShowStatusSummary(false)}
+          labelMap={statusLabelMap}
         />
       )}
 
@@ -711,7 +763,7 @@ export default function ApplicationSheetPanel() {
             onChange={(event) => updateNewRow("status", event.target.value)}
             style={compactInputStyle}
           >
-            {STATUS_OPTIONS.map((status) => (
+            {statusOptions.map((status) => (
               <option key={status} value={status}>{status}</option>
             ))}
           </select>
@@ -827,7 +879,7 @@ export default function ApplicationSheetPanel() {
                           style={cellStyle(false, columnWidths[entry.key] || DEFAULT_COLUMN_WIDTHS[entry.key] || 160)}
                         >
                           {entry.key === "status" ? (
-                            <StatusIndicator cell={cell} />
+                            <StatusIndicator cell={cell} colorMap={statusColorMap} labelMap={statusLabelMap} />
                           ) : (
                             <span style={oneLineStyle}>{cell.value || ""}</span>
                           )}
@@ -846,7 +898,7 @@ export default function ApplicationSheetPanel() {
                         <div style={detailRowStyle}>
                           <div style={detailStatusStyle}>
                             <span style={detailLabelStyle}>Status</span>
-                            <StatusIndicator cell={getCell(row, trackingColumns.status)} />
+                            <StatusIndicator cell={getCell(row, trackingColumns.status)} colorMap={statusColorMap} labelMap={statusLabelMap} />
                           </div>
                           <div style={detailItemStyle}>
                             <span style={detailLabelStyle}>Date</span>
@@ -862,7 +914,7 @@ export default function ApplicationSheetPanel() {
                             <input value={editingRows[row.row_number].company} onChange={(event) => updateEditRow(row.row_number, "company", event.target.value)} placeholder="Company" />
                             <input value={editingRows[row.row_number].job_title} onChange={(event) => updateEditRow(row.row_number, "job_title", event.target.value)} placeholder="Job title" />
                             <select value={editingRows[row.row_number].status} onChange={(event) => updateEditRow(row.row_number, "status", event.target.value)}>
-                              {STATUS_OPTIONS.map((status) => (
+                              {statusOptions.map((status) => (
                                 <option key={status} value={status}>{status}</option>
                               ))}
                             </select>
@@ -899,7 +951,7 @@ export default function ApplicationSheetPanel() {
                             {row.stages.map((stage) => (
                               <div key={stage.id} style={stageHistoryRowStyle}>
                                 <span style={{ minWidth: "135px", flexShrink: 0 }}>
-                                  <StatusIndicator cell={{ value: stage.status }} />
+                                  <StatusIndicator cell={{ value: stage.status }} colorMap={statusColorMap} labelMap={statusLabelMap} />
                                 </span>
                                 <span style={{ fontSize: "12px", color: "var(--text-muted)", minWidth: "80px", flexShrink: 0 }}>{stage.date || "—"}</span>
                                 {stage.notes && <span style={{ fontSize: "12px", flex: 1 }}>{stage.notes}</span>}
@@ -919,10 +971,10 @@ export default function ApplicationSheetPanel() {
                           <select
                             value={(stageRows[row.row_number]?.status) || "Waiting for Call"}
                             onChange={(event) => updateStageRow(row.row_number, "status", event.target.value)}
-                            style={stageSelectStyle((stageRows[row.row_number]?.status) || "Waiting for Call")}
+                            style={stageSelectStyle((stageRows[row.row_number]?.status) || "Waiting for Call", statusColorMap)}
                           >
-                            {STATUS_OPTIONS.map((status) => (
-                              <option key={status} value={status} style={stageOptionStyle(status)}>{status}</option>
+                            {statusOptions.map((status) => (
+                              <option key={status} value={status} style={stageOptionStyle(status, statusColorMap)}>{status}</option>
                             ))}
                           </select>
                           <input

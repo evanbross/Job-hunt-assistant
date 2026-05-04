@@ -134,6 +134,150 @@ def save_cover_letter():
     return jsonify({"path": str(path), "filename": filename, "folder": str(folder)})
 
 
+@cover_letter_bp.route("/jobs/<int:job_id>/pitch", methods=["POST"])
+def generate_pitch(job_id: int):
+    """Generate a short 2-paragraph pitch: why-company or why-fit."""
+    body = request.get_json(silent=True) or {}
+    pitch_type = str(body.get("type") or "").strip()
+    if pitch_type not in ("why_company", "why_fit"):
+        return jsonify({"error": "type must be 'why_company' or 'why_fit'"}), 400
+
+    repos = _get_repos()
+    job = repos["jobs"].get_by_id(job_id)
+    resume_row = repos["resume"].get_latest()
+    repos["conn"].close()
+
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    company = job.get("company") or "the company"
+    job_title = job.get("job_title") or "the position"
+    job_context = (job.get("raw_email_snippet") or job.get("fit_reasoning") or "").strip()
+    resume_text = (resume_row["content"] if resume_row else "") or ""
+    candidate_profile = config.load_candidate_profile()
+
+    context_block = f"\nJob context:\n{job_context[:1500]}\n" if job_context else ""
+    resume_block = f"\nResume (for reference):\n{resume_text[:2000]}\n" if resume_text else ""
+
+    system_prompt = (
+        f"You are writing on behalf of a job candidate.\n\n"
+        f"CANDIDATE PROFILE:\n{candidate_profile}\n"
+        f"{resume_block}"
+        "Write in first person. Match the candidate's writing style exactly as described "
+        "in the Writing Style section of their profile. "
+        "2 paragraphs maximum. No bullet points. No headers."
+    )
+
+    if pitch_type == "why_company":
+        user_prompt = (
+            f"Company: {company}\nRole: {job_title}\n{context_block}\n"
+            "Write 2 short paragraphs explaining why I'm genuinely interested in working "
+            "at this specific company. Draw on anything specific from the job context about "
+            "their product, mission, or the problem they're solving. If there's nothing "
+            "company-specific to anchor on, focus on what's appealing about the domain or "
+            "the type of work — but be honest, not generic."
+        )
+    else:
+        user_prompt = (
+            f"Company: {company}\nRole: {job_title}\n{context_block}\n"
+            "Write 2 short paragraphs explaining why I'd be good at this specific job, "
+            "drawing on the most relevant parts of my background. Be concrete about the "
+            "match between my experience and what this role actually needs. "
+            "Don't just list skills — show how they connect to the work."
+        )
+
+    try:
+        text = AIProviderClient().complete(
+            system=system_prompt,
+            messages=[AIMessage(role="user", content=user_prompt)],
+            max_tokens=450,
+        )
+    except Exception as exc:
+        logger.error("Pitch generation failed for job %d: %s", job_id, exc, exc_info=True)
+        return jsonify({"error": _safe_error_message(exc, "Generation failed")}), _ai_error_http_status(exc)
+
+    return jsonify({"text": text.strip()})
+
+
+@cover_letter_bp.route("/jobs/<int:job_id>/pitch/chat", methods=["POST"])
+def pitch_chat(job_id: int):
+    """AI chat for refining a why-company or why-fit pitch."""
+    repos = _get_repos()
+    job = repos["jobs"].get_by_id(job_id)
+    repos["conn"].close()
+
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    messages: list[dict] = body.get("messages", [])
+    current_text = (body.get("current_text") or "").strip()
+    pitch_type = str(body.get("type") or "").strip()
+
+    if pitch_type not in ("why_company", "why_fit"):
+        return jsonify({"error": "type must be 'why_company' or 'why_fit'"}), 400
+
+    if not messages:
+        return jsonify({"error": "No messages provided"}), 400
+
+    company = job.get("company") or "the company"
+    job_title = job.get("job_title") or "the position"
+    candidate_profile = config.load_candidate_profile()
+    pitch_label = (
+        "why you want to work at this company"
+        if pitch_type == "why_company"
+        else "why you'd be a good fit for this role"
+    )
+
+    system_prompt = (
+        f"You are helping a job applicant refine a short pitch about {pitch_label} "
+        f"for the role of {job_title} at {company}.\n\n"
+        f"CANDIDATE PROFILE:\n{candidate_profile}\n\n"
+        f"CURRENT PITCH:\n{current_text}\n\n"
+        "Help the applicant improve the pitch, answer questions about it, or make specific edits "
+        "they request. Keep it to 2 paragraphs maximum. No bullet points. No headers. First person. "
+        "Match the candidate's writing style exactly as described in the Writing Style section "
+        "of their profile. "
+        "If you are providing a substantially rewritten or updated version of the pitch, wrap ONLY "
+        "the new pitch text (plain text, no preamble, no commentary) inside <UPDATED_PITCH> and "
+        "</UPDATED_PITCH> tags so the applicant can apply the update with one click. "
+        "If you are only commenting or making small suggestions, do not include those tags."
+    )
+
+    try:
+        reply_text = AIProviderClient().complete(
+            system=system_prompt,
+            messages=[
+                AIMessage(
+                    role=str(message.get("role") or ""),
+                    content=str(message.get("content") or ""),
+                )
+                for message in messages
+                if isinstance(message, dict)
+                and message.get("role") in {"user", "assistant"}
+                and isinstance(message.get("content"), str)
+                and str(message.get("content") or "").strip()
+            ],
+            max_tokens=800,
+        )
+    except Exception as exc:
+        logger.error("Pitch chat failed for job %d: %s", job_id, exc, exc_info=True)
+        return jsonify({"error": _safe_error_message(exc, "Pitch chat failed")}), _ai_error_http_status(exc)
+
+    updated_pitch: str | None = None
+    tag_match = re.search(r"<UPDATED_PITCH>(.*?)</UPDATED_PITCH>", reply_text, re.DOTALL)
+    if tag_match:
+        updated_pitch = tag_match.group(1).strip()
+        reply_text = re.sub(
+            r"\s*<UPDATED_PITCH>.*?</UPDATED_PITCH>\s*",
+            "\n\n[Updated version ready — click **Use this version** above to apply it.]\n\n",
+            reply_text,
+            flags=re.DOTALL,
+        ).strip()
+
+    return jsonify({"reply": reply_text, "updated_pitch": updated_pitch})
+
+
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter/chat", methods=["POST"])
 def cover_letter_chat(job_id: int):
     repos = _get_repos()

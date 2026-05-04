@@ -117,7 +117,13 @@ class IApplicationStageRepository(Protocol):
     def get_by_job_id(self, job_id: int) -> list[dict[str, Any]]: ...
     def get_by_id(self, stage_id: int) -> dict[str, Any] | None: ...
     def insert(self, stage: dict[str, Any]) -> int: ...
+    def update(self, stage_id: int, fields: dict[str, Any]) -> None: ...
     def delete(self, stage_id: int) -> None: ...
+
+
+@runtime_checkable
+class IStageStatusRepository(Protocol):
+    def get_all(self) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable
@@ -742,8 +748,28 @@ class PostgresApplicationStageRepository(_BaseRepo):
         )
         return cur.fetchone()["id"]
 
+    def update(self, stage_id: int, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
+        set_clause = ", ".join(f"{col} = %s" for col in fields)
+        self._execute(
+            f"UPDATE application_stages SET {set_clause} WHERE id = %s",
+            [*fields.values(), stage_id],
+        )
+
     def delete(self, stage_id: int) -> None:
         self._execute("DELETE FROM application_stages WHERE id = %s", (stage_id,))
+
+
+class PostgresStageStatusRepository(_BaseRepo):
+    def get_all(self) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM stage_statuses ORDER BY sort_order ASC, key ASC"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
 
 
 class PostgresResumeRepository(_BaseRepo):
@@ -1161,6 +1187,7 @@ SQLiteCareerScanResultRepository = PostgresCareerScanResultRepository
 SQLiteCareerScanFailureRepository = PostgresCareerScanFailureRepository
 SQLiteCareerRejectionRuleRepository = PostgresCareerRejectionRuleRepository
 SQLiteEmailSubjectRuleRepository = PostgresEmailSubjectRuleRepository
+SQLiteStageStatusRepository = PostgresStageStatusRepository
 
 
 # ─── Seed data ────────────────────────────────────────────────────────────────
@@ -1616,6 +1643,17 @@ def _create_tables(conn: Any) -> None:
             rule_type TEXT NOT NULL DEFAULT 'blacklist'
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS stage_statuses (
+            key            TEXT PRIMARY KEY,
+            label          TEXT NOT NULL,
+            sort_order     INTEGER DEFAULT 0,
+            ghost_eligible BOOLEAN DEFAULT FALSE,
+            is_terminal    BOOLEAN DEFAULT FALSE,
+            color_bg       TEXT,
+            color_fg       TEXT
+        )
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()
@@ -1793,6 +1831,17 @@ def _create_tables_sqlite(conn: Any) -> None:
             rule_type TEXT NOT NULL DEFAULT 'blacklist'
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS stage_statuses (
+            key            TEXT PRIMARY KEY,
+            label          TEXT NOT NULL,
+            sort_order     INTEGER DEFAULT 0,
+            ghost_eligible INTEGER DEFAULT 0,
+            is_terminal    INTEGER DEFAULT 0,
+            color_bg       TEXT,
+            color_fg       TEXT
+        )
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()
@@ -1863,4 +1912,5 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "career_scan_failures": PostgresCareerScanFailureRepository(conn),
         "career_rejection_rules": PostgresCareerRejectionRuleRepository(conn),
         "email_subject_rules": PostgresEmailSubjectRuleRepository(conn),
+        "stage_statuses": PostgresStageStatusRepository(conn),
     }

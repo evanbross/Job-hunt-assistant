@@ -66,8 +66,13 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   const [descriptionSaving, setDescriptionSaving] = useState(false);
   const [descriptionError, setDescriptionError] = useState("");
   const [descriptionSaved, setDescriptionSaved] = useState(false);
-  const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | null
+  const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | "pitch" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
+  const [showWritingMenu, setShowWritingMenu] = useState(false);
+  const [pitchText, setPitchText] = useState(null);
+  const [pitchType, setPitchType] = useState(null); // "why_company" | "why_fit"
+  const [pitchOpen, setPitchOpen] = useState(false);
+  const [pitchCopied, setPitchCopied] = useState(false);
   // skipConfirm: null | { key, label } — the selected reason awaiting confirmation
   const [skipConfirm, setSkipConfirm] = useState(null);
   const [skipNote, setSkipNote] = useState("");
@@ -91,6 +96,14 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   const [pendingUpdate, setPendingUpdate] = useState(null); // updated cover letter from AI
   const chatMessagesRef = useRef(null);
 
+  // Pitch chat state
+  const [pitchChatOpen, setPitchChatOpen] = useState(false);
+  const [pitchChatMessages, setPitchChatMessages] = useState([]);
+  const [pitchChatInput, setPitchChatInput] = useState("");
+  const [pitchChatSending, setPitchChatSending] = useState(false);
+  const [pitchPendingUpdate, setPitchPendingUpdate] = useState(null);
+  const pitchChatMessagesRef = useRef(null);
+
   // Fit review chat state
   const [fitChatOpen, setFitChatOpen] = useState(false);
   const [fitChatMessages, setFitChatMessages] = useState([]);
@@ -104,6 +117,12 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
       chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
     }
   }, [chatMessages, chatOpen]);
+
+  useEffect(() => {
+    if (pitchChatOpen && pitchChatMessagesRef.current) {
+      pitchChatMessagesRef.current.scrollTop = pitchChatMessagesRef.current.scrollHeight;
+    }
+  }, [pitchChatMessages, pitchChatOpen]);
 
   useEffect(() => {
     if (fitChatOpen && fitChatMessagesRef.current) {
@@ -190,6 +209,79 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     navigator.clipboard.writeText(coverLetter || "");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handlePitch = async (type) => {
+    setShowWritingMenu(false);
+    if (pitchType === type && pitchText) {
+      setPitchOpen((o) => !o);
+      return;
+    }
+    setPitchType(type);
+    setPitchOpen(false);
+    setPitchChatOpen(false);
+    setPitchChatMessages([]);
+    setPitchChatInput("");
+    setPitchPendingUpdate(null);
+    setLoading("pitch");
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/pitch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Generation failed");
+      setPitchText(data.text);
+      setPitchOpen(true);
+    } catch (e) {
+      alert("Pitch generation failed: " + e.message);
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handlePitchCopy = () => {
+    navigator.clipboard.writeText(pitchText || "");
+    setPitchCopied(true);
+    setTimeout(() => setPitchCopied(false), 2000);
+  };
+
+  const handlePitchChatSend = async () => {
+    const text = pitchChatInput.trim();
+    if (!text || pitchChatSending) return;
+
+    const newMessages = [...pitchChatMessages, { role: "user", content: text }];
+    setPitchChatMessages(newMessages);
+    setPitchChatInput("");
+    setPitchChatSending(true);
+
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/pitch/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: newMessages, current_text: pitchText, type: pitchType }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Chat failed");
+
+      setPitchChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+      if (data.updated_pitch) {
+        setPitchPendingUpdate(data.updated_pitch);
+      }
+    } catch (e) {
+      setPitchChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Error: ${e.message}` },
+      ]);
+    } finally {
+      setPitchChatSending(false);
+    }
+  };
+
+  const applyPitchPendingUpdate = () => {
+    setPitchText(pitchPendingUpdate);
+    setPitchPendingUpdate(null);
   };
 
   const handleSave = async (folderOverride = null) => {
@@ -530,18 +622,50 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
             {descriptionOpen ? "Hide Description" : "Job Description"}
           </button>
         )}
-        <button
-          className="btn-secondary"
-          onClick={handleCoverLetter}
-          disabled={busy}
-          style={{ fontSize: "13px" }}
-        >
-          {loading === "cover"
-            ? "Generating…"
-            : coverLetter
-            ? coverLetterOpen ? "Hide Cover Letter" : "Show Cover Letter"
-            : "Cover Letter"}
-        </button>
+        {/* Writing dropdown — Cover Letter / Why this company / Why I'd be good */}
+        <div style={{ position: "relative" }}>
+          <button
+            className="btn-secondary"
+            onClick={() => setShowWritingMenu((v) => !v)}
+            disabled={busy}
+            style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px" }}
+          >
+            {loading === "cover" || loading === "pitch" ? "Generating…" : "Writing"}
+            {!busy && <span style={{ fontSize: "10px", opacity: 0.7 }}>▾</span>}
+          </button>
+          {showWritingMenu && (
+            <div style={skipMenuStyle}>
+              <button
+                onClick={() => { setShowWritingMenu(false); handleCoverLetter(); }}
+                style={skipMenuItemStyle}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface2)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {coverLetter ? (coverLetterOpen ? "Hide Cover Letter" : "Show Cover Letter") : "Cover Letter"}
+              </button>
+              <button
+                onClick={() => handlePitch("why_company")}
+                style={skipMenuItemStyle}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface2)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {pitchType === "why_company" && pitchText
+                  ? pitchOpen ? "Hide — Why I want to work here" : "Show — Why I want to work here"
+                  : "Why I want to work here"}
+              </button>
+              <button
+                onClick={() => handlePitch("why_fit")}
+                style={skipMenuItemStyle}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface2)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {pitchType === "why_fit" && pitchText
+                  ? pitchOpen ? "Hide — Why I'd be good for this job" : "Show — Why I'd be good for this job"
+                  : "Why I'd be good for this job"}
+              </button>
+            </div>
+          )}
+        </div>
         <button
           className="btn-secondary"
           onClick={() => {
@@ -781,6 +905,130 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
         />
       )}
 
+      {/* Pitch panel */}
+      {pitchOpen && pitchText && (
+        <div style={coverLetterPanelStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+            <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              {pitchType === "why_company" ? "Why I want to work here" : "Why I'd be good for this job"}
+            </span>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button
+                className="btn-secondary"
+                onClick={handlePitchCopy}
+                style={{ fontSize: "11px", padding: "3px 10px" }}
+              >
+                {pitchCopied ? "Copied!" : "Copy"}
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  setPitchChatOpen((o) => !o);
+                  setPitchChatMessages([]);
+                  setPitchPendingUpdate(null);
+                }}
+                style={{ fontSize: "11px", padding: "3px 10px" }}
+              >
+                {pitchChatOpen ? "Close Chat" : "Chat with AI ✦"}
+              </button>
+            </div>
+          </div>
+
+          {pitchPendingUpdate && (
+            <div style={{ marginBottom: "10px", padding: "8px 12px", background: "rgba(76,175,129,0.1)", border: "1px solid rgba(76,175,129,0.3)", borderRadius: "var(--radius)", display: "flex", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "12px", color: "var(--green)", flex: 1 }}>
+                AI suggested an updated version.
+              </span>
+              <button className="btn-success" onClick={applyPitchPendingUpdate} style={{ fontSize: "11px", padding: "3px 10px", whiteSpace: "nowrap" }}>
+                Use updated version
+              </button>
+              <button className="btn-secondary" onClick={() => setPitchPendingUpdate(null)} style={{ fontSize: "11px", padding: "3px 10px" }}>
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          <p style={{ fontSize: "13px", lineHeight: "1.7", color: "var(--text)", whiteSpace: "pre-wrap", margin: 0 }}>
+            {pitchText}
+          </p>
+
+          {pitchChatOpen && (
+            <div style={{ marginTop: "16px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
+              <p style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "10px" }}>
+                Chat with AI — ask for edits, adjustments, or feedback
+              </p>
+
+              {pitchChatMessages.length > 0 && (
+                <div ref={pitchChatMessagesRef} style={{ maxHeight: "300px", overflowY: "auto", marginBottom: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {pitchChatMessages.map((msg, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
+                        maxWidth: "85%",
+                        background: msg.role === "user" ? "var(--accent)" : "var(--surface)",
+                        color: msg.role === "user" ? "#fff" : "var(--text)",
+                        border: msg.role === "user" ? "none" : "1px solid var(--border)",
+                        borderRadius: "var(--radius)",
+                        padding: "8px 12px",
+                        fontSize: "13px",
+                        lineHeight: "1.5",
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
+                      {msg.content}
+                    </div>
+                  ))}
+                  {pitchChatSending && (
+                    <div style={{ alignSelf: "flex-start", color: "var(--text-muted)", fontSize: "12px", padding: "4px 8px" }}>
+                      Thinking…
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: "6px" }}>
+                <textarea
+                  value={pitchChatInput}
+                  onChange={(e) => setPitchChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handlePitchChatSend();
+                    }
+                  }}
+                  placeholder='e.g. "Make it more specific to their product" or "Too formal"'
+                  rows={2}
+                  disabled={pitchChatSending}
+                  style={{
+                    flex: 1,
+                    fontSize: "13px",
+                    padding: "7px 10px",
+                    borderRadius: "var(--radius)",
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    color: "var(--text)",
+                    resize: "vertical",
+                    fontFamily: "inherit",
+                  }}
+                />
+                <button
+                  className="btn-primary"
+                  onClick={handlePitchChatSend}
+                  disabled={pitchChatSending || !pitchChatInput.trim()}
+                  style={{ fontSize: "13px", padding: "7px 14px", alignSelf: "flex-end" }}
+                >
+                  Send
+                </button>
+              </div>
+              <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "5px" }}>
+                Enter to send · Shift+Enter for new line
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Cover letter panel */}
       {coverLetterOpen && coverLetter && (
         <div style={coverLetterPanelStyle}>
@@ -880,7 +1128,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
             {coverLetter}
           </p>
 
-          {/* Chat panel */}
+          {/* Chat panel  */}
           {chatOpen && (
             <div style={{ marginTop: "16px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
               <p style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "10px" }}>
