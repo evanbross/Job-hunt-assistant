@@ -206,6 +206,7 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
 
 def queue_import_capture(body: dict) -> tuple[dict, int]:
     """Analyze a captured page payload and dispatch a Celery import task."""
+    global _current_task_id
     with _task_id_lock:
         existing_task_id = _current_task_id
     if existing_task_id:
@@ -252,7 +253,6 @@ def queue_import_capture(body: dict) -> tuple[dict, int]:
 
     task = run_import_task.delay(extracted, capture_source, body)
     with _task_id_lock:
-        global _current_task_id
         _current_task_id = task.id
     logger.info("Import task dispatched: %s (%d URLs)", task.id, len(extracted))
     return {"status": "started", "task_id": task.id}, 202
