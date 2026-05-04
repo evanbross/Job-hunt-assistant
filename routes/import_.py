@@ -32,24 +32,22 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""Captured-page job import routes and background import thread."""
+"""Captured-page job import routes."""
 
 from __future__ import annotations
 
 import logging
 import re
-import socket
 import threading
-import urllib.error
-from dataclasses import dataclass
 from datetime import datetime, UTC
 
+from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 
-import config
 from backend.captured_page_import_service import CapturedPageImportService
-from backend.import_repair import post_repair_duplicate_check, repair_existing_job_company, repair_linkedin_company
-from backend.manual_job_ingest_service import ManualJobIngestService
+from backend.celery_app import celery_app
+from backend.import_repair import post_repair_duplicate_check, repair_linkedin_company
+from backend.tasks import run_import_task
 from backend.utils import (
     _get_repos,
     _parse_positive_int,
@@ -62,25 +60,13 @@ logger = logging.getLogger(__name__)
 import_bp = Blueprint("import_", __name__)
 
 
-# ─── Import state (in-memory, protected by a lock) ────────────────────────────
+# ─── Active task tracking ─────────────────────────────────────────────────────
+# Stores the Celery task ID for the most recently dispatched import.
+# The status endpoint reads progress from the Celery result backend (Redis)
+# rather than in-process memory, so the Flask and worker processes are decoupled.
 
-@dataclass
-class ImportState:
-    running: bool = False
-    phase: str = "idle"
-    progress: int = 0
-    message: str = "Idle"
-    total: int = 0
-    result: dict | None = None
-    trigger: str = ""
-    started_at: str | None = None
-    capture_source: dict | None = None
-    current_job_url: str = ""
-    current_platform: str = ""
-
-
-_import_state = ImportState()
-_import_lock = threading.Lock()
+_current_task_id: str | None = None
+_task_id_lock = threading.Lock()
 
 
 def _capture_source_suggestions(repos: dict[str, object], query: str) -> list[dict]:
@@ -218,215 +204,58 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
     )
 
 
-def _record_capture_source(source: dict | None, repos: dict[str, object], body: dict) -> None:
-    if not source:
-        return
-    fields: dict[str, object] = {
-        "last_captured_at": datetime.now(UTC).isoformat(timespec="seconds")
-    }
-    interval_value = body.get("recapture_interval_days")
-    if interval_value is not None and interval_value != "":
-        fields["recapture_interval_days"] = _parse_positive_int(
-            interval_value,
-            default=4,
-            field_name="recapture_interval_days",
-        )
-    repos["career_sites"].update(source["id"], fields)
-
-
-def _reset_import_state(
-    *,
-    phase: str,
-    message: str,
-    trigger: str,
-    progress: int = 0,
-    total: int = 0,
-    result: dict | None = None,
-    capture_source: dict | None = None,
-) -> None:
-    with _import_lock:
-        _import_state.running = True
-        _import_state.phase = phase
-        _import_state.progress = progress
-        _import_state.message = message
-        _import_state.total = total
-        _import_state.result = result
-        _import_state.trigger = trigger
-        _import_state.started_at = datetime.now(UTC).isoformat(timespec="seconds")
-        _import_state.capture_source = capture_source
-        _import_state.current_job_url = ""
-        _import_state.current_platform = ""
-
-
-def _finish_import_state(message: str, result: dict | None = None) -> None:
-    with _import_lock:
-        _import_state.running = False
-        _import_state.phase = "done" if result is not None else "idle"
-        _import_state.progress = 100 if result is not None else _import_state.progress
-        _import_state.message = message
-        _import_state.result = result
-        _import_state.current_job_url = ""
-        _import_state.current_platform = ""
-
-
-def _run_import(extracted: list[dict], capture_source: dict | None, body: dict) -> None:
-    total = len(extracted)
-    with _import_lock:
-        _import_state.running = True
-        _import_state.phase = "processing"
-        _import_state.total = total
-        _import_state.progress = 0
-        _import_state.result = None
-        _import_state.capture_source = capture_source
-        _import_state.message = f"Fetching {total} job{'s' if total != 1 else ''}…"
-
-    repos = _get_repos()
-    try:
-        known_jobs: list[dict] = repos["jobs"].get_all_ordered()
-        service = ManualJobIngestService(repos["jobs"], repos["resume"], repos["penalties"])
-        queued = 0
-        skipped = 0
-        repaired = 0
-        failed = 0
-
-        for i, url_row in enumerate(extracted):
-            url = url_row["url"]
-            platform = url_row["platform"]
-            with _import_lock:
-                _import_state.progress = round((i / total) * 100)
-                _import_state.message = f"Job {i + 1} of {total} — {platform}…"
-                _import_state.current_job_url = url
-                _import_state.current_platform = platform
-
-            existing_job = repos["jobs"].get_by_url(url)
-            if existing_job is not None:
-                repaired_ok = repair_existing_job_company(repos["jobs"], existing_job, url_row)
-                if not repaired_ok and platform == "LinkedIn":
-                    repaired_ok = repair_linkedin_company(repos["jobs"], existing_job, url)
-                if repaired_ok:
-                    repaired += 1
-                    repos["conn"].commit()
-                skipped += 1
-                continue
-
-            try:
-                service.ingest(
-                    str(url_row.get("listing_text") or ""),
-                    source_url=url,
-                    source_name=platform,
-                    company_override=str(url_row.get("company") or ""),
-                    job_title_override=str(url_row.get("job_title") or ""),
-                    sheet_jobs=known_jobs,
-                )
-                queued += 1
-                repos["conn"].commit()
-            except (ValueError, urllib.error.URLError, TimeoutError, socket.error) as exc:
-                repos["conn"].rollback()
-                logger.warning("Bulk import skipped %s: %s", url, exc)
-                failed += 1
-            except Exception as exc:
-                repos["conn"].rollback()
-                logger.error("Bulk import error for %s: %s", url, exc)
-                failed += 1
-
-        try:
-            _record_capture_source(capture_source, repos, body)
-            repos["conn"].commit()
-        except Exception as exc:
-            repos["conn"].rollback()
-            logger.warning("Failed to record capture source: %s", exc)
-
-        with _import_lock:
-            _import_state.progress = 100
-            _import_state.phase = "done"
-            _import_state.message = (
-                f"Done — {queued} queued, {skipped} skipped, {repaired} repaired, {failed} failed."
-            )
-            _import_state.result = {
-                "queued": queued,
-                "skipped": skipped,
-                "repaired": repaired,
-                "failed": failed,
-                "capture_source": capture_source,
-            }
-    except Exception as exc:
-        logger.error("Import thread failed: %s", exc)
-        with _import_lock:
-            _import_state.phase = "error"
-            _import_state.message = f"Import failed: {exc}"
-    finally:
-        repos["conn"].close()
-        with _import_lock:
-            _import_state.running = False
-            _import_state.current_job_url = ""
-            _import_state.current_platform = ""
-
-
 def queue_import_capture(body: dict) -> tuple[dict, int]:
-    """Analyze a captured page payload and start the shared import worker."""
-    trigger = str(body.get("import_trigger") or "ui").strip().lower() or "ui"
-    with _import_lock:
-        if _import_state.running:
+    """Analyze a captured page payload and dispatch a Celery import task."""
+    with _task_id_lock:
+        existing_task_id = _current_task_id
+    if existing_task_id:
+        existing = AsyncResult(existing_task_id, app=celery_app)
+        if existing.state not in ("SUCCESS", "FAILURE", "REVOKED"):
             return {"error": "An import is already running"}, 409
-    _reset_import_state(
-        phase="receiving",
-        message="Receiving captured job-board HTML...",
-        trigger=trigger,
-    )
 
     repos = _get_repos()
     raw_content = str(body.get("content") or "")
     content_format = str(body.get("format") or "html")
 
     try:
-        with _import_lock:
-            _import_state.phase = "analyzing"
-            _import_state.progress = 5
-            _import_state.message = "Extracting job links from captured page..."
         page_url = str(body.get("url") or "").strip() or None
-        analysis = CapturedPageImportService().analyze_capture(raw_content, content_format, base_url=page_url)
+        analysis = CapturedPageImportService().analyze_capture(
+            raw_content, content_format, base_url=page_url
+        )
         extracted = analysis["urls"]
     except ValueError as exc:
         repos["conn"].close()
-        _finish_import_state(str(exc), {"queued": 0, "skipped": 0, "failed": 0, "error": str(exc)})
         return {"error": str(exc)}, 400
     except Exception as exc:
         repos["conn"].close()
-        logger.error("Captured page import failed: %s", exc)
-        _finish_import_state("Captured page import failed.", {"queued": 0, "skipped": 0, "failed": 1})
+        logger.error("Captured page analysis failed: %s", exc)
         return {"error": str(exc)}, 500
 
     if not extracted:
         repos["conn"].close()
-        result = {"queued": 0, "skipped": 0, "failed": 0, "jobs": []}
-        _finish_import_state("No supported job links were found in the captured page.", result)
         return {"queued": 0, "skipped": 0, "failed": 0, "jobs": []}, 200
 
     try:
-        with _import_lock:
-            _import_state.phase = "resolving_source"
-            _import_state.progress = 10
-            _import_state.total = len(extracted)
-            _import_state.message = f"Found {len(extracted)} job link{'s' if len(extracted) != 1 else ''}. Resolving capture source..."
-        capture_source, source_error = _resolve_capture_source(repos, body, analysis["source"])
+        capture_source, source_error = _resolve_capture_source(
+            repos, body, analysis["source"]
+        )
     except ValueError as exc:
         repos["conn"].close()
-        _finish_import_state(str(exc), {"queued": 0, "skipped": 0, "failed": 0, "error": str(exc)})
         return {"error": str(exc)}, 400
     if source_error:
         payload, status_code = source_error
         repos["conn"].close()
-        _finish_import_state(str(payload.get("error") or "Capture source is required."), payload)
         return payload, status_code
 
     repos["conn"].commit()
     repos["conn"].close()
 
-    thread = threading.Thread(
-        target=_run_import, args=(extracted, capture_source, body), daemon=True
-    )
-    thread.start()
-    return {"status": "started"}, 202
+    task = run_import_task.delay(extracted, capture_source, body)
+    with _task_id_lock:
+        global _current_task_id
+        _current_task_id = task.id
+    logger.info("Import task dispatched: %s (%d URLs)", task.id, len(extracted))
+    return {"status": "started", "task_id": task.id}, 202
 
 
 # ─── Import routes ────────────────────────────────────────────────────────────
@@ -486,17 +315,71 @@ def import_and_queue_all_jobs():
 
 @import_bp.route("/import/status")
 def import_status():
-    with _import_lock:
+    with _task_id_lock:
+        task_id = _current_task_id
+
+    if not task_id:
         return jsonify({
-            "running": _import_state.running,
-            "phase": _import_state.phase,
-            "progress": _import_state.progress,
-            "message": _import_state.message,
-            "total": _import_state.total,
-            "result": _import_state.result,
-            "trigger": _import_state.trigger,
-            "started_at": _import_state.started_at,
-            "capture_source": _import_state.capture_source,
-            "current_job_url": _import_state.current_job_url,
-            "current_platform": _import_state.current_platform,
+            "running": False,
+            "phase": "idle",
+            "progress": 0,
+            "message": "Idle",
+            "total": 0,
+            "result": None,
+            "current_job_url": "",
+            "current_platform": "",
         })
+
+    result = AsyncResult(task_id, app=celery_app)
+    state = result.state
+
+    if state in ("PENDING", "STARTED"):
+        meta = result.info if isinstance(result.info, dict) else {}
+        return jsonify({
+            "running": True,
+            "phase": meta.get("phase", "processing"),
+            "progress": meta.get("progress", 0),
+            "message": meta.get("message", "Starting…"),
+            "total": meta.get("total", 0),
+            "result": None,
+            "current_job_url": meta.get("current_job_url", ""),
+            "current_platform": meta.get("current_platform", ""),
+        })
+
+    if state == "PROGRESS":
+        meta = result.info or {}
+        return jsonify({
+            "running": True,
+            "phase": meta.get("phase", "processing"),
+            "progress": meta.get("progress", 0),
+            "message": meta.get("message", ""),
+            "total": meta.get("total", 0),
+            "result": None,
+            "current_job_url": meta.get("current_job_url", ""),
+            "current_platform": meta.get("current_platform", ""),
+        })
+
+    if state == "SUCCESS":
+        return jsonify({
+            "running": False,
+            "phase": "done",
+            "progress": 100,
+            "message": "Import complete",
+            "total": 0,
+            "result": result.result,
+            "current_job_url": "",
+            "current_platform": "",
+        })
+
+    # FAILURE or REVOKED
+    err = str(result.result) if result.result else "Import failed"
+    return jsonify({
+        "running": False,
+        "phase": "error",
+        "progress": 0,
+        "message": err,
+        "total": 0,
+        "result": None,
+        "current_job_url": "",
+        "current_platform": "",
+    })

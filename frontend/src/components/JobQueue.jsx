@@ -830,12 +830,22 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
                   </button>
                 </div>
 
-                {manualResult && (
-                  <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--green)" }}>
-                    Queued {manualResult.job_title || "job"} at {manualResult.company || "unknown company"} as{" "}
-                    <strong>{manualResult.status}</strong>
-                    {manualResult.fit_score != null ? ` with fit score ${manualResult.fit_score}` : ""}.
-                  </p>
+                {manualSubmitting && (
+                  <div style={inlineImportProgressStyle}>
+                    <span className="inline-spinner" style={{ marginRight: "8px" }} />
+                    <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>Evaluating job listing…</span>
+                  </div>
+                )}
+
+                {manualResult && !manualSubmitting && (
+                  <div style={inlineImportSuccessStyle}>
+                    <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--green)", marginBottom: "2px" }}>Queued</div>
+                    <div style={{ fontSize: "13px" }}>
+                      {manualResult.job_title || "Job"} at {manualResult.company || "unknown company"}{" "}
+                      as <strong>{manualResult.status}</strong>
+                      {manualResult.fit_score != null ? ` · fit score ${manualResult.fit_score}` : ""}
+                    </div>
+                  </div>
                 )}
               </>
             ) : (
@@ -905,6 +915,56 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
                     {importSubmitting ? "Importing…" : "Extract & Queue All"}
                   </button>
                 </div>
+
+                {importSubmitting && (
+                  <div style={inlineImportProgressStyle}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: importState ? "8px" : "0" }}>
+                      <span className="inline-spinner" />
+                      <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>{importState?.message || "Starting import…"}</span>
+                    </div>
+                    {importState && (
+                      <>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px" }}>
+                          <span>Progress</span>
+                          <span>{Math.max(0, Math.min(100, Number(importState.progress) || 0))}%</span>
+                        </div>
+                        <div className="loading-bar">
+                          <div className="loading-bar-fill" style={{ width: `${Math.max(0, Math.min(100, Number(importState.progress) || 0))}%` }} />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {importSummary && !importSubmitting && (
+                  <div style={inlineImportSuccessStyle}>
+                    <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--green)", marginBottom: "8px" }}>Import complete</div>
+                    <div style={{ display: "flex", gap: "20px" }}>
+                      <div>
+                        <div style={{ fontSize: "22px", fontWeight: 700, color: importSummary.queued > 0 ? "var(--green)" : "var(--text-muted)" }}>{importSummary.queued}</div>
+                        <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>queued</div>
+                      </div>
+                      {importSummary.skipped > 0 && (
+                        <div>
+                          <div style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-muted)" }}>{importSummary.skipped}</div>
+                          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>already in queue</div>
+                        </div>
+                      )}
+                      {(importSummary.repaired ?? 0) > 0 && (
+                        <div>
+                          <div style={{ fontSize: "22px", fontWeight: 700, color: "var(--green)" }}>{importSummary.repaired}</div>
+                          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>company fixed</div>
+                        </div>
+                      )}
+                      {importSummary.failed > 0 && (
+                        <div>
+                          <div style={{ fontSize: "22px", fontWeight: 700, color: "var(--red)" }}>{importSummary.failed}</div>
+                          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>failed</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -931,16 +991,8 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         <ScanSummaryPopup summary={scanSummary} onClose={() => setScanSummary(null)} />
       )}
 
-      {importSummary && (
+      {importSummary && !importPanelOpen && (
         <ImportSummaryPopup summary={importSummary} onClose={() => setImportSummary(null)} />
-      )}
-
-      {importSubmitting && importState && (
-        <ProgressPopup
-          title="Importing Job Posts"
-          message={importState.message}
-          progress={importState.progress}
-        />
       )}
 
       {anyScanRunning && scanState && (
@@ -1434,6 +1486,22 @@ function detectImportFormatFromText(text, fallback) {
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) return "json";
   return fallback;
 }
+
+const inlineImportProgressStyle = {
+  marginTop: "12px",
+  padding: "10px 12px",
+  background: "rgba(255,255,255,0.04)",
+  borderRadius: "6px",
+  border: "1px solid var(--border)",
+};
+
+const inlineImportSuccessStyle = {
+  marginTop: "12px",
+  padding: "10px 12px",
+  background: "rgba(76,175,129,0.08)",
+  borderRadius: "6px",
+  border: "1px solid rgba(76,175,129,0.25)",
+};
 
 const progressBox = {
   background: "var(--surface)",

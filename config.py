@@ -96,6 +96,9 @@ DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(
     os.getenv("CANDIDATE_PROFILE_PATH", str(BASE_DIR / "candidate_profile.md"))
 )
 
+# ─── Redis / Celery ───────────────────────────────────────────────────────────
+REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
 # ─── Google OAuth ─────────────────────────────────────────────────────────────
 GOOGLE_CREDENTIALS_FILE: Path = CREDENTIALS_DIR / "google_credentials.json"
 GOOGLE_TOKEN_FILE: Path = CREDENTIALS_DIR / "token.json"

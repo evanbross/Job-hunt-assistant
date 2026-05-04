@@ -883,7 +883,18 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
       )}
 
       {/* Actions */}
-      <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+      <div style={{ display: "flex", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
+        {job.url && (
+          <a
+            href={job.url}
+            target="_blank"
+            rel="noreferrer"
+            className="btn-secondary"
+            style={{ display: "inline-flex", alignItems: "center", padding: "6px 14px", fontSize: "13px", textDecoration: "none", flexShrink: 0 }}
+          >
+            View Job ↗
+          </a>
+        )}
         <button
           className="btn-success"
           onClick={() => act(onApprove, "approve")}
