@@ -76,6 +76,29 @@ _scan_state = ScanState()
 _scan_lock = threading.Lock()
 
 
+def _email_report_row(
+    *,
+    email_id: str,
+    sender_email: str = "",
+    email_subject: str = "",
+    email_date: str | None = None,
+    disposition: str,
+    gmail_action: str,
+    job_count: int = 0,
+    job_titles: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "email_id": email_id,
+        "sender_email": sender_email,
+        "email_subject": email_subject,
+        "email_date": email_date,
+        "disposition": disposition,
+        "gmail_action": gmail_action,
+        "job_count": job_count,
+        "job_titles": job_titles or [],
+    }
+
+
 def _update_scan(
     *,
     progress: int | None = None,
@@ -178,8 +201,21 @@ def _run_scan(rescan_all: bool = False) -> None:
 
         new_jobs: int = 0
         emails_with_jobs: int = 0
+        duplicate_emails: int = 0
+        already_scanned_emails: int = 0
+        acknowledgement_emails: int = 0
+        feedback_filtered_emails: int = 0
+        non_job_emails: int = 0
+        parser_error_emails: int = 0
+        fetch_error_emails: int = 0
+        pending_review_jobs: int = 0
+        triage_jobs: int = 0
+        possible_duplicate_jobs: int = 0
+        low_fit_score_jobs: int = 0
+        scoring_failed_jobs: int = 0
         jobs_by_source: dict[str, int] = {}
         successful_emails: list[dict[str, object]] = []
+        email_report: list[dict[str, object]] = []
 
         # Load all known jobs once for duplicate detection.
         known_jobs: list[dict] = job_repo.get_all_ordered()
@@ -190,6 +226,14 @@ def _run_scan(rescan_all: bool = False) -> None:
             # Primary dedup: skip if this exact Gmail message ID was already processed.
             # Uses scanned_emails table so rejected/deleted jobs are still remembered.
             if scanned_repo.has_been_scanned(msg_id):
+                already_scanned_emails += 1
+                email_report.append(
+                    _email_report_row(
+                        email_id=msg_id,
+                        disposition="already_scanned",
+                        gmail_action="already processed",
+                    )
+                )
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
@@ -197,7 +241,16 @@ def _run_scan(rescan_all: bool = False) -> None:
                 full_msg = gmail.get_message(msg_id)
                 subject, sender, body = gmail.extract_text(full_msg)
             except Exception as exc:
+                fetch_error_emails += 1
+                email_report.append(
+                    _email_report_row(
+                        email_id=msg_id,
+                        disposition="fetch_error",
+                        gmail_action="left in inbox",
+                    )
+                )
                 _update_scan(error=f"Failed to fetch message {msg_id}: {exc}")
+                _update_scan(jobs_processed=idx + 1)
                 continue
 
             email_date = email_date_from_message(full_msg)
@@ -206,26 +259,59 @@ def _run_scan(rescan_all: bool = False) -> None:
 
             # Blacklist: skip application-acknowledgement emails
             if subject_rule == "blacklist":
+                acknowledgement_emails += 1
                 gmail.mark_as_read(msg_id)
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="ack", email_date=email_date)
                 conn.commit()
+                email_report.append(
+                    _email_report_row(
+                        email_id=msg_id,
+                        sender_email=sender,
+                        email_subject=subject,
+                        email_date=email_date,
+                        disposition="ack",
+                        gmail_action="marked read",
+                    )
+                )
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
             # Secondary dedup: same sender + subject seen within the lookback window.
             # Catches edge cases like a message re-delivered with a different ID.
             if scanned_repo.is_duplicate_by_content(sender, subject, lookback_days):
+                duplicate_emails += 1
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="duplicate", email_date=email_date)
                 conn.commit()
+                email_report.append(
+                    _email_report_row(
+                        email_id=msg_id,
+                        sender_email=sender,
+                        email_subject=subject,
+                        email_date=email_date,
+                        disposition="duplicate",
+                        gmail_action="left in inbox",
+                    )
+                )
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
             # Check relevance feedback — skip if known noise
             feedback = feedback_repo.find_match(sender, subject)
             if feedback and feedback["is_relevant"] == 0:
+                feedback_filtered_emails += 1
                 gmail.mark_as_read(msg_id)
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="feedback_filtered", email_date=email_date)
                 conn.commit()
+                email_report.append(
+                    _email_report_row(
+                        email_id=msg_id,
+                        sender_email=sender,
+                        email_subject=subject,
+                        email_date=email_date,
+                        disposition="feedback_filtered",
+                        gmail_action="marked read",
+                    )
+                )
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
@@ -233,8 +319,19 @@ def _run_scan(rescan_all: bool = False) -> None:
             try:
                 parsed_jobs = parser.parse(subject, sender, body)
             except Exception as exc:
+                parser_error_emails += 1
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=body, parser_error_msg=str(exc))
                 conn.commit()
+                email_report.append(
+                    _email_report_row(
+                        email_id=msg_id,
+                        sender_email=sender,
+                        email_subject=subject,
+                        email_date=email_date,
+                        disposition="parser_error",
+                        gmail_action="left in inbox",
+                    )
+                )
                 _update_scan(
                     error=f"Parser error: {exc}",
                     error_email_id=msg_id,
@@ -244,13 +341,24 @@ def _run_scan(rescan_all: bool = False) -> None:
 
             if not parsed_jobs:
                 # Not a job email — mark scanned and move on
+                non_job_emails += 1
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="noise", email_date=email_date)
-                gmail.mark_as_read(msg_id)
                 conn.commit()
+                email_report.append(
+                    _email_report_row(
+                        email_id=msg_id,
+                        sender_email=sender,
+                        email_subject=subject,
+                        email_date=email_date,
+                        disposition="noise",
+                        gmail_action="left in inbox",
+                    )
+                )
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
             snippet = body[:300]
+            job_titles: list[str] = []
 
             for job_idx, parsed in enumerate(parsed_jobs):
                 # First job keeps the raw msg_id; subsequent jobs get a suffix so the
@@ -323,17 +431,41 @@ def _run_scan(rescan_all: bool = False) -> None:
                         )
                         job_data["fit_score"] = score_result["score"]
                         job_data["fit_reasoning"] = score_result["reasoning"]
+                        if score_result["score"] < 70:
+                            low_fit_score_jobs += 1
                     except Exception as exc:
+                        scoring_failed_jobs += 1
                         logger.warning("Scoring failed for %s job %d: %s", msg_id, job_idx, exc)
 
                 job_repo.insert(job_data)
                 new_jobs += 1
+                job_title = str(parsed.get("job_title") or "").strip()
+                if job_title:
+                    job_titles.append(job_title)
+                if status == "possible_duplicate":
+                    possible_duplicate_jobs += 1
+                elif status == "triage":
+                    triage_jobs += 1
+                else:
+                    pending_review_jobs += 1
                 source_key = (parsed.get("source") or "Unknown").strip() or "Unknown"
                 jobs_by_source[source_key] = jobs_by_source.get(source_key, 0) + 1
 
             emails_with_jobs += 1
             scanned_repo.mark_scanned(msg_id, sender, subject, disposition="job_created", email_date=email_date)
             conn.commit()
+            email_report.append(
+                _email_report_row(
+                    email_id=msg_id,
+                    sender_email=sender,
+                    email_subject=subject,
+                    email_date=email_date,
+                    disposition="job_created",
+                    gmail_action="eligible to move",
+                    job_count=len(parsed_jobs),
+                    job_titles=job_titles,
+                )
+            )
             successful_emails.append(
                 {
                     "email_id": msg_id,
@@ -365,7 +497,21 @@ def _run_scan(rescan_all: bool = False) -> None:
                 "emails_scanned": total,
                 "new_jobs": new_jobs,
                 "emails_with_jobs": emails_with_jobs,
+                "duplicates": duplicate_emails + already_scanned_emails,
+                "duplicate_emails": duplicate_emails,
+                "already_scanned_emails": already_scanned_emails,
+                "acknowledgement_emails": acknowledgement_emails,
+                "feedback_filtered_emails": feedback_filtered_emails,
+                "non_job_emails": non_job_emails,
+                "parser_error_emails": parser_error_emails,
+                "fetch_error_emails": fetch_error_emails,
+                "pending_review_jobs": pending_review_jobs,
+                "triage_jobs": triage_jobs,
+                "possible_duplicate_jobs": possible_duplicate_jobs,
+                "low_fit_score_jobs": low_fit_score_jobs,
+                "scoring_failed_jobs": scoring_failed_jobs,
                 "successful_emails": successful_emails,
+                "email_report": email_report,
                 "sources_with_jobs": len(jobs_by_source),
                 "by_source": sorted(
                     [{"source": k, "count": v} for k, v in jobs_by_source.items()],

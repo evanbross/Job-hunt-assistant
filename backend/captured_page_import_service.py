@@ -132,6 +132,9 @@ class _DocumentParser(HTMLParser):
 
 
 class CapturedPageImportService:
+    _MHTML_HEADER_NAMES: frozenset[str] = frozenset(
+        {"content-type:", "content-location:", "mime-version:"}
+    )
     _SUPPORTED_HOSTS: tuple[tuple[str, str], ...] = (
         ("greenhouse.io", "Greenhouse"),
         ("lever.co", "Lever"),
@@ -141,19 +144,31 @@ class CapturedPageImportService:
         ("linkedin.com", "LinkedIn"),
     )
 
-    def extract_public_job_urls(self, raw_content: str, content_format: str, *, base_url: str | None = None) -> list[ExtractedJobUrl]:
+    def extract_public_job_urls(
+        self,
+        raw_content: str,
+        content_format: str = "auto",
+        *,
+        base_url: str | None = None,
+    ) -> list[ExtractedJobUrl]:
         return self.analyze_capture(raw_content, content_format, base_url=base_url)["urls"]
 
-    def analyze_capture(self, raw_content: str, content_format: str, *, base_url: str | None = None) -> CaptureAnalysis:
+    def analyze_capture(
+        self,
+        raw_content: str,
+        content_format: str = "auto",
+        *,
+        base_url: str | None = None,
+    ) -> CaptureAnalysis:
         normalized = raw_content.strip()
         if not normalized:
             raise ValueError("Captured page content is required.")
 
-        normalized_format = content_format.strip().lower() or "html"
+        normalized_format = self._resolve_content_format(normalized, content_format)
         if normalized_format == "json":
             return self._analyze_json_capture(normalized)
 
-        html_documents = self._extract_html_documents(normalized, content_format)
+        html_documents = self._extract_html_documents(normalized, normalized_format)
         seen: set[str] = set()
         results: list[ExtractedJobUrl] = []
         source_candidates: list[str] = []
@@ -190,6 +205,39 @@ class CapturedPageImportService:
                 results.append(result)
         source = self._guess_capture_source(source_candidates, results)
         return CaptureAnalysis(urls=results, source=source)
+
+    def _resolve_content_format(self, raw_content: str, content_format: str) -> str:
+        normalized_format = content_format.strip().lower() or "auto"
+        if normalized_format != "auto":
+            return normalized_format
+        return self._detect_content_format(raw_content)
+
+    def _detect_content_format(self, raw_content: str) -> str:
+        first_lines = [
+            candidate_line.strip()
+            for candidate_line in raw_content.splitlines()[:12]
+            if candidate_line.strip()
+        ]
+        first_text = "\n".join(first_lines).lstrip("\ufeff")
+        if first_text.startswith(("{", "[")):
+            return "json"
+        lowered_lines = [first_line.lower() for first_line in first_lines]
+        if any(
+            lowered_line.startswith("content-type: multipart/")
+            for lowered_line in lowered_lines
+        ):
+            return "mhtml"
+        matching_header_count = sum(
+            1
+            for lowered_line in lowered_lines
+            if any(
+                lowered_line.startswith(header_name)
+                for header_name in self._MHTML_HEADER_NAMES
+            )
+        )
+        if matching_header_count >= 2:
+            return "mhtml"
+        return "html"
 
     def _analyze_json_capture(self, raw_content: str) -> CaptureAnalysis:
         try:

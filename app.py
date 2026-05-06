@@ -94,7 +94,12 @@ _cors_origins_env = os.environ.get("CORS_ORIGINS", "")
 _cors_origins = (
     [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
     if _cors_origins_env
-    else ["http://localhost:5173", "http://localhost:5174"]
+    else [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+    ]
 )
 CORS(app, resources={r"/api/*": {"origins": _cors_origins}})
 
@@ -227,6 +232,7 @@ from routes.scan import scan_bp
 from routes.settings import settings_bp
 from routes.sheet import sheet_bp
 from routes.system import system_bp
+from routes.wellfound import wellfound_bp
 
 app.register_blueprint(auth_bp, url_prefix="/api")
 app.register_blueprint(board_search_bp, url_prefix="/api")
@@ -239,10 +245,11 @@ app.register_blueprint(jobs_bp, url_prefix="/api")
 app.register_blueprint(scan_bp, url_prefix="/api")
 app.register_blueprint(settings_bp, url_prefix="/api")
 app.register_blueprint(sheet_bp, url_prefix="/api")
+app.register_blueprint(wellfound_bp, url_prefix="/api")
 app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /api/system/*
 
-# Start the career-site background scheduler
-start_career_site_scheduler()
+# Auto-scheduler disabled — use the manual scan banner in the UI instead
+# start_career_site_scheduler()
 start_job_import_listener(queue_import_capture)
 
 # Register generated Swagger docs after API routes are loaded and before the SPA

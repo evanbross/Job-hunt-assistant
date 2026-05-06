@@ -41,6 +41,7 @@ import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
+from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, request
 
@@ -305,6 +306,11 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
             )
             return
 
+        logger.info(
+            "Career-site scan started: %d site(s), trigger=%s",
+            len(target_sources),
+            trigger,
+        )
         _update_career_scan(
             progress=10,
             message=f"Scanning {len(target_sources)} career site(s)...",
@@ -348,17 +354,48 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
         jobs_added_total = 0
         source_count = len(target_sources)
 
+        # Sites that require a real browser — handled by dedicated Playwright scrapers.
+        _PLAYWRIGHT_ONLY_HOSTS = frozenset({"wellfound.com", "www.wellfound.com"})
+
         for idx, source in enumerate(target_sources):
             current_source_id = source["id"]
             source_name = source["name"]
             source_url = source["url"]
             detected_platform = "generic"
+            logger.info(
+                "Career-site scan [%d/%d]: %s (%s)",
+                idx + 1,
+                source_count,
+                source_name,
+                source_url,
+            )
             _update_career_scan(
                 message=f"Scanning {source_name}...",
                 sites_scanned=scanned_sites,
                 jobs_found=jobs_found_total,
                 jobs_added=jobs_added_total,
             )
+
+            try:
+                _host = urlparse(source_url).hostname or ""
+            except Exception:
+                _host = ""
+            if _host in _PLAYWRIGHT_ONLY_HOSTS:
+                logger.info(
+                    "Skipping %s (%s) — Playwright-only host; use the Wellfound Scan panel",
+                    source_name,
+                    source_url,
+                )
+                _update_career_scan(
+                    error=(
+                        f"{source_name}: requires the Wellfound Playwright scanner "
+                        f"— use the Wellfound Scan panel in the Career Sites tab"
+                    )
+                )
+                scanned_sites += 1
+                progress = 20 + int((scanned_sites / source_count) * 75)
+                _update_career_scan(progress=progress, sites_scanned=scanned_sites)
+                continue
 
             if source_id is not None:
                 results_repo.delete_by_site_source_id(current_source_id)
@@ -368,6 +405,12 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 outcome = scanner.scan_site(site_name=source_name, site_url=source_url)
                 jobs = outcome["jobs"]
                 detected_platform = outcome["detected_platform"]
+                logger.info(
+                    "Scanned %s: %d job(s) found (platform=%s)",
+                    source_name,
+                    len(jobs),
+                    detected_platform,
+                )
                 source_repo.update(
                     current_source_id, {"detected_platform": detected_platform}
                 )
@@ -553,6 +596,12 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 jobs_added=jobs_added_total,
             )
 
+        logger.info(
+            "Career-site scan complete: %d site(s) scanned, %d job(s) found, %d added",
+            scanned_sites,
+            jobs_found_total,
+            jobs_added_total,
+        )
         _update_career_scan(
             progress=100,
             message=f"Career-site scan complete. {jobs_added_total} new job(s) added.",

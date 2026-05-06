@@ -134,3 +134,54 @@ def test_open_repositories_selects_sqlite_implementations(tmp_path) -> None:
         assert repos["jobs"].get_by_id(job_id) is None
     finally:
         repos["conn"].close()
+
+
+def test_scanned_email_history_includes_all_child_jobs(tmp_path) -> None:
+    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
+
+    init_db(dsn)
+    repos = open_repositories(dsn)
+    try:
+        repos["scanned_emails"].mark_scanned(
+            "email-3",
+            "jobs@example.com",
+            "Two roles",
+            disposition="job_created",
+            email_date="2026-05-01",
+        )
+        first_job_id = repos["jobs"].insert(
+            {
+                "email_id": "email-3",
+                "company": "Acme",
+                "job_title": "Backend Engineer",
+                "url": "https://example.com/jobs/3",
+                "source": "email",
+                "status": "added_to_sheet",
+                "date_found": "2026-05-01",
+                "fit_score": 82,
+            }
+        )
+        second_job_id = repos["jobs"].insert(
+            {
+                "email_id": "email-3:1",
+                "company": "Acme",
+                "job_title": "Frontend Engineer",
+                "url": "https://example.com/jobs/4",
+                "source": "email",
+                "status": "skipped",
+                "date_found": "2026-05-01",
+                "skip_reason": "duplicate",
+            }
+        )
+        repos["conn"].commit()
+
+        emails = repos["scanned_emails"].get_all_with_job_status()
+
+        assert len(emails) == 1
+        assert emails[0]["job_count"] == 2
+        assert emails[0]["job_id"] == first_job_id
+        assert [job["id"] for job in emails[0]["jobs"]] == [first_job_id, second_job_id]
+        assert emails[0]["jobs"][0]["status"] == "added_to_sheet"
+        assert emails[0]["jobs"][1]["skip_reason"] == "duplicate"
+    finally:
+        repos["conn"].close()

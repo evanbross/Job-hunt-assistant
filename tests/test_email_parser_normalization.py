@@ -34,7 +34,24 @@
 
 from __future__ import annotations
 
-from backend.email_parser import _normalize_title_company
+from backend.ai_provider import AIMessage
+from backend.email_parser import EmailParser, _normalize_title_company
+
+
+class FakeParserClient:
+    def __init__(self) -> None:
+        self.messages: list[AIMessage] = []
+
+    def complete(
+        self,
+        *,
+        messages: list[AIMessage],
+        system: str,
+        max_tokens: int,
+        json_response: bool,
+    ) -> str:
+        self.messages = messages
+        return "[]"
 
 
 def test_extracts_company_from_job_application_title() -> None:
@@ -111,3 +128,15 @@ def test_keeps_existing_known_company() -> None:
 
     assert item["company"] == "Acme"
     assert item["job_title"] == "Job Application for Senior Engineer at Transcend Inc."
+
+
+def test_parser_sends_later_digest_jobs_to_ai_client() -> None:
+    client = FakeParserClient()
+    parser = EmailParser(client=client)
+    late_job_title = "Principal Platform Engineer"
+    body = "Top LinkedIn jobs for you\n" + ("filler\n" * 1200) + late_job_title
+
+    parser.parse("LinkedIn job alert", "jobs-noreply@linkedin.com", body)
+
+    sent_content = client.messages[0].content
+    assert late_job_title in sent_content

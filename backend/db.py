@@ -651,7 +651,6 @@ class PostgresScannedEmailRepository(_BaseRepo):
         )
 
     def get_all_with_job_status(self) -> list[dict[str, Any]]:
-        # Literal % in LIKE patterns — no params passed so psycopg2 won't interpret them.
         cur = self._execute("""
             SELECT
                 se.email_id,
@@ -663,24 +662,85 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 se.raw_body,
                 se.parser_error_msg,
                 se.hidden,
-                (SELECT j.id        FROM jobs j WHERE j.email_id = se.email_id
-                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS job_id,
-                (SELECT j.company   FROM jobs j WHERE j.email_id = se.email_id
-                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS company,
-                (SELECT j.job_title FROM jobs j WHERE j.email_id = se.email_id
-                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS job_title,
-                (SELECT j.status    FROM jobs j WHERE j.email_id = se.email_id
-                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS job_status,
-                (SELECT j.fit_score FROM jobs j WHERE j.email_id = se.email_id
-                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS fit_score,
-                (SELECT j.skip_reason FROM jobs j WHERE j.email_id = se.email_id
-                    OR j.email_id LIKE se.email_id || ':%' ORDER BY j.id LIMIT 1) AS skip_reason,
-                (SELECT COUNT(*)    FROM jobs j WHERE j.email_id = se.email_id
-                    OR j.email_id LIKE se.email_id || ':%') AS job_count
+                j.id AS child_job_id,
+                j.email_id AS child_email_id,
+                j.company AS child_company,
+                j.job_title AS child_job_title,
+                j.url AS child_url,
+                j.status AS child_job_status,
+                j.fit_score AS child_fit_score,
+                j.skip_reason AS child_skip_reason,
+                j.parser_confidence AS child_parser_confidence,
+                j.confidence_score AS child_confidence_score,
+                j.duplicate_hint AS child_duplicate_hint,
+                j.date_found AS child_date_found,
+                j.date_added_to_sheet AS child_date_added_to_sheet
             FROM scanned_emails se
-            ORDER BY se.scanned_at DESC
+            LEFT JOIN jobs j
+              ON j.email_id = se.email_id
+              OR substr(j.email_id, 1, length(se.email_id) + 1) = se.email_id || ':'
+            ORDER BY se.scanned_at DESC, j.id
         """)
-        return [_row_to_dict(r) for r in cur.fetchall()]
+        rows = [_row_to_dict(row) for row in cur.fetchall()]
+        emails_by_id: dict[str, dict[str, Any]] = {}
+        ordered_email_ids: list[str] = []
+
+        for email_job_row in rows:
+            email_id = str(email_job_row["email_id"])
+            if email_id not in emails_by_id:
+                emails_by_id[email_id] = {
+                    "email_id": email_job_row["email_id"],
+                    "sender_email": email_job_row["sender_email"],
+                    "email_subject": email_job_row["email_subject"],
+                    "scanned_at": email_job_row["scanned_at"],
+                    "email_date": email_job_row["email_date"],
+                    "disposition": email_job_row["disposition"],
+                    "raw_body": email_job_row["raw_body"],
+                    "parser_error_msg": email_job_row["parser_error_msg"],
+                    "hidden": email_job_row["hidden"],
+                    "job_id": None,
+                    "company": None,
+                    "job_title": None,
+                    "job_status": None,
+                    "fit_score": None,
+                    "skip_reason": None,
+                    "job_count": 0,
+                    "jobs": [],
+                }
+                ordered_email_ids.append(email_id)
+
+            child_job_id = email_job_row.get("child_job_id")
+            if child_job_id is None:
+                continue
+
+            child_job = {
+                "id": child_job_id,
+                "email_id": email_job_row["child_email_id"],
+                "company": email_job_row["child_company"],
+                "job_title": email_job_row["child_job_title"],
+                "url": email_job_row["child_url"],
+                "status": email_job_row["child_job_status"],
+                "fit_score": email_job_row["child_fit_score"],
+                "skip_reason": email_job_row["child_skip_reason"],
+                "parser_confidence": email_job_row["child_parser_confidence"],
+                "confidence_score": email_job_row["child_confidence_score"],
+                "duplicate_hint": email_job_row["child_duplicate_hint"],
+                "date_found": email_job_row["child_date_found"],
+                "date_added_to_sheet": email_job_row["child_date_added_to_sheet"],
+            }
+            email_record = emails_by_id[email_id]
+            email_record["jobs"].append(child_job)
+            email_record["job_count"] = len(email_record["jobs"])
+
+            if email_record["job_id"] is None:
+                email_record["job_id"] = child_job["id"]
+                email_record["company"] = child_job["company"]
+                email_record["job_title"] = child_job["job_title"]
+                email_record["job_status"] = child_job["status"]
+                email_record["fit_score"] = child_job["fit_score"]
+                email_record["skip_reason"] = child_job["skip_reason"]
+
+        return [emails_by_id[email_id] for email_id in ordered_email_ids]
 
     def set_hidden(self, email_id: str, hidden: bool) -> None:
         self._execute(

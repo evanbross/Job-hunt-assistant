@@ -99,6 +99,12 @@ DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(
 # ─── Redis / Celery ───────────────────────────────────────────────────────────
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+# ─── Wellfound scraper ────────────────────────────────────────────────────────
+WELLFOUND_EMAIL: str = os.getenv("WELLFOUND_EMAIL", "")
+WELLFOUND_PASSWORD: str = os.getenv("WELLFOUND_PASSWORD", "")
+WELLFOUND_SEARCH_URL: str = os.getenv("WELLFOUND_SEARCH_URL", "https://wellfound.com/jobs")
+WELLFOUND_SESSION_FILE: Path = CREDENTIALS_DIR / "wellfound_session.json"
+
 # ─── Google OAuth ─────────────────────────────────────────────────────────────
 GOOGLE_CREDENTIALS_FILE: Path = CREDENTIALS_DIR / "google_credentials.json"
 GOOGLE_TOKEN_FILE: Path = CREDENTIALS_DIR / "token.json"

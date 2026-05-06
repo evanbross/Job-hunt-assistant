@@ -56,6 +56,21 @@ def test_extracts_public_supported_urls_from_html() -> None:
     assert rows[1]["platform"] == "Lever"
 
 
+def test_auto_detects_html_capture() -> None:
+    service = CapturedPageImportService()
+    html = """
+    <!doctype html>
+    <html><body>
+    <a href="https://job-boards.greenhouse.io/acme/jobs/123">Greenhouse</a>
+    </body></html>
+    """
+
+    rows = service.extract_public_job_urls(html)
+
+    assert len(rows) == 1
+    assert rows[0]["platform"] == "Greenhouse"
+
+
 def test_extracts_html_parts_from_mhtml() -> None:
     service = CapturedPageImportService()
     mhtml = (
@@ -72,6 +87,23 @@ def test_extracts_html_parts_from_mhtml() -> None:
     assert len(rows) == 1
     assert rows[0]["url"] == "https://job-boards.greenhouse.io/acme/jobs/123"
     assert rows[0]["platform"] == "Greenhouse"
+
+
+def test_auto_detects_mhtml_capture() -> None:
+    service = CapturedPageImportService()
+    mhtml = (
+        "MIME-Version: 1.0\n"
+        "Content-Type: multipart/related; boundary=\"BOUNDARY\"\n\n"
+        "--BOUNDARY\n"
+        "Content-Type: text/html; charset=\"utf-8\"\n\n"
+        "<html><body><a href=\"https://jobs.lever.co/acme/456\">Job</a></body></html>\n"
+        "--BOUNDARY--\n"
+    )
+
+    rows = service.extract_public_job_urls(mhtml)
+
+    assert len(rows) == 1
+    assert rows[0]["platform"] == "Lever"
 
 
 def test_analyzes_capture_source_from_single_greenhouse_board() -> None:
@@ -163,6 +195,23 @@ def test_analyzes_bookmarklet_json_capture() -> None:
     assert analysis["urls"][0]["company"] == "Spawn"
     assert analysis["urls"][0]["job_title"] == "Game Engineer at Spawn"
     assert analysis["source"]["url"] == "https://wellfound.com/jobs"
+
+
+def test_auto_detects_bookmarklet_json_capture() -> None:
+    service = CapturedPageImportService()
+    payload = """
+    [
+      {
+        "url": "https://job-boards.greenhouse.io/acme/jobs/123",
+        "platform": "Greenhouse"
+      }
+    ]
+    """
+
+    analysis = service.analyze_capture(payload)
+
+    assert len(analysis["urls"]) == 1
+    assert analysis["urls"][0]["platform"] == "Greenhouse"
 
 
 def test_recovers_wellfound_company_from_bookmarklet_text() -> None:

@@ -41,6 +41,7 @@ import re
 from pathlib import Path
 
 import docx
+import fitz
 from flask import Blueprint, jsonify, request
 
 import config
@@ -85,10 +86,12 @@ def save_cover_letter():
     text = (body.get("text") or "").strip()
     job_title = (body.get("job_title") or "Cover Letter").strip()
     company = (body.get("company") or "").strip()
+    label = (body.get("label") or "Cover Letter").strip()
+    file_format = (body.get("format") or "docx").lower()
     folder_override = (body.get("folder") or "").strip() or None
 
     if not text:
-        return jsonify({"error": "No cover letter text provided"}), 400
+        return jsonify({"error": "No text provided"}), 400
 
     repos = _get_repos()
     settings = repos["settings"]
@@ -112,24 +115,51 @@ def save_cover_letter():
     _illegal = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
     safe_title = _illegal.sub("", job_title)[:60].strip()
     safe_company = _illegal.sub("", company)[:30].strip()
+    safe_label = _illegal.sub("", label)[:30].strip()
+    
     filename_parts = [part for part in (safe_company, safe_title) if part]
     filename_stem = " - ".join(filename_parts)
-    filename_stem = filename_stem or "Cover Letter"
-    filename = f"{filename_stem} Cover Letter.docx"
-
+    filename_stem = filename_stem or safe_label
+    
+    extension = "docx"
+    if file_format == "pdf":
+        extension = "pdf"
+    elif file_format in ("text", "txt"):
+        extension = "txt"
+        
+    filename = f"{filename_stem} {safe_label}.{extension}"
     path = folder / filename
 
-    doc = docx.Document()
-    # Remove the default empty paragraph that python-docx adds
-    for para in doc.paragraphs:
-        p = para._element
-        p.getparent().remove(p)
+    try:
+        if extension == "docx":
+            doc = docx.Document()
+            # Remove the default empty paragraph that python-docx adds
+            for para in doc.paragraphs:
+                p = para._element
+                p.getparent().remove(p)
 
-    # Add the cover letter as separate paragraphs, preserving line breaks
-    for block in text.split("\n"):
-        doc.add_paragraph(block)
-
-    doc.save(str(path))
+            # Add the cover letter as separate paragraphs, preserving line breaks
+            for block in text.split("\n"):
+                doc.add_paragraph(block)
+            doc.save(str(path))
+            
+        elif extension == "pdf":
+            doc = fitz.open()
+            page = doc.new_page()
+            # 1 inch margin (72 points)
+            margin = 72
+            rect = fitz.Rect(margin, margin, page.rect.width - margin, page.rect.height - margin)
+            page.insert_textbox(rect, text, fontsize=11, fontname="helv", align=0)
+            doc.save(str(path))
+            doc.close()
+            
+        else: # txt
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+                
+    except Exception as exc:
+        logger.error("Failed to save %s: %s", extension, exc, exc_info=True)
+        return jsonify({"error": f"Failed to write file: {exc}"}), 500
 
     return jsonify({"path": str(path), "filename": filename, "folder": str(folder)})
 

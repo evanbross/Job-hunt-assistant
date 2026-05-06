@@ -216,7 +216,7 @@ def queue_import_capture(body: dict) -> tuple[dict, int]:
 
     repos = _get_repos()
     raw_content = str(body.get("content") or "")
-    content_format = str(body.get("format") or "html")
+    content_format = str(body.get("format") or "auto")
 
     try:
         page_url = str(body.get("url") or "").strip() or None
@@ -292,7 +292,7 @@ def fix_unknown_companies():
 def extract_imported_job_urls():
     body = request.get_json(silent=True) or {}
     raw_content = str(body.get("content") or "")
-    content_format = str(body.get("format") or "html")
+    content_format = str(body.get("format") or "auto")
 
     try:
         page_url = str(body.get("url") or "").strip() or None

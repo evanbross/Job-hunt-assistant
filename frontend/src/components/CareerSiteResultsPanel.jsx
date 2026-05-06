@@ -178,8 +178,8 @@ export default function CareerSiteResultsPanel() {
   const runScanNow = async () => {
     const res = await fetch("/api/career-scan/run", { method: "POST" });
     if (!res.ok) {
-      const err = await res.json();
-      alert(err.error || "Failed to start career-site scan");
+      const err = await res.json().catch(() => ({}));
+      window.alert(`Scan failed (${res.status}): ${err.error || "Unknown error"}`);
       return;
     }
     setRunning(true);
@@ -190,8 +190,8 @@ export default function CareerSiteResultsPanel() {
   const runScanForSite = async (siteId) => {
     const res = await fetch(`/api/career-sites/${siteId}/scan`, { method: "POST" });
     if (!res.ok) {
-      const err = await res.json();
-      alert(err.error || "Failed to start site rescan");
+      const err = await res.json().catch(() => ({}));
+      window.alert(`Scan failed (${res.status}): ${err.error || "Unknown error"}`);
       return;
     }
     setRunning(true);
@@ -537,11 +537,17 @@ export default function CareerSiteResultsPanel() {
           <p style={{ marginTop: "6px", fontSize: "11px", color: "var(--text-muted)" }}>
             Sites scanned: {status.sites_scanned} · Found: {status.jobs_found} · New: {status.jobs_added}
           </p>
-          {status.errors?.length > 0 && (
-            <ul style={{ marginTop: "8px", fontSize: "11px", color: "var(--red)", paddingLeft: "16px" }}>
-              {status.errors.map((e, i) => <li key={i}>{e}</li>)}
-            </ul>
-          )}
+        </div>
+      )}
+
+      {!running && status?.errors?.length > 0 && (
+        <div style={{ ...progressBox, background: "rgba(239,68,68,0.06)", borderColor: "rgba(239,68,68,0.25)", marginBottom: "16px" }}>
+          <p style={{ fontSize: "12px", fontWeight: 600, color: "var(--red)", marginBottom: "6px" }}>
+            Scan completed with errors:
+          </p>
+          <ul style={{ fontSize: "11px", color: "var(--red)", paddingLeft: "16px", margin: 0 }}>
+            {status.errors.map((e, i) => <li key={i}>{e}</li>)}
+          </ul>
         </div>
       )}
 
@@ -569,14 +575,14 @@ export default function CareerSiteResultsPanel() {
           <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "10px" }}>Extracted Jobs</div>
           <div style={{ display: "grid", gap: "10px" }}>
             {groupedRows.map((siteGroup) => (
-              <details key={siteGroup.siteKey} open style={treeGroupStyle}>
+              <details key={siteGroup.siteKey} style={treeGroupStyle}>
                 <summary style={treeSiteSummaryStyle}>
                   <span>{siteGroup.siteLabel}</span>
                   <span style={treeCountStyle}>{siteGroup.jobs.length} job{siteGroup.jobs.length === 1 ? "" : "s"}</span>
                 </summary>
                 <div style={treeChildrenStyle}>
                   {siteGroup.matchGroups.map((matchGroup) => (
-                    <details key={`${siteGroup.siteKey}-${matchGroup.key}`} open style={treeSubgroupStyle}>
+                    <details key={`${siteGroup.siteKey}-${matchGroup.key}`} style={treeSubgroupStyle}>
                       <summary style={treeMatchSummaryStyle}>
                         <span>{matchGroup.label}</span>
                         <span style={treeCountStyle}>{matchGroup.jobs.length}</span>

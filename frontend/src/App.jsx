@@ -40,6 +40,8 @@ import EmailsPanel from "./components/EmailsPanel.jsx";
 import HistoryPanel from "./components/HistoryPanel.jsx";
 import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
 import CareerSiteResultsPanel from "./components/CareerSiteResultsPanel.jsx";
+import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
+import WellfoundScanPanel from "./components/WellfoundScanPanel.jsx";
 
 const TABS = [
   { key: "queue", label: "Job Queue" },
@@ -339,6 +341,8 @@ export default function App() {
         </div>
       )}
 
+      <CareerSiteScanBanner />
+
       <main style={styles.content}>
         {activeTab === "queue" && (
           <JobQueue
@@ -360,7 +364,12 @@ export default function App() {
             focusEmailId={emailFocusId}
           />
         )}
-        {activeTab === "career" && <CareerSiteResultsPanel />}
+        {activeTab === "career" && (
+          <>
+            <WellfoundScanPanel />
+            <CareerSiteResultsPanel />
+          </>
+        )}
         {activeTab === "settings" && <SettingsPanel />}
       </main>
 

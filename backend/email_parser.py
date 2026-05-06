@@ -42,11 +42,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import TypedDict
+from typing import Protocol, TypedDict
 
 from backend.ai_provider import AIMessage, AIProviderClient
 
 logger = logging.getLogger(__name__)
+
+MAX_EMAIL_BODY_CHARS = 20000
 
 
 class ParsedJob(TypedDict):
@@ -57,6 +59,17 @@ class ParsedJob(TypedDict):
     confidence: str          # "high" | "low"
     confidence_score: int    # 0–100 numeric certainty
     confidence_reason: str
+
+
+class EmailParserClient(Protocol):
+    def complete(
+        self,
+        *,
+        messages: list[AIMessage],
+        system: str,
+        max_tokens: int,
+        json_response: bool,
+    ) -> str: ...
 
 
 _UNKNOWN_COMPANY_VALUES = {"", "unknown", "unknown company"}
@@ -76,14 +89,19 @@ Rules:
 3. If the email contains a single job posting, return an array with one element.
 4. If the email is a digest or alert with multiple jobs (e.g. a LinkedIn Jobs alert), \
    return one element per job — do not collapse them into one.
-5. If the email is not a job posting at all (social notification, newsletter unrelated \
+5. For LinkedIn/Dice/Indeed alert emails, scan the entire body from top to bottom. \
+   Treat each repeated job card/listing block as a separate posting even if some \
+   fields are missing. Do not stop after the first relevant or irrelevant job.
+6. Before returning, verify that every visible job title or job-card block in the \
+   body has a corresponding JSON element.
+7. If the email is not a job posting at all (social notification, newsletter unrelated \
    to jobs, etc.), return an empty array: [].
-6. Set "confidence" to "high" for a job when it has at least a job title, company \
+8. Set "confidence" to "high" for a job when it has at least a job title, company \
    name, and an apply/view URL.
-7. Set "confidence" to "low" when the job title, company, or URL is missing or ambiguous.
-8. "source" should be the job board name if identifiable (e.g. "LinkedIn", "Dice"), \
+9. Set "confidence" to "low" when the job title, company, or URL is missing or ambiguous.
+10. "source" should be the job board name if identifiable (e.g. "LinkedIn", "Dice"), \
    otherwise the sender domain.
-9. Leave a field as an empty string if it cannot be determined; do not invent values.
+11. Leave a field as an empty string if it cannot be determined; do not invent values.
 
 Each element schema:
 {
@@ -101,8 +119,8 @@ Each element schema:
 class EmailParser:
     """Parses job emails using the Anthropic API."""
 
-    def __init__(self) -> None:
-        self._client = AIProviderClient()
+    def __init__(self, client: EmailParserClient | None = None) -> None:
+        self._client = client or AIProviderClient()
 
     def parse(self, subject: str, sender: str, body_snippet: str) -> list[ParsedJob]:
         """
@@ -113,7 +131,7 @@ class EmailParser:
         user_content = (
             f"From: {sender}\n"
             f"Subject: {subject}\n\n"
-            f"Body:\n{body_snippet[:6000]}"  # digests can be long
+            f"Body:\n{body_snippet[:MAX_EMAIL_BODY_CHARS]}"
         )
 
         raw = self._client.complete(

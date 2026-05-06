@@ -186,12 +186,16 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     );
   };
 
+  const [showSaveAsMenu, setShowSaveAsMenu] = useState(false); // false | "cover" | "pitch"
+
   const handleCoverLetter = async () => {
     if (coverLetter) {
       setCoverLetterOpen((o) => !o);
       return;
     }
     setLoading("cover");
+    setSaveStatus(null);
+    setShowSaveAsMenu(false);
     try {
       const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
       const data = await res.json();
@@ -223,6 +227,8 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     setPitchChatMessages([]);
     setPitchChatInput("");
     setPitchPendingUpdate(null);
+    setSaveStatus(null);
+    setShowSaveAsMenu(false);
     setLoading("pitch");
     try {
       const res = await fetch(`/api/jobs/${job.id}/pitch`, {
@@ -284,12 +290,15 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     setPitchPendingUpdate(null);
   };
 
-  const handleSave = async (folderOverride = null) => {
+  const handleSave = async (text, label = "Cover Letter", format = "docx", folderOverride = null) => {
     setSaveStatus("saving");
     setFolderEditOpen(false);
+    setShowSaveAsMenu(false);
     try {
       const body = {
-        text: coverLetter,
+        text: text,
+        label: label,
+        format: format,
         job_title: job.job_title || "",
         company: job.company || "",
       };
@@ -302,7 +311,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Save failed");
-      setSaveStatus({ path: data.path, folder: data.folder });
+      setSaveStatus({ path: data.path, folder: data.folder, label: label, format: format });
     } catch (e) {
       setSaveStatus("error");
       alert("Save failed: " + e.message);
@@ -920,6 +929,24 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
               >
                 {pitchCopied ? "Copied!" : "Copy"}
               </button>
+              <div style={{ position: "relative" }}>
+                <button
+                  className="btn-secondary"
+                  onClick={() => setShowSaveAsMenu(showSaveAsMenu === "pitch" ? false : "pitch")}
+                  disabled={saveStatus === "saving"}
+                  style={{ fontSize: "11px", padding: "3px 10px", display: "flex", alignItems: "center", gap: "3px" }}
+                >
+                  {saveStatus === "saving" ? "Saving…" : "Save As"}
+                  <span style={{ fontSize: "8px", opacity: 0.7 }}>▾</span>
+                </button>
+                {showSaveAsMenu === "pitch" && (
+                  <div style={{ ...skipMenuStyle, bottom: "auto", top: "calc(100% + 4px)", left: "auto", right: 0 }}>
+                    <button onClick={() => handleSave(pitchText, pitchType === "why_company" ? "Why Company" : "Why Fit", "text")} style={skipMenuItemStyle}>Text (.txt)</button>
+                    <button onClick={() => handleSave(pitchText, pitchType === "why_company" ? "Why Company" : "Why Fit", "docx")} style={skipMenuItemStyle}>Word (.docx)</button>
+                    <button onClick={() => handleSave(pitchText, pitchType === "why_company" ? "Why Company" : "Why Fit", "pdf")} style={skipMenuItemStyle}>PDF (.pdf)</button>
+                  </div>
+                )}
+              </div>
               <button
                 className="btn-secondary"
                 onClick={() => {
@@ -944,6 +971,47 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
               </button>
               <button className="btn-secondary" onClick={() => setPitchPendingUpdate(null)} style={{ fontSize: "11px", padding: "3px 10px" }}>
                 Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Save confirmation */}
+          {saveStatus && saveStatus !== "saving" && saveStatus !== "error" && (saveStatus.label === "Why Company" || saveStatus.label === "Why Fit") && (
+            <div style={saveStatusBoxStyle}>
+              <div style={{ fontSize: "12px", color: "var(--green)", fontWeight: "600", marginBottom: "4px" }}>
+                Saved as {saveStatus.format === "pdf" ? "PDF" : saveStatus.format === "text" ? "Text" : "Word"}
+              </div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px", wordBreak: "break-all" }}>
+                {saveStatus.path}
+              </div>
+              <button
+                onClick={() => {
+                  setFolderEditOpen((o) => !o);
+                  setFolderInput(saveStatus.folder);
+                }}
+                style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: "12px", padding: 0, textDecoration: "underline", fontWeight: "500" }}
+              >
+                {folderEditOpen ? "Cancel folder edit" : "Change save folder"}
+              </button>
+            </div>
+          )}
+
+          {/* Folder edit input */}
+          {folderEditOpen && (saveStatus?.label === "Why Company" || saveStatus?.label === "Why Fit") && (
+            <div style={{ marginBottom: "10px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="text"
+                value={folderInput}
+                onChange={(e) => setFolderInput(e.target.value)}
+                placeholder="Choose a folder for saved pitches"
+                style={{ flex: 1, minWidth: "280px", fontSize: "12px", padding: "8px 10px", borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontFamily: "monospace" }}
+                onKeyDown={(e) => { if (e.key === "Enter") handleSave(pitchText, pitchType === "why_company" ? "Why Company" : "Why Fit", saveStatus?.format || "docx", folderInput); }}
+              />
+              <button className="btn-secondary" onClick={handleBrowseFolder} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
+                Browse…
+              </button>
+              <button className="btn-secondary" onClick={() => handleSave(pitchText, pitchType === "why_company" ? "Why Company" : "Why Fit", saveStatus?.format || "docx", folderInput)} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
+                Save here
               </button>
             </div>
           )}
@@ -1045,14 +1113,24 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
               >
                 {copied ? "Copied!" : "Copy"}
               </button>
-              <button
-                className="btn-secondary"
-                onClick={() => handleSave()}
-                disabled={saveStatus === "saving"}
-                style={{ fontSize: "11px", padding: "3px 10px" }}
-              >
-                {saveStatus === "saving" ? "Saving…" : "Save as Word"}
-              </button>
+              <div style={{ position: "relative" }}>
+                <button
+                  className="btn-secondary"
+                  onClick={() => setShowSaveAsMenu(showSaveAsMenu === "cover" ? false : "cover")}
+                  disabled={saveStatus === "saving"}
+                  style={{ fontSize: "11px", padding: "3px 10px", display: "flex", alignItems: "center", gap: "3px" }}
+                >
+                  {saveStatus === "saving" ? "Saving…" : "Save As"}
+                  <span style={{ fontSize: "8px", opacity: 0.7 }}>▾</span>
+                </button>
+                {showSaveAsMenu === "cover" && (
+                  <div style={{ ...skipMenuStyle, bottom: "auto", top: "calc(100% + 4px)", left: "auto", right: 0 }}>
+                    <button onClick={() => handleSave(coverLetter, "Cover Letter", "text")} style={skipMenuItemStyle}>Text (.txt)</button>
+                    <button onClick={() => handleSave(coverLetter, "Cover Letter", "docx")} style={skipMenuItemStyle}>Word (.docx)</button>
+                    <button onClick={() => handleSave(coverLetter, "Cover Letter", "pdf")} style={skipMenuItemStyle}>PDF (.pdf)</button>
+                  </div>
+                )}
+              </div>
               <button
                 className="btn-secondary"
                 onClick={() => {
@@ -1083,10 +1161,10 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
           )}
 
           {/* Save confirmation */}
-          {saveStatus && saveStatus !== "saving" && saveStatus !== "error" && (
+          {saveStatus && saveStatus !== "saving" && saveStatus !== "error" && saveStatus.label === "Cover Letter" && (
             <div style={saveStatusBoxStyle}>
               <div style={{ fontSize: "12px", color: "var(--green)", fontWeight: "600", marginBottom: "4px" }}>
-                Saved as Word
+                Saved as {saveStatus.format === "pdf" ? "PDF" : saveStatus.format === "text" ? "Text" : "Word"}
               </div>
               <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px", wordBreak: "break-all" }}>
                 {saveStatus.path}
@@ -1104,7 +1182,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
           )}
 
           {/* Folder edit input */}
-          {folderEditOpen && (
+          {folderEditOpen && saveStatus?.label === "Cover Letter" && (
             <div style={{ marginBottom: "10px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
               <input
                 type="text"
@@ -1112,12 +1190,12 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
                 onChange={(e) => setFolderInput(e.target.value)}
                 placeholder="Choose a folder for saved cover letters"
                 style={{ flex: 1, minWidth: "280px", fontSize: "12px", padding: "8px 10px", borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontFamily: "monospace" }}
-                onKeyDown={(e) => { if (e.key === "Enter") handleSave(folderInput); }}
+                onKeyDown={(e) => { if (e.key === "Enter") handleSave(coverLetter, "Cover Letter", saveStatus?.format || "docx", folderInput); }}
               />
               <button className="btn-secondary" onClick={handleBrowseFolder} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
                 Browse…
               </button>
-              <button className="btn-secondary" onClick={() => handleSave(folderInput)} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
+              <button className="btn-secondary" onClick={() => handleSave(coverLetter, "Cover Letter", saveStatus?.format || "docx", folderInput)} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
                 Save here
               </button>
             </div>

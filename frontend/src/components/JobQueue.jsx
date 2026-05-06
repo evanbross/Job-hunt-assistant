@@ -99,7 +99,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   const [manualSubmitting, setManualSubmitting] = useState(false);
   const [manualResult, setManualResult] = useState(null);
   const [importContent, setImportContent] = useState("");
-  const [importFormat, setImportFormat] = useState("html");
   const [importRecaptureIntervalDays, setImportRecaptureIntervalDays] = useState("4");
   const [importSubmitting, setImportSubmitting] = useState(false);
   const [importSummary, setImportSummary] = useState(null);
@@ -471,7 +470,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         return;
       }
       setImportContent(text);
-      setImportFormat(detectImportFormatFromText(text, "html"));
     } catch {
       window.alert("Clipboard read failed. Your browser may require permission.");
     }
@@ -483,7 +481,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     try {
       const text = await file.text();
       setImportContent(text);
-      setImportFormat(detectImportFormatFromText(text, detectImportFormatFromName(file.name)));
     } catch {
       window.alert("Failed to read file.");
     } finally {
@@ -493,7 +490,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
 
   const buildImportPayload = (sourceFields = {}) => ({
     content: importContent,
-    format: importFormat,
     recapture_interval_days: parseInt(importRecaptureIntervalDays, 10),
     ...sourceFields,
   });
@@ -859,14 +855,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
                 />
 
                 <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
-                  <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                    Format
-                  </label>
-                  <select value={importFormat} onChange={(e) => setImportFormat(e.target.value)} style={selectStyle}>
-                    <option value="html">HTML</option>
-                    <option value="mhtml">MHTML</option>
-                    <option value="json">JSON</option>
-                  </select>
                   <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>
                     Remind every
                   </label>
@@ -1306,12 +1294,49 @@ function JobReEvaluatePopup({ popup, onClose }) {
 }
 
 function ScanSummaryPopup({ summary, onClose }) {
-  const { emails_scanned, new_jobs, sources_with_jobs, by_source } = summary;
+  const {
+    emails_scanned = 0,
+    new_jobs = 0,
+    sources_with_jobs = 0,
+    duplicates = 0,
+    acknowledgement_emails = 0,
+    feedback_filtered_emails = 0,
+    non_job_emails = 0,
+    parser_error_emails = 0,
+    fetch_error_emails = 0,
+    pending_review_jobs = 0,
+    triage_jobs = 0,
+    possible_duplicate_jobs = 0,
+    low_fit_score_jobs = 0,
+    scoring_failed_jobs = 0,
+  } = summary;
+  const bySource = Array.isArray(summary.by_source) ? summary.by_source : [];
   const successfulEmails = Array.isArray(summary.successful_emails) ? summary.successful_emails : [];
+  const emailReport = Array.isArray(summary.email_report) ? summary.email_report : successfulEmails.map((email) => ({
+    ...email,
+    disposition: "job_created",
+    gmail_action: "eligible to move",
+  }));
+  const skippedEmailDetails = [
+    { label: "duplicates", value: duplicates },
+    { label: "not job emails", value: non_job_emails },
+    { label: "acknowledgements", value: acknowledgement_emails },
+    { label: "didn't fit / filtered", value: feedback_filtered_emails },
+    { label: "parser errors", value: parser_error_emails, tone: "red" },
+    { label: "fetch errors", value: fetch_error_emails, tone: "red" },
+  ].filter((item) => item.value > 0);
+  const createdJobDetails = [
+    { label: "kept in queue", value: pending_review_jobs, tone: "green" },
+    { label: "moved to triage", value: triage_jobs, tone: "yellow" },
+    { label: "possible duplicates", value: possible_duplicate_jobs },
+    { label: "low fit score", value: low_fit_score_jobs, tone: "yellow" },
+    { label: "scoring failed", value: scoring_failed_jobs, tone: "red" },
+  ].filter((item) => item.value > 0);
   const [selectedEmailIds, setSelectedEmailIds] = useState(() => successfulEmails.map((email) => email.email_id));
   const [movingEmails, setMovingEmails] = useState(false);
   const [moveResult, setMoveResult] = useState(null);
   const selectedCount = selectedEmailIds.length;
+  const movedEmailIds = Array.isArray(moveResult?.email_ids) ? moveResult.email_ids : [];
 
   const toggleEmail = (emailId) => {
     setSelectedEmailIds((currentIds) =>
@@ -1357,7 +1382,7 @@ function ScanSummaryPopup({ summary, onClose }) {
           </button>
         </div>
 
-        <div style={{ display: "flex", gap: "28px", marginBottom: by_source.length > 0 || successfulEmails.length > 0 ? "16px" : 0 }}>
+        <div style={{ display: "flex", gap: "28px", marginBottom: "16px", flexWrap: "wrap" }}>
           <div>
             <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--text)" }}>{emails_scanned}</div>
             <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>emails scanned</div>
@@ -1374,9 +1399,28 @@ function ScanSummaryPopup({ summary, onClose }) {
           )}
         </div>
 
-        {by_source.length > 0 && (
+        {(createdJobDetails.length > 0 || skippedEmailDetails.length > 0) && (
           <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
-            {by_source.map(({ source, count }) => (
+            {createdJobDetails.length > 0 && (
+              <div style={summaryMetricGridStyle}>
+                {createdJobDetails.map((item) => (
+                  <SummaryMetric key={item.label} label={item.label} value={item.value} tone={item.tone} />
+                ))}
+              </div>
+            )}
+            {skippedEmailDetails.length > 0 && (
+              <div style={{ ...summaryMetricGridStyle, marginTop: createdJobDetails.length > 0 ? "14px" : 0 }}>
+                {skippedEmailDetails.map((item) => (
+                  <SummaryMetric key={item.label} label={item.label} value={item.value} tone={item.tone} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {bySource.length > 0 && (
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
+            {bySource.map(({ source, count }) => (
               <div key={source} style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", padding: "3px 0" }}>
                 <span style={{ color: "var(--text-muted)" }}>{source}</span>
                 <span style={{ fontWeight: 500 }}>{count} job{count !== 1 ? "s" : ""}</span>
@@ -1385,74 +1429,114 @@ function ScanSummaryPopup({ summary, onClose }) {
           </div>
         )}
 
-        {successfulEmails.length > 0 && (
+        {emailReport.length > 0 && (
           <div style={emailChecklistStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
               <div>
                 <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text)" }}>
-                  Parsed emails
+                  Email report
                 </div>
                 <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                  {selectedCount} of {successfulEmails.length} selected
+                  {selectedCount} of {successfulEmails.length} move-eligible selected
                 </div>
               </div>
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  style={{ padding: "4px 10px", fontSize: "12px" }}
-                  onClick={() => setSelectedEmailIds(successfulEmails.map((email) => email.email_id))}
-                >
-                  Select all
-                </button>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  style={{ padding: "4px 10px", fontSize: "12px" }}
-                  onClick={() => setSelectedEmailIds([])}
-                >
-                  Deselect all
-                </button>
-              </div>
+              {successfulEmails.length > 0 && (
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: "4px 10px", fontSize: "12px" }}
+                    onClick={() => setSelectedEmailIds(successfulEmails.map((email) => email.email_id))}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: "4px 10px", fontSize: "12px" }}
+                    onClick={() => setSelectedEmailIds([])}
+                  >
+                    Deselect all
+                  </button>
+                </div>
+              )}
             </div>
 
-            <div style={emailChecklistRowsStyle}>
-              {successfulEmails.map((email) => (
-                <label key={email.email_id} style={emailChecklistRowStyle}>
-                  <input
-                    type="checkbox"
-                    checked={selectedEmailIds.includes(email.email_id)}
-                    onChange={() => toggleEmail(email.email_id)}
-                    style={{ width: "auto", marginTop: "2px" }}
-                  />
-                  <span style={{ minWidth: 0 }}>
-                    <span style={{ display: "block", color: "var(--text)", fontSize: "13px", fontWeight: 600, overflowWrap: "anywhere" }}>
-                      {email.email_subject || "(no subject)"}
-                    </span>
-                    <span style={{ display: "block", color: "var(--text-muted)", fontSize: "12px", overflowWrap: "anywhere" }}>
-                      {email.sender_email || "Unknown sender"} · {email.email_date || "No date"} · {email.job_count || 1} job{email.job_count === 1 ? "" : "s"}
-                    </span>
-                  </span>
-                </label>
-              ))}
+            <div style={emailReportTableWrapStyle}>
+              <table style={emailReportTableStyle}>
+                <thead>
+                  <tr>
+                    <th style={{ ...emailReportHeaderStyle, width: "34px" }} />
+                    <th style={emailReportHeaderStyle}>Email</th>
+                    <th style={emailReportHeaderStyle}>From</th>
+                    <th style={emailReportHeaderStyle}>Disposition</th>
+                    <th style={emailReportHeaderStyle}>Action</th>
+                    <th style={{ ...emailReportHeaderStyle, textAlign: "right" }}>Jobs</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {emailReport.map((email) => {
+                    const moveEligible = email.disposition === "job_created";
+                    const wasMoved = movedEmailIds.includes(email.email_id);
+                    const actionLabel = wasMoved
+                      ? `moved to ${moveResult.label}`
+                      : formatScanAction(email.gmail_action);
+                    return (
+                      <tr key={email.email_id}>
+                        <td style={emailReportCellStyle}>
+                          {moveEligible && (
+                            <input
+                              type="checkbox"
+                              checked={selectedEmailIds.includes(email.email_id)}
+                              onChange={() => toggleEmail(email.email_id)}
+                              style={{ width: "auto", margin: 0 }}
+                            />
+                          )}
+                        </td>
+                        <td style={emailReportCellStyle}>
+                          <div style={{ color: "var(--text)", fontWeight: 600, overflowWrap: "anywhere" }}>
+                            {email.email_subject || "(no subject)"}
+                          </div>
+                          <div style={{ color: "var(--text-muted)", fontSize: "11px", overflowWrap: "anywhere" }}>
+                            {email.email_date || "No date"} · {formatJobTitles(email.job_titles)}
+                          </div>
+                        </td>
+                        <td style={emailReportCellStyle}>{email.sender_email || "Unknown sender"}</td>
+                        <td style={emailReportCellStyle}>{formatScanDisposition(email.disposition)}</td>
+                        <td style={emailReportCellStyle}>{actionLabel}</td>
+                        <td style={{ ...emailReportCellStyle, textAlign: "right", fontWeight: 700 }}>{email.job_count || 0}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td style={emailReportFooterStyle} colSpan={6}>
+                      {new_jobs} job{new_jobs === 1 ? "" : "s"} · {non_job_emails + acknowledgement_emails + feedback_filtered_emails} ignored · {duplicates} duplicate{duplicates === 1 ? "" : "s"} · {triage_jobs} triage · {possible_duplicate_jobs} possible duplicate{possible_duplicate_jobs === 1 ? "" : "s"} · {parser_error_emails + fetch_error_emails} error{parser_error_emails + fetch_error_emails === 1 ? "" : "s"}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginTop: "12px", flexWrap: "wrap" }}>
-              <div style={{ fontSize: "12px", color: moveResult ? "var(--green)" : "var(--text-muted)" }}>
-                {moveResult
-                  ? `Moved ${moveResult.moved} email${moveResult.moved === 1 ? "" : "s"} to ${moveResult.label}.`
-                  : "Move selected emails out of the inbox after confirming the parse."}
+            {successfulEmails.length > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginTop: "12px", flexWrap: "wrap" }}>
+                <div style={{ fontSize: "12px", color: moveResult ? "var(--green)" : "var(--text-muted)" }}>
+                  {moveResult
+                    ? `Moved ${moveResult.moved} email${moveResult.moved === 1 ? "" : "s"} to ${moveResult.label}.`
+                    : "Move selected emails out of the inbox after confirming the parse."}
+                </div>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={moveSelectedEmails}
+                  disabled={movingEmails || selectedCount === 0}
+                  style={{ padding: "7px 12px", fontSize: "12px" }}
+                >
+                  {movingEmails ? "Moving..." : "Move Selected to Scanned Folder"}
+                </button>
               </div>
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={moveSelectedEmails}
-                disabled={movingEmails || selectedCount === 0}
-                style={{ padding: "7px 12px", fontSize: "12px" }}
-              >
-                {movingEmails ? "Moving..." : "Move Selected to Scanned Folder"}
-              </button>
-            </div>
+            )}
           </div>
         )}
       </div>
@@ -1473,18 +1557,28 @@ function scoreDeltaLabel(previousScore, newScore) {
   return `${delta > 0 ? "+" : ""}${delta}`;
 }
 
-function detectImportFormatFromName(fileName) {
-  const normalized = String(fileName || "").toLowerCase();
-  if (normalized.endsWith(".mhtml") || normalized.endsWith(".mht")) return "mhtml";
-  if (normalized.endsWith(".json")) return "json";
-  return "html";
+function formatScanDisposition(disposition) {
+  const labels = {
+    ack: "acknowledgement",
+    already_scanned: "already scanned",
+    duplicate: "duplicate",
+    feedback_filtered: "didn't fit / filtered",
+    fetch_error: "fetch error",
+    job_created: "job created",
+    noise: "ignored",
+    parser_error: "parser error",
+  };
+  return labels[disposition] || disposition || "unknown";
 }
 
-function detectImportFormatFromText(text, fallback) {
-  const trimmed = String(text || "").trim();
-  if (!trimmed) return fallback;
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) return "json";
-  return fallback;
+function formatScanAction(action) {
+  return action || "left in inbox";
+}
+
+function formatJobTitles(jobTitles) {
+  if (!Array.isArray(jobTitles) || jobTitles.length === 0) return "no jobs";
+  if (jobTitles.length === 1) return jobTitles[0] || "1 job";
+  return `${jobTitles.length} jobs: ${jobTitles.filter(Boolean).join(", ")}`;
 }
 
 const inlineImportProgressStyle = {
@@ -1611,20 +1705,46 @@ const emailChecklistStyle = {
   paddingTop: "12px",
 };
 
-const emailChecklistRowsStyle = {
+const emailReportTableWrapStyle = {
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
-  maxHeight: "260px",
-  overflowY: "auto",
+  maxHeight: "300px",
+  overflow: "auto",
 };
 
-const emailChecklistRowStyle = {
-  alignItems: "flex-start",
+const emailReportTableStyle = {
+  borderCollapse: "collapse",
+  fontSize: "12px",
+  minWidth: "760px",
+  width: "100%",
+};
+
+const emailReportHeaderStyle = {
+  background: "var(--bg-elevated)",
   borderBottom: "1px solid var(--border)",
-  cursor: "pointer",
-  display: "flex",
-  gap: "10px",
-  padding: "9px 11px",
+  color: "var(--text-muted)",
+  fontSize: "11px",
+  fontWeight: 700,
+  padding: "8px 10px",
+  position: "sticky",
+  textAlign: "left",
+  top: 0,
+  zIndex: 1,
+};
+
+const emailReportCellStyle = {
+  borderBottom: "1px solid var(--border)",
+  color: "var(--text-muted)",
+  padding: "9px 10px",
+  verticalAlign: "top",
+};
+
+const emailReportFooterStyle = {
+  background: "var(--bg-elevated)",
+  color: "var(--text)",
+  fontSize: "12px",
+  fontWeight: 700,
+  padding: "9px 10px",
 };
 
 const manualBox = {
@@ -1663,14 +1783,6 @@ const queueSearchInputStyle = {
   flex: "1 1 260px",
   marginLeft: "auto",
   maxWidth: "420px",
-};
-
-const selectStyle = {
-  padding: "8px 10px",
-  borderRadius: "var(--radius)",
-  border: "1px solid var(--border)",
-  background: "var(--bg-elevated)",
-  color: "var(--text)",
 };
 
 const textareaStyle = {

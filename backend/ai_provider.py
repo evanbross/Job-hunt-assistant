@@ -35,12 +35,15 @@
 from __future__ import annotations
 
 import json
+import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-import anthropic
+import certifi
+import httpx
+from anthropic import APIStatusError, Anthropic
 
 import config
 
@@ -97,9 +100,14 @@ class AIProviderClient:
         if system:
             kwargs["system"] = system
         try:
-            response = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY).messages.create(**kwargs)
-        except anthropic.APIStatusError as exc:
+            response = Anthropic(
+                api_key=config.ANTHROPIC_API_KEY,
+                http_client=httpx.Client(verify=certifi.where()),
+            ).messages.create(**kwargs)
+        except APIStatusError as exc:
             raise AIProviderError(_anthropic_error_message(exc), status_code=exc.status_code) from exc
+        except (ssl.SSLError, OSError) as exc:
+            raise AIProviderError(f"SSL/network error contacting Anthropic: {exc}") from exc
         if not response.content:
             raise AIProviderError("Anthropic returned an empty response")
         return response.content[0].text.strip()
@@ -167,7 +175,7 @@ class AIProviderClient:
             raise AIProviderError(f"AI provider connection failed: {exc}") from exc
 
 
-def _anthropic_error_message(exc: anthropic.APIStatusError) -> str:
+def _anthropic_error_message(exc: APIStatusError) -> str:
     body = getattr(exc, "body", None)
     if isinstance(body, dict):
         error = body.get("error")

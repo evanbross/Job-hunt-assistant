@@ -71,14 +71,26 @@ function statusSortKey(email) {
   return statusBadge(email).label;
 }
 
+function jobStatusBadge(job) {
+  return JOB_STATUS_INFO[job.status] || { label: job.status || "Unknown", cls: "badge-gray" };
+}
+
+function emailHasJobStatus(email, statuses) {
+  const childJobs = Array.isArray(email.jobs) ? email.jobs : [];
+  return childJobs.some((job) => statuses.includes(job.status)) || statuses.includes(email.job_status);
+}
+
 function gmailReadIndicator(email) {
-  if (email.job_status && ["pending_review", "triage", "possible_duplicate"].includes(email.job_status)) {
+  if (emailHasJobStatus(email, ["pending_review", "triage", "possible_duplicate"])) {
     return { label: "Keep unread", cls: "badge-yellow", canMoveToScanned: false };
   }
-  if (email.job_status && ["added_to_sheet", "skipped"].includes(email.job_status)) {
+  if (emailHasJobStatus(email, ["added_to_sheet", "skipped"])) {
     return { label: "Move To Scanned", cls: "badge-green", canMoveToScanned: true };
   }
-  if (["noise", "ack", "duplicate", "feedback_filtered"].includes(email.disposition)) {
+  if (email.disposition === "noise") {
+    return { label: "Leave in inbox", cls: "badge-gray", canMoveToScanned: false };
+  }
+  if (["ack", "duplicate", "feedback_filtered"].includes(email.disposition)) {
     return { label: "Move To Scanned", cls: "badge-green", canMoveToScanned: true };
   }
   if (email.disposition === "parser_error") {
@@ -186,6 +198,7 @@ function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRe
   const isMovingToScanned = movingToScanned[email.email_id];
   const isRescanning = rescanning[email.email_id];
   const isParserError = email.disposition === "parser_error";
+  const emailJobs = Array.isArray(email.jobs) ? email.jobs : [];
 
   return (
     <div style={detailPanelStyle}>
@@ -257,35 +270,42 @@ function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRe
 
         {/* Right: job info (if any) */}
         <div>
-          <div style={sectionLabel}>Job</div>
-          {email.job_id ? (
-            <dl style={dlStyle}>
-              <dt style={dtStyle}>Title</dt>
-              <dd style={ddStyle}>{email.job_title || "—"}</dd>
-              <dt style={dtStyle}>Company</dt>
-              <dd style={ddStyle}>{email.company || "—"}</dd>
-              <dt style={dtStyle}>Status</dt>
-              <dd style={ddStyle}>
-                {JOB_STATUS_INFO[email.job_status]?.label || email.job_status || "—"}
-                {email.skip_reason && (
-                  <span style={{ color: "var(--text-muted)", marginLeft: "6px" }}>
-                    ({SKIP_REASON_LABELS[email.skip_reason] || email.skip_reason})
-                  </span>
-                )}
-              </dd>
-              {email.fit_score != null && (
-                <>
-                  <dt style={dtStyle}>Fit score</dt>
-                  <dd style={ddStyle}>{email.fit_score}</dd>
-                </>
-              )}
-              {email.job_count > 1 && (
-                <>
-                  <dt style={dtStyle}>Jobs in email</dt>
-                  <dd style={ddStyle}>{email.job_count}</dd>
-                </>
-              )}
-            </dl>
+          <div style={sectionLabel}>Jobs</div>
+          {emailJobs.length > 0 ? (
+            <div style={{ display: "grid", gap: "8px" }}>
+              {emailJobs.map((job) => {
+                const jobBadge = jobStatusBadge(job);
+                return (
+                  <div key={job.id} style={jobSummaryStyle}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ ...ddStyle, fontWeight: "600" }}>
+                        {job.url ? (
+                          <a href={job.url} target="_blank" rel="noreferrer">
+                            {job.job_title || "Untitled job"}
+                          </a>
+                        ) : (
+                          job.job_title || "Untitled job"
+                        )}
+                      </div>
+                      <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
+                        {job.company || "—"}
+                        {job.fit_score != null && (
+                          <span style={{ marginLeft: "8px" }}>Fit {job.fit_score}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <span className={`badge ${jobBadge.cls}`}>{jobBadge.label}</span>
+                      {job.skip_reason && (
+                        <span className="badge badge-gray">
+                          {SKIP_REASON_LABELS[job.skip_reason] || job.skip_reason}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           ) : (
             <p style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>
               No job record linked to this email.
@@ -452,6 +472,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
     setSelected(null);
     setScanState(null);
     setEmails([]);
+    clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
       try {
         const r = await fetch("/api/scan/status");
@@ -530,19 +551,24 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
   };
 
   const handleSetHidden = async (emailId, hidden) => {
-    await fetch(`/api/emails/${encodeURIComponent(emailId)}/hide`, {
+    const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/hide`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ hidden }),
     });
+    if (!res.ok) {
+      const data = await res.json();
+      alert(data.error || "Failed to update email visibility");
+      return;
+    }
     await fetchEmails(filter);
     if (hidden) setSelected(null);
   };
 
   const counts = emails.reduce(
     (acc, e) => {
-      if (e.job_status && ["pending_review", "triage", "possible_duplicate"].includes(e.job_status)) acc.potential++;
-      else if (e.job_status && ["added_to_sheet", "skipped"].includes(e.job_status)) acc.acted++;
+      if (emailHasJobStatus(e, ["pending_review", "triage", "possible_duplicate"])) acc.potential++;
+      else if (emailHasJobStatus(e, ["added_to_sheet", "skipped"])) acc.acted++;
       return acc;
     },
     { potential: 0, acted: 0 }
@@ -653,6 +679,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
+                  <th style={{ ...thStyle, position: "sticky", top: 0, zIndex: 1, width: "34px" }} />
                   <th
                     style={{ ...thStyle, position: "sticky", top: 0, zIndex: 1, cursor: "pointer", userSelect: "none" }}
                     onClick={() => handleColSort("date")}
@@ -677,68 +704,126 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
                   const gmailIndicator = gmailReadIndicator(email);
                   const isParserError = email.disposition === "parser_error";
                   const isHidden = Boolean(email.hidden);
+                  const childJobs = Array.isArray(email.jobs) ? email.jobs : [];
                   return (
-                    <tr
-                      key={email.email_id}
-                      onClick={() => handleRowClick(email.email_id)}
-                      style={{
-                        background: isSelected ? "var(--accent-light)" : "var(--surface)",
-                        cursor: "pointer",
-                        outline: isSelected ? "2px solid var(--accent)" : "none",
-                        outlineOffset: "-2px",
-                        transition: "background 0.1s",
-                        opacity: isHidden ? 0.45 : 1,
-                      }}
-                      onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--surface2)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = isSelected ? "var(--accent-light)" : "var(--surface)"; }}
-                    >
-                      <td style={{ ...tdStyle, whiteSpace: "nowrap", fontSize: "12px", color: "var(--text-muted)" }}>
-                        {email.email_date || "—"}
-                      </td>
-                      <td style={{ ...tdStyle, width: "160px", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "12px" }}>
-                        {email.sender_email || "—"}
-                      </td>
-                      <td style={{ ...tdStyle, maxWidth: "320px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {email.email_subject || "—"}
-                      </td>
-                      <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
-                        {isParserError ? (
-                          <button
-                            className={`badge ${cls}`}
-                            onClick={(e) => { e.stopPropagation(); setErrorModalEmail(email); }}
-                            style={{ cursor: "pointer", background: "none", border: "none", padding: 0, textDecoration: "underline dotted" }}
-                            title="Click to view raw email body"
-                          >
-                            {label}
-                          </button>
-                        ) : (
-                          <span className={`badge ${cls}`}>{label}</span>
-                        )}
-                      </td>
-                      <td style={{ ...tdStyle, whiteSpace: "nowrap", width: "140px" }}>
-                        {gmailIndicator.canMoveToScanned ? (
-                          <button
-                            className={`badge ${gmailIndicator.cls}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleMoveToScanned(email.email_id);
-                            }}
-                            disabled={movingToScanned[email.email_id]}
-                            style={badgeButtonStyle}
-                            title="Move this email from Inbox to the configured Processed Email Label in Gmail"
-                          >
-                            {movingToScanned[email.email_id] ? "Moving..." : gmailIndicator.label}
-                          </button>
-                        ) : (
-                          <span
-                            className={`badge ${gmailIndicator.cls}`}
-                            title="This email still needs review or follow-up before marking it read."
-                          >
-                            {gmailIndicator.label}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
+                    <React.Fragment key={email.email_id}>
+                      <tr
+                        onClick={() => handleRowClick(email.email_id)}
+                        aria-expanded={isSelected}
+                        style={{
+                          background: isSelected ? "var(--accent-light)" : "var(--surface)",
+                          cursor: "pointer",
+                          outline: isSelected ? "2px solid var(--accent)" : "none",
+                          outlineOffset: "-2px",
+                          transition: "background 0.1s",
+                          opacity: isHidden ? 0.45 : 1,
+                        }}
+                        onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--surface2)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = isSelected ? "var(--accent-light)" : "var(--surface)"; }}
+                      >
+                        <td style={{ ...tdStyle, width: "34px", textAlign: "center", color: "var(--text-muted)", fontSize: "11px" }}>
+                          {isSelected ? "▾" : "▸"}
+                        </td>
+                        <td style={{ ...tdStyle, whiteSpace: "nowrap", fontSize: "12px", color: "var(--text-muted)" }}>
+                          {email.email_date || "—"}
+                        </td>
+                        <td style={{ ...tdStyle, width: "160px", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "12px" }}>
+                          {email.sender_email || "—"}
+                        </td>
+                        <td style={{ ...tdStyle, maxWidth: "320px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {email.email_subject || "—"}
+                          {childJobs.length > 1 && (
+                            <span style={{ marginLeft: "8px", fontSize: "11px", color: "var(--text-muted)" }}>
+                              {childJobs.length} jobs
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
+                          {isParserError ? (
+                            <button
+                              className={`badge ${cls}`}
+                              onClick={(e) => { e.stopPropagation(); setErrorModalEmail(email); }}
+                              style={{ cursor: "pointer", background: "none", border: "none", padding: 0, textDecoration: "underline dotted" }}
+                              title="Click to view raw email body"
+                            >
+                              {label}
+                            </button>
+                          ) : (
+                            <span className={`badge ${cls}`}>{label}</span>
+                          )}
+                        </td>
+                        <td style={{ ...tdStyle, whiteSpace: "nowrap", width: "140px" }}>
+                          {gmailIndicator.canMoveToScanned ? (
+                            <button
+                              className={`badge ${gmailIndicator.cls}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveToScanned(email.email_id);
+                              }}
+                              disabled={movingToScanned[email.email_id]}
+                              style={badgeButtonStyle}
+                              title="Move this email from Inbox to the configured Processed Email Label in Gmail"
+                            >
+                              {movingToScanned[email.email_id] ? "Moving..." : gmailIndicator.label}
+                            </button>
+                          ) : (
+                            <span
+                              className={`badge ${gmailIndicator.cls}`}
+                              title="This email still needs review or follow-up before marking it read."
+                            >
+                              {gmailIndicator.label}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                      {isSelected && (
+                        <tr style={{ background: "var(--surface2)" }}>
+                          <td style={{ ...tdStyle, borderBottom: "1px solid var(--border)" }} />
+                          <td colSpan={5} style={{ padding: "12px 14px 14px", borderBottom: "1px solid var(--border)" }}>
+                            {childJobs.length > 0 ? (
+                              <div style={{ display: "grid", gap: "8px" }}>
+                                {childJobs.map((job) => {
+                                  const jobBadge = jobStatusBadge(job);
+                                  return (
+                                    <div key={job.id} style={treeJobRowStyle}>
+                                      <div style={{ minWidth: 0 }}>
+                                        <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                          {job.url ? (
+                                            <a href={job.url} target="_blank" rel="noreferrer">
+                                              {job.job_title || "Untitled job"}
+                                            </a>
+                                          ) : (
+                                            job.job_title || "Untitled job"
+                                          )}
+                                        </div>
+                                        <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
+                                          {job.company || "—"}
+                                          {job.fit_score != null && (
+                                            <span style={{ marginLeft: "8px" }}>Fit {job.fit_score}</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <div style={{ display: "flex", gap: "6px", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap" }}>
+                                        <span className={`badge ${jobBadge.cls}`}>{jobBadge.label}</span>
+                                        {job.skip_reason && (
+                                          <span className="badge badge-gray">
+                                            {SKIP_REASON_LABELS[job.skip_reason] || job.skip_reason}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <p style={{ fontSize: "12px", color: "var(--text-muted)", margin: 0 }}>
+                                No job record linked to this email.
+                              </p>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -830,6 +915,28 @@ const detailPanelStyle = {
   borderRadius: "var(--radius-lg)",
   padding: "20px",
   boxShadow: "var(--shadow-sm)",
+};
+
+const jobSummaryStyle = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto",
+  gap: "12px",
+  alignItems: "center",
+  padding: "10px 12px",
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+};
+
+const treeJobRowStyle = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto",
+  gap: "12px",
+  alignItems: "center",
+  padding: "10px 12px",
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
 };
 
 const sectionLabel = {

@@ -79,12 +79,20 @@ def get_scanned_emails():
     if filter_param == "acted":
         emails = [
             e for e in emails
-            if e.get("job_status") in ("added_to_sheet", "skipped")
+            if any(
+                job.get("status") in ("added_to_sheet", "skipped")
+                for job in e.get("jobs") or []
+            )
+            or e.get("job_status") in ("added_to_sheet", "skipped")
         ]
     elif filter_param == "potential":
         emails = [
             e for e in emails
-            if e.get("job_status") in ("pending_review", "triage", "possible_duplicate")
+            if any(
+                job.get("status") in ("pending_review", "triage", "possible_duplicate")
+                for job in e.get("jobs") or []
+            )
+            or e.get("job_status") in ("pending_review", "triage", "possible_duplicate")
         ]
 
     return jsonify(emails)
@@ -140,7 +148,27 @@ def move_scanned_emails():
 
     scanned_email_label = config.get_scanned_email_label()
     try:
-        moved_count = GmailClient().move_messages_to_label(email_ids, scanned_email_label)
+        repos = _get_repos()
+        scanned_repo = repos["scanned_emails"]
+        
+        # Filter out emails that are 'noise' (not a job email) to respect the 
+        # "leave it where it is" policy for non-job content.
+        filtered_email_ids = []
+        for eid in email_ids:
+            # Check the primary email_id (before any suffix)
+            base_eid = eid.split(":")[0]
+            status_info = scanned_repo.get_by_id(base_eid)
+            if status_info and status_info.get("disposition") == "noise":
+                logger.info("Skipping move of email %s because it is marked as 'noise'", base_eid)
+                continue
+            filtered_email_ids.append(eid)
+        
+        repos["conn"].close()
+        
+        if not filtered_email_ids:
+            return jsonify({"status": "ok", "moved": 0, "message": "No eligible emails to move"})
+            
+        moved_count = GmailClient().move_messages_to_label(filtered_email_ids, scanned_email_label)
     except NotAuthenticatedError as exc:
         return jsonify({"error": str(exc)}), 401
     except Exception:
