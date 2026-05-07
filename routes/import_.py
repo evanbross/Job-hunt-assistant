@@ -66,6 +66,8 @@ import_bp = Blueprint("import_", __name__)
 # rather than in-process memory, so the Flask and worker processes are decoupled.
 
 _current_task_id: str | None = None
+_current_trigger: str = "ui"
+_current_started_at: str = ""
 _task_id_lock = threading.Lock()
 
 
@@ -204,9 +206,9 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
     )
 
 
-def queue_import_capture(body: dict) -> tuple[dict, int]:
+def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     """Analyze a captured page payload and dispatch a Celery import task."""
-    global _current_task_id
+    global _current_task_id, _current_trigger, _current_started_at
     with _task_id_lock:
         existing_task_id = _current_task_id
     if existing_task_id:
@@ -252,9 +254,12 @@ def queue_import_capture(body: dict) -> tuple[dict, int]:
     repos["conn"].close()
 
     task = run_import_task.delay(extracted, capture_source, body)
+    started_at = datetime.now(UTC).isoformat(timespec="seconds")
     with _task_id_lock:
         _current_task_id = task.id
-    logger.info("Import task dispatched: %s (%d URLs)", task.id, len(extracted))
+        _current_trigger = trigger
+        _current_started_at = started_at
+    logger.info("Import task dispatched: %s (%d URLs) trigger=%s", task.id, len(extracted), trigger)
     return {"status": "started", "task_id": task.id}, 202
 
 
@@ -317,6 +322,8 @@ def import_and_queue_all_jobs():
 def import_status():
     with _task_id_lock:
         task_id = _current_task_id
+        trigger = _current_trigger
+        started_at = _current_started_at
 
     if not task_id:
         return jsonify({
@@ -328,6 +335,8 @@ def import_status():
             "result": None,
             "current_job_url": "",
             "current_platform": "",
+            "trigger": trigger,
+            "started_at": started_at,
         })
 
     result = AsyncResult(task_id, app=celery_app)
@@ -344,6 +353,8 @@ def import_status():
             "result": None,
             "current_job_url": meta.get("current_job_url", ""),
             "current_platform": meta.get("current_platform", ""),
+            "trigger": trigger,
+            "started_at": started_at,
         })
 
     if state == "PROGRESS":
@@ -357,6 +368,8 @@ def import_status():
             "result": None,
             "current_job_url": meta.get("current_job_url", ""),
             "current_platform": meta.get("current_platform", ""),
+            "trigger": trigger,
+            "started_at": started_at,
         })
 
     if state == "SUCCESS":
@@ -369,6 +382,8 @@ def import_status():
             "result": result.result,
             "current_job_url": "",
             "current_platform": "",
+            "trigger": trigger,
+            "started_at": started_at,
         })
 
     # FAILURE or REVOKED
@@ -382,4 +397,6 @@ def import_status():
         "result": None,
         "current_job_url": "",
         "current_platform": "",
+        "trigger": trigger,
+        "started_at": started_at,
     })

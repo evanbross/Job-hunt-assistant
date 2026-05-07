@@ -88,7 +88,14 @@
       "Bash(\"F:/Evan-F/Projects/JobHuntAssistant/.venv/Scripts/python.exe\" -m pip install anthropic)",
       "Bash(\"F:/Evan-F/Projects/JobHuntAssistant/.venv/Scripts/python.exe\" -m ensurepip)",
       "Bash(\"F:/Evan-F/Projects/JobHuntAssistant/.venv/Scripts/python.exe\" -m pip install --upgrade typing_extensions)",
-      "Bash(\"F:/Evan-F/Projects/JobHuntAssistant/.venv/Scripts/python.exe\" -m pip install --force-reinstall typing_extensions)"
+      "Bash(\"F:/Evan-F/Projects/JobHuntAssistant/.venv/Scripts/python.exe\" -m pip install --force-reinstall typing_extensions)",
+      "Bash(PYTHONPATH=. uv run pytest tests/test_email_parser_normalization.py tests/test_db_sqlite.py -q)",
+      "Bash(.venv/Scripts/python -c \"import certifi; import httpx; print\\('certifi:', certifi.where\\(\\)\\); print\\('httpx:', httpx.__version__\\)\")",
+      "Bash(.venv/Scripts/python -c \"import certifi; print\\(dir\\(certifi\\)\\); print\\(certifi.__file__\\)\")",
+      "Bash(.venv/Scripts/python -c \"from certifi.core import where; print\\(where\\(\\)\\)\")",
+      "Bash(Get-ChildItem -Path \"F:\\\\Evan-F\\\\Projects\\\\JobHuntAssistant\" -Force)",
+      "Bash(Select-Object Name, PSIsContainer)",
+      "Bash(tasklist)"
     ]
   }
 }

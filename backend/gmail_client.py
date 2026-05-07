@@ -316,13 +316,22 @@ def _extract_body(payload: dict[str, Any]) -> str:
         return _html_to_text(_b64decode(data))
 
     parts = payload.get("parts", [])
-    # Prefer text/plain part
-    for part in parts:
-        if part.get("mimeType") == "text/plain":
-            data = part.get("body", {}).get("data", "")
-            return _b64decode(data)
 
-    # Recurse into multipart/* containers
+    # Collect plain-text and HTML bodies separately; return the richer one.
+    # LinkedIn/digest emails use multipart/alternative where text/plain is an
+    # abbreviated summary but text/html contains all job cards.
+    plain = ""
+    html = ""
+    for part in parts:
+        ptype = part.get("mimeType", "")
+        if ptype == "text/plain" and not plain:
+            plain = _b64decode(part.get("body", {}).get("data", ""))
+        elif ptype == "text/html" and not html:
+            html = _html_to_text(_b64decode(part.get("body", {}).get("data", "")))
+    if plain or html:
+        return plain if len(plain) >= len(html) else html
+
+    # Recurse into nested multipart/* containers
     for part in parts:
         text = _extract_body(part)
         if text.strip():
@@ -368,7 +377,8 @@ def _html_to_text(html: str) -> str:
         extractor.feed(html)
         return extractor.get_text()
     except Exception:
-        return html  # fall back to raw HTML if the parser itself fails
+        logger.warning("HTML-to-text parser failed; returning partial text", exc_info=True)
+        return extractor.get_text()
 
 
 def _b64decode(data: str) -> str:

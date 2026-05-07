@@ -157,12 +157,12 @@ def is_application_acknowledgement(subject: str, patterns: list[str] | None = No
 
 
 def email_date_from_message(full_msg: dict) -> str | None:
-    """Extract the Gmail message send date as YYYY-MM-DD when available."""
+    """Extract the Gmail message send timestamp as a UTC ISO string when available."""
     raw = full_msg.get("internalDate")
     if not raw:
         return None
     try:
-        return datetime.fromtimestamp(int(raw) / 1000, UTC).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(int(raw) / 1000, UTC).isoformat(timespec="seconds")
     except (ValueError, OSError):
         return None
 

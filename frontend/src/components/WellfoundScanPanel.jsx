@@ -33,6 +33,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { formatLocalDateTime, parseUtcTimestamp } from "../utils/dateTimeUtils.js";
 
 const POLL_INTERVAL_MS = 1500;
 
@@ -72,7 +73,8 @@ export default function WellfoundScanPanel() {
     clearInterval(countdownRef.current);
     if (status?.running && status?.phase_deadline) {
       const tick = () => {
-        const remaining = Math.max(0, Math.round((new Date(status.phase_deadline) - Date.now()) / 1000));
+        const deadline = parseUtcTimestamp(status.phase_deadline);
+        const remaining = Math.max(0, Math.round(((deadline?.getTime() || Date.now()) - Date.now()) / 1000));
         setCountdown(remaining);
         if (remaining === 0) clearInterval(countdownRef.current);
       };
@@ -207,7 +209,7 @@ export default function WellfoundScanPanel() {
 
       {!running && status?.last_run_at && !status?.error && (
         <div style={styles.lastRun}>
-          Last run {status.last_run_at} — {status.last_found} job{status.last_found === 1 ? "" : "s"} queued
+          Last run {formatLocalDateTime(status.last_run_at)} — {status.last_found} job{status.last_found === 1 ? "" : "s"} queued
           {status.task_id && (
             <span style={{ color: "var(--text-muted)" }}> (task {status.task_id.slice(0, 8)}…)</span>
           )}

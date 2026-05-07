@@ -585,25 +585,18 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
               <ul style={reasoningListStyle}>
                 {reasoningBullets.map((item, index) => (
                   <li
-                    key={`${item}-${index}`}
+                    key={`bullet-${index}`}
                     style={negativeReasoningBulletStyleFor(item)}
                   >
                     {item}
                   </li>
                 ))}
+                {penaltiesApplied.map((penalty, index) => (
+                  <li key={`penalty-${index}`} style={penaltyInlineBulletStyle}>
+                    <strong>-{penalty.points}</strong> for &lsquo;{penalty.ruleText}&rsquo;
+                  </li>
+                ))}
               </ul>
-              {penaltiesApplied.length > 0 && (
-                <div style={penaltiesBoxStyle}>
-                  <div style={penaltiesHeadingStyle}>Penalties applied</div>
-                  <ul style={penaltiesListStyle}>
-                    {penaltiesApplied.map((penalty, index) => (
-                      <li key={`${penalty.ruleText}-${index}`} style={penaltyListItemStyle}>
-                        <strong style={penaltyValueStyle}>-{penalty.points}</strong> for {penalty.ruleText}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -701,6 +694,22 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
           disabled={busy}
         >
           {loading === "approve" ? "Applying…" : "Applied"}
+        </button>
+
+        <button
+          className="btn-secondary"
+          onClick={async () => {
+            setLoading("skip:duplicate");
+            try {
+              await onSkip(job.id, "duplicate", "", []);
+            } finally {
+              setLoading(null);
+            }
+          }}
+          disabled={busy}
+          style={{ fontSize: "13px" }}
+        >
+          {loading === "skip:duplicate" ? "Removing…" : "Duplicate"}
         </button>
 
         {/* Skip with reason picker */}
@@ -1652,35 +1661,7 @@ const negativeReasoningBulletStyle = {
   color: "var(--red)",
 };
 
-const penaltiesBoxStyle = {
-  marginTop: "12px",
-  paddingTop: "10px",
-  borderTop: "1px solid var(--border)",
-};
-
-const penaltiesHeadingStyle = {
-  color: "var(--text)",
-  fontSize: "12px",
-  fontWeight: 700,
-  marginBottom: "6px",
-};
-
-const penaltiesListStyle = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-  gap: "5px 16px",
-  paddingLeft: "18px",
-  margin: 0,
-  color: "var(--red)",
-  fontSize: "13px",
-  lineHeight: "1.5",
-};
-
-const penaltyListItemStyle = {
-  color: "var(--red)",
-};
-
-const penaltyValueStyle = {
+const penaltyInlineBulletStyle = {
   color: "var(--red)",
 };
 

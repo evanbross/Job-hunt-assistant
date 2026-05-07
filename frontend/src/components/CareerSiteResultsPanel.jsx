@@ -33,6 +33,7 @@
  */
 
 import React, { useEffect, useRef, useState } from "react";
+import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 
 function scoreBadge(score) {
   if (score == null) return <span className="badge badge-gray">—</span>;
@@ -53,13 +54,6 @@ function confidenceBadge(level, score) {
   if (level === "medium") return <span className="badge badge-yellow">{label}</span>;
   if (level === "low") return <span className="badge badge-red">{label}</span>;
   return <span className="badge badge-gray">{label}</span>;
-}
-
-function formatTimestampLocal(value) {
-  if (!value) return "—";
-  const dt = new Date(value);
-  if (Number.isNaN(dt.getTime())) return value;
-  return dt.toLocaleString();
 }
 
 export default function CareerSiteResultsPanel() {
@@ -414,7 +408,7 @@ export default function CareerSiteResultsPanel() {
         {status && (
           <span style={{ color: "var(--text-muted)", fontSize: "12px", marginLeft: "auto" }}>
             Manual scan mode
-            {status.last_run_at ? ` · Last run: ${formatTimestampLocal(status.last_run_at)}` : ""}
+            {status.last_run_at ? ` · Last run: ${formatLocalDateTime(status.last_run_at)}` : ""}
           </span>
         )}
       </div>
@@ -664,7 +658,7 @@ export default function CareerSiteResultsPanel() {
               <DetailCell label="Tracking" value={selectedJob.tracking_status || "New"} />
               <DetailCell label="Match Score" value={selectedJob.match_score ?? "—"} />
               <DetailCell label="Confidence" value={`${selectedJob.confidence_level || "unknown"}${selectedJob.confidence_score != null ? ` (${selectedJob.confidence_score})` : ""}`} />
-              <DetailCell label="Date Scanned" value={formatTimestampLocal(selectedJob.scanned_at)} />
+              <DetailCell label="Date Scanned" value={formatLocalDateTime(selectedJob.scanned_at)} />
               <DetailCell label="Date Posted" value={selectedJob.posted_at || "—"} />
               <DetailCell label="Tracking Source" value={selectedJob.tracking_source || "—"} />
             </div>
@@ -791,7 +785,7 @@ export default function CareerSiteResultsPanel() {
                         {rule.enabled ? "On" : "Off"}
                       </button>
                     </td>
-                    <td style={tdStyle}>{formatTimestampLocal(rule.updated_at || rule.created_at)}</td>
+                    <td style={tdStyle}>{formatLocalDateTime(rule.updated_at || rule.created_at)}</td>
                     <td style={tdStyle}>
                       <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                         <button className="btn-secondary" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => startEditRule(rule)}>Edit</button>
@@ -830,7 +824,7 @@ export default function CareerSiteResultsPanel() {
               <tbody>
                 {failures.map((f) => (
                   <tr key={f.id}>
-                    <td style={tdStyle}>{formatTimestampLocal(f.occurred_at)}</td>
+                    <td style={tdStyle}>{formatLocalDateTime(f.occurred_at)}</td>
                     <td style={tdStyle}>{f.platform || "—"}</td>
                     <td style={tdStyle}>{f.site_name || f.site_url || "—"}</td>
                     <td style={{ ...tdStyle, whiteSpace: "normal", maxWidth: "520px" }}>
@@ -978,7 +972,7 @@ function FailureDetailsModal({ failure, onClose }) {
         <div style={{ padding: "12px 14px", overflowY: "auto" }}>
           <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "max-content 1fr", rowGap: "6px", columnGap: "12px", fontSize: "12px" }}>
             <dt style={modalDtStyle}>When</dt>
-            <dd style={modalDdStyle}>{formatTimestampLocal(failure.occurred_at)}</dd>
+            <dd style={modalDdStyle}>{formatLocalDateTime(failure.occurred_at)}</dd>
             <dt style={modalDtStyle}>Platform</dt>
             <dd style={modalDdStyle}>{failure.platform || "—"}</dd>
             <dt style={modalDtStyle}>Trigger</dt>

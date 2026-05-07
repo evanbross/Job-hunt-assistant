@@ -109,6 +109,22 @@ export default function TriagePanel({ onCountChange }) {
     }
   };
 
+  const handleSkipAsDuplicate = async (job) => {
+    const res = await fetch(`/api/jobs/${job.id}/skip`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "duplicate", feedback: "", mismatch_reasons: [] }),
+    });
+    if (res.ok) {
+      const updated = jobs.filter((j) => j.id !== job.id);
+      setJobs(updated);
+      onCountChange(updated.length);
+    } else {
+      const err = await res.json().catch(() => ({}));
+      window.alert(err.error || "Failed to skip as duplicate");
+    }
+  };
+
   const handleMarkUnique = async (job) => {
     const res = await fetch(`/api/jobs/${job.id}/dismiss-duplicate`, { method: "POST" });
 
@@ -394,6 +410,7 @@ export default function TriagePanel({ onCountChange }) {
             job={job}
             onApprove={() => handleApprove(job)}
             onReject={() => handleReject(job)}
+            onSkipAsDuplicate={() => handleSkipAsDuplicate(job)}
             onReEvaluate={() => handleReEvaluateFit(job)}
             onRefreshFromUrl={() => handleRefreshFromUrl(job)}
             onReprocessed={(updated) => {
@@ -509,7 +526,7 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique }) {
   );
 }
 
-function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, onReprocessed }) {
+function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate, onRefreshFromUrl, onReprocessed }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingCompany, setEditingCompany] = useState(false);
   const [companyDraft, setCompanyDraft] = useState("");
@@ -819,25 +836,18 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
             <ul style={reasoningListStyle}>
               {triageReasoningBullets(triageReasoning).map((item, index) => (
                 <li
-                  key={`${item}-${index}`}
+                  key={`bullet-${index}`}
                   style={negativeReasoningBulletStyleFor(item)}
                 >
                   {item}
                 </li>
               ))}
+              {penaltiesApplied.map((penalty, index) => (
+                <li key={`penalty-${index}`} style={penaltyInlineBulletStyle}>
+                  <strong>-{penalty.points}</strong> for &lsquo;{penalty.ruleText}&rsquo;
+                </li>
+              ))}
             </ul>
-            {penaltiesApplied.length > 0 && (
-              <div style={penaltiesBoxStyle}>
-                <div style={penaltiesHeadingStyle}>Penalties applied</div>
-                <ul style={penaltiesListStyle}>
-                  {penaltiesApplied.map((penalty, index) => (
-                    <li key={`${penalty.ruleText}-${index}`} style={penaltyListItemStyle}>
-                      <strong style={penaltyValueStyle}>-{penalty.points}</strong> for {penalty.ruleText}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -910,6 +920,14 @@ function TriageCard({ job, onApprove, onReject, onReEvaluate, onRefreshFromUrl, 
           style={{ flex: 1 }}
         >
           {loadingAction === "reject" ? "Removing…" : "Not Relevant"}
+        </button>
+        <button
+          className="btn-secondary"
+          onClick={() => act(onSkipAsDuplicate, "duplicate")}
+          disabled={loadingAction !== null}
+          style={{ flexShrink: 0 }}
+        >
+          {loadingAction === "duplicate" ? "Removing…" : "Duplicate"}
         </button>
       </div>
 
@@ -1848,35 +1866,7 @@ const negativeReasoningBulletStyle = {
   color: "var(--red)",
 };
 
-const penaltiesBoxStyle = {
-  marginTop: "12px",
-  paddingTop: "10px",
-  borderTop: "1px solid var(--border)",
-};
-
-const penaltiesHeadingStyle = {
-  color: "var(--text)",
-  fontSize: "12px",
-  fontWeight: 700,
-  marginBottom: "6px",
-};
-
-const penaltiesListStyle = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-  gap: "5px 16px",
-  paddingLeft: "18px",
-  margin: 0,
-  color: "var(--red)",
-  fontSize: "13px",
-  lineHeight: "1.5",
-};
-
-const penaltyListItemStyle = {
-  color: "var(--red)",
-};
-
-const penaltyValueStyle = {
+const penaltyInlineBulletStyle = {
   color: "var(--red)",
 };
 

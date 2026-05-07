@@ -376,7 +376,7 @@ def re_evaluate_job_fit(job_id: int):
         penalty_rules = repos["penalties"].get_enabled()
         fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
         scorer = FitScorer()
-        scoring_text = "\n".join(
+        scoring_text = job.get("job_description") or "\n".join(
             part
             for part in [
                 job.get("email_subject", ""),
@@ -395,6 +395,56 @@ def re_evaluate_job_fit(job_id: int):
     except Exception as exc:
         repos["conn"].close()
         logger.warning("Fit re-evaluation failed for job %d: %s", job_id, exc, exc_info=True)
+        return jsonify({"error": _safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
+
+    score = int(result["score"])
+    new_status = "pending_review" if score >= 70 else "triage"
+    repos["jobs"].update(
+        job_id,
+        {
+            "fit_score": score,
+            "fit_reasoning": result["reasoning"],
+            "status": new_status,
+        },
+    )
+    updated_job = repos["jobs"].get_by_id(job_id)
+    repos["conn"].commit()
+    repos["conn"].close()
+    return jsonify(updated_job)
+
+
+@fit_bp.route("/jobs/<int:job_id>/description", methods=["POST"])
+def save_job_description(job_id: int):
+    body = request.get_json(silent=True) or {}
+    description = str(body.get("description") or "").strip()
+    if len(description) < 80:
+        return jsonify({"error": "Description is too short to be useful (minimum 80 characters)"}), 400
+
+    repos = _get_repos()
+    job = repos["jobs"].get_by_id(job_id)
+    if not job:
+        repos["conn"].close()
+        return jsonify({"error": "Job not found"}), 404
+
+    repos["jobs"].update(job_id, {"job_description": description})
+
+    try:
+        resume_row = repos["resume"].get_latest()
+        resume_text = resume_row["content"] if resume_row else ""
+        penalty_rules = repos["penalties"].get_enabled()
+        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+        scorer = FitScorer()
+        result = scorer.score(
+            job_title=str(job.get("job_title") or ""),
+            company=str(job.get("company") or ""),
+            email_body=description,
+            resume_text=resume_text,
+            penalty_rules=penalty_rules,
+            fit_feedback=fit_feedback,
+        )
+    except Exception as exc:
+        repos["conn"].close()
+        logger.warning("Fit scoring after description save failed for job %d: %s", job_id, exc, exc_info=True)
         return jsonify({"error": _safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
 
     score = int(result["score"])

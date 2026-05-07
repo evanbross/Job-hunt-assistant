@@ -102,6 +102,7 @@ class IRelevanceFeedbackRepository(Protocol):
 @runtime_checkable
 class IScannedEmailRepository(Protocol):
     def has_been_scanned(self, email_id: str) -> bool: ...
+    def get_scanned_metadata(self, email_id: str) -> dict[str, str | None] | None: ...
     def is_duplicate_by_content(self, sender_email: str, subject: str, since_days: int) -> bool: ...
     def mark_scanned(self, email_id: str, sender_email: str, subject: str, disposition: str = "noise", email_date: str | None = None, raw_body: str | None = None, parser_error_msg: str | None = None) -> None: ...
     def get_all_with_job_status(self) -> list[dict[str, Any]]: ...
@@ -322,6 +323,7 @@ class PostgresJobRepository(_BaseRepo):
         "skip_feedback",
         "skip_mismatch_reasons",
         "notes",
+        "job_description",
     })
 
     def get_all_by_status(self, status: str) -> list[dict[str, Any]]:
@@ -610,6 +612,16 @@ class PostgresScannedEmailRepository(_BaseRepo):
             "SELECT 1 FROM scanned_emails WHERE email_id = %s", (email_id,)
         )
         return cur.fetchone() is not None
+
+    def get_scanned_metadata(self, email_id: str) -> dict[str, str | None] | None:
+        cur = self._execute(
+            "SELECT sender_email, email_subject, email_date FROM scanned_emails WHERE email_id = %s",
+            (email_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return {"sender_email": row[0], "email_subject": row[1], "email_date": row[2]}
 
     def is_duplicate_by_content(
         self, sender_email: str, subject: str, since_days: int
@@ -1346,6 +1358,7 @@ def _migrate(conn: Any) -> None:
         ("skip_feedback", "TEXT"),
         ("skip_mismatch_reasons", "TEXT"),
         ("notes", "TEXT"),
+        ("job_description", "TEXT"),
     ]:
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {defn}")
 
@@ -1454,6 +1467,7 @@ def _migrate_sqlite(conn: Any) -> None:
         ("skip_feedback", "TEXT"),
         ("skip_mismatch_reasons", "TEXT"),
         ("notes", "TEXT"),
+        ("job_description", "TEXT"),
     ]:
         _sqlite_add_column_if_missing(cur, "jobs", col, defn)
 
@@ -1558,7 +1572,8 @@ def _create_tables(conn: Any) -> None:
             confidence_score      INTEGER,
             skip_reason           TEXT,
             skip_feedback         TEXT,
-            skip_mismatch_reasons TEXT
+            skip_mismatch_reasons TEXT,
+            job_description       TEXT
         )
         """,
         """
@@ -1745,7 +1760,8 @@ def _create_tables_sqlite(conn: Any) -> None:
             skip_reason           TEXT,
             skip_feedback         TEXT,
             skip_mismatch_reasons TEXT,
-            notes                 TEXT
+            notes                 TEXT,
+            job_description       TEXT
         )
         """,
         """

@@ -33,10 +33,13 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { parseUtcTimestamp } from "../utils/dateTimeUtils.js";
 
 function formatAge(isoTimestamp) {
   if (!isoTimestamp) return "never scanned";
-  const diffMs = Date.now() - new Date(isoTimestamp).getTime();
+  const parsed = parseUtcTimestamp(isoTimestamp);
+  if (!parsed) return "never scanned";
+  const diffMs = Date.now() - parsed.getTime();
   const days = Math.floor(diffMs / 86400000);
   if (days === 0) return "scanned today";
   if (days === 1) return "1 day ago";

@@ -42,12 +42,14 @@ from datetime import date
 from flask import Blueprint, jsonify, request
 
 import config
+from backend.duplicate_checker import DuplicateChecker
 from backend.email_cleanup_service import EmailCleanupService
 from backend.email_parser import EmailParser
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.utils import (
     _get_repos,
+    db_match_for_job,
     email_date_from_message,
     get_subject_rule_match,
     is_application_acknowledgement,
@@ -56,6 +58,12 @@ from backend.utils import (
 logger = logging.getLogger(__name__)
 
 emails_bp = Blueprint("emails", __name__)
+
+_ACTIVE_RESCAN_STATUSES: tuple[str, ...] = (
+    "pending_review",
+    "triage",
+    "possible_duplicate",
+)
 
 
 # ─── Scanned email routes ────────────────────────────────────────────────────
@@ -240,9 +248,9 @@ def rescan_email(email_id: str):
     """
     Re-fetch a single email from Gmail and re-run the parser on it.
 
-    Deletes the scanned_emails record and any associated jobs first so the
-    email is treated as fresh. Returns the newly created job(s) or an empty
-    list if the email produced no job postings.
+    Deletes active jobs for this email first so the email is treated as fresh.
+    Applied/skipped jobs are preserved so a rescan can detect them as tracked
+    duplicates instead of erasing application history.
     """
     repos = _get_repos()
     scanned_repo = repos["scanned_emails"]
@@ -260,10 +268,9 @@ def rescan_email(email_id: str):
     # Remove prior scanned record so this email is treated as new
     scanned_repo.delete(email_id)
 
-    # Delete any jobs produced from this email (base and suffixed)
-    existing_jobs = job_repo.get_by_statuses(
-        ["pending_review", "triage", "possible_duplicate", "added_to_sheet", "skipped"]
-    )
+    # Delete active jobs produced from this email (base and suffixed). Preserve
+    # terminal history so applied/rejected jobs are still duplicate candidates.
+    existing_jobs = job_repo.get_by_statuses(list(_ACTIVE_RESCAN_STATUSES))
     base_id = email_id.split(":")[0]
     for job in existing_jobs:
         eid = (job.get("email_id") or "")
@@ -309,17 +316,30 @@ def rescan_email(email_id: str):
     fit_feedback = job_repo.get_not_a_fit_with_feedback()
     scorer = FitScorer()
     feedback = feedback_repo.find_match(sender, subject)
+    dedup_checker = DuplicateChecker()
+    known_jobs: list[dict] = job_repo.get_all_ordered()
 
     created: list[dict] = []
     for job_idx, parsed in enumerate(parsed_jobs):
-        job_email_id = email_id if job_idx == 0 else f"{email_id}:{job_idx}"
+        job_email_id = _rescan_job_email_id(job_repo, base_id, job_idx)
         confidence = parsed.get("confidence", "low")
         if feedback and feedback["is_relevant"] == 1:
             confidence = "high"
         if subject_rule == "whitelist":
             confidence = "high"
 
-        status = "pending_review" if confidence == "high" else "triage"
+        _tracked_status, _tracking_source, duplicate_hint = db_match_for_job(
+            job_title=str(parsed.get("job_title") or ""),
+            company=str(parsed.get("company") or ""),
+            job_url=str(parsed.get("url") or ""),
+            known_jobs=known_jobs,
+            dedup_checker=dedup_checker,
+        )
+
+        if duplicate_hint:
+            status = "possible_duplicate"
+        else:
+            status = "pending_review" if confidence == "high" else "triage"
         job_data: dict = {
             "email_id": job_email_id,
             "company": parsed.get("company", ""),
@@ -334,7 +354,7 @@ def rescan_email(email_id: str):
             "confidence_reason": parsed.get("confidence_reason", ""),
             "date_found": date.today().isoformat(),
             "date_added_to_sheet": None,
-            "duplicate_hint": None,
+            "duplicate_hint": duplicate_hint,
             "sender_email": sender,
             "email_subject": subject,
             "confidence_score": parsed.get("confidence_score", 50),
@@ -352,6 +372,8 @@ def rescan_email(email_id: str):
                 )
                 job_data["fit_score"] = result["score"]
                 job_data["fit_reasoning"] = result["reasoning"]
+                if result["score"] < 70:
+                    job_data["status"] = "triage"
             except Exception as exc:
                 logger.warning("Scoring failed during rescan: %s", exc)
 
@@ -362,6 +384,19 @@ def rescan_email(email_id: str):
     repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"jobs": created, "message": f"Rescanned — {len(created)} job(s) extracted."})
+
+
+def _rescan_job_email_id(job_repo: object, base_email_id: str, job_idx: int) -> str:
+    preferred_email_id = base_email_id if job_idx == 0 else f"{base_email_id}:{job_idx}"
+    if job_repo.get_by_email_id(preferred_email_id) is None:
+        return preferred_email_id
+
+    candidate_idx = 0
+    while True:
+        candidate_email_id = f"{base_email_id}:rescan:{job_idx}:{candidate_idx}"
+        if job_repo.get_by_email_id(candidate_email_id) is None:
+            return candidate_email_id
+        candidate_idx += 1
 
 
 # ─── Email source routes ──────────────────────────────────────────────────────

@@ -48,8 +48,10 @@ import json
 import logging
 import os
 import re
+import socket
 import subprocess as _subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 import flask
@@ -81,6 +83,16 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
+
+# Suppress Werkzeug access-log noise from high-frequency polling endpoints.
+_SILENT_PATHS = {"/api/import/status", "/api/scan/status", "/api/career-scan/status"}
+
+class _PollFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(path in msg for path in _SILENT_PATHS)
+
+logging.getLogger("werkzeug").addFilter(_PollFilter())
 
 # ─── App setup ────────────────────────────────────────────────────────────────
 
@@ -250,7 +262,7 @@ app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /ap
 
 # Auto-scheduler disabled — use the manual scan banner in the UI instead
 # start_career_site_scheduler()
-start_job_import_listener(queue_import_capture)
+start_job_import_listener(lambda body: queue_import_capture(body, trigger="listener"))
 
 # Register generated Swagger docs after API routes are loaded and before the SPA
 # catch-all. The UI is available at /apidocs/ and the JSON spec at /apispec_1.json.
@@ -259,6 +271,26 @@ app.config["SWAGGER"] = {
     "uiversion": 3,
 }
 _swagger = Swagger(app, template=_build_swagger_template(app))
+
+
+# ─── Startup checks ───────────────────────────────────────────────────────────
+
+def _check_redis() -> None:
+    parsed = urllib.parse.urlparse(config.REDIS_URL)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 6379
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            logger.info("Redis reachable at %s:%s", host, port)
+    except OSError:
+        logger.warning(
+            "Redis is NOT reachable at %s:%s — Celery task submission will fail. "
+            "Start the infra container: cd ../infra && docker-compose up -d",
+            host, port,
+        )
+
+
+_check_redis()
 
 
 # ─── Dev-server launcher ──────────────────────────────────────────────────────
@@ -361,11 +393,50 @@ def _stop_vite() -> None:
         logger.info("Vite dev server stopped.")
 
 
+_celery_proc: _subprocess.Popen | None = None
+
+
+def _start_celery_worker() -> None:
+    global _celery_proc
+
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        return  # reloader fork — worker already running from the parent
+
+    try:
+        _celery_proc = _subprocess.Popen(
+            [
+                sys.executable, "-m", "celery",
+                "-A", "backend.celery_app", "worker",
+                "--loglevel=warning",
+                "--concurrency=2",
+                "--pool=threads",
+            ],
+            cwd=str(config.BASE_DIR),
+        )
+        atexit.register(_stop_celery_worker)
+        logger.info("Celery worker started (PID %s)", _celery_proc.pid)
+    except Exception as exc:
+        logger.warning("Could not start Celery worker: %s", exc)
+
+
+def _stop_celery_worker() -> None:
+    if _celery_proc and _celery_proc.poll() is None:
+        if sys.platform == "win32":
+            _subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(_celery_proc.pid)],
+                capture_output=True,
+            )
+        else:
+            _celery_proc.terminate()
+        logger.info("Celery worker stopped.")
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     _maybe_rebuild_frontend()
     _start_vite()
+    _start_celery_worker()
     app.run(
         debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",
         host=os.environ.get("FLASK_HOST", "127.0.0.1"),

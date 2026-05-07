@@ -35,17 +35,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-import certifi
 import httpx
 from anthropic import APIStatusError, Anthropic
 
 import config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,14 @@ class AIProviderClient:
         self._openai_model = str(cfg.get("openai_model") or config.OPENAI_MODEL).strip()
         self._ollama_base_url = str(cfg.get("ollama_base_url") or config.OLLAMA_BASE_URL).strip().rstrip("/")
         self._ollama_model = str(cfg.get("ollama_model") or config.OLLAMA_MODEL).strip()
+        self._anthropic_client: Anthropic | None = (
+            Anthropic(
+                api_key=config.ANTHROPIC_API_KEY,
+                http_client=httpx.Client(verify=ssl.create_default_context()),
+            )
+            if config.ANTHROPIC_API_KEY
+            else None
+        )
 
     def complete(
         self,
@@ -90,7 +100,7 @@ class AIProviderClient:
         raise AIProviderError(f"Unknown AI provider: {self._provider}")
 
     def _complete_anthropic(self, messages: list[AIMessage], system: str, max_tokens: int) -> str:
-        if not config.ANTHROPIC_API_KEY:
+        if not self._anthropic_client:
             raise AIProviderError("ANTHROPIC_API_KEY is not set")
         kwargs: dict[str, Any] = {
             "model": self._anthropic_model,
@@ -100,10 +110,7 @@ class AIProviderClient:
         if system:
             kwargs["system"] = system
         try:
-            response = Anthropic(
-                api_key=config.ANTHROPIC_API_KEY,
-                http_client=httpx.Client(verify=certifi.where()),
-            ).messages.create(**kwargs)
+            response = self._anthropic_client.messages.create(**kwargs)
         except APIStatusError as exc:
             raise AIProviderError(_anthropic_error_message(exc), status_code=exc.status_code) from exc
         except (ssl.SSLError, OSError) as exc:
@@ -167,7 +174,14 @@ class AIProviderClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=600) as response:
-                return json.loads(response.read().decode("utf-8"))
+                raw = response.read().decode("utf-8")
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    preview = raw.strip()[:120]
+                    raise AIProviderError(
+                        f"AI provider returned a non-JSON response: {preview!r}"
+                    ) from exc
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise AIProviderError(_http_error_message(body, exc.reason), status_code=exc.code) from exc
@@ -190,7 +204,11 @@ def _http_error_message(body: str, fallback: str) -> str:
     try:
         parsed = json.loads(body)
     except json.JSONDecodeError:
-        return body.strip() or fallback
+        logger.debug("AI provider returned non-JSON error body: %s", body[:500])
+        stripped = body.strip()
+        if stripped.lower().startswith("<!"):
+            return f"{fallback} (provider returned an HTML error page)"
+        return stripped[:300] or fallback
     for path in (("error", "message"), ("error",), ("message",)):
         current: Any = parsed
         for key in path:

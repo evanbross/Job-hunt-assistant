@@ -102,6 +102,7 @@ def run_import_task(
         skipped = 0
         repaired = 0
         failed = 0
+        failures: list[dict] = []
 
         for i, url_row in enumerate(extracted):
             url = str(url_row.get("url") or "")
@@ -155,10 +156,12 @@ def run_import_task(
                 repos["conn"].rollback()
                 logger.warning("Bulk import skipped %s: %s", url, exc)
                 failed += 1
+                failures.append({"url": url, "reason": str(exc)})
             except Exception as exc:
                 repos["conn"].rollback()
                 logger.error("Bulk import error for %s: %s", url, exc)
                 failed += 1
+                failures.append({"url": url, "reason": str(exc)})
 
         _record_capture_source(capture_source, repos, body)
 
@@ -167,6 +170,7 @@ def run_import_task(
             "skipped": skipped,
             "repaired": repaired,
             "failed": failed,
+            "failures": failures,
             "capture_source": capture_source,
         }
     finally:

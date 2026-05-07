@@ -33,6 +33,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 
 const DISPOSITION_INFO = {
   job_created:       { label: "Job extracted",      cls: "badge-accent" },
@@ -238,9 +239,9 @@ function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRe
           <div style={sectionLabel}>Email</div>
           <dl style={dlStyle}>
             <dt style={dtStyle}>Date</dt>
-            <dd style={ddStyle}>{email.email_date || "—"}</dd>
+            <dd style={ddStyle}>{formatLocalDateTime(email.email_date || email.scanned_at)}</dd>
             <dt style={dtStyle}>Scanned at</dt>
-            <dd style={ddStyle}>{email.scanned_at ? email.scanned_at.replace("T", " ").slice(0, 19) : "—"}</dd>
+            <dd style={ddStyle}>{formatLocalDateTime(email.scanned_at)}</dd>
             <dt style={dtStyle}>Disposition</dt>
             <dd style={ddStyle}>
               {(DISPOSITION_INFO[email.disposition] || { label: email.disposition || "—" }).label}
@@ -725,7 +726,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
                           {isSelected ? "▾" : "▸"}
                         </td>
                         <td style={{ ...tdStyle, whiteSpace: "nowrap", fontSize: "12px", color: "var(--text-muted)" }}>
-                          {email.email_date || "—"}
+                          {formatLocalDateTime(email.email_date || email.scanned_at)}
                         </td>
                         <td style={{ ...tdStyle, width: "160px", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "12px" }}>
                           {email.sender_email || "—"}

@@ -34,6 +34,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
+import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 
 function FixCompaniesDialog({ progress, onClose }) {
@@ -826,23 +827,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
                   </button>
                 </div>
 
-                {manualSubmitting && (
-                  <div style={inlineImportProgressStyle}>
-                    <span className="inline-spinner" style={{ marginRight: "8px" }} />
-                    <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>Evaluating job listing…</span>
-                  </div>
-                )}
-
-                {manualResult && !manualSubmitting && (
-                  <div style={inlineImportSuccessStyle}>
-                    <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--green)", marginBottom: "2px" }}>Queued</div>
-                    <div style={{ fontSize: "13px" }}>
-                      {manualResult.job_title || "Job"} at {manualResult.company || "unknown company"}{" "}
-                      as <strong>{manualResult.status}</strong>
-                      {manualResult.fit_score != null ? ` · fit score ${manualResult.fit_score}` : ""}
-                    </div>
-                  </div>
-                )}
               </>
             ) : (
               <>
@@ -906,21 +890,23 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
 
                 {importSubmitting && (
                   <div style={inlineImportProgressStyle}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: importState ? "8px" : "0" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
                       <span className="inline-spinner" />
                       <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>{importState?.message || "Starting import…"}</span>
                     </div>
-                    {importState && (
-                      <>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px" }}>
-                          <span>Progress</span>
-                          <span>{Math.max(0, Math.min(100, Number(importState.progress) || 0))}%</span>
-                        </div>
-                        <div className="loading-bar">
-                          <div className="loading-bar-fill" style={{ width: `${Math.max(0, Math.min(100, Number(importState.progress) || 0))}%` }} />
-                        </div>
-                      </>
+                    {importState?.current_job_url && (
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {importState.current_platform && <strong style={{ marginRight: "4px" }}>{importState.current_platform}</strong>}
+                        {importState.current_job_url}
+                      </div>
                     )}
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px" }}>
+                      <span>Progress</span>
+                      <span>{Math.max(0, Math.min(100, Number(importState?.progress) || 0))}%</span>
+                    </div>
+                    <div className="loading-bar">
+                      <div className="loading-bar-fill" style={{ width: `${Math.max(0, Math.min(100, Number(importState?.progress) || 0))}%` }} />
+                    </div>
                   </div>
                 )}
 
@@ -1035,6 +1021,14 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         />
       )}
 
+      {(manualSubmitting || manualResult) && (
+        <ManualEvalDialog
+          submitting={manualSubmitting}
+          result={manualResult}
+          onClose={() => setManualResult(null)}
+        />
+      )}
+
       {loading ? (
         <p style={{ color: "var(--text-muted)" }}>Loading jobs…</p>
       ) : jobs.length === 0 ? (
@@ -1134,6 +1128,7 @@ function ProgressPopup({ title, message, progress, children }) {
 
 function ImportSummaryPopup({ summary, onClose }) {
   const { queued, skipped, repaired = 0, failed } = summary;
+  const failures = Array.isArray(summary.failures) ? summary.failures : [];
   const sourceName = summary.capture_source?.name;
   return (
     <div style={popupBackdropStyle}>
@@ -1177,6 +1172,24 @@ function ImportSummaryPopup({ summary, onClose }) {
             </div>
           )}
         </div>
+
+        {failures.length > 0 && (
+          <div style={{ marginTop: "14px", borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
+              Failure details
+            </div>
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "6px", maxHeight: "200px", overflowY: "auto" }}>
+              {failures.map((f, i) => (
+                <li key={i} style={{ fontSize: "12px", lineHeight: 1.5 }}>
+                  <div style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.url}>
+                    {f.url}
+                  </div>
+                  <div style={{ color: "var(--red)" }}>{f.reason}</div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1498,7 +1511,7 @@ function ScanSummaryPopup({ summary, onClose }) {
                             {email.email_subject || "(no subject)"}
                           </div>
                           <div style={{ color: "var(--text-muted)", fontSize: "11px", overflowWrap: "anywhere" }}>
-                            {email.email_date || "No date"} · {formatJobTitles(email.job_titles)}
+                            {formatLocalDateTime(email.email_date) || "No date"} · {formatJobTitles(email.job_titles)}
                           </div>
                         </td>
                         <td style={emailReportCellStyle}>{email.sender_email || "Unknown sender"}</td>
@@ -1539,6 +1552,158 @@ function ScanSummaryPopup({ summary, onClose }) {
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+const EVAL_PHASES = [
+  "Parsing job description…",
+  "Extracting skills and requirements…",
+  "Scoring fit against your resume…",
+  "Applying penalty rules…",
+  "Finalizing evaluation…",
+];
+
+function ManualEvalDialog({ submitting, result, onClose }) {
+  const [phaseIndex, setPhaseIndex] = useState(0);
+
+  useEffect(() => {
+    if (!submitting) return;
+    setPhaseIndex(0);
+    const interval = setInterval(() => {
+      setPhaseIndex((i) => Math.min(i + 1, EVAL_PHASES.length - 1));
+    }, 1800);
+    return () => clearInterval(interval);
+  }, [submitting]);
+
+  const score = result?.fit_score;
+  const status = result?.status;
+  const scoreColor =
+    score == null ? "var(--text-muted)"
+    : score >= 70 ? "var(--green)"
+    : score >= 50 ? "var(--yellow)"
+    : "var(--red)";
+  const statusLabel =
+    status === "pending_review" ? "Queued for review"
+    : status === "triage" ? "Moved to triage"
+    : status || "";
+  const statusColor = status === "pending_review" ? "var(--green)" : "var(--yellow)";
+  const statusBg = status === "pending_review" ? "rgba(76,175,129,0.15)" : "rgba(255,193,7,0.15)";
+
+  return (
+    <div style={{ ...popupBackdropStyle, zIndex: 1200 }}>
+      <div style={{ ...popupPanelStyle, maxWidth: "500px" }}>
+        <div style={popupHeaderStyle}>
+          <div>
+            <div style={popupTitleStyle}>
+              {submitting ? "Evaluating job" : result?.job_title || "Job evaluated"}
+            </div>
+            {!submitting && result?.company && (
+              <div style={popupSubtitleStyle}>{result.company}</div>
+            )}
+          </div>
+          {submitting ? (
+            <span className="inline-spinner" style={popupSpinnerStyle} />
+          ) : (
+            <button type="button" className="btn-secondary" onClick={onClose} style={{ padding: "4px 10px", fontSize: "12px" }}>
+              Close
+            </button>
+          )}
+        </div>
+
+        {submitting ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {EVAL_PHASES.map((phase, i) => {
+              const done = i < phaseIndex;
+              const active = i === phaseIndex;
+              return (
+                <div
+                  key={phase}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    fontSize: "13px",
+                    color: done ? "var(--green)" : active ? "var(--text)" : "var(--text-muted)",
+                    opacity: i > phaseIndex ? 0.4 : 1,
+                    transition: "color 0.3s, opacity 0.3s",
+                  }}
+                >
+                  {done ? (
+                    <span style={{ width: "14px", textAlign: "center", color: "var(--green)", fontWeight: 700 }}>✓</span>
+                  ) : active ? (
+                    <span className="inline-spinner" style={{ width: "14px", height: "14px", flexShrink: 0 }} />
+                  ) : (
+                    <span style={{ width: "14px", textAlign: "center", color: "var(--text-muted)" }}>○</span>
+                  )}
+                  {phase}
+                </div>
+              );
+            })}
+          </div>
+        ) : result ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "20px",
+              padding: "14px 16px",
+              background: "rgba(255,255,255,0.04)",
+              borderRadius: "var(--radius)",
+              border: "1px solid var(--border)",
+            }}>
+              <div style={{ textAlign: "center", minWidth: "64px" }}>
+                <div style={{ fontSize: "42px", fontWeight: 800, color: scoreColor, lineHeight: 1 }}>
+                  {score ?? "—"}
+                </div>
+                <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "3px" }}>fit score</div>
+              </div>
+              <div>
+                <div style={{
+                  display: "inline-block",
+                  padding: "4px 10px",
+                  borderRadius: "999px",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  background: statusBg,
+                  color: statusColor,
+                  marginBottom: "8px",
+                }}>
+                  {statusLabel}
+                </div>
+                {result.company && (
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)" }}>{result.company}</div>
+                )}
+                {result.job_title && (
+                  <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{result.job_title}</div>
+                )}
+              </div>
+            </div>
+
+            {result.fit_reasoning && (
+              <div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "6px" }}>
+                  Scoring notes
+                </div>
+                <div style={{
+                  fontSize: "13px",
+                  color: "var(--text)",
+                  lineHeight: 1.65,
+                  whiteSpace: "pre-wrap",
+                  maxHeight: "220px",
+                  overflowY: "auto",
+                  padding: "10px 12px",
+                  background: "rgba(255,255,255,0.03)",
+                  borderRadius: "var(--radius)",
+                  border: "1px solid var(--border)",
+                }}>
+                  {result.fit_reasoning}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : null}
       </div>
     </div>
   );

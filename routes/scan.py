@@ -227,9 +227,13 @@ def _run_scan(rescan_all: bool = False) -> None:
             # Uses scanned_emails table so rejected/deleted jobs are still remembered.
             if scanned_repo.has_been_scanned(msg_id):
                 already_scanned_emails += 1
+                stored = scanned_repo.get_scanned_metadata(msg_id)
                 email_report.append(
                     _email_report_row(
                         email_id=msg_id,
+                        sender_email=(stored or {}).get("sender_email") or "",
+                        email_subject=(stored or {}).get("email_subject") or "",
+                        email_date=(stored or {}).get("email_date"),
                         disposition="already_scanned",
                         gmail_action="already processed",
                     )
@@ -432,6 +436,8 @@ def _run_scan(rescan_all: bool = False) -> None:
                         job_data["fit_score"] = score_result["score"]
                         job_data["fit_reasoning"] = score_result["reasoning"]
                         if score_result["score"] < 70:
+                            job_data["status"] = "triage"
+                            status = "triage"
                             low_fit_score_jobs += 1
                     except Exception as exc:
                         scoring_failed_jobs += 1
