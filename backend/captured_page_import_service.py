@@ -375,7 +375,7 @@ class CapturedPageImportService:
             return self._normalize_wellfound_job_url(parsed)
         if platform == "LinkedIn":
             return self._normalize_linkedin_job_url(parsed)
-        cleaned = parsed._replace(fragment="", query=parsed.query)
+        cleaned = parsed._replace(fragment="", query="")
         return cleaned.geturl()
 
     def _normalize_wellfound_job_url(self, parsed: ParseResult) -> str | None:
@@ -414,6 +414,11 @@ class CapturedPageImportService:
     def _wellfound_listing_fields(self, public_url: str, anchor_parts: list[str]) -> dict[str, str]:
         title = anchor_parts[0].strip() if anchor_parts else ""
         company = self._company_from_wellfound_title(title)
+        if not company and len(anchor_parts) > 1:
+            # Wellfound cards often render as separate text nodes: [title, company, location…]
+            company = self._clean_wellfound_company(anchor_parts[1].strip())
+        if not company:
+            company = self._company_from_wellfound_slug(public_url)
         detail_lines = [part.strip() for part in anchor_parts[1:] if part.strip()]
         listing_lines = [
             line
@@ -435,6 +440,19 @@ class CapturedPageImportService:
     def _company_from_wellfound_title(title: str) -> str:
         match = re.search(r"\bat\s+(.+)$", title)
         return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def _company_from_wellfound_slug(url: str) -> str:
+        parsed = urlparse(url)
+        slug = parse_qs(parsed.query).get("job_listing_slug", [""])[0]
+        if not slug:
+            return ""
+        # Slug format: <job-title>-at-<company>[-<id>]
+        match = re.search(r"-at-(.+)$", slug)
+        if not match:
+            return ""
+        company_slug = re.sub(r"-\d+$", "", match.group(1))
+        return company_slug.replace("-", " ").title()
 
     def _company_from_wellfound_text(self, title: str, listing_text: str) -> str:
         company_match = re.search(r"(?im)^Company:\s*(.+)$", listing_text)

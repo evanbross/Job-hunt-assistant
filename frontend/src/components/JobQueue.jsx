@@ -110,6 +110,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   const [moreToolsOpen, setMoreToolsOpen] = useState(false);
   const [fixingCompanies, setFixingCompanies] = useState(false);
   const [fixProgress, setFixProgress] = useState(null);
+  const [deletingUnknownCompanies, setDeletingUnknownCompanies] = useState(false);
   const pollRef = useRef(null);
   const boardPollRef = useRef(null);
   const importPollRef = useRef(null);
@@ -247,6 +248,29 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
       setFixProgress((p) => ({ ...p, done: true }));
     } finally {
       setFixingCompanies(false);
+    }
+  };
+
+  const handleDeleteUnknownCompanies = async () => {
+    if (!window.confirm("Delete all jobs with unknown company? You'll need to reimport them.")) return;
+    setDeletingUnknownCompanies(true);
+    setMoreToolsOpen(false);
+    try {
+      const res = await fetch("/api/repair/delete-unknown-companies", { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        window.alert(`Delete failed: ${data.error || res.status}`);
+        return;
+      }
+      const data = await res.json();
+      await fetchJobs();
+      if (data.deleted > 0) {
+        window.alert(`Deleted ${data.deleted} job${data.deleted === 1 ? "" : "s"} with unknown company.`);
+      } else {
+        window.alert("No jobs with unknown company found.");
+      }
+    } finally {
+      setDeletingUnknownCompanies(false);
     }
   };
 
@@ -419,7 +443,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   };
 
   const anyScanRunning = scanning || rescanAllRunning;
-  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies;
+  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies;
   const filteredJobs = jobs.filter((job) => jobMatchesSearch(job, searchText));
 
   const handleManualSubmit = async () => {
@@ -697,6 +721,24 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
               >
                 {fixingCompanies ? "Fixing…" : "Fix Unknown Companies"}
               </button>
+              <button
+                onClick={handleDeleteUnknownCompanies}
+                disabled={anyQueueActionRunning || deletingUnknownCompanies}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 14px",
+                  fontSize: "13px",
+                  background: "none",
+                  border: "none",
+                  color: "var(--red)",
+                  cursor: (anyQueueActionRunning || deletingUnknownCompanies) ? "not-allowed" : "pointer",
+                  opacity: (anyQueueActionRunning || deletingUnknownCompanies) ? 0.5 : 1,
+                }}
+              >
+                {deletingUnknownCompanies ? "Deleting…" : "Delete Unknown Companies"}
+              </button>
               <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
               <button
                 onClick={() => { setMoreToolsOpen(false); handleRescanAll(); }}
@@ -722,12 +764,19 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
       </div>
 
       {recaptureDueSites.length > 0 && (
-        <div style={{ ...progressBox, background: "rgba(255,193,7,0.08)", borderColor: "rgba(255,193,7,0.28)" }}>
+        <div style={{ ...progressBox, background: "rgba(255,193,7,0.08)", borderColor: "rgba(255,193,7,0.28)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--text)" }}>
             Time to recapture {recaptureDueSites.length} job board{recaptureDueSites.length === 1 ? "" : "s"}:
             {" "}
             {recaptureDueSites.map((site) => site.name || site.url).join(", ")}
           </p>
+          <button
+            onClick={() => setRecaptureDueSites([])}
+            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "16px", lineHeight: 1, padding: "0 2px", flexShrink: 0 }}
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -1000,12 +1049,21 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           message={boardState.message}
           progress={boardState.progress}
         >
-          {boardState.candidates_found > 0 && (
-            <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--text-muted)" }}>
-              {boardState.candidates_processed}/{boardState.candidates_found} scored
-              {boardState.jobs_added > 0 && ` · ${boardState.jobs_added} added`}
-            </p>
-          )}
+          {boardState.candidates_found > 0 && (() => {
+            const totalDups = (boardState.duplicates_skipped || 0) + (boardState.fuzzy_duplicates_skipped || 0);
+            const scoringFailed = boardState.scoring_failed || 0;
+            const notFit = boardState.below_min_score || 0;
+            const added = boardState.jobs_added || 0;
+            return (
+              <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--text-muted)" }}>
+                {boardState.candidates_processed}/{boardState.candidates_found} scored
+                {totalDups > 0 && ` · ${totalDups} duplicate${totalDups !== 1 ? "s" : ""}`}
+                {scoringFailed > 0 && ` · ${scoringFailed} couldn't score`}
+                {notFit > 0 && ` · ${notFit} not fit`}
+                {added > 0 && ` · ${added} added`}
+              </p>
+            );
+          })()}
           {boardState.errors?.length > 0 && (
             <ul style={{ marginTop: "8px", fontSize: "11px", color: "var(--red)", paddingLeft: "16px" }}>
               {boardState.errors.map((e, i) => <li key={i}>{e}</li>)}
@@ -1330,6 +1388,11 @@ function ScanSummaryPopup({ summary, onClose }) {
     disposition: "job_created",
     gmail_action: "eligible to move",
   }));
+  const moveEligibleEmails = emailReport.filter(
+    (email) => email.disposition === "job_created" && email.gmail_action === "eligible to move"
+  );
+  const movedSuccessfulEmails = summary.moved_successful_emails || 0;
+  const scannedEmailLabel = summary.scanned_email_label || "the scanned folder";
   const skippedEmailDetails = [
     { label: "duplicates", value: duplicates },
     { label: "not job emails", value: non_job_emails },
@@ -1345,7 +1408,7 @@ function ScanSummaryPopup({ summary, onClose }) {
     { label: "low fit score", value: low_fit_score_jobs, tone: "yellow" },
     { label: "scoring failed", value: scoring_failed_jobs, tone: "red" },
   ].filter((item) => item.value > 0);
-  const [selectedEmailIds, setSelectedEmailIds] = useState(() => successfulEmails.map((email) => email.email_id));
+  const [selectedEmailIds, setSelectedEmailIds] = useState(() => moveEligibleEmails.map((email) => email.email_id));
   const [movingEmails, setMovingEmails] = useState(false);
   const [moveResult, setMoveResult] = useState(null);
   const selectedCount = selectedEmailIds.length;
@@ -1450,16 +1513,17 @@ function ScanSummaryPopup({ summary, onClose }) {
                   Email report
                 </div>
                 <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                  {selectedCount} of {successfulEmails.length} move-eligible selected
+                  {selectedCount} of {moveEligibleEmails.length} move-eligible selected
+                  {movedSuccessfulEmails > 0 && ` · ${movedSuccessfulEmails} moved automatically`}
                 </div>
               </div>
-              {successfulEmails.length > 0 && (
+              {moveEligibleEmails.length > 0 && (
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                   <button
                     type="button"
                     className="btn-secondary"
                     style={{ padding: "4px 10px", fontSize: "12px" }}
-                    onClick={() => setSelectedEmailIds(successfulEmails.map((email) => email.email_id))}
+                    onClick={() => setSelectedEmailIds(moveEligibleEmails.map((email) => email.email_id))}
                   >
                     Select all
                   </button>
@@ -1489,7 +1553,7 @@ function ScanSummaryPopup({ summary, onClose }) {
                 </thead>
                 <tbody>
                   {emailReport.map((email) => {
-                    const moveEligible = email.disposition === "job_created";
+                    const moveEligible = email.disposition === "job_created" && email.gmail_action === "eligible to move";
                     const wasMoved = movedEmailIds.includes(email.email_id);
                     const actionLabel = wasMoved
                       ? `moved to ${moveResult.label}`
@@ -1532,22 +1596,26 @@ function ScanSummaryPopup({ summary, onClose }) {
               </table>
             </div>
 
-            {successfulEmails.length > 0 && (
+            {(moveEligibleEmails.length > 0 || movedSuccessfulEmails > 0) && (
               <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginTop: "12px", flexWrap: "wrap" }}>
                 <div style={{ fontSize: "12px", color: moveResult ? "var(--green)" : "var(--text-muted)" }}>
                   {moveResult
                     ? `Moved ${moveResult.moved} email${moveResult.moved === 1 ? "" : "s"} to ${moveResult.label}.`
-                    : "Move selected emails out of the inbox after confirming the parse."}
+                    : movedSuccessfulEmails > 0
+                      ? `Moved ${movedSuccessfulEmails} email${movedSuccessfulEmails === 1 ? "" : "s"} to ${scannedEmailLabel}.`
+                      : "Move selected emails out of the inbox after confirming the parse."}
                 </div>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={moveSelectedEmails}
-                  disabled={movingEmails || selectedCount === 0}
-                  style={{ padding: "7px 12px", fontSize: "12px" }}
-                >
-                  {movingEmails ? "Moving..." : "Move Selected to Scanned Folder"}
-                </button>
+                {moveEligibleEmails.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={moveSelectedEmails}
+                    disabled={movingEmails || selectedCount === 0}
+                    style={{ padding: "7px 12px", fontSize: "12px" }}
+                  >
+                    {movingEmails ? "Moving..." : "Move Selected to Scanned Folder"}
+                  </button>
+                )}
               </div>
             )}
           </div>

@@ -1416,8 +1416,13 @@ function classificationLabel(status) {
 function sourceSummaryForJob(job) {
   const source = String(job.source || "").trim();
   const platform = platformLabelForUrl(job.url);
-  const manual = isManualJob(job);
   const sourceLabel = source ? titleCaseKnownSource(source) : "";
+
+  if (sourceLabel.toLowerCase().startsWith("tampermonkey")) {
+    return sourceLabel;
+  }
+
+  const manual = isManualJob(job);
   const manualPlatform = manualPlatformFromSource(sourceLabel);
 
   if (manualPlatform) {
@@ -1445,8 +1450,11 @@ function isManualJob(job) {
   const source = String(job.source || "").toLowerCase();
   return (
     emailSubject.includes("manual pasted job listing") ||
+    emailSubject.includes("tampermonkey streamed job listing") ||
     emailId.startsWith("manual:") ||
-    source.includes("manual paste")
+    emailId.startsWith("tampermonkey:") ||
+    source.includes("manual paste") ||
+    source.includes("tampermonkey")
   );
 }
 
@@ -1461,6 +1469,8 @@ function platformLabelForUrl(rawUrl) {
   if (normalizedUrl.includes("greenhouse.io")) return "Greenhouse";
   if (normalizedUrl.includes("lever.co")) return "Lever";
   if (normalizedUrl.includes("ashbyhq.com")) return "Ashby";
+  if (normalizedUrl.includes("wellfound.com")) return "Wellfound";
+  if (normalizedUrl.includes("linkedin.com")) return "LinkedIn";
   if (normalizedUrl.includes("myworkdayjobs.com")) return "Workday";
   return "";
 }
@@ -1474,6 +1484,7 @@ function titleCaseKnownSource(source) {
   if (normalizedSource === "manual paste") return "Manual paste";
   if (normalizedSource === "manual pasted job listing") return "Manual paste";
   if (normalizedSource === "manual url") return "Manual URL";
+  if (normalizedSource === "tampermonkey") return "Tampermonkey";
   return source;
 }
 

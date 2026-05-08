@@ -541,6 +541,8 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
+  const [chatReclassification, setChatReclassification] = useState(null);
+  const [chatAccepting, setChatAccepting] = useState(false);
   const chatMessagesRef = useRef(null);
   const triageReasoning = triageReasoningForJob(job);
   const penaltiesApplied = penaltiesAppliedForJob(job);
@@ -659,6 +661,7 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
       if (!res.ok) throw new Error(data.error ? `${data.error} (${res.status})` : `Chat failed (${res.status})`);
 
       setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+      setChatReclassification(data.reclassification || null);
     } catch (err) {
       setChatMessages((prev) => [
         ...prev,
@@ -666,6 +669,32 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
       ]);
     } finally {
       setChatSending(false);
+    }
+  };
+
+  const handleAcceptReclassification = async () => {
+    if (!chatReclassification) return;
+    setChatAccepting(true);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/fit-classification`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(chatReclassification),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        window.alert(`Failed to apply: ${data.error || res.status}`);
+        return;
+      }
+      const updated = await res.json();
+      setChatReclassification(null);
+      setChatOpen(false);
+      setChatMessages([]);
+      onReprocessed(updated);
+    } catch (err) {
+      window.alert(`Failed to apply: ${err.message}`);
+    } finally {
+      setChatAccepting(false);
     }
   };
 
@@ -827,6 +856,7 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
           onClick={() => {
             setChatOpen((open) => !open);
             setChatMessages([]);
+            setChatReclassification(null);
           }}
         >
           {chatOpen ? "Close AI chat" : "Chat with AI about fit"}
@@ -858,8 +888,11 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
           chatMessages={chatMessages}
           chatMessagesRef={chatMessagesRef}
           chatSending={chatSending}
+          reclassification={chatReclassification}
+          accepting={chatAccepting}
           onInputChange={setChatInput}
           onSend={handleChatSend}
+          onAccept={handleAcceptReclassification}
         />
       )}
 
@@ -964,9 +997,15 @@ function FitChatPanel({
   chatMessages,
   chatMessagesRef,
   chatSending,
+  reclassification,
+  accepting,
   onInputChange,
   onSend,
+  onAccept,
 }) {
+  const statusLabel = (status) =>
+    status === "pending_review" ? "Job Queue" : status === "triage" ? "Triage" : "Skip";
+
   return (
     <div style={chatPanelStyle}>
       <p style={chatHeadingStyle}>Discuss fit percentage</p>
@@ -991,6 +1030,21 @@ function FitChatPanel({
               Thinking…
             </div>
           )}
+        </div>
+      )}
+      {reclassification && (
+        <div style={reclassificationBannerStyle}>
+          <span style={{ fontSize: "13px" }}>
+            AI suggests: <strong>{reclassification.fit_score}%</strong> → <strong>{statusLabel(reclassification.status)}</strong>
+          </span>
+          <button
+            className="btn-primary"
+            onClick={onAccept}
+            disabled={accepting || chatSending}
+            style={{ fontSize: "12px", padding: "4px 14px", flexShrink: 0 }}
+          >
+            {accepting ? "Applying…" : "Accept & Apply"}
+          </button>
         </div>
       )}
       <div style={{ display: "flex", gap: "6px" }}>
@@ -1333,6 +1387,11 @@ function DescriptionUpdatePopup({ popup, onClose }) {
 function sourceLabel(job) {
   const source = String(job.source || "").trim();
   const platform = platformLabelForUrl(job.url);
+
+  if (source.toLowerCase().startsWith("tampermonkey")) {
+    return source;
+  }
+
   if (!source) return platform;
   if (!platform) return titleCaseKnownSource(source);
 
@@ -1340,7 +1399,7 @@ function sourceLabel(job) {
   if (normalizedSource.includes(platform.toLowerCase())) {
     return titleCaseKnownSource(source);
   }
-  if (isManualSource(source) || job.email_subject === "Manual pasted job listing") {
+  if (isManualSource(source) || isManualPastedJob(job)) {
     return `${titleCaseKnownSource(source)} - ${platform}`;
   }
   return titleCaseKnownSource(source);
@@ -1353,12 +1412,15 @@ function isManualSource(source) {
     "manual paste",
     "manual pasted job listing",
     "manual url",
+    "tampermonkey",
   ].includes(normalizedSource);
 }
 
 function isManualPastedJob(job) {
+  const subject = String(job.email_subject || "").trim().toLowerCase();
   return (
-    String(job.email_subject || "").trim().toLowerCase() === "manual pasted job listing"
+    subject === "manual pasted job listing"
+    || subject === "tampermonkey streamed job listing"
     || isManualSource(String(job.source || ""))
   );
 }
@@ -1369,6 +1431,8 @@ function platformLabelForUrl(rawUrl) {
   if (normalizedUrl.includes("greenhouse.io")) return PLATFORM_LABELS.greenhouse;
   if (normalizedUrl.includes("lever.co")) return PLATFORM_LABELS.lever;
   if (normalizedUrl.includes("ashbyhq.com")) return PLATFORM_LABELS.ashby;
+  if (normalizedUrl.includes("wellfound.com")) return "Wellfound";
+  if (normalizedUrl.includes("linkedin.com")) return "LinkedIn";
   if (normalizedUrl.includes("myworkdayjobs.com")) return PLATFORM_LABELS.workday;
   return "";
 }
@@ -1382,6 +1446,7 @@ function titleCaseKnownSource(source) {
   if (normalizedSource === "manual paste") return "Manual Paste";
   if (normalizedSource === "manual pasted job listing") return "Manual Paste";
   if (normalizedSource === "manual url") return "Manual URL";
+  if (normalizedSource === "tampermonkey") return "Tampermonkey";
   return source;
 }
 
@@ -1910,6 +1975,18 @@ const chatBubbleStyle = {
   fontSize: "13px",
   lineHeight: "1.5",
   whiteSpace: "pre-wrap",
+};
+
+const reclassificationBannerStyle = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "10px",
+  background: "var(--surface)",
+  border: "1px solid var(--accent)",
+  borderRadius: "var(--radius)",
+  padding: "8px 12px",
+  marginBottom: "10px",
 };
 
 const chatInputStyle = {

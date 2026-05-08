@@ -238,6 +238,7 @@ from routes.career_sites import career_sites_bp
 from routes.cover_letter import cover_letter_bp
 from routes.emails import emails_bp
 from routes.fit import fit_bp
+from routes.greenhouse import greenhouse_bp
 from routes.import_ import import_bp, queue_import_capture
 from routes.jobs import jobs_bp
 from routes.scan import scan_bp
@@ -252,6 +253,7 @@ app.register_blueprint(career_sites_bp, url_prefix="/api")
 app.register_blueprint(cover_letter_bp, url_prefix="/api")
 app.register_blueprint(emails_bp, url_prefix="/api")
 app.register_blueprint(fit_bp, url_prefix="/api")
+app.register_blueprint(greenhouse_bp, url_prefix="/api")
 app.register_blueprint(import_bp, url_prefix="/api")
 app.register_blueprint(jobs_bp, url_prefix="/api")
 app.register_blueprint(scan_bp, url_prefix="/api")

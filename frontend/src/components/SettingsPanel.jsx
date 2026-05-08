@@ -263,6 +263,7 @@ function EmailSourcesSection() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", match_type: "sender_domain", match_value: "" });
   const [editId, setEditId] = useState(null);
+  const [sourceSort, setSourceSort] = useState({ key: "name", direction: "asc" });
 
   useEffect(() => {
     fetchConfig();
@@ -292,7 +293,10 @@ function EmailSourcesSection() {
     const res = await fetch("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scanned_email_label: scannedEmailLabel }),
+      body: JSON.stringify({
+        scanned_email_label: scannedEmailLabel,
+        move_successfully_processed_emails: !!cfg?.move_successfully_processed_emails,
+      }),
     });
     const data = await res.json();
     setConfigSaving(false);
@@ -363,6 +367,23 @@ function EmailSourcesSection() {
     fetchSources();
   };
 
+  const requestSourceSort = (key) => {
+    setSourceSort((currentSort) => ({
+      key,
+      direction: currentSort.key === key && currentSort.direction === "asc" ? "desc" : "asc",
+    }));
+  };
+
+  const sortedSources = [...sources].sort((leftSource, rightSource) =>
+    compareSourceRows(leftSource, rightSource, sourceSort.key, sourceSort.direction)
+  );
+  const sourceColumns = [
+    { key: "name", label: "Name" },
+    { key: "match_type", label: "Type" },
+    { key: "match_value", label: "Value" },
+    { key: "enabled", label: "Enabled" },
+  ];
+
   return (
     <div>
       <SectionHeader title="Email" />
@@ -382,6 +403,21 @@ function EmailSourcesSection() {
                 Gmail label used when moving processed emails out of the inbox.
               </span>
             </label>
+            <div style={{ ...settingRowStyle, marginTop: "14px" }}>
+              <div>
+                <div style={settingTitleStyle}>Move Successful Emails</div>
+                <div style={settingDescriptionStyle}>
+                  When on, emails that produced job records move to the processed label; when off, they stay in place.
+                </div>
+              </div>
+              <Toggle
+                checked={!!cfg.move_successfully_processed_emails}
+                onChange={() => setCfg({
+                  ...cfg,
+                  move_successfully_processed_emails: !cfg.move_successfully_processed_emails,
+                })}
+              />
+            </div>
             <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
               <button className="btn-primary" onClick={saveConfig} disabled={configSaving}>
                 {configSaving ? "Saving..." : "Save Configuration"}
@@ -422,10 +458,28 @@ function EmailSourcesSection() {
 
       <table style={tableStyle}>
         <thead>
-          <tr>{["Name", "Type", "Value", "Enabled", "Actions"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+          <tr>
+            {sourceColumns.map((column) => (
+              <th key={column.key} style={thStyle}>
+                <button
+                  type="button"
+                  style={sortableHeaderButtonStyle}
+                  onClick={() => requestSourceSort(column.key)}
+                >
+                  {column.label}
+                  {sourceSort.key === column.key && (
+                    <span style={sortDirectionStyle}>
+                      {sourceSort.direction === "asc" ? "^" : "v"}
+                    </span>
+                  )}
+                </button>
+              </th>
+            ))}
+            <th style={thStyle}>Actions</th>
+          </tr>
         </thead>
         <tbody>
-          {sources.map((s) => (
+          {sortedSources.map((s) => (
             <tr key={s.id}>
               <td style={tdStyle}>{s.name}</td>
               <td style={tdStyle}><span className="badge badge-gray">{s.match_type}</span></td>
@@ -445,6 +499,32 @@ function EmailSourcesSection() {
       </table>
     </div>
   );
+}
+
+function compareSourceRows(leftSource, rightSource, key, direction) {
+  const directionMultiplier = direction === "desc" ? -1 : 1;
+  const leftValue = sourceSortValue(leftSource, key);
+  const rightValue = sourceSortValue(rightSource, key);
+
+  if (typeof leftValue === "number" && typeof rightValue === "number") {
+    return (leftValue - rightValue) * directionMultiplier;
+  }
+
+  const compared = String(leftValue).localeCompare(String(rightValue), undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+  if (compared !== 0) return compared * directionMultiplier;
+
+  return String(leftSource.name || "").localeCompare(String(rightSource.name || ""), undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function sourceSortValue(source, key) {
+  if (key === "enabled") return source.enabled ? 1 : 0;
+  return source[key] || "";
 }
 
 // ── Career Site Sources ──────────────────────────────────────────────────────
@@ -1227,6 +1307,26 @@ const sectionSubheadingStyle = {
   margin: "0 0 10px 0",
 };
 
+const settingRowStyle = {
+  alignItems: "center",
+  display: "flex",
+  gap: "14px",
+  justifyContent: "space-between",
+};
+
+const settingTitleStyle = {
+  color: "var(--text)",
+  fontSize: "13px",
+  fontWeight: 700,
+};
+
+const settingDescriptionStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  lineHeight: 1.4,
+  marginTop: "2px",
+};
+
 const listenerStatusBoxStyle = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
@@ -1275,6 +1375,26 @@ const thStyle = {
   textTransform: "uppercase",
   letterSpacing: "0.05em",
   borderBottom: "1px solid var(--border)",
+};
+
+const sortableHeaderButtonStyle = {
+  alignItems: "center",
+  background: "transparent",
+  border: "none",
+  color: "inherit",
+  cursor: "pointer",
+  display: "inline-flex",
+  font: "inherit",
+  gap: "5px",
+  letterSpacing: "inherit",
+  padding: 0,
+  textAlign: "left",
+  textTransform: "inherit",
+};
+
+const sortDirectionStyle = {
+  color: "var(--text)",
+  fontSize: "10px",
 };
 
 const tdStyle = {

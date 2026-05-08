@@ -149,6 +149,7 @@ def run_import_task(
                     company_override=str(url_row.get("company") or ""),
                     job_title_override=str(url_row.get("job_title") or ""),
                     sheet_jobs=known_jobs,
+                    trigger=body.get("import_trigger", "ui"),
                 )
                 queued += 1
                 repos["conn"].commit()

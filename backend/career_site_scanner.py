@@ -46,7 +46,7 @@ import re
 from datetime import UTC, datetime
 from html import unescape
 from html.parser import HTMLParser
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
 from urllib.request import Request, urlopen
 
@@ -100,6 +100,7 @@ class CareerSiteJob(TypedDict):
     posted_at: str | None
     confidence_level: str
     confidence_score: int
+    company: NotRequired[str]
 
 
 class CareerSiteScanFailure(TypedDict):
@@ -589,6 +590,7 @@ class CareerSiteScanner:
             f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{job_id}"
         )
         title = _clean_text(data.get("title", "")) or "Untitled Job"
+        company = _clean_text((data.get("company") or {}).get("name", "")) or token
         content = _clean_text(data.get("content", ""))
         location = _clean_text((data.get("location") or {}).get("name", ""))
         text = f"Location: {location}. {content}" if location else content
@@ -602,6 +604,7 @@ class CareerSiteScanner:
             posted_at=_normalize_date(data.get("updated_at") or data.get("created_at")),
             confidence_level=confidence_level,
             confidence_score=confidence_score,
+            company=company,
         )
 
     def _scan_greenhouse(self, site_name: str, site_url: str) -> list[CareerSiteJob]:

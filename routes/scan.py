@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from flask import Blueprint, jsonify
+from googleapiclient.errors import HttpError
 
 import config
 from backend.db import open_repositories
@@ -158,6 +159,8 @@ def _run_scan(rescan_all: bool = False) -> None:
         lookback_days: int = runtime_cfg.get(
             "email_lookback_days", config.DEFAULT_EMAIL_LOOKBACK_DAYS
         )
+        move_successfully_processed_emails = config.should_move_successfully_processed_emails()
+        scanned_email_label = config.get_scanned_email_label()
 
         repos = open_repositories(config.DATABASE_URL)
         conn = repos["conn"]
@@ -213,6 +216,7 @@ def _run_scan(rescan_all: bool = False) -> None:
         possible_duplicate_jobs: int = 0
         low_fit_score_jobs: int = 0
         scoring_failed_jobs: int = 0
+        moved_successful_emails: int = 0
         jobs_by_source: dict[str, int] = {}
         successful_emails: list[dict[str, object]] = []
         email_report: list[dict[str, object]] = []
@@ -460,6 +464,19 @@ def _run_scan(rescan_all: bool = False) -> None:
             emails_with_jobs += 1
             scanned_repo.mark_scanned(msg_id, sender, subject, disposition="job_created", email_date=email_date)
             conn.commit()
+            gmail_action = "eligible to move"
+            if move_successfully_processed_emails:
+                try:
+                    moved_count = gmail.move_messages_to_label([msg_id], scanned_email_label)
+                    moved_successful_emails += moved_count
+                    gmail_action = (
+                        f"moved to {scanned_email_label}"
+                        if moved_count
+                        else f"move to {scanned_email_label} skipped"
+                    )
+                except HttpError as exc:
+                    logger.warning("Could not move processed email %s: %s", msg_id, exc)
+                    gmail_action = f"move to {scanned_email_label} failed"
             email_report.append(
                 _email_report_row(
                     email_id=msg_id,
@@ -467,7 +484,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                     email_subject=subject,
                     email_date=email_date,
                     disposition="job_created",
-                    gmail_action="eligible to move",
+                    gmail_action=gmail_action,
                     job_count=len(parsed_jobs),
                     job_titles=job_titles,
                 )
@@ -516,6 +533,9 @@ def _run_scan(rescan_all: bool = False) -> None:
                 "possible_duplicate_jobs": possible_duplicate_jobs,
                 "low_fit_score_jobs": low_fit_score_jobs,
                 "scoring_failed_jobs": scoring_failed_jobs,
+                "move_successfully_processed_emails": move_successfully_processed_emails,
+                "moved_successful_emails": moved_successful_emails,
+                "scanned_email_label": scanned_email_label,
                 "successful_emails": successful_emails,
                 "email_report": email_report,
                 "sources_with_jobs": len(jobs_by_source),

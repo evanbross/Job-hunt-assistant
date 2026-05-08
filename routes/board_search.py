@@ -65,6 +65,10 @@ class BoardSearchState:
     candidates_found: int = 0
     candidates_processed: int = 0
     jobs_added: int = 0
+    duplicates_skipped: int = 0
+    fuzzy_duplicates_skipped: int = 0
+    scoring_failed: int = 0
+    below_min_score: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -79,6 +83,10 @@ def _update_board(
     candidates_found: int | None = None,
     candidates_processed: int | None = None,
     jobs_added: int | None = None,
+    duplicates_skipped: int | None = None,
+    fuzzy_duplicates_skipped: int | None = None,
+    scoring_failed: int | None = None,
+    below_min_score: int | None = None,
     error: str | None = None,
 ) -> None:
     with _board_lock:
@@ -92,6 +100,14 @@ def _update_board(
             _board_state.candidates_processed = candidates_processed
         if jobs_added is not None:
             _board_state.jobs_added = jobs_added
+        if duplicates_skipped is not None:
+            _board_state.duplicates_skipped = duplicates_skipped
+        if fuzzy_duplicates_skipped is not None:
+            _board_state.fuzzy_duplicates_skipped = fuzzy_duplicates_skipped
+        if scoring_failed is not None:
+            _board_state.scoring_failed = scoring_failed
+        if below_min_score is not None:
+            _board_state.below_min_score = below_min_score
         if error is not None:
             _board_state.errors.append(error)
 
@@ -143,6 +159,10 @@ def _run_board_search() -> None:
         _board_state.candidates_found = 0
         _board_state.candidates_processed = 0
         _board_state.jobs_added = 0
+        _board_state.duplicates_skipped = 0
+        _board_state.fuzzy_duplicates_skipped = 0
+        _board_state.scoring_failed = 0
+        _board_state.below_min_score = 0
         _board_state.errors.clear()
 
     try:
@@ -201,6 +221,10 @@ def _run_board_search() -> None:
 
         # ── 5. Score, dedup, and insert ───────────────────────────────────────
         jobs_added = 0
+        duplicates_skipped = 0
+        fuzzy_duplicates_skipped = 0
+        scoring_failed = 0
+        below_min_score = 0
         for idx, candidate in enumerate(candidates):
             url = candidate["url"]
             title = candidate["title"]
@@ -208,13 +232,15 @@ def _run_board_search() -> None:
 
             # URL-exact dedup: skip if already tracked in this DB
             if url and job_repo.get_by_url(url):
-                _update_board(candidates_processed=idx + 1)
+                duplicates_skipped += 1
+                _update_board(candidates_processed=idx + 1, duplicates_skipped=duplicates_skipped)
                 continue
 
             # Fuzzy company+title dedup against sheet and existing DB rows
             if all_known_jobs and company and title:
                 if dup_checker.check(job_title=title, company=company, sheet_jobs=all_known_jobs):
-                    _update_board(candidates_processed=idx + 1)
+                    fuzzy_duplicates_skipped += 1
+                    _update_board(candidates_processed=idx + 1, fuzzy_duplicates_skipped=fuzzy_duplicates_skipped)
                     continue
 
             # Score against candidate profile
@@ -231,11 +257,13 @@ def _run_board_search() -> None:
                 fit_reasoning: str = score_result["reasoning"]
             except Exception as exc:
                 logger.warning("Scoring failed for %s @ %s: %s", title, company, exc)
-                _update_board(candidates_processed=idx + 1)
+                scoring_failed += 1
+                _update_board(candidates_processed=idx + 1, scoring_failed=scoring_failed)
                 continue
 
             if fit_score < config.BOARD_SEARCH_MIN_SCORE:
-                _update_board(candidates_processed=idx + 1)
+                below_min_score += 1
+                _update_board(candidates_processed=idx + 1, below_min_score=below_min_score)
                 continue
 
             status = "pending_review" if fit_score >= 70 else "triage"
@@ -325,6 +353,10 @@ def board_search_status():
                 "candidates_found": _board_state.candidates_found,
                 "candidates_processed": _board_state.candidates_processed,
                 "jobs_added": _board_state.jobs_added,
+                "duplicates_skipped": _board_state.duplicates_skipped,
+                "fuzzy_duplicates_skipped": _board_state.fuzzy_duplicates_skipped,
+                "scoring_failed": _board_state.scoring_failed,
+                "below_min_score": _board_state.below_min_score,
                 "errors": list(_board_state.errors),
             }
         )

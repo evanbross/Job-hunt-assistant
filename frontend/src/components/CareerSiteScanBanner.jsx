@@ -112,6 +112,16 @@ export default function CareerSiteScanBanner() {
     setScanStatus(null);
   };
 
+  const handleDismiss = async (siteId) => {
+    const res = await fetch(`/api/career-sites/${siteId}/dismiss-recapture`, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      window.alert(`Dismiss failed: ${err.error || res.status}`);
+      return;
+    }
+    setDueSites((prev) => prev.filter((s) => s.id !== siteId));
+  };
+
   if (!scanning && dueSites.length === 0) return null;
 
   const progress = Math.max(0, Math.min(100, Number(scanStatus?.progress) || 0));
@@ -170,6 +180,13 @@ export default function CareerSiteScanBanner() {
                     onClick={() => handleScan(site.id)}
                   >
                     Scan
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    style={scanBtnStyle}
+                    onClick={() => handleDismiss(site.id)}
+                  >
+                    Dismiss
                   </button>
                 </div>
               ))}

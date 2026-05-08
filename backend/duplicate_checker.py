@@ -136,6 +136,16 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def _slugify(text: str) -> str:
+    """Remove all non-alphanumeric chars and lowercase — produces a URL-slug form.
+
+    Used as a fallback company comparison: "paynearmeinc" and "PayNearMe, Inc."
+    both slugify to "paynearmeinc", catching cases where a Greenhouse board token
+    is stored as the company name instead of the display name.
+    """
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
 class DuplicateChecker:
     """
     Compares a job's (company, title) against a list of already-tracked sheet
@@ -169,6 +179,13 @@ class DuplicateChecker:
                 continue
 
             c_score: int = fuzz.token_set_ratio(norm_company, _normalize(sheet_company_raw))
+            # Slug fallback: catches Greenhouse board tokens stored as company names
+            # (e.g. "paynearmeinc" vs "PayNearMe, Inc.").
+            if c_score < _COMPANY_THRESHOLD:
+                own_slug = _slugify(company)
+                sheet_slug = _slugify(sheet_company_raw)
+                if own_slug and sheet_slug and own_slug == sheet_slug:
+                    c_score = 100
             t_score: int = fuzz.token_set_ratio(norm_title, _normalize(sheet_title_raw))
 
             if c_score >= _COMPANY_THRESHOLD and t_score >= _TITLE_THRESHOLD:

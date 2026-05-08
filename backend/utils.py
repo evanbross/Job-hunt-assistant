@@ -199,6 +199,12 @@ def platform_for_site_url(site_url: str) -> str:
         return "greenhouse"
     if "lever.co" in host:
         return "lever"
+    if "ashbyhq.com" in host:
+        return "ashby"
+    if "wellfound.com" in host:
+        return "wellfound"
+    if "linkedin.com" in host:
+        return "linkedin"
     if "myworkdayjobs.com" in host:
         return "workday"
     return "generic"
@@ -210,6 +216,8 @@ def platform_label(platform: str) -> str:
         "lever": "Lever",
         "workday": "Workday",
         "ashby": "Ashby",
+        "wellfound": "Wellfound",
+        "linkedin": "LinkedIn",
     }
     return labels.get(platform.lower(), platform.title() or "Career Site")
 

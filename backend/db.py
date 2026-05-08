@@ -621,7 +621,11 @@ class PostgresScannedEmailRepository(_BaseRepo):
         row = cur.fetchone()
         if row is None:
             return None
-        return {"sender_email": row[0], "email_subject": row[1], "email_date": row[2]}
+        return {
+            "sender_email": row["sender_email"],
+            "email_subject": row["email_subject"],
+            "email_date": row["email_date"],
+        }
 
     def is_duplicate_by_content(
         self, sender_email: str, subject: str, since_days: int
@@ -1440,6 +1444,8 @@ def _migrate(conn: Any) -> None:
           AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
     """)
 
+    cur.execute("UPDATE jobs SET date_found = CURRENT_DATE::text WHERE date_found IS NULL")
+
     conn.commit()
 
 
@@ -1544,6 +1550,8 @@ def _migrate_sqlite(conn: Any) -> None:
           AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
     """)
 
+    cur.execute("UPDATE jobs SET date_found = date('now') WHERE date_found IS NULL")
+
     conn.commit()
 
 
@@ -1564,7 +1572,7 @@ def _create_tables(conn: Any) -> None:
             status                TEXT,
             parser_confidence     TEXT,
             confidence_reason     TEXT,
-            date_found            TEXT,
+            date_found            TEXT DEFAULT (CURRENT_DATE::text),
             date_added_to_sheet   TEXT,
             duplicate_hint        TEXT,
             sender_email          TEXT,
@@ -1751,7 +1759,7 @@ def _create_tables_sqlite(conn: Any) -> None:
             status                TEXT,
             parser_confidence     TEXT,
             confidence_reason     TEXT,
-            date_found            TEXT,
+            date_found            TEXT DEFAULT (date('now')),
             date_added_to_sheet   TEXT,
             duplicate_hint        TEXT,
             sender_email          TEXT,

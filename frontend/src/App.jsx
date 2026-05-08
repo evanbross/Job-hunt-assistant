@@ -41,6 +41,7 @@ import HistoryPanel from "./components/HistoryPanel.jsx";
 import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
 import CareerSiteResultsPanel from "./components/CareerSiteResultsPanel.jsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
+import GreenhouseScanPanel from "./components/GreenhouseScanPanel.jsx";
 import WellfoundScanPanel from "./components/WellfoundScanPanel.jsx";
 
 const TABS = [
@@ -366,6 +367,7 @@ export default function App() {
         )}
         {activeTab === "career" && (
           <>
+            <GreenhouseScanPanel />
             <WellfoundScanPanel />
             <CareerSiteResultsPanel />
           </>

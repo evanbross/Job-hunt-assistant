@@ -100,6 +100,7 @@ class ManualJobIngestService:
         company_override: str = "",
         job_title_override: str = "",
         sheet_jobs: list[dict[str, Any]] | None = None,
+        trigger: str = "ui",
     ) -> ManualJobIngestResult:
         normalized_text = listing_text.strip()
         normalized_source_url = source_url.strip()
@@ -107,6 +108,15 @@ class ManualJobIngestService:
         normalized_job_title_override = job_title_override.strip()
         if not normalized_text and not normalized_source_url:
             raise ValueError("Job listing text or a public job URL is required.")
+
+        # If this is coming from the browser listener (Tampermonkey), use distinct labeling
+        is_streamed = (trigger == "listener")
+        email_id_prefix = "tampermonkey" if is_streamed else "manual"
+        email_subject = (
+            "Tampermonkey streamed job listing" if is_streamed
+            else "Manual pasted job listing"
+        )
+        source_prefix = "Tampermonkey" if is_streamed else "Manual Paste"
 
         parsed_jobs: list[ParsedJob] = []
         parsed: ParsedJob = ParsedJob(
@@ -122,8 +132,8 @@ class ManualJobIngestService:
 
         if normalized_text:
             parsed_jobs = self._parser.parse(
-                "Manual pasted job listing",
-                "manual@local",
+                email_subject,
+                f"{email_id_prefix}@local",
                 normalized_text,
             )
             if parsed_jobs:
@@ -134,7 +144,7 @@ class ManualJobIngestService:
                 normalized_source_url, fetched_job["job_title"]
             )
             parsed = ParsedJob(
-                company=inferred_company,
+                company=fetched_job.get("company") or inferred_company,
                 job_title=clean_title,
                 url=fetched_job["job_url"],
                 source=source_name.strip() or self._source_name_for_url(normalized_source_url),
@@ -148,11 +158,12 @@ class ManualJobIngestService:
         job_title = normalized_job_title_override or (parsed.get("job_title") or "").strip()
         url = normalized_source_url or (parsed.get("url") or "").strip()
         parsed_source = (parsed.get("source") or "").strip()
-        source = source_name.strip() or parsed_source or "Manual Paste"
-        if self._is_manual_source(source) and url:
+
+        source = source_name.strip() or parsed_source or source_prefix
+        if (self._is_manual_source(source) or is_streamed) and url:
             platform_source = self._source_name_for_url(url)
             if platform_source != "Manual URL":
-                source = f"Manual Paste - {platform_source}"
+                source = f"{source_prefix} - {platform_source}"
 
         if not company and not job_title:
             raise ValueError("Enter a company name or job title when the parser cannot extract them.")
@@ -179,7 +190,7 @@ class ManualJobIngestService:
 
         job_id = self._jobs_repo.insert(
             {
-                "email_id": self._manual_email_id(),
+                "email_id": f"{email_id_prefix}:{date.today().isoformat()}:{secrets.token_hex(8)}",
                 "company": company,
                 "job_title": job_title,
                 "url": url,
@@ -194,7 +205,7 @@ class ManualJobIngestService:
                 "date_added_to_sheet": None,
                 "duplicate_hint": duplicate_hint,
                 "sender_email": None,
-                "email_subject": "Manual pasted job listing",
+                "email_subject": email_subject,
                 "confidence_score": parsed.get("confidence_score", 50),
             }
         )
@@ -255,6 +266,10 @@ class ManualJobIngestService:
             return "Lever"
         if "ashbyhq.com" in lowered:
             return "Ashby"
+        if "wellfound.com" in lowered:
+            return "Wellfound"
+        if "linkedin.com" in lowered:
+            return "LinkedIn"
         if "myworkdayjobs.com" in lowered:
             return "Workday"
         return "Manual URL"
@@ -278,4 +293,5 @@ class ManualJobIngestService:
             "manual paste",
             "manual pasted job listing",
             "manual url",
+            "tampermonkey",
         }

@@ -105,6 +105,16 @@ WELLFOUND_PASSWORD: str = os.getenv("WELLFOUND_PASSWORD", "")
 WELLFOUND_SEARCH_URL: str = os.getenv("WELLFOUND_SEARCH_URL", "https://wellfound.com/jobs")
 WELLFOUND_SESSION_FILE: Path = CREDENTIALS_DIR / "wellfound_session.json"
 
+# ─── Greenhouse scraper ───────────────────────────────────────────────────────
+GREENHOUSE_EMAIL: str = os.getenv("GREENHOUSE_EMAIL", "")
+GREENHOUSE_SEARCH_URL: str = os.getenv(
+    "GREENHOUSE_SEARCH_URL",
+    "https://my.greenhouse.io/jobs?query=software%20engineer"
+    "&salary=more_than_200k&work_type[]=remote"
+    "&employment_type[]=full_time&employment_type[]=contract",
+)
+GREENHOUSE_SESSION_FILE: Path = CREDENTIALS_DIR / "greenhouse_session.json"
+
 # ─── Google OAuth ─────────────────────────────────────────────────────────────
 GOOGLE_CREDENTIALS_FILE: Path = CREDENTIALS_DIR / "google_credentials.json"
 GOOGLE_TOKEN_FILE: Path = CREDENTIALS_DIR / "token.json"
@@ -140,6 +150,10 @@ DEFAULT_SCANNED_EMAIL_LABEL: str = os.getenv(
     "SCANNED_EMAIL_LABEL",
     ".Job Hunt 2025/Scanned By Assistant",
 )
+DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS: bool = (
+    os.getenv("MOVE_SUCCESSFULLY_PROCESSED_EMAILS", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 # Minimum fit score (0-100) for a board-search result to be inserted into the DB.
 # Jobs scoring below this are silently discarded.
 BOARD_SEARCH_MIN_SCORE: int = int(os.getenv("BOARD_SEARCH_MIN_SCORE", "40"))
@@ -170,6 +184,10 @@ def load_runtime_config() -> dict[str, Any]:
                 return {
                     "email_lookback_days": raw_cfg.get("email_lookback_days", DEFAULT_EMAIL_LOOKBACK_DAYS),
                     "scanned_email_label": raw_cfg.get("scanned_email_label", DEFAULT_SCANNED_EMAIL_LABEL),
+                    "move_successfully_processed_emails": _config_bool(
+                        raw_cfg.get("move_successfully_processed_emails"),
+                        DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
+                    ),
                     "candidate_profile_path": raw_cfg.get("candidate_profile_path", str(DEFAULT_CANDIDATE_PROFILE_PATH)),
                     "ai_provider": raw_cfg.get("ai_provider", AI_PROVIDER),
                     "anthropic_model": raw_cfg.get("anthropic_model", SCORER_MODEL),
@@ -202,6 +220,7 @@ def load_runtime_config() -> dict[str, Any]:
     return {
         "email_lookback_days": DEFAULT_EMAIL_LOOKBACK_DAYS,
         "scanned_email_label": DEFAULT_SCANNED_EMAIL_LABEL,
+        "move_successfully_processed_emails": DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
         "candidate_profile_path": str(DEFAULT_CANDIDATE_PROFILE_PATH),
         "ai_provider": AI_PROVIDER,
         "anthropic_model": SCORER_MODEL,
@@ -228,6 +247,15 @@ def get_scanned_email_label() -> str:
     cfg = load_runtime_config()
     scanned_email_label = str(cfg.get("scanned_email_label") or "").strip()
     return scanned_email_label or DEFAULT_SCANNED_EMAIL_LABEL
+
+
+def should_move_successfully_processed_emails() -> bool:
+    """Return whether successful job emails should be moved during scans."""
+    cfg = load_runtime_config()
+    return _config_bool(
+        cfg.get("move_successfully_processed_emails"),
+        DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
+    )
 
 
 def load_candidate_profile() -> str:

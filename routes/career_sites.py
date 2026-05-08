@@ -748,6 +748,19 @@ def delete_career_site(source_id: int):
     return jsonify({"status": "ok"})
 
 
+@career_sites_bp.route("/career-sites/<int:source_id>/dismiss-recapture", methods=["POST"])
+def dismiss_recapture_reminder(source_id: int):
+    repos = _get_repos()
+    existing = repos["career_sites"].get_by_id(source_id)
+    if not existing:
+        repos["conn"].close()
+        return jsonify({"error": "Career site not found"}), 404
+    repos["career_sites"].update(source_id, {"last_captured_at": datetime.now(UTC).isoformat(timespec="seconds")})
+    repos["conn"].commit()
+    repos["conn"].close()
+    return jsonify({"status": "ok"})
+
+
 @career_sites_bp.route("/career-sites/<int:source_id>/scan", methods=["POST"])
 def run_career_scan_for_site(source_id: int):
     repos = _get_repos()

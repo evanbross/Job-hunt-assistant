@@ -80,6 +80,14 @@ def update_config():
             return jsonify({"error": "scanned_email_label cannot be empty"}), 400
         cfg["scanned_email_label"] = scanned_email_label
 
+    if "move_successfully_processed_emails" in data:
+        try:
+            cfg["move_successfully_processed_emails"] = _parse_bool_setting(
+                data.get("move_successfully_processed_emails")
+            )
+        except ValueError:
+            return jsonify({"error": "move_successfully_processed_emails must be a boolean"}), 400
+
     if "candidate_profile_path" in data:
         candidate_profile_path = str(data.get("candidate_profile_path") or "").strip()
         if not candidate_profile_path:

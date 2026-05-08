@@ -46,6 +46,7 @@ from flask import Blueprint, jsonify, request
 
 from backend.captured_page_import_service import CapturedPageImportService
 from backend.celery_app import celery_app
+from backend.import_dump import dump_import_capture
 from backend.import_repair import post_repair_duplicate_check, repair_linkedin_company
 from backend.tasks import run_import_task
 from backend.utils import (
@@ -126,7 +127,7 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
         return source, None
 
     source_query = str(body.get("capture_source_query") or "").strip()
-    source_url = str(body.get("capture_source_url") or "").strip()
+    source_url = str(body.get("capture_source_url") or body.get("url") or "").strip()
     source_name = str(body.get("capture_source_name") or "").strip()
 
     if guessed_source and not source_query and not source_url and not source_name:
@@ -196,6 +197,7 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
         )
         return career_sites_repo.get_by_id(source_id), None
 
+    logger.warning("capture source could not be inferred for url=%s", source_url or "(none)")
     return None, (
         {
             "error": "Capture source could not be inferred. Enter the source site.",
@@ -208,6 +210,7 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
 
 def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     """Analyze a captured page payload and dispatch a Celery import task."""
+    dump_import_capture(body)
     global _current_task_id, _current_trigger, _current_started_at
     with _task_id_lock:
         existing_task_id = _current_task_id
@@ -293,9 +296,29 @@ def fix_unknown_companies():
         repos["conn"].close()
 
 
+@import_bp.route("/repair/delete-unknown-companies", methods=["POST"])
+def delete_unknown_companies():
+    repos = _get_repos()
+    try:
+        batch = repos["jobs"].get_with_missing_company(limit=10_000)
+        deleted = 0
+        for job in batch:
+            repos["jobs"].delete(int(job["id"]))
+            deleted += 1
+        repos["conn"].commit()
+        return jsonify({"deleted": deleted})
+    except Exception as exc:
+        repos["conn"].rollback()
+        logger.error("delete-unknown-companies failed: %s", exc)
+        return jsonify({"error": "Delete failed"}), 500
+    finally:
+        repos["conn"].close()
+
+
 @import_bp.route("/import/job-urls", methods=["POST"])
 def extract_imported_job_urls():
     body = request.get_json(silent=True) or {}
+    dump_import_capture(body)
     raw_content = str(body.get("content") or "")
     content_format = str(body.get("format") or "auto")
 
