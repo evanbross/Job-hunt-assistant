@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, UTC
+from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, request
 
@@ -106,6 +107,16 @@ def _maybe_mark_source_email_read(job: dict[str, object], job_repo) -> None:
         logger.warning("Could not mark email %s as read: %s", base_email_id, exc)
 
 
+def _validated_job_patch_fields(body: dict[str, object]) -> tuple[dict[str, str], str | None]:
+    allowed = {"company", "job_title", "url"}
+    fields = {k: str(v).strip() for k, v in body.items() if k in allowed and isinstance(v, str)}
+    if "url" in fields:
+        parsed = urlparse(fields["url"])
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return {}, "url must start with http:// or https://"
+    return fields, None
+
+
 # ─── Job routes ───────────────────────────────────────────────────────────────
 
 @jobs_bp.route("/jobs")
@@ -162,8 +173,9 @@ def create_manual_job():
 @jobs_bp.route("/jobs/<int:job_id>", methods=["PATCH"])
 def patch_job(job_id: int):
     body = request.get_json(silent=True) or {}
-    allowed = {"company", "job_title"}
-    fields = {k: str(v).strip() for k, v in body.items() if k in allowed and isinstance(v, str)}
+    fields, validation_error = _validated_job_patch_fields(body)
+    if validation_error:
+        return jsonify({"error": validation_error}), 400
     if not fields:
         return jsonify({"error": "No valid fields to update"}), 400
     repos = _get_repos()

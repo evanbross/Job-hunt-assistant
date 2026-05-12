@@ -43,6 +43,7 @@ import json
 import logging
 import re
 from typing import Protocol, TypedDict
+from urllib.parse import unquote, urlparse
 
 from backend.ai_provider import AIMessage, AIProviderClient
 
@@ -128,6 +129,13 @@ class EmailParser:
         (empty list if the email contains no job postings).
         Raises ValueError if the API returns malformed JSON.
         """
+        linkedin_jobs = _parse_linkedin_alert_jobs(subject, sender, body_snippet)
+        if linkedin_jobs:
+            return linkedin_jobs
+        wttj_jobs = _parse_welcome_to_the_jungle_jobs(sender, body_snippet)
+        if wttj_jobs:
+            return wttj_jobs
+
         user_content = (
             f"From: {sender}\n"
             f"Subject: {subject}\n\n"
@@ -242,3 +250,168 @@ def _trim_company_tail(value: str) -> str:
     for delimiter in (" | ", " — ", " – "):
         value = value.split(delimiter, 1)[0]
     return value.strip(" -–—\t\r\n")
+
+
+_LINKEDIN_SENDER_RE = re.compile(r"linkedin\.com", re.IGNORECASE)
+_LINKEDIN_VIEW_JOB_RE = re.compile(r"^View job:\s*(https?://\S+)", re.IGNORECASE)
+_LINKEDIN_SEPARATOR_RE = re.compile(r"^-{8,}$")
+_LINKEDIN_NON_JOB_LINES = {
+    "Fast growing",
+    "This company is actively hiring",
+}
+_WTTJ_SENDER_RE = re.compile(r"welcometothejungle\.com|welcome to the jungle", re.IGNORECASE)
+_WTTJ_JOB_URL_RE = re.compile(r"https?://[^\s<>()\"']*welcometothejungle\.com/[^\s<>()\"']+", re.IGNORECASE)
+_WTTJ_SKIP_TITLE_LINES = {
+    "view job",
+    "view offer",
+    "apply",
+    "apply now",
+    "see job",
+    "see offer",
+}
+
+
+def _parse_linkedin_alert_jobs(subject: str, sender: str, body_snippet: str) -> list[ParsedJob]:
+    if not _looks_like_linkedin_alert(subject, sender, body_snippet):
+        return []
+
+    lines = [line.strip() for line in body_snippet.splitlines()]
+    jobs: list[ParsedJob] = []
+    previous_boundary_idx = 0
+    seen_urls: set[str] = set()
+
+    for line_idx, line in enumerate(lines):
+        view_match = _LINKEDIN_VIEW_JOB_RE.match(line)
+        if not view_match:
+            if _LINKEDIN_SEPARATOR_RE.match(line):
+                previous_boundary_idx = line_idx + 1
+            continue
+
+        job_url = view_match.group(1).strip()
+        if job_url in seen_urls:
+            continue
+
+        block_lines = _linkedin_card_lines(lines[previous_boundary_idx:line_idx])
+        if len(block_lines) < 2:
+            continue
+
+        job_title, company = block_lines[0], block_lines[1]
+        jobs.append(
+            {
+                "company": company,
+                "job_title": job_title,
+                "url": job_url,
+                "source": "LinkedIn",
+                "confidence": "high",
+                "confidence_score": 95,
+                "confidence_reason": "Parsed from a LinkedIn job alert card with title, company, and View job URL.",
+            }
+        )
+        seen_urls.add(job_url)
+        previous_boundary_idx = line_idx + 1
+
+    return jobs
+
+
+def _looks_like_linkedin_alert(subject: str, sender: str, body_snippet: str) -> bool:
+    if not _LINKEDIN_SENDER_RE.search(sender):
+        return False
+    combined_text = f"{subject}\n{body_snippet}".lower()
+    return "job alert" in combined_text and "view job:" in combined_text
+
+
+def _linkedin_card_lines(raw_lines: list[str]) -> list[str]:
+    card_lines: list[str] = []
+    for raw_line in raw_lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _LINKEDIN_SEPARATOR_RE.match(line):
+            card_lines = []
+            continue
+        if line in _LINKEDIN_NON_JOB_LINES:
+            continue
+        if line.lower().startswith(("your job alert", "results from ", "because you")):
+            card_lines = []
+            continue
+        card_lines.append(line)
+    return card_lines
+
+
+def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str) -> list[ParsedJob]:
+    if not _looks_like_welcome_to_the_jungle(sender, body_snippet):
+        return []
+
+    lines = [line.strip() for line in body_snippet.splitlines()]
+    jobs: list[ParsedJob] = []
+    seen_urls: set[str] = set()
+    for line_idx, line in enumerate(lines):
+        for url_match in _WTTJ_JOB_URL_RE.finditer(line):
+            job_url = url_match.group(0).rstrip(".,;)")
+            if job_url in seen_urls:
+                continue
+
+            company, slug_title = _wttj_company_title_from_url(job_url)
+            if not company and not slug_title:
+                continue
+            nearby_title = _wttj_title_from_nearby_lines(lines, line_idx, company)
+            job_title = nearby_title or slug_title
+            jobs.append(
+                {
+                    "company": company,
+                    "job_title": job_title,
+                    "url": job_url,
+                    "source": "Welcome to the Jungle",
+                    "confidence": "high" if company and job_title else "low",
+                    "confidence_score": 92 if company and job_title else 70,
+                    "confidence_reason": "Parsed from a Welcome to the Jungle job URL and nearby email text.",
+                }
+            )
+            seen_urls.add(job_url)
+
+    return jobs
+
+
+def _looks_like_welcome_to_the_jungle(sender: str, body_snippet: str) -> bool:
+    return bool(_WTTJ_SENDER_RE.search(sender) or _WTTJ_SENDER_RE.search(body_snippet))
+
+
+def _wttj_company_title_from_url(job_url: str) -> tuple[str, str]:
+    parsed = urlparse(job_url)
+    path_parts = [unquote(part) for part in parsed.path.split("/") if part]
+    company = ""
+    job_title = ""
+    for idx, part in enumerate(path_parts):
+        if part == "companies" and idx + 1 < len(path_parts):
+            company = _title_case_slug(path_parts[idx + 1])
+        if part == "jobs" and idx + 1 < len(path_parts):
+            job_title = _title_case_slug(path_parts[idx + 1].split("_", 1)[0])
+    return company, job_title
+
+
+def _wttj_title_from_nearby_lines(lines: list[str], url_line_idx: int, company: str) -> str:
+    normalized_company = _normalized_line(company)
+    for candidate in reversed(lines[max(0, url_line_idx - 8):url_line_idx]):
+        normalized_candidate = _normalized_line(candidate)
+        if not normalized_candidate:
+            continue
+        if normalized_candidate == normalized_company:
+            continue
+        if normalized_candidate in _WTTJ_SKIP_TITLE_LINES:
+            continue
+        if normalized_candidate.startswith(("http://", "https://")):
+            continue
+        if len(candidate) > 120:
+            continue
+        return candidate.strip(" -–—\t\r\n")
+    return ""
+
+
+def _title_case_slug(slug: str) -> str:
+    value = re.sub(r"[-_]+", " ", slug)
+    value = re.sub(r"\s+", " ", value).strip()
+    return " ".join(word.capitalize() if not word.isupper() else word for word in value.split())
+
+
+def _normalized_line(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower())

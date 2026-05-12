@@ -34,6 +34,26 @@
 
 import React, { useEffect, useState } from "react";
 
+const HISTORY_SEARCH_STORAGE_KEY = "jha.history.search";
+
+function readStoredSearch(storageKey) {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(storageKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredSearch(storageKey, value) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(storageKey, value);
+  } catch {
+    /* ignore unavailable storage */
+  }
+}
+
 // ── Status definitions ────────────────────────────────────────────────────────
 
 const STAGE_STATUSES = [
@@ -41,7 +61,7 @@ const STAGE_STATUSES = [
   { key: "waiting_call",   label: "Waiting for Call",  bg: "#e0f2fe", fg: "#075985" },
   { key: "waiting_second", label: "Waiting for 2nd",   bg: "#dbeafe", fg: "#1e40af" },
   { key: "eval_test",      label: "Eval Test",         bg: "#d1fae5", fg: "#065f46" },
-  { key: "rejected",       label: "Rejected",          bg: "#fee2e2", fg: "#991b1b" },
+  { key: "rejected",       label: "Rejected",          bg: "#b91c1c", fg: "#ffffff" },
   { key: "job_filled",     label: "Job was Filled",    bg: "#fecaca", fg: "#7f1d1d" },
   { key: "ghosted",        label: "Ghosted",           bg: "#ffedd5", fg: "#9a3412" },
 ];
@@ -170,7 +190,7 @@ export default function HistoryPanel() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(new Set());
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => readStoredSearch(HISTORY_SEARCH_STORAGE_KEY));
 
   useEffect(() => {
     fetch("/api/jobs/history")
@@ -181,6 +201,10 @@ export default function HistoryPanel() {
       })
       .catch(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    writeStoredSearch(HISTORY_SEARCH_STORAGE_KEY, search);
+  }, [search]);
 
   const toggleExpand = (id) => {
     setExpanded((prev) => {

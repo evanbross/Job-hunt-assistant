@@ -161,6 +161,49 @@ def test_patch_job_rechecks_duplicate_after_company_edit(monkeypatch) -> None:
     assert data["duplicate_hint"].startswith("Possible duplicate")
 
 
+def test_patch_job_accepts_manual_url(monkeypatch) -> None:
+    jobs_repo = FakeJobsRepo()
+    repos = {
+        "conn": FakeConnection(),
+        "jobs": jobs_repo,
+        "resume": FakeResumeRepo(),
+        "penalties": FakePenaltyRepo(),
+    }
+
+    monkeypatch.setattr("routes.jobs._get_repos", lambda: repos)
+    monkeypatch.setattr("routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None))
+
+    app = Flask(__name__)
+    app.register_blueprint(jobs_bp, url_prefix="/api")
+    client = app.test_client()
+
+    response = client.patch("/api/jobs/7", json={"url": "https://example.com/jobs/7"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["url"] == "https://example.com/jobs/7"
+
+
+def test_patch_job_rejects_invalid_manual_url(monkeypatch) -> None:
+    repos = {
+        "conn": FakeConnection(),
+        "jobs": FakeJobsRepo(),
+        "resume": FakeResumeRepo(),
+        "penalties": FakePenaltyRepo(),
+    }
+
+    monkeypatch.setattr("routes.jobs._get_repos", lambda: repos)
+
+    app = Flask(__name__)
+    app.register_blueprint(jobs_bp, url_prefix="/api")
+    client = app.test_client()
+
+    response = client.patch("/api/jobs/7", json={"url": "example.com/jobs/7"})
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "url must start with http:// or https://"
+
+
 def test_patch_job_clears_stale_duplicate_when_no_match(monkeypatch) -> None:
     jobs_repo = FakeJobsRepo()
     jobs_repo.row.update(

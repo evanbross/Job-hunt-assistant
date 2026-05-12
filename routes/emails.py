@@ -59,6 +59,19 @@ logger = logging.getLogger(__name__)
 
 emails_bp = Blueprint("emails", __name__)
 
+_EMAIL_SOURCE_MATCH_TYPES = {"sender_domain", "sender_email", "subject_contains"}
+_EMAIL_SOURCE_SUBJECT_FILTER_MODES = {"", "contains", "starts_with"}
+_EMAIL_SOURCE_SUBJECT_FILTER_MATCH_MODES = {"text", "glob", "regex"}
+_EMAIL_SOURCE_ALLOWED_FIELDS = {
+    "name",
+    "match_type",
+    "match_value",
+    "subject_filter_mode",
+    "subject_filter_value",
+    "subject_filter_match_mode",
+    "enabled",
+}
+
 _ACTIVE_RESCAN_STATUSES: tuple[str, ...] = (
     "pending_review",
     "triage",
@@ -414,16 +427,12 @@ def create_source():
     data = request.get_json()
     if not data or not all(k in data for k in ("name", "match_type", "match_value")):
         return jsonify({"error": "name, match_type, and match_value are required"}), 400
+    source_payload, error_response = _email_source_payload(data)
+    if error_response is not None:
+        return error_response
 
     repos = _get_repos()
-    source_id = repos["sources"].insert(
-        {
-            "name": data["name"],
-            "match_type": data["match_type"],
-            "match_value": data["match_value"],
-            "enabled": data.get("enabled", 1),
-        }
-    )
+    source_id = repos["sources"].insert(source_payload)
     source = repos["sources"].get_by_id(source_id)
     repos["conn"].commit()
     repos["conn"].close()
@@ -436,8 +445,9 @@ def update_source(source_id: int):
     if not data:
         return jsonify({"error": "No data provided"}), 400
 
-    allowed = {"name", "match_type", "match_value", "enabled"}
-    updates = {k: v for k, v in data.items() if k in allowed}
+    updates, error_response = _email_source_payload(data, partial=True)
+    if error_response is not None:
+        return error_response
 
     repos = _get_repos()
     if not repos["sources"].get_by_id(source_id):
@@ -462,3 +472,50 @@ def delete_source(source_id: int):
     repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
+
+
+def _email_source_payload(
+    data: dict,
+    *,
+    partial: bool = False,
+) -> tuple[dict[str, object], object | None]:
+    updates = {key: value for key, value in data.items() if key in _EMAIL_SOURCE_ALLOWED_FIELDS}
+
+    for field_name in ("name", "match_type", "match_value"):
+        if not partial or field_name in updates:
+            value = str(updates.get(field_name) or "").strip()
+            if not value:
+                return {}, (jsonify({"error": f"{field_name} is required"}), 400)
+            updates[field_name] = value
+
+    if "match_type" in updates:
+        match_type = str(updates["match_type"]).strip()
+        if match_type not in _EMAIL_SOURCE_MATCH_TYPES:
+            return {}, (jsonify({"error": "match_type is invalid"}), 400)
+        updates["match_type"] = match_type
+
+    if not partial or "subject_filter_mode" in updates or "subject_filter_value" in updates:
+        mode = str(updates.get("subject_filter_mode") or "").strip()
+        value = str(updates.get("subject_filter_value") or "").strip()
+        if mode not in _EMAIL_SOURCE_SUBJECT_FILTER_MODES:
+            return {}, (jsonify({"error": "subject_filter_mode is invalid"}), 400)
+        if mode and not value:
+            return {}, (jsonify({"error": "subject_filter_value is required when a subject filter is selected"}), 400)
+        if value and not mode:
+            return {}, (jsonify({"error": "subject_filter_mode is required when a subject filter value is provided"}), 400)
+        updates["subject_filter_mode"] = mode
+        updates["subject_filter_value"] = value
+
+    if not partial or "subject_filter_match_mode" in updates:
+        match_mode = str(updates.get("subject_filter_match_mode") or "text").strip()
+        if match_mode not in _EMAIL_SOURCE_SUBJECT_FILTER_MATCH_MODES:
+            return {}, (jsonify({"error": "subject_filter_match_mode must be text, glob, or regex"}), 400)
+        updates["subject_filter_match_mode"] = match_mode
+
+    if not partial and "enabled" not in updates:
+        updates["enabled"] = 1
+
+    if "enabled" in updates:
+        updates["enabled"] = 1 if bool(updates["enabled"]) else 0
+
+    return updates, None

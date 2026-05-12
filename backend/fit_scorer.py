@@ -92,17 +92,23 @@ class FitScorer:
             json_response=True,
         )
 
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-
         try:
             result: dict = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            logger.error("Fit scorer returned non-JSON: %s", raw)
-            raise ValueError(f"Scorer returned invalid JSON: {exc}") from exc
+        except json.JSONDecodeError:
+            # Model may prefix the JSON with prose and wrap it in a code fence.
+            # Try to extract the JSON object from wherever it appears.
+            m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.DOTALL)
+            if m:
+                raw = m.group(1).strip()
+            else:
+                brace = raw.find("{")
+                if brace >= 0:
+                    raw = raw[brace:]
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                logger.error("Fit scorer returned non-JSON: %s", raw)
+                raise ValueError(f"Scorer returned invalid JSON: {exc}") from exc
 
         raw_score: int = int(result.get("score", 50))
         reasoning: str = result.get("reasoning", "No reasoning provided.")

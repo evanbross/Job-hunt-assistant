@@ -56,6 +56,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from backend.email_source_filters import build_gmail_source_query
 from config import GMAIL_SCOPES, GOOGLE_TOKEN_FILE, READ_ONLY_MODE
 
 logger = logging.getLogger(__name__)
@@ -122,25 +123,13 @@ class GmailClient:
         Return messages from the last *lookback_days* days that match at least
         one enabled email source filter.
 
-        sender_filters: list of dicts with keys 'match_type' and 'match_value'.
+        sender_filters: list of dicts with keys 'match_type' and 'match_value',
+            optionally plus 'subject_filter_mode' and 'subject_filter_value'.
         unread_only: when False, includes already-read messages (needed for
             rescan-all so previously processed emails are re-fetched).
         Returns list of {id, threadId} dicts.
         """
-        # Build a search query combining lookback + OR of sender filters
-        filter_parts: list[str] = []
-        for sf in sender_filters:
-            if sf["match_type"] == "sender_domain":
-                filter_parts.append(f"from:{sf['match_value']}")
-            elif sf["match_type"] == "sender_email":
-                filter_parts.append(f"from:{sf['match_value']}")
-            elif sf["match_type"] == "subject_contains":
-                filter_parts.append(f"subject:{sf['match_value']}")
-
-        if filter_parts:
-            sender_query = "(" + " OR ".join(filter_parts) + ")"
-        else:
-            sender_query = ""
+        sender_query = build_gmail_source_query(sender_filters)
 
         unread_clause = "is:unread " if unread_only else ""
         query = f"in:inbox {unread_clause}newer_than:{lookback_days}d {sender_query}".strip()
@@ -350,20 +339,33 @@ class _HTMLTextExtractor(HTMLParser):
         super().__init__()
         self._parts: list[str] = []
         self._skip_depth = 0
+        self._href_stack: list[str | None] = []
+        self._anchor_text_stack: list[list[str]] = []
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
         elif tag in self._BLOCK_TAGS:
             self._parts.append("\n")
+        if tag == "a" and self._skip_depth == 0:
+            attr_map = {str(name).lower(): str(value) for name, value in attrs if value is not None}
+            self._href_stack.append(attr_map.get("href"))
+            self._anchor_text_stack.append([])
 
     def handle_endtag(self, tag: str) -> None:
         if tag in self._SKIP_TAGS:
             self._skip_depth = max(0, self._skip_depth - 1)
+        elif tag == "a" and self._skip_depth == 0 and self._href_stack:
+            href = self._href_stack.pop()
+            anchor_text = "".join(self._anchor_text_stack.pop()).strip()
+            if href and href.startswith(("http://", "https://")) and href not in anchor_text:
+                self._parts.append(f"\n{anchor_text}: {href}" if anchor_text else f"\n{href}")
 
     def handle_data(self, data: str) -> None:
         if self._skip_depth == 0:
             self._parts.append(data)
+            if self._anchor_text_stack:
+                self._anchor_text_stack[-1].append(data)
 
     def get_text(self) -> str:
         text = "".join(self._parts)

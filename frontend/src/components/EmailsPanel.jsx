@@ -359,6 +359,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
   const [movingToScanned, setMovingToScanned] = useState({});
   const [cleanResult, setCleanResult] = useState(null);
   const [scanState, setScanState] = useState(null);
+  const [scanSummary, setScanSummary] = useState(null);
   const [sortCol, setSortCol] = useState("date");
   const [sortDir, setSortDir] = useState("desc");
   const [showHidden, setShowHidden] = useState(false);
@@ -458,7 +459,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
     setCleanResult(null);
     if (
       !window.confirm(
-        "This will delete the history of your applications and skipped jobs, then re-scan every email from scratch.\n\nAre you sure?"
+        "This will clear scanned-email memory and remove active email-sourced queue rows, then re-scan every matching email. Applied and skipped history is preserved for duplicate checks.\n\nContinue?"
       )
     ) {
       return;
@@ -472,6 +473,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
     setRescanAllRunning(true);
     setSelected(null);
     setScanState(null);
+    setScanSummary(null);
     setEmails([]);
     clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
@@ -482,6 +484,9 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
         if (!state.running) {
           clearInterval(pollRef.current);
           setRescanAllRunning(false);
+          if (state.summary) {
+            setScanSummary(state.summary);
+          }
           await fetchEmails(filter);
           try {
             const t = await fetch("/api/jobs/triage");
@@ -635,7 +640,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
             disabled={rescanAllRunning || cleaning}
             style={{ padding: "6px 16px", fontSize: "13px" }}
           >
-            {rescanAllRunning ? "Purging…" : "Purge Queue"}
+            {rescanAllRunning ? "Rescanning…" : "Rescan All Emails"}
           </button>
         </div>
       </div>
@@ -870,8 +875,119 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
           onClose={() => setErrorModalEmail(null)}
         />
       )}
+      {scanSummary && (
+        <EmailScanSummaryModal
+          summary={scanSummary}
+          onClose={() => setScanSummary(null)}
+        />
+      )}
     </div>
   );
+}
+
+function EmailScanSummaryModal({ summary, onClose }) {
+  const emailReport = Array.isArray(summary.email_report) ? summary.email_report : [];
+  const jobEmails = emailReport.filter((email) => (email.job_count || 0) > 0);
+  const bySource = Array.isArray(summary.by_source) ? summary.by_source : [];
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div style={modalBackdropStyle} onClick={onClose}>
+      <div style={summaryModalPanelStyle} onClick={(event) => event.stopPropagation()}>
+        <div style={modalHeaderStyle}>
+          <div>
+            <div style={modalTitleStyle}>Email scan complete</div>
+            <div style={modalSubtitleStyle}>
+              {summary.emails_scanned || 0} email{summary.emails_scanned === 1 ? "" : "s"} scanned
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onClose}
+            style={{ padding: "5px 12px", fontSize: "12px" }}
+          >
+            Close
+          </button>
+        </div>
+
+        <div style={summaryMetricRowStyle}>
+          <SummaryMetric label="new jobs" value={summary.new_jobs || 0} tone="green" />
+          <SummaryMetric label="emails with jobs" value={summary.emails_with_jobs || 0} />
+          <SummaryMetric label="triage" value={summary.triage_jobs || 0} tone="yellow" />
+          <SummaryMetric label="duplicates" value={summary.duplicates || 0} />
+          <SummaryMetric label="errors" value={(summary.parser_error_emails || 0) + (summary.fetch_error_emails || 0)} tone="red" />
+        </div>
+
+        {bySource.length > 0 && (
+          <div style={summarySectionStyle}>
+            <div style={sectionLabel}>Sources</div>
+            {bySource.map((sourceRow) => (
+              <div key={sourceRow.source} style={sourceRowStyle}>
+                <span>{sourceRow.source || "Unknown"}</span>
+                <strong>{sourceRow.count || 0} job{sourceRow.count === 1 ? "" : "s"}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={summarySectionStyle}>
+          <div style={sectionLabel}>Emails That Produced Jobs</div>
+          {jobEmails.length > 0 ? (
+            <div style={summaryEmailListStyle}>
+              {jobEmails.map((email) => (
+                <div key={email.email_id} style={summaryEmailRowStyle}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={summaryEmailSubjectStyle}>{email.email_subject || "(no subject)"}</div>
+                    <div style={summaryEmailMetaStyle}>
+                      {email.sender_email || "Unknown sender"} · {formatLocalDateTime(email.email_date) || "No date"}
+                    </div>
+                    <div style={summaryJobTitlesStyle}>{formatSummaryJobTitles(email.job_titles)}</div>
+                  </div>
+                  <strong style={summaryJobCountStyle}>
+                    {email.job_count || 0} job{email.job_count === 1 ? "" : "s"}
+                  </strong>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>
+              No emails produced new jobs.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SummaryMetric({ label, value, tone = "muted" }) {
+  const colorByTone = {
+    green: "var(--green)",
+    red: "var(--red, #e05252)",
+    yellow: "var(--yellow, #d6a21d)",
+    muted: "var(--text)",
+  };
+  return (
+    <div style={summaryMetricStyle}>
+      <div style={{ ...summaryMetricValueStyle, color: colorByTone[tone] || colorByTone.muted }}>{value}</div>
+      <div style={summaryMetricLabelStyle}>{label}</div>
+    </div>
+  );
+}
+
+function formatSummaryJobTitles(jobTitles) {
+  if (!Array.isArray(jobTitles) || jobTitles.length === 0) {
+    return "No job titles captured.";
+  }
+  return jobTitles.filter(Boolean).join(", ");
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -970,4 +1086,135 @@ const ddStyle = {
   color: "var(--text)",
   margin: 0,
   wordBreak: "break-word",
+};
+
+const modalBackdropStyle = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 1100,
+  background: "rgba(0,0,0,0.55)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "24px",
+};
+
+const summaryModalPanelStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  boxShadow: "var(--shadow-lg)",
+  width: "100%",
+  maxWidth: "760px",
+  maxHeight: "86vh",
+  overflowY: "auto",
+  padding: "18px",
+};
+
+const modalHeaderStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: "16px",
+  paddingBottom: "14px",
+  borderBottom: "1px solid var(--border)",
+  marginBottom: "14px",
+};
+
+const modalTitleStyle = {
+  fontSize: "16px",
+  fontWeight: 700,
+  color: "var(--text)",
+};
+
+const modalSubtitleStyle = {
+  fontSize: "12px",
+  color: "var(--text-muted)",
+  marginTop: "2px",
+};
+
+const summaryMetricRowStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))",
+  gap: "10px",
+  marginBottom: "14px",
+};
+
+const summaryMetricStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  padding: "10px 12px",
+};
+
+const summaryMetricValueStyle = {
+  fontSize: "22px",
+  fontWeight: 700,
+  lineHeight: 1,
+};
+
+const summaryMetricLabelStyle = {
+  fontSize: "11px",
+  color: "var(--text-muted)",
+  marginTop: "5px",
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+};
+
+const summarySectionStyle = {
+  borderTop: "1px solid var(--border)",
+  paddingTop: "13px",
+  marginTop: "13px",
+};
+
+const sourceRowStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: "12px",
+  fontSize: "13px",
+  color: "var(--text)",
+  padding: "4px 0",
+};
+
+const summaryEmailListStyle = {
+  display: "grid",
+  gap: "8px",
+};
+
+const summaryEmailRowStyle = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto",
+  gap: "14px",
+  alignItems: "center",
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  padding: "10px 12px",
+};
+
+const summaryEmailSubjectStyle = {
+  fontSize: "13px",
+  fontWeight: 700,
+  color: "var(--text)",
+  overflowWrap: "anywhere",
+};
+
+const summaryEmailMetaStyle = {
+  fontSize: "11px",
+  color: "var(--text-muted)",
+  marginTop: "2px",
+  overflowWrap: "anywhere",
+};
+
+const summaryJobTitlesStyle = {
+  fontSize: "12px",
+  color: "var(--text)",
+  marginTop: "5px",
+  overflowWrap: "anywhere",
+};
+
+const summaryJobCountStyle = {
+  fontSize: "13px",
+  color: "var(--green)",
+  whiteSpace: "nowrap",
 };

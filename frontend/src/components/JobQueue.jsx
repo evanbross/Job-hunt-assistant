@@ -37,6 +37,26 @@ import JobCard from "./JobCard.jsx";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 
+const JOB_QUEUE_SEARCH_STORAGE_KEY = "jha.jobQueue.search";
+
+function readStoredSearch(storageKey) {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(storageKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredSearch(storageKey, value) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(storageKey, value);
+  } catch {
+    /* ignore unavailable storage */
+  }
+}
+
 function FixCompaniesDialog({ progress, onClose }) {
   const { totalFixed, remaining, done, error } = progress;
   return (
@@ -79,7 +99,8 @@ function FixCompaniesDialog({ progress, onClose }) {
 
 export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavigateToEmails, onNavigateToHistory }) {
   const [jobs, setJobs] = useState([]);
-  const [searchText, setSearchText] = useState("");
+  const [searchText, setSearchText] = useState(() => readStoredSearch(JOB_QUEUE_SEARCH_STORAGE_KEY));
+  const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [scanState, setScanState] = useState(null);
@@ -118,6 +139,10 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   const reEvaluateResetTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
   const moreToolsRef = useRef(null);
+
+  useEffect(() => {
+    writeStoredSearch(JOB_QUEUE_SEARCH_STORAGE_KEY, searchText);
+  }, [searchText]);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -202,7 +227,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     }
     if (
       !window.confirm(
-        "This will delete the history of your applications and skipped jobs, then re-scan every email from scratch.\n\nAre you sure?"
+        "This will clear scanned-email memory and remove active email-sourced queue rows, then re-scan every matching email. Applied and skipped history is preserved for duplicate checks.\n\nContinue?"
       )
     ) {
       return;
@@ -319,6 +344,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
 
     setJobReEvaluatePopup({
       company: data.company || job.company || "",
+      fitReasoning: data.fit_reasoning,
       jobTitle: data.job_title || job.job_title || "",
       newScore: data.fit_score,
       phase: "done",
@@ -444,7 +470,12 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
 
   const anyScanRunning = scanning || rescanAllRunning;
   const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies;
-  const filteredJobs = jobs.filter((job) => jobMatchesSearch(job, searchText));
+  const filteredJobs = jobs.filter((job) => {
+    if (!jobMatchesSearch(job, searchText)) return false;
+    if (showOnlyUnscored && job.fit_score != null) return false;
+    return true;
+  });
+  const unscoredCount = jobs.filter((j) => j.fit_score == null).length;
 
   const handleManualSubmit = async () => {
     if (!manualListingText.trim() && !manualSourceUrl.trim()) {
@@ -672,6 +703,18 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           style={queueSearchInputStyle}
         />
 
+        {unscoredCount > 0 && (
+          <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={showOnlyUnscored}
+              onChange={(e) => setShowOnlyUnscored(e.target.checked)}
+              style={{ cursor: "pointer" }}
+            />
+            Needs score ({unscoredCount})
+          </label>
+        )}
+
         {jobs.length > 0 && (
           <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
             {filteredJobs.length !== jobs.length && `${filteredJobs.length} of `}
@@ -756,7 +799,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
                   opacity: anyQueueActionRunning ? 0.5 : 1,
                 }}
               >
-                {rescanAllRunning ? "Purging…" : "Purge Queue"}
+                {rescanAllRunning ? "Rescanning…" : "Rescan All Emails"}
               </button>
             </div>
           )}
@@ -986,6 +1029,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
                         </div>
                       )}
                     </div>
+                    <ImportFailureDetails summary={importSummary} compact />
                   </div>
                 )}
               </>
@@ -1020,7 +1064,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
 
       {anyScanRunning && scanState && (
         <ProgressPopup
-          title={rescanAllRunning ? "Purging Queue" : "Scanning Emails"}
+          title={rescanAllRunning ? "Rescanning Emails" : "Scanning Emails"}
           message={scanState.message}
           progress={scanState.progress}
         >
@@ -1107,6 +1151,18 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
             onReEvaluate={handleJobReEvaluate}
             onSkip={handleSkip}
             onUpdate={(jobId, updatedJob) => {
+              if (updatedJob.fit_score !== job.fit_score || updatedJob.fit_reasoning !== job.fit_reasoning) {
+                setJobReEvaluatePopup({
+                  company: updatedJob.company || job.company || "",
+                  fitReasoning: updatedJob.fit_reasoning,
+                  heading: "Description re-evaluated",
+                  jobTitle: updatedJob.job_title || job.job_title || "",
+                  newScore: updatedJob.fit_score,
+                  phase: "done",
+                  previousScore: job.fit_score,
+                  status: updatedJob.status,
+                });
+              }
               if (updatedJob.status === "pending_review") {
                 setJobs((prev) => prev.map((j) => (j.id === jobId ? updatedJob : j)));
                 return;
@@ -1186,7 +1242,6 @@ function ProgressPopup({ title, message, progress, children }) {
 
 function ImportSummaryPopup({ summary, onClose }) {
   const { queued, skipped, repaired = 0, failed } = summary;
-  const failures = Array.isArray(summary.failures) ? summary.failures : [];
   const sourceName = summary.capture_source?.name;
   return (
     <div style={popupBackdropStyle}>
@@ -1231,26 +1286,69 @@ function ImportSummaryPopup({ summary, onClose }) {
           )}
         </div>
 
-        {failures.length > 0 && (
-          <div style={{ marginTop: "14px", borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
-            <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
-              Failure details
-            </div>
-            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "6px", maxHeight: "200px", overflowY: "auto" }}>
-              {failures.map((f, i) => (
-                <li key={i} style={{ fontSize: "12px", lineHeight: 1.5 }}>
-                  <div style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.url}>
-                    {f.url}
-                  </div>
-                  <div style={{ color: "var(--red)" }}>{f.reason}</div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <ImportFailureDetails summary={summary} />
       </div>
     </div>
   );
+}
+
+function ImportFailureDetails({ summary, compact = false }) {
+  const failures = normalizeImportFailures(summary);
+  if (failures.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: "14px", borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
+      <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
+        Failure details
+      </div>
+      <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "6px", maxHeight: compact ? "140px" : "200px", overflowY: "auto" }}>
+        {failures.map((failure, index) => (
+          <li key={`${failure.url || "import-failure"}-${index}`} style={{ fontSize: "12px", lineHeight: 1.5 }}>
+            <div style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={failure.url}>
+              {failureLabel(failure)}
+            </div>
+            <div style={{ color: "var(--red)", overflowWrap: "anywhere" }}>
+              {failure.reason}
+              {failure.error_type && ` (${failure.error_type}${failure.stage ? ` during ${failure.stage}` : ""})`}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function normalizeImportFailures(summary) {
+  const failures = Array.isArray(summary?.failures) ? summary.failures : [];
+  const failedCount = Number(summary?.failed) || 0;
+  const normalized = failures.map((failure) => ({
+    url: failure?.url || "",
+    platform: failure?.platform || "",
+    job_title: failure?.job_title || "",
+    company: failure?.company || "",
+    stage: failure?.stage || "",
+    error_type: failure?.error_type || "",
+    reason: failure?.reason || "No failure reason was returned.",
+  }));
+  for (let index = normalized.length; index < failedCount; index += 1) {
+    normalized.push({
+      url: "",
+      platform: "",
+      job_title: "",
+      company: "",
+      stage: "",
+      error_type: "",
+      reason: "No detailed failure was returned by the worker. Check the server or Celery worker logs for this import.",
+    });
+  }
+  return normalized;
+}
+
+function failureLabel(failure) {
+  const title = failure.job_title || "Imported job";
+  const company = failure.company ? ` at ${failure.company}` : "";
+  const source = failure.platform ? `${failure.platform}: ` : "";
+  return failure.url || `${source}${title}${company}`;
 }
 
 function ReEvaluateSummaryPopup({ summary, onClose }) {
@@ -1312,6 +1410,12 @@ function JobReEvaluatePopup({ popup, onClose }) {
   const companyText = popup.company ? ` at ${popup.company}` : "";
   const isRunning = popup.phase === "running";
   const isError = popup.phase === "error";
+  const reasoningBullets = fitReasoningBullets(reasoningWithoutPenaltySummary(popup.fitReasoning));
+  const statusText =
+    popup.status === "pending_review" ? "Queued for review"
+    : popup.status === "triage" ? "Moved to triage"
+    : popup.status ? dispositionLabel(popup.status)
+    : "";
 
   return (
     <div style={popupBackdropStyle}>
@@ -1319,7 +1423,7 @@ function JobReEvaluatePopup({ popup, onClose }) {
         <div style={popupHeaderStyle}>
           <div>
             <div style={popupTitleStyle}>
-              {isRunning ? "Re-evaluation in progress" : isError ? "Re-evaluation failed" : "Re-evaluation complete"}
+              {isRunning ? "Re-evaluation in progress" : isError ? "Re-evaluation failed" : popup.heading || "Re-evaluation complete"}
             </div>
             <div style={popupSubtitleStyle}>{title}{companyText}</div>
           </div>
@@ -1345,19 +1449,31 @@ function JobReEvaluatePopup({ popup, onClose }) {
             {popup.error || "Failed to re-evaluate fit."}
           </div>
         ) : (
-          <div style={popupResultStyle}>
-            <span>{scoreLabel(popup.previousScore)}</span>
-            <span style={{ color: "var(--text-muted)" }}>to</span>
-            <span>{scoreLabel(popup.newScore)}</span>
-            {scoreDeltaLabel(popup.previousScore, popup.newScore) && (
-              <span style={popupDeltaStyle}>
-                {scoreDeltaLabel(popup.previousScore, popup.newScore)}
-              </span>
+          <>
+            <div style={popupResultStyle}>
+              <span>{scoreLabel(popup.previousScore)}</span>
+              <span style={{ color: "var(--text-muted)" }}>to</span>
+              <span>{scoreLabel(popup.newScore)}</span>
+              {scoreDeltaLabel(popup.previousScore, popup.newScore) && (
+                <span style={popupDeltaStyle}>
+                  {scoreDeltaLabel(popup.previousScore, popup.newScore)}
+                </span>
+              )}
+              {statusText && (
+                <span style={popupMovedStyle}>{statusText}</span>
+              )}
+            </div>
+            {reasoningBullets.length > 0 && (
+              <div style={popupReasoningStyle}>
+                <div style={popupReasoningHeadingStyle}>Why this score</div>
+                <ul style={popupReasoningListStyle}>
+                  {reasoningBullets.map((item, index) => (
+                    <li key={`fit-reason-${index}`}>{item}</li>
+                  ))}
+                </ul>
+              </div>
             )}
-            {popup.status === "triage" && (
-              <span style={popupMovedStyle}>Moved to triage</span>
-            )}
-          </div>
+          </>
         )}
       </div>
     </div>
@@ -1372,6 +1488,7 @@ function ScanSummaryPopup({ summary, onClose }) {
     duplicates = 0,
     acknowledgement_emails = 0,
     feedback_filtered_emails = 0,
+    source_filtered_emails = 0,
     non_job_emails = 0,
     parser_error_emails = 0,
     fetch_error_emails = 0,
@@ -1397,7 +1514,8 @@ function ScanSummaryPopup({ summary, onClose }) {
     { label: "duplicates", value: duplicates },
     { label: "not job emails", value: non_job_emails },
     { label: "acknowledgements", value: acknowledgement_emails },
-    { label: "didn't fit / filtered", value: feedback_filtered_emails },
+    { label: "source-filter skipped", value: source_filtered_emails },
+    { label: "learned-pattern filtered", value: feedback_filtered_emails },
     { label: "parser errors", value: parser_error_emails, tone: "red" },
     { label: "fetch errors", value: fetch_error_emails, tone: "red" },
   ].filter((item) => item.value > 0);
@@ -1411,6 +1529,7 @@ function ScanSummaryPopup({ summary, onClose }) {
   const [selectedEmailIds, setSelectedEmailIds] = useState(() => moveEligibleEmails.map((email) => email.email_id));
   const [movingEmails, setMovingEmails] = useState(false);
   const [moveResult, setMoveResult] = useState(null);
+  const [moveStatusOpen, setMoveStatusOpen] = useState(false);
   const selectedCount = selectedEmailIds.length;
   const movedEmailIds = Array.isArray(moveResult?.email_ids) ? moveResult.email_ids : [];
 
@@ -1426,6 +1545,7 @@ function ScanSummaryPopup({ summary, onClose }) {
     if (selectedEmailIds.length === 0 || movingEmails) return;
     setMovingEmails(true);
     setMoveResult(null);
+    setMoveStatusOpen(true);
     try {
       const res = await fetch("/api/emails/move-scanned", {
         method: "POST",
@@ -1445,7 +1565,7 @@ function ScanSummaryPopup({ summary, onClose }) {
 
   return (
     <div style={popupBackdropStyle}>
-      <div style={{ ...popupPanelStyle, maxWidth: "680px" }}>
+      <div style={{ ...popupPanelStyle, maxHeight: "88vh", maxWidth: "1040px", overflowY: "auto" }}>
         <div style={popupHeaderStyle}>
           <div style={popupTitleStyle}>Scan complete</div>
           <button
@@ -1547,7 +1667,9 @@ function ScanSummaryPopup({ summary, onClose }) {
                     <th style={emailReportHeaderStyle}>Email</th>
                     <th style={emailReportHeaderStyle}>From</th>
                     <th style={emailReportHeaderStyle}>Disposition</th>
-                    <th style={emailReportHeaderStyle}>Action</th>
+                    <th style={emailReportHeaderStyle}>Reason</th>
+                    <th style={emailReportHeaderStyle}>Job outcomes</th>
+                    <th style={{ ...emailReportHeaderStyle, minWidth: "150px" }}>Action</th>
                     <th style={{ ...emailReportHeaderStyle, textAlign: "right" }}>Jobs</th>
                   </tr>
                 </thead>
@@ -1580,6 +1702,10 @@ function ScanSummaryPopup({ summary, onClose }) {
                         </td>
                         <td style={emailReportCellStyle}>{email.sender_email || "Unknown sender"}</td>
                         <td style={emailReportCellStyle}>{formatScanDisposition(email.disposition)}</td>
+                        <td style={{ ...emailReportCellStyle, maxWidth: "280px", overflowWrap: "anywhere" }}>
+                          {email.reason || "—"}
+                        </td>
+                        <td style={emailReportCellStyle}>{formatEmailJobDetails(email)}</td>
                         <td style={emailReportCellStyle}>{actionLabel}</td>
                         <td style={{ ...emailReportCellStyle, textAlign: "right", fontWeight: 700 }}>{email.job_count || 0}</td>
                       </tr>
@@ -1588,8 +1714,8 @@ function ScanSummaryPopup({ summary, onClose }) {
                 </tbody>
                 <tfoot>
                   <tr>
-                    <td style={emailReportFooterStyle} colSpan={6}>
-                      {new_jobs} job{new_jobs === 1 ? "" : "s"} · {non_job_emails + acknowledgement_emails + feedback_filtered_emails} ignored · {duplicates} duplicate{duplicates === 1 ? "" : "s"} · {triage_jobs} triage · {possible_duplicate_jobs} possible duplicate{possible_duplicate_jobs === 1 ? "" : "s"} · {parser_error_emails + fetch_error_emails} error{parser_error_emails + fetch_error_emails === 1 ? "" : "s"}
+                    <td style={emailReportFooterStyle} colSpan={8}>
+                      {new_jobs} job{new_jobs === 1 ? "" : "s"} · {non_job_emails + acknowledgement_emails + feedback_filtered_emails + source_filtered_emails} ignored · {duplicates} duplicate{duplicates === 1 ? "" : "s"} · {triage_jobs} triage · {possible_duplicate_jobs} possible duplicate{possible_duplicate_jobs === 1 ? "" : "s"} · {parser_error_emails + fetch_error_emails} error{parser_error_emails + fetch_error_emails === 1 ? "" : "s"}
                     </td>
                   </tr>
                 </tfoot>
@@ -1618,6 +1744,55 @@ function ScanSummaryPopup({ summary, onClose }) {
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {moveStatusOpen && (
+          <MoveEmailsStatusDialog
+            label={moveResult?.label || scannedEmailLabel}
+            moving={movingEmails}
+            moved={moveResult?.moved ?? 0}
+            onClose={() => setMoveStatusOpen(false)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MoveEmailsStatusDialog({ label, moving, moved, onClose }) {
+  const movedCount = Number(moved) || 0;
+  return (
+    <div style={smallStatusBackdropStyle}>
+      <div style={smallStatusPanelStyle}>
+        <div style={popupHeaderStyle}>
+          <div>
+            <div style={popupTitleStyle}>
+              {moving ? "Moving emails" : "Emails moved"}
+            </div>
+            <div style={popupSubtitleStyle}>
+              {moving
+                ? "Moving selected emails to the scanned folder..."
+                : movedCount > 0
+                  ? `Moved ${movedCount} email${movedCount === 1 ? "" : "s"} to ${label}.`
+                  : `Move request completed for ${label}.`}
+            </div>
+          </div>
+          {!moving && (
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ padding: "4px 10px", fontSize: "12px" }}
+              onClick={onClose}
+            >
+              Close
+            </button>
+          )}
+        </div>
+        {moving && (
+          <div style={popupBodyStyle}>
+            <span className="inline-spinner" style={popupSpinnerStyle} />
+            <span>Waiting for Gmail to finish the move...</span>
           </div>
         )}
       </div>
@@ -1790,16 +1965,49 @@ function scoreDeltaLabel(previousScore, newScore) {
   return `${delta > 0 ? "+" : ""}${delta}`;
 }
 
+function reasoningWithoutPenaltySummary(reasoning) {
+  return String(reasoning || "")
+    .replace(/\s*Penalties applied:\s*.+?\.\s*$/i, "")
+    .trim();
+}
+
+function fitReasoningBullets(reasoning) {
+  const text = String(reasoning || "").trim();
+  if (!text) return [];
+  const bulletMatches = text.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s+.+/g);
+  if (bulletMatches) {
+    return bulletMatches
+      .map((item) => item.replace(/^\s*(?:[-*•]|\d+\.)\s+/, "").trim())
+      .filter(Boolean);
+  }
+  return text
+    .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function dispositionLabel(status) {
+  const labels = {
+    added_to_sheet: "Added to sheet",
+    pending_review: "Queued for review",
+    possible_duplicate: "Possible duplicate",
+    skipped: "Skipped",
+    triage: "Moved to triage",
+  };
+  return labels[status] || status || "";
+}
+
 function formatScanDisposition(disposition) {
   const labels = {
     ack: "acknowledgement",
     already_scanned: "already scanned",
     duplicate: "duplicate",
-    feedback_filtered: "didn't fit / filtered",
+    feedback_filtered: "learned-pattern filtered",
     fetch_error: "fetch error",
     job_created: "job created",
     noise: "ignored",
     parser_error: "parser error",
+    source_filtered: "source-filter skipped",
   };
   return labels[disposition] || disposition || "unknown";
 }
@@ -1812,6 +2020,52 @@ function formatJobTitles(jobTitles) {
   if (!Array.isArray(jobTitles) || jobTitles.length === 0) return "no jobs";
   if (jobTitles.length === 1) return jobTitles[0] || "1 job";
   return `${jobTitles.length} jobs: ${jobTitles.filter(Boolean).join(", ")}`;
+}
+
+function formatEmailJobDetails(email) {
+  if (Array.isArray(email?.job_details) && email.job_details.length > 0) {
+    return formatJobDetails(email.job_details);
+  }
+  if (email?.disposition === "feedback_filtered") {
+    return "Not parsed: skipped by learned feedback before fit scoring or duplicate checks.";
+  }
+  if (email?.disposition === "source_filtered") {
+    return "Not parsed: source subject filter did not match.";
+  }
+  if (email?.disposition === "duplicate" || email?.disposition === "already_scanned") {
+    return "Not parsed: email-level duplicate check matched before job extraction.";
+  }
+  if (email?.disposition === "ack" || email?.disposition === "noise") {
+    return "No job outcome: email did not enter job scoring.";
+  }
+  return "—";
+}
+
+function formatJobDetails(jobDetails) {
+  if (!Array.isArray(jobDetails) || jobDetails.length === 0) return "—";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "6px", minWidth: "220px" }}>
+      {jobDetails.map((jobDetail, index) => {
+        const score = jobDetail.fit_score === null || jobDetail.fit_score === undefined
+          ? "not scored"
+          : `${jobDetail.fit_score}%`;
+        const duplicateText = jobDetail.duplicate_hint ? ` · ${jobDetail.duplicate_hint}` : "";
+        const confidenceText = jobDetail.confidence_score === null || jobDetail.confidence_score === undefined
+          ? ""
+          : ` · parser ${jobDetail.confidence_score}%`;
+        return (
+          <div key={`${jobDetail.job_title || "job"}-${index}`} style={{ color: "var(--text-muted)", lineHeight: 1.35 }}>
+            <div style={{ color: "var(--text)", fontWeight: 600, overflowWrap: "anywhere" }}>
+              {jobDetail.job_title || "Untitled job"}{jobDetail.company ? ` at ${jobDetail.company}` : ""}
+            </div>
+            <div style={{ overflowWrap: "anywhere" }}>
+              {jobDetail.outcome || formatScanDisposition(jobDetail.status)} · fit {score}{confidenceText}{duplicateText}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 const inlineImportProgressStyle = {
@@ -1858,6 +2112,17 @@ const popupPanelStyle = {
   maxWidth: "460px",
   padding: "18px",
   width: "100%",
+};
+
+const smallStatusBackdropStyle = {
+  ...popupBackdropStyle,
+  background: "rgba(24,28,58,0.18)",
+  zIndex: 1200,
+};
+
+const smallStatusPanelStyle = {
+  ...popupPanelStyle,
+  maxWidth: "420px",
 };
 
 const importDialogPanelStyle = {
@@ -1926,6 +2191,34 @@ const popupMovedStyle = {
   padding: "4px 9px",
 };
 
+const popupReasoningStyle = {
+  borderTop: "1px solid var(--border)",
+  marginTop: "16px",
+  paddingTop: "14px",
+};
+
+const popupReasoningHeadingStyle = {
+  color: "var(--text-muted)",
+  fontSize: "11px",
+  fontWeight: 700,
+  letterSpacing: "0.05em",
+  marginBottom: "8px",
+  textTransform: "uppercase",
+};
+
+const popupReasoningListStyle = {
+  color: "var(--text)",
+  display: "flex",
+  flexDirection: "column",
+  fontSize: "13px",
+  gap: "7px",
+  lineHeight: 1.5,
+  margin: 0,
+  maxHeight: "220px",
+  overflowY: "auto",
+  paddingLeft: "18px",
+};
+
 const summaryMetricGridStyle = {
   display: "flex",
   flexWrap: "wrap",
@@ -1948,7 +2241,7 @@ const emailReportTableWrapStyle = {
 const emailReportTableStyle = {
   borderCollapse: "collapse",
   fontSize: "12px",
-  minWidth: "760px",
+  minWidth: "1120px",
   width: "100%",
 };
 

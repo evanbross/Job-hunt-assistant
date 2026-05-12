@@ -36,6 +36,26 @@ import React, { useEffect, useRef, useState } from "react";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 
+const TRIAGE_SEARCH_STORAGE_KEY = "jha.triage.search";
+
+function readStoredSearch(storageKey) {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(storageKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredSearch(storageKey, value) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(storageKey, value);
+  } catch {
+    /* ignore unavailable storage */
+  }
+}
+
 const PLATFORM_LABELS = {
   greenhouse: "Greenhouse",
   lever: "Lever",
@@ -43,13 +63,40 @@ const PLATFORM_LABELS = {
   workday: "Workday",
 };
 
+const SKIP_REASONS = [
+  { key: "rejected", label: "Rejected" },
+  { key: "duplicate", label: "Duplicate" },
+  { key: "req_closed", label: "Req Closed" },
+  { key: "not_remote", label: "Not Remote" },
+  { key: "not_a_fit", label: "Not a Fit" },
+  { key: "not_interested", label: "Not Interested" },
+  { key: "other", label: "Other" },
+];
+
+const MISMATCH_REASONS = [
+  "Not Remote",
+  "Hybrid / On-Site",
+  "Wrong Level",
+  "Wrong Tech Stack",
+  "Too Management-Focused",
+  "Wrong Domain",
+  "Compensation Mismatch",
+  "Location Constraint",
+  "Contract / Temp",
+  "Other Mismatch",
+];
+
 export default function TriagePanel({ onCountChange }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState("date_desc");
-  const [searchText, setSearchText] = useState("");
+  const [searchText, setSearchText] = useState(() => readStoredSearch(TRIAGE_SEARCH_STORAGE_KEY));
   const [reEvaluatePopup, setReEvaluatePopup] = useState(null);
   const [batchRefreshPopup, setBatchRefreshPopup] = useState(null);
+  const [descriptionUpdatePopup, setDescriptionUpdatePopup] = useState(null);
+  const [moreActionsOpen, setMoreActionsOpen] = useState(false);
+  const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
+  const moreActionsRef = useRef(null);
 
   const fetchTriage = async () => {
     try {
@@ -68,6 +115,21 @@ export default function TriagePanel({ onCountChange }) {
   useEffect(() => {
     fetchTriage();
   }, []);
+
+  useEffect(() => {
+    writeStoredSearch(TRIAGE_SEARCH_STORAGE_KEY, searchText);
+  }, [searchText]);
+
+  useEffect(() => {
+    if (!moreActionsOpen) return;
+    const handleOutsideClick = (event) => {
+      if (moreActionsRef.current && !moreActionsRef.current.contains(event.target)) {
+        setMoreActionsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [moreActionsOpen]);
 
   const handleApprove = async (job) => {
     const senderEmail = extractSender(job.raw_email_snippet, job);
@@ -89,31 +151,15 @@ export default function TriagePanel({ onCountChange }) {
     }
   };
 
-  const handleReject = async (job) => {
-    const senderEmail = extractSender(job.raw_email_snippet, job);
-    const subjectPattern = extractSubjectWords(job.job_title || "");
-
-    const res = await fetch(`/api/jobs/${job.id}/reject`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sender_email: senderEmail, subject_pattern: subjectPattern }),
-    });
-
-    if (res.ok) {
-      const updated = jobs.filter((j) => j.id !== job.id);
-      setJobs(updated);
-      onCountChange(updated.length);
-    } else {
-      const err = await res.json();
-      alert(err.error || "Failed to reject");
-    }
+  const handleSkipAsDuplicate = async (job) => {
+    await handleSkip(job, "duplicate", "", []);
   };
 
-  const handleSkipAsDuplicate = async (job) => {
+  const handleSkip = async (job, reason, feedback = "", mismatchReasons = []) => {
     const res = await fetch(`/api/jobs/${job.id}/skip`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: "duplicate", feedback: "", mismatch_reasons: [] }),
+      body: JSON.stringify({ reason, feedback, mismatch_reasons: mismatchReasons }),
     });
     if (res.ok) {
       const updated = jobs.filter((j) => j.id !== job.id);
@@ -121,7 +167,7 @@ export default function TriagePanel({ onCountChange }) {
       onCountChange(updated.length);
     } else {
       const err = await res.json().catch(() => ({}));
-      window.alert(err.error || "Failed to skip as duplicate");
+      window.alert(err.error || "Failed to skip job");
     }
   };
 
@@ -214,7 +260,8 @@ export default function TriagePanel({ onCountChange }) {
       status: data.status,
     });
 
-    if (data.status === "triage") {
+    const triageStatuses = new Set(["triage", "possible_duplicate"]);
+    if (triageStatuses.has(data.status)) {
       setJobs((prev) => prev.map((j) => (j.id === data.id ? data : j)));
       return data;
     }
@@ -299,15 +346,28 @@ export default function TriagePanel({ onCountChange }) {
 
   if (jobs.length === 0) {
     return (
-      <div className="empty-state">
-        <p style={{ fontSize: "32px" }}>✅</p>
-        <p>No emails waiting for review.</p>
-        <p>Low-confidence emails from your next scan will appear here.</p>
+      <div>
+        {descriptionUpdatePopup && (
+          <DescriptionUpdatePopup
+            popup={descriptionUpdatePopup}
+            onClose={() => setDescriptionUpdatePopup(null)}
+          />
+        )}
+        <div className="empty-state">
+          <p style={{ fontSize: "32px" }}>✅</p>
+          <p>No emails waiting for review.</p>
+          <p>Low-confidence emails from your next scan will appear here.</p>
+        </div>
       </div>
     );
   }
 
-  const filteredJobs = jobs.filter((job) => jobMatchesSearch(job, searchText));
+  const filteredJobs = jobs.filter((job) => {
+    if (!jobMatchesSearch(job, searchText)) return false;
+    if (showOnlyUnscored && job.fit_score != null) return false;
+    return true;
+  });
+  const unscoredCount = jobs.filter((j) => j.fit_score == null).length;
   const visibleDupeCount = filteredJobs.filter((j) => j.status === "possible_duplicate").length;
   const visibleTriageCount = filteredJobs.length - visibleDupeCount;
   const refreshableCount = jobs.filter((job) => job.status !== "possible_duplicate" && job.url).length;
@@ -331,37 +391,68 @@ export default function TriagePanel({ onCountChange }) {
   return (
     <div>
       <div style={triageToolbarStyle}>
-        <input
-          type="search"
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          placeholder="Search triage jobs"
-          style={triageSearchInputStyle}
-        />
-        <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>
-          {searchText.trim() && `${filteredJobs.length} of ${jobs.length} shown · `}
-          {visibleTriageCount > 0 && `${visibleTriageCount} email${visibleTriageCount !== 1 ? "s" : ""} need review (low confidence)`}
-          {visibleTriageCount > 0 && visibleDupeCount > 0 && " · "}
-          {visibleDupeCount > 0 && `${visibleDupeCount} possible duplicate${visibleDupeCount !== 1 ? "s" : ""} to confirm`}
-        </p>
-        <div style={topActionsStyle}>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={handleBatchRefreshFromUrls}
-            disabled={isBatchRefreshing || refreshableCount === 0}
-            style={{ fontSize: "12px", padding: "5px 11px", whiteSpace: "nowrap" }}
-          >
-            {isBatchRefreshing ? (
-              <span style={buttonSpinnerContentStyle}>
-                <span className="inline-spinner" />
-                Re-fetching...
-              </span>
-            ) : (
-              `Re-fetch all${refreshableCount > 0 ? ` (${refreshableCount})` : ""}`
+        <div style={triageToolbarMainStyle}>
+          <input
+            type="search"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            placeholder="Search triage jobs"
+            style={triageSearchInputStyle}
+          />
+          {unscoredCount > 0 && (
+            <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={showOnlyUnscored}
+                onChange={(e) => setShowOnlyUnscored(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              Needs score ({unscoredCount})
+            </label>
+          )}
+          <p style={triageCountStyle}>
+            {filteredJobs.length !== jobs.length && `${filteredJobs.length} of `}
+            {jobs.length} entr{jobs.length === 1 ? "y" : "ies"} waiting for review
+            {(visibleTriageCount > 0 || visibleDupeCount > 0) && " · "}
+            {visibleTriageCount > 0 && `${visibleTriageCount} low-confidence`}
+            {visibleTriageCount > 0 && visibleDupeCount > 0 && " · "}
+            {visibleDupeCount > 0 && `${visibleDupeCount} possible duplicate${visibleDupeCount !== 1 ? "s" : ""}`}
+          </p>
+          <div ref={moreActionsRef} style={triageMoreActionsStyle}>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setMoreActionsOpen((open) => !open)}
+              disabled={isBatchRefreshing || refreshableCount === 0}
+              aria-label="More actions"
+              aria-expanded={moreActionsOpen}
+              style={triageKebabButtonStyle}
+            >
+              &#8942;
+            </button>
+            {moreActionsOpen && (
+              <div style={triageMenuStyle}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreActionsOpen(false);
+                    handleBatchRefreshFromUrls();
+                  }}
+                  disabled={isBatchRefreshing || refreshableCount === 0}
+                  style={{
+                    ...triageMenuItemStyle,
+                    cursor: (isBatchRefreshing || refreshableCount === 0) ? "not-allowed" : "pointer",
+                    opacity: (isBatchRefreshing || refreshableCount === 0) ? 0.5 : 1,
+                  }}
+                >
+                  {isBatchRefreshing ? "Re-fetching..." : `Re-fetch all${refreshableCount > 0 ? ` (${refreshableCount})` : ""}`}
+                </button>
+              </div>
             )}
-          </button>
-          <label style={{ fontSize: "12px", color: "var(--text-muted)" }}>Sort:</label>
+          </div>
+        </div>
+        <div style={triageSortRowStyle}>
+          <label style={triageSortLabelStyle}>Sort:</label>
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
@@ -391,6 +482,13 @@ export default function TriagePanel({ onCountChange }) {
         />
       )}
 
+      {descriptionUpdatePopup && (
+        <DescriptionUpdatePopup
+          popup={descriptionUpdatePopup}
+          onClose={() => setDescriptionUpdatePopup(null)}
+        />
+      )}
+
       {sortedJobs.length === 0 ? (
         <div className="empty-state">
           <p>No triage jobs match your search.</p>
@@ -400,20 +498,41 @@ export default function TriagePanel({ onCountChange }) {
           <DuplicateCard
             key={job.id}
             job={job}
-            onSameJob={() => handleReject(job)}
+            onSameJob={() => handleSkipAsDuplicate(job)}
             onDifferentJob={() => handleApprove(job)}
             onMarkUnique={() => handleMarkUnique(job)}
+            onReEvaluate={() => handleReEvaluateFit(job)}
           />
         ) : (
           <TriageCard
             key={job.id}
             job={job}
             onApprove={() => handleApprove(job)}
-            onReject={() => handleReject(job)}
-            onSkipAsDuplicate={() => handleSkipAsDuplicate(job)}
+            onSkip={(reason, feedback, mismatchReasons) => handleSkip(job, reason, feedback, mismatchReasons)}
             onReEvaluate={() => handleReEvaluateFit(job)}
             onRefreshFromUrl={() => handleRefreshFromUrl(job)}
             onReprocessed={(updated) => {
+              const triageStatuses = new Set(["triage", "possible_duplicate"]);
+              if (triageStatuses.has(updated.status)) {
+                setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
+                return;
+              }
+              setJobs((prev) => {
+                const nextJobs = prev.filter((j) => j.id !== updated.id);
+                onCountChange(nextJobs.length);
+                return nextJobs;
+              });
+            }}
+            onDescriptionUpdated={(updated, previous) => {
+              setDescriptionUpdatePopup({
+                company: updated.company || job.company || "",
+                jobTitle: updated.job_title || job.job_title || "",
+                newScore: updated.fit_score,
+                newStatus: updated.status,
+                previousScore: previous.previousScore,
+                previousStatus: previous.previousStatus,
+              });
+
               const triageStatuses = new Set(["triage", "possible_duplicate"]);
               if (triageStatuses.has(updated.status)) {
                 setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
@@ -433,8 +552,12 @@ export default function TriagePanel({ onCountChange }) {
   );
 }
 
-function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique }) {
+function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvaluate }) {
   const [loadingAction, setLoadingAction] = useState(null);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [reEvaluateError, setReEvaluateError] = useState(null);
+  const triageReasoning = triageReasoningForJob(job);
+  const penaltiesApplied = penaltiesAppliedForJob(job);
 
   const act = async (fn, label) => {
     setLoadingAction(label);
@@ -445,11 +568,24 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique }) {
     }
   };
 
+  const handleReEvaluateClick = async () => {
+    setLoadingAction("reevaluate");
+    setReEvaluateError(null);
+    try {
+      await onReEvaluate();
+    } catch (err) {
+      setReEvaluateError(err.message || "Re-evaluate failed");
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
   return (
     <div style={{ ...cardStyle, borderColor: "var(--warning, #b45309)" }}>
       {/* Meta */}
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
         <span className="badge badge-orange">Possible duplicate</span>
+        <span className={`badge ${fitScoreClass(job)}`}>Fit: {fitPercentageLabel(job)}</span>
         <SourceBadge job={job} />
         <SalaryBadge job={job} />
         {job.date_found && <span className="badge badge-gray">{job.date_found}</span>}
@@ -495,6 +631,59 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique }) {
         <div style={hintStyle}>{job.duplicate_hint}</div>
       )}
 
+      {reEvaluateError && (
+        <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--red)" }}>
+          {reEvaluateError}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "5px 11px", whiteSpace: "nowrap" }}
+          onClick={handleReEvaluateClick}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "reevaluate" ? (
+            <span style={buttonSpinnerContentStyle}>
+              <span className="inline-spinner" />
+              Re-evaluating...
+            </span>
+          ) : (
+            "Re-evaluate Fit"
+          )}
+        </button>
+        <button
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "5px 11px" }}
+          type="button"
+          onClick={() => setReasoningOpen((open) => !open)}
+        >
+          {reasoningOpen ? "Hide reasoning" : "Show reasoning"}
+        </button>
+      </div>
+
+      {reasoningOpen && (
+        <div style={reasoningBoxStyle}>
+          <ul style={reasoningListStyle}>
+            {triageReasoningBullets(triageReasoning).map((item, index) => (
+              <li
+                key={`duplicate-reason-${index}`}
+                style={negativeReasoningBulletStyleFor(item)}
+              >
+                {item}
+              </li>
+            ))}
+            {penaltiesApplied.map((penalty, index) => (
+              <li key={`duplicate-penalty-${index}`} style={penaltyInlineBulletStyle}>
+                <strong>-{penalty.points}</strong> for &lsquo;{penalty.ruleText}&rsquo;
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Actions */}
       <div style={{ display: "flex", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
         <button
@@ -526,16 +715,21 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique }) {
   );
 }
 
-function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate, onRefreshFromUrl, onReprocessed }) {
+function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingCompany, setEditingCompany] = useState(false);
   const [companyDraft, setCompanyDraft] = useState("");
+  const [editingUrl, setEditingUrl] = useState(false);
+  const [urlDraft, setUrlDraft] = useState("");
   const [reprocessError, setReprocessError] = useState(null);
   const [reEvaluateError, setReEvaluateError] = useState(null);
+  const [showSkipMenu, setShowSkipMenu] = useState(false);
+  const [skipConfirm, setSkipConfirm] = useState(null);
+  const [skipNote, setSkipNote] = useState("");
+  const [skipMismatchReasons, setSkipMismatchReasons] = useState([]);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [descriptionPasteOpen, setDescriptionPasteOpen] = useState(false);
-  const [descriptionUpdatePopup, setDescriptionUpdatePopup] = useState(null);
   const [pastedDescription, setPastedDescription] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
@@ -573,6 +767,36 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
     } finally {
       setLoadingAction(null);
     }
+  };
+
+  const handleSkipReasonClick = (reason) => {
+    setShowSkipMenu(false);
+    setSkipConfirm(reason);
+    setSkipNote("");
+    setSkipMismatchReasons([]);
+  };
+
+  const handleSkipConfirm = async () => {
+    if (!skipConfirm) return;
+    const note = skipNote.trim();
+    const mismatchReasons = skipMismatchReasons;
+    setLoadingAction(`skip:${skipConfirm.key}`);
+    setSkipConfirm(null);
+    setSkipNote("");
+    setSkipMismatchReasons([]);
+    try {
+      await onSkip(skipConfirm.key, note, mismatchReasons);
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const toggleMismatchReason = (reason) => {
+    setSkipMismatchReasons((previousReasons) =>
+      previousReasons.includes(reason)
+        ? previousReasons.filter((currentReason) => currentReason !== reason)
+        : [...previousReasons, reason]
+    );
   };
 
   const handleReprocess = async () => {
@@ -624,12 +848,7 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
         setReprocessError(data.error || "Description update failed");
         return;
       }
-      onReprocessed(data);
-      setDescriptionUpdatePopup({
-        company: data.company || job.company || "",
-        jobTitle: data.job_title || job.job_title || "",
-        newScore: data.fit_score,
-        newStatus: data.status,
+      onDescriptionUpdated(data, {
         previousScore: job.fit_score,
         previousStatus: job.status,
       });
@@ -721,6 +940,44 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
     onReprocessed(updated);
   };
 
+  const startUrlEdit = () => {
+    setUrlDraft(job.url || "");
+    setReprocessError(null);
+    setEditingUrl(true);
+  };
+
+  const saveUrlEdit = async () => {
+    const value = normalizeManualJobUrl(urlDraft);
+    if (!value) {
+      setReprocessError("Enter a URL starting with http:// or https://.");
+      return;
+    }
+    if (value === (job.url || "")) {
+      setEditingUrl(false);
+      return;
+    }
+
+    setLoadingAction("url");
+    setReprocessError(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setReprocessError(data.error || `URL update failed (${res.status})`);
+        return;
+      }
+      onReprocessed(data);
+      setEditingUrl(false);
+      setUrlDraft("");
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
   return (
     <div style={cardStyle}>
       {/* Header row */}
@@ -765,25 +1022,70 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
           {isManualPastedJob(job) && (
             <div style={compactOriginStyle}>{job.email_subject || "Manual pasted job listing"}</div>
           )}
-          {job.url && (
+          {(job.url || editingUrl) && (
             <div style={triageUrlRowStyle}>
-              <a
-                href={job.url}
-                target="_blank"
-                rel="noreferrer"
-                style={triageUrlLinkStyle}
-              >
-                {job.url}
-              </a>
-              <button
-                className="btn-secondary"
-                style={{ fontSize: "11px", padding: "2px 8px", flexShrink: 0 }}
-                type="button"
-                onClick={handleRefreshFromUrl}
-                disabled={loadingAction !== null}
-              >
-                {loadingAction === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
-              </button>
+              {editingUrl ? (
+                <>
+                  <input
+                    autoFocus
+                    value={urlDraft}
+                    onChange={(event) => setUrlDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") saveUrlEdit();
+                      if (event.key === "Escape") setEditingUrl(false);
+                    }}
+                    placeholder="https://company.com/jobs/123"
+                    style={triageUrlInputStyle}
+                  />
+                  <button
+                    className="btn-secondary"
+                    style={triageUrlButtonStyle}
+                    type="button"
+                    onClick={saveUrlEdit}
+                    disabled={loadingAction !== null}
+                  >
+                    {loadingAction === "url" ? "Saving..." : "Save URL"}
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    style={triageUrlButtonStyle}
+                    type="button"
+                    onClick={() => setEditingUrl(false)}
+                    disabled={loadingAction !== null}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <a
+                    href={job.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={triageUrlLinkStyle}
+                  >
+                    {job.url}
+                  </a>
+                  <button
+                    className="btn-secondary"
+                    style={triageUrlButtonStyle}
+                    type="button"
+                    onClick={startUrlEdit}
+                    disabled={loadingAction !== null}
+                  >
+                    Edit URL
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    style={triageUrlButtonStyle}
+                    type="button"
+                    onClick={handleRefreshFromUrl}
+                    disabled={loadingAction !== null}
+                  >
+                    {loadingAction === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
+                  </button>
+                </>
+              )}
             </div>
           )}
           {(reprocessError || reEvaluateError) && (
@@ -938,6 +1240,17 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
             View Job ↗
           </a>
         )}
+        {!job.url && !editingUrl && (
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={startUrlEdit}
+            disabled={loadingAction !== null}
+            style={{ fontSize: "13px", flexShrink: 0 }}
+          >
+            Add Job URL
+          </button>
+        )}
         <button
           className="btn-success"
           onClick={() => act(onApprove, "approve")}
@@ -946,23 +1259,108 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
         >
           {loadingAction === "approve" ? "Moving…" : "It's a Job Posting"}
         </button>
-        <button
-          className="btn-danger"
-          onClick={() => act(onReject, "reject")}
-          disabled={loadingAction !== null}
-          style={{ flex: 1 }}
-        >
-          {loadingAction === "reject" ? "Removing…" : "Not Relevant"}
-        </button>
-        <button
-          className="btn-secondary"
-          onClick={() => act(onSkipAsDuplicate, "duplicate")}
-          disabled={loadingAction !== null}
-          style={{ flexShrink: 0 }}
-        >
-          {loadingAction === "duplicate" ? "Removing…" : "Duplicate"}
-        </button>
+        <div style={{ position: "relative", flex: 1 }}>
+          <button
+            className="btn-danger"
+            onClick={() => setShowSkipMenu((open) => !open)}
+            disabled={loadingAction !== null}
+            style={{ alignItems: "center", display: "flex", gap: "5px", justifyContent: "center", width: "100%" }}
+          >
+            {String(loadingAction || "").startsWith("skip:") ? "Skipping…" : "Not Relevant"}
+            {loadingAction === null && <span style={{ fontSize: "10px", opacity: 0.7 }}>▾</span>}
+          </button>
+
+          {showSkipMenu && (
+            <div style={skipMenuStyle}>
+              {SKIP_REASONS.map((reason) => (
+                <button
+                  key={reason.key}
+                  onClick={() => handleSkipReasonClick(reason)}
+                  style={skipMenuItemStyle}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "var(--surface2)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+                >
+                  {reason.label}
+                </button>
+              ))}
+              <hr style={{ margin: "4px 0", border: "none", borderTop: "1px solid var(--border)" }} />
+              <button
+                onClick={() => setShowSkipMenu(false)}
+                style={{ ...skipMenuItemStyle, color: "var(--text-muted)", fontSize: "11px" }}
+                onMouseEnter={(event) => { event.currentTarget.style.background = "var(--surface2)"; }}
+                onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+
+      {skipConfirm && (
+        <div style={skipConfirmPanelStyle}>
+          <p style={skipConfirmTextStyle}>
+            Mark not relevant as <strong style={{ color: "var(--text)" }}>{skipConfirm.label}</strong>
+            {skipConfirm.key === "not_a_fit" && (
+              <span style={{ opacity: 0.7 }}> — select one or more mismatch reasons to train future scoring</span>
+            )}
+          </p>
+          {skipConfirm.key === "not_a_fit" && (
+            <div style={mismatchChipRowStyle}>
+              {MISMATCH_REASONS.map((reason) => {
+                const selected = skipMismatchReasons.includes(reason);
+                return (
+                  <button
+                    key={reason}
+                    type="button"
+                    onClick={() => toggleMismatchReason(reason)}
+                    style={{
+                      ...mismatchChipStyle,
+                      background: selected ? "var(--accent-light)" : "var(--surface)",
+                      borderColor: selected ? "rgba(74,92,247,0.35)" : "var(--border)",
+                      color: selected ? "var(--accent)" : "var(--text)",
+                    }}
+                  >
+                    {reason}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <input
+            type="text"
+            value={skipNote}
+            onChange={(event) => setSkipNote(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") handleSkipConfirm();
+              if (event.key === "Escape") {
+                setSkipConfirm(null);
+                setSkipNote("");
+                setSkipMismatchReasons([]);
+              }
+            }}
+            placeholder={skipConfirm.key === "not_a_fit" ? "Optional note about the mismatch..." : "Optional note..."}
+            autoFocus
+            style={skipNoteInputStyle}
+          />
+          <div style={skipConfirmActionsStyle}>
+            <button className="btn-danger" onClick={handleSkipConfirm} disabled={loadingAction !== null}>
+              {String(loadingAction || "").startsWith("skip:") ? "Skipping…" : `Skip — ${skipConfirm.label}`}
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                setSkipConfirm(null);
+                setSkipNote("");
+                setSkipMismatchReasons([]);
+              }}
+              style={{ fontSize: "13px" }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {descriptionOpen && (
         <DescriptionModal
@@ -982,12 +1380,6 @@ function TriageCard({ job, onApprove, onReject, onSkipAsDuplicate, onReEvaluate,
         />
       )}
 
-      {descriptionUpdatePopup && (
-        <DescriptionUpdatePopup
-          popup={descriptionUpdatePopup}
-          onClose={() => setDescriptionUpdatePopup(null)}
-        />
-      )}
     </div>
   );
 }
@@ -1437,6 +1829,18 @@ function platformLabelForUrl(rawUrl) {
   return "";
 }
 
+function normalizeManualJobUrl(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
 function titleCaseKnownSource(source) {
   const normalizedSource = source.trim().toLowerCase();
   if (normalizedSource === "greenhouse") return PLATFORM_LABELS.greenhouse;
@@ -1620,12 +2024,18 @@ const sortSelectStyle = {
 };
 
 const triageToolbarStyle = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "8px",
+  marginBottom: "16px",
+};
+
+const triageToolbarMainStyle = {
   alignItems: "center",
   display: "flex",
   flexWrap: "wrap",
-  gap: "10px 14px",
-  justifyContent: "space-between",
-  marginBottom: "16px",
+  gap: "12px",
+  width: "100%",
 };
 
 const triageSearchInputStyle = {
@@ -1640,12 +2050,60 @@ const triageSearchInputStyle = {
   padding: "8px 11px",
 };
 
-const topActionsStyle = {
+const triageCountStyle = {
+  color: "var(--text-muted)",
+  fontSize: "13px",
+  margin: 0,
+};
+
+const triageMoreActionsStyle = {
+  marginLeft: "auto",
+  position: "relative",
+};
+
+const triageKebabButtonStyle = {
+  fontSize: "20px",
+  lineHeight: 1,
+  minHeight: "34px",
+  padding: "4px 10px",
+};
+
+const triageMenuStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+  minWidth: "160px",
+  overflow: "hidden",
+  position: "absolute",
+  right: 0,
+  top: "calc(100% + 4px)",
+  zIndex: 100,
+};
+
+const triageMenuItemStyle = {
+  background: "none",
+  border: "none",
+  color: "var(--text)",
+  display: "block",
+  fontSize: "13px",
+  padding: "10px 14px",
+  textAlign: "left",
+  width: "100%",
+};
+
+const triageSortRowStyle = {
   alignItems: "center",
   display: "flex",
   flexWrap: "wrap",
   gap: "6px",
   justifyContent: "flex-end",
+  width: "100%",
+};
+
+const triageSortLabelStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
 };
 
 const cardStyle = {
@@ -1740,9 +2198,102 @@ const triageUrlLinkStyle = {
   overflowWrap: "anywhere",
 };
 
+const triageUrlInputStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  color: "var(--text)",
+  flex: "1 1 280px",
+  fontSize: "12px",
+  minWidth: 0,
+  padding: "6px 9px",
+};
+
+const triageUrlButtonStyle = {
+  flexShrink: 0,
+  fontSize: "11px",
+  padding: "2px 8px",
+};
+
 const sourceLinkStyle = {
   color: "var(--accent)",
   overflowWrap: "anywhere",
+};
+
+const skipMenuStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  bottom: "calc(100% + 4px)",
+  boxShadow: "var(--shadow-sm)",
+  display: "flex",
+  flexDirection: "column",
+  gap: "2px",
+  left: 0,
+  minWidth: "170px",
+  padding: "5px",
+  position: "absolute",
+  zIndex: 10,
+};
+
+const skipMenuItemStyle = {
+  background: "transparent",
+  border: "none",
+  borderRadius: "4px",
+  color: "var(--text)",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: "13px",
+  padding: "7px 10px",
+  textAlign: "left",
+};
+
+const skipConfirmPanelStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  marginTop: "12px",
+  padding: "12px 14px",
+};
+
+const skipConfirmTextStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  margin: "0 0 8px",
+};
+
+const mismatchChipRowStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px",
+  marginBottom: "10px",
+};
+
+const mismatchChipStyle = {
+  border: "1px solid var(--border)",
+  borderRadius: "999px",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: "11px",
+  padding: "4px 9px",
+};
+
+const skipNoteInputStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  boxSizing: "border-box",
+  color: "var(--text)",
+  fontFamily: "inherit",
+  fontSize: "13px",
+  padding: "7px 10px",
+  width: "100%",
+};
+
+const skipConfirmActionsStyle = {
+  display: "flex",
+  gap: "8px",
+  marginTop: "8px",
 };
 
 const buttonSpinnerContentStyle = {

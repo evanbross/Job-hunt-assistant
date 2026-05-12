@@ -243,6 +243,7 @@ from routes.import_ import import_bp, queue_import_capture
 from routes.jobs import jobs_bp
 from routes.scan import scan_bp
 from routes.settings import settings_bp
+from routes.setup import setup_bp
 from routes.sheet import sheet_bp
 from routes.system import system_bp
 from routes.wellfound import wellfound_bp
@@ -258,6 +259,7 @@ app.register_blueprint(import_bp, url_prefix="/api")
 app.register_blueprint(jobs_bp, url_prefix="/api")
 app.register_blueprint(scan_bp, url_prefix="/api")
 app.register_blueprint(settings_bp, url_prefix="/api")
+app.register_blueprint(setup_bp, url_prefix="/api")
 app.register_blueprint(sheet_bp, url_prefix="/api")
 app.register_blueprint(wellfound_bp, url_prefix="/api")
 app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /api/system/*

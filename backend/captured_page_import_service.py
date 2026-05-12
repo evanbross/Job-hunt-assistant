@@ -69,12 +69,14 @@ class _DocumentParser(HTMLParser):
         super().__init__()
         self.hrefs: list[str] = []
         self.anchor_parts_by_href: dict[str, list[str]] = {}
+        self.wellfound_company_by_href: dict[str, str] = {}
         self.source_candidates: list[str] = []
         self._in_title = False
         self.title_parts: list[str] = []
         self._active_anchor_href: str | None = None
         self._active_anchor_parts: list[str] = []
         self._base_url: str | None = base_url
+        self._current_wellfound_company = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized_tag = tag.lower()
@@ -90,6 +92,8 @@ class _DocumentParser(HTMLParser):
                 if self._base_url and not urlparse(raw).scheme:
                     raw = urljoin(self._base_url, raw)
                 self.hrefs.append(raw)
+                if self._is_wellfound_job_href(raw) and self._current_wellfound_company:
+                    self.wellfound_company_by_href[raw] = self._current_wellfound_company
                 self._active_anchor_href = raw
                 self._active_anchor_parts = []
             return
@@ -117,6 +121,10 @@ class _DocumentParser(HTMLParser):
         if normalized_tag == "a" and self._active_anchor_href:
             existing = self.anchor_parts_by_href.setdefault(self._active_anchor_href, [])
             existing.extend(self._active_anchor_parts)
+            if self._is_wellfound_company_href(self._active_anchor_href):
+                company = " ".join(self._active_anchor_parts).strip()
+                if company:
+                    self._current_wellfound_company = company
             self._active_anchor_href = None
             self._active_anchor_parts = []
             return
@@ -129,6 +137,19 @@ class _DocumentParser(HTMLParser):
             self._active_anchor_parts.append(normalized_data)
         if self._in_title and data.strip():
             self.title_parts.append(data.strip())
+
+    @staticmethod
+    def _is_wellfound_company_href(href: str) -> bool:
+        parsed = urlparse(href)
+        return "wellfound.com" in parsed.netloc.lower() and parsed.path.startswith("/company/")
+
+    @staticmethod
+    def _is_wellfound_job_href(href: str) -> bool:
+        parsed = urlparse(href)
+        return "wellfound.com" in parsed.netloc.lower() and re.match(
+            r"^/jobs/(\d+[-/][^/?#]+)",
+            parsed.path,
+        ) is not None
 
 
 class CapturedPageImportService:
@@ -193,6 +214,7 @@ class CapturedPageImportService:
                         self._wellfound_listing_fields(
                             public_url,
                             parser.anchor_parts_by_href.get(href, []),
+                            parser.wellfound_company_by_href.get(href, ""),
                         )
                     )
                 elif platform == "LinkedIn":
@@ -284,9 +306,13 @@ class CapturedPageImportService:
                 or raw_job.get("text")
                 or ""
             ).strip()
-            company = self._clean_wellfound_company(
-                str(raw_job.get("company") or "").strip()
-            ) if platform == "Wellfound" else str(raw_job.get("company") or "").strip()
+            company = (
+                self._clean_wellfound_company(
+                    str(raw_job.get("company") or "").strip()
+                )
+                if platform == "Wellfound"
+                else str(raw_job.get("company") or "").strip()
+            )
             if not company and platform == "Wellfound":
                 company = self._company_from_wellfound_text(job_title, listing_text)
             if company:
@@ -411,12 +437,26 @@ class CapturedPageImportService:
             return None
         return parsed._replace(query="", fragment="").geturl()
 
-    def _wellfound_listing_fields(self, public_url: str, anchor_parts: list[str]) -> dict[str, str]:
+    def _wellfound_listing_fields(
+        self,
+        public_url: str,
+        anchor_parts: list[str],
+        company_context: str = "",
+    ) -> dict[str, str]:
         title = anchor_parts[0].strip() if anchor_parts else ""
         company = self._company_from_wellfound_title(title)
+        if not company and company_context:
+            company = self._clean_wellfound_company(company_context)
         if not company and len(anchor_parts) > 1:
-            # Wellfound cards often render as separate text nodes: [title, company, location…]
-            company = self._clean_wellfound_company(anchor_parts[1].strip())
+            # Older Wellfound markup sometimes included company in the job anchor.
+            company = next(
+                (
+                    self._clean_wellfound_company(part)
+                    for part in anchor_parts[1:]
+                    if self._clean_wellfound_company(part)
+                ),
+                "",
+            )
         if not company:
             company = self._company_from_wellfound_slug(public_url)
         detail_lines = [part.strip() for part in anchor_parts[1:] if part.strip()]
@@ -463,6 +503,8 @@ class CapturedPageImportService:
     @staticmethod
     def _clean_wellfound_company(company: str) -> str:
         cleaned = company.strip()
+        if not cleaned or CapturedPageImportService._is_wellfound_non_company_text(cleaned):
+            return ""
         for marker in (
             "Actively Hiring",
             "Promoted",
@@ -472,7 +514,35 @@ class CapturedPageImportService:
             marker_index = cleaned.find(marker)
             if marker_index > 0:
                 cleaned = cleaned[:marker_index].strip()
+        if CapturedPageImportService._is_wellfound_non_company_text(cleaned):
+            return ""
         return cleaned
+
+    @staticmethod
+    def _is_wellfound_non_company_text(text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", text.strip().lower())
+        if not normalized:
+            return True
+        non_company_prefixes = (
+            "remote only",
+            "onsite or remote",
+            "hybrid",
+            "onsite",
+            "posted ",
+            "recruiter recently active",
+            "apply on wellfound",
+            "save",
+            "learn more",
+            "report",
+            "hide",
+        )
+        if normalized.startswith(non_company_prefixes):
+            return True
+        if re.search(r"\$\d", normalized):
+            return True
+        if re.search(r"\b\d+(?:\.\d+)?%\b", normalized):
+            return True
+        return False
 
     def _platform_for_host(self, host: str) -> str:
         for suffix, label in self._SUPPORTED_HOSTS:

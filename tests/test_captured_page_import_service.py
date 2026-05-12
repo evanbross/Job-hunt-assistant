@@ -165,6 +165,61 @@ def test_normalizes_wellfound_job_links_to_listing_slug_url() -> None:
     assert rows[0]["listing_text"].startswith("Game Engineer at Spawn")
 
 
+def test_extracts_wellfound_company_from_startup_card_header() -> None:
+    service = CapturedPageImportService()
+    html = """
+    <html><body>
+      <div data-test="StartupResult">
+        <a href="/company/dropzone">
+          <h2>Dropzone</h2>
+          <span>Actively Hiring</span>
+        </a>
+        <div data-testid="job-listing-list">
+          <a href="/jobs/4157759-ai-research-engineer">
+            <span>AI Research Engineer</span>
+            <span>Remote only</span>
+            <span>United States</span>
+            <span>$200k - $250k</span>
+          </a>
+          <a href="/jobs/4157760-senior-security-engineer">
+            <span>Senior Security Engineer</span>
+            <span>Remote only</span>
+            <span>United States</span>
+            <span>$175k - $217k</span>
+          </a>
+        </div>
+      </div>
+      <div data-test="StartupResult">
+        <a href="/company/hostgpo">
+          <h2>HostGPO</h2>
+          <span>Actively Hiring</span>
+        </a>
+        <div data-testid="job-listing-list">
+          <a href="/jobs/4157761-director-of-engineering">
+            <span>Director of Engineering</span>
+            <span>Remote only</span>
+            <span>United States</span>
+            <span>$200k - $240k</span>
+          </a>
+        </div>
+      </div>
+    </body></html>
+    """
+
+    rows = service.extract_public_job_urls(
+        html,
+        "html",
+        base_url="https://wellfound.com/jobs",
+    )
+
+    assert [row["company"] for row in rows] == ["Dropzone", "Dropzone", "HostGPO"]
+    assert [row["job_title"] for row in rows] == [
+        "AI Research Engineer",
+        "Senior Security Engineer",
+        "Director of Engineering",
+    ]
+
+
 def test_analyzes_bookmarklet_json_capture() -> None:
     service = CapturedPageImportService()
     payload = """
@@ -253,6 +308,28 @@ def test_cleans_overcaptured_wellfound_company_text() -> None:
     analysis = service.analyze_capture(payload, "json")
 
     assert analysis["urls"][0]["company"] == "Softrip"
+
+
+def test_ignores_wellfound_location_text_as_company() -> None:
+    service = CapturedPageImportService()
+    payload = """
+    {
+      "jobs": [
+        {
+          "url": "https://wellfound.com/jobs/4157759-ai-research-engineer",
+          "platform": "Wellfound",
+          "company": "Remote only",
+          "job_title": "AI Research Engineer",
+          "listing_text": "AI Research Engineer\\nRemote only • United States • $200k - $250k"
+        }
+      ]
+    }
+    """
+
+    analysis = service.analyze_capture(payload, "json")
+
+    assert "company" not in analysis["urls"][0]
+    assert analysis["urls"][0]["job_title"] == "AI Research Engineer"
 
 
 def test_rejects_empty_content() -> None:

@@ -40,6 +40,7 @@ from backend.db import (
     SQLiteAppSettingsRepository,
     SQLiteCareerSiteSourceRepository,
     SQLiteJobRepository,
+    SQLiteRelevanceFeedbackRepository,
     get_connection,
     init_db,
     open_repositories,
@@ -124,10 +125,23 @@ def test_open_repositories_selects_sqlite_implementations(tmp_path) -> None:
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             }
         )
+        email_source_id = repos["sources"].insert(
+            {
+                "name": "Welcome to the Jungle",
+                "match_type": "sender_domain",
+                "match_value": "welcometothejungle.com",
+                "subject_filter_mode": "starts_with",
+                "subject_filter_value": "new match",
+                "enabled": 1,
+            }
+        )
         repos["conn"].commit()
 
         assert repos["jobs"].get_by_id(job_id)["company"] == "Widget Co"
         assert [site["id"] for site in repos["career_sites"].get_due_recapture()] == [source_id]
+        email_source = repos["sources"].get_by_id(email_source_id)
+        assert email_source["subject_filter_mode"] == "starts_with"
+        assert email_source["subject_filter_value"] == "new match"
 
         repos["jobs"].delete_email_sourced()
         repos["conn"].commit()
@@ -185,3 +199,59 @@ def test_scanned_email_history_includes_all_child_jobs(tmp_path) -> None:
         assert emails[0]["jobs"][1]["skip_reason"] == "duplicate"
     finally:
         repos["conn"].close()
+
+
+def test_scanned_email_get_by_id_returns_disposition(tmp_path) -> None:
+    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
+
+    init_db(dsn)
+    repos = open_repositories(dsn)
+    try:
+        repos["scanned_emails"].mark_scanned(
+            "email-noise-1",
+            "noise@example.com",
+            "Newsletter",
+            disposition="noise",
+            email_date="2026-05-11",
+            raw_body="Not a job.",
+        )
+        repos["conn"].commit()
+
+        scanned_email = repos["scanned_emails"].get_by_id("email-noise-1")
+
+        assert scanned_email is not None
+        assert scanned_email["email_id"] == "email-noise-1"
+        assert scanned_email["disposition"] == "noise"
+        assert scanned_email["email_date"] == "2026-05-11"
+        assert repos["scanned_emails"].get_by_id("missing-email") is None
+    finally:
+        repos["conn"].close()
+
+
+def test_relevance_feedback_requires_subject_overlap_for_exact_sender(tmp_path) -> None:
+    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
+    init_db(dsn)
+    conn = get_connection(dsn)
+    try:
+        feedback = SQLiteRelevanceFeedbackRepository(conn)
+        feedback.insert(
+            {
+                "sender_email": "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+                "subject_pattern": "staff software engineer",
+                "is_relevant": 0,
+                "source_name": "LinkedIn",
+                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+        )
+        conn.commit()
+
+        assert feedback.find_match(
+            "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+            "Principal Product Manager posted on 5/9/26",
+        ) is None
+        assert feedback.find_match(
+            "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+            "Staff Software Engineer posted on 5/9/26",
+        ) is not None
+    finally:
+        conn.close()

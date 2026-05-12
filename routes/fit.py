@@ -398,7 +398,11 @@ def re_evaluate_job_fit(job_id: int):
         return jsonify({"error": _safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
 
     score = int(result["score"])
-    new_status = "pending_review" if score >= 70 else "triage"
+    current_status = str(job.get("status") or "")
+    if current_status in {"possible_duplicate", "skipped", "added_to_sheet"}:
+        new_status = current_status
+    else:
+        new_status = "pending_review" if score >= 70 else "triage"
     repos["jobs"].update(
         job_id,
         {

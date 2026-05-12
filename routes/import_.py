@@ -39,7 +39,9 @@ from __future__ import annotations
 import logging
 import re
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime, UTC
+from typing import Any
 
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
@@ -69,7 +71,72 @@ import_bp = Blueprint("import_", __name__)
 _current_task_id: str | None = None
 _current_trigger: str = "ui"
 _current_started_at: str = ""
+_current_listener_status: "ImportProgressState | None" = None
 _task_id_lock = threading.Lock()
+
+
+@dataclass
+class ImportProgressState:
+    running: bool
+    phase: str
+    progress: int
+    message: str
+    trigger: str
+    started_at: str
+    total: int = 0
+    result: dict[str, Any] | None = None
+    current_job_url: str = ""
+    current_platform: str = ""
+    capture_source: dict[str, Any] | None = None
+    steps: list[dict[str, str]] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "running": self.running,
+            "phase": self.phase,
+            "progress": self.progress,
+            "message": self.message,
+            "total": self.total,
+            "result": self.result,
+            "current_job_url": self.current_job_url,
+            "current_platform": self.current_platform,
+            "trigger": self.trigger,
+            "started_at": self.started_at,
+            "capture_source": self.capture_source,
+            "steps": self.steps or _import_steps(self.phase, self.running),
+        }
+
+
+def _import_steps(phase: str, running: bool) -> list[dict[str, str]]:
+    step_keys = ["receiving", "filtering", "matching"]
+    labels = {
+        "receiving": "Received",
+        "filtering": "Filtered",
+        "matching": "Matched",
+    }
+    normalized_phase = "matching" if phase in {"processing", "done"} else phase
+    active_index = next(
+        (index for index, key in enumerate(step_keys) if key == normalized_phase),
+        0,
+    )
+
+    steps: list[dict[str, str]] = []
+    for index, key in enumerate(step_keys):
+        status = "pending"
+        if phase == "done" or index < active_index:
+            status = "complete"
+        elif index == active_index and running:
+            status = "active"
+        elif index == active_index and phase == "error":
+            status = "error"
+        steps.append({"key": key, "label": labels[key], "status": status})
+    return steps
+
+
+def _set_import_progress(state: ImportProgressState) -> None:
+    global _current_listener_status
+    with _task_id_lock:
+        _current_listener_status = state
 
 
 def _capture_source_suggestions(repos: dict[str, object], query: str) -> list[dict]:
@@ -212,11 +279,32 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     """Analyze a captured page payload and dispatch a Celery import task."""
     dump_import_capture(body)
     global _current_task_id, _current_trigger, _current_started_at
+    started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    _set_import_progress(
+        ImportProgressState(
+            running=True,
+            phase="receiving",
+            progress=5,
+            message="Job description received from browser stream.",
+            trigger=trigger,
+            started_at=started_at,
+        )
+    )
     with _task_id_lock:
         existing_task_id = _current_task_id
     if existing_task_id:
         existing = AsyncResult(existing_task_id, app=celery_app)
         if existing.state not in ("SUCCESS", "FAILURE", "REVOKED"):
+            _set_import_progress(
+                ImportProgressState(
+                    running=False,
+                    phase="error",
+                    progress=0,
+                    message="An import is already running.",
+                    trigger=trigger,
+                    started_at=started_at,
+                )
+            )
             return {"error": "An import is already running"}, 409
 
     repos = _get_repos()
@@ -224,6 +312,16 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     content_format = str(body.get("format") or "auto")
 
     try:
+        _set_import_progress(
+            ImportProgressState(
+                running=True,
+                phase="filtering",
+                progress=18,
+                message="Filtering captured page content for job links.",
+                trigger=trigger,
+                started_at=started_at,
+            )
+        )
         page_url = str(body.get("url") or "").strip() or None
         analysis = CapturedPageImportService().analyze_capture(
             raw_content, content_format, base_url=page_url
@@ -231,33 +329,109 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         extracted = analysis["urls"]
     except ValueError as exc:
         repos["conn"].close()
+        _set_import_progress(
+            ImportProgressState(
+                running=False,
+                phase="error",
+                progress=0,
+                message=str(exc),
+                trigger=trigger,
+                started_at=started_at,
+            )
+        )
         return {"error": str(exc)}, 400
     except Exception as exc:
         repos["conn"].close()
         logger.error("Captured page analysis failed: %s", exc)
-        return {"error": str(exc)}, 500
+        _set_import_progress(
+            ImportProgressState(
+                running=False,
+                phase="error",
+                progress=0,
+                message="Captured page analysis failed.",
+                trigger=trigger,
+                started_at=started_at,
+            )
+        )
+        return {"error": "Captured page analysis failed"}, 500
 
     if not extracted:
         repos["conn"].close()
+        _set_import_progress(
+            ImportProgressState(
+                running=False,
+                phase="done",
+                progress=100,
+                message="No job links were found in the captured page.",
+                trigger=trigger,
+                started_at=started_at,
+                result={"queued": 0, "skipped": 0, "failed": 0, "jobs": []},
+            )
+        )
         return {"queued": 0, "skipped": 0, "failed": 0, "jobs": []}, 200
 
     try:
+        _set_import_progress(
+            ImportProgressState(
+                running=True,
+                phase="filtering",
+                progress=32,
+                message=f"Found {len(extracted)} job link{'s' if len(extracted) != 1 else ''}; resolving source.",
+                trigger=trigger,
+                started_at=started_at,
+                total=len(extracted),
+            )
+        )
         capture_source, source_error = _resolve_capture_source(
             repos, body, analysis["source"]
         )
     except ValueError as exc:
         repos["conn"].close()
+        _set_import_progress(
+            ImportProgressState(
+                running=False,
+                phase="error",
+                progress=0,
+                message=str(exc),
+                trigger=trigger,
+                started_at=started_at,
+            )
+        )
         return {"error": str(exc)}, 400
     if source_error:
         payload, status_code = source_error
         repos["conn"].close()
+        _set_import_progress(
+            ImportProgressState(
+                running=False,
+                phase="error",
+                progress=0,
+                message=str(
+                    payload.get("error") or "Capture source could not be resolved."
+                ),
+                trigger=trigger,
+                started_at=started_at,
+                total=len(extracted),
+            )
+        )
         return payload, status_code
 
     repos["conn"].commit()
     repos["conn"].close()
 
+    _set_import_progress(
+        ImportProgressState(
+            running=True,
+            phase="matching",
+            progress=45,
+            message=f"Sending {len(extracted)} filtered job link{'s' if len(extracted) != 1 else ''} for matching.",
+            trigger=trigger,
+            started_at=started_at,
+            total=len(extracted),
+            capture_source=capture_source,
+        )
+    )
     task = run_import_task.delay(extracted, capture_source, body)
-    started_at = datetime.now(UTC).isoformat(timespec="seconds")
     with _task_id_lock:
         _current_task_id = task.id
         _current_trigger = trigger
@@ -347,8 +521,11 @@ def import_status():
         task_id = _current_task_id
         trigger = _current_trigger
         started_at = _current_started_at
+        listener_status = _current_listener_status
 
     if not task_id:
+        if listener_status:
+            return jsonify(listener_status.as_dict())
         return jsonify({
             "running": False,
             "phase": "idle",
@@ -360,7 +537,12 @@ def import_status():
             "current_platform": "",
             "trigger": trigger,
             "started_at": started_at,
+            "capture_source": None,
+            "steps": _import_steps("idle", False),
         })
+
+    if listener_status and listener_status.started_at != started_at:
+        return jsonify(listener_status.as_dict())
 
     result = AsyncResult(task_id, app=celery_app)
     state = result.state
@@ -378,6 +560,8 @@ def import_status():
             "current_platform": meta.get("current_platform", ""),
             "trigger": trigger,
             "started_at": started_at,
+            "capture_source": meta.get("capture_source"),
+            "steps": _import_steps(str(meta.get("phase", "processing")), True),
         })
 
     if state == "PROGRESS":
@@ -393,9 +577,12 @@ def import_status():
             "current_platform": meta.get("current_platform", ""),
             "trigger": trigger,
             "started_at": started_at,
+            "capture_source": meta.get("capture_source"),
+            "steps": _import_steps(str(meta.get("phase", "processing")), True),
         })
 
     if state == "SUCCESS":
+        task_result = result.result if isinstance(result.result, dict) else {}
         return jsonify({
             "running": False,
             "phase": "done",
@@ -407,6 +594,8 @@ def import_status():
             "current_platform": "",
             "trigger": trigger,
             "started_at": started_at,
+            "capture_source": task_result.get("capture_source"),
+            "steps": _import_steps("done", False),
         })
 
     # FAILURE or REVOKED
@@ -422,4 +611,6 @@ def import_status():
         "current_platform": "",
         "trigger": trigger,
         "started_at": started_at,
+        "capture_source": None,
+        "steps": _import_steps("error", False),
     })

@@ -51,6 +51,7 @@ import logging
 import socket
 import urllib.error
 from datetime import datetime, UTC
+from typing import Any
 
 from backend.celery_app import celery_app
 from backend.import_repair import (
@@ -62,6 +63,22 @@ from backend.manual_job_ingest_service import ManualJobIngestService
 from backend.utils import _get_repos, _parse_positive_int
 
 logger = logging.getLogger(__name__)
+
+
+def _import_failure_detail(
+    url_row: dict[str, Any], exc: BaseException, stage: str
+) -> dict[str, str]:
+    url = str(url_row.get("url") or "")
+    reason = str(exc).strip() or exc.__class__.__name__
+    return {
+        "url": url,
+        "platform": str(url_row.get("platform") or ""),
+        "job_title": str(url_row.get("job_title") or ""),
+        "company": str(url_row.get("company") or ""),
+        "stage": stage,
+        "error_type": exc.__class__.__name__,
+        "reason": reason,
+    }
 
 
 @celery_app.task(bind=True)
@@ -83,12 +100,13 @@ def run_import_task(
     self.update_state(
         state="PROGRESS",
         meta={
-            "phase": "processing",
+            "phase": "filtering",
             "progress": 0,
-            "message": f"Fetching {total} job{'s' if total != 1 else ''}…",
+            "message": f"Preparing {total} filtered job{'s' if total != 1 else ''} for matching…",
             "total": total,
             "current_job_url": "",
             "current_platform": "",
+            "capture_source": capture_source,
         },
     )
 
@@ -111,12 +129,13 @@ def run_import_task(
             self.update_state(
                 state="PROGRESS",
                 meta={
-                    "phase": "processing",
+                    "phase": "filtering",
                     "progress": round((i / total) * 100) if total else 0,
-                    "message": f"Job {i + 1} of {total} — {platform}…",
+                    "message": f"Filtering job {i + 1} of {total} — {platform}…",
                     "total": total,
                     "current_job_url": url,
                     "current_platform": platform,
+                    "capture_source": capture_source,
                 },
             )
 
@@ -142,6 +161,18 @@ def run_import_task(
                 continue
 
             try:
+                self.update_state(
+                    state="PROGRESS",
+                    meta={
+                        "phase": "matching",
+                        "progress": round(((i + 0.5) / total) * 100) if total else 0,
+                        "message": f"Matching job {i + 1} of {total} against resume and duplicate history…",
+                        "total": total,
+                        "current_job_url": url,
+                        "current_platform": platform,
+                        "capture_source": capture_source,
+                    },
+                )
                 service.ingest(
                     str(url_row.get("listing_text") or ""),
                     source_url=url,
@@ -157,12 +188,12 @@ def run_import_task(
                 repos["conn"].rollback()
                 logger.warning("Bulk import skipped %s: %s", url, exc)
                 failed += 1
-                failures.append({"url": url, "reason": str(exc)})
+                failures.append(_import_failure_detail(url_row, exc, "ingest"))
             except Exception as exc:
                 repos["conn"].rollback()
                 logger.error("Bulk import error for %s: %s", url, exc)
                 failed += 1
-                failures.append({"url": url, "reason": str(exc)})
+                failures.append(_import_failure_detail(url_row, exc, "unexpected"))
 
         _record_capture_source(capture_source, repos, body)
 

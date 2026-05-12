@@ -140,3 +140,75 @@ def test_parser_sends_later_digest_jobs_to_ai_client() -> None:
 
     sent_content = client.messages[0].content
     assert late_job_title in sent_content
+
+
+def test_parser_extracts_all_linkedin_alert_cards_without_ai() -> None:
+    client = FakeParserClient()
+    parser = EmailParser(client=client)
+    body = """Your job alert for remote engineer
+Results from the new AI-powered job search
+
+Staff Software Engineer
+Gifthealth
+United States
+Fast growing
+View job: https://www.linkedin.com/comm/jobs/view/4389757103/
+
+---------------------------------------------------------
+
+Staff Software Engineer
+OpenMined
+United States
+View job: https://www.linkedin.com/comm/jobs/view/4411273040/
+
+---------------------------------------------------------
+
+Principal Software Engineer
+Devoted Health
+United States
+This company is actively hiring
+View job: https://www.linkedin.com/comm/jobs/view/4410403022/
+"""
+
+    jobs = parser.parse("LinkedIn job alert", "jobalerts-noreply@linkedin.com", body)
+
+    assert client.messages == []
+    assert [job["company"] for job in jobs] == ["Gifthealth", "OpenMined", "Devoted Health"]
+    assert [job["job_title"] for job in jobs] == [
+        "Staff Software Engineer",
+        "Staff Software Engineer",
+        "Principal Software Engineer",
+    ]
+    assert all(job["source"] == "LinkedIn" for job in jobs)
+
+
+def test_parser_extracts_welcome_to_the_jungle_jobs_from_urls_without_ai() -> None:
+    client = FakeParserClient()
+    parser = EmailParser(client=client)
+    body = """New match for your search
+
+Senior Backend Engineer
+Acme Health
+View job: https://www.welcometothejungle.com/en/companies/acme-health/jobs/senior-backend-engineer_remote
+
+Staff Platform Engineer
+Globex
+View job: https://www.welcometothejungle.com/en/companies/globex/jobs/staff-platform-engineer_new-york
+"""
+
+    jobs = parser.parse(
+        "New match: Senior Backend Engineer",
+        "Welcome to the Jungle <hello@welcometothejungle.com>",
+        body,
+    )
+
+    assert client.messages == []
+    assert [job["company"] for job in jobs] == ["Acme Health", "Globex"]
+    assert [job["job_title"] for job in jobs] == [
+        "Senior Backend Engineer",
+        "Staff Platform Engineer",
+    ]
+    assert [job["url"] for job in jobs] == [
+        "https://www.welcometothejungle.com/en/companies/acme-health/jobs/senior-backend-engineer_remote",
+        "https://www.welcometothejungle.com/en/companies/globex/jobs/staff-platform-engineer_new-york",
+    ]

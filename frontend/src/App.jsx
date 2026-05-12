@@ -36,6 +36,7 @@ import React, { useEffect, useState } from "react";
 import JobQueue from "./components/JobQueue.jsx";
 import TriagePanel from "./components/TriagePanel.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
+import SetupWizardPanel from "./components/SetupWizardPanel.jsx";
 import EmailsPanel from "./components/EmailsPanel.jsx";
 import HistoryPanel from "./components/HistoryPanel.jsx";
 import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
@@ -51,6 +52,7 @@ const TABS = [
   { key: "emails", label: "Emails Scanning\nHistory" },
   { key: "career", label: "Career Sites" },
   { key: "settings", label: "Settings" },
+  { key: "setup", label: "Setup" },
 ];
 const LEGACY_TAB_KEYS = ["queue", "triage", "history", "applications", "emails", "career", "settings"];
 
@@ -175,6 +177,7 @@ export default function App() {
   const [emailFocusId, setEmailFocusId] = useState(null);
   const [listenerImportState, setListenerImportState] = useState(null);
   const [listenerImportDismissedAt, setListenerImportDismissedAt] = useState("");
+  const [setupComplete, setSetupComplete] = useState(true); // optimistic; corrected on mount
 
   const navigateToEmails = (emailId) => {
     setEmailFocusId(emailId);
@@ -190,6 +193,7 @@ export default function App() {
   useEffect(() => {
     fetchAuthStatus();
     fetchTriageCount();
+    fetchSetupStatus();
 
     // Check if returning from OAuth flow
     const params = new URLSearchParams(window.location.search);
@@ -206,7 +210,10 @@ export default function App() {
         const res = await fetch("/api/import/status");
         const data = await res.json();
         if (cancelled) return;
-        if (data.trigger === "listener" && (data.running || data.result)) {
+        if (
+          data.trigger === "listener"
+          && (data.running || data.result || data.phase === "error")
+        ) {
           setListenerImportState(data);
           if (data.running) {
             setListenerImportDismissedAt("");
@@ -233,6 +240,26 @@ export default function App() {
     } catch {
       setAuthStatus(false);
     }
+  };
+
+  const fetchSetupStatus = async () => {
+    try {
+      const res = await fetch("/api/setup/status");
+      const data = await res.json();
+      setSetupComplete(data.complete);
+      if (!data.complete) {
+        setActiveTab("setup");
+        localStorage.setItem("activeTab", "setup");
+      }
+    } catch {
+      /* don't block app startup if setup endpoint is unreachable */
+    }
+  };
+
+  const handleSetupComplete = async () => {
+    await fetchSetupStatus();
+    setActiveTab("queue");
+    localStorage.setItem("activeTab", "queue");
   };
 
   const fetchTriageCount = async () => {
@@ -342,6 +369,23 @@ export default function App() {
         </div>
       )}
 
+      {!setupComplete && activeTab !== "setup" && (
+        <div style={{ maxWidth: "1200px", margin: "0 auto", width: "100%", padding: "10px 28px 0 28px" }}>
+          <div style={{ background: "rgba(251,191,36,0.12)", border: "1px solid var(--orange)", borderRadius: "var(--radius)", padding: "10px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+            <span style={{ color: "var(--text)", fontSize: "13px" }}>
+              Setup is not complete — AI scoring and Gmail features may not work.
+            </span>
+            <button
+              className="btn-secondary"
+              style={{ flexShrink: 0, fontSize: "12px" }}
+              onClick={() => { setActiveTab("setup"); localStorage.setItem("activeTab", "setup"); }}
+            >
+              Open Setup Wizard
+            </button>
+          </div>
+        </div>
+      )}
+
       <CareerSiteScanBanner />
 
       <main style={styles.content}>
@@ -373,6 +417,9 @@ export default function App() {
           </>
         )}
         {activeTab === "settings" && <SettingsPanel />}
+        {activeTab === "setup" && (
+          <SetupWizardPanel onSetupComplete={handleSetupComplete} />
+        )}
       </main>
 
       {listenerImportState
@@ -393,6 +440,7 @@ function ListenerImportDialog({ state, onClose }) {
   const result = state.result || {};
   const sourceName = state.capture_source?.name || state.capture_source?.url || "";
   const phaseLabel = listenerImportPhaseLabel(state.phase);
+  const title = listenerImportTitle(state.phase, running);
 
   return (
     <div style={listenerDialogBackdropStyle}>
@@ -400,7 +448,7 @@ function ListenerImportDialog({ state, onClose }) {
         <div style={listenerDialogHeaderStyle}>
           <div>
             <div style={listenerDialogTitleStyle}>
-              {running ? "Receiving Job Listings" : "Job Listing Import Complete"}
+              {title}
             </div>
             <div style={listenerDialogSubtitleStyle}>
               {phaseLabel}{sourceName ? ` · ${sourceName}` : ""}
@@ -421,6 +469,15 @@ function ListenerImportDialog({ state, onClose }) {
         <div style={listenerDialogBodyStyle}>
           {running && <span className="inline-spinner" style={listenerSpinnerStyle} />}
           <span>{state.message || "Processing captured job-board HTML..."}</span>
+        </div>
+
+        <div style={listenerStepListStyle}>
+          {(state.steps || []).map((step) => (
+            <div key={step.key} style={listenerStepStyle}>
+              <span style={listenerStepDotStyle(step.status)} />
+              <span style={listenerStepLabelStyle(step.status)}>{step.label}</span>
+            </div>
+          ))}
         </div>
 
         <div style={{ marginTop: "14px" }}>
@@ -467,11 +524,19 @@ function ImportResultMetric({ label, value, tone = "" }) {
   );
 }
 
+function listenerImportTitle(phase, running) {
+  if (running) return "Receiving Job Description";
+  if (phase === "error") return "Job Description Import Failed";
+  return "Job Description Import Complete";
+}
+
 function listenerImportPhaseLabel(phase) {
   if (phase === "receiving") return "Receiving HTML";
   if (phase === "analyzing") return "Extracting job links";
+  if (phase === "filtering") return "Filtering captured content";
   if (phase === "resolving_source") return "Resolving job board";
-  if (phase === "processing") return "Fetching and evaluating jobs";
+  if (phase === "matching") return "Matching job description";
+  if (phase === "processing") return "Matching job description";
   if (phase === "done") return "Finished";
   if (phase === "error") return "Import failed";
   return "Import listener";
@@ -525,6 +590,47 @@ const listenerDialogBodyStyle = {
   fontSize: "14px",
   gap: "10px",
 };
+
+const listenerStepListStyle = {
+  display: "grid",
+  gap: "10px",
+  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  marginTop: "16px",
+};
+
+const listenerStepStyle = {
+  alignItems: "center",
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  display: "flex",
+  gap: "8px",
+  minHeight: "42px",
+  padding: "8px 10px",
+};
+
+const listenerStepDotStyle = (status) => ({
+  background: listenerStepDotColor(status),
+  border: status === "pending" ? "2px solid var(--border)" : "2px solid transparent",
+  borderRadius: "50%",
+  boxShadow: status === "active" ? "0 0 0 4px rgba(74,92,247,0.12)" : "none",
+  flexShrink: 0,
+  height: "12px",
+  width: "12px",
+});
+
+function listenerStepDotColor(status) {
+  if (status === "complete") return "var(--green)";
+  if (status === "error") return "var(--red)";
+  if (status === "active") return "var(--accent)";
+  return "transparent";
+}
+
+const listenerStepLabelStyle = (status) => ({
+  color: status === "pending" ? "var(--text-muted)" : "var(--text)",
+  fontSize: "12px",
+  fontWeight: status === "active" ? 700 : 600,
+});
 
 const listenerSpinnerStyle = {
   color: "var(--accent)",

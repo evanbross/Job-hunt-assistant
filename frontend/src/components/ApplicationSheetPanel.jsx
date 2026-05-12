@@ -34,6 +34,26 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
+const APPLICATION_SHEET_SEARCH_STORAGE_KEY = "jha.applicationSheet.search";
+
+function readStoredSearch(storageKey) {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(storageKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredSearch(storageKey, value) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(storageKey, value);
+  } catch {
+    /* ignore unavailable storage */
+  }
+}
+
 const STATUS_FALLBACKS = {
   applied:            { background: "#d9ead3", color: "#274e13" },
   rejected:           { background: "#cc0000", color: "#ffffff" },
@@ -108,6 +128,7 @@ function normalizeStatus(value) {
 
 function getStatusStyle(value, colorMap = {}) {
   const normalizedValue = normalizeStatus(value);
+  if (normalizedValue.includes("reject")) return STATUS_FALLBACKS.rejected;
   if (colorMap[normalizedValue]) return colorMap[normalizedValue];
   if (STATUS_FALLBACKS[normalizedValue]) return STATUS_FALLBACKS[normalizedValue];
   if (normalizedValue.includes("2nd") || normalizedValue.includes("second")) {
@@ -116,7 +137,6 @@ function getStatusStyle(value, colorMap = {}) {
   if (normalizedValue.includes("waiting")) return STATUS_FALLBACKS.waiting_call;
   if (normalizedValue.includes("eval")) return STATUS_FALLBACKS.eval_test;
   if (normalizedValue.includes("filled")) return STATUS_FALLBACKS.job_filled;
-  if (normalizedValue.includes("reject")) return STATUS_FALLBACKS.rejected;
   if (normalizedValue.includes("applied")) return STATUS_FALLBACKS.applied;
   if (normalizedValue.includes("ghost")) return STATUS_FALLBACKS.ghosted;
   return null;
@@ -338,7 +358,7 @@ export default function ApplicationSheetPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [expandedRows, setExpandedRows] = useState(new Set());
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => readStoredSearch(APPLICATION_SHEET_SEARCH_STORAGE_KEY));
   const [sortConfig, setSortConfig] = useState({ key: "company", direction: "asc" });
   const [newRow, setNewRow] = useState(defaultEmptyForm());
   const [showAddApplication, setShowAddApplication] = useState(false);
@@ -385,6 +405,10 @@ export default function ApplicationSheetPanel() {
   useEffect(() => () => {
     resizeCleanupRef.current?.();
   }, []);
+
+  useEffect(() => {
+    writeStoredSearch(APPLICATION_SHEET_SEARCH_STORAGE_KEY, search);
+  }, [search]);
 
   const trackingColumns = useMemo(() => {
     const company = findColumn(sheet.columns, ["company"]);
@@ -678,6 +702,7 @@ export default function ApplicationSheetPanel() {
             onChange={(event) => setSearch(event.target.value)}
             style={searchStyle}
           />
+          <button className="btn-secondary" onClick={loadSheet}>Refresh</button>
           <div style={actionMenuWrapStyle}>
             <button
               type="button"
@@ -723,7 +748,6 @@ export default function ApplicationSheetPanel() {
               </div>
             )}
           </div>
-          <button className="btn-secondary" onClick={loadSheet}>Refresh</button>
         </div>
       </div>
 

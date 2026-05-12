@@ -261,8 +261,17 @@ function EmailSourcesSection() {
   const [configSaved, setConfigSaved] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", match_type: "sender_domain", match_value: "" });
+  const emptySourceForm = {
+    name: "",
+    match_type: "sender_domain",
+    match_value: "",
+    subject_filter_mode: "",
+    subject_filter_value: "",
+    subject_filter_match_mode: "text",
+  };
+  const [form, setForm] = useState(emptySourceForm);
   const [editId, setEditId] = useState(null);
+  const [subjectFilterTest, setSubjectFilterTest] = useState("");
   const [sourceSort, setSourceSort] = useState({ key: "name", direction: "asc" });
 
   useEffect(() => {
@@ -288,12 +297,18 @@ function EmailSourcesSection() {
       window.alert("Processed email label cannot be empty.");
       return;
     }
+    const lookbackDays = parseInt(cfg?.email_lookback_days, 10);
+    if (!Number.isFinite(lookbackDays) || lookbackDays < 1 || lookbackDays > 90) {
+      window.alert("Lookback days must be a number between 1 and 90.");
+      return;
+    }
 
     setConfigSaving(true);
     const res = await fetch("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        email_lookback_days: lookbackDays,
         scanned_email_label: scannedEmailLabel,
         move_successfully_processed_emails: !!cfg?.move_successfully_processed_emails,
       }),
@@ -334,12 +349,24 @@ function EmailSourcesSection() {
 
   const startEdit = (source) => {
     setEditId(source.id);
-    setForm({ name: source.name, match_type: source.match_type, match_value: source.match_value });
+    setForm({
+      name: source.name,
+      match_type: source.match_type,
+      match_value: source.match_value,
+      subject_filter_mode: source.subject_filter_mode || "",
+      subject_filter_value: source.subject_filter_value || "",
+      subject_filter_match_mode: source.subject_filter_match_mode || "text",
+    });
+    setSubjectFilterTest("");
     setShowForm(true);
   };
 
   const submitForm = async () => {
     if (!form.name || !form.match_value) return;
+    if (form.subject_filter_mode && !form.subject_filter_value.trim()) {
+      window.alert("Enter a subject filter value, or set the subject filter to None.");
+      return;
+    }
     if (editId) {
       const res = await fetch(`/api/sources/${editId}`, {
         method: "PUT",
@@ -363,7 +390,7 @@ function EmailSourcesSection() {
     }
     setShowForm(false);
     setEditId(null);
-    setForm({ name: "", match_type: "sender_domain", match_value: "" });
+    setForm(emptySourceForm);
     fetchSources();
   };
 
@@ -381,6 +408,7 @@ function EmailSourcesSection() {
     { key: "name", label: "Name" },
     { key: "match_type", label: "Type" },
     { key: "match_value", label: "Value" },
+    { key: "subject_filter_value", label: "Subject Filter" },
     { key: "enabled", label: "Enabled" },
   ];
 
@@ -393,6 +421,19 @@ function EmailSourcesSection() {
         {cfg ? (
           <>
             <label style={labelStyle}>
+              Email Lookback (days)
+              <input
+                type="number"
+                min="1"
+                max="90"
+                value={cfg.email_lookback_days ?? 10}
+                onChange={(e) => setCfg({ ...cfg, email_lookback_days: e.target.value })}
+              />
+              <span style={helpTextStyle}>
+                Scan emails from the past N days.
+              </span>
+            </label>
+            <label style={{ ...labelStyle, marginTop: "14px" }}>
               Processed Email Label
               <input
                 value={cfg.scanned_email_label || ""}
@@ -430,7 +471,7 @@ function EmailSourcesSection() {
         )}
       </div>
 
-      <SectionHeader title="Email Sources" action={{ label: "Add Source", onClick: () => { setEditId(null); setForm({ name: "", match_type: "sender_domain", match_value: "" }); setShowForm(true); } }} />
+      <SectionHeader title="Email Sources" action={{ label: "Add Source", onClick: () => { setEditId(null); setForm(emptySourceForm); setShowForm(true); } }} />
 
       {showForm && (
         <div style={formBox}>
@@ -448,10 +489,90 @@ function EmailSourcesSection() {
             <label style={labelStyle}>Match Value
               <input value={form.match_value} onChange={(e) => setForm({ ...form, match_value: e.target.value })} placeholder="linkedin.com" />
             </label>
+            <label style={labelStyle}>Subject Filter
+              <select
+                value={form.subject_filter_mode}
+                onChange={(e) => setForm({
+                  ...form,
+                  subject_filter_mode: e.target.value,
+                  subject_filter_value: e.target.value ? form.subject_filter_value : "",
+                })}
+              >
+                <option value="">None</option>
+                <option value="starts_with">Starts With</option>
+                <option value="contains">Contains</option>
+              </select>
+            </label>
+            <label style={labelStyle}>Subject Filter Value
+              <input
+                value={form.subject_filter_value}
+                onChange={(e) => setForm({ ...form, subject_filter_value: e.target.value })}
+                placeholder="new match"
+                disabled={!form.subject_filter_mode}
+              />
+            </label>
+            {form.subject_filter_mode && (
+              <label style={labelStyle}>Match Mode
+                <select
+                  value={form.subject_filter_match_mode}
+                  onChange={(e) => setForm({ ...form, subject_filter_match_mode: e.target.value })}
+                >
+                  <option value="text">Text (case-insensitive)</option>
+                  <option value="glob">Glob (* and ?)</option>
+                  <option value="regex">Regular Expression</option>
+                </select>
+              </label>
+            )}
+            {form.subject_filter_mode && form.subject_filter_value.trim() && (() => {
+              const matchMode = form.subject_filter_match_mode || "text";
+              let match = null;
+              if (subjectFilterTest.trim()) {
+                const subject = subjectFilterTest;
+                const filterValue = form.subject_filter_value.trim();
+                const filterMode = form.subject_filter_mode;
+                if (matchMode === "glob") {
+                  const normalized = subject.toLowerCase();
+                  const pat = filterValue.toLowerCase();
+                  const glob = filterMode === "starts_with" ? pat + "*" : "*" + pat + "*";
+                  const reStr = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+                  match = new RegExp(`^${reStr}$`).test(normalized);
+                } else if (matchMode === "regex") {
+                  try {
+                    const re = new RegExp(filterValue, "i");
+                    if (filterMode === "starts_with") {
+                      const m = re.exec(subject);
+                      match = m !== null && m.index === 0;
+                    } else {
+                      match = re.test(subject);
+                    }
+                  } catch {
+                    match = false;
+                  }
+                } else {
+                  const normalized = subject.toLowerCase();
+                  const pat = filterValue.toLowerCase();
+                  match = filterMode === "starts_with" ? normalized.startsWith(pat) : normalized.includes(pat);
+                }
+              }
+              return (
+                <label style={labelStyle}>Test Subject
+                  <input
+                    value={subjectFilterTest}
+                    onChange={(e) => setSubjectFilterTest(e.target.value)}
+                    placeholder="e.g. New job alert: Engineer"
+                  />
+                  {match !== null && (
+                    <span style={{ fontSize: "11px", marginTop: "4px", fontWeight: 600, color: match ? "var(--green)" : "var(--red)" }}>
+                      {match ? "✓ matches" : "✗ no match"}
+                    </span>
+                  )}
+                </label>
+              );
+            })()}
           </div>
           <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
             <button className="btn-primary" onClick={submitForm}>{editId ? "Save" : "Add"}</button>
-            <button className="btn-secondary" onClick={() => { setShowForm(false); setEditId(null); }}>Cancel</button>
+            <button className="btn-secondary" onClick={() => { setShowForm(false); setEditId(null); setSubjectFilterTest(""); }}>Cancel</button>
           </div>
         </div>
       )}
@@ -484,6 +605,9 @@ function EmailSourcesSection() {
               <td style={tdStyle}>{s.name}</td>
               <td style={tdStyle}><span className="badge badge-gray">{s.match_type}</span></td>
               <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: "12px" }}>{s.match_value}</td>
+              <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: "12px" }}>
+                {formatSourceSubjectFilter(s)}
+              </td>
               <td style={tdStyle}>
                 <Toggle checked={!!s.enabled} onChange={() => toggleEnabled(s)} />
               </td>
@@ -520,6 +644,13 @@ function compareSourceRows(leftSource, rightSource, key, direction) {
     numeric: true,
     sensitivity: "base",
   });
+}
+
+function formatSourceSubjectFilter(source) {
+  const mode = source.subject_filter_mode || "";
+  const value = source.subject_filter_value || "";
+  if (!mode || !value) return "—";
+  return `${mode === "starts_with" ? "starts with" : "contains"}: ${value}`;
 }
 
 function sourceSortValue(source, key) {
@@ -1028,16 +1159,11 @@ function ConfigSection() {
   }, []);
 
   const save = async () => {
-    const days = parseInt(cfg.email_lookback_days, 10);
-    if (!Number.isFinite(days) || days < 1 || days > 90) {
-      window.alert("Lookback days must be a number between 1 and 90.");
-      return;
-    }
     setSaving(true);
     const res = await fetch("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...cfg, email_lookback_days: days }),
+      body: JSON.stringify(cfg),
     });
     const data = await res.json();
     setSaving(false);
@@ -1088,20 +1214,6 @@ function ConfigSection() {
 
       <div style={{ maxWidth: "760px" }}>
         <label style={labelStyle}>
-          Email Lookback (days)
-          <input
-            type="number"
-            min="1"
-            max="90"
-            value={cfg.email_lookback_days ?? 10}
-            onChange={(e) => setCfg({ ...cfg, email_lookback_days: e.target.value })}
-          />
-          <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", display: "block" }}>
-            Scan emails from the past N days (1–90).
-          </span>
-        </label>
-
-        <label style={{ ...labelStyle, marginTop: "16px" }}>
           Candidate Profile File
           <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
             <input

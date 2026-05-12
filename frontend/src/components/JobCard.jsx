@@ -79,9 +79,17 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   const [skipMismatchReasons, setSkipMismatchReasons] = useState([]);
   const [editingCompany, setEditingCompany] = useState(false);
   const [companyDraft, setCompanyDraft] = useState("");
+  const [editingUrl, setEditingUrl] = useState(false);
+  const [urlDraft, setUrlDraft] = useState("");
+  const [urlSaving, setUrlSaving] = useState(false);
+  const [urlError, setUrlError] = useState("");
   const [coverLetter, setCoverLetter] = useState(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [companyLookupOpen, setCompanyLookupOpen] = useState(false);
+  const [companyLookupLoading, setCompanyLookupLoading] = useState(false);
+  const [companyLookupError, setCompanyLookupError] = useState("");
+  const [companyLookupRows, setCompanyLookupRows] = useState([]);
 
   // Save-to-disk state
   const [saveStatus, setSaveStatus] = useState(null); // null | "saving" | {path, folder} | "error"
@@ -145,7 +153,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   const reasoningBullets = fitReasoningBullets(reasoningText);
   const penaltiesApplied = penaltiesAppliedForJob(job);
   const showEmailOrigin = shouldShowEmailOrigin(job);
-  const jobDescription = String(job.raw_email_snippet || "").trim();
+  const jobDescription = String(job.job_description || job.raw_email_snippet || "").trim();
 
   const handleApprove = async () => {
     setLoading("approve");
@@ -463,6 +471,36 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     }
   };
 
+  const handleCompanyLookup = async () => {
+    const company = String(job.company || "").trim();
+    setCompanyLookupOpen(true);
+    setCompanyLookupError("");
+    setCompanyLookupRows([]);
+    if (!company) {
+      setCompanyLookupError("This card does not have a company name to search.");
+      return;
+    }
+
+    setCompanyLookupLoading(true);
+    try {
+      const res = await fetch("/api/sheet/applications");
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Application lookup failed (${res.status})`);
+      }
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      setCompanyLookupRows(
+        rows
+          .map(applicationRowFromSheet)
+          .filter((row) => rowMatchesCompany(row.company, company))
+      );
+    } catch (error) {
+      setCompanyLookupError(error.message || "Application lookup failed");
+    } finally {
+      setCompanyLookupLoading(false);
+    }
+  };
+
   const applyPendingUpdate = () => {
     setCoverLetter(pendingUpdate);
     setPendingUpdate(null);
@@ -487,13 +525,55 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     onUpdate?.(job.id, updated);
   };
 
+  const startUrlEdit = () => {
+    setUrlDraft(job.url || "");
+    setUrlError("");
+    setEditingUrl(true);
+  };
+
+  const saveUrlEdit = async () => {
+    const value = normalizeManualJobUrl(urlDraft);
+    if (!value) {
+      setUrlError("Enter a URL starting with http:// or https://.");
+      return;
+    }
+    if (value === (job.url || "")) {
+      setEditingUrl(false);
+      return;
+    }
+
+    setUrlSaving(true);
+    setUrlError("");
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setUrlError(data.error || `URL update failed (${res.status})`);
+        return;
+      }
+      onUpdate?.(job.id, data);
+      setEditingUrl(false);
+      setUrlDraft("");
+    } finally {
+      setUrlSaving(false);
+    }
+  };
+
   const busy = loading !== null;
 
   return (
     <div style={cardStyle}>
       {/* Header row */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
-        <span className={`badge ${scoreCls}`} style={{ fontSize: "14px", padding: "4px 10px", flexShrink: 0 }}>
+        <span
+          className={`badge ${scoreCls}`}
+          style={{ fontSize: "14px", padding: "4px 10px", flexShrink: 0 }}
+          title={score == null ? "No fit score — add a description and re-evaluate to rank this entry" : undefined}
+        >
           {score !== null && score !== undefined ? score : "—"}
         </span>
 
@@ -546,9 +626,73 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
               )}
             </div>
           )}
+          {(job.url || editingUrl) && (
+            <div style={jobUrlEditRowStyle}>
+              {editingUrl ? (
+                <>
+                  <input
+                    autoFocus
+                    value={urlDraft}
+                    onChange={(event) => {
+                      setUrlDraft(event.target.value);
+                      setUrlError("");
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") saveUrlEdit();
+                      if (event.key === "Escape") setEditingUrl(false);
+                    }}
+                    placeholder="https://company.com/jobs/123"
+                    style={jobUrlInputStyle}
+                  />
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={saveUrlEdit}
+                    disabled={urlSaving}
+                    style={jobUrlSmallButtonStyle}
+                  >
+                    {urlSaving ? "Saving..." : "Save URL"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setEditingUrl(false)}
+                    disabled={urlSaving}
+                    style={jobUrlSmallButtonStyle}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <a href={job.url} target="_blank" rel="noreferrer" style={jobUrlTextStyle}>
+                    {job.url}
+                  </a>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={startUrlEdit}
+                    style={jobUrlSmallButtonStyle}
+                  >
+                    Edit URL
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          {urlError && <div style={jobUrlErrorStyle}>{urlError}</div>}
         </div>
 
-        <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+        <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleCompanyLookup}
+            style={{ fontSize: "12px", padding: "3px 9px" }}
+            title="Show application tracking rows for this company"
+          >
+            Company History
+          </button>
           <span className="badge badge-accent">{job.source || "?"}</span>
           {salaryRange && <span className="badge badge-green">Salary: {salaryRange}</span>}
           <span className="badge badge-gray">{job.date_found || "—"}</span>
@@ -568,6 +712,18 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
             </div>
           )}
         </div>
+      )}
+
+      {companyLookupOpen && (
+        <CompanyHistoryDialog
+          company={job.company || "Unknown Company"}
+          currentJobId={job.id}
+          currentJobTitle={job.job_title || ""}
+          error={companyLookupError}
+          loading={companyLookupLoading}
+          rows={companyLookupRows}
+          onClose={() => setCompanyLookupOpen(false)}
+        />
       )}
 
       {/* Reasoning (collapsible) */}
@@ -614,6 +770,16 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
           >
             View Job ↗
           </a>
+        )}
+        {!job.url && !editingUrl && (
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={startUrlEdit}
+            style={{ fontSize: "13px" }}
+          >
+            Add Job URL
+          </button>
         )}
         {jobDescription && (
           <button
@@ -1406,6 +1572,156 @@ function FitReviewPanel({
   );
 }
 
+function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose }) {
+  const previousRows = rows.filter((row) => row.id !== currentJobId);
+  const currentRows = rows.filter((row) => row.id === currentJobId);
+  const appliedCount = previousRows.filter((row) => isAppliedStatus(row.status)).length;
+  const duplicateHints = previousRows.filter((row) => titleLooksSimilar(row.title, currentJobTitle)).length;
+
+  return (
+    <div style={historyModalBackdropStyle} onClick={onClose}>
+      <div style={historyModalPanelStyle} onClick={(event) => event.stopPropagation()}>
+        <div style={historyModalHeaderStyle}>
+          <div style={{ minWidth: 0 }}>
+            <div style={historyModalTitleStyle}>{company}</div>
+            <div style={historyModalSubtitleStyle}>
+              {loading
+                ? "Searching application tracking..."
+                : error
+                  ? "Application tracking lookup failed"
+                  : `${previousRows.length} prior matching row${previousRows.length === 1 ? "" : "s"}${appliedCount > 0 ? ` · ${appliedCount} applied` : ""}`}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onClose}
+            style={{ fontSize: "12px", padding: "4px 10px", flexShrink: 0 }}
+          >
+            Close
+          </button>
+        </div>
+
+        {loading && (
+          <div style={historyStatusStyle}>
+            <span className="inline-spinner" />
+            <span>Loading application tracking rows...</span>
+          </div>
+        )}
+
+        {!loading && error && (
+          <div style={{ ...historyStatusStyle, color: "var(--red)" }}>{error}</div>
+        )}
+
+        {!loading && !error && rows.length === 0 && (
+          <div style={historyEmptyStyle}>
+            No application tracking rows matched this company.
+          </div>
+        )}
+
+        {!loading && !error && rows.length > 0 && (
+          <>
+            <div style={historySummaryStyle}>
+              <span>{previousRows.length > 0 ? "Previous activity found" : "Only this queue card matched"}</span>
+              {duplicateHints > 0 && <span>{duplicateHints} similar title{duplicateHints === 1 ? "" : "s"}</span>}
+            </div>
+            <div style={historyListStyle}>
+              {[...currentRows, ...previousRows].map((row) => (
+                <div key={row.id || `${row.company}-${row.title}-${row.date}`} style={historyRowStyle}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={historyRowTitleStyle}>
+                      {row.title || "Untitled role"}
+                      {row.id === currentJobId && <span style={currentJobBadgeStyle}>Current card</span>}
+                    </div>
+                    <div style={historyRowMetaStyle}>
+                      <span>{row.status || "No status"}</span>
+                      {row.date && <span>{row.date}</span>}
+                      {row.source && <span>{row.source}</span>}
+                    </div>
+                    {row.notes && <div style={historyNotesStyle}>{row.notes}</div>}
+                    {row.url && (
+                      <a href={row.url} target="_blank" rel="noreferrer" style={historyLinkStyle}>
+                        {row.url}
+                      </a>
+                    )}
+                    {row.stages.length > 0 && (
+                      <div style={historyStageListStyle}>
+                        {row.stages.map((stage) => (
+                          <span key={stage.id || `${stage.status}-${stage.date}`} style={historyStageStyle}>
+                            {stage.status || "stage"}{stage.date ? ` · ${stage.date}` : ""}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <span className={`badge ${historyStatusBadgeClass(row.status)}`} style={{ flexShrink: 0 }}>
+                    {row.status || "unknown"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function applicationRowFromSheet(row) {
+  const cells = Array.isArray(row.cells) ? row.cells : [];
+  return {
+    id: row.row_number,
+    company: cellValue(cells, 0),
+    status: cellValue(cells, 1),
+    source: cellValue(cells, 2),
+    date: cellValue(cells, 3),
+    title: cellValue(cells, 4),
+    url: cellValue(cells, 5),
+    notes: cellValue(cells, 6),
+    stages: Array.isArray(row.stages) ? row.stages : [],
+  };
+}
+
+function cellValue(cells, columnIndex) {
+  const cell = cells.find((item) => Number(item.column_index) === columnIndex);
+  return String(cell?.value || "").trim();
+}
+
+function normalizeCompany(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\b(inc|llc|ltd|corp|corporation|company|co)\b\.?/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function rowMatchesCompany(rowCompany, targetCompany) {
+  const rowName = normalizeCompany(rowCompany);
+  const targetName = normalizeCompany(targetCompany);
+  if (!rowName || !targetName) return false;
+  return rowName.includes(targetName) || targetName.includes(rowName);
+}
+
+function isAppliedStatus(status) {
+  const normalizedStatus = String(status || "").toLowerCase();
+  return normalizedStatus.includes("applied") || normalizedStatus.includes("added");
+}
+
+function titleLooksSimilar(title, currentTitle) {
+  const normalizedTitle = String(title || "").toLowerCase();
+  const normalizedCurrentTitle = String(currentTitle || "").toLowerCase();
+  if (!normalizedTitle || !normalizedCurrentTitle) return false;
+  return normalizedTitle.includes(normalizedCurrentTitle) || normalizedCurrentTitle.includes(normalizedTitle);
+}
+
+function historyStatusBadgeClass(status) {
+  const normalizedStatus = String(status || "").toLowerCase();
+  if (normalizedStatus.includes("reject") || normalizedStatus.includes("skip")) return "badge-red";
+  if (normalizedStatus.includes("applied") || normalizedStatus.includes("added")) return "badge-green";
+  if (normalizedStatus.includes("duplicate") || normalizedStatus.includes("triage")) return "badge-yellow";
+  return "badge-gray";
+}
+
 function classificationLabel(status) {
   if (status === "pending_review") return "Keep in queue";
   if (status === "triage") return "Move to triage";
@@ -1442,6 +1758,18 @@ function sourceSummaryForJob(job) {
     return `${sourceLabel} - ${platform}`;
   }
   return sourceLabel || platform || "";
+}
+
+function normalizeManualJobUrl(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
 }
 
 function isManualJob(job) {
@@ -1563,6 +1891,43 @@ const sourceSummaryStyle = {
 const sourceLinkStyle = {
   color: "var(--accent)",
   textDecoration: "none",
+};
+
+const jobUrlEditRowStyle = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "7px",
+  marginTop: "6px",
+};
+
+const jobUrlTextStyle = {
+  color: "var(--accent)",
+  fontSize: "12px",
+  overflowWrap: "anywhere",
+};
+
+const jobUrlInputStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  color: "var(--text)",
+  flex: "1 1 280px",
+  fontSize: "12px",
+  minWidth: 0,
+  padding: "6px 9px",
+};
+
+const jobUrlSmallButtonStyle = {
+  flexShrink: 0,
+  fontSize: "11px",
+  padding: "3px 8px",
+};
+
+const jobUrlErrorStyle = {
+  color: "var(--red)",
+  fontSize: "11px",
+  marginTop: "5px",
 };
 
 const editableCompanyStyle = {
@@ -1732,6 +2097,155 @@ const fitChatInputStyle = {
   color: "var(--text)",
   resize: "vertical",
   fontFamily: "inherit",
+};
+
+const historyModalBackdropStyle = {
+  alignItems: "center",
+  background: "rgba(24,28,58,0.38)",
+  display: "flex",
+  inset: 0,
+  justifyContent: "center",
+  padding: "24px",
+  position: "fixed",
+  zIndex: 1100,
+};
+
+const historyModalPanelStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  boxShadow: "var(--shadow)",
+  maxHeight: "84vh",
+  maxWidth: "760px",
+  overflowY: "auto",
+  padding: "18px",
+  width: "100%",
+};
+
+const historyModalHeaderStyle = {
+  alignItems: "flex-start",
+  display: "flex",
+  gap: "12px",
+  justifyContent: "space-between",
+  marginBottom: "14px",
+};
+
+const historyModalTitleStyle = {
+  color: "var(--text)",
+  fontSize: "16px",
+  fontWeight: 700,
+  overflowWrap: "anywhere",
+};
+
+const historyModalSubtitleStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "3px",
+};
+
+const historyStatusStyle = {
+  alignItems: "center",
+  color: "var(--text-muted)",
+  display: "flex",
+  fontSize: "13px",
+  gap: "8px",
+  padding: "16px 0 4px",
+};
+
+const historyEmptyStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  color: "var(--text-muted)",
+  fontSize: "13px",
+  padding: "14px",
+};
+
+const historySummaryStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px 18px",
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginBottom: "10px",
+};
+
+const historyListStyle = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "8px",
+};
+
+const historyRowStyle = {
+  alignItems: "flex-start",
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  display: "flex",
+  gap: "12px",
+  justifyContent: "space-between",
+  padding: "10px 12px",
+};
+
+const historyRowTitleStyle = {
+  alignItems: "center",
+  color: "var(--text)",
+  display: "flex",
+  flexWrap: "wrap",
+  fontSize: "13px",
+  fontWeight: 700,
+  gap: "7px",
+  overflowWrap: "anywhere",
+};
+
+const historyRowMetaStyle = {
+  color: "var(--text-muted)",
+  display: "flex",
+  flexWrap: "wrap",
+  fontSize: "12px",
+  gap: "5px 12px",
+  marginTop: "4px",
+};
+
+const historyNotesStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  lineHeight: 1.5,
+  marginTop: "6px",
+  overflowWrap: "anywhere",
+};
+
+const historyLinkStyle = {
+  color: "var(--accent)",
+  display: "block",
+  fontSize: "12px",
+  marginTop: "6px",
+  overflowWrap: "anywhere",
+};
+
+const historyStageListStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "6px",
+  marginTop: "8px",
+};
+
+const historyStageStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "999px",
+  color: "var(--text-muted)",
+  fontSize: "11px",
+  padding: "3px 8px",
+};
+
+const currentJobBadgeStyle = {
+  background: "var(--accent-light)",
+  borderRadius: "999px",
+  color: "var(--accent)",
+  fontSize: "11px",
+  fontWeight: 700,
+  padding: "3px 8px",
 };
 
 const mismatchChipStyle = {

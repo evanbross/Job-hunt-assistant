@@ -102,6 +102,7 @@ class IRelevanceFeedbackRepository(Protocol):
 @runtime_checkable
 class IScannedEmailRepository(Protocol):
     def has_been_scanned(self, email_id: str) -> bool: ...
+    def get_by_id(self, email_id: str) -> dict[str, Any] | None: ...
     def get_scanned_metadata(self, email_id: str) -> dict[str, str | None] | None: ...
     def is_duplicate_by_content(self, sender_email: str, subject: str, since_days: int) -> bool: ...
     def mark_scanned(self, email_id: str, sender_email: str, subject: str, disposition: str = "noise", email_date: str | None = None, raw_body: str | None = None, parser_error_msg: str | None = None) -> None: ...
@@ -444,6 +445,9 @@ class PostgresEmailSourceRepository(_BaseRepo):
         "name",
         "match_type",
         "match_value",
+        "subject_filter_mode",
+        "subject_filter_value",
+        "subject_filter_match_mode",
         "enabled",
     })
 
@@ -565,26 +569,26 @@ class PostgresRelevanceFeedbackRepository(_BaseRepo):
     def find_match(self, sender_email: str, subject: str) -> dict[str, Any] | None:
         cur = self._execute(
             "SELECT * FROM relevance_feedback WHERE sender_email = %s"
-            " ORDER BY created_at DESC LIMIT 1",
+            " ORDER BY created_at DESC",
             (sender_email,),
         )
-        row = cur.fetchone()
-        if row:
-            return _row_to_dict(row)
+        for row in cur.fetchall():
+            feedback_row = _row_to_dict(row)
+            if _feedback_subject_matches(feedback_row, subject):
+                return feedback_row
 
-        domain = sender_email.split("@")[-1] if "@" in sender_email else ""
+        domain = _sender_domain(sender_email)
         if not domain:
             return None
 
-        subject_words = {w.lower() for w in subject.split() if len(w) > 3}
         cur = self._execute(
             "SELECT * FROM relevance_feedback WHERE sender_email LIKE %s",
             (f"%@{domain}",),
         )
         for row in cur.fetchall():
-            pattern_words = set((row["subject_pattern"] or "").lower().split())
-            if pattern_words and (pattern_words & subject_words):
-                return _row_to_dict(row)
+            feedback_row = _row_to_dict(row)
+            if _feedback_subject_matches(feedback_row, subject):
+                return feedback_row
 
         return None
 
@@ -606,12 +610,33 @@ class PostgresRelevanceFeedbackRepository(_BaseRepo):
         )
 
 
+def _feedback_subject_matches(feedback_row: dict[str, Any], subject: str) -> bool:
+    pattern = str(feedback_row.get("subject_pattern") or "").strip()
+    if not pattern:
+        return True
+    pattern_words = {word.lower() for word in re.split(r"\W+", pattern) if len(word) > 3}
+    subject_words = {word.lower() for word in re.split(r"\W+", subject) if len(word) > 3}
+    return bool(pattern_words and pattern_words & subject_words)
+
+
+def _sender_domain(sender_email: str) -> str:
+    match = re.search(r"@([^>\s]+)", sender_email)
+    return match.group(1).lower() if match else ""
+
+
 class PostgresScannedEmailRepository(_BaseRepo):
     def has_been_scanned(self, email_id: str) -> bool:
         cur = self._execute(
             "SELECT 1 FROM scanned_emails WHERE email_id = %s", (email_id,)
         )
         return cur.fetchone() is not None
+
+    def get_by_id(self, email_id: str) -> dict[str, Any] | None:
+        cur = self._execute(
+            "SELECT * FROM scanned_emails WHERE email_id = %s", (email_id,)
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row is not None else None
 
     def get_scanned_metadata(self, email_id: str) -> dict[str, str | None] | None:
         cur = self._execute(
@@ -1367,6 +1392,23 @@ def _migrate(conn: Any) -> None:
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {defn}")
 
     for col, defn in [
+        ("subject_filter_mode", "TEXT"),
+        ("subject_filter_value", "TEXT"),
+        ("subject_filter_match_mode", "TEXT DEFAULT 'text'"),
+    ]:
+        cur.execute(f"ALTER TABLE email_sources ADD COLUMN IF NOT EXISTS {col} {defn}")
+    cur.execute(
+        """
+        UPDATE email_sources
+        SET subject_filter_mode = 'starts_with',
+            subject_filter_value = 'new match'
+        WHERE LOWER(COALESCE(match_value, '')) LIKE '%welcometothejungle.com%'
+          AND COALESCE(subject_filter_mode, '') = ''
+          AND COALESCE(subject_filter_value, '') = ''
+        """
+    )
+
+    for col, defn in [
         ("email_date", "TEXT"),
         ("raw_body", "TEXT"),
         ("parser_error_msg", "TEXT"),
@@ -1478,6 +1520,23 @@ def _migrate_sqlite(conn: Any) -> None:
         _sqlite_add_column_if_missing(cur, "jobs", col, defn)
 
     for col, defn in [
+        ("subject_filter_mode", "TEXT"),
+        ("subject_filter_value", "TEXT"),
+        ("subject_filter_match_mode", "TEXT DEFAULT 'text'"),
+    ]:
+        _sqlite_add_column_if_missing(cur, "email_sources", col, defn)
+    cur.execute(
+        """
+        UPDATE email_sources
+        SET subject_filter_mode = 'starts_with',
+            subject_filter_value = 'new match'
+        WHERE LOWER(COALESCE(match_value, '')) LIKE '%welcometothejungle.com%'
+          AND COALESCE(subject_filter_mode, '') = ''
+          AND COALESCE(subject_filter_value, '') = ''
+        """
+    )
+
+    for col, defn in [
         ("email_date", "TEXT"),
         ("raw_body", "TEXT"),
         ("parser_error_msg", "TEXT"),
@@ -1586,11 +1645,14 @@ def _create_tables(conn: Any) -> None:
         """,
         """
         CREATE TABLE IF NOT EXISTS email_sources (
-            id          SERIAL PRIMARY KEY,
-            name        TEXT,
-            match_type  TEXT,
-            match_value TEXT,
-            enabled     INTEGER DEFAULT 1
+            id                          SERIAL PRIMARY KEY,
+            name                        TEXT,
+            match_type                  TEXT,
+            match_value                 TEXT,
+            subject_filter_mode         TEXT,
+            subject_filter_value        TEXT,
+            subject_filter_match_mode   TEXT DEFAULT 'text',
+            enabled                     INTEGER DEFAULT 1
         )
         """,
         """
@@ -1774,11 +1836,14 @@ def _create_tables_sqlite(conn: Any) -> None:
         """,
         """
         CREATE TABLE IF NOT EXISTS email_sources (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            name        TEXT,
-            match_type  TEXT,
-            match_value TEXT,
-            enabled     INTEGER DEFAULT 1
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name                        TEXT,
+            match_type                  TEXT,
+            match_value                 TEXT,
+            subject_filter_mode         TEXT,
+            subject_filter_value        TEXT,
+            subject_filter_match_mode   TEXT DEFAULT 'text',
+            enabled                     INTEGER DEFAULT 1
         )
         """,
         """

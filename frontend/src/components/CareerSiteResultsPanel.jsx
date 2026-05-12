@@ -70,6 +70,8 @@ export default function CareerSiteResultsPanel() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState(null);
   const [running, setRunning] = useState(false);
+  const [scanPopupTitle, setScanPopupTitle] = useState("Career-site scan");
+  const [scanSummary, setScanSummary] = useState(null);
   const [selectedFailure, setSelectedFailure] = useState(null);
   const [bookmarkletSite, setBookmarkletSite] = useState(null);
   const [selectedJobId, setSelectedJobId] = useState(null);
@@ -162,6 +164,7 @@ export default function CareerSiteResultsPanel() {
         clearInterval(pollRef.current);
         await fetchRows();
         await fetchFailures();
+        setScanSummary(s);
       }
     } catch {
       clearInterval(pollRef.current);
@@ -170,6 +173,8 @@ export default function CareerSiteResultsPanel() {
   };
 
   const runScanNow = async () => {
+    setScanPopupTitle("Scanning Career Sites");
+    setScanSummary(null);
     const res = await fetch("/api/career-scan/run", { method: "POST" });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -182,6 +187,9 @@ export default function CareerSiteResultsPanel() {
   };
 
   const runScanForSite = async (siteId) => {
+    const site = sites.find((siteRow) => siteRow.id === siteId);
+    setScanPopupTitle(site?.name ? `Rescanning ${site.name}` : "Rescanning Career Site");
+    setScanSummary(null);
     const res = await fetch(`/api/career-sites/${siteId}/scan`, { method: "POST" });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -520,29 +528,14 @@ export default function CareerSiteResultsPanel() {
       </div>
 
       {running && status && (
-        <div style={progressBox}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
-            <span>{status.message}</span>
-            <span>{status.progress}%</span>
-          </div>
-          <div className="loading-bar">
-            <div className="loading-bar-fill" style={{ width: `${status.progress}%` }} />
-          </div>
-          <p style={{ marginTop: "6px", fontSize: "11px", color: "var(--text-muted)" }}>
-            Sites scanned: {status.sites_scanned} · Found: {status.jobs_found} · New: {status.jobs_added}
-          </p>
-        </div>
+        <CareerScanProgressPopup title={scanPopupTitle} status={status} />
       )}
 
-      {!running && status?.errors?.length > 0 && (
-        <div style={{ ...progressBox, background: "rgba(239,68,68,0.06)", borderColor: "rgba(239,68,68,0.25)", marginBottom: "16px" }}>
-          <p style={{ fontSize: "12px", fontWeight: 600, color: "var(--red)", marginBottom: "6px" }}>
-            Scan completed with errors:
-          </p>
-          <ul style={{ fontSize: "11px", color: "var(--red)", paddingLeft: "16px", margin: 0 }}>
-            {status.errors.map((e, i) => <li key={i}>{e}</li>)}
-          </ul>
-        </div>
+      {!running && scanSummary && (
+        <CareerScanSummaryPopup
+          summary={scanSummary}
+          onClose={() => setScanSummary(null)}
+        />
       )}
 
       {reEvaluateSummary && (
@@ -870,6 +863,102 @@ function isRejectedCareerRow(row) {
   );
 }
 
+function CareerScanProgressPopup({ title, status }) {
+  const progress = Math.max(0, Math.min(100, Number(status?.progress) || 0));
+  return (
+    <div style={modalBackdropStyle}>
+      <div style={{ ...modalPanelStyle, maxWidth: "520px", padding: "18px", display: "block" }}>
+        <div style={{ ...modalHeaderStyle, padding: 0, borderBottom: "none", marginBottom: "14px" }}>
+          <div>
+            <div style={popupTitleStyle}>{title}</div>
+            <div style={popupSubtitleStyle}>{status?.message || "Working..."}</div>
+          </div>
+          <span className="inline-spinner" style={popupSpinnerStyle} />
+        </div>
+
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
+            <span>Progress</span>
+            <span>{progress}%</span>
+          </div>
+          <div className="loading-bar">
+            <div className="loading-bar-fill" style={{ width: `${progress}%` }} />
+          </div>
+          <p style={{ margin: "10px 0 0", fontSize: "12px", color: "var(--text-muted)" }}>
+            Sites scanned: {status?.sites_scanned ?? 0} · Found: {status?.jobs_found ?? 0} · New: {status?.jobs_added ?? 0}
+          </p>
+          {status?.errors?.length > 0 && (
+            <CareerScanErrorList errors={status.errors} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CareerScanSummaryPopup({ summary, onClose }) {
+  const errors = Array.isArray(summary?.errors) ? summary.errors : [];
+  const hasErrors = errors.length > 0;
+  return (
+    <div style={modalBackdropStyle}>
+      <div style={{ ...modalPanelStyle, maxWidth: "620px", padding: "18px", display: "block" }}>
+        <div style={{ ...modalHeaderStyle, padding: 0, borderBottom: "none", marginBottom: "14px" }}>
+          <div>
+            <div style={popupTitleStyle}>
+              {hasErrors ? "Career-site scan completed with errors" : "Career-site scan complete"}
+            </div>
+            <div style={popupSubtitleStyle}>{summary?.message || "Finished."}</div>
+          </div>
+          <button className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: "28px", flexWrap: "wrap" }}>
+          <CareerScanMetric label="sites scanned" value={summary?.sites_scanned ?? 0} />
+          <CareerScanMetric label="jobs found" value={summary?.jobs_found ?? 0} tone={(summary?.jobs_found ?? 0) > 0 ? "green" : "muted"} />
+          <CareerScanMetric label="new jobs" value={summary?.jobs_added ?? 0} tone={(summary?.jobs_added ?? 0) > 0 ? "green" : "muted"} />
+          {hasErrors && <CareerScanMetric label="errors" value={errors.length} tone="red" />}
+        </div>
+
+        {hasErrors && (
+          <div style={{ marginTop: "14px", borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
+              Error details
+            </div>
+            <CareerScanErrorList errors={errors} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CareerScanMetric({ label, value, tone = "muted" }) {
+  const colorByTone = {
+    green: "var(--green)",
+    muted: "var(--text-muted)",
+    red: "var(--red)",
+  };
+  return (
+    <div>
+      <div style={{ fontSize: "28px", fontWeight: 700, color: colorByTone[tone] || colorByTone.muted }}>{value}</div>
+      <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{label}</div>
+    </div>
+  );
+}
+
+function CareerScanErrorList({ errors }) {
+  if (!errors?.length) return null;
+  return (
+    <ul style={{ margin: 0, paddingLeft: "16px", maxHeight: "220px", overflowY: "auto", fontSize: "12px", color: "var(--red)", lineHeight: 1.45 }}>
+      {errors.map((error, index) => (
+        <li key={`${error}-${index}`} style={{ marginBottom: "4px" }}>{error}</li>
+      ))}
+    </ul>
+  );
+}
+
 function BookmarkletModal({ site, onClose }) {
   const [copied, setCopied] = useState(false);
   const bookmarklet = buildCaptureBookmarklet(site);
@@ -1124,6 +1213,24 @@ const modalDtStyle = {
 const modalDdStyle = {
   margin: 0,
   color: "var(--text)",
+};
+
+const popupTitleStyle = {
+  color: "var(--text)",
+  fontSize: "16px",
+  fontWeight: 700,
+};
+
+const popupSubtitleStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "3px",
+};
+
+const popupSpinnerStyle = {
+  color: "var(--accent)",
+  height: "18px",
+  width: "18px",
 };
 
 const detailLabelStyle = {
