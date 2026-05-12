@@ -95,7 +95,8 @@
       "Bash(.venv/Scripts/python -c \"from certifi.core import where; print\\(where\\(\\)\\)\")",
       "Bash(Get-ChildItem -Path \"F:\\\\Evan-F\\\\Projects\\\\JobHuntAssistant\" -Force)",
       "Bash(Select-Object Name, PSIsContainer)",
-      "Bash(tasklist)"
+      "Bash(tasklist)",
+      "Bash(npx vite *)"
     ]
   }
 }

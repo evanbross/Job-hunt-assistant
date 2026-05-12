@@ -36,6 +36,8 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
+import { fitReasoningBullets, reasoningWithoutPenaltySummary, scoreLabel } from "../utils/fitScoringUtils.js";
+import { dispositionLabel, formatJobTitles, formatScanAction, formatScanDisposition, scoreDeltaLabel } from "../utils/jobQueueUtils.js";
 
 const JOB_QUEUE_SEARCH_STORAGE_KEY = "jha.jobQueue.search";
 
@@ -1950,76 +1952,6 @@ function ManualEvalDialog({ submitting, result, onClose }) {
       </div>
     </div>
   );
-}
-
-function scoreLabel(score) {
-  return score === null || score === undefined ? "not scored" : `${score}%`;
-}
-
-function scoreDeltaLabel(previousScore, newScore) {
-  if (previousScore === null || previousScore === undefined || newScore === null || newScore === undefined) {
-    return "";
-  }
-  const delta = Number(newScore) - Number(previousScore);
-  if (delta === 0) return "no change";
-  return `${delta > 0 ? "+" : ""}${delta}`;
-}
-
-function reasoningWithoutPenaltySummary(reasoning) {
-  return String(reasoning || "")
-    .replace(/\s*Penalties applied:\s*.+?\.\s*$/i, "")
-    .trim();
-}
-
-function fitReasoningBullets(reasoning) {
-  const text = String(reasoning || "").trim();
-  if (!text) return [];
-  const bulletMatches = text.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s+.+/g);
-  if (bulletMatches) {
-    return bulletMatches
-      .map((item) => item.replace(/^\s*(?:[-*•]|\d+\.)\s+/, "").trim())
-      .filter(Boolean);
-  }
-  return text
-    .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function dispositionLabel(status) {
-  const labels = {
-    added_to_sheet: "Added to sheet",
-    pending_review: "Queued for review",
-    possible_duplicate: "Possible duplicate",
-    skipped: "Skipped",
-    triage: "Moved to triage",
-  };
-  return labels[status] || status || "";
-}
-
-function formatScanDisposition(disposition) {
-  const labels = {
-    ack: "acknowledgement",
-    already_scanned: "already scanned",
-    duplicate: "duplicate",
-    feedback_filtered: "learned-pattern filtered",
-    fetch_error: "fetch error",
-    job_created: "job created",
-    noise: "ignored",
-    parser_error: "parser error",
-    source_filtered: "source-filter skipped",
-  };
-  return labels[disposition] || disposition || "unknown";
-}
-
-function formatScanAction(action) {
-  return action || "left in inbox";
-}
-
-function formatJobTitles(jobTitles) {
-  if (!Array.isArray(jobTitles) || jobTitles.length === 0) return "no jobs";
-  if (jobTitles.length === 1) return jobTitles[0] || "1 job";
-  return `${jobTitles.length} jobs: ${jobTitles.filter(Boolean).join(", ")}`;
 }
 
 function formatEmailJobDetails(email) {
