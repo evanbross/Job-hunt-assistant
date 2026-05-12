@@ -33,7 +33,11 @@
  */
 
 import React, { useEffect, useRef, useState } from "react";
+import StatusBadge from "./common/StatusBadge.jsx";
+import Modal from "./common/Modal.jsx";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
+import { scoreTone, scoreLabel, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
+import { statusTone } from "../utils/jobQueueUtils.js";
 
 const SKIP_REASONS = [
   { key: "rejected", label: "Rejected" },
@@ -139,14 +143,6 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   }, [fitChatMessages, fitChatOpen]);
 
   const score = job.fit_score;
-  const scoreCls =
-    score === null || score === undefined
-      ? "badge-gray"
-      : score >= 70
-      ? "badge-green"
-      : score >= 40
-      ? "badge-yellow"
-      : "badge-red";
   const salaryRange = salaryRangeForJob(job);
   const sourceSummary = sourceSummaryForJob(job);
   const reasoningText = reasoningWithoutPenaltySummary(job.fit_reasoning);
@@ -569,13 +565,11 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     <div style={cardStyle}>
       {/* Header row */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
-        <span
-          className={`badge ${scoreCls}`}
-          style={{ fontSize: "14px", padding: "4px 10px", flexShrink: 0 }}
-          title={score == null ? "No fit score — add a description and re-evaluate to rank this entry" : undefined}
-        >
-          {score !== null && score !== undefined ? score : "—"}
-        </span>
+        <StatusBadge
+          status={scoreTone(score)}
+          label={score !== null && score !== undefined ? String(score) : "—"}
+          tone={scoreTone(score)}
+        />
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: "15px", fontWeight: "600", color: "var(--text)", lineHeight: "1.4" }}>
@@ -1579,91 +1573,91 @@ function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, l
   const duplicateHints = previousRows.filter((row) => titleLooksSimilar(row.title, currentJobTitle)).length;
 
   return (
-    <div style={historyModalBackdropStyle} onClick={onClose}>
-      <div style={historyModalPanelStyle} onClick={(event) => event.stopPropagation()}>
-        <div style={historyModalHeaderStyle}>
-          <div style={{ minWidth: 0 }}>
-            <div style={historyModalTitleStyle}>{company}</div>
-            <div style={historyModalSubtitleStyle}>
-              {loading
-                ? "Searching application tracking..."
-                : error
-                  ? "Application tracking lookup failed"
-                  : `${previousRows.length} prior matching row${previousRows.length === 1 ? "" : "s"}${appliedCount > 0 ? ` · ${appliedCount} applied` : ""}`}
-            </div>
-          </div>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onClose}
-            style={{ fontSize: "12px", padding: "4px 10px", flexShrink: 0 }}
-          >
-            Close
-          </button>
+    <Modal
+      title={company}
+      subtitle={loading
+        ? "Searching application tracking..."
+        : error
+          ? "Application tracking lookup failed"
+          : `${previousRows.length} prior matching row${previousRows.length === 1 ? "" : "s"}${appliedCount > 0 ? ` · ${appliedCount} applied` : ""}`}
+      onClose={onClose}
+      maxWidth="760px"
+    >
+      {loading && (
+        <div style={{ alignItems: "center", color: "var(--text-muted)", display: "flex", fontSize: "13px", gap: "8px", padding: "16px 0 4px" }}>
+          <span className="inline-spinner" />
+          <span>Loading application tracking rows...</span>
         </div>
+      )}
 
-        {loading && (
-          <div style={historyStatusStyle}>
-            <span className="inline-spinner" />
-            <span>Loading application tracking rows...</span>
+      {!loading && error && (
+        <div style={{ color: "var(--red)", fontSize: "13px", padding: "16px 0 4px" }}>{error}</div>
+      )}
+
+      {!loading && !error && rows.length === 0 && (
+        <div style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text-muted)", fontSize: "13px", padding: "14px" }}>
+          No application tracking rows matched this company.
+        </div>
+      )}
+
+      {!loading && !error && rows.length > 0 && (
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 18px", color: "var(--text-muted)", fontSize: "12px", marginBottom: "10px" }}>
+            <span>{previousRows.length > 0 ? "Previous activity found" : "Only this queue card matched"}</span>
+            {duplicateHints > 0 && <span>{duplicateHints} similar title{duplicateHints === 1 ? "" : "s"}</span>}
           </div>
-        )}
-
-        {!loading && error && (
-          <div style={{ ...historyStatusStyle, color: "var(--red)" }}>{error}</div>
-        )}
-
-        {!loading && !error && rows.length === 0 && (
-          <div style={historyEmptyStyle}>
-            No application tracking rows matched this company.
-          </div>
-        )}
-
-        {!loading && !error && rows.length > 0 && (
-          <>
-            <div style={historySummaryStyle}>
-              <span>{previousRows.length > 0 ? "Previous activity found" : "Only this queue card matched"}</span>
-              {duplicateHints > 0 && <span>{duplicateHints} similar title{duplicateHints === 1 ? "" : "s"}</span>}
-            </div>
-            <div style={historyListStyle}>
-              {[...currentRows, ...previousRows].map((row) => (
-                <div key={row.id || `${row.company}-${row.title}-${row.date}`} style={historyRowStyle}>
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={historyRowTitleStyle}>
-                      {row.title || "Untitled role"}
-                      {row.id === currentJobId && <span style={currentJobBadgeStyle}>Current card</span>}
-                    </div>
-                    <div style={historyRowMetaStyle}>
-                      <span>{row.status || "No status"}</span>
-                      {row.date && <span>{row.date}</span>}
-                      {row.source && <span>{row.source}</span>}
-                    </div>
-                    {row.notes && <div style={historyNotesStyle}>{row.notes}</div>}
-                    {row.url && (
-                      <a href={row.url} target="_blank" rel="noreferrer" style={historyLinkStyle}>
-                        {row.url}
-                      </a>
-                    )}
-                    {row.stages.length > 0 && (
-                      <div style={historyStageListStyle}>
-                        {row.stages.map((stage) => (
-                          <span key={stage.id || `${stage.status}-${stage.date}`} style={historyStageStyle}>
-                            {stage.status || "stage"}{stage.date ? ` · ${stage.date}` : ""}
-                          </span>
-                        ))}
-                      </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {[...currentRows, ...previousRows].map((row) => (
+              <div
+                key={row.id || `${row.company}-${row.title}-${row.date}`}
+                style={{
+                  alignItems: "flex-start",
+                  background: "var(--surface2)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)",
+                  display: "flex",
+                  gap: "12px",
+                  justifyContent: "space-between",
+                  padding: "10px 12px",
+                }}
+              >
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ alignItems: "center", color: "var(--text)", display: "flex", flexWrap: "wrap", fontSize: "13px", fontWeight: 700, gap: "7px", overflowWrap: "anywhere" }}>
+                    {row.title || "Untitled role"}
+                    {row.id === currentJobId && (
+                      <span style={{ background: "var(--accent-light)", borderRadius: "999px", color: "var(--accent)", fontSize: "11px", fontWeight: 700, padding: "3px 8px" }}>
+                        Current card
+                      </span>
                     )}
                   </div>
-                  <span className={`badge ${historyStatusBadgeClass(row.status)}`} style={{ flexShrink: 0 }}>
-                    {row.status || "unknown"}
-                  </span>
+                  <div style={{ color: "var(--text-muted)", display: "flex", flexWrap: "wrap", fontSize: "12px", gap: "5px 12px", marginTop: "4px" }}>
+                    <span>{row.status || "No status"}</span>
+                    {row.date && <span>{row.date}</span>}
+                    {row.source && <span>{row.source}</span>}
+                  </div>
+                  {row.notes && <div style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.5, marginTop: "6px", overflowWrap: "anywhere" }}>{row.notes}</div>}
+                  {row.url && (
+                    <a href={row.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", display: "block", fontSize: "12px", marginTop: "6px", overflowWrap: "anywhere" }}>
+                      {row.url}
+                    </a>
+                  )}
+                  {row.stages.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
+                      {row.stages.map((stage) => (
+                        <span key={stage.id || `${stage.status}-${stage.date}`} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "999px", color: "var(--text-muted)", fontSize: "11px", padding: "3px 8px" }}>
+                          {stage.status || "stage"}{stage.date ? ` · ${stage.date}` : ""}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+                <StatusBadge status={row.status} />
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -2097,155 +2091,6 @@ const fitChatInputStyle = {
   color: "var(--text)",
   resize: "vertical",
   fontFamily: "inherit",
-};
-
-const historyModalBackdropStyle = {
-  alignItems: "center",
-  background: "rgba(24,28,58,0.38)",
-  display: "flex",
-  inset: 0,
-  justifyContent: "center",
-  padding: "24px",
-  position: "fixed",
-  zIndex: 1100,
-};
-
-const historyModalPanelStyle = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  boxShadow: "var(--shadow)",
-  maxHeight: "84vh",
-  maxWidth: "760px",
-  overflowY: "auto",
-  padding: "18px",
-  width: "100%",
-};
-
-const historyModalHeaderStyle = {
-  alignItems: "flex-start",
-  display: "flex",
-  gap: "12px",
-  justifyContent: "space-between",
-  marginBottom: "14px",
-};
-
-const historyModalTitleStyle = {
-  color: "var(--text)",
-  fontSize: "16px",
-  fontWeight: 700,
-  overflowWrap: "anywhere",
-};
-
-const historyModalSubtitleStyle = {
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  marginTop: "3px",
-};
-
-const historyStatusStyle = {
-  alignItems: "center",
-  color: "var(--text-muted)",
-  display: "flex",
-  fontSize: "13px",
-  gap: "8px",
-  padding: "16px 0 4px",
-};
-
-const historyEmptyStyle = {
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  color: "var(--text-muted)",
-  fontSize: "13px",
-  padding: "14px",
-};
-
-const historySummaryStyle = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "8px 18px",
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  marginBottom: "10px",
-};
-
-const historyListStyle = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "8px",
-};
-
-const historyRowStyle = {
-  alignItems: "flex-start",
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  display: "flex",
-  gap: "12px",
-  justifyContent: "space-between",
-  padding: "10px 12px",
-};
-
-const historyRowTitleStyle = {
-  alignItems: "center",
-  color: "var(--text)",
-  display: "flex",
-  flexWrap: "wrap",
-  fontSize: "13px",
-  fontWeight: 700,
-  gap: "7px",
-  overflowWrap: "anywhere",
-};
-
-const historyRowMetaStyle = {
-  color: "var(--text-muted)",
-  display: "flex",
-  flexWrap: "wrap",
-  fontSize: "12px",
-  gap: "5px 12px",
-  marginTop: "4px",
-};
-
-const historyNotesStyle = {
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  lineHeight: 1.5,
-  marginTop: "6px",
-  overflowWrap: "anywhere",
-};
-
-const historyLinkStyle = {
-  color: "var(--accent)",
-  display: "block",
-  fontSize: "12px",
-  marginTop: "6px",
-  overflowWrap: "anywhere",
-};
-
-const historyStageListStyle = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "6px",
-  marginTop: "8px",
-};
-
-const historyStageStyle = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "999px",
-  color: "var(--text-muted)",
-  fontSize: "11px",
-  padding: "3px 8px",
-};
-
-const currentJobBadgeStyle = {
-  background: "var(--accent-light)",
-  borderRadius: "999px",
-  color: "var(--accent)",
-  fontSize: "11px",
-  fontWeight: 700,
-  padding: "3px 8px",
 };
 
 const mismatchChipStyle = {

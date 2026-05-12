@@ -34,6 +34,10 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
+import Modal from "./common/Modal.jsx";
+import MetricGrid, { MetricItem } from "./common/MetricGrid.jsx";
+import StatusBadge from "./common/StatusBadge.jsx";
+import { statusTone } from "../utils/jobQueueUtils.js";
 
 const DISPOSITION_INFO = {
   job_created:       { label: "Job extracted",      cls: "badge-accent" },
@@ -103,98 +107,60 @@ function gmailReadIndicator(email) {
 // ── Raw body modal ────────────────────────────────────────────────────────────
 
 function RawBodyModal({ email, onClose }) {
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: "fixed", inset: 0, zIndex: 1000,
-        background: "rgba(0,0,0,0.55)", display: "flex",
-        alignItems: "center", justifyContent: "center", padding: "24px",
-      }}
+    <Modal
+      title={email.email_subject || "(No subject)"}
+      subtitle={email.sender_email || "—"}
+      onClose={onClose}
+      maxWidth="760px"
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "var(--surface)", border: "1px solid var(--border)",
-          borderRadius: "var(--radius-lg)", boxShadow: "var(--shadow-lg)",
-          width: "100%", maxWidth: "760px", maxHeight: "80vh",
-          display: "flex", flexDirection: "column", overflow: "hidden",
-        }}
-      >
-        {/* Modal header */}
-        <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
-          <div>
-            <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--text)", marginBottom: "2px" }}>
-              {email.email_subject || <em style={{ color: "var(--text-muted)" }}>No subject</em>}
-            </div>
-            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{email.sender_email || "—"}</div>
+      {/* Error message */}
+      {email.parser_error_msg ? (
+        <div style={{ marginBottom: "16px" }}>
+          <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--red)", marginBottom: "6px" }}>
+            Error
           </div>
-          <button
-            onClick={onClose}
-            style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px", color: "var(--text-muted)", lineHeight: 1, flexShrink: 0, padding: "2px 6px" }}
-            aria-label="Close"
-          >
-            ×
-          </button>
+          <pre style={{
+            fontFamily: "monospace", fontSize: "12px", color: "var(--red)",
+            whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0,
+            background: "rgba(224,82,82,0.07)", borderRadius: "var(--radius)",
+            padding: "10px 14px", border: "1px solid rgba(224,82,82,0.25)",
+          }}>
+            {email.parser_error_msg}
+          </pre>
         </div>
-        {/* Modal body */}
-        <div style={{ padding: "16px 20px", overflowY: "auto", flex: 1 }}>
-          {/* Error message */}
-          {email.parser_error_msg ? (
-            <div style={{ marginBottom: "16px" }}>
-              <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--red, #e05252)", marginBottom: "6px" }}>
-                Error
-              </div>
-              <pre style={{
-                fontFamily: "monospace", fontSize: "12px", color: "var(--red, #e05252)",
-                whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0,
-                background: "rgba(224,82,82,0.07)", borderRadius: "var(--radius)",
-                padding: "10px 14px", border: "1px solid rgba(224,82,82,0.25)",
-              }}>
-                {email.parser_error_msg}
-              </pre>
-            </div>
-          ) : (
-            <div style={{ marginBottom: "16px", fontSize: "12px", color: "var(--text-muted)", fontStyle: "italic" }}>
-              No error message stored — this email was scanned before error capture was enabled.
-            </div>
-          )}
+      ) : (
+        <div style={{ marginBottom: "16px", fontSize: "12px", color: "var(--text-muted)", fontStyle: "italic" }}>
+          No error message stored — this email was scanned before error capture was enabled.
+        </div>
+      )}
 
-          {/* Raw body */}
-          <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--text-muted)", marginBottom: "10px" }}>
-            Raw Email Body
-          </div>
-          {email.raw_body ? (
-            <pre style={{
-              fontFamily: "monospace", fontSize: "12px", color: "var(--text)",
-              whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0,
-              background: "var(--surface2)", borderRadius: "var(--radius)",
-              padding: "12px 14px", border: "1px solid var(--border)",
-            }}>
-              {email.raw_body}
-            </pre>
-          ) : (
-            <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-              Email body not stored — this email was scanned before body capture was enabled.
-              Use <strong>Rescan This Email</strong> to re-process it.
-            </p>
-          )}
-        </div>
+      {/* Raw body */}
+      <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--text-muted)", marginBottom: "10px" }}>
+        Raw Email Body
       </div>
-    </div>
+      {email.raw_body ? (
+        <pre style={{
+          fontFamily: "monospace", fontSize: "12px", color: "var(--text)",
+          whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0,
+          background: "var(--surface2)", borderRadius: "var(--radius)",
+          padding: "12px 14px", border: "1px solid var(--border)",
+        }}>
+          {email.raw_body}
+        </pre>
+      ) : (
+        <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+          Email body not stored — this email was scanned before body capture was enabled.
+          Use <strong>Rescan This Email</strong> to re-process it.
+        </p>
+      )}
+    </Modal>
   );
 }
 
 // ── Detail panel shown when a row is selected ─────────────────────────────────
 
 function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRescan, onShowBody, onSetHidden }) {
-  const { label, cls } = statusBadge(email);
   const gmailIndicator = gmailReadIndicator(email);
   const isMovingToScanned = movingToScanned[email.email_id];
   const isRescanning = rescanning[email.email_id];
@@ -202,11 +168,11 @@ function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRe
   const emailJobs = Array.isArray(email.jobs) ? email.jobs : [];
 
   return (
-    <div style={detailPanelStyle}>
+    <div className="card" style={{ padding: "20px" }}>
       {/* Header row */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px", flexWrap: "wrap", marginBottom: "16px" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--text)", marginBottom: "3px", wordBreak: "break-word" }}>
+          <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text)", marginBottom: "3px", wordBreak: "break-word" }}>
             {email.email_subject || <em style={{ color: "var(--text-muted)" }}>No subject</em>}
           </div>
           <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{email.sender_email || "—"}</div>
@@ -215,25 +181,21 @@ function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRe
           {isParserError ? (
             <button
               onClick={onShowBody}
-              className={`badge ${cls}`}
-              style={{ cursor: "pointer", background: "none", border: "none", padding: 0, textDecoration: "underline dotted" }}
-              title="Click to view raw email body"
+              style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}
             >
-              {label}
+              <StatusBadge status="parser_error" label="Parser Error" />
             </button>
           ) : (
-            <span className={`badge ${cls}`}>{label}</span>
+            <StatusBadge status={email.job_status || email.disposition} />
           )}
           {email.job_status === "skipped" && email.skip_reason && (
-            <span className="badge badge-gray" style={{ textTransform: "capitalize" }}>
-              {SKIP_REASON_LABELS[email.skip_reason] || email.skip_reason}
-            </span>
+            <StatusBadge status="skipped" label={SKIP_REASON_LABELS[email.skip_reason] || email.skip_reason} tone="gray" />
           )}
         </div>
       </div>
 
       {/* Two-column grid for metadata + job info */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
         {/* Left: email metadata */}
         <div>
           <div style={sectionLabel}>Email</div>
@@ -250,21 +212,16 @@ function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRe
             <dd style={ddStyle}>
               {gmailIndicator.canMoveToScanned ? (
                 <button
-                  className={`badge ${gmailIndicator.cls}`}
+                  className={`badge badge-${gmailIndicator.cls.replace("badge-", "")}`}
                   onClick={() => onMoveToScanned(email.email_id)}
                   disabled={isMovingToScanned}
-                  style={badgeButtonStyle}
-                  title="Move this email from Inbox to the configured Processed Email Label in Gmail"
+                  style={{ border: "none", cursor: "pointer", font: "inherit" }}
                 >
                   {isMovingToScanned ? "Moving..." : gmailIndicator.label}
                 </button>
               ) : (
-                <span className={`badge ${gmailIndicator.cls}`}>{gmailIndicator.label}</span>
+                <StatusBadge status={gmailIndicator.cls.replace("badge-", "")} label={gmailIndicator.label} />
               )}
-            </dd>
-            <dt style={dtStyle}>Message ID</dt>
-            <dd style={{ ...ddStyle, fontFamily: "monospace", fontSize: "11px", wordBreak: "break-all", color: "var(--text-muted)" }}>
-              {email.email_id}
             </dd>
           </dl>
         </div>
@@ -274,38 +231,33 @@ function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRe
           <div style={sectionLabel}>Jobs</div>
           {emailJobs.length > 0 ? (
             <div style={{ display: "grid", gap: "8px" }}>
-              {emailJobs.map((job) => {
-                const jobBadge = jobStatusBadge(job);
-                return (
-                  <div key={job.id} style={jobSummaryStyle}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ ...ddStyle, fontWeight: "600" }}>
-                        {job.url ? (
-                          <a href={job.url} target="_blank" rel="noreferrer">
-                            {job.job_title || "Untitled job"}
-                          </a>
-                        ) : (
-                          job.job_title || "Untitled job"
-                        )}
-                      </div>
-                      <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
-                        {job.company || "—"}
-                        {job.fit_score != null && (
-                          <span style={{ marginLeft: "8px" }}>Fit {job.fit_score}</span>
-                        )}
-                      </div>
+              {emailJobs.map((job) => (
+                <div key={job.id} style={jobSummaryStyle}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ ...ddStyle, fontWeight: "600" }}>
+                      {job.url ? (
+                        <a href={job.url} target="_blank" rel="noreferrer">
+                          {job.job_title || "Untitled job"}
+                        </a>
+                      ) : (
+                        job.job_title || "Untitled job"
+                      )}
                     </div>
-                    <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                      <span className={`badge ${jobBadge.cls}`}>{jobBadge.label}</span>
-                      {job.skip_reason && (
-                        <span className="badge badge-gray">
-                          {SKIP_REASON_LABELS[job.skip_reason] || job.skip_reason}
-                        </span>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
+                      {job.company || "—"}
+                      {job.fit_score != null && (
+                        <span style={{ marginLeft: "8px" }}>Fit {job.fit_score}%</span>
                       )}
                     </div>
                   </div>
-                );
-              })}
+                  <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <StatusBadge status={job.status} />
+                    {job.skip_reason && (
+                      <StatusBadge status="skipped" label={SKIP_REASON_LABELS[job.skip_reason] || job.skip_reason} tone="gray" />
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           ) : (
             <p style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>
@@ -890,96 +842,60 @@ function EmailScanSummaryModal({ summary, onClose }) {
   const jobEmails = emailReport.filter((email) => (email.job_count || 0) > 0);
   const bySource = Array.isArray(summary.by_source) ? summary.by_source : [];
 
-  useEffect(() => {
-    const onKey = (event) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div style={modalBackdropStyle} onClick={onClose}>
-      <div style={summaryModalPanelStyle} onClick={(event) => event.stopPropagation()}>
-        <div style={modalHeaderStyle}>
-          <div>
-            <div style={modalTitleStyle}>Email scan complete</div>
-            <div style={modalSubtitleStyle}>
-              {summary.emails_scanned || 0} email{summary.emails_scanned === 1 ? "" : "s"} scanned
+    <Modal
+      title="Email scan complete"
+      subtitle={`${summary.emails_scanned || 0} email${summary.emails_scanned === 1 ? "" : "s"} scanned`}
+      onClose={onClose}
+      maxWidth="760px"
+      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
+    >
+      <MetricGrid>
+        <MetricItem label="new jobs" value={summary.new_jobs || 0} tone="green" />
+        <MetricItem label="emails with jobs" value={summary.emails_with_jobs || 0} />
+        <MetricItem label="triage" value={summary.triage_jobs || 0} tone="yellow" />
+        <MetricItem label="duplicates" value={summary.duplicates || 0} />
+        <MetricItem label="errors" value={(summary.parser_error_emails || 0) + (summary.fetch_error_emails || 0)} tone="red" />
+      </MetricGrid>
+
+      {bySource.length > 0 && (
+        <div style={summarySectionStyle}>
+          <div style={sectionLabel}>Sources</div>
+          {bySource.map((sourceRow) => (
+            <div key={sourceRow.source} style={sourceRowStyle}>
+              <span>{sourceRow.source || "Unknown"}</span>
+              <strong>{sourceRow.count || 0} job{sourceRow.count === 1 ? "" : "s"}</strong>
             </div>
-          </div>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onClose}
-            style={{ padding: "5px 12px", fontSize: "12px" }}
-          >
-            Close
-          </button>
+          ))}
         </div>
+      )}
 
-        <div style={summaryMetricRowStyle}>
-          <SummaryMetric label="new jobs" value={summary.new_jobs || 0} tone="green" />
-          <SummaryMetric label="emails with jobs" value={summary.emails_with_jobs || 0} />
-          <SummaryMetric label="triage" value={summary.triage_jobs || 0} tone="yellow" />
-          <SummaryMetric label="duplicates" value={summary.duplicates || 0} />
-          <SummaryMetric label="errors" value={(summary.parser_error_emails || 0) + (summary.fetch_error_emails || 0)} tone="red" />
-        </div>
-
-        {bySource.length > 0 && (
-          <div style={summarySectionStyle}>
-            <div style={sectionLabel}>Sources</div>
-            {bySource.map((sourceRow) => (
-              <div key={sourceRow.source} style={sourceRowStyle}>
-                <span>{sourceRow.source || "Unknown"}</span>
-                <strong>{sourceRow.count || 0} job{sourceRow.count === 1 ? "" : "s"}</strong>
+      <div style={summarySectionStyle}>
+        <div style={sectionLabel}>Emails That Produced Jobs</div>
+        {jobEmails.length > 0 ? (
+          <div style={{ display: "grid", gap: "8px" }}>
+            {jobEmails.map((email) => (
+              <div key={email.email_id} style={summaryEmailRowStyle}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={summaryEmailSubjectStyle}>{email.email_subject || "(no subject)"}</div>
+                  <div style={summaryEmailMetaStyle}>
+                    {email.sender_email || "Unknown sender"} · {formatLocalDateTime(email.email_date) || "No date"}
+                  </div>
+                  <div style={summaryJobTitlesStyle}>{formatSummaryJobTitles(email.job_titles)}</div>
+                </div>
+                <strong style={summaryJobCountStyle}>
+                  {email.job_count || 0} job{email.job_count === 1 ? "" : "s"}
+                </strong>
               </div>
             ))}
           </div>
+        ) : (
+          <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>
+            No emails produced new jobs.
+          </p>
         )}
-
-        <div style={summarySectionStyle}>
-          <div style={sectionLabel}>Emails That Produced Jobs</div>
-          {jobEmails.length > 0 ? (
-            <div style={summaryEmailListStyle}>
-              {jobEmails.map((email) => (
-                <div key={email.email_id} style={summaryEmailRowStyle}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={summaryEmailSubjectStyle}>{email.email_subject || "(no subject)"}</div>
-                    <div style={summaryEmailMetaStyle}>
-                      {email.sender_email || "Unknown sender"} · {formatLocalDateTime(email.email_date) || "No date"}
-                    </div>
-                    <div style={summaryJobTitlesStyle}>{formatSummaryJobTitles(email.job_titles)}</div>
-                  </div>
-                  <strong style={summaryJobCountStyle}>
-                    {email.job_count || 0} job{email.job_count === 1 ? "" : "s"}
-                  </strong>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>
-              No emails produced new jobs.
-            </p>
-          )}
-        </div>
       </div>
-    </div>
-  );
-}
-
-function SummaryMetric({ label, value, tone = "muted" }) {
-  const colorByTone = {
-    green: "var(--green)",
-    red: "var(--red, #e05252)",
-    yellow: "var(--yellow, #d6a21d)",
-    muted: "var(--text)",
-  };
-  return (
-    <div style={summaryMetricStyle}>
-      <div style={{ ...summaryMetricValueStyle, color: colorByTone[tone] || colorByTone.muted }}>{value}</div>
-      <div style={summaryMetricLabelStyle}>{label}</div>
-    </div>
+    </Modal>
   );
 }
 
@@ -1088,79 +1004,6 @@ const ddStyle = {
   wordBreak: "break-word",
 };
 
-const modalBackdropStyle = {
-  position: "fixed",
-  inset: 0,
-  zIndex: 1100,
-  background: "rgba(0,0,0,0.55)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: "24px",
-};
-
-const summaryModalPanelStyle = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  boxShadow: "var(--shadow-lg)",
-  width: "100%",
-  maxWidth: "760px",
-  maxHeight: "86vh",
-  overflowY: "auto",
-  padding: "18px",
-};
-
-const modalHeaderStyle = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "flex-start",
-  gap: "16px",
-  paddingBottom: "14px",
-  borderBottom: "1px solid var(--border)",
-  marginBottom: "14px",
-};
-
-const modalTitleStyle = {
-  fontSize: "16px",
-  fontWeight: 700,
-  color: "var(--text)",
-};
-
-const modalSubtitleStyle = {
-  fontSize: "12px",
-  color: "var(--text-muted)",
-  marginTop: "2px",
-};
-
-const summaryMetricRowStyle = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))",
-  gap: "10px",
-  marginBottom: "14px",
-};
-
-const summaryMetricStyle = {
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  padding: "10px 12px",
-};
-
-const summaryMetricValueStyle = {
-  fontSize: "22px",
-  fontWeight: 700,
-  lineHeight: 1,
-};
-
-const summaryMetricLabelStyle = {
-  fontSize: "11px",
-  color: "var(--text-muted)",
-  marginTop: "5px",
-  textTransform: "uppercase",
-  letterSpacing: "0.05em",
-};
-
 const summarySectionStyle = {
   borderTop: "1px solid var(--border)",
   paddingTop: "13px",
@@ -1174,11 +1017,6 @@ const sourceRowStyle = {
   fontSize: "13px",
   color: "var(--text)",
   padding: "4px 0",
-};
-
-const summaryEmailListStyle = {
-  display: "grid",
-  gap: "8px",
 };
 
 const summaryEmailRowStyle = {

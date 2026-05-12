@@ -33,6 +33,9 @@
  */
 
 import React, { useEffect, useState } from "react";
+import StatusBadge from "./common/StatusBadge.jsx";
+import { scoreTone } from "../utils/fitScoringUtils.js";
+import { statusTone } from "../utils/jobQueueUtils.js";
 
 const HISTORY_SEARCH_STORAGE_KEY = "jha.history.search";
 
@@ -56,60 +59,31 @@ function writeStoredSearch(storageKey, value) {
 
 // ── Status definitions ────────────────────────────────────────────────────────
 
-const STAGE_STATUSES = [
-  { key: "applied",        label: "Applied",           bg: "#dcfce7", fg: "#166534" },
-  { key: "waiting_call",   label: "Waiting for Call",  bg: "#e0f2fe", fg: "#075985" },
-  { key: "waiting_second", label: "Waiting for 2nd",   bg: "#dbeafe", fg: "#1e40af" },
-  { key: "eval_test",      label: "Eval Test",         bg: "#d1fae5", fg: "#065f46" },
-  { key: "rejected",       label: "Rejected",          bg: "#b91c1c", fg: "#ffffff" },
-  { key: "job_filled",     label: "Job was Filled",    bg: "#fecaca", fg: "#7f1d1d" },
-  { key: "ghosted",        label: "Ghosted",           bg: "#ffedd5", fg: "#9a3412" },
+const STAGE_STATUS_OPTIONS = [
+  { key: "applied",        label: "Applied" },
+  { key: "waiting_call",   label: "Waiting for Call" },
+  { key: "waiting_second", label: "Waiting for 2nd" },
+  { key: "eval_test",      label: "Eval Test" },
+  { key: "rejected",       label: "Rejected" },
+  { key: "job_filled",     label: "Job was Filled" },
+  { key: "ghosted",        label: "Ghosted" },
 ];
 
-const STAGE_MAP = Object.fromEntries(STAGE_STATUSES.map((s) => [s.key, s]));
-
-// Fallback for legacy "added_to_sheet" / "skipped" job statuses
-const LEGACY_STATUS = {
-  added_to_sheet: { label: "Applied", bg: "#dcfce7", fg: "#166534" },
-  skipped:        { label: "Skipped", bg: "#f3f4f6", fg: "#6b7280" },
-};
-
-function StatusBadge({ status }) {
-  const cfg = STAGE_MAP[status] ?? LEGACY_STATUS[status];
-  if (!cfg) {
-    return (
-      <span className="badge badge-gray">
-        {String(status).replace(/_/g, " ")}
-      </span>
-    );
-  }
-  return (
-    <span style={{
-      background: cfg.bg,
-      color: cfg.fg,
-      borderRadius: "var(--radius)",
-      padding: "2px 9px",
-      fontSize: "11px",
-      fontWeight: "600",
-      whiteSpace: "nowrap",
-      display: "inline-block",
-    }}>
-      {cfg.label}
-    </span>
-  );
-}
-
 function ScoreBadge({ score }) {
-  if (score == null) return <span className="badge badge-gray">—</span>;
-  const cls = score >= 70 ? "badge-green" : score >= 40 ? "badge-yellow" : "badge-red";
-  return <span className={`badge ${cls}`}>{score}</span>;
+  return (
+    <StatusBadge
+      status={scoreTone(score)}
+      label={score == null ? "—" : String(score)}
+      tone={scoreTone(score)}
+    />
+  );
 }
 
 // ── Add-stage inline form ─────────────────────────────────────────────────────
 
 function AddStageForm({ jobId, onAdded }) {
   const today = new Date().toLocaleDateString('en-CA');
-  const [status, setStatus] = useState(STAGE_STATUSES[1].key); // default: waiting_call
+  const [status, setStatus] = useState(STAGE_STATUS_OPTIONS[1].key); // default: waiting_call
   const [stageDate, setStageDate] = useState(today);
   const [saving, setSaving] = useState(false);
 
@@ -129,7 +103,7 @@ function AddStageForm({ jobId, onAdded }) {
       const stage = await res.json();
       onAdded(stage);
       // Reset to next likely status
-      setStatus(STAGE_STATUSES[1].key);
+      setStatus(STAGE_STATUS_OPTIONS[1].key);
       setStageDate(today);
     } finally {
       setSaving(false);
@@ -146,7 +120,7 @@ function AddStageForm({ jobId, onAdded }) {
         onChange={(e) => setStatus(e.target.value)}
         style={selectStyle}
       >
-        {STAGE_STATUSES.map((s) => (
+        {STAGE_STATUS_OPTIONS.map((s) => (
           <option key={s.key} value={s.key}>{s.label}</option>
         ))}
       </select>
@@ -167,6 +141,7 @@ function AddStageForm({ jobId, onAdded }) {
     </div>
   );
 }
+
 
 // ── Wildcard search helper ────────────────────────────────────────────────────
 
@@ -342,7 +317,7 @@ export default function HistoryPanel() {
                           {stages.map((stage, idx) => (
                             <div key={stage.id} style={stageRowStyle}>
                               <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1 }}>
-                                <div style={timelineDotStyle(STAGE_MAP[stage.status]?.bg)} />
+                                <div style={timelineDotStyle(statusTone(stage.status))} />
                                 {idx < stages.length - 1 && <div style={timelineLineStyle} />}
                                 <span style={{ fontSize: "12px", color: "var(--text-muted)", minWidth: "90px" }}>
                                   {stage.date}
@@ -414,11 +389,11 @@ const stageRowStyle = {
   position: "relative",
 };
 
-const timelineDotStyle = (bg) => ({
+const timelineDotStyle = (tone) => ({
   width: "10px",
   height: "10px",
   borderRadius: "50%",
-  background: bg || "var(--border)",
+  background: `var(--${tone})`,
   flexShrink: 0,
 });
 

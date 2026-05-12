@@ -54,6 +54,8 @@ from datetime import datetime, UTC
 from typing import Any
 
 from backend.celery_app import celery_app
+from backend.duplicate_checker import DuplicateChecker
+from backend.fit_scorer import FitScorer
 from backend.import_repair import (
     post_repair_duplicate_check,
     repair_existing_job_company,
@@ -79,6 +81,74 @@ def _import_failure_detail(
         "error_type": exc.__class__.__name__,
         "reason": reason,
     }
+
+
+_ENRICH_MIN_CHARS = 300
+_ENRICH_ADVANTAGE_CHARS = 300
+
+
+def _is_richer_description(incoming_text: str, existing_job: dict[str, Any]) -> bool:
+    """Return True if incoming_text is substantially richer than what is stored."""
+    if len(incoming_text) < _ENRICH_MIN_CHARS:
+        return False
+    existing = str(
+        existing_job.get("job_description") or existing_job.get("raw_email_snippet") or ""
+    )
+    return len(incoming_text) > len(existing) + _ENRICH_ADVANTAGE_CHARS
+
+
+def _enrich_job_description(repos: dict[str, Any], job: dict[str, Any], description: str) -> None:
+    """Overwrite a job's description fields and re-score against the candidate profile."""
+    job_id = int(job["id"])
+    repos["jobs"].update(job_id, {
+        "job_description": description,
+        "raw_email_snippet": description[:6000],
+    })
+    try:
+        resume_row = repos["resume"].get_latest()
+        resume_text = str(resume_row.get("content") or "") if resume_row else ""
+        penalty_rules = repos["penalties"].get_enabled()
+        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+        result = FitScorer().score(
+            job_title=str(job.get("job_title") or ""),
+            company=str(job.get("company") or ""),
+            email_body=description,
+            resume_text=resume_text,
+            penalty_rules=penalty_rules,
+            fit_feedback=fit_feedback,
+        )
+        score = int(result["score"])
+        current_status = str(job.get("status") or "")
+        score_updates: dict[str, Any] = {
+            "fit_score": score,
+            "fit_reasoning": result["reasoning"],
+        }
+        if current_status not in {"skipped", "added_to_sheet"}:
+            score_updates["status"] = "pending_review" if score >= 70 else "triage"
+        repos["jobs"].update(job_id, score_updates)
+    except Exception as exc:
+        logger.warning("Re-scoring failed for enriched job %d: %s", job_id, exc)
+
+
+def _find_duplicate_original(
+    new_job: dict[str, Any],
+    known_jobs: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return the existing job that new_job duplicates, or None."""
+    job_title = str(new_job.get("job_title") or "").strip()
+    company = str(new_job.get("company") or "").strip()
+    new_id = int(new_job.get("id") or 0)
+    if not job_title or not company:
+        return None
+    candidates = [j for j in known_jobs if int(j.get("id") or 0) != new_id]
+    match = DuplicateChecker().check(job_title=job_title, company=company, sheet_jobs=candidates)
+    if not match:
+        return None
+    for job in candidates:
+        if (str(job.get("company") or "") == match["sheet_company"] and
+                str(job.get("job_title") or "") == match["sheet_title"]):
+            return job
+    return None
 
 
 @celery_app.task(bind=True)
@@ -119,12 +189,14 @@ def run_import_task(
         queued = 0
         skipped = 0
         repaired = 0
+        enriched = 0
         failed = 0
         failures: list[dict] = []
 
         for i, url_row in enumerate(extracted):
             url = str(url_row.get("url") or "")
             platform = str(url_row.get("platform") or "")
+            incoming_text = str(url_row.get("listing_text") or "").strip()
 
             self.update_state(
                 state="PROGRESS",
@@ -157,6 +229,10 @@ def run_import_task(
                             repos["jobs"], updated, known_jobs
                         )
                         repos["conn"].commit()
+                if _is_richer_description(incoming_text, existing_job):
+                    _enrich_job_description(repos, existing_job, incoming_text)
+                    repos["conn"].commit()
+                    enriched += 1
                 skipped += 1
                 continue
 
@@ -173,8 +249,8 @@ def run_import_task(
                         "capture_source": capture_source,
                     },
                 )
-                service.ingest(
-                    str(url_row.get("listing_text") or ""),
+                ingest_result = service.ingest(
+                    incoming_text,
                     source_url=url,
                     source_name=platform,
                     company_override=str(url_row.get("company") or ""),
@@ -182,6 +258,15 @@ def run_import_task(
                     sheet_jobs=known_jobs,
                     trigger=body.get("import_trigger", "ui"),
                 )
+                new_job = ingest_result.job
+                if new_job.get("status") == "possible_duplicate":
+                    original = _find_duplicate_original(new_job, known_jobs)
+                    if original and _is_richer_description(incoming_text, original):
+                        _enrich_job_description(repos, original, incoming_text)
+                        repos["jobs"].delete(int(new_job["id"]))
+                        repos["conn"].commit()
+                        enriched += 1
+                        continue
                 queued += 1
                 repos["conn"].commit()
             except (ValueError, urllib.error.URLError, TimeoutError, socket.error) as exc:
@@ -201,6 +286,7 @@ def run_import_task(
             "queued": queued,
             "skipped": skipped,
             "repaired": repaired,
+            "enriched": enriched,
             "failed": failed,
             "failures": failures,
             "capture_source": capture_source,

@@ -442,85 +442,103 @@ function ListenerImportDialog({ state, onClose }) {
   const phaseLabel = listenerImportPhaseLabel(state.phase);
   const title = listenerImportTitle(state.phase, running);
 
-  return (
-    <div style={listenerDialogBackdropStyle}>
-      <div style={listenerDialogPanelStyle}>
-        <div style={listenerDialogHeaderStyle}>
-          <div>
-            <div style={listenerDialogTitleStyle}>
-              {title}
-            </div>
-            <div style={listenerDialogSubtitleStyle}>
-              {phaseLabel}{sourceName ? ` · ${sourceName}` : ""}
-            </div>
-          </div>
-          {!running && (
-            <button
-              type="button"
-              className="btn-secondary"
-              style={{ padding: "4px 10px", fontSize: "12px" }}
-              onClick={onClose}
-            >
-              Close
-            </button>
-          )}
-        </div>
-
-        <div style={listenerDialogBodyStyle}>
-          {running && <span className="inline-spinner" style={listenerSpinnerStyle} />}
-          <span>{state.message || "Processing captured job-board HTML..."}</span>
-        </div>
-
-        <div style={listenerStepListStyle}>
-          {(state.steps || []).map((step) => (
-            <div key={step.key} style={listenerStepStyle}>
-              <span style={listenerStepDotStyle(step.status)} />
-              <span style={listenerStepLabelStyle(step.status)}>{step.label}</span>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ marginTop: "14px" }}>
-          <div style={listenerProgressHeaderStyle}>
-            <span>{state.total ? `${state.total} job link${state.total === 1 ? "" : "s"}` : "Waiting for job links"}</span>
-            <span>{safeProgress}%</span>
-          </div>
-          <div className="loading-bar">
-            <div className="loading-bar-fill" style={{ width: `${safeProgress}%` }} />
-          </div>
-        </div>
-
-        {state.current_job_url && (
-          <div style={listenerCurrentJobStyle}>
-            <div style={listenerCurrentJobLabelStyle}>
-              {state.current_platform || "Current job"}
-            </div>
-            <a href={state.current_job_url} target="_blank" rel="noreferrer">
-              {state.current_job_url}
-            </a>
-          </div>
-        )}
-
-        {!running && state.result && (
-          <div style={listenerResultGridStyle}>
-            <ImportResultMetric label="queued" value={result.queued || 0} tone="green" />
-            <ImportResultMetric label="skipped" value={result.skipped || 0} />
-            <ImportResultMetric label="repaired" value={result.repaired || 0} tone="green" />
-            <ImportResultMetric label="failed" value={result.failed || 0} tone={result.failed ? "red" : ""} />
-          </div>
-        )}
-      </div>
-    </div>
+  const footer = !running && (
+    <button
+      type="button"
+      className="btn-secondary"
+      onClick={onClose}
+    >
+      Close
+    </button>
   );
-}
 
-function ImportResultMetric({ label, value, tone = "" }) {
-  const color = tone === "green" ? "var(--green)" : tone === "red" ? "var(--red)" : "var(--text-muted)";
   return (
-    <div>
-      <div style={{ color, fontSize: "24px", fontWeight: 700 }}>{value}</div>
-      <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>{label}</div>
-    </div>
+    <Modal
+      title={title}
+      subtitle={`${phaseLabel}${sourceName ? ` · ${sourceName}` : ""}`}
+      onClose={onClose}
+      showCloseButton={!running}
+      footer={footer}
+      maxWidth="560px"
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text)", fontSize: "14px" }}>
+        {running && <span className="inline-spinner" style={{ color: "var(--accent)", height: "18px", width: "18px" }} />}
+        <span>{state.message || "Processing captured job-board HTML..."}</span>
+      </div>
+
+      <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", marginTop: "16px" }}>
+        {(state.steps || []).map((step) => (
+          <div
+            key={step.key}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              padding: "8px 10px",
+              background: "var(--surface2)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              minHeight: "42px",
+            }}
+          >
+            <span style={{
+              height: "12px",
+              width: "12px",
+              borderRadius: "50%",
+              flexShrink: 0,
+              background: step.status === "complete" ? "var(--green)" : step.status === "error" ? "var(--red)" : step.status === "active" ? "var(--accent)" : "transparent",
+              border: step.status === "pending" ? "2px solid var(--border)" : "2px solid transparent",
+              boxShadow: step.status === "active" ? "0 0 0 4px rgba(74,92,247,0.12)" : "none",
+            }} />
+            <span style={{
+              fontSize: "12px",
+              fontWeight: step.status === "active" ? 700 : 600,
+              color: step.status === "pending" ? "var(--text-muted)" : "var(--text)",
+            }}>{step.label}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: "18px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--text-muted)", marginBottom: "8px" }}>
+          <span>{state.total ? `${state.total} job link${state.total === 1 ? "" : "s"}` : "Waiting for job links"}</span>
+          <span>{safeProgress}%</span>
+        </div>
+        <div className="loading-bar">
+          <div className="loading-bar-fill" style={{ width: `${safeProgress}%` }} />
+        </div>
+      </div>
+
+      {state.current_job_url && (
+        <div style={{
+          marginTop: "16px",
+          padding: "10px 12px",
+          background: "var(--surface2)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          fontSize: "12px",
+          overflowWrap: "anywhere",
+        }}>
+          <div style={{ color: "var(--text-muted)", fontSize: "11px", fontWeight: 700, marginBottom: "4px", textTransform: "uppercase" }}>
+            {state.current_platform || "Current job"}
+          </div>
+          <a href={state.current_job_url} target="_blank" rel="noreferrer">
+            {state.current_job_url}
+          </a>
+        </div>
+      )}
+
+      {!running && state.result && (
+        <div style={{ marginTop: "18px", paddingTop: "14px", borderTop: "1px solid var(--border)" }}>
+          <MetricGrid>
+            <MetricItem label="queued" value={result.queued || 0} tone="green" />
+            <MetricItem label="skipped" value={result.skipped || 0} />
+            <MetricItem label="repaired" value={result.repaired || 0} tone="green" />
+            <MetricItem label="failed" value={result.failed || 0} tone={result.failed ? "red" : ""} />
+          </MetricGrid>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -542,42 +560,7 @@ function listenerImportPhaseLabel(phase) {
   return "Import listener";
 }
 
-const listenerDialogBackdropStyle = {
-  alignItems: "center",
-  background: "rgba(24,28,58,0.38)",
-  display: "flex",
-  inset: 0,
-  justifyContent: "center",
-  padding: "24px",
-  position: "fixed",
-  zIndex: 1200,
-};
-
-const listenerDialogPanelStyle = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  boxShadow: "var(--shadow)",
-  maxWidth: "560px",
-  padding: "18px",
-  width: "100%",
-};
-
-const listenerDialogHeaderStyle = {
-  alignItems: "flex-start",
-  display: "flex",
-  gap: "12px",
-  justifyContent: "space-between",
-  marginBottom: "14px",
-};
-
-const listenerDialogTitleStyle = {
-  color: "var(--text)",
-  fontSize: "16px",
-  fontWeight: 700,
-};
-
-const listenerDialogSubtitleStyle = {
+alogSubtitleStyle = {
   color: "var(--text-muted)",
   fontSize: "12px",
   marginTop: "3px",

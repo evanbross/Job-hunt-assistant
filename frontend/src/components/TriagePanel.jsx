@@ -33,6 +33,7 @@
  */
 
 import React, { useEffect, useRef, useState } from "react";
+import Modal from "./common/Modal.jsx";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 import { fitReasoningBullets } from "../utils/fitScoringUtils.js";
@@ -1476,49 +1477,43 @@ function ReEvaluatePopup({ popup, onClose }) {
   const action = popup.action || "Re-evaluation";
   const runningText = popup.runningText || "Applying current scoring rules…";
 
+  const footer = !isRunning && (
+    <button type="button" className="btn-secondary" onClick={onClose}>
+      Close
+    </button>
+  );
+
   return (
-    <div style={popupBackdropStyle}>
-      <div style={popupPanelStyle}>
-        <div style={popupHeaderStyle}>
-          <div>
-            <div style={popupTitleStyle}>
-              {isRunning ? `${action} in progress` : isError ? `${action} failed` : `${action} complete`}
-            </div>
-            <div style={popupSubtitleStyle}>{title}{companyText}</div>
-          </div>
-          {!isRunning && (
-            <button
-              type="button"
-              className="btn-secondary"
-              style={{ padding: "4px 10px", fontSize: "12px" }}
-              onClick={onClose}
-            >
-              Close
-            </button>
+    <Modal
+      title={isRunning ? `${action} in progress` : isError ? `${action} failed` : `${action} complete`}
+      subtitle={`${title}${companyText}`}
+      onClose={onClose}
+      showCloseButton={!isRunning}
+      footer={footer}
+      maxWidth="460px"
+    >
+      {isRunning ? (
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-muted)", fontSize: "14px" }}>
+          <span className="inline-spinner" style={{ color: "var(--accent)" }} />
+          <span>{runningText}</span>
+        </div>
+      ) : isError ? (
+        <div style={{ color: "var(--red)", fontSize: "14px" }}>
+          {popup.error || "Failed to re-evaluate fit."}
+        </div>
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "22px", fontWeight: 700, color: "var(--text)" }}>
+          <span>{scoreLabel(popup.previousScore)}</span>
+          <span style={{ color: "var(--text-muted)" }}>→</span>
+          <span>{scoreLabel(popup.newScore)}</span>
+          {popup.status === "pending_review" && (
+            <span style={{ background: "rgba(76,175,129,0.15)", borderRadius: "999px", color: "var(--green)", fontSize: "12px", padding: "4px 9px" }}>
+              Moved to job queue
+            </span>
           )}
         </div>
-
-        {isRunning ? (
-          <div style={popupBodyStyle}>
-            <span className="inline-spinner" style={popupSpinnerStyle} />
-            <span>{runningText}</span>
-          </div>
-        ) : isError ? (
-          <div style={{ ...popupBodyStyle, color: "var(--red)" }}>
-            {popup.error || "Failed to re-evaluate fit."}
-          </div>
-        ) : (
-          <div style={popupResultStyle}>
-            <span>{scoreLabel(popup.previousScore)}</span>
-            <span style={{ color: "var(--text-muted)" }}>→</span>
-            <span>{scoreLabel(popup.newScore)}</span>
-            {popup.status === "pending_review" && (
-              <span style={popupMovedStyle}>Moved to job queue</span>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+      )}
+    </Modal>
   );
 }
 
@@ -1531,68 +1526,72 @@ function BatchRefreshPopup({ popup, onClose }) {
   const movedCount = results.filter((result) => result.status === "pending_review").length;
   const errorCount = results.filter((result) => result.error).length;
 
+  const footer = !isRunning && (
+    <button type="button" className="btn-secondary" onClick={onClose}>
+      Close
+    </button>
+  );
+
   return (
-    <div style={popupBackdropStyle}>
-      <div style={batchPopupPanelStyle}>
-        <div style={popupHeaderStyle}>
-          <div>
-            <div style={popupTitleStyle}>
-              {isRunning ? "Re-fetch all in progress" : "Re-fetch all complete"}
-            </div>
-            <div style={popupSubtitleStyle}>
-              {isRunning
-                ? `${processedCount} of ${popup.total} complete`
-                : `${successCount} refreshed, ${movedCount} moved to job queue, ${errorCount} failed`}
-            </div>
-          </div>
-          {!isRunning && (
-            <button
-              type="button"
-              className="btn-secondary"
-              style={{ padding: "4px 10px", fontSize: "12px" }}
-              onClick={onClose}
+    <Modal
+      title={isRunning ? "Re-fetch all in progress" : "Re-fetch all complete"}
+      subtitle={isRunning
+        ? `${processedCount} of ${popup.total} complete`
+        : `${successCount} refreshed, ${movedCount} moved to job queue, ${errorCount} failed`}
+      onClose={onClose}
+      showCloseButton={!isRunning}
+      footer={footer}
+      maxWidth="680px"
+    >
+      {isRunning && (
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-muted)", fontSize: "14px", marginBottom: "14px" }}>
+          <span className="inline-spinner" style={{ color: "var(--accent)" }} />
+          <span>{jobDisplayName(currentJob)}</span>
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "420px", overflowY: "auto" }}>
+        {results.length === 0 && isRunning ? (
+          <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>Starting first re-fetch...</div>
+        ) : (
+          results.map((result, index) => (
+            <div
+              key={`${result.jobTitle}-${result.company}-${index}`}
+              style={{
+                alignItems: "flex-start",
+                background: "var(--surface2)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                display: "flex",
+                gap: "12px",
+                justifyContent: "space-between",
+                padding: "10px 12px",
+              }}
             >
-              Close
-            </button>
-          )}
-        </div>
-
-        {isRunning && (
-          <div style={{ ...popupBodyStyle, marginBottom: "14px" }}>
-            <span className="inline-spinner" style={popupSpinnerStyle} />
-            <span>{jobDisplayName(currentJob)}</span>
-          </div>
-        )}
-
-        <div style={batchSummaryListStyle}>
-          {results.length === 0 && isRunning ? (
-            <div style={batchEmptyTextStyle}>Starting first re-fetch...</div>
-          ) : (
-            results.map((result, index) => (
-              <div key={`${result.jobTitle}-${result.company}-${index}`} style={batchSummaryRowStyle}>
-                <div style={batchSummaryMainStyle}>
-                  <div style={batchSummaryTitleStyle}>{jobDisplayName(result)}</div>
-                  {result.error ? (
-                    <div style={batchSummaryErrorStyle}>{result.error}</div>
-                  ) : (
-                    <div style={batchSummaryMetaStyle}>
-                      {scoreLabel(result.previousScore)} to {scoreLabel(result.newScore)}
-                      {scoreDeltaLabel(result.previousScore, result.newScore)}
-                    </div>
-                  )}
+              <div style={{ minWidth: 0 }}>
+                <div style={{ color: "var(--text)", fontSize: "13px", fontWeight: 600, overflowWrap: "anywhere" }}>
+                  {jobDisplayName(result)}
                 </div>
-                <span
-                  className={`badge ${result.error ? "badge-red" : result.status === "pending_review" ? "badge-green" : "badge-yellow"}`}
-                  style={batchStatusBadgeStyle}
-                >
-                  {result.error ? "Failed" : dispositionLabel(result.status)}
-                </span>
+                {result.error ? (
+                  <div style={{ color: "var(--red)", fontSize: "12px", marginTop: "3px", overflowWrap: "anywhere" }}>{result.error}</div>
+                ) : (
+                  <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "3px" }}>
+                    {scoreLabel(result.previousScore)} to {scoreLabel(result.newScore)}
+                    {scoreDeltaLabel(result.previousScore, result.newScore)}
+                  </div>
+                )}
               </div>
-            ))
-          )}
-        </div>
+              <span
+                className={`badge ${result.error ? "badge-red" : result.status === "pending_review" ? "badge-green" : "badge-yellow"}`}
+                style={{ flexShrink: 0, whiteSpace: "nowrap" }}
+              >
+                {result.error ? "Failed" : dispositionLabel(result.status)}
+              </span>
+            </div>
+          ))
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -1626,106 +1625,77 @@ function SalaryBadge({ job }) {
 }
 
 function DescriptionModal({ job, onClose }) {
-  useEffect(() => {
-    const handleKeyDown = (event) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
   return (
-    <div style={modalBackdropStyle} onClick={onClose}>
-      <div style={modalPanelStyle} onClick={(event) => event.stopPropagation()}>
-        <div style={modalHeaderStyle}>
-          <div style={{ minWidth: 0 }}>
-            <div style={modalTitleStyle}>{job.job_title || "Job Description"}</div>
-            {job.company && <div style={modalSubtitleStyle}>{job.company}</div>}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            style={modalCloseButtonStyle}
-            aria-label="Close formatted description"
-          >
-            &#x2715;
-          </button>
-        </div>
-        <div style={modalBodyStyle}>
-          <pre style={formattedDescriptionStyle}>
-            {formatJobDescription(job.raw_email_snippet)}
-          </pre>
-        </div>
-      </div>
-    </div>
+    <Modal
+      title={job.job_title || "Job Description"}
+      subtitle={job.company}
+      onClose={onClose}
+      maxWidth="900px"
+    >
+      <pre style={formattedDescriptionStyle}>
+        {formatJobDescription(job.raw_email_snippet)}
+      </pre>
+    </Modal>
   );
 }
 
 function DescriptionPasteModal({ job, value, saving, onChange, onClose, onSubmit }) {
-  useEffect(() => {
-    const handleKeyDown = (event) => {
-      if (event.key === "Escape" && !saving) onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, saving]);
-
   const charCount = value.trim().length;
   const canSubmit = charCount >= 80 && !saving;
 
-  return (
-    <div style={modalBackdropStyle} onClick={() => !saving && onClose()}>
-      <div style={descriptionPastePanelStyle} onClick={(event) => event.stopPropagation()}>
-        <div style={modalHeaderStyle}>
-          <div style={{ minWidth: 0 }}>
-            <div style={modalTitleStyle}>Add Detailed Description</div>
-            <div style={modalSubtitleStyle}>
-              {(job.job_title || "Job")}{job.company ? ` at ${job.company}` : ""}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={saving}
-            style={modalCloseButtonStyle}
-            aria-label="Close description paste dialog"
-          >
-            &#x2715;
-          </button>
-        </div>
-
-        <div style={descriptionPasteBodyStyle}>
-          <textarea
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            placeholder="Paste the full job description here..."
-            style={descriptionPasteTextareaStyle}
-            disabled={saving}
-          />
-          <div style={descriptionPasteFooterStyle}>
-            <span style={{ color: canSubmit ? "var(--text-muted)" : "var(--red)", fontSize: "12px" }}>
-              {charCount} characters
-            </span>
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={onSubmit}
-              disabled={!canSubmit}
-              style={{ padding: "7px 14px", fontSize: "13px" }}
-            >
-              {saving ? (
-                <span style={buttonSpinnerContentStyle}>
-                  <span className="inline-spinner" />
-                  Re-evaluating...
-                </span>
-              ) : (
-                "Save & Re-evaluate"
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
+  const footer = (
+    <div style={{ alignItems: "center", display: "flex", gap: "12px", justifyContent: "space-between", width: "100%" }}>
+      <span style={{ color: canSubmit ? "var(--text-muted)" : "var(--red)", fontSize: "12px" }}>
+        {charCount} characters
+      </span>
+      <button
+        type="button"
+        className="btn-primary"
+        onClick={onSubmit}
+        disabled={!canSubmit}
+        style={{ padding: "7px 14px", fontSize: "13px" }}
+      >
+        {saving ? (
+          <span style={buttonSpinnerContentStyle}>
+            <span className="inline-spinner" />
+            Re-evaluating...
+          </span>
+        ) : (
+          "Save & Re-evaluate"
+        )}
+      </button>
     </div>
+  );
+
+  return (
+    <Modal
+      title="Add Detailed Description"
+      subtitle={`${(job.job_title || "Job")}${job.company ? ` at ${job.company}` : ""}`}
+      onClose={onClose}
+      showCloseButton={!saving}
+      footer={footer}
+      maxWidth="820px"
+    >
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Paste the full job description here..."
+        style={{
+          background: "var(--surface2)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          color: "var(--text)",
+          fontFamily: "inherit",
+          fontSize: "13px",
+          lineHeight: 1.55,
+          minHeight: "360px",
+          padding: "12px",
+          resize: "vertical",
+          width: "100%",
+        }}
+        disabled={saving}
+      />
+    </Modal>
   );
 }
 
@@ -1736,43 +1706,33 @@ function DescriptionUpdatePopup({ popup, onClose }) {
   const stayedInTriage = popup.newStatus === "triage";
 
   return (
-    <div style={popupBackdropStyle}>
-      <div style={popupPanelStyle}>
-        <div style={popupHeaderStyle}>
-          <div>
-            <div style={popupTitleStyle}>Description Re-evaluated</div>
-            <div style={popupSubtitleStyle}>{title}{companyText}</div>
-          </div>
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ padding: "4px 10px", fontSize: "12px" }}
-            onClick={onClose}
-          >
-            Close
-          </button>
-        </div>
-
-        <div style={popupResultStyle}>
-          <span>{scoreLabel(popup.previousScore)}</span>
-          <span style={{ color: "var(--text-muted)" }}>to</span>
-          <span>{scoreLabel(popup.newScore)}</span>
-          {scoreDeltaLabel(popup.previousScore, popup.newScore) && (
-            <span style={{ color: "var(--text-muted)", fontSize: "13px", fontWeight: 700 }}>
-              {scoreDeltaLabel(popup.previousScore, popup.newScore)}
-            </span>
-          )}
-        </div>
-
-        <div style={descriptionUpdateStatusStyle}>
-          {movedToQueue && "Moved to job queue"}
-          {stayedInTriage && "Still in triage"}
-          {!movedToQueue && !stayedInTriage && dispositionLabel(popup.newStatus)}
-        </div>
+    <Modal
+      title="Description Re-evaluated"
+      subtitle={`${title}${companyText}`}
+      onClose={onClose}
+      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
+      maxWidth="460px"
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "22px", fontWeight: 700, color: "var(--text)" }}>
+        <span>{scoreLabel(popup.previousScore)}</span>
+        <span style={{ color: "var(--text-muted)" }}>to</span>
+        <span>{scoreLabel(popup.newScore)}</span>
+        {scoreDeltaLabel(popup.previousScore, popup.newScore) && (
+          <span style={{ color: "var(--text-muted)", fontSize: "13px", fontWeight: 700 }}>
+            {scoreDeltaLabel(popup.previousScore, popup.newScore)}
+          </span>
+        )}
       </div>
-    </div>
+
+      <div style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", fontSize: "13px", fontWeight: 700, marginTop: "14px", padding: "9px 12px" }}>
+        {movedToQueue && "Moved to job queue"}
+        {stayedInTriage && "Still in triage"}
+        {!movedToQueue && !stayedInTriage && dispositionLabel(popup.newStatus)}
+      </div>
+    </Modal>
   );
 }
+
 
 
 const sortSelectStyle = {
@@ -2064,149 +2024,6 @@ const buttonSpinnerContentStyle = {
   gap: "6px",
 };
 
-const popupBackdropStyle = {
-  alignItems: "center",
-  background: "rgba(24,28,58,0.38)",
-  display: "flex",
-  inset: 0,
-  justifyContent: "center",
-  padding: "24px",
-  position: "fixed",
-  zIndex: 1100,
-};
-
-const popupPanelStyle = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  boxShadow: "var(--shadow)",
-  maxWidth: "460px",
-  padding: "18px",
-  width: "100%",
-};
-
-const batchPopupPanelStyle = {
-  ...popupPanelStyle,
-  maxWidth: "680px",
-};
-
-const popupHeaderStyle = {
-  alignItems: "flex-start",
-  display: "flex",
-  gap: "12px",
-  justifyContent: "space-between",
-  marginBottom: "14px",
-};
-
-const popupTitleStyle = {
-  color: "var(--text)",
-  fontSize: "16px",
-  fontWeight: 700,
-};
-
-const popupSubtitleStyle = {
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  marginTop: "3px",
-};
-
-const popupBodyStyle = {
-  alignItems: "center",
-  color: "var(--text-muted)",
-  display: "flex",
-  fontSize: "14px",
-  gap: "10px",
-};
-
-const popupSpinnerStyle = {
-  color: "var(--accent)",
-  height: "18px",
-  width: "18px",
-};
-
-const popupResultStyle = {
-  alignItems: "center",
-  color: "var(--text)",
-  display: "flex",
-  flexWrap: "wrap",
-  fontSize: "22px",
-  fontWeight: 700,
-  gap: "10px",
-};
-
-const popupMovedStyle = {
-  background: "var(--green-light)",
-  borderRadius: "999px",
-  color: "var(--green)",
-  fontSize: "12px",
-  fontWeight: 700,
-  padding: "4px 9px",
-};
-
-const descriptionUpdateStatusStyle = {
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  color: "var(--text)",
-  fontSize: "13px",
-  fontWeight: 700,
-  marginTop: "14px",
-  padding: "9px 12px",
-};
-
-const batchSummaryListStyle = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "8px",
-  maxHeight: "420px",
-  overflowY: "auto",
-};
-
-const batchSummaryRowStyle = {
-  alignItems: "flex-start",
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  display: "flex",
-  gap: "12px",
-  justifyContent: "space-between",
-  padding: "10px 12px",
-};
-
-const batchSummaryMainStyle = {
-  minWidth: 0,
-};
-
-const batchSummaryTitleStyle = {
-  color: "var(--text)",
-  fontSize: "13px",
-  fontWeight: 600,
-  overflowWrap: "anywhere",
-};
-
-const batchSummaryMetaStyle = {
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  marginTop: "3px",
-};
-
-const batchSummaryErrorStyle = {
-  color: "var(--red)",
-  fontSize: "12px",
-  marginTop: "3px",
-  overflowWrap: "anywhere",
-};
-
-const batchStatusBadgeStyle = {
-  flexShrink: 0,
-  whiteSpace: "nowrap",
-};
-
-const batchEmptyTextStyle = {
-  color: "var(--text-muted)",
-  fontSize: "13px",
-};
-
 const emailMetaStyle = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
@@ -2238,10 +2055,6 @@ const reasoningListStyle = {
   color: "var(--text-muted)",
   fontSize: "13px",
   lineHeight: "1.6",
-};
-
-const negativeReasoningBulletStyle = {
-  color: "var(--red)",
 };
 
 const penaltyInlineBulletStyle = {
@@ -2314,98 +2127,6 @@ const chatInputStyle = {
   fontFamily: "inherit",
 };
 
-const modalBackdropStyle = {
-  position: "fixed",
-  inset: 0,
-  zIndex: 1000,
-  background: "rgba(0,0,0,0.55)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: "24px",
-};
-
-const modalPanelStyle = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  boxShadow: "var(--shadow)",
-  width: "min(900px, 100%)",
-  maxHeight: "86vh",
-  display: "flex",
-  flexDirection: "column",
-  overflow: "hidden",
-};
-
-const descriptionPastePanelStyle = {
-  ...modalPanelStyle,
-  width: "min(820px, 100%)",
-};
-
-const modalHeaderStyle = {
-  display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between",
-  gap: "16px",
-  padding: "16px 20px",
-  borderBottom: "1px solid var(--border)",
-};
-
-const modalTitleStyle = {
-  fontSize: "15px",
-  fontWeight: 700,
-  color: "var(--text)",
-  overflowWrap: "anywhere",
-};
-
-const modalSubtitleStyle = {
-  marginTop: "3px",
-  fontSize: "12px",
-  color: "var(--text-muted)",
-};
-
-const modalCloseButtonStyle = {
-  flexShrink: 0,
-  background: "var(--surface2)",
-  color: "var(--text-muted)",
-  border: "1px solid var(--border)",
-  padding: "3px 9px",
-  fontSize: "13px",
-};
-
-const modalBodyStyle = {
-  overflowY: "auto",
-  padding: "18px 22px",
-};
-
-const descriptionPasteBodyStyle = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "10px",
-  padding: "16px 20px",
-};
-
-const descriptionPasteTextareaStyle = {
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  color: "var(--text)",
-  fontFamily: "inherit",
-  fontSize: "13px",
-  lineHeight: 1.55,
-  minHeight: "360px",
-  padding: "12px",
-  resize: "vertical",
-  width: "100%",
-};
-
-const descriptionPasteFooterStyle = {
-  alignItems: "center",
-  display: "flex",
-  gap: "12px",
-  justifyContent: "space-between",
-};
-
 const formattedDescriptionStyle = {
   margin: 0,
   whiteSpace: "pre-wrap",
@@ -2430,3 +2151,4 @@ const snippetStyle = {
   fontFamily: "ui-monospace, 'Cascadia Code', monospace",
   lineHeight: "1.6",
 };
+

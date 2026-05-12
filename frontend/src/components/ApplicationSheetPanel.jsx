@@ -33,6 +33,7 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import Modal from "./common/Modal.jsx";
 
 const APPLICATION_SHEET_SEARCH_STORAGE_KEY = "jha.applicationSheet.search";
 
@@ -55,19 +56,19 @@ function writeStoredSearch(storageKey, value) {
 }
 
 const STATUS_FALLBACKS = {
-  applied:            { background: "#d9ead3", color: "#274e13" },
-  rejected:           { background: "#cc0000", color: "#ffffff" },
-  waiting_call:       { background: "#cfe8f3", color: "#134f5c" },
-  waiting_second:     { background: "#f4c7b3", color: "#783f04" },
-  eval_test:          { background: "#16875b", color: "#ffffff" },
-  job_filled:         { background: "#cc0000", color: "#ffffff" },
-  ghosted:            { background: "#e8710a", color: "#ffffff" },
-  skipped:            { background: "#f3f4f6", color: "#6b7280" },
-  triage:             { background: "#fff2cc", color: "#6b4500" },
-  pending_review:     { background: "#e8d5f5", color: "#4a1d96" },
-  possible_duplicate: { background: "#fde8c8", color: "#7c2d00" },
-  not_a_fit:          { background: "#fce8e6", color: "#9a0007" },
-  added_to_sheet:     { background: "#ccf0e8", color: "#00574a" },
+  applied:            { background: "var(--green-light)", color: "var(--green)" },
+  rejected:           { background: "var(--red-light)", color: "var(--red)" },
+  waiting_call:       { background: "var(--accent-light)", color: "var(--accent)" },
+  waiting_second:     { background: "var(--orange-light)", color: "var(--orange)" },
+  eval_test:          { background: "var(--green-light)", color: "var(--green)" },
+  job_filled:         { background: "var(--red-light)", color: "var(--red)" },
+  ghosted:            { background: "var(--orange-light)", color: "var(--orange)" },
+  skipped:            { background: "var(--surface2)", color: "var(--text-muted)" },
+  triage:             { background: "var(--yellow-light)", color: "var(--yellow)" },
+  pending_review:     { background: "var(--surface2)", color: "var(--text-muted)" },
+  possible_duplicate: { background: "var(--yellow-light)", color: "var(--yellow)" },
+  not_a_fit:          { background: "var(--red-light)", color: "var(--red)" },
+  added_to_sheet:     { background: "var(--green-light)", color: "var(--green)" },
 };
 
 // Fallback option list shown before the DB loads (or if the table is empty).
@@ -225,87 +226,78 @@ function StatusIndicator({ cell, colorMap = {}, labelMap = {} }) {
 function GhostDialog({ result, onClose, labelMap = {} }) {
   const marked = Array.isArray(result.marked) ? result.marked : [];
   return (
-    <div style={modalBackdropStyle}>
-      <div style={modalPanelStyle}>
-        <div style={modalHeaderStyle}>
-          <div>
-            <div style={modalTitleStyle}>Mark Ghosts Complete</div>
-            <div style={modalSubtitleStyle}>
-              {marked.length === 0
-                ? `No applications were Applied for 30+ days as of ${result.cutoff_date || "the cutoff"}.`
-                : `${marked.length} application${marked.length === 1 ? "" : "s"} marked as Ghosted.`}
-            </div>
-          </div>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onClose}
-            style={{ fontSize: "12px", padding: "4px 10px" }}
-          >
-            Close
-          </button>
-        </div>
-        {marked.length > 0 && (
-          <div style={ghostListStyle}>
-            {marked.map((job) => (
-              <div key={job.id} style={ghostRowStyle}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={ghostTitleStyle}>
-                    {job.job_title || "Untitled role"}
-                    {job.company && <span style={ghostCompanyStyle}> at {job.company}</span>}
-                  </div>
-                  <div style={ghostMetaStyle}>
-                    Applied {job.applied_date} · {job.days_applied} days
-                  </div>
+    <Modal
+      title="Mark Ghosts Complete"
+      subtitle={marked.length === 0
+        ? `No applications were Applied for 30+ days as of ${result.cutoff_date || "the cutoff"}.`
+        : `${marked.length} application${marked.length === 1 ? "" : "s"} marked as Ghosted.`}
+      onClose={onClose}
+      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
+      maxWidth="640px"
+    >
+      {marked.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "420px", overflowY: "auto" }}>
+          {marked.map((job) => (
+            <div
+              key={job.id}
+              style={{
+                alignItems: "center",
+                background: "var(--surface2)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                display: "flex",
+                gap: "12px",
+                justifyContent: "space-between",
+                padding: "10px 12px",
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ color: "var(--text)", fontSize: "13px", fontWeight: 600, overflowWrap: "anywhere" }}>
+                  {job.job_title || "Untitled role"}
+                  {job.company && <span style={{ color: "var(--text-muted)", fontWeight: 500 }}> at {job.company}</span>}
                 </div>
-                <StatusIndicator cell={{ value: "ghosted" }} labelMap={labelMap} />
+                <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "3px" }}>
+                  Applied {job.applied_date} · {job.days_applied} days
+                </div>
               </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+              <StatusIndicator cell={{ value: "ghosted" }} labelMap={labelMap} />
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
   );
 }
 
 function StatusSummaryDialog({ counts, total, onClose, labelMap = {} }) {
   const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
   return (
-    <div style={modalBackdropStyle}>
-      <div style={{ ...modalPanelStyle, maxWidth: "360px" }}>
-        <div style={modalHeaderStyle}>
-          <div>
-            <div style={modalTitleStyle}>Status Summary</div>
-            <div style={modalSubtitleStyle}>{total} application{total !== 1 ? "s" : ""} total</div>
+    <Modal
+      title="Status Summary"
+      subtitle={`${total} application${total !== 1 ? "s" : ""} total`}
+      onClose={onClose}
+      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
+      maxWidth="360px"
+    >
+      <div style={{ padding: "4px 0" }}>
+        {entries.map(([status, count]) => (
+          <div key={status} style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            padding: "8px 0",
+            borderBottom: "1px solid var(--border)",
+            fontSize: "14px",
+          }}>
+            <span style={{ color: "var(--text)" }}>{labelMap[status] || status.charAt(0).toUpperCase() + status.slice(1)}</span>
+            <span style={{ fontWeight: 600, color: "var(--text-muted)", minWidth: "2em", textAlign: "right" }}>{count}</span>
           </div>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onClose}
-            style={{ fontSize: "12px", padding: "4px 10px" }}
-          >
-            Close
-          </button>
-        </div>
-        <div style={{ padding: "12px 0 4px" }}>
-          {entries.map(([status, count]) => (
-            <div key={status} style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              padding: "6px 16px",
-              borderBottom: "1px solid var(--border)",
-              fontSize: "14px",
-            }}>
-              <span style={{ color: "var(--text)" }}>{labelMap[status] || status.charAt(0).toUpperCase() + status.slice(1)}</span>
-              <span style={{ fontWeight: 600, color: "var(--text-muted)", minWidth: "2em", textAlign: "right" }}>{count}</span>
-            </div>
-          ))}
-        </div>
+        ))}
       </div>
-    </div>
+    </Modal>
   );
 }
+
 
 function cellStyle(isHeader = false, width = null) {
   return {
@@ -1276,84 +1268,6 @@ const stageControlStyle = {
   padding: "6px 9px",
 };
 
-const modalBackdropStyle = {
-  alignItems: "center",
-  background: "rgba(24,28,58,0.38)",
-  display: "flex",
-  inset: 0,
-  justifyContent: "center",
-  padding: "24px",
-  position: "fixed",
-  zIndex: 1100,
-};
-
-const modalPanelStyle = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  boxShadow: "var(--shadow)",
-  maxWidth: "640px",
-  padding: "18px",
-  width: "100%",
-};
-
-const modalHeaderStyle = {
-  alignItems: "flex-start",
-  display: "flex",
-  gap: "12px",
-  justifyContent: "space-between",
-  marginBottom: "14px",
-};
-
-const modalTitleStyle = {
-  color: "var(--text)",
-  fontSize: "16px",
-  fontWeight: 700,
-};
-
-const modalSubtitleStyle = {
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  marginTop: "3px",
-};
-
-const ghostListStyle = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "8px",
-  maxHeight: "420px",
-  overflowY: "auto",
-};
-
-const ghostRowStyle = {
-  alignItems: "center",
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  display: "flex",
-  gap: "12px",
-  justifyContent: "space-between",
-  padding: "10px 12px",
-};
-
-const ghostTitleStyle = {
-  color: "var(--text)",
-  fontSize: "13px",
-  fontWeight: 600,
-  overflowWrap: "anywhere",
-};
-
-const ghostCompanyStyle = {
-  color: "var(--text-muted)",
-  fontWeight: 500,
-};
-
-const ghostMetaStyle = {
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  marginTop: "3px",
-};
-
 const detailItemStyle = {
   minWidth: 0,
   display: "flex",
@@ -1400,3 +1314,4 @@ const emptyCellStyle = {
   color: "var(--text-muted)",
   background: "var(--surface)",
 };
+

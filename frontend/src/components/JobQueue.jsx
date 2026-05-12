@@ -36,6 +36,8 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
+import Modal from "./common/Modal.jsx";
+import MetricGrid, { MetricItem } from "./common/MetricGrid.jsx";
 import { fitReasoningBullets, reasoningWithoutPenaltySummary, scoreLabel } from "../utils/fitScoringUtils.js";
 import { dispositionLabel, formatJobTitles, formatScanAction, formatScanDisposition, scoreDeltaLabel } from "../utils/jobQueueUtils.js";
 
@@ -61,43 +63,44 @@ function writeStoredSearch(storageKey, value) {
 
 function FixCompaniesDialog({ progress, onClose }) {
   const { totalFixed, remaining, done, error } = progress;
+  const footer = done && (
+    <button type="button" className="btn-secondary" onClick={onClose}>
+      Close
+    </button>
+  );
+
   return (
-    <div style={popupBackdropStyle}>
-      <div style={{ ...popupPanelStyle, maxWidth: "380px" }}>
-        <div style={popupHeaderStyle}>
-          <div>
-            <div style={popupTitleStyle}>Fix Unknown Companies</div>
-            <div style={popupSubtitleStyle}>{done ? (error ? "Stopped — check server log." : "Complete") : "Running…"}</div>
-          </div>
-          {done && (
-            <button type="button" className="btn-secondary" onClick={onClose} style={{ fontSize: "12px", padding: "4px 10px" }}>
-              Close
-            </button>
-          )}
-        </div>
-        <div style={{ fontSize: "14px", color: "var(--text)", lineHeight: 1.6 }}>
-          {!done ? (
-            <p style={{ margin: 0 }}>
-              {totalFixed > 0 ? `Fixed ${totalFixed} so far` : "Searching…"}
-              {remaining !== null ? ` · ${remaining} remaining` : ""}
-            </p>
-          ) : error ? (
-            <p style={{ margin: 0, color: "var(--red)" }}>An error occurred. {totalFixed > 0 && `${totalFixed} fixed before the error.`}</p>
-          ) : (
-            <p style={{ margin: 0 }}>
-              {totalFixed > 0
-                ? `Fixed ${totalFixed} company name${totalFixed !== 1 ? "s" : ""}.`
-                : "No fixable jobs found."}
-              {remaining > 0
-                ? ` ${remaining} could not be repaired automatically.`
-                : totalFixed > 0 ? " All unknown companies resolved." : ""}
-            </p>
-          )}
-        </div>
+    <Modal
+      title="Fix Unknown Companies"
+      subtitle={done ? (error ? "Stopped — check server log." : "Complete") : "Running…"}
+      onClose={onClose}
+      showCloseButton={done}
+      footer={footer}
+      maxWidth="420px"
+    >
+      <div style={{ fontSize: "14px", color: "var(--text)", lineHeight: 1.6 }}>
+        {!done ? (
+          <p style={{ margin: 0 }}>
+            {totalFixed > 0 ? `Fixed ${totalFixed} so far` : "Searching…"}
+            {remaining !== null ? ` · ${remaining} remaining` : ""}
+          </p>
+        ) : error ? (
+          <p style={{ margin: 0, color: "var(--red)" }}>An error occurred. {totalFixed > 0 && `${totalFixed} fixed before the error.`}</p>
+        ) : (
+          <p style={{ margin: 0 }}>
+            {totalFixed > 0
+              ? `Fixed ${totalFixed} company name${totalFixed !== 1 ? "s" : ""}.`
+              : "No fixable jobs found."}
+            {remaining > 0
+              ? ` ${remaining} could not be repaired automatically.`
+              : totalFixed > 0 ? " All unknown companies resolved." : ""}
+          </p>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }
+
 
 export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavigateToEmails, onNavigateToHistory }) {
   const [jobs, setJobs] = useState([]);
@@ -1217,82 +1220,55 @@ function ErrorList({ errors, onNavigateToEmails }) {
 function ProgressPopup({ title, message, progress, children }) {
   const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
   return (
-    <div style={popupBackdropStyle}>
-      <div style={{ ...popupPanelStyle, maxWidth: "520px" }}>
-        <div style={popupHeaderStyle}>
-          <div>
-            <div style={popupTitleStyle}>{title}</div>
-            <div style={popupSubtitleStyle}>{message || "Working..."}</div>
-          </div>
-          <span className="inline-spinner" style={popupSpinnerStyle} />
-        </div>
-
-        <div style={{ paddingTop: "4px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
+    <Modal
+      title={title}
+      subtitle={message || "Working..."}
+      onClose={() => {}}
+      showCloseButton={false}
+      maxWidth="520px"
+    >
+      <div style={{ paddingTop: "4px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span className="inline-spinner" style={{ color: "var(--accent)" }} />
             <span>Progress</span>
-            <span>{safeProgress}%</span>
           </div>
-          <div className="loading-bar">
-            <div className="loading-bar-fill" style={{ width: `${safeProgress}%` }} />
-          </div>
-          {children}
+          <span>{safeProgress}%</span>
         </div>
+        <div className="loading-bar">
+          <div className="loading-bar-fill" style={{ width: `${safeProgress}%` }} />
+        </div>
+        {children}
       </div>
-    </div>
+    </Modal>
   );
 }
 
 function ImportSummaryPopup({ summary, onClose }) {
-  const { queued, skipped, repaired = 0, failed } = summary;
+  const { queued, skipped, repaired = 0, enriched = 0, failed } = summary;
   const sourceName = summary.capture_source?.name;
+
   return (
-    <div style={popupBackdropStyle}>
-      <div style={{ ...popupPanelStyle, maxWidth: "480px" }}>
-        <div style={popupHeaderStyle}>
-          <div>
-            <div style={popupTitleStyle}>Import complete</div>
-            {sourceName && <div style={popupSubtitleStyle}>{sourceName}</div>}
-          </div>
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ padding: "4px 10px", fontSize: "12px" }}
-            onClick={onClose}
-          >
-            Close
-          </button>
-        </div>
+    <Modal
+      title="Import complete"
+      subtitle={sourceName}
+      onClose={onClose}
+      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
+      maxWidth="480px"
+    >
+      <MetricGrid>
+        <MetricItem label="queued" value={queued} tone={queued > 0 ? "green" : ""} />
+        {skipped > 0 && <MetricItem label="already in queue" value={skipped} />}
+        {repaired > 0 && <MetricItem label="company fixed" value={repaired} tone="green" />}
+        {enriched > 0 && <MetricItem label="description enriched" value={enriched} tone="green" />}
+        {failed > 0 && <MetricItem label="failed" value={failed} tone="red" />}
+      </MetricGrid>
 
-        <div style={{ display: "flex", gap: "28px" }}>
-          <div>
-            <div style={{ fontSize: "28px", fontWeight: 700, color: queued > 0 ? "var(--green)" : "var(--text-muted)" }}>{queued}</div>
-            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>queued</div>
-          </div>
-          {skipped > 0 && (
-            <div>
-              <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--text-muted)" }}>{skipped}</div>
-              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>already in queue</div>
-            </div>
-          )}
-          {repaired > 0 && (
-            <div>
-              <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--green)" }}>{repaired}</div>
-              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>company fixed</div>
-            </div>
-          )}
-          {failed > 0 && (
-            <div>
-              <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--red)" }}>{failed}</div>
-              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>failed</div>
-            </div>
-          )}
-        </div>
-
-        <ImportFailureDetails summary={summary} />
-      </div>
-    </div>
+      <ImportFailureDetails summary={summary} />
+    </Modal>
   );
 }
+
 
 function ImportFailureDetails({ summary, compact = false }) {
   const failures = normalizeImportFailures(summary);
@@ -1361,51 +1337,23 @@ function ReEvaluateSummaryPopup({ summary, onClose }) {
   const failed = summary.failed ?? 0;
 
   return (
-    <div style={popupBackdropStyle}>
-      <div style={{ ...popupPanelStyle, maxWidth: "520px" }}>
-        <div style={popupHeaderStyle}>
-          <div>
-            <div style={popupTitleStyle}>Re-evaluation complete</div>
-            <div style={popupSubtitleStyle}>
-              Re-evaluated {evaluated} active job{evaluated === 1 ? "" : "s"}.
-            </div>
-          </div>
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ padding: "4px 10px", fontSize: "12px" }}
-            onClick={onClose}
-          >
-            Close
-          </button>
-        </div>
-
-        <div style={summaryMetricGridStyle}>
-          <SummaryMetric label="rescored" value={rescored} tone="green" />
-          {duplicates > 0 && <SummaryMetric label="duplicates flagged" value={duplicates} />}
-          {moved > 0 && <SummaryMetric label="moved" value={moved} tone="yellow" />}
-          {failed > 0 && <SummaryMetric label="failed" value={failed} tone="red" />}
-        </div>
-      </div>
-    </div>
+    <Modal
+      title="Re-evaluation complete"
+      subtitle={`Re-evaluated ${evaluated} active job${evaluated === 1 ? "" : "s"}.`}
+      onClose={onClose}
+      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
+      maxWidth="520px"
+    >
+      <MetricGrid>
+        <MetricItem label="rescored" value={rescored} tone="green" />
+        {duplicates > 0 && <MetricItem label="duplicates flagged" value={duplicates} />}
+        {moved > 0 && <MetricItem label="moved" value={moved} tone="yellow" />}
+        {failed > 0 && <MetricItem label="failed" value={failed} tone="red" />}
+      </MetricGrid>
+    </Modal>
   );
 }
 
-function SummaryMetric({ label, value, tone = "muted" }) {
-  const colorByTone = {
-    green: "var(--green)",
-    muted: "var(--text-muted)",
-    red: "var(--red)",
-    yellow: "var(--yellow)",
-  };
-
-  return (
-    <div>
-      <div style={{ fontSize: "28px", fontWeight: 700, color: colorByTone[tone] || colorByTone.muted }}>{value}</div>
-      <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{label}</div>
-    </div>
-  );
-}
 
 function JobReEvaluatePopup({ popup, onClose }) {
   const title = popup.jobTitle || "Job";
@@ -1420,67 +1368,57 @@ function JobReEvaluatePopup({ popup, onClose }) {
     : "";
 
   return (
-    <div style={popupBackdropStyle}>
-      <div style={popupPanelStyle}>
-        <div style={popupHeaderStyle}>
-          <div>
-            <div style={popupTitleStyle}>
-              {isRunning ? "Re-evaluation in progress" : isError ? "Re-evaluation failed" : popup.heading || "Re-evaluation complete"}
-            </div>
-            <div style={popupSubtitleStyle}>{title}{companyText}</div>
-          </div>
-          {!isRunning && (
-            <button
-              type="button"
-              className="btn-secondary"
-              style={{ padding: "4px 10px", fontSize: "12px" }}
-              onClick={onClose}
-            >
-              Close
-            </button>
-          )}
+    <Modal
+      title={isRunning ? "Re-evaluation in progress" : isError ? "Re-evaluation failed" : popup.heading || "Re-evaluation complete"}
+      subtitle={`${title}${companyText}`}
+      onClose={onClose}
+      showCloseButton={!isRunning}
+      footer={!isRunning && <button className="btn-secondary" onClick={onClose}>Close</button>}
+    >
+      {isRunning ? (
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-muted)", fontSize: "14px" }}>
+          <span className="inline-spinner" style={{ color: "var(--accent)" }} />
+          <span>Applying current scoring rules...</span>
         </div>
-
-        {isRunning ? (
-          <div style={popupBodyStyle}>
-            <span className="inline-spinner" style={popupSpinnerStyle} />
-            <span>Applying current scoring rules...</span>
-          </div>
-        ) : isError ? (
-          <div style={{ ...popupBodyStyle, color: "var(--red)" }}>
-            {popup.error || "Failed to re-evaluate fit."}
-          </div>
-        ) : (
-          <>
-            <div style={popupResultStyle}>
-              <span>{scoreLabel(popup.previousScore)}</span>
-              <span style={{ color: "var(--text-muted)" }}>to</span>
-              <span>{scoreLabel(popup.newScore)}</span>
-              {scoreDeltaLabel(popup.previousScore, popup.newScore) && (
-                <span style={popupDeltaStyle}>
-                  {scoreDeltaLabel(popup.previousScore, popup.newScore)}
-                </span>
-              )}
-              {statusText && (
-                <span style={popupMovedStyle}>{statusText}</span>
-              )}
-            </div>
-            {reasoningBullets.length > 0 && (
-              <div style={popupReasoningStyle}>
-                <div style={popupReasoningHeadingStyle}>Why this score</div>
-                <ul style={popupReasoningListStyle}>
-                  {reasoningBullets.map((item, index) => (
-                    <li key={`fit-reason-${index}`}>{item}</li>
-                  ))}
-                </ul>
-              </div>
+      ) : isError ? (
+        <div style={{ color: "var(--red)", fontSize: "14px" }}>
+          {popup.error || "Failed to re-evaluate fit."}
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "22px", fontWeight: 700, flexWrap: "wrap", color: "var(--text)" }}>
+            <span>{scoreLabel(popup.previousScore)}</span>
+            <span style={{ color: "var(--text-muted)" }}>to</span>
+            <span>{scoreLabel(popup.newScore)}</span>
+            {scoreDeltaLabel(popup.previousScore, popup.newScore) && (
+              <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                {scoreDeltaLabel(popup.previousScore, popup.newScore)}
+              </span>
             )}
-          </>
-        )}
-      </div>
-    </div>
+            {statusText && (
+              <span style={{ background: "rgba(251,191,36,0.15)", color: "var(--orange)", fontSize: "12px", padding: "4px 9px", borderRadius: "999px" }}>
+                {statusText}
+              </span>
+            )}
+          </div>
+          {reasoningBullets.length > 0 && (
+            <div style={{ borderTop: "1px solid var(--border)", marginTop: "16px", paddingTop: "14px" }}>
+              <div style={{ color: "var(--text-muted)", fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
+                Why this score
+              </div>
+              <ul style={{ color: "var(--text)", fontSize: "13px", lineHeight: 1.5, margin: 0, paddingLeft: "18px", display: "flex", flexDirection: "column", gap: "7px", maxHeight: "220px", overflowY: "auto" }}>
+                {reasoningBullets.map((item, index) => (
+                  <li key={`fit-reason-${index}`}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </Modal>
   );
 }
+
 
 function ScanSummaryPopup({ summary, onClose }) {
   const {
@@ -1501,17 +1439,13 @@ function ScanSummaryPopup({ summary, onClose }) {
     scoring_failed_jobs = 0,
   } = summary;
   const bySource = Array.isArray(summary.by_source) ? summary.by_source : [];
-  const successfulEmails = Array.isArray(summary.successful_emails) ? summary.successful_emails : [];
-  const emailReport = Array.isArray(summary.email_report) ? summary.email_report : successfulEmails.map((email) => ({
-    ...email,
-    disposition: "job_created",
-    gmail_action: "eligible to move",
-  }));
+  const emailReport = Array.isArray(summary.email_report) ? summary.email_report : [];
   const moveEligibleEmails = emailReport.filter(
     (email) => email.disposition === "job_created" && email.gmail_action === "eligible to move"
   );
   const movedSuccessfulEmails = summary.moved_successful_emails || 0;
   const scannedEmailLabel = summary.scanned_email_label || "the scanned folder";
+
   const skippedEmailDetails = [
     { label: "duplicates", value: duplicates },
     { label: "not job emails", value: non_job_emails },
@@ -1521,6 +1455,7 @@ function ScanSummaryPopup({ summary, onClose }) {
     { label: "parser errors", value: parser_error_emails, tone: "red" },
     { label: "fetch errors", value: fetch_error_emails, tone: "red" },
   ].filter((item) => item.value > 0);
+
   const createdJobDetails = [
     { label: "kept in queue", value: pending_review_jobs, tone: "green" },
     { label: "moved to triage", value: triage_jobs, tone: "yellow" },
@@ -1528,6 +1463,7 @@ function ScanSummaryPopup({ summary, onClose }) {
     { label: "low fit score", value: low_fit_score_jobs, tone: "yellow" },
     { label: "scoring failed", value: scoring_failed_jobs, tone: "red" },
   ].filter((item) => item.value > 0);
+
   const [selectedEmailIds, setSelectedEmailIds] = useState(() => moveEligibleEmails.map((email) => email.email_id));
   const [movingEmails, setMovingEmails] = useState(false);
   const [moveResult, setMoveResult] = useState(null);
@@ -1566,241 +1502,220 @@ function ScanSummaryPopup({ summary, onClose }) {
   };
 
   return (
-    <div style={popupBackdropStyle}>
-      <div style={{ ...popupPanelStyle, maxHeight: "88vh", maxWidth: "1040px", overflowY: "auto" }}>
-        <div style={popupHeaderStyle}>
-          <div style={popupTitleStyle}>Scan complete</div>
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ padding: "4px 10px", fontSize: "12px" }}
-            onClick={onClose}
-          >
-            Close
-          </button>
+    <Modal
+      title="Scan complete"
+      onClose={onClose}
+      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
+      maxWidth="1040px"
+    >
+      <div style={{ display: "flex", gap: "28px", marginBottom: "16px", flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--text)" }}>{emails_scanned}</div>
+          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>emails scanned</div>
         </div>
+        <div>
+          <div style={{ fontSize: "28px", fontWeight: 700, color: new_jobs > 0 ? "var(--green)" : "var(--text-muted)" }}>{new_jobs}</div>
+          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>new jobs</div>
+        </div>
+        {new_jobs > 0 && (
+          <div>
+            <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--text)" }}>{sources_with_jobs}</div>
+            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{sources_with_jobs === 1 ? "source" : "sources"}</div>
+          </div>
+        )}
+      </div>
 
-        <div style={{ display: "flex", gap: "28px", marginBottom: "16px", flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--text)" }}>{emails_scanned}</div>
-            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>emails scanned</div>
-          </div>
-          <div>
-            <div style={{ fontSize: "28px", fontWeight: 700, color: new_jobs > 0 ? "var(--green)" : "var(--text-muted)" }}>{new_jobs}</div>
-            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>new jobs</div>
-          </div>
-          {new_jobs > 0 && (
-            <div>
-              <div style={{ fontSize: "28px", fontWeight: 700, color: "var(--text)" }}>{sources_with_jobs}</div>
-              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{sources_with_jobs === 1 ? "source" : "sources"}</div>
+      {(createdJobDetails.length > 0 || skippedEmailDetails.length > 0) && (
+        <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
+          {createdJobDetails.length > 0 && (
+            <MetricGrid>
+              {createdJobDetails.map((item) => (
+                <MetricItem key={item.label} label={item.label} value={item.value} tone={item.tone} />
+              ))}
+            </MetricGrid>
+          )}
+          {skippedEmailDetails.length > 0 && (
+            <div style={{ marginTop: createdJobDetails.length > 0 ? "14px" : 0 }}>
+              <MetricGrid>
+                {skippedEmailDetails.map((item) => (
+                  <MetricItem key={item.label} label={item.label} value={item.value} tone={item.tone} />
+                ))}
+              </MetricGrid>
             </div>
           )}
         </div>
+      )}
 
-        {(createdJobDetails.length > 0 || skippedEmailDetails.length > 0) && (
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
-            {createdJobDetails.length > 0 && (
-              <div style={summaryMetricGridStyle}>
-                {createdJobDetails.map((item) => (
-                  <SummaryMetric key={item.label} label={item.label} value={item.value} tone={item.tone} />
-                ))}
+      {bySource.length > 0 && (
+        <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px", marginTop: "12px" }}>
+          {bySource.map(({ source, count }) => (
+            <div key={source} style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", padding: "3px 0" }}>
+              <span style={{ color: "var(--text-muted)" }}>{source}</span>
+              <span style={{ fontWeight: 500 }}>{count} job{count !== 1 ? "s" : ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {emailReport.length > 0 && (
+        <div style={{ borderTop: "1px solid var(--border)", marginTop: "14px", paddingTop: "12px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text)" }}>
+                Email report
               </div>
-            )}
-            {skippedEmailDetails.length > 0 && (
-              <div style={{ ...summaryMetricGridStyle, marginTop: createdJobDetails.length > 0 ? "14px" : 0 }}>
-                {skippedEmailDetails.map((item) => (
-                  <SummaryMetric key={item.label} label={item.label} value={item.value} tone={item.tone} />
-                ))}
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                {selectedCount} of {moveEligibleEmails.length} move-eligible selected
+                {movedSuccessfulEmails > 0 && ` · ${movedSuccessfulEmails} moved automatically`}
+              </div>
+            </div>
+            {moveEligibleEmails.length > 0 && (
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ padding: "4px 10px", fontSize: "12px" }}
+                  onClick={() => setSelectedEmailIds(moveEligibleEmails.map((email) => email.email_id))}
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ padding: "4px 10px", fontSize: "12px" }}
+                  onClick={() => setSelectedEmailIds([])}
+                >
+                  Deselect all
+                </button>
               </div>
             )}
           </div>
-        )}
 
-        {bySource.length > 0 && (
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
-            {bySource.map(({ source, count }) => (
-              <div key={source} style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", padding: "3px 0" }}>
-                <span style={{ color: "var(--text-muted)" }}>{source}</span>
-                <span style={{ fontWeight: 500 }}>{count} job{count !== 1 ? "s" : ""}</span>
-              </div>
-            ))}
+          <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius)", maxHeight: "300px", overflow: "auto" }}>
+            <table style={{ borderCollapse: "collapse", fontSize: "12px", minWidth: "1120px", width: "100%" }}>
+              <thead>
+                <tr>
+                  <th style={{ ...emailReportHeaderStyle, width: "34px" }} />
+                  <th style={emailReportHeaderStyle}>Email</th>
+                  <th style={emailReportHeaderStyle}>From</th>
+                  <th style={emailReportHeaderStyle}>Disposition</th>
+                  <th style={emailReportHeaderStyle}>Reason</th>
+                  <th style={emailReportHeaderStyle}>Job outcomes</th>
+                  <th style={{ ...emailReportHeaderStyle, minWidth: "150px" }}>Action</th>
+                  <th style={{ ...emailReportHeaderStyle, textAlign: "right" }}>Jobs</th>
+                </tr>
+              </thead>
+              <tbody>
+                {emailReport.map((email) => {
+                  const moveEligible = email.disposition === "job_created" && email.gmail_action === "eligible to move";
+                  const wasMoved = movedEmailIds.includes(email.email_id);
+                  const actionLabel = wasMoved
+                    ? `moved to ${moveResult.label}`
+                    : formatScanAction(email.gmail_action);
+                  return (
+                    <tr key={email.email_id}>
+                      <td style={emailReportCellStyle}>
+                        {moveEligible && (
+                          <input
+                            type="checkbox"
+                            checked={selectedEmailIds.includes(email.email_id)}
+                            onChange={() => toggleEmail(email.email_id)}
+                            style={{ width: "auto", margin: 0 }}
+                          />
+                        )}
+                      </td>
+                      <td style={emailReportCellStyle}>
+                        <div style={{ color: "var(--text)", fontWeight: 600, overflowWrap: "anywhere" }}>
+                          {email.email_subject || "(no subject)"}
+                        </div>
+                        <div style={{ color: "var(--text-muted)", fontSize: "11px", overflowWrap: "anywhere" }}>
+                          {formatLocalDateTime(email.email_date) || "No date"} · {formatJobTitles(email.job_titles)}
+                        </div>
+                      </td>
+                      <td style={emailReportCellStyle}>{email.sender_email || "Unknown sender"}</td>
+                      <td style={emailReportCellStyle}>{formatScanDisposition(email.disposition)}</td>
+                      <td style={{ ...emailReportCellStyle, maxWidth: "280px", overflowWrap: "anywhere" }}>
+                        {email.reason || "—"}
+                      </td>
+                      <td style={emailReportCellStyle}>{formatEmailJobDetails(email)}</td>
+                      <td style={emailReportCellStyle}>{actionLabel}</td>
+                      <td style={{ ...emailReportCellStyle, textAlign: "right", fontWeight: 700 }}>{email.job_count || 0}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td style={{ ...emailReportCellStyle, background: "var(--surface2)", color: "var(--text)", fontWeight: 700 }} colSpan={8}>
+                    {new_jobs} job{new_jobs === 1 ? "" : "s"} · {non_job_emails + acknowledgement_emails + feedback_filtered_emails + source_filtered_emails} ignored · {duplicates} duplicate{duplicates === 1 ? "" : "s"} · {triage_jobs} triage · {possible_duplicate_jobs} possible duplicate{possible_duplicate_jobs === 1 ? "" : "s"} · {parser_error_emails + fetch_error_emails} error{parser_error_emails + fetch_error_emails === 1 ? "" : "s"}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
           </div>
-        )}
 
-        {emailReport.length > 0 && (
-          <div style={emailChecklistStyle}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text)" }}>
-                  Email report
-                </div>
-                <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                  {selectedCount} of {moveEligibleEmails.length} move-eligible selected
-                  {movedSuccessfulEmails > 0 && ` · ${movedSuccessfulEmails} moved automatically`}
-                </div>
+          {(moveEligibleEmails.length > 0 || movedSuccessfulEmails > 0) && (
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginTop: "12px", flexWrap: "wrap" }}>
+              <div style={{ fontSize: "12px", color: moveResult ? "var(--green)" : "var(--text-muted)" }}>
+                {moveResult
+                  ? `Moved ${moveResult.moved} email${moveResult.moved === 1 ? "" : "s"} to ${moveResult.label}.`
+                  : movedSuccessfulEmails > 0
+                    ? `Moved ${movedSuccessfulEmails} email${movedSuccessfulEmails === 1 ? "" : "s"} to ${scannedEmailLabel}.`
+                    : "Move selected emails out of the inbox after confirming the parse."}
               </div>
               {moveEligibleEmails.length > 0 && (
-                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    style={{ padding: "4px 10px", fontSize: "12px" }}
-                    onClick={() => setSelectedEmailIds(moveEligibleEmails.map((email) => email.email_id))}
-                  >
-                    Select all
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    style={{ padding: "4px 10px", fontSize: "12px" }}
-                    onClick={() => setSelectedEmailIds([])}
-                  >
-                    Deselect all
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={moveSelectedEmails}
+                  disabled={movingEmails || selectedCount === 0}
+                  style={{ padding: "7px 12px", fontSize: "12px" }}
+                >
+                  {movingEmails ? "Moving..." : "Move Selected to Scanned Folder"}
+                </button>
               )}
             </div>
+          )}
+        </div>
+      )}
 
-            <div style={emailReportTableWrapStyle}>
-              <table style={emailReportTableStyle}>
-                <thead>
-                  <tr>
-                    <th style={{ ...emailReportHeaderStyle, width: "34px" }} />
-                    <th style={emailReportHeaderStyle}>Email</th>
-                    <th style={emailReportHeaderStyle}>From</th>
-                    <th style={emailReportHeaderStyle}>Disposition</th>
-                    <th style={emailReportHeaderStyle}>Reason</th>
-                    <th style={emailReportHeaderStyle}>Job outcomes</th>
-                    <th style={{ ...emailReportHeaderStyle, minWidth: "150px" }}>Action</th>
-                    <th style={{ ...emailReportHeaderStyle, textAlign: "right" }}>Jobs</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {emailReport.map((email) => {
-                    const moveEligible = email.disposition === "job_created" && email.gmail_action === "eligible to move";
-                    const wasMoved = movedEmailIds.includes(email.email_id);
-                    const actionLabel = wasMoved
-                      ? `moved to ${moveResult.label}`
-                      : formatScanAction(email.gmail_action);
-                    return (
-                      <tr key={email.email_id}>
-                        <td style={emailReportCellStyle}>
-                          {moveEligible && (
-                            <input
-                              type="checkbox"
-                              checked={selectedEmailIds.includes(email.email_id)}
-                              onChange={() => toggleEmail(email.email_id)}
-                              style={{ width: "auto", margin: 0 }}
-                            />
-                          )}
-                        </td>
-                        <td style={emailReportCellStyle}>
-                          <div style={{ color: "var(--text)", fontWeight: 600, overflowWrap: "anywhere" }}>
-                            {email.email_subject || "(no subject)"}
-                          </div>
-                          <div style={{ color: "var(--text-muted)", fontSize: "11px", overflowWrap: "anywhere" }}>
-                            {formatLocalDateTime(email.email_date) || "No date"} · {formatJobTitles(email.job_titles)}
-                          </div>
-                        </td>
-                        <td style={emailReportCellStyle}>{email.sender_email || "Unknown sender"}</td>
-                        <td style={emailReportCellStyle}>{formatScanDisposition(email.disposition)}</td>
-                        <td style={{ ...emailReportCellStyle, maxWidth: "280px", overflowWrap: "anywhere" }}>
-                          {email.reason || "—"}
-                        </td>
-                        <td style={emailReportCellStyle}>{formatEmailJobDetails(email)}</td>
-                        <td style={emailReportCellStyle}>{actionLabel}</td>
-                        <td style={{ ...emailReportCellStyle, textAlign: "right", fontWeight: 700 }}>{email.job_count || 0}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot>
-                  <tr>
-                    <td style={emailReportFooterStyle} colSpan={8}>
-                      {new_jobs} job{new_jobs === 1 ? "" : "s"} · {non_job_emails + acknowledgement_emails + feedback_filtered_emails + source_filtered_emails} ignored · {duplicates} duplicate{duplicates === 1 ? "" : "s"} · {triage_jobs} triage · {possible_duplicate_jobs} possible duplicate{possible_duplicate_jobs === 1 ? "" : "s"} · {parser_error_emails + fetch_error_emails} error{parser_error_emails + fetch_error_emails === 1 ? "" : "s"}
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-
-            {(moveEligibleEmails.length > 0 || movedSuccessfulEmails > 0) && (
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginTop: "12px", flexWrap: "wrap" }}>
-                <div style={{ fontSize: "12px", color: moveResult ? "var(--green)" : "var(--text-muted)" }}>
-                  {moveResult
-                    ? `Moved ${moveResult.moved} email${moveResult.moved === 1 ? "" : "s"} to ${moveResult.label}.`
-                    : movedSuccessfulEmails > 0
-                      ? `Moved ${movedSuccessfulEmails} email${movedSuccessfulEmails === 1 ? "" : "s"} to ${scannedEmailLabel}.`
-                      : "Move selected emails out of the inbox after confirming the parse."}
-                </div>
-                {moveEligibleEmails.length > 0 && (
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={moveSelectedEmails}
-                    disabled={movingEmails || selectedCount === 0}
-                    style={{ padding: "7px 12px", fontSize: "12px" }}
-                  >
-                    {movingEmails ? "Moving..." : "Move Selected to Scanned Folder"}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {moveStatusOpen && (
-          <MoveEmailsStatusDialog
-            label={moveResult?.label || scannedEmailLabel}
-            moving={movingEmails}
-            moved={moveResult?.moved ?? 0}
-            onClose={() => setMoveStatusOpen(false)}
-          />
-        )}
-      </div>
-    </div>
+      {moveStatusOpen && (
+        <MoveEmailsStatusDialog
+          label={moveResult?.label || scannedEmailLabel}
+          moving={movingEmails}
+          moved={moveResult?.moved ?? 0}
+          onClose={() => setMoveStatusOpen(false)}
+        />
+      )}
+    </Modal>
   );
 }
 
 function MoveEmailsStatusDialog({ label, moving, moved, onClose }) {
   const movedCount = Number(moved) || 0;
   return (
-    <div style={smallStatusBackdropStyle}>
-      <div style={smallStatusPanelStyle}>
-        <div style={popupHeaderStyle}>
-          <div>
-            <div style={popupTitleStyle}>
-              {moving ? "Moving emails" : "Emails moved"}
-            </div>
-            <div style={popupSubtitleStyle}>
-              {moving
-                ? "Moving selected emails to the scanned folder..."
-                : movedCount > 0
-                  ? `Moved ${movedCount} email${movedCount === 1 ? "" : "s"} to ${label}.`
-                  : `Move request completed for ${label}.`}
-            </div>
-          </div>
-          {!moving && (
-            <button
-              type="button"
-              className="btn-secondary"
-              style={{ padding: "4px 10px", fontSize: "12px" }}
-              onClick={onClose}
-            >
-              Close
-            </button>
-          )}
+    <Modal
+      title={moving ? "Moving emails" : "Emails moved"}
+      subtitle={moving
+        ? "Moving selected emails to the scanned folder..."
+        : movedCount > 0
+          ? `Moved ${movedCount} email${movedCount === 1 ? "" : "s"} to ${label}.`
+          : `Move request completed for ${label}.`}
+      onClose={onClose}
+      showCloseButton={!moving}
+      footer={!moving && <button className="btn-secondary" onClick={onClose}>Close</button>}
+      maxWidth="420px"
+    >
+      {moving && (
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-muted)", fontSize: "14px" }}>
+          <span className="inline-spinner" style={{ color: "var(--accent)" }} />
+          <span>Waiting for Gmail to finish the move...</span>
         </div>
-        {moving && (
-          <div style={popupBodyStyle}>
-            <span className="inline-spinner" style={popupSpinnerStyle} />
-            <span>Waiting for Gmail to finish the move...</span>
-          </div>
-        )}
-      </div>
-    </div>
+      )}
+    </Modal>
   );
 }
+
 
 const EVAL_PHASES = [
   "Parsing job description…",
@@ -1836,123 +1751,114 @@ function ManualEvalDialog({ submitting, result, onClose }) {
   const statusColor = status === "pending_review" ? "var(--green)" : "var(--yellow)";
   const statusBg = status === "pending_review" ? "rgba(76,175,129,0.15)" : "rgba(255,193,7,0.15)";
 
+  const title = submitting ? "Evaluating job" : result?.job_title || "Job evaluated";
+  const subtitle = !submitting && result?.company ? result.company : undefined;
+
   return (
-    <div style={{ ...popupBackdropStyle, zIndex: 1200 }}>
-      <div style={{ ...popupPanelStyle, maxWidth: "500px" }}>
-        <div style={popupHeaderStyle}>
-          <div>
-            <div style={popupTitleStyle}>
-              {submitting ? "Evaluating job" : result?.job_title || "Job evaluated"}
+    <Modal
+      title={title}
+      subtitle={subtitle}
+      onClose={onClose}
+      showCloseButton={!submitting}
+      footer={!submitting && <button className="btn-secondary" onClick={onClose}>Close</button>}
+      maxWidth="500px"
+    >
+      {submitting ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {EVAL_PHASES.map((phase, i) => {
+            const done = i < phaseIndex;
+            const active = i === phaseIndex;
+            return (
+              <div
+                key={phase}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  fontSize: "13px",
+                  color: done ? "var(--green)" : active ? "var(--text)" : "var(--text-muted)",
+                  opacity: i > phaseIndex ? 0.4 : 1,
+                  transition: "color 0.3s, opacity 0.3s",
+                }}
+              >
+                {done ? (
+                  <span style={{ width: "14px", textAlign: "center", color: "var(--green)", fontWeight: 700 }}>✓</span>
+                ) : active ? (
+                  <span className="inline-spinner" style={{ width: "14px", height: "14px", flexShrink: 0 }} />
+                ) : (
+                  <span style={{ width: "14px", textAlign: "center", color: "var(--text-muted)" }}>○</span>
+                )}
+                {phase}
+              </div>
+            );
+          })}
+        </div>
+      ) : result ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "20px",
+            padding: "14px 16px",
+            background: "var(--surface2)",
+            borderRadius: "var(--radius)",
+            border: "1px solid var(--border)",
+          }}>
+            <div style={{ textAlign: "center", minWidth: "64px" }}>
+              <div style={{ fontSize: "42px", fontWeight: 800, color: scoreColor, lineHeight: 1 }}>
+                {score ?? "—"}
+              </div>
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "3px" }}>fit score</div>
             </div>
-            {!submitting && result?.company && (
-              <div style={popupSubtitleStyle}>{result.company}</div>
-            )}
+            <div>
+              <div style={{
+                display: "inline-block",
+                padding: "4px 10px",
+                borderRadius: "999px",
+                fontSize: "12px",
+                fontWeight: 700,
+                background: statusBg,
+                color: statusColor,
+                marginBottom: "8px",
+              }}>
+                {statusLabel}
+              </div>
+              {result.company && (
+                <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)" }}>{result.company}</div>
+              )}
+              {result.job_title && (
+                <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{result.job_title}</div>
+              )}
+            </div>
           </div>
-          {submitting ? (
-            <span className="inline-spinner" style={popupSpinnerStyle} />
-          ) : (
-            <button type="button" className="btn-secondary" onClick={onClose} style={{ padding: "4px 10px", fontSize: "12px" }}>
-              Close
-            </button>
+
+          {result.fit_reasoning && (
+            <div>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "6px" }}>
+                Scoring notes
+              </div>
+              <div style={{
+                fontSize: "13px",
+                color: "var(--text)",
+                lineHeight: 1.65,
+                whiteSpace: "pre-wrap",
+                maxHeight: "220px",
+                overflowY: "auto",
+                padding: "10px 12px",
+                background: "var(--surface2)",
+                borderRadius: "var(--radius)",
+                border: "1px solid var(--border)",
+              }}>
+                {result.fit_reasoning}
+              </div>
+            </div>
           )}
         </div>
-
-        {submitting ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {EVAL_PHASES.map((phase, i) => {
-              const done = i < phaseIndex;
-              const active = i === phaseIndex;
-              return (
-                <div
-                  key={phase}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "10px",
-                    fontSize: "13px",
-                    color: done ? "var(--green)" : active ? "var(--text)" : "var(--text-muted)",
-                    opacity: i > phaseIndex ? 0.4 : 1,
-                    transition: "color 0.3s, opacity 0.3s",
-                  }}
-                >
-                  {done ? (
-                    <span style={{ width: "14px", textAlign: "center", color: "var(--green)", fontWeight: 700 }}>✓</span>
-                  ) : active ? (
-                    <span className="inline-spinner" style={{ width: "14px", height: "14px", flexShrink: 0 }} />
-                  ) : (
-                    <span style={{ width: "14px", textAlign: "center", color: "var(--text-muted)" }}>○</span>
-                  )}
-                  {phase}
-                </div>
-              );
-            })}
-          </div>
-        ) : result ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "20px",
-              padding: "14px 16px",
-              background: "rgba(255,255,255,0.04)",
-              borderRadius: "var(--radius)",
-              border: "1px solid var(--border)",
-            }}>
-              <div style={{ textAlign: "center", minWidth: "64px" }}>
-                <div style={{ fontSize: "42px", fontWeight: 800, color: scoreColor, lineHeight: 1 }}>
-                  {score ?? "—"}
-                </div>
-                <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "3px" }}>fit score</div>
-              </div>
-              <div>
-                <div style={{
-                  display: "inline-block",
-                  padding: "4px 10px",
-                  borderRadius: "999px",
-                  fontSize: "12px",
-                  fontWeight: 700,
-                  background: statusBg,
-                  color: statusColor,
-                  marginBottom: "8px",
-                }}>
-                  {statusLabel}
-                </div>
-                {result.company && (
-                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)" }}>{result.company}</div>
-                )}
-                {result.job_title && (
-                  <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{result.job_title}</div>
-                )}
-              </div>
-            </div>
-
-            {result.fit_reasoning && (
-              <div>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "6px" }}>
-                  Scoring notes
-                </div>
-                <div style={{
-                  fontSize: "13px",
-                  color: "var(--text)",
-                  lineHeight: 1.65,
-                  whiteSpace: "pre-wrap",
-                  maxHeight: "220px",
-                  overflowY: "auto",
-                  padding: "10px 12px",
-                  background: "rgba(255,255,255,0.03)",
-                  borderRadius: "var(--radius)",
-                  border: "1px solid var(--border)",
-                }}>
-                  {result.fit_reasoning}
-                </div>
-              </div>
-            )}
-          </div>
-        ) : null}
-      </div>
-    </div>
+      ) : null}
+    </Modal>
   );
 }
+
 
 function formatEmailJobDetails(email) {
   if (Array.isArray(email?.job_details) && email.job_details.length > 0) {
@@ -2000,220 +1906,6 @@ function formatJobDetails(jobDetails) {
   );
 }
 
-const inlineImportProgressStyle = {
-  marginTop: "12px",
-  padding: "10px 12px",
-  background: "rgba(255,255,255,0.04)",
-  borderRadius: "6px",
-  border: "1px solid var(--border)",
-};
-
-const inlineImportSuccessStyle = {
-  marginTop: "12px",
-  padding: "10px 12px",
-  background: "rgba(76,175,129,0.08)",
-  borderRadius: "6px",
-  border: "1px solid rgba(76,175,129,0.25)",
-};
-
-const progressBox = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  padding: "16px 18px",
-  marginBottom: "16px",
-  boxShadow: "var(--shadow-sm)",
-};
-
-const popupBackdropStyle = {
-  alignItems: "center",
-  background: "rgba(24,28,58,0.38)",
-  display: "flex",
-  inset: 0,
-  justifyContent: "center",
-  padding: "24px",
-  position: "fixed",
-  zIndex: 1100,
-};
-
-const popupPanelStyle = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  boxShadow: "var(--shadow)",
-  maxWidth: "460px",
-  padding: "18px",
-  width: "100%",
-};
-
-const smallStatusBackdropStyle = {
-  ...popupBackdropStyle,
-  background: "rgba(24,28,58,0.18)",
-  zIndex: 1200,
-};
-
-const smallStatusPanelStyle = {
-  ...popupPanelStyle,
-  maxWidth: "420px",
-};
-
-const importDialogPanelStyle = {
-  ...popupPanelStyle,
-  maxHeight: "86vh",
-  maxWidth: "820px",
-  overflowY: "auto",
-};
-
-const popupHeaderStyle = {
-  alignItems: "flex-start",
-  display: "flex",
-  gap: "12px",
-  justifyContent: "space-between",
-  marginBottom: "14px",
-};
-
-const popupTitleStyle = {
-  color: "var(--text)",
-  fontSize: "16px",
-  fontWeight: 700,
-};
-
-const popupSubtitleStyle = {
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  marginTop: "3px",
-};
-
-const popupBodyStyle = {
-  alignItems: "center",
-  color: "var(--text-muted)",
-  display: "flex",
-  fontSize: "14px",
-  gap: "10px",
-};
-
-const popupSpinnerStyle = {
-  color: "var(--accent)",
-  height: "18px",
-  width: "18px",
-};
-
-const popupResultStyle = {
-  alignItems: "center",
-  color: "var(--text)",
-  display: "flex",
-  flexWrap: "wrap",
-  fontSize: "22px",
-  fontWeight: 700,
-  gap: "10px",
-};
-
-const popupDeltaStyle = {
-  color: "var(--text-muted)",
-  fontSize: "13px",
-  fontWeight: 700,
-};
-
-const popupMovedStyle = {
-  background: "var(--yellow-light)",
-  borderRadius: "999px",
-  color: "var(--yellow)",
-  fontSize: "12px",
-  fontWeight: 700,
-  padding: "4px 9px",
-};
-
-const popupReasoningStyle = {
-  borderTop: "1px solid var(--border)",
-  marginTop: "16px",
-  paddingTop: "14px",
-};
-
-const popupReasoningHeadingStyle = {
-  color: "var(--text-muted)",
-  fontSize: "11px",
-  fontWeight: 700,
-  letterSpacing: "0.05em",
-  marginBottom: "8px",
-  textTransform: "uppercase",
-};
-
-const popupReasoningListStyle = {
-  color: "var(--text)",
-  display: "flex",
-  flexDirection: "column",
-  fontSize: "13px",
-  gap: "7px",
-  lineHeight: 1.5,
-  margin: 0,
-  maxHeight: "220px",
-  overflowY: "auto",
-  paddingLeft: "18px",
-};
-
-const summaryMetricGridStyle = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "28px",
-};
-
-const emailChecklistStyle = {
-  borderTop: "1px solid var(--border)",
-  marginTop: "14px",
-  paddingTop: "12px",
-};
-
-const emailReportTableWrapStyle = {
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  maxHeight: "300px",
-  overflow: "auto",
-};
-
-const emailReportTableStyle = {
-  borderCollapse: "collapse",
-  fontSize: "12px",
-  minWidth: "1120px",
-  width: "100%",
-};
-
-const emailReportHeaderStyle = {
-  background: "var(--bg-elevated)",
-  borderBottom: "1px solid var(--border)",
-  color: "var(--text-muted)",
-  fontSize: "11px",
-  fontWeight: 700,
-  padding: "8px 10px",
-  position: "sticky",
-  textAlign: "left",
-  top: 0,
-  zIndex: 1,
-};
-
-const emailReportCellStyle = {
-  borderBottom: "1px solid var(--border)",
-  color: "var(--text-muted)",
-  padding: "9px 10px",
-  verticalAlign: "top",
-};
-
-const emailReportFooterStyle = {
-  background: "var(--bg-elevated)",
-  color: "var(--text)",
-  fontSize: "12px",
-  fontWeight: 700,
-  padding: "9px 10px",
-};
-
-const manualBox = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  padding: "16px 18px",
-  marginBottom: "16px",
-  boxShadow: "var(--shadow-sm)",
-};
-
 const modeToggleStyle = {
   display: "flex",
   flexWrap: "wrap",
@@ -2256,3 +1948,4 @@ const textareaStyle = {
   fontSize: "13px",
   lineHeight: 1.5,
 };
+

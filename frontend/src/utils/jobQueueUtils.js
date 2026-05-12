@@ -52,6 +52,15 @@ export function dispositionLabel(status) {
   return labels[status] || status || "";
 }
 
+export function statusTone(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized.includes("reject") || normalized.includes("skip") || normalized.includes("not_a_fit") || normalized.includes("ghosted") || normalized.includes("filled") || normalized.includes("noise") || normalized.includes("error")) return "red";
+  if (normalized.includes("applied") || normalized.includes("added") || normalized.includes("eval_test") || normalized.includes("created")) return "green";
+  if (normalized.includes("duplicate") || normalized.includes("triage") || normalized.includes("pending") || normalized.includes("ack")) return "yellow";
+  if (normalized.includes("waiting") || normalized.includes("active") || normalized.includes("eligible")) return "accent";
+  return "gray";
+}
+
 export function formatScanDisposition(disposition) {
   const labels = {
     ack: "acknowledgement",

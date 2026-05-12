@@ -36,6 +36,13 @@ export function scoreLabel(score) {
   return score === null || score === undefined ? "not scored" : `${score}%`;
 }
 
+export function scoreTone(score) {
+  if (score === null || score === undefined) return "gray";
+  if (score >= 70) return "green";
+  if (score >= 40) return "yellow";
+  return "red";
+}
+
 export function reasoningWithoutPenaltySummary(reasoning) {
   return String(reasoning || "")
     .replace(/\s*Penalties applied:\s*.+?\.\s*$/i, "")

@@ -34,26 +34,16 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
-
-function scoreBadge(score) {
-  if (score == null) return <span className="badge badge-gray">—</span>;
-  const cls = score >= 70 ? "badge-green" : score >= 40 ? "badge-yellow" : "badge-red";
-  return <span className={`badge ${cls}`}>{score}</span>;
-}
+import Modal from "./common/Modal.jsx";
+import MetricGrid, { MetricItem } from "./common/MetricGrid.jsx";
+import StatusBadge from "./common/StatusBadge.jsx";
+import { scoreTone } from "../utils/fitScoringUtils.js";
 
 function getMatchLevel(score) {
   if (score >= 85) return { key: "ideal", label: "Ideal Match" };
   if (score >= 70) return { key: "high", label: "High Match" };
   if (score >= 40) return { key: "medium", label: "Medium Match" };
   return { key: "low", label: "Low Match" };
-}
-
-function confidenceBadge(level, score) {
-  const label = `${level || "unknown"}${score != null ? ` (${score})` : ""}`;
-  if (level === "high") return <span className="badge badge-green">{label}</span>;
-  if (level === "medium") return <span className="badge badge-yellow">{label}</span>;
-  if (level === "low") return <span className="badge badge-red">{label}</span>;
-  return <span className="badge badge-gray">{label}</span>;
 }
 
 export default function CareerSiteResultsPanel() {
@@ -594,8 +584,16 @@ export default function CareerSiteResultsPanel() {
                               </div>
                             </div>
                             <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                              {scoreBadge(row.match_score)}
-                              {confidenceBadge(row.confidence_level, row.confidence_score)}
+                              <StatusBadge
+                                status={scoreTone(row.match_score)}
+                                label={row.match_score != null ? String(row.match_score) : "—"}
+                                tone={scoreTone(row.match_score)}
+                              />
+                              <StatusBadge
+                                status={row.confidence_level || "gray"}
+                                label={`${row.confidence_level || "unknown"}${row.confidence_score != null ? ` (${row.confidence_score})` : ""}`}
+                                tone={statusTone(row.confidence_level)}
+                              />
                               {row.job_url ? (
                                 <a href={row.job_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
                                   Open
@@ -866,33 +864,25 @@ function isRejectedCareerRow(row) {
 function CareerScanProgressPopup({ title, status }) {
   const progress = Math.max(0, Math.min(100, Number(status?.progress) || 0));
   return (
-    <div style={modalBackdropStyle}>
-      <div style={{ ...modalPanelStyle, maxWidth: "520px", padding: "18px", display: "block" }}>
-        <div style={{ ...modalHeaderStyle, padding: 0, borderBottom: "none", marginBottom: "14px" }}>
-          <div>
-            <div style={popupTitleStyle}>{title}</div>
-            <div style={popupSubtitleStyle}>{status?.message || "Working..."}</div>
-          </div>
-          <span className="inline-spinner" style={popupSpinnerStyle} />
-        </div>
-
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
-            <span>Progress</span>
-            <span>{progress}%</span>
-          </div>
-          <div className="loading-bar">
-            <div className="loading-bar-fill" style={{ width: `${progress}%` }} />
-          </div>
-          <p style={{ margin: "10px 0 0", fontSize: "12px", color: "var(--text-muted)" }}>
-            Sites scanned: {status?.sites_scanned ?? 0} · Found: {status?.jobs_found ?? 0} · New: {status?.jobs_added ?? 0}
-          </p>
-          {status?.errors?.length > 0 && (
-            <CareerScanErrorList errors={status.errors} />
-          )}
-        </div>
+    <Modal
+      title={title}
+      subtitle={status?.message || "Working..."}
+      maxWidth="520px"
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
+        <span>Progress</span>
+        <span>{progress}%</span>
       </div>
-    </div>
+      <div className="loading-bar">
+        <div className="loading-bar-fill" style={{ width: `${progress}%` }} />
+      </div>
+      <p style={{ margin: "10px 0 0", fontSize: "12px", color: "var(--text-muted)" }}>
+        Sites scanned: {status?.sites_scanned ?? 0} · Found: {status?.jobs_found ?? 0} · New: {status?.jobs_added ?? 0}
+      </p>
+      {status?.errors?.length > 0 && (
+        <CareerScanErrorList errors={status.errors} />
+      )}
+    </Modal>
   );
 }
 
@@ -900,51 +890,29 @@ function CareerScanSummaryPopup({ summary, onClose }) {
   const errors = Array.isArray(summary?.errors) ? summary.errors : [];
   const hasErrors = errors.length > 0;
   return (
-    <div style={modalBackdropStyle}>
-      <div style={{ ...modalPanelStyle, maxWidth: "620px", padding: "18px", display: "block" }}>
-        <div style={{ ...modalHeaderStyle, padding: 0, borderBottom: "none", marginBottom: "14px" }}>
-          <div>
-            <div style={popupTitleStyle}>
-              {hasErrors ? "Career-site scan completed with errors" : "Career-site scan complete"}
-            </div>
-            <div style={popupSubtitleStyle}>{summary?.message || "Finished."}</div>
+    <Modal
+      title={hasErrors ? "Career-site scan completed with errors" : "Career-site scan complete"}
+      subtitle={summary?.message || "Finished."}
+      onClose={onClose}
+      maxWidth="620px"
+      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
+    >
+      <MetricGrid>
+        <MetricItem label="sites scanned" value={summary?.sites_scanned ?? 0} />
+        <MetricItem label="jobs found" value={summary?.jobs_found ?? 0} tone={(summary?.jobs_found ?? 0) > 0 ? "green" : "muted"} />
+        <MetricItem label="new jobs" value={summary?.jobs_added ?? 0} tone={(summary?.jobs_added ?? 0) > 0 ? "green" : "muted"} />
+        {hasErrors && <MetricItem label="errors" value={errors.length} tone="red" />}
+      </MetricGrid>
+
+      {hasErrors && (
+        <div style={{ marginTop: "14px", borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
+          <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
+            Error details
           </div>
-          <button className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={onClose}>
-            Close
-          </button>
+          <CareerScanErrorList errors={errors} />
         </div>
-
-        <div style={{ display: "flex", gap: "28px", flexWrap: "wrap" }}>
-          <CareerScanMetric label="sites scanned" value={summary?.sites_scanned ?? 0} />
-          <CareerScanMetric label="jobs found" value={summary?.jobs_found ?? 0} tone={(summary?.jobs_found ?? 0) > 0 ? "green" : "muted"} />
-          <CareerScanMetric label="new jobs" value={summary?.jobs_added ?? 0} tone={(summary?.jobs_added ?? 0) > 0 ? "green" : "muted"} />
-          {hasErrors && <CareerScanMetric label="errors" value={errors.length} tone="red" />}
-        </div>
-
-        {hasErrors && (
-          <div style={{ marginTop: "14px", borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
-            <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
-              Error details
-            </div>
-            <CareerScanErrorList errors={errors} />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CareerScanMetric({ label, value, tone = "muted" }) {
-  const colorByTone = {
-    green: "var(--green)",
-    muted: "var(--text-muted)",
-    red: "var(--red)",
-  };
-  return (
-    <div>
-      <div style={{ fontSize: "28px", fontWeight: 700, color: colorByTone[tone] || colorByTone.muted }}>{value}</div>
-      <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{label}</div>
-    </div>
+      )}
+    </Modal>
   );
 }
 
@@ -975,115 +943,88 @@ function BookmarkletModal({ site, onClose }) {
   };
 
   return (
-    <div onClick={onClose} style={modalBackdropStyle}>
-      <div onClick={(e) => e.stopPropagation()} style={{ ...modalPanelStyle, maxWidth: "820px" }}>
-        <div style={modalHeaderStyle}>
-          <div>
-            <strong style={{ fontSize: "13px" }}>Capture Bookmarklet</strong>
-            <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
-              {site.name || site.url || "Career site"}
-            </div>
-          </div>
-          <button className="btn-secondary" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={onClose}>
-            Close
-          </button>
+    <Modal
+      title="Capture Bookmarklet"
+      subtitle={site.name || site.url || "Career site"}
+      onClose={onClose}
+      maxWidth="820px"
+      footer={<button className="btn-primary" onClick={copyBookmarklet}>{copied ? "Copied!" : "Copy Script"}</button>}
+    >
+      <div style={{ display: "grid", gap: "12px" }}>
+        <div style={{ display: "grid", gap: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
+          <p style={{ margin: 0 }}>
+            Create a browser bookmark named <strong style={{ color: "var(--text)" }}>Capture Jobs</strong>, paste this script as the bookmark URL, then click it while viewing the job board.
+          </p>
+          <p style={{ margin: 0 }}>
+            {isWellfound
+              ? "This exporter reads visible Wellfound job cards and downloads a JSON file that Import Job Posts can upload."
+              : "This generic exporter reads visible supported job links and downloads JSON that Import Job Posts can upload."}
+          </p>
         </div>
-        <div style={{ padding: "12px 14px", display: "grid", gap: "12px" }}>
-          <div style={{ display: "grid", gap: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
-            <p style={{ margin: 0 }}>
-              Create a browser bookmark named <strong style={{ color: "var(--text)" }}>Capture Jobs</strong>, paste this script as the bookmark URL, then click it while viewing the job board.
-            </p>
-            <p style={{ margin: 0 }}>
-              {isWellfound
-                ? "This exporter reads visible Wellfound job cards and downloads a JSON file that Import Job Posts can upload."
-                : "This generic exporter reads visible supported job links and downloads JSON that Import Job Posts can upload."}
-            </p>
-          </div>
-          <a
-            href={bookmarklet}
-            onClick={(e) => e.preventDefault()}
-            style={{
-              justifySelf: "start",
-              display: "inline-flex",
-              alignItems: "center",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              padding: "7px 12px",
-              background: "var(--surface2)",
-              fontSize: "12px",
-              fontWeight: 700,
-            }}
-            title="Drag this link to the bookmarks bar"
-          >
-            Capture Jobs
-          </a>
-          <textarea
-            readOnly
-            value={bookmarklet}
-            style={{
-              minHeight: "170px",
-              fontFamily: "monospace",
-              fontSize: "11px",
-              resize: "vertical",
-            }}
-            onFocus={(e) => e.target.select()}
-          />
-          <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ fontSize: "12px", color: copied ? "var(--green)" : "var(--text-muted)" }}>
-              {copied ? "Copied." : "After export, upload the JSON file from Job Queue > Import Job Posts."}
-            </span>
-            <button className="btn-primary" style={{ padding: "7px 14px", fontSize: "12px" }} onClick={copyBookmarklet}>
-              Copy Script
-            </button>
-          </div>
+        <a
+          href={bookmarklet}
+          onClick={(e) => e.preventDefault()}
+          style={{
+            justifySelf: "start",
+            display: "inline-flex",
+            alignItems: "center",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+            padding: "7px 12px",
+            background: "var(--surface2)",
+            fontSize: "12px",
+            fontWeight: 700,
+          }}
+          title="Drag this link to the bookmarks bar"
+        >
+          Capture Jobs
+        </a>
+        <textarea
+          readOnly
+          value={bookmarklet}
+          style={{
+            minHeight: "170px",
+            fontFamily: "monospace",
+            fontSize: "11px",
+            resize: "vertical",
+          }}
+          onFocus={(e) => e.target.select()}
+        />
+        <div style={{ fontSize: "12px", color: copied ? "var(--green)" : "var(--text-muted)" }}>
+          {copied ? "Copied to clipboard." : "After export, upload the JSON file from Job Queue > Import Job Posts."}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
 function FailureDetailsModal({ failure, onClose }) {
   return (
-    <div
-      onClick={onClose}
-      style={modalBackdropStyle}
+    <Modal
+      title="Failure Details"
+      onClose={onClose}
+      maxWidth="760px"
+      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ ...modalPanelStyle, maxWidth: "760px" }}
-      >
-        <div style={modalHeaderStyle}>
-          <strong style={{ fontSize: "13px" }}>Failure Details</strong>
-          <button className="btn-secondary" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={onClose}>
-            Close
-          </button>
-        </div>
-        <div style={{ padding: "12px 14px", overflowY: "auto" }}>
-          <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "max-content 1fr", rowGap: "6px", columnGap: "12px", fontSize: "12px" }}>
-            <dt style={modalDtStyle}>When</dt>
-            <dd style={modalDdStyle}>{formatLocalDateTime(failure.occurred_at)}</dd>
-            <dt style={modalDtStyle}>Platform</dt>
-            <dd style={modalDdStyle}>{failure.platform || "—"}</dd>
-            <dt style={modalDtStyle}>Trigger</dt>
-            <dd style={modalDdStyle}>{failure.trigger || "—"}</dd>
-            <dt style={modalDtStyle}>Site Name</dt>
-            <dd style={modalDdStyle}>{failure.site_name || "—"}</dd>
-            <dt style={modalDtStyle}>Site URL</dt>
-            <dd style={{ ...modalDdStyle, fontFamily: "monospace", wordBreak: "break-all" }}>{failure.site_url || "—"}</dd>
-            <dt style={modalDtStyle}>Site Source ID</dt>
-            <dd style={modalDdStyle}>{failure.site_source_id ?? "—"}</dd>
-            <dt style={modalDtStyle}>Failure ID</dt>
-            <dd style={modalDdStyle}>{failure.id ?? "—"}</dd>
-            <dt style={modalDtStyle}>Error</dt>
-            <dd style={modalDdStyle}>
-              <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "monospace", fontSize: "12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px" }}>
-                {failure.error_message || "—"}
-              </pre>
-            </dd>
-          </dl>
-        </div>
-      </div>
-    </div>
+      <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "max-content 1fr", rowGap: "8px", columnGap: "12px", fontSize: "12px" }}>
+        <dt style={{ color: "var(--text-muted)", fontWeight: 600 }}>When</dt>
+        <dd style={{ margin: 0 }}>{formatLocalDateTime(failure.occurred_at)}</dd>
+        <dt style={{ color: "var(--text-muted)", fontWeight: 600 }}>Platform</dt>
+        <dd style={{ margin: 0 }}>{failure.platform || "—"}</dd>
+        <dt style={{ color: "var(--text-muted)", fontWeight: 600 }}>Trigger</dt>
+        <dd style={{ margin: 0 }}>{failure.trigger || "—"}</dd>
+        <dt style={{ color: "var(--text-muted)", fontWeight: 600 }}>Site Name</dt>
+        <dd style={{ margin: 0 }}>{failure.site_name || "—"}</dd>
+        <dt style={{ color: "var(--text-muted)", fontWeight: 600 }}>Site URL</dt>
+        <dd style={{ margin: 0, fontFamily: "monospace", wordBreak: "break-all" }}>{failure.site_url || "—"}</dd>
+        <dt style={{ color: "var(--text-muted)", fontWeight: 600 }}>Error</dt>
+        <dd style={{ margin: 0 }}>
+          <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "monospace", fontSize: "12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px" }}>
+            {failure.error_message || "—"}
+          </pre>
+        </dd>
+      </dl>
+    </Modal>
   );
 }
 
@@ -1171,66 +1112,6 @@ const progressBox = {
   padding: "16px 18px",
   marginBottom: "16px",
   boxShadow: "var(--shadow-sm)",
-};
-
-const modalBackdropStyle = {
-  position: "fixed",
-  inset: 0,
-  zIndex: 1000,
-  background: "rgba(0,0,0,0.55)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: "24px",
-};
-
-const modalPanelStyle = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  boxShadow: "var(--shadow-lg)",
-  width: "100%",
-  maxHeight: "80vh",
-  display: "flex",
-  flexDirection: "column",
-  overflow: "hidden",
-};
-
-const modalHeaderStyle = {
-  padding: "12px 14px",
-  borderBottom: "1px solid var(--border)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: "8px",
-};
-
-const modalDtStyle = {
-  color: "var(--text-muted)",
-  fontWeight: 600,
-};
-
-const modalDdStyle = {
-  margin: 0,
-  color: "var(--text)",
-};
-
-const popupTitleStyle = {
-  color: "var(--text)",
-  fontSize: "16px",
-  fontWeight: 700,
-};
-
-const popupSubtitleStyle = {
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  marginTop: "3px",
-};
-
-const popupSpinnerStyle = {
-  color: "var(--accent)",
-  height: "18px",
-  width: "18px",
 };
 
 const detailLabelStyle = {
