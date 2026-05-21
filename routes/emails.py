@@ -87,7 +87,7 @@ def get_scanned_emails():
     Return all scanned emails enriched with their associated job status.
 
     Optional query param ``filter``:
-      - ``acted``    — only emails whose job has status added_to_sheet or skipped
+      - ``acted``    — only emails whose job has status applied or skipped
       - ``potential`` — only emails whose job is still in pending_review / triage / possible_duplicate
       - (omitted)    — all scanned emails
     """
@@ -101,10 +101,10 @@ def get_scanned_emails():
         emails = [
             e for e in emails
             if any(
-                job.get("status") in ("added_to_sheet", "skipped")
+                job.get("status") in ("applied", "skipped")
                 for job in e.get("jobs") or []
             )
-            or e.get("job_status") in ("added_to_sheet", "skipped")
+            or e.get("job_status") in ("applied", "skipped")
         ]
     elif filter_param == "potential":
         emails = [

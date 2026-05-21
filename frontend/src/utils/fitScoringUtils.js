@@ -54,12 +54,27 @@ export function fitReasoningBullets(reasoning) {
   if (!text) return [];
   const bulletMatches = text.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s+.+/g);
   if (bulletMatches) {
-    return bulletMatches
+    return combineParserConfidenceBullets(bulletMatches
       .map((item) => item.replace(/^\s*(?:[-*•]|\d+\.)\s+/, "").trim())
-      .filter(Boolean);
+      .filter(Boolean));
   }
-  return text
+  return combineParserConfidenceBullets(text
     .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
     .map((item) => item.trim())
-    .filter(Boolean);
+    .filter(Boolean));
+}
+
+function combineParserConfidenceBullets(items) {
+  const combinedItems = [];
+  for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+    const confidenceMatch = items[itemIndex].match(/^Parser confidence:\s*(.+?)\.?$/i);
+    const certaintyMatch = items[itemIndex + 1]?.match(/^Parser certainty score:\s*(.+?)\.?$/i);
+    if (confidenceMatch && certaintyMatch) {
+      combinedItems.push(`Parser confidence: ${confidenceMatch[1]} (${certaintyMatch[1]} certainty).`);
+      itemIndex += 1;
+    } else {
+      combinedItems.push(items[itemIndex]);
+    }
+  }
+  return combinedItems;
 }

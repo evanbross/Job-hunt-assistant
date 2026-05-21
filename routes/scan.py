@@ -47,6 +47,7 @@ from googleapiclient.errors import HttpError
 import config
 from backend.db import open_repositories
 from backend.duplicate_checker import DuplicateChecker
+from backend.ai_provider import AIProviderClient
 from backend.email_parser import EmailParser
 from backend.email_source_filters import email_matches_source_filters
 from backend.fit_scorer import FitScorer
@@ -73,6 +74,7 @@ class ScanState:
     jobs_processed: int = 0
     errors: list[dict] = field(default_factory=list)
     summary: dict | None = None
+    connection_warning: str = ""
 
 
 _scan_state = ScanState()
@@ -115,6 +117,7 @@ def _update_scan(
     error: str | None = None,
     error_email_id: str | None = None,
     summary: dict | None = None,
+    connection_warning: str | None = None,
 ) -> None:
     with _scan_lock:
         if progress is not None:
@@ -129,6 +132,8 @@ def _update_scan(
             _scan_state.errors.append({"message": error, "email_id": error_email_id})
         if summary is not None:
             _scan_state.summary = summary
+        if connection_warning is not None:
+            _scan_state.connection_warning = connection_warning
 
 
 # ─── Gmail helpers ────────────────────────────────────────────────────────────
@@ -213,7 +218,11 @@ def _run_scan(rescan_all: bool = False) -> None:
         resume_row = resume_repo.get_latest()
         resume_text = resume_row["content"] if resume_row else ""
 
-        parser = EmailParser()
+        parser = EmailParser(
+            client=AIProviderClient(
+                on_retry=lambda msg: _update_scan(connection_warning=msg)
+            )
+        )
         scorer = FitScorer()
         dup_checker = DuplicateChecker()
 
@@ -361,6 +370,7 @@ def _run_scan(rescan_all: bool = False) -> None:
             # Parse the email — returns a list (empty if not a job email)
             try:
                 parsed_jobs = parser.parse(subject, sender, body)
+                _update_scan(connection_warning="")
             except Exception as exc:
                 parser_error_emails += 1
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=body, parser_error_msg=str(exc))
@@ -632,6 +642,7 @@ def scan_status():
                 "jobs_processed": _scan_state.jobs_processed,
                 "errors": list(_scan_state.errors),
                 "summary": _scan_state.summary,
+                "connection_warning": _scan_state.connection_warning,
             }
         )
 

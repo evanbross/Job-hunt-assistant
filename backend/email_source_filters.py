@@ -85,7 +85,9 @@ def _gmail_source_query(source_filter: dict[str, Any]) -> str:
         return ""
 
     subject_filter_value = str(source_filter.get("subject_filter_value") or "").strip()
-    if not subject_filter_value:
+    subject_filter_match_mode = str(source_filter.get("subject_filter_match_mode") or "text").strip()
+    # Regex/glob patterns are not valid Gmail query syntax; app-side filtering handles those.
+    if not subject_filter_value or subject_filter_match_mode in ("regex", "glob"):
         return base_query
     return f"({base_query} subject:{_gmail_query_value(subject_filter_value)})"
 

@@ -73,6 +73,8 @@ logger = logging.getLogger(__name__)
 
 career_sites_bp = Blueprint("career_sites", __name__)
 
+_CAREER_SITE_COLLECTION_MODES = frozenset({"automatic", "manual"})
+
 
 # ─── Career-site scan state (in-memory, protected by a lock) ──────────────────
 
@@ -81,9 +83,12 @@ class CareerSiteScanState:
     running: bool = False
     progress: int = 0
     message: str = "Idle"
+    sites_total: int = 0
     sites_scanned: int = 0
     jobs_found: int = 0
     jobs_added: int = 0
+    listings_filtered: int = 0
+    listings_evaluated: int = 0
     last_run_at: str | None = None
     last_trigger: str | None = None
     errors: list[str] = field(default_factory=list)
@@ -145,9 +150,12 @@ def _update_career_scan(
     *,
     progress: int | None = None,
     message: str | None = None,
+    sites_total: int | None = None,
     sites_scanned: int | None = None,
     jobs_found: int | None = None,
     jobs_added: int | None = None,
+    listings_filtered: int | None = None,
+    listings_evaluated: int | None = None,
     last_run_at: str | None = None,
     last_trigger: str | None = None,
     error: str | None = None,
@@ -157,18 +165,31 @@ def _update_career_scan(
             _career_state.progress = progress
         if message is not None:
             _career_state.message = message
+        if sites_total is not None:
+            _career_state.sites_total = sites_total
         if sites_scanned is not None:
             _career_state.sites_scanned = sites_scanned
         if jobs_found is not None:
             _career_state.jobs_found = jobs_found
         if jobs_added is not None:
             _career_state.jobs_added = jobs_added
+        if listings_filtered is not None:
+            _career_state.listings_filtered = listings_filtered
+        if listings_evaluated is not None:
+            _career_state.listings_evaluated = listings_evaluated
         if last_run_at is not None:
             _career_state.last_run_at = last_run_at
         if last_trigger is not None:
             _career_state.last_trigger = last_trigger
         if error is not None:
             _career_state.errors.append(error)
+
+
+def _parse_collection_mode(value: object, *, default: str = "automatic") -> str:
+    mode = str(value or default).strip().lower()
+    if mode not in _CAREER_SITE_COLLECTION_MODES:
+        raise ValueError("collection_mode must be automatic or manual")
+    return mode
 
 
 def _re_evaluate_career_scan_results(
@@ -266,9 +287,12 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
         _career_state.running = True
         _career_state.progress = 0
         _career_state.message = "Starting career-site scan..."
+        _career_state.sites_total = 0
         _career_state.sites_scanned = 0
         _career_state.jobs_found = 0
         _career_state.jobs_added = 0
+        _career_state.listings_filtered = 0
+        _career_state.listings_evaluated = 0
         _career_state.errors.clear()
         _career_state.last_trigger = trigger
 
@@ -314,6 +338,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
         _update_career_scan(
             progress=10,
             message=f"Scanning {len(target_sources)} career site(s)...",
+            sites_total=len(target_sources),
         )
 
         resume_row = resume_repo.get_latest()
@@ -352,6 +377,8 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
         scanned_sites = 0
         jobs_found_total = 0
         jobs_added_total = 0
+        listings_filtered_total = 0
+        listings_evaluated_total = 0
         source_count = len(target_sources)
 
         # Sites that require a real browser — handled by dedicated Playwright scrapers.
@@ -374,6 +401,8 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 sites_scanned=scanned_sites,
                 jobs_found=jobs_found_total,
                 jobs_added=jobs_added_total,
+                listings_filtered=listings_filtered_total,
+                listings_evaluated=listings_evaluated_total,
             )
 
             try:
@@ -460,6 +489,12 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 )
 
             jobs_found_total += len(jobs)
+            _update_career_scan(
+                message=f"Evaluating {len(jobs)} job listing(s) from {source_name}...",
+                jobs_found=jobs_found_total,
+                listings_filtered=listings_filtered_total,
+                listings_evaluated=listings_evaluated_total,
+            )
 
             for job in jobs:
                 sheet_status: str | None = None
@@ -517,9 +552,11 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 local_status = (local_job or {}).get("status")
 
                 _dismissed = {"rejected", "skipped"}
+                listing_filtered = False
                 if (sheet_status and sheet_status.lower() in _dismissed) or (local_status and local_status.lower() in _dismissed):
                     tracking_status = f"Tracked: {sheet_status}" if sheet_status else f"Inbox: {local_status}"
                     tracking_source = "db_rejected"
+                    listing_filtered = True
                 elif sheet_status and local_status:
                     tracking_status = f"Tracked: {sheet_status} · Inbox: {local_status}"
                 elif sheet_status:
@@ -536,6 +573,9 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     tracking_source = "career_rule"
                     rejection_reason = matched_rejection_rule["rule_text"]
                     rejection_source = "career_rule"
+                    listing_filtered = True
+                if listing_filtered:
+                    listings_filtered_total += 1
 
                 try:
                     score_result = scorer.score(
@@ -548,6 +588,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     )
                     match_score: int | None = score_result["score"]
                     match_reasoning: str = score_result["reasoning"]
+                    listings_evaluated_total += 1
                 except Exception as exc:
                     logger.warning(
                         "Fit scoring failed for career job %s: %s",
@@ -556,6 +597,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     )
                     match_score = None
                     match_reasoning = f"Scoring failed: {exc}"
+                    listings_evaluated_total += 1
 
                 row_data = {
                     "site_source_id": current_source_id,
@@ -586,6 +628,12 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 except Exception as exc:
                     conn.rollback()
                     logger.debug("Career-scan insert skipped for %s: %s", job["job_url"], exc)
+                _update_career_scan(
+                    jobs_found=jobs_found_total,
+                    jobs_added=jobs_added_total,
+                    listings_filtered=listings_filtered_total,
+                    listings_evaluated=listings_evaluated_total,
+                )
 
             scanned_sites += 1
             progress = 20 + int((scanned_sites / source_count) * 75)
@@ -594,6 +642,8 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 sites_scanned=scanned_sites,
                 jobs_found=jobs_found_total,
                 jobs_added=jobs_added_total,
+                listings_filtered=listings_filtered_total,
+                listings_evaluated=listings_evaluated_total,
             )
 
         logger.info(
@@ -608,6 +658,8 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
             sites_scanned=scanned_sites,
             jobs_found=jobs_found_total,
             jobs_added=jobs_added_total,
+            listings_filtered=listings_filtered_total,
+            listings_evaluated=listings_evaluated_total,
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
     except Exception as exc:
@@ -652,13 +704,14 @@ def create_career_site():
     url = (data.get("url") or "").strip()
     try:
         enabled = 1 if _parse_bool(data.get("enabled"), default=True) else 0
+        collection_mode = _parse_collection_mode(data.get("collection_mode"))
         recapture_interval_days = _parse_positive_int(
             data.get("recapture_interval_days"),
             default=4,
             field_name="recapture_interval_days",
         )
-    except ValueError:
-        return jsonify({"error": "enabled must be a boolean value and recapture_interval_days must be positive"}), 400
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     if not name or not url:
         return jsonify({"error": "name and url are required"}), 400
@@ -671,6 +724,7 @@ def create_career_site():
             "name": name,
             "url": url,
             "enabled": enabled,
+            "collection_mode": collection_mode,
             "detected_platform": platform_for_site_url(url),
             "recapture_interval_days": recapture_interval_days,
             "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -702,8 +756,13 @@ def update_career_site(source_id: int):
     if "enabled" in data:
         try:
             fields["enabled"] = 1 if _parse_bool(data.get("enabled"), default=True) else 0
-        except ValueError:
-            return jsonify({"error": "enabled must be a boolean value"}), 400
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    if "collection_mode" in data:
+        try:
+            fields["collection_mode"] = _parse_collection_mode(data.get("collection_mode"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
     if "recapture_interval_days" in data:
         try:
             fields["recapture_interval_days"] = _parse_positive_int(
@@ -768,6 +827,8 @@ def run_career_scan_for_site(source_id: int):
     repos["conn"].close()
     if not existing:
         return jsonify({"error": "Career site not found"}), 404
+    if (existing.get("collection_mode") or "automatic") != "automatic":
+        return jsonify({"error": "This career site is marked for manual collection."}), 400
 
     with _career_lock:
         if _career_state.running:
@@ -802,8 +863,12 @@ def career_scan_status():
                 "progress": _career_state.progress,
                 "message": _career_state.message,
                 "sites_scanned": _career_state.sites_scanned,
+                "sites_total": _career_state.sites_total,
                 "jobs_found": _career_state.jobs_found,
                 "jobs_added": _career_state.jobs_added,
+                "job_listings": _career_state.jobs_found,
+                "listings_filtered": _career_state.listings_filtered,
+                "listings_evaluated": _career_state.listings_evaluated,
                 "last_run_at": _career_state.last_run_at,
                 "last_trigger": _career_state.last_trigger,
                 "errors": list(_career_state.errors),

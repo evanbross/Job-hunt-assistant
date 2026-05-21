@@ -926,6 +926,7 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
         "name",
         "url",
         "enabled",
+        "collection_mode",
         "detected_platform",
         "last_captured_at",
         "recapture_interval_days",
@@ -938,7 +939,10 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
 
     def get_enabled(self) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM career_site_sources WHERE enabled = 1 ORDER BY name"
+            "SELECT * FROM career_site_sources"
+            " WHERE enabled = 1"
+            " AND COALESCE(collection_mode, 'automatic') = 'automatic'"
+            " ORDER BY name"
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
@@ -1441,6 +1445,7 @@ def _migrate(conn: Any) -> None:
         cur.execute(f"ALTER TABLE career_scan_results ADD COLUMN IF NOT EXISTS {col} {defn}")
 
     for col, defn in [
+        ("collection_mode", "TEXT DEFAULT 'automatic'"),
         ("detected_platform", "TEXT"),
         ("last_captured_at", "TEXT"),
         ("recapture_interval_days", "INTEGER DEFAULT 4"),
@@ -1482,9 +1487,10 @@ def _migrate(conn: Any) -> None:
         INSERT INTO application_stages (job_id, status, date)
         SELECT id, 'applied', COALESCE(date_added_to_sheet, date_found, CURRENT_DATE::text)
         FROM jobs
-        WHERE status = 'added_to_sheet'
+        WHERE status IN ('added_to_sheet', 'applied')
           AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
     """)
+    cur.execute("UPDATE jobs SET status = 'applied' WHERE status = 'added_to_sheet'")
 
     cur.execute("UPDATE jobs SET date_found = CURRENT_DATE::text WHERE date_found IS NULL")
 
@@ -1566,6 +1572,7 @@ def _migrate_sqlite(conn: Any) -> None:
         _sqlite_add_column_if_missing(cur, "career_scan_results", col, defn)
 
     for col, defn in [
+        ("collection_mode", "TEXT DEFAULT 'automatic'"),
         ("detected_platform", "TEXT"),
         ("last_captured_at", "TEXT"),
         ("recapture_interval_days", "INTEGER DEFAULT 4"),
@@ -1605,9 +1612,10 @@ def _migrate_sqlite(conn: Any) -> None:
         INSERT INTO application_stages (job_id, status, date)
         SELECT id, 'applied', COALESCE(date_added_to_sheet, date_found, date('now'))
         FROM jobs
-        WHERE status = 'added_to_sheet'
+        WHERE status IN ('added_to_sheet', 'applied')
           AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
     """)
+    cur.execute("UPDATE jobs SET status = 'applied' WHERE status = 'added_to_sheet'")
 
     cur.execute("UPDATE jobs SET date_found = date('now') WHERE date_found IS NULL")
 
@@ -1724,6 +1732,7 @@ def _create_tables(conn: Any) -> None:
             name                    TEXT NOT NULL,
             url                     TEXT NOT NULL,
             enabled                 INTEGER DEFAULT 1,
+            collection_mode         TEXT DEFAULT 'automatic',
             detected_platform       TEXT,
             last_captured_at        TEXT,
             recapture_interval_days INTEGER DEFAULT 4,
@@ -1916,6 +1925,7 @@ def _create_tables_sqlite(conn: Any) -> None:
             name                    TEXT NOT NULL,
             url                     TEXT NOT NULL,
             enabled                 INTEGER DEFAULT 1,
+            collection_mode         TEXT DEFAULT 'automatic',
             detected_platform       TEXT,
             last_captured_at        TEXT,
             recapture_interval_days INTEGER DEFAULT 4,

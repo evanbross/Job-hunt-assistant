@@ -96,7 +96,8 @@
       "Bash(Get-ChildItem -Path \"F:\\\\Evan-F\\\\Projects\\\\JobHuntAssistant\" -Force)",
       "Bash(Select-Object Name, PSIsContainer)",
       "Bash(tasklist)",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "Bash(findstr /i \"career\")"
     ]
   }
 }

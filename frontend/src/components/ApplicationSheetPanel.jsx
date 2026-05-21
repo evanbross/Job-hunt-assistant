@@ -34,6 +34,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Modal from "./common/Modal.jsx";
+import { jobCardTabForStatus } from "../utils/jobQueueUtils.js";
 
 const APPLICATION_SHEET_SEARCH_STORAGE_KEY = "jha.applicationSheet.search";
 
@@ -68,7 +69,6 @@ const STATUS_FALLBACKS = {
   pending_review:     { background: "var(--surface2)", color: "var(--text-muted)" },
   possible_duplicate: { background: "var(--yellow-light)", color: "var(--yellow)" },
   not_a_fit:          { background: "var(--red-light)", color: "var(--red)" },
-  added_to_sheet:     { background: "var(--green-light)", color: "var(--green)" },
 };
 
 // Fallback option list shown before the DB loads (or if the table is empty).
@@ -89,7 +89,6 @@ const FALLBACK_DISPLAY_NAMES = {
   pending_review:     "Pending Review",
   possible_duplicate: "Possible Duplicate",
   not_a_fit:          "Not a Fit",
-  added_to_sheet:     "Added to Sheet",
 };
 
 const DEFAULT_COLUMN_WIDTHS = {
@@ -126,6 +125,7 @@ function defaultStageForm() {
 function normalizeStatus(value) {
   return String(value || "").trim().toLowerCase();
 }
+
 
 function getStatusStyle(value, colorMap = {}) {
   const normalizedValue = normalizeStatus(value);
@@ -344,7 +344,7 @@ function compareCellValues(leftValue, rightValue, key) {
   });
 }
 
-export default function ApplicationSheetPanel() {
+export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   const [sheet, setSheet] = useState({ sheet_name: "", columns: [], rows: [] });
   const [stageStatuses, setStageStatuses] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -653,6 +653,22 @@ export default function ApplicationSheetPanel() {
     }
   };
 
+  const returnToQueue = async (jobId) => {
+    if (!window.confirm("Move this job back to the Job Queue?")) return;
+    setSavingKey(`queue:${jobId}`);
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/return-to-queue`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        window.alert(data.error || `Move failed (${res.status})`);
+        return;
+      }
+      await loadSheet();
+    } finally {
+      setSavingKey("");
+    }
+  };
+
   if (loading) {
     return <p style={{ color: "var(--text-muted)" }}>Loading sheet...</p>;
   }
@@ -692,6 +708,7 @@ export default function ApplicationSheetPanel() {
             placeholder="Search sheet"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
+            onFocus={(event) => event.target.select()}
             style={searchStyle}
           />
           <button className="btn-secondary" onClick={loadSheet}>Refresh</button>
@@ -883,6 +900,8 @@ export default function ApplicationSheetPanel() {
             ) : visibleRows.map((row, rowIndex) => {
               const isOpen = expandedRows.has(row.row_number);
               const rowShade = rowIndex % 2 === 0 ? "var(--surface)" : "#f7f8fd";
+              const rowStatus = getCell(row, trackingColumns.status).value;
+              const jobCardTab = jobCardTabForStatus(rowStatus);
               return (
                 <React.Fragment key={row.row_number}>
                   <tr style={{ ...bodyRowStyle, background: rowShade }} onClick={() => toggleRow(row.row_number)}>
@@ -896,6 +915,18 @@ export default function ApplicationSheetPanel() {
                         >
                           {entry.key === "status" ? (
                             <StatusIndicator cell={cell} colorMap={statusColorMap} labelMap={statusLabelMap} />
+                          ) : entry.key === "job_title" && jobCardTab ? (
+                            <button
+                              type="button"
+                              style={jobTitleLinkStyle}
+                              title={`Show this job on ${jobCardTab === "queue" ? "Job Queue" : "Triage"}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onNavigateToJobCard?.(row.row_number, rowStatus);
+                              }}
+                            >
+                              {cell.value || "Untitled role"}
+                            </button>
                           ) : (
                             <span style={oneLineStyle}>{cell.value || ""}</span>
                           )}
@@ -959,6 +990,15 @@ export default function ApplicationSheetPanel() {
                             <button className="btn-secondary" onClick={() => startEditing(row)}>
                               Edit Row
                             </button>
+                            {normalizeStatus(getCell(row, trackingColumns.status).value) === "applied" && (
+                              <button
+                                className="btn-secondary"
+                                onClick={() => returnToQueue(row.row_number)}
+                                disabled={savingKey === `queue:${row.row_number}`}
+                              >
+                                {savingKey === `queue:${row.row_number}` ? "Moving..." : "Move Back to Queue"}
+                              </button>
+                            )}
                           </div>
                         )}
                         {row.stages?.length > 0 && (
@@ -1151,6 +1191,19 @@ const oneLineStyle = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
+};
+
+const jobTitleLinkStyle = {
+  ...oneLineStyle,
+  background: "transparent",
+  border: 0,
+  color: "var(--accent)",
+  cursor: "pointer",
+  font: "inherit",
+  padding: 0,
+  textAlign: "left",
+  textDecoration: "underline",
+  width: "100%",
 };
 
 const sortButtonStyle = {

@@ -34,6 +34,11 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import Modal from "./common/Modal.jsx";
+import StatusBadge from "./common/StatusBadge.jsx";
+import CompanyHistoryDialog, { useCompanyHistoryLookup } from "./common/CompanyHistoryDialog.jsx";
+import { applicationRowFromSheet, isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.js";
+import UndoEditNotice from "./common/UndoEditNotice.jsx";
+import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 import { fitReasoningBullets } from "../utils/fitScoringUtils.js";
@@ -85,7 +90,22 @@ function writeStoredSearch(storageKey, value) {
 }
 
 
-export default function TriagePanel({ onCountChange }) {
+function companyRowSummary(rows) {
+  const counts = {};
+  for (const row of rows) {
+    const s = String(row.status || "No status").trim();
+    counts[s] = (counts[s] || 0) + 1;
+  }
+  return counts;
+}
+
+function companyHistoryBadgeClass(rows) {
+  if (rows.some((row) => String(row.status || "").toLowerCase().includes("reject"))) return "badge-red";
+  if (rows.some((row) => isAppliedStatus(row.status))) return "badge-orange";
+  return "badge-gray";
+}
+
+export default function TriagePanel({ onCountChange, focusJobId }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState("date_desc");
@@ -95,6 +115,7 @@ export default function TriagePanel({ onCountChange }) {
   const [descriptionUpdatePopup, setDescriptionUpdatePopup] = useState(null);
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
+  const [allSheetRows, setAllSheetRows] = useState(null);
   const moreActionsRef = useRef(null);
 
   const fetchTriage = async () => {
@@ -129,6 +150,31 @@ export default function TriagePanel({ onCountChange }) {
     document.addEventListener("mousedown", handleOutsideClick);
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [moreActionsOpen]);
+
+  useEffect(() => {
+    if (!focusJobId) return;
+    setSearchText("");
+    setShowOnlyUnscored(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusJobId]);
+
+  useEffect(() => {
+    if (!focusJobId || loading) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      document.getElementById(`triage-card-${focusJobId}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [focusJobId, jobs.length, loading]);
+
+  useEffect(() => {
+    fetch("/api/sheet/applications")
+      .then((res) => res.json())
+      .then((data) => setAllSheetRows(Array.isArray(data.rows) ? data.rows.map(applicationRowFromSheet) : []))
+      .catch(() => setAllSheetRows([]));
+  }, []);
 
   const handleApprove = async (job) => {
     const senderEmail = extractSender(job.raw_email_snippet, job);
@@ -389,16 +435,18 @@ export default function TriagePanel({ onCountChange }) {
 
   return (
     <div>
+      <h2 style={{ fontSize: "18px", fontWeight: 700, lineHeight: 1.2, margin: "0 0 14px" }}>Triage</h2>
       <div style={triageToolbarStyle}>
         <div style={triageToolbarMainStyle}>
           <input
             type="search"
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
+            onFocus={(e) => e.target.select()}
             placeholder="Search triage jobs"
             style={triageSearchInputStyle}
           />
-          {unscoredCount > 0 && (
+          {(unscoredCount > 0 || showOnlyUnscored) && (
             <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
               <input
                 type="checkbox"
@@ -501,6 +549,19 @@ export default function TriagePanel({ onCountChange }) {
             onDifferentJob={() => handleApprove(job)}
             onMarkUnique={() => handleMarkUnique(job)}
             onReEvaluate={() => handleReEvaluateFit(job)}
+            onReprocessed={(updated) => {
+              const triageStatuses = new Set(["triage", "possible_duplicate"]);
+              if (triageStatuses.has(updated.status)) {
+                setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
+                return;
+              }
+              setJobs((prev) => {
+                const nextJobs = prev.filter((j) => j.id !== updated.id);
+                onCountChange(nextJobs.length);
+                return nextJobs;
+              });
+            }}
+            companySheetRows={allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))}
           />
         ) : (
           <TriageCard
@@ -510,6 +571,7 @@ export default function TriagePanel({ onCountChange }) {
             onSkip={(reason, feedback, mismatchReasons) => handleSkip(job, reason, feedback, mismatchReasons)}
             onReEvaluate={() => handleReEvaluateFit(job)}
             onRefreshFromUrl={() => handleRefreshFromUrl(job)}
+            companySheetRows={allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))}
             onReprocessed={(updated) => {
               const triageStatuses = new Set(["triage", "possible_duplicate"]);
               if (triageStatuses.has(updated.status)) {
@@ -551,10 +613,44 @@ export default function TriagePanel({ onCountChange }) {
   );
 }
 
-function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvaluate }) {
+function CardContextMenu({ contextMenu, company, onShowCompanyHistory }) {
+  const hasCompany = String(company || "").trim().length > 0;
+  return (
+    <div
+      style={{
+        ...contextMenuStyle,
+        left: contextMenu.x,
+        top: contextMenu.y,
+      }}
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <button
+        type="button"
+        style={{
+          ...contextMenuItemStyle,
+          cursor: hasCompany ? "pointer" : "not-allowed",
+          opacity: hasCompany ? 1 : 0.5,
+        }}
+        onClick={onShowCompanyHistory}
+        disabled={!hasCompany}
+      >
+        Show Company History
+      </button>
+    </div>
+  );
+}
+
+function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvaluate, onReprocessed, companySheetRows = null }) {
   const [loadingAction, setLoadingAction] = useState(null);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [reEvaluateError, setReEvaluateError] = useState(null);
+  const [descriptionPasteOpen, setDescriptionPasteOpen] = useState(false);
+  const [pastedDescription, setPastedDescription] = useState("");
+  const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
+  const companyHistory = useCompanyHistoryLookup(job);
   const triageReasoning = triageReasoningForJob(job);
   const penaltiesApplied = penaltiesAppliedForJob(job);
 
@@ -579,8 +675,66 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
     }
   };
 
+  const handleDescriptionSubmit = async () => {
+    const description = pastedDescription.trim();
+    if (description.length < 80) {
+      setReEvaluateError("Paste a more complete job description before re-evaluating.");
+      return;
+    }
+    setLoadingAction("description");
+    setReEvaluateError(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/description`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setReEvaluateError(data.error || "Description update failed");
+        return;
+      }
+      onReprocessed?.(data);
+      setPastedDescription("");
+      setDescriptionPasteOpen(false);
+    } catch (err) {
+      setReEvaluateError(err.message || "Description update failed");
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const saveTitleEdit = async () => {
+    setEditingTitle(false);
+    const value = titleDraft.trim();
+    if (!value || value === (job.job_title || "")) return;
+
+    const res = await fetch(`/api/jobs/${job.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_title: value }),
+    });
+    if (!res.ok) {
+      setReEvaluateError(`Job title update failed (${res.status})`);
+      return;
+    }
+    const updated = await res.json();
+    onReprocessed?.(updated);
+  };
+
   return (
-    <div style={{ ...cardStyle, borderColor: "var(--warning, #b45309)" }}>
+    <div
+      id={`triage-card-${job.id}`}
+      style={{ ...cardStyle, borderColor: "var(--warning, #b45309)" }}
+      onContextMenu={openContextMenu}
+    >
+      {contextMenu && (
+        <CardContextMenu
+          contextMenu={contextMenu}
+          company={job.company}
+          onShowCompanyHistory={() => runContextAction(companyHistory.open)}
+        />
+      )}
       {/* Meta */}
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
         <span className="badge badge-orange">Possible duplicate</span>
@@ -588,6 +742,16 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
         <SourceBadge job={job} />
         <SalaryBadge job={job} />
         {job.date_found && <span className="badge badge-gray">{job.date_found}</span>}
+        {companySheetRows !== null && companySheetRows.length > 0 && (
+          <span
+            className={`badge ${companyHistoryBadgeClass(companySheetRows)}`}
+            style={{ cursor: "pointer" }}
+            title={Object.entries(companyRowSummary(companySheetRows)).map(([s, n]) => `${n}× ${s}`).join(" · ")}
+            onClick={companyHistory.open}
+          >
+            {companySheetRows.length} tracked
+          </span>
+        )}
       </div>
 
       {/* Email origin */}
@@ -610,8 +774,34 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
         {job.company && (
           <div style={{ fontSize: "15px", fontWeight: "600" }}>{job.company}</div>
         )}
-        {job.job_title && (
-          <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>{job.job_title}</div>
+        {(job.job_title || editingTitle) && (
+          <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+            {editingTitle ? (
+              <input
+                autoFocus
+                value={titleDraft}
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onBlur={saveTitleEdit}
+                onFocus={(event) => event.target.select()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                  if (event.key === "Escape") setEditingTitle(false);
+                }}
+                style={editableDuplicateTitleInputStyle}
+              />
+            ) : (
+              <span
+                style={editableJobTitleStyle}
+                title="Click to edit job title"
+                onClick={() => {
+                  setTitleDraft(job.job_title || "");
+                  setEditingTitle(true);
+                }}
+              >
+                {job.job_title}
+              </span>
+            )}
+          </div>
         )}
         {job.url && (
           <a
@@ -619,8 +809,18 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
             target="_blank"
             rel="noreferrer"
             style={{ fontSize: "12px", wordBreak: "break-all" }}
+            title={job.url.length > 100 ? job.url : undefined}
           >
-            {job.url}
+            {job.url.length > 100 ? (
+              <>
+                {job.url.slice(0, 80)}
+                <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+                  {"…"} ({job.url.length} chars)
+                </span>
+              </>
+            ) : (
+              job.url
+            )}
           </a>
         )}
       </div>
@@ -660,6 +860,19 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
           onClick={() => setReasoningOpen((open) => !open)}
         >
           {reasoningOpen ? "Hide reasoning" : "Show reasoning"}
+        </button>
+        <button
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "5px 11px" }}
+          type="button"
+          onClick={() => {
+            setPastedDescription("");
+            setDescriptionPasteOpen(true);
+            setReEvaluateError(null);
+          }}
+          disabled={loadingAction !== null}
+        >
+          {job.job_description ? "Update description" : "Add description"}
         </button>
       </div>
 
@@ -710,11 +923,34 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
           {loadingAction === "different" ? "Moving…" : "No, it's a different role"}
         </button>
       </div>
+
+      {descriptionPasteOpen && (
+        <DescriptionPasteModal
+          job={job}
+          value={pastedDescription}
+          saving={loadingAction === "description"}
+          onChange={setPastedDescription}
+          onClose={() => setDescriptionPasteOpen(false)}
+          onSubmit={handleDescriptionSubmit}
+        />
+      )}
+
+      {companyHistory.opened && (
+        <CompanyHistoryDialog
+          company={job.company || "Unknown Company"}
+          currentJobId={job.id}
+          currentJobTitle={job.job_title || ""}
+          error={companyHistory.error}
+          loading={companyHistory.loading}
+          rows={companyHistory.rows}
+          onClose={companyHistory.close}
+        />
+      )}
     </div>
   );
 }
 
-function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated }) {
+function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, companySheetRows = null }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingCompany, setEditingCompany] = useState(false);
   const [companyDraft, setCompanyDraft] = useState("");
@@ -722,6 +958,10 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
   const [urlDraft, setUrlDraft] = useState("");
   const [reprocessError, setReprocessError] = useState(null);
   const [reEvaluateError, setReEvaluateError] = useState(null);
+  const [undoEdit, setUndoEdit] = useState(null);
+  const [undoSaving, setUndoSaving] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const [showSkipMenu, setShowSkipMenu] = useState(false);
   const [skipConfirm, setSkipConfirm] = useState(null);
   const [skipNote, setSkipNote] = useState("");
@@ -737,9 +977,13 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
   const [chatReclassification, setChatReclassification] = useState(null);
   const [chatAccepting, setChatAccepting] = useState(false);
   const chatMessagesRef = useRef(null);
+  const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
+  const companyHistory = useCompanyHistoryLookup(job);
   const triageReasoning = triageReasoningForJob(job);
   const penaltiesApplied = penaltiesAppliedForJob(job);
   const salaryRange = salaryRangeForJob(job);
+  const rawJobDescription = String(job.job_description || job.raw_email_snippet || "").trim();
+  const jobDescription = formatJobDescription(rawJobDescription);
 
   useEffect(() => {
     if (chatOpen && chatMessagesRef.current) {
@@ -768,11 +1012,21 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
     }
   };
 
-  const handleSkipReasonClick = (reason) => {
+  const handleSkipReasonClick = async (reason) => {
     setShowSkipMenu(false);
-    setSkipConfirm(reason);
     setSkipNote("");
     setSkipMismatchReasons([]);
+    if (reason.key === "other") {
+      setSkipConfirm(reason);
+      return;
+    }
+    setSkipConfirm(null);
+    setLoadingAction(`skip:${reason.key}`);
+    try {
+      await onSkip(reason.key, "", []);
+    } finally {
+      setLoadingAction(null);
+    }
   };
 
   const handleSkipConfirm = async () => {
@@ -837,6 +1091,7 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
     setReprocessError(null);
     setReEvaluateError(null);
     try {
+      const previousDescription = rawJobDescription;
       const res = await fetch(`/api/jobs/${job.id}/description`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -850,6 +1105,11 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
       onDescriptionUpdated(data, {
         previousScore: job.fit_score,
         previousStatus: job.status,
+      });
+      setUndoEdit({
+        label: "job description",
+        previousValue: previousDescription,
+        type: "description",
       });
       setPastedDescription("");
       setDescriptionPasteOpen(false);
@@ -921,6 +1181,24 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
     setEditingCompany(true);
   };
 
+  const saveTitleEdit = async () => {
+    setEditingTitle(false);
+    const value = titleDraft.trim();
+    if (!value || value === (job.job_title || "")) return;
+
+    const res = await fetch(`/api/jobs/${job.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_title: value }),
+    });
+    if (!res.ok) {
+      setReprocessError(`Job title update failed (${res.status})`);
+      return;
+    }
+    const updated = await res.json();
+    onReprocessed(updated);
+  };
+
   const saveCompanyEdit = async () => {
     setEditingCompany(false);
     const value = companyDraft.trim();
@@ -947,11 +1225,12 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
 
   const saveUrlEdit = async () => {
     const value = normalizeManualJobUrl(urlDraft);
-    if (!value) {
+    const previousUrl = String(job.url || "");
+    if (!value && urlDraft.trim()) {
       setReprocessError("Enter a URL starting with http:// or https://.");
       return;
     }
-    if (value === (job.url || "")) {
+    if (value === previousUrl) {
       setEditingUrl(false);
       return;
     }
@@ -970,6 +1249,11 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
         return;
       }
       onReprocessed(data);
+      setUndoEdit({
+        label: "URL",
+        previousValue: previousUrl,
+        type: "url",
+      });
       setEditingUrl(false);
       setUrlDraft("");
     } finally {
@@ -977,8 +1261,64 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
     }
   };
 
+  const handleUndoEdit = async () => {
+    if (!undoEdit) return;
+    setUndoSaving(true);
+    setReprocessError(null);
+    setReEvaluateError(null);
+    try {
+      if (undoEdit.type === "url") {
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: undoEdit.previousValue }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || `URL undo failed (${res.status})`);
+        }
+        onReprocessed(data);
+      } else {
+        const previousDescription = String(undoEdit.previousValue || "").trim();
+        if (previousDescription.length < 80) {
+          throw new Error("The previous job description was too short to restore through re-scoring.");
+        }
+        const res = await fetch(`/api/jobs/${job.id}/description`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ description: previousDescription }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || "Description undo failed");
+        }
+        onDescriptionUpdated(data, {
+          previousScore: job.fit_score,
+          previousStatus: job.status,
+        });
+      }
+      setUndoEdit(null);
+    } catch (error) {
+      setReprocessError(error.message || "Undo failed");
+    } finally {
+      setUndoSaving(false);
+    }
+  };
+
+  const handleCardContextMenu = (event) => {
+    setShowSkipMenu(false);
+    openContextMenu(event);
+  };
+
   return (
-    <div style={cardStyle}>
+    <div id={`triage-card-${job.id}`} style={cardStyle} onContextMenu={handleCardContextMenu}>
+      {contextMenu && (
+        <CardContextMenu
+          contextMenu={contextMenu}
+          company={job.company}
+          onShowCompanyHistory={() => runContextAction(companyHistory.open)}
+        />
+      )}
       {/* Header row */}
       <div style={triageHeaderStyle}>
         <span className={`badge ${fitScoreClass(job)}`} style={scoreBadgeStyle}>
@@ -987,7 +1327,31 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
 
         <div style={triageHeaderBodyStyle}>
           <div style={triageTitleStyle}>
-            {job.job_title || <em style={{ color: "var(--text-muted)" }}>Unknown Title</em>}
+            {editingTitle ? (
+              <input
+                autoFocus
+                value={titleDraft}
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onBlur={saveTitleEdit}
+                onFocus={(event) => event.target.select()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                  if (event.key === "Escape") setEditingTitle(false);
+                }}
+                style={editableJobTitleInputStyle}
+              />
+            ) : (
+              <span
+                style={editableJobTitleStyle}
+                title="Click to edit job title"
+                onClick={() => {
+                  setTitleDraft(job.job_title || "");
+                  setEditingTitle(true);
+                }}
+              >
+                {job.job_title || <em style={{ color: "var(--text-muted)" }}>Unknown Title</em>}
+              </span>
+            )}
             <span style={{ fontWeight: "400", color: "var(--text-muted)", margin: "0 5px" }}>at</span>
             {editingCompany ? (
               <input
@@ -1012,80 +1376,104 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
             )}
           </div>
           <div style={triageMetaTextStyle}>
-            <SourceText job={job} />
-            {job.date_found && <span>{job.date_found}</span>}
             <span>Parser: {parserConfidenceLabel(job)}</span>
             <span>Fit: {fitPercentageLabel(job)}</span>
-            {salaryRange && <span>Salary: {salaryRange}</span>}
           </div>
           {isManualPastedJob(job) && (
             <div style={compactOriginStyle}>{job.email_subject || "Manual pasted job listing"}</div>
           )}
-          {(job.url || editingUrl) && (
-            <div style={triageUrlRowStyle}>
-              {editingUrl ? (
-                <>
-                  <input
-                    autoFocus
-                    value={urlDraft}
-                    onChange={(event) => setUrlDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") saveUrlEdit();
-                      if (event.key === "Escape") setEditingUrl(false);
-                    }}
-                    placeholder="https://company.com/jobs/123"
-                    style={triageUrlInputStyle}
-                  />
-                  <button
-                    className="btn-secondary"
-                    style={triageUrlButtonStyle}
-                    type="button"
-                    onClick={saveUrlEdit}
-                    disabled={loadingAction !== null}
-                  >
-                    {loadingAction === "url" ? "Saving..." : "Save URL"}
-                  </button>
-                  <button
-                    className="btn-secondary"
-                    style={triageUrlButtonStyle}
-                    type="button"
-                    onClick={() => setEditingUrl(false)}
-                    disabled={loadingAction !== null}
-                  >
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <>
-                  <a
-                    href={job.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={triageUrlLinkStyle}
-                  >
-                    {job.url}
-                  </a>
-                  <button
-                    className="btn-secondary"
-                    style={triageUrlButtonStyle}
-                    type="button"
-                    onClick={startUrlEdit}
-                    disabled={loadingAction !== null}
-                  >
-                    Edit URL
-                  </button>
-                  <button
-                    className="btn-secondary"
-                    style={triageUrlButtonStyle}
-                    type="button"
-                    onClick={handleRefreshFromUrl}
-                    disabled={loadingAction !== null}
-                  >
-                    {loadingAction === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
-                  </button>
-                </>
-              )}
-            </div>
+          <div style={triageUrlRowStyle}>
+            {editingUrl ? (
+              <>
+                <input
+                  autoFocus
+                  value={urlDraft}
+                  onFocus={(event) => event.target.select()}
+                  onChange={(event) => setUrlDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") saveUrlEdit();
+                    if (event.key === "Escape") setEditingUrl(false);
+                  }}
+                  placeholder="https://company.com/jobs/123"
+                  style={triageUrlInputStyle}
+                />
+                <button
+                  className="btn-secondary"
+                  style={triageUrlButtonStyle}
+                  type="button"
+                  onClick={saveUrlEdit}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "url" ? "Saving..." : "Save URL"}
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={triageUrlButtonStyle}
+                  type="button"
+                  onClick={() => setEditingUrl(false)}
+                  disabled={loadingAction !== null}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : job.url ? (
+              <>
+                <a
+                  href={job.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={triageUrlLinkStyle}
+                  title={job.url.length > 100 ? job.url : undefined}
+                >
+                  {job.url.length > 100 ? (
+                    <>
+                      {job.url.slice(0, 80)}
+                      <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+                        {"…"} ({job.url.length} chars)
+                      </span>
+                    </>
+                  ) : (
+                    job.url
+                  )}
+                </a>
+                <button
+                  className="btn-secondary"
+                  style={triageUrlButtonStyle}
+                  type="button"
+                  onClick={startUrlEdit}
+                  disabled={loadingAction !== null}
+                >
+                  Edit URL
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={triageUrlButtonStyle}
+                  type="button"
+                  onClick={handleRefreshFromUrl}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
+                </button>
+              </>
+            ) : (
+              <button
+                className="btn-secondary"
+                style={triageUrlButtonStyle}
+                type="button"
+                onClick={startUrlEdit}
+                disabled={loadingAction !== null}
+              >
+                + Add URL
+              </button>
+            )}
+          </div>
+          {undoEdit?.type === "url" && (
+            <UndoEditNotice
+              label="URL updated"
+              onDismiss={() => setUndoEdit(null)}
+              onUndo={handleUndoEdit}
+              saving={undoSaving}
+            />
           )}
           {(reprocessError || reEvaluateError) && (
             <div style={{ marginTop: "5px", fontSize: "11px", color: "var(--red)" }}>
@@ -1095,6 +1483,19 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
         </div>
 
         <div style={triageHeaderActionsStyle}>
+          <SourceBadge job={job} />
+          {salaryRange && <span className="badge badge-green">Salary: {salaryRange}</span>}
+          {job.date_found && <span className="badge badge-gray">{job.date_found}</span>}
+          {companySheetRows !== null && companySheetRows.length > 0 && (
+            <span
+              className={`badge ${companyHistoryBadgeClass(companySheetRows)}`}
+              style={{ cursor: "pointer" }}
+              title={Object.entries(companyRowSummary(companySheetRows)).map(([s, n]) => `${n}× ${s}`).join(" · ")}
+              onClick={companyHistory.open}
+            >
+              {companySheetRows.length} tracked
+            </span>
+          )}
           <button
             type="button"
             className="btn-secondary"
@@ -1197,16 +1598,16 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
         />
       )}
 
-      {/* Snippet */}
-      {job.raw_email_snippet && (
+      {/* Job description */}
+      {jobDescription && (
         <div>
           <div style={descriptionActionRowStyle}>
             <button
               className="btn-secondary"
               style={{ fontSize: "12px", padding: "4px 10px" }}
-              onClick={() => setDescriptionOpen(true)}
+              onClick={() => setDescriptionOpen((open) => !open)}
             >
-              View formatted description
+              {descriptionOpen ? "Hide Description" : "Job Description"}
             </button>
             <button
               className="btn-secondary"
@@ -1219,10 +1620,22 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
               }}
               disabled={loadingAction !== null}
             >
-              Add detailed description
+              {job.job_description ? "Update detailed description" : "Add detailed description"}
             </button>
           </div>
-          <pre style={snippetStyle}>{job.raw_email_snippet}</pre>
+          {descriptionOpen && (
+            <div style={descriptionBoxStyle}>
+              {jobDescription}
+            </div>
+          )}
+          {undoEdit?.type === "description" && (
+            <UndoEditNotice
+              label="Job description updated"
+              onDismiss={() => setUndoEdit(null)}
+              onUndo={handleUndoEdit}
+              saving={undoSaving}
+            />
+          )}
         </div>
       )}
 
@@ -1361,13 +1774,6 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
         </div>
       )}
 
-      {descriptionOpen && (
-        <DescriptionModal
-          job={job}
-          onClose={() => setDescriptionOpen(false)}
-        />
-      )}
-
       {descriptionPasteOpen && (
         <DescriptionPasteModal
           job={job}
@@ -1376,6 +1782,18 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
           onChange={setPastedDescription}
           onClose={() => setDescriptionPasteOpen(false)}
           onSubmit={handleDescriptionSubmit}
+        />
+      )}
+
+      {companyHistory.opened && (
+        <CompanyHistoryDialog
+          company={job.company || "Unknown Company"}
+          currentJobId={job.id}
+          currentJobTitle={job.job_title || ""}
+          error={companyHistory.error}
+          loading={companyHistory.loading}
+          rows={companyHistory.rows}
+          onClose={companyHistory.close}
         />
       )}
 
@@ -1624,46 +2042,68 @@ function SalaryBadge({ job }) {
   return <span className="badge badge-green">Salary: {salaryRange}</span>;
 }
 
-function DescriptionModal({ job, onClose }) {
-  return (
-    <Modal
-      title={job.job_title || "Job Description"}
-      subtitle={job.company}
-      onClose={onClose}
-      maxWidth="900px"
-    >
-      <pre style={formattedDescriptionStyle}>
-        {formatJobDescription(job.raw_email_snippet)}
-      </pre>
-    </Modal>
-  );
-}
-
 function DescriptionPasteModal({ job, value, saving, onChange, onClose, onSubmit }) {
+  const textareaRef = useRef(null);
+  const [pasteError, setPasteError] = useState("");
   const charCount = value.trim().length;
   const canSubmit = charCount >= 80 && !saving;
+
+  const handlePasteClipboard = async () => {
+    if (!navigator.clipboard?.readText) {
+      setPasteError("Clipboard paste is not available in this browser.");
+      return;
+    }
+
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      const textarea = textareaRef.current;
+      const selectionStart = textarea?.selectionStart ?? value.length;
+      const selectionEnd = textarea?.selectionEnd ?? value.length;
+      const nextValue = `${value.slice(0, selectionStart)}${clipboardText}${value.slice(selectionEnd)}`;
+      const nextCursor = selectionStart + clipboardText.length;
+      onChange(nextValue);
+      setPasteError("");
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+      });
+    } catch {
+      setPasteError("Clipboard paste failed. Use Ctrl+V to paste manually.");
+    }
+  };
 
   const footer = (
     <div style={{ alignItems: "center", display: "flex", gap: "12px", justifyContent: "space-between", width: "100%" }}>
       <span style={{ color: canSubmit ? "var(--text-muted)" : "var(--red)", fontSize: "12px" }}>
         {charCount} characters
       </span>
-      <button
-        type="button"
-        className="btn-primary"
-        onClick={onSubmit}
-        disabled={!canSubmit}
-        style={{ padding: "7px 14px", fontSize: "13px" }}
-      >
-        {saving ? (
-          <span style={buttonSpinnerContentStyle}>
-            <span className="inline-spinner" />
-            Re-evaluating...
-          </span>
-        ) : (
-          "Save & Re-evaluate"
-        )}
-      </button>
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={handlePasteClipboard}
+          disabled={saving}
+          style={{ padding: "7px 14px", fontSize: "13px" }}
+        >
+          Paste Clipboard
+        </button>
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={onSubmit}
+          disabled={!canSubmit}
+          style={{ padding: "7px 14px", fontSize: "13px" }}
+        >
+          {saving ? (
+            <span style={buttonSpinnerContentStyle}>
+              <span className="inline-spinner" />
+              Re-evaluating...
+            </span>
+          ) : (
+            "Save & Re-evaluate"
+          )}
+        </button>
+      </div>
     </div>
   );
 
@@ -1677,8 +2117,12 @@ function DescriptionPasteModal({ job, value, saving, onChange, onClose, onSubmit
       maxWidth="820px"
     >
       <textarea
+        ref={textareaRef}
         value={value}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => {
+          onChange(event.target.value);
+          setPasteError("");
+        }}
         placeholder="Paste the full job description here..."
         style={{
           background: "var(--surface2)",
@@ -1695,6 +2139,7 @@ function DescriptionPasteModal({ job, value, saving, onChange, onClose, onSubmit
         }}
         disabled={saving}
       />
+      {pasteError && <div style={{ color: "var(--red)", fontSize: "12px", marginTop: "8px" }}>{pasteError}</div>}
     </Modal>
   );
 }
@@ -1838,6 +2283,31 @@ const cardStyle = {
   transition: "box-shadow 0.2s, border-color 0.2s",
 };
 
+const contextMenuStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  boxShadow: "var(--shadow-lg)",
+  display: "flex",
+  flexDirection: "column",
+  minWidth: "220px",
+  padding: "4px",
+  position: "fixed",
+  zIndex: 1000,
+};
+
+const contextMenuItemStyle = {
+  background: "transparent",
+  border: "none",
+  borderRadius: "4px",
+  color: "var(--text)",
+  cursor: "pointer",
+  fontSize: "13px",
+  padding: "8px 10px",
+  textAlign: "left",
+  width: "100%",
+};
+
 const triageHeaderStyle = {
   display: "flex",
   alignItems: "flex-start",
@@ -1851,8 +2321,12 @@ const triageHeaderBodyStyle = {
 };
 
 const triageHeaderActionsStyle = {
+  alignItems: "flex-start",
   display: "flex",
   flexShrink: 0,
+  flexWrap: "wrap",
+  gap: "6px",
+  justifyContent: "flex-end",
 };
 
 const scoreBadgeStyle = {
@@ -1876,6 +2350,35 @@ const triageMetaTextStyle = {
   color: "var(--text-muted)",
   fontSize: "12px",
   lineHeight: 1.5,
+};
+
+const editableJobTitleStyle = {
+  borderBottom: "1px dotted var(--text-muted)",
+  color: "var(--text)",
+  cursor: "text",
+  fontWeight: 600,
+};
+
+const editableJobTitleInputStyle = {
+  background: "transparent",
+  border: "none",
+  borderBottom: "1px solid var(--accent)",
+  color: "var(--text)",
+  font: "inherit",
+  fontSize: "15px",
+  fontWeight: 600,
+  minWidth: "220px",
+  outline: "none",
+  padding: 0,
+  width: "min(460px, 70%)",
+};
+
+const editableDuplicateTitleInputStyle = {
+  ...editableJobTitleInputStyle,
+  color: "var(--text-muted)",
+  fontSize: "13px",
+  minWidth: "180px",
+  width: "min(420px, 100%)",
 };
 
 const editableCompanyStyle = {
@@ -2127,28 +2630,17 @@ const chatInputStyle = {
   fontFamily: "inherit",
 };
 
-const formattedDescriptionStyle = {
-  margin: 0,
-  whiteSpace: "pre-wrap",
-  overflowWrap: "anywhere",
-  fontFamily: "var(--font)",
-  fontSize: "14px",
-  lineHeight: "1.75",
-  color: "var(--text)",
-};
-
-const snippetStyle = {
+const descriptionBoxStyle = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
-  padding: "10px 13px",
-  fontSize: "12px",
-  color: "var(--text-muted)",
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-  maxHeight: "120px",
+  color: "var(--text)",
+  fontSize: "13px",
+  lineHeight: 1.6,
+  marginBottom: "12px",
+  maxHeight: "360px",
   overflowY: "auto",
-  fontFamily: "ui-monospace, 'Cascadia Code', monospace",
-  lineHeight: "1.6",
+  padding: "12px 14px",
+  whiteSpace: "pre-wrap",
 };
 

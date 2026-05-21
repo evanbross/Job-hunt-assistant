@@ -399,7 +399,7 @@ def re_evaluate_job_fit(job_id: int):
 
     score = int(result["score"])
     current_status = str(job.get("status") or "")
-    if current_status in {"possible_duplicate", "skipped", "added_to_sheet"}:
+    if current_status in {"possible_duplicate", "skipped", "applied"}:
         new_status = current_status
     else:
         new_status = "pending_review" if score >= 70 else "triage"

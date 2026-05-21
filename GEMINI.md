@@ -42,3 +42,32 @@ Key files:
 - `config.py` — constants and runtime config helpers
 - `frontend/src/App.jsx` — main React shell
 - `frontend/src/components/` — tab panels
+
+---
+
+## Critical Guardrails (Lessons from Code Review)
+
+### 1. Python DB Lifecycle
+Always use `try/finally` to ensure DB connections are closed, especially when using `_get_repos()` in routes.
+```python
+conn, repos = _get_repos()
+try:
+    # logic
+finally:
+    conn.close()
+```
+
+### 2. React Hook Dependencies
+Do NOT include state variables in `useEffect` dependency arrays if the effect modifies that same state (e.g., filtering logic that resets a search term). This prevents infinite loops and "undo" bugs during typing.
+
+### 3. Fetch Error Handling
+Always check `res.ok`. When parsing JSON in an error branch, use `.catch()` to prevent crashes on non-JSON (HTML) error responses.
+```javascript
+if (!res.ok) {
+  const errorData = await res.json().catch(() => ({}));
+  // handle error
+}
+```
+
+### 4. Shared Extraction
+If logic or components are needed in >1 file, extract to `frontend/src/utils/`, `hooks/`, or `components/common/`. Always `grep` to ensure the original duplicates are removed.

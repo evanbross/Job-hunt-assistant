@@ -34,6 +34,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { parseUtcTimestamp } from "../utils/dateTimeUtils.js";
+import { isManualCollectionSite } from "../utils/careerSiteUtils.js";
+import { CareerScanProgressPopup, CareerScanSummaryPopup } from "./common/CareerScanModals.jsx";
 
 function formatAge(isoTimestamp) {
   if (!isoTimestamp) return "never scanned";
@@ -50,6 +52,7 @@ export default function CareerSiteScanBanner() {
   const [dueSites, setDueSites] = useState([]);
   const [scanStatus, setScanStatus] = useState(null);
   const [scanning, setScanning] = useState(false);
+  const [scanSummary, setScanSummary] = useState(null);
   const pollRef = useRef(null);
   const duePollRef = useRef(null);
 
@@ -71,6 +74,7 @@ export default function CareerSiteScanBanner() {
       if (!data.running) {
         setScanning(false);
         clearInterval(pollRef.current);
+        setScanSummary(data);
         fetchDueSites();
       }
     } catch {
@@ -80,7 +84,6 @@ export default function CareerSiteScanBanner() {
 
   useEffect(() => {
     fetchDueSites();
-    duePollRef.current = setInterval(fetchDueSites, 60000);
     return () => {
       clearInterval(duePollRef.current);
       clearInterval(pollRef.current);
@@ -90,9 +93,11 @@ export default function CareerSiteScanBanner() {
   useEffect(() => {
     if (scanning) {
       clearInterval(duePollRef.current);
+      clearInterval(pollRef.current);
       pollRef.current = setInterval(fetchScanStatus, 1500);
     } else {
       clearInterval(pollRef.current);
+      clearInterval(duePollRef.current);
       duePollRef.current = setInterval(fetchDueSites, 60000);
     }
     return () => {
@@ -112,6 +117,11 @@ export default function CareerSiteScanBanner() {
     setScanStatus(null);
   };
 
+  const handleOpenSite = (site) => {
+    if (!site?.url) return;
+    window.open(site.url, "_blank", "noopener,noreferrer");
+  };
+
   const handleDismiss = async (siteId) => {
     const res = await fetch(`/api/career-sites/${siteId}/dismiss-recapture`, { method: "POST" });
     if (!res.ok) {
@@ -122,65 +132,52 @@ export default function CareerSiteScanBanner() {
     setDueSites((prev) => prev.filter((s) => s.id !== siteId));
   };
 
-  if (!scanning && dueSites.length === 0) return null;
-
-  const progress = Math.max(0, Math.min(100, Number(scanStatus?.progress) || 0));
+  if (!scanning && !scanSummary && dueSites.length === 0) return null;
 
   return (
-    <div style={bannerWrapStyle}>
-      <div style={bannerInnerStyle}>
-        <div style={headerRowStyle}>
-          <span style={labelStyle}>Career Sites Ready to Scan</span>
-          {scanning && scanStatus?.message && (
-            <span style={statusMsgStyle}>{scanStatus.message}</span>
-          )}
-        </div>
+    <>
+      {scanning && (
+        <CareerScanProgressPopup
+          title="Scanning Career Sites"
+          status={scanStatus}
+        />
+      )}
 
-        {scanning ? (
-          <div style={progressAreaStyle}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <span className="inline-spinner" style={spinnerStyle} />
-              <span style={progressTextStyle}>
-                {scanStatus
-                  ? `${scanStatus.sites_scanned ?? 0} sites · ${scanStatus.jobs_found ?? 0} jobs found`
-                  : "Starting scan…"}
-              </span>
-              <span style={progressPctStyle}>{progress}%</span>
+      {scanSummary && (
+        <CareerScanSummaryPopup
+          summary={scanSummary}
+          onClose={() => setScanSummary(null)}
+        />
+      )}
+
+      {!scanning && !scanSummary && (
+        <div style={bannerWrapStyle}>
+          <div style={bannerInnerStyle}>
+            <div style={headerRowStyle}>
+              <span style={labelStyle}>Career Sites Ready to Scan</span>
             </div>
-            <div className="loading-bar" style={{ marginTop: "8px" }}>
-              <div className="loading-bar-fill" style={{ width: `${progress}%` }} />
-            </div>
-          </div>
-        ) : (
-          <>
-            {scanStatus?.errors?.length > 0 && (
-              <div style={postScanErrorStyle}>
-                <strong style={{ fontSize: "12px" }}>Last scan completed with errors:</strong>
-                <ul style={{ margin: "4px 0 0 0", paddingLeft: "18px" }}>
-                  {scanStatus.errors.map((e, i) => (
-                    <li key={i} style={{ fontSize: "12px", lineHeight: "1.5" }}>{e}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {scanStatus && !scanStatus.running && !scanStatus.errors?.length && scanStatus.last_run_at && (
-              <div style={postScanSuccessStyle}>
-                Scan complete — {scanStatus.jobs_added ?? 0} new job(s) added across{" "}
-                {scanStatus.sites_scanned ?? 0} site(s).
-              </div>
-            )}
             <div style={siteListStyle}>
               {dueSites.map((site) => (
                 <div key={site.id} style={siteRowStyle}>
                   <span style={siteNameStyle}>{site.name || site.url}</span>
                   <span style={siteAgeStyle}>{formatAge(site.last_captured_at)}</span>
-                  <button
-                    className="btn-primary"
-                    style={scanBtnStyle}
-                    onClick={() => handleScan(site.id)}
-                  >
-                    Scan
-                  </button>
+                  {isManualCollectionSite(site) ? (
+                    <button
+                      className="btn-primary"
+                      style={scanBtnStyle}
+                      onClick={() => handleOpenSite(site)}
+                    >
+                      Open
+                    </button>
+                  ) : (
+                    <button
+                      className="btn-primary"
+                      style={scanBtnStyle}
+                      onClick={() => handleScan(site.id)}
+                    >
+                      Scan
+                    </button>
+                  )}
                   <button
                     className="btn-secondary"
                     style={scanBtnStyle}
@@ -191,10 +188,10 @@ export default function CareerSiteScanBanner() {
                 </div>
               ))}
             </div>
-          </>
-        )}
-      </div>
-    </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -225,32 +222,6 @@ const labelStyle = {
   color: "var(--accent)",
   textTransform: "uppercase",
   letterSpacing: "0.04em",
-};
-
-const statusMsgStyle = {
-  fontSize: "12px",
-  color: "var(--text-muted)",
-};
-
-const progressAreaStyle = {
-  padding: "2px 0",
-};
-
-const spinnerStyle = {
-  color: "var(--accent)",
-  width: "16px",
-  height: "16px",
-};
-
-const progressTextStyle = {
-  fontSize: "13px",
-  color: "var(--text)",
-};
-
-const progressPctStyle = {
-  fontSize: "12px",
-  color: "var(--text-muted)",
-  marginLeft: "auto",
 };
 
 const siteListStyle = {
@@ -288,17 +259,3 @@ const scanBtnStyle = {
   fontSize: "12px",
 };
 
-const postScanErrorStyle = {
-  background: "rgba(239,68,68,0.07)",
-  border: "1px solid rgba(239,68,68,0.25)",
-  borderRadius: "6px",
-  padding: "8px 12px",
-  marginBottom: "10px",
-  color: "var(--danger, #ef4444)",
-};
-
-const postScanSuccessStyle = {
-  fontSize: "12px",
-  color: "var(--text-muted)",
-  marginBottom: "8px",
-};

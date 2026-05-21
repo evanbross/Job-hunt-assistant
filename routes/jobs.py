@@ -110,7 +110,7 @@ def _maybe_mark_source_email_read(job: dict[str, object], job_repo) -> None:
 def _validated_job_patch_fields(body: dict[str, object]) -> tuple[dict[str, str], str | None]:
     allowed = {"company", "job_title", "url"}
     fields = {k: str(v).strip() for k, v in body.items() if k in allowed and isinstance(v, str)}
-    if "url" in fields:
+    if "url" in fields and fields["url"]:
         parsed = urlparse(fields["url"])
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return {}, "url must start with http:// or https://"
@@ -256,7 +256,7 @@ def skip_job(job_id: int):
 @jobs_bp.route("/jobs/history")
 def get_history_jobs():
     repos = _get_repos()
-    jobs = repos["jobs"].get_by_statuses(["added_to_sheet", "skipped"])
+    jobs = repos["jobs"].get_by_statuses(["applied", "skipped"])
     for job in jobs:
         job["stages"] = repos["stages"].get_by_job_id(job["id"])
     repos["conn"].close()
@@ -273,13 +273,43 @@ def approve_job(job_id: int):
 
     today = date.today().isoformat()
     repos["jobs"].update(
-        job_id, {"status": "added_to_sheet", "date_added_to_sheet": today}
+        job_id, {"status": "applied", "date_added_to_sheet": today}
     )
     repos["stages"].insert({"job_id": job_id, "status": "applied", "date": today, "notes": None})
     _maybe_mark_source_email_read(job, repos["jobs"])
     repos["conn"].commit()
     repos["conn"].close()
     return jsonify({"status": "ok"})
+
+
+@jobs_bp.route("/jobs/<int:job_id>/return-to-queue", methods=["POST"])
+def return_job_to_queue(job_id: int):
+    repos = _get_repos()
+    try:
+        job = repos["jobs"].get_by_id(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+
+        if job.get("status") != "applied":
+            return jsonify({"error": "Only applied jobs can be returned to the queue"}), 409
+
+        for stage in repos["stages"].get_by_job_id(job_id):
+            if stage.get("status") == "applied" and not stage.get("notes"):
+                repos["stages"].delete(stage["id"])
+
+        fit_score = int(job.get("fit_score") or 0)
+        new_status = "pending_review" if fit_score >= 70 else "triage"
+        repos["jobs"].update(
+            job_id,
+            {
+                "status": new_status,
+                "date_added_to_sheet": None,
+            },
+        )
+        repos["conn"].commit()
+        return jsonify({"status": "ok"})
+    finally:
+        repos["conn"].close()
 
 
 @jobs_bp.route("/jobs/<int:job_id>/dismiss-duplicate", methods=["POST"])
@@ -410,7 +440,7 @@ def refresh_job_from_url(job_id: int):
 
     fit_score = score_result["score"]
     current_status = job.get("status", "triage")
-    if current_status not in {"possible_duplicate", "skipped", "added_to_sheet"}:
+    if current_status not in {"possible_duplicate", "skipped", "applied"}:
         current_status = "pending_review" if fit_score >= 70 else "triage"
 
     repos["jobs"].update(job_id, {
@@ -464,7 +494,7 @@ def update_job_description(job_id: int):
 
     fit_score = score_result["score"]
     current_status = job.get("status", "triage")
-    if current_status not in {"possible_duplicate", "skipped", "added_to_sheet"}:
+    if current_status not in {"possible_duplicate", "skipped", "applied"}:
         current_status = "pending_review" if fit_score >= 70 else "triage"
 
     repos["jobs"].update(

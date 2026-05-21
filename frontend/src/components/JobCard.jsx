@@ -35,34 +35,30 @@
 import React, { useEffect, useRef, useState } from "react";
 import StatusBadge from "./common/StatusBadge.jsx";
 import Modal from "./common/Modal.jsx";
+import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
+import UndoEditNotice from "./common/UndoEditNotice.jsx";
+import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
+import { applicationRowFromSheet, rowMatchesCompany } from "../utils/sheetUtils.js";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { scoreTone, scoreLabel, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
 import { statusTone } from "../utils/jobQueueUtils.js";
+import {
+  MISMATCH_REASONS,
+  SKIP_REASONS,
+  isNegativeReasoningBullet,
+  negativeReasoningBulletStyleFor,
+  normalizeManualJobUrl,
+  penaltiesAppliedForJob,
+  platformLabelForUrl,
+} from "../utils/triagePanelUtils.js";
 
-const SKIP_REASONS = [
-  { key: "rejected", label: "Rejected" },
-  { key: "duplicate", label: "Duplicate" },
-  { key: "req_closed", label: "Req Closed" },
-  { key: "not_remote", label: "Not Remote" },
-  { key: "not_a_fit", label: "Not a Fit" },
-  { key: "not_interested", label: "Not Interested" },
-  { key: "other", label: "Other" },
-];
-
-const MISMATCH_REASONS = [
-  "Not Remote",
-  "Hybrid / On-Site",
-  "Wrong Level",
-  "Wrong Tech Stack",
-  "Too Management-Focused",
-  "Wrong Domain",
-  "Compensation Mismatch",
-  "Location Constraint",
-  "Contract / Temp",
-  "Other Mismatch",
-];
-
-export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate }) {
+export default function JobCard({
+  job,
+  onApprove,
+  onReEvaluate,
+  onSkip,
+  onUpdate,
+}) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [descriptionEditOpen, setDescriptionEditOpen] = useState(false);
@@ -72,7 +68,6 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   const [descriptionSaved, setDescriptionSaved] = useState(false);
   const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | "pitch" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
-  const [showWritingMenu, setShowWritingMenu] = useState(false);
   const [pitchText, setPitchText] = useState(null);
   const [pitchType, setPitchType] = useState(null); // "why_company" | "why_fit"
   const [pitchOpen, setPitchOpen] = useState(false);
@@ -81,12 +76,16 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   const [skipConfirm, setSkipConfirm] = useState(null);
   const [skipNote, setSkipNote] = useState("");
   const [skipMismatchReasons, setSkipMismatchReasons] = useState([]);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const [editingCompany, setEditingCompany] = useState(false);
   const [companyDraft, setCompanyDraft] = useState("");
   const [editingUrl, setEditingUrl] = useState(false);
   const [urlDraft, setUrlDraft] = useState("");
   const [urlSaving, setUrlSaving] = useState(false);
   const [urlError, setUrlError] = useState("");
+  const [undoEdit, setUndoEdit] = useState(null);
+  const [undoSaving, setUndoSaving] = useState(false);
   const [coverLetter, setCoverLetter] = useState(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -94,6 +93,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   const [companyLookupLoading, setCompanyLookupLoading] = useState(false);
   const [companyLookupError, setCompanyLookupError] = useState("");
   const [companyLookupRows, setCompanyLookupRows] = useState([]);
+  const { contextMenu, setContextMenu, runContextAction } = useCardContextMenu();
 
   // Save-to-disk state
   const [saveStatus, setSaveStatus] = useState(null); // null | "saving" | {path, folder} | "error"
@@ -107,6 +107,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   const [chatSending, setChatSending] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState(null); // updated cover letter from AI
   const chatMessagesRef = useRef(null);
+  const descriptionTextareaRef = useRef(null);
 
   // Pitch chat state
   const [pitchChatOpen, setPitchChatOpen] = useState(false);
@@ -148,6 +149,30 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   const reasoningText = reasoningWithoutPenaltySummary(job.fit_reasoning);
   const reasoningBullets = fitReasoningBullets(reasoningText);
   const penaltiesApplied = penaltiesAppliedForJob(job);
+
+  // Match each penalty to the reasoning bullet that best describes it so the
+  // deduction can be shown inline. Words from the penalty's ruleText (>3 chars)
+  // are searched in the bullet text; each penalty is consumed at most once.
+  const usedPenaltyIndices = new Set();
+  const bulletsWithDeductions = reasoningBullets.map((bullet) => {
+    if (!isNegativeReasoningBullet(bullet)) return { bullet, deduction: null };
+    const bulletLower = bullet.toLowerCase();
+    let matchedIdx = -1;
+    penaltiesApplied.forEach((p, i) => {
+      if (matchedIdx !== -1 || usedPenaltyIndices.has(i)) return;
+      const words = p.ruleText.toLowerCase().split(/[\s_]+/).filter((w) => w.length > 3);
+      if (words.length > 0 && words.some((w) => bulletLower.includes(w))) {
+        matchedIdx = i;
+      }
+    });
+    if (matchedIdx !== -1) {
+      usedPenaltyIndices.add(matchedIdx);
+      return { bullet, deduction: penaltiesApplied[matchedIdx].points };
+    }
+    return { bullet, deduction: null };
+  });
+  const unmatchedPenalties = penaltiesApplied.filter((_, i) => !usedPenaltyIndices.has(i));
+
   const showEmailOrigin = shouldShowEmailOrigin(job);
   const jobDescription = String(job.job_description || job.raw_email_snippet || "").trim();
 
@@ -160,11 +185,21 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     }
   };
 
-  const handleSkipReasonClick = (reason) => {
+  const handleSkipReasonClick = async (reason) => {
     setShowSkipMenu(false);
-    setSkipConfirm(reason);
     setSkipNote("");
     setSkipMismatchReasons([]);
+    if (reason.key === "other") {
+      setSkipConfirm(reason);
+      return;
+    }
+    setSkipConfirm(null);
+    setLoading(`skip:${reason.key}`);
+    try {
+      await onSkip(job.id, reason.key, "", []);
+    } finally {
+      setLoading(null);
+    }
   };
 
   const handleSkipConfirm = async () => {
@@ -190,11 +225,31 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     );
   };
 
+  const openContextMenu = (event) => {
+    if (event.target.closest("a,button,input,textarea,select")) return;
+    event.preventDefault();
+    setContextMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 240)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 260)),
+    });
+    setShowSkipMenu(false);
+    setShowSaveAsMenu(false);
+  };
+
+  const startDescriptionEdit = () => {
+    setDescriptionOpen(true);
+    setDescriptionDraft(jobDescription);
+    setDescriptionError("");
+    setDescriptionSaved(false);
+    setDescriptionEditOpen(true);
+  };
+
   const [showSaveAsMenu, setShowSaveAsMenu] = useState(false); // false | "cover" | "pitch"
 
   const handleCoverLetter = async () => {
     if (coverLetter) {
-      setCoverLetterOpen((o) => !o);
+      setCoverLetterOpen(true);
+      setChatOpen(true);
       return;
     }
     setLoading("cover");
@@ -206,6 +261,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
       if (!res.ok) throw new Error(data.error || "Generation failed");
       setCoverLetter(data.cover_letter);
       setCoverLetterOpen(true);
+      setChatOpen(true);
     } catch (e) {
       alert("Cover letter generation failed: " + e.message);
     } finally {
@@ -220,9 +276,9 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
   };
 
   const handlePitch = async (type) => {
-    setShowWritingMenu(false);
     if (pitchType === type && pitchText) {
-      setPitchOpen((o) => !o);
+      setPitchOpen(true);
+      setPitchChatOpen(true);
       return;
     }
     setPitchType(type);
@@ -244,6 +300,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
       if (!res.ok) throw new Error(data.error || "Generation failed");
       setPitchText(data.text);
       setPitchOpen(true);
+      setPitchChatOpen(true);
     } catch (e) {
       alert("Pitch generation failed: " + e.message);
     } finally {
@@ -410,7 +467,13 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     setDescriptionError("");
     setDescriptionSaved(false);
     try {
+      const previousDescription = jobDescription;
       await updateJobDescription(description);
+      setUndoEdit({
+        label: "job description",
+        previousValue: previousDescription,
+        type: "description",
+      });
       setDescriptionEditOpen(false);
       setDescriptionDraft("");
       setDescriptionSaved(true);
@@ -418,6 +481,31 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
       setDescriptionError(e.message || "Description update failed");
     } finally {
       setDescriptionSaving(false);
+    }
+  };
+
+  const handleDescriptionClipboardPaste = async () => {
+    if (!navigator.clipboard?.readText) {
+      setDescriptionError("Clipboard paste is not available in this browser.");
+      return;
+    }
+
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      const textarea = descriptionTextareaRef.current;
+      const selectionStart = textarea?.selectionStart ?? descriptionDraft.length;
+      const selectionEnd = textarea?.selectionEnd ?? descriptionDraft.length;
+      const nextDraft = `${descriptionDraft.slice(0, selectionStart)}${clipboardText}${descriptionDraft.slice(selectionEnd)}`;
+      const nextCursor = selectionStart + clipboardText.length;
+      setDescriptionDraft(nextDraft);
+      setDescriptionError("");
+      setDescriptionSaved(false);
+      requestAnimationFrame(() => {
+        descriptionTextareaRef.current?.focus();
+        descriptionTextareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+      });
+    } catch {
+      setDescriptionError("Clipboard paste failed. Use Ctrl+V to paste manually.");
     }
   };
 
@@ -504,6 +592,23 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     setSaveStatus(null);
   };
 
+  const saveTitleEdit = async () => {
+    setEditingTitle(false);
+    const value = titleDraft.trim();
+    if (!value || value === (job.job_title || "")) return;
+    const res = await fetch(`/api/jobs/${job.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_title: value }),
+    });
+    if (!res.ok) {
+      window.alert(`Job title update failed (${res.status})`);
+      return;
+    }
+    const updated = await res.json();
+    onUpdate?.(job.id, updated);
+  };
+
   const saveCompanyEdit = async () => {
     setEditingCompany(false);
     const value = companyDraft.trim();
@@ -529,11 +634,12 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
 
   const saveUrlEdit = async () => {
     const value = normalizeManualJobUrl(urlDraft);
-    if (!value) {
+    const previousUrl = String(job.url || "");
+    if (!value && urlDraft.trim()) {
       setUrlError("Enter a URL starting with http:// or https://.");
       return;
     }
-    if (value === (job.url || "")) {
+    if (value === previousUrl) {
       setEditingUrl(false);
       return;
     }
@@ -552,6 +658,11 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
         return;
       }
       onUpdate?.(job.id, data);
+      setUndoEdit({
+        label: "URL",
+        previousValue: previousUrl,
+        type: "url",
+      });
       setEditingUrl(false);
       setUrlDraft("");
     } finally {
@@ -559,10 +670,120 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
     }
   };
 
+  const handleUndoEdit = async () => {
+    if (!undoEdit) return;
+    setUndoSaving(true);
+    setUrlError("");
+    setDescriptionError("");
+    try {
+      if (undoEdit.type === "url") {
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: undoEdit.previousValue }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || `URL undo failed (${res.status})`);
+        }
+        onUpdate?.(job.id, data);
+      } else {
+        const previousDescription = String(undoEdit.previousValue || "").trim();
+        if (previousDescription.length < 80) {
+          throw new Error("The previous job description was too short to restore through re-scoring.");
+        }
+        await updateJobDescription(previousDescription);
+      }
+      setUndoEdit(null);
+      setDescriptionSaved(false);
+    } catch (error) {
+      const message = error.message || "Undo failed";
+      if (undoEdit.type === "url") {
+        setUrlError(message);
+      } else {
+        setDescriptionError(message);
+      }
+    } finally {
+      setUndoSaving(false);
+    }
+  };
+
   const busy = loading !== null;
 
   return (
-    <div style={cardStyle}>
+    <div id={`job-card-${job.id}`} style={cardStyle} onContextMenu={openContextMenu}>
+      {contextMenu && (
+        <div
+          style={{
+            ...contextMenuStyle,
+            left: contextMenu.x,
+            top: contextMenu.y,
+          }}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          {jobDescription && (
+            <button
+              type="button"
+              style={contextMenuItemStyle}
+              onClick={() => runContextAction(() => setDescriptionOpen((open) => !open))}
+            >
+              {descriptionOpen ? "Hide Description" : "Job Description"}
+            </button>
+          )}
+          <button
+            type="button"
+            style={contextMenuItemStyle}
+            onClick={() => runContextAction(startDescriptionEdit)}
+            disabled={descriptionSaving || busy}
+          >
+            Update Description
+          </button>
+          <div style={contextMenuSeparatorStyle} />
+          <button
+            type="button"
+            style={contextMenuItemStyle}
+            onClick={() => runContextAction(handleCoverLetter)}
+            disabled={busy}
+          >
+            {coverLetter ? "Show Cover Letter" : "Cover Letter"}
+          </button>
+          <button
+            type="button"
+            style={contextMenuItemStyle}
+            onClick={() => runContextAction(() => handlePitch("why_company"))}
+            disabled={busy}
+          >
+            Why I want to work here
+          </button>
+          <button
+            type="button"
+            style={contextMenuItemStyle}
+            onClick={() => runContextAction(() => handlePitch("why_fit"))}
+            disabled={busy}
+          >
+            Why I'd be good for this job
+          </button>
+          <div style={contextMenuSeparatorStyle} />
+          <button
+            type="button"
+            style={contextMenuItemStyle}
+            onClick={() => runContextAction(startUrlEdit)}
+            disabled={urlSaving}
+          >
+            {job.url ? "Edit URL" : "Add Job URL"}
+          </button>
+          <div style={contextMenuSeparatorStyle} />
+          <button
+            type="button"
+            style={contextMenuItemStyle}
+            onClick={() => runContextAction(handleCompanyLookup)}
+            disabled={!String(job.company || "").trim()}
+          >
+            Show Company History
+          </button>
+        </div>
+      )}
       {/* Header row */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
         <StatusBadge
@@ -573,7 +794,31 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: "15px", fontWeight: "600", color: "var(--text)", lineHeight: "1.4" }}>
-            {job.job_title || <em style={{ color: "var(--text-muted)" }}>Unknown Title</em>}
+            {editingTitle ? (
+              <input
+                autoFocus
+                value={titleDraft}
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onBlur={saveTitleEdit}
+                onFocus={(event) => event.target.select()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                  if (event.key === "Escape") setEditingTitle(false);
+                }}
+                style={editableJobTitleInputStyle}
+              />
+            ) : (
+              <span
+                style={editableJobTitleStyle}
+                title="Click to edit job title"
+                onClick={() => {
+                  setTitleDraft(job.job_title || "");
+                  setEditingTitle(true);
+                }}
+              >
+                {job.job_title || <em style={{ color: "var(--text-muted)" }}>Unknown Title</em>}
+              </span>
+            )}
             <span style={{ fontWeight: "400", color: "var(--text-muted)", margin: "0 5px" }}>at</span>
             {editingCompany ? (
               <input
@@ -627,6 +872,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
                   <input
                     autoFocus
                     value={urlDraft}
+                    onFocus={(event) => event.target.select()}
                     onChange={(event) => {
                       setUrlDraft(event.target.value);
                       setUrlError("");
@@ -659,22 +905,37 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
                 </>
               ) : (
                 <>
-                  <a href={job.url} target="_blank" rel="noreferrer" style={jobUrlTextStyle}>
-                    {job.url}
-                  </a>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={startUrlEdit}
-                    style={jobUrlSmallButtonStyle}
+                  <a
+                    href={job.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={jobUrlTextStyle}
+                    title={job.url.length > 100 ? job.url : undefined}
                   >
-                    Edit URL
-                  </button>
+                    {job.url.length > 100 ? (
+                      <>
+                        {job.url.slice(0, 80)}
+                        <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+                          {"…"} ({job.url.length} chars)
+                        </span>
+                      </>
+                    ) : (
+                      job.url
+                    )}
+                  </a>
                 </>
               )}
             </div>
           )}
           {urlError && <div style={jobUrlErrorStyle}>{urlError}</div>}
+          {undoEdit?.type === "url" && (
+            <UndoEditNotice
+              label="URL updated"
+              onDismiss={() => setUndoEdit(null)}
+              onUndo={handleUndoEdit}
+              saving={undoSaving}
+            />
+          )}
         </div>
 
         <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
@@ -733,15 +994,18 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
           {reasoningOpen && (
             <div style={reasoningBoxStyle}>
               <ul style={reasoningListStyle}>
-                {reasoningBullets.map((item, index) => (
+                {bulletsWithDeductions.map(({ bullet, deduction }, index) => (
                   <li
                     key={`bullet-${index}`}
-                    style={negativeReasoningBulletStyleFor(item)}
+                    style={negativeReasoningBulletStyleFor(bullet)}
                   >
-                    {item}
+                    {bullet}
+                    {deduction !== null && (
+                      <span style={penaltyDeductionBadgeStyle}>-{deduction} pts</span>
+                    )}
                   </li>
                 ))}
-                {penaltiesApplied.map((penalty, index) => (
+                {unmatchedPenalties.map((penalty, index) => (
                   <li key={`penalty-${index}`} style={penaltyInlineBulletStyle}>
                     <strong>-{penalty.points}</strong> for &lsquo;{penalty.ruleText}&rsquo;
                   </li>
@@ -754,17 +1018,6 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
 
       {/* Action row */}
       <div style={{ marginTop: "12px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
-        {job.url && (
-          <a
-            href={job.url}
-            target="_blank"
-            rel="noreferrer"
-            className="btn-secondary"
-            style={{ display: "inline-flex", alignItems: "center", padding: "6px 14px", fontSize: "13px", textDecoration: "none" }}
-          >
-            View Job ↗
-          </a>
-        )}
         {!job.url && !editingUrl && (
           <button
             type="button"
@@ -775,59 +1028,6 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
             Add Job URL
           </button>
         )}
-        {jobDescription && (
-          <button
-            className="btn-secondary"
-            onClick={() => setDescriptionOpen((open) => !open)}
-            style={{ fontSize: "13px" }}
-          >
-            {descriptionOpen ? "Hide Description" : "Job Description"}
-          </button>
-        )}
-        {/* Writing dropdown — Cover Letter / Why this company / Why I'd be good */}
-        <div style={{ position: "relative" }}>
-          <button
-            className="btn-secondary"
-            onClick={() => setShowWritingMenu((v) => !v)}
-            disabled={busy}
-            style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px" }}
-          >
-            {loading === "cover" || loading === "pitch" ? "Generating…" : "Writing"}
-            {!busy && <span style={{ fontSize: "10px", opacity: 0.7 }}>▾</span>}
-          </button>
-          {showWritingMenu && (
-            <div style={skipMenuStyle}>
-              <button
-                onClick={() => { setShowWritingMenu(false); handleCoverLetter(); }}
-                style={skipMenuItemStyle}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface2)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-              >
-                {coverLetter ? (coverLetterOpen ? "Hide Cover Letter" : "Show Cover Letter") : "Cover Letter"}
-              </button>
-              <button
-                onClick={() => handlePitch("why_company")}
-                style={skipMenuItemStyle}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface2)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-              >
-                {pitchType === "why_company" && pitchText
-                  ? pitchOpen ? "Hide — Why I want to work here" : "Show — Why I want to work here"
-                  : "Why I want to work here"}
-              </button>
-              <button
-                onClick={() => handlePitch("why_fit")}
-                style={skipMenuItemStyle}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface2)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-              >
-                {pitchType === "why_fit" && pitchText
-                  ? pitchOpen ? "Hide — Why I'd be good for this job" : "Show — Why I'd be good for this job"
-                  : "Why I'd be good for this job"}
-              </button>
-            </div>
-          )}
-        </div>
         <button
           className="btn-secondary"
           onClick={() => {
@@ -922,12 +1122,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
             <button
               type="button"
               className="btn-secondary"
-              onClick={() => {
-                setDescriptionDraft(jobDescription);
-                setDescriptionError("");
-                setDescriptionSaved(false);
-                setDescriptionEditOpen(true);
-              }}
+              onClick={startDescriptionEdit}
               disabled={descriptionSaving || busy}
               style={{ fontSize: "12px", padding: "5px 11px" }}
             >
@@ -936,6 +1131,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
           ) : (
             <div style={descriptionEditorStyle}>
               <textarea
+                ref={descriptionTextareaRef}
                 value={descriptionDraft}
                 onChange={(event) => {
                   setDescriptionDraft(event.target.value);
@@ -972,6 +1168,15 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
                 <button
                   type="button"
                   className="btn-secondary"
+                  onClick={handleDescriptionClipboardPaste}
+                  disabled={descriptionSaving}
+                  style={{ fontSize: "12px", padding: "5px 11px" }}
+                >
+                  Paste Clipboard
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
                   onClick={() => {
                     setDescriptionEditOpen(false);
                     setDescriptionDraft("");
@@ -996,6 +1201,14 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
           )}
           {descriptionError && <div style={descriptionErrorStyle}>{descriptionError}</div>}
           {descriptionSaved && <div style={descriptionSavedStyle}>Job description updated and fit score refreshed.</div>}
+          {undoEdit?.type === "description" && (
+            <UndoEditNotice
+              label="Job description updated"
+              onDismiss={() => setUndoEdit(null)}
+              onUndo={handleUndoEdit}
+              saving={undoSaving}
+            />
+          )}
         </div>
       )}
 
@@ -1085,10 +1298,16 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
 
       {/* Pitch panel */}
       {pitchOpen && pitchText && (
-        <div style={coverLetterPanelStyle}>
+        <Modal
+          title={pitchType === "why_company" ? "Why I want to work here" : "Why I'd be good for this job"}
+          subtitle={`${job.job_title || "Untitled role"}${job.company ? ` at ${job.company}` : ""}`}
+          onClose={() => setPitchOpen(false)}
+          maxWidth="900px"
+        >
+        <div style={writingDialogBodyStyle}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
             <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              {pitchType === "why_company" ? "Why I want to work here" : "Why I'd be good for this job"}
+              Draft
             </span>
             <div style={{ display: "flex", gap: "6px" }}>
               <button
@@ -1116,17 +1335,6 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
                   </div>
                 )}
               </div>
-              <button
-                className="btn-secondary"
-                onClick={() => {
-                  setPitchChatOpen((o) => !o);
-                  setPitchChatMessages([]);
-                  setPitchPendingUpdate(null);
-                }}
-                style={{ fontSize: "11px", padding: "3px 10px" }}
-              >
-                {pitchChatOpen ? "Close Chat" : "Chat with AI ✦"}
-              </button>
             </div>
           </div>
 
@@ -1189,8 +1397,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
             {pitchText}
           </p>
 
-          {pitchChatOpen && (
-            <div style={{ marginTop: "16px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
+          <div style={{ marginTop: "16px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
               <p style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "10px" }}>
                 Chat with AI — ask for edits, adjustments, or feedback
               </p>
@@ -1262,17 +1469,23 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
                 Enter to send · Shift+Enter for new line
               </p>
             </div>
-          )}
         </div>
+        </Modal>
       )}
 
       {/* Cover letter panel */}
       {coverLetterOpen && coverLetter && (
-        <div style={coverLetterPanelStyle}>
+        <Modal
+          title="Cover Letter"
+          subtitle={`${job.job_title || "Untitled role"}${job.company ? ` at ${job.company}` : ""}`}
+          onClose={() => setCoverLetterOpen(false)}
+          maxWidth="900px"
+        >
+        <div style={writingDialogBodyStyle}>
           {/* Panel header */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
             <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Cover Letter
+              Draft
             </span>
             <div style={{ display: "flex", gap: "6px" }}>
               <button
@@ -1300,17 +1513,6 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
                   </div>
                 )}
               </div>
-              <button
-                className="btn-secondary"
-                onClick={() => {
-                  setChatOpen((o) => !o);
-                  setChatMessages([]);
-                  setPendingUpdate(null);
-                }}
-                style={{ fontSize: "11px", padding: "3px 10px" }}
-              >
-                {chatOpen ? "Close Chat" : "Chat with AI ✦"}
-              </button>
             </div>
           </div>
 
@@ -1376,8 +1578,7 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
           </p>
 
           {/* Chat panel  */}
-          {chatOpen && (
-            <div style={{ marginTop: "16px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
+          <div style={{ marginTop: "16px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
               <p style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "10px" }}>
                 Chat with AI — ask for edits, adjustments, or feedback
               </p>
@@ -1451,8 +1652,8 @@ export default function JobCard({ job, onApprove, onReEvaluate, onSkip, onUpdate
                 Enter to send · Shift+Enter for new line
               </p>
             </div>
-          )}
         </div>
+        </Modal>
       )}
     </div>
   );
@@ -1566,156 +1767,6 @@ function FitReviewPanel({
   );
 }
 
-function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose }) {
-  const previousRows = rows.filter((row) => row.id !== currentJobId);
-  const currentRows = rows.filter((row) => row.id === currentJobId);
-  const appliedCount = previousRows.filter((row) => isAppliedStatus(row.status)).length;
-  const duplicateHints = previousRows.filter((row) => titleLooksSimilar(row.title, currentJobTitle)).length;
-
-  return (
-    <Modal
-      title={company}
-      subtitle={loading
-        ? "Searching application tracking..."
-        : error
-          ? "Application tracking lookup failed"
-          : `${previousRows.length} prior matching row${previousRows.length === 1 ? "" : "s"}${appliedCount > 0 ? ` · ${appliedCount} applied` : ""}`}
-      onClose={onClose}
-      maxWidth="760px"
-    >
-      {loading && (
-        <div style={{ alignItems: "center", color: "var(--text-muted)", display: "flex", fontSize: "13px", gap: "8px", padding: "16px 0 4px" }}>
-          <span className="inline-spinner" />
-          <span>Loading application tracking rows...</span>
-        </div>
-      )}
-
-      {!loading && error && (
-        <div style={{ color: "var(--red)", fontSize: "13px", padding: "16px 0 4px" }}>{error}</div>
-      )}
-
-      {!loading && !error && rows.length === 0 && (
-        <div style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text-muted)", fontSize: "13px", padding: "14px" }}>
-          No application tracking rows matched this company.
-        </div>
-      )}
-
-      {!loading && !error && rows.length > 0 && (
-        <>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 18px", color: "var(--text-muted)", fontSize: "12px", marginBottom: "10px" }}>
-            <span>{previousRows.length > 0 ? "Previous activity found" : "Only this queue card matched"}</span>
-            {duplicateHints > 0 && <span>{duplicateHints} similar title{duplicateHints === 1 ? "" : "s"}</span>}
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {[...currentRows, ...previousRows].map((row) => (
-              <div
-                key={row.id || `${row.company}-${row.title}-${row.date}`}
-                style={{
-                  alignItems: "flex-start",
-                  background: "var(--surface2)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)",
-                  display: "flex",
-                  gap: "12px",
-                  justifyContent: "space-between",
-                  padding: "10px 12px",
-                }}
-              >
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ alignItems: "center", color: "var(--text)", display: "flex", flexWrap: "wrap", fontSize: "13px", fontWeight: 700, gap: "7px", overflowWrap: "anywhere" }}>
-                    {row.title || "Untitled role"}
-                    {row.id === currentJobId && (
-                      <span style={{ background: "var(--accent-light)", borderRadius: "999px", color: "var(--accent)", fontSize: "11px", fontWeight: 700, padding: "3px 8px" }}>
-                        Current card
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ color: "var(--text-muted)", display: "flex", flexWrap: "wrap", fontSize: "12px", gap: "5px 12px", marginTop: "4px" }}>
-                    <span>{row.status || "No status"}</span>
-                    {row.date && <span>{row.date}</span>}
-                    {row.source && <span>{row.source}</span>}
-                  </div>
-                  {row.notes && <div style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.5, marginTop: "6px", overflowWrap: "anywhere" }}>{row.notes}</div>}
-                  {row.url && (
-                    <a href={row.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", display: "block", fontSize: "12px", marginTop: "6px", overflowWrap: "anywhere" }}>
-                      {row.url}
-                    </a>
-                  )}
-                  {row.stages.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
-                      {row.stages.map((stage) => (
-                        <span key={stage.id || `${stage.status}-${stage.date}`} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "999px", color: "var(--text-muted)", fontSize: "11px", padding: "3px 8px" }}>
-                          {stage.status || "stage"}{stage.date ? ` · ${stage.date}` : ""}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <StatusBadge status={row.status} />
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </Modal>
-  );
-}
-
-function applicationRowFromSheet(row) {
-  const cells = Array.isArray(row.cells) ? row.cells : [];
-  return {
-    id: row.row_number,
-    company: cellValue(cells, 0),
-    status: cellValue(cells, 1),
-    source: cellValue(cells, 2),
-    date: cellValue(cells, 3),
-    title: cellValue(cells, 4),
-    url: cellValue(cells, 5),
-    notes: cellValue(cells, 6),
-    stages: Array.isArray(row.stages) ? row.stages : [],
-  };
-}
-
-function cellValue(cells, columnIndex) {
-  const cell = cells.find((item) => Number(item.column_index) === columnIndex);
-  return String(cell?.value || "").trim();
-}
-
-function normalizeCompany(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/\b(inc|llc|ltd|corp|corporation|company|co)\b\.?/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-function rowMatchesCompany(rowCompany, targetCompany) {
-  const rowName = normalizeCompany(rowCompany);
-  const targetName = normalizeCompany(targetCompany);
-  if (!rowName || !targetName) return false;
-  return rowName.includes(targetName) || targetName.includes(rowName);
-}
-
-function isAppliedStatus(status) {
-  const normalizedStatus = String(status || "").toLowerCase();
-  return normalizedStatus.includes("applied") || normalizedStatus.includes("added");
-}
-
-function titleLooksSimilar(title, currentTitle) {
-  const normalizedTitle = String(title || "").toLowerCase();
-  const normalizedCurrentTitle = String(currentTitle || "").toLowerCase();
-  if (!normalizedTitle || !normalizedCurrentTitle) return false;
-  return normalizedTitle.includes(normalizedCurrentTitle) || normalizedCurrentTitle.includes(normalizedTitle);
-}
-
-function historyStatusBadgeClass(status) {
-  const normalizedStatus = String(status || "").toLowerCase();
-  if (normalizedStatus.includes("reject") || normalizedStatus.includes("skip")) return "badge-red";
-  if (normalizedStatus.includes("applied") || normalizedStatus.includes("added")) return "badge-green";
-  if (normalizedStatus.includes("duplicate") || normalizedStatus.includes("triage")) return "badge-yellow";
-  return "badge-gray";
-}
-
 function classificationLabel(status) {
   if (status === "pending_review") return "Keep in queue";
   if (status === "triage") return "Move to triage";
@@ -1754,18 +1805,6 @@ function sourceSummaryForJob(job) {
   return sourceLabel || platform || "";
 }
 
-function normalizeManualJobUrl(value) {
-  const trimmed = String(value || "").trim();
-  if (!trimmed) return "";
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
-    return parsed.toString();
-  } catch {
-    return "";
-  }
-}
-
 function isManualJob(job) {
   const emailSubject = String(job.email_subject || "").toLowerCase();
   const emailId = String(job.email_id || "").toLowerCase();
@@ -1783,18 +1822,6 @@ function isManualJob(job) {
 function shouldShowEmailOrigin(job) {
   if (!job.sender_email && !job.email_subject) return false;
   return !isManualJob(job);
-}
-
-function platformLabelForUrl(rawUrl) {
-  const normalizedUrl = String(rawUrl || "").trim().toLowerCase();
-  if (!normalizedUrl) return "";
-  if (normalizedUrl.includes("greenhouse.io")) return "Greenhouse";
-  if (normalizedUrl.includes("lever.co")) return "Lever";
-  if (normalizedUrl.includes("ashbyhq.com")) return "Ashby";
-  if (normalizedUrl.includes("wellfound.com")) return "Wellfound";
-  if (normalizedUrl.includes("linkedin.com")) return "LinkedIn";
-  if (normalizedUrl.includes("myworkdayjobs.com")) return "Workday";
-  return "";
 }
 
 function titleCaseKnownSource(source) {
@@ -1819,51 +1846,6 @@ function manualPlatformFromSource(source) {
   return match ? titleCaseKnownSource(match[1].trim()) : "";
 }
 
-function penaltiesAppliedForJob(job) {
-  const reasoning = String(job.fit_reasoning || "");
-  const match = reasoning.match(/Penalties applied:\s*(.+?)\.\s*$/i);
-  if (!match) return [];
-  return match[1]
-    .split(/\s*,\s*/)
-    .map((item) => item.match(/-(\d+)\s+for\s+'([^']+)'/i))
-    .filter(Boolean)
-    .map((matchItem) => ({
-      points: Number(matchItem[1]),
-      ruleText: matchItem[2],
-    }));
-}
-
-function reasoningWithoutPenaltySummary(reasoning) {
-  return String(reasoning || "")
-    .replace(/\s*Penalties applied:\s*.+?\.\s*$/i, "")
-    .trim();
-}
-
-function fitReasoningBullets(reasoning) {
-  const text = String(reasoning || "").trim();
-  if (!text) return [];
-  const bulletMatches = text.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s+.+/g);
-  if (bulletMatches) {
-    return bulletMatches
-      .map((item) => item.replace(/^\s*(?:[-*•]|\d+\.)\s+/, "").trim())
-      .filter(Boolean);
-  }
-  return text
-    .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function negativeReasoningBulletStyleFor(item) {
-  return isNegativeReasoningBullet(item) ? negativeReasoningBulletStyle : undefined;
-}
-
-function isNegativeReasoningBullet(item) {
-  return /\b(penalt|deduct|below|low|missing|uncertain|not|no|failed|mismatch|triage)\b/i.test(
-    String(item || "")
-  );
-}
-
 const cardStyle = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
@@ -1872,6 +1854,36 @@ const cardStyle = {
   marginBottom: "12px",
   boxShadow: "var(--shadow-sm)",
   transition: "box-shadow 0.2s, border-color 0.2s",
+};
+
+const contextMenuStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  boxShadow: "var(--shadow-lg)",
+  display: "flex",
+  flexDirection: "column",
+  minWidth: "220px",
+  padding: "4px",
+  position: "fixed",
+  zIndex: 1000,
+};
+
+const contextMenuItemStyle = {
+  background: "transparent",
+  border: "none",
+  borderRadius: "4px",
+  color: "var(--text)",
+  cursor: "pointer",
+  fontSize: "13px",
+  padding: "8px 10px",
+  textAlign: "left",
+  width: "100%",
+};
+
+const contextMenuSeparatorStyle = {
+  borderTop: "1px solid var(--border)",
+  margin: "4px 0",
 };
 
 const sourceSummaryStyle = {
@@ -1885,6 +1897,27 @@ const sourceSummaryStyle = {
 const sourceLinkStyle = {
   color: "var(--accent)",
   textDecoration: "none",
+};
+
+const editableJobTitleStyle = {
+  borderBottom: "1px dotted var(--text-muted)",
+  color: "var(--text)",
+  cursor: "text",
+  fontWeight: 600,
+};
+
+const editableJobTitleInputStyle = {
+  background: "transparent",
+  border: "none",
+  borderBottom: "1px solid var(--accent)",
+  color: "var(--text)",
+  font: "inherit",
+  fontSize: "15px",
+  fontWeight: 600,
+  minWidth: "220px",
+  outline: "none",
+  padding: 0,
+  width: "min(460px, 70%)",
 };
 
 const jobUrlEditRowStyle = {
@@ -2027,20 +2060,21 @@ const reasoningListStyle = {
   lineHeight: "1.6",
 };
 
-const negativeReasoningBulletStyle = {
-  color: "var(--red)",
-};
-
 const penaltyInlineBulletStyle = {
   color: "var(--red)",
 };
 
-const coverLetterPanelStyle = {
-  marginTop: "14px",
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  padding: "14px 16px",
+const penaltyDeductionBadgeStyle = {
+  fontSize: "11px",
+  fontWeight: 700,
+  marginLeft: "6px",
+  opacity: 0.85,
+};
+
+const writingDialogBodyStyle = {
+  maxHeight: "72vh",
+  overflowY: "auto",
+  paddingRight: "4px",
 };
 
 const fitReviewPanelStyle = {

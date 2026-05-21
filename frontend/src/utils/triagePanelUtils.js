@@ -232,7 +232,7 @@ export function dispositionLabel(status) {
   if (status === "triage") return "Still triage";
   if (status === "possible_duplicate") return "Duplicate review";
   if (status === "skipped") return "Skipped";
-  if (status === "added_to_sheet") return "On sheet";
+  if (status === "applied") return "Applied";
   return status || "Updated";
 }
 

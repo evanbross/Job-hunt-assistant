@@ -44,6 +44,9 @@ import CareerSiteResultsPanel from "./components/CareerSiteResultsPanel.jsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
 import GreenhouseScanPanel from "./components/GreenhouseScanPanel.jsx";
 import WellfoundScanPanel from "./components/WellfoundScanPanel.jsx";
+import Modal from "./components/common/Modal.jsx";
+import MetricGrid, { MetricItem } from "./components/common/MetricGrid.jsx";
+import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 
 const TABS = [
   { key: "queue", label: "Job Queue" },
@@ -175,6 +178,7 @@ export default function App() {
   const [triageCount, setTriageCount] = useState(0);
   const [authStatus, setAuthStatus] = useState(null); // null | true | false
   const [emailFocusId, setEmailFocusId] = useState(null);
+  const [focusedJobCard, setFocusedJobCard] = useState(null);
   const [listenerImportState, setListenerImportState] = useState(null);
   const [listenerImportDismissedAt, setListenerImportDismissedAt] = useState("");
   const [setupComplete, setSetupComplete] = useState(true); // optimistic; corrected on mount
@@ -188,6 +192,18 @@ export default function App() {
   const navigateToHistory = () => {
     setActiveTab(HISTORY_TAB_KEY);
     localStorage.setItem("activeTab", HISTORY_TAB_KEY);
+  };
+
+  const navigateToJobCard = (jobId, status) => {
+    const tabKey = jobCardTabForStatus(status);
+    if (!tabKey) {
+      window.alert("That job is not currently on the Job Queue or Triage page.");
+      return;
+    }
+    setFocusedJobCard({ id: Number(jobId), tabKey, requestedAt: Date.now() });
+    setActiveTab(tabKey);
+    localStorage.setItem("activeTab", tabKey);
+    if (tabKey === "triage") fetchTriageCount();
   };
 
   useEffect(() => {
@@ -215,9 +231,6 @@ export default function App() {
           && (data.running || data.result || data.phase === "error")
         ) {
           setListenerImportState(data);
-          if (data.running) {
-            setListenerImportDismissedAt("");
-          }
         }
       } catch {
         /* no-op */
@@ -395,13 +408,17 @@ export default function App() {
             isAuthenticated={authStatus === true}
             onNavigateToEmails={navigateToEmails}
             onNavigateToHistory={navigateToHistory}
+            focusJobId={focusedJobCard?.tabKey === "queue" ? focusedJobCard.id : null}
           />
         )}
         {activeTab === "triage" && (
-          <TriagePanel onCountChange={setTriageCount} />
+          <TriagePanel
+            onCountChange={setTriageCount}
+            focusJobId={focusedJobCard?.tabKey === "triage" ? focusedJobCard.id : null}
+          />
         )}
         {activeTab === HISTORY_TAB_KEY && <HistoryPanel />}
-        {activeTab === "applications" && <ApplicationSheetPanel />}
+        {activeTab === "applications" && <ApplicationSheetPanel onNavigateToJobCard={navigateToJobCard} />}
         {activeTab === "emails" && (
           <EmailsPanel
             isAuthenticated={authStatus === true}
@@ -442,13 +459,13 @@ function ListenerImportDialog({ state, onClose }) {
   const phaseLabel = listenerImportPhaseLabel(state.phase);
   const title = listenerImportTitle(state.phase, running);
 
-  const footer = !running && (
+  const footer = (
     <button
       type="button"
       className="btn-secondary"
       onClick={onClose}
     >
-      Close
+      {running ? "Dismiss" : "Close"}
     </button>
   );
 
@@ -457,7 +474,7 @@ function ListenerImportDialog({ state, onClose }) {
       title={title}
       subtitle={`${phaseLabel}${sourceName ? ` · ${sourceName}` : ""}`}
       onClose={onClose}
-      showCloseButton={!running}
+      showCloseButton={true}
       footer={footer}
       maxWidth="560px"
     >
@@ -559,99 +576,3 @@ function listenerImportPhaseLabel(phase) {
   if (phase === "error") return "Import failed";
   return "Import listener";
 }
-
-alogSubtitleStyle = {
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  marginTop: "3px",
-};
-
-const listenerDialogBodyStyle = {
-  alignItems: "center",
-  color: "var(--text)",
-  display: "flex",
-  fontSize: "14px",
-  gap: "10px",
-};
-
-const listenerStepListStyle = {
-  display: "grid",
-  gap: "10px",
-  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-  marginTop: "16px",
-};
-
-const listenerStepStyle = {
-  alignItems: "center",
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  display: "flex",
-  gap: "8px",
-  minHeight: "42px",
-  padding: "8px 10px",
-};
-
-const listenerStepDotStyle = (status) => ({
-  background: listenerStepDotColor(status),
-  border: status === "pending" ? "2px solid var(--border)" : "2px solid transparent",
-  borderRadius: "50%",
-  boxShadow: status === "active" ? "0 0 0 4px rgba(74,92,247,0.12)" : "none",
-  flexShrink: 0,
-  height: "12px",
-  width: "12px",
-});
-
-function listenerStepDotColor(status) {
-  if (status === "complete") return "var(--green)";
-  if (status === "error") return "var(--red)";
-  if (status === "active") return "var(--accent)";
-  return "transparent";
-}
-
-const listenerStepLabelStyle = (status) => ({
-  color: status === "pending" ? "var(--text-muted)" : "var(--text)",
-  fontSize: "12px",
-  fontWeight: status === "active" ? 700 : 600,
-});
-
-const listenerSpinnerStyle = {
-  color: "var(--accent)",
-  height: "18px",
-  width: "18px",
-};
-
-const listenerProgressHeaderStyle = {
-  color: "var(--text-muted)",
-  display: "flex",
-  fontSize: "12px",
-  justifyContent: "space-between",
-  marginBottom: "8px",
-};
-
-const listenerCurrentJobStyle = {
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  fontSize: "12px",
-  marginTop: "14px",
-  overflowWrap: "anywhere",
-  padding: "10px 12px",
-};
-
-const listenerCurrentJobLabelStyle = {
-  color: "var(--text-muted)",
-  fontSize: "11px",
-  fontWeight: 700,
-  marginBottom: "4px",
-  textTransform: "uppercase",
-};
-
-const listenerResultGridStyle = {
-  borderTop: "1px solid var(--border)",
-  display: "grid",
-  gap: "18px",
-  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-  marginTop: "16px",
-  paddingTop: "14px",
-};

@@ -87,6 +87,8 @@ def test_sqlite_backend_initializes_and_supports_repositories(tmp_path) -> None:
         assert settings.get("cover_letter_folder") == "C:/letters"
         assert jobs.get_by_id(job_id)["company"] == "Acme"
         assert jobs.get_by_url("https://example.com/jobs/1")["job_title"] == "Senior Engineer"
+        assert career_sites.get_by_id(source_id)["collection_mode"] == "automatic"
+        assert [site["id"] for site in career_sites.get_enabled()] == [source_id]
 
         due_sites = career_sites.get_due_recapture()
         assert [site["id"] for site in due_sites] == [source_id]
@@ -139,6 +141,9 @@ def test_open_repositories_selects_sqlite_implementations(tmp_path) -> None:
 
         assert repos["jobs"].get_by_id(job_id)["company"] == "Widget Co"
         assert [site["id"] for site in repos["career_sites"].get_due_recapture()] == [source_id]
+        repos["career_sites"].update(source_id, {"collection_mode": "manual"})
+        repos["conn"].commit()
+        assert repos["career_sites"].get_enabled() == []
         email_source = repos["sources"].get_by_id(email_source_id)
         assert email_source["subject_filter_mode"] == "starts_with"
         assert email_source["subject_filter_value"] == "new match"
@@ -170,7 +175,7 @@ def test_scanned_email_history_includes_all_child_jobs(tmp_path) -> None:
                 "job_title": "Backend Engineer",
                 "url": "https://example.com/jobs/3",
                 "source": "email",
-                "status": "added_to_sheet",
+                "status": "applied",
                 "date_found": "2026-05-01",
                 "fit_score": 82,
             }
@@ -195,7 +200,7 @@ def test_scanned_email_history_includes_all_child_jobs(tmp_path) -> None:
         assert emails[0]["job_count"] == 2
         assert emails[0]["job_id"] == first_job_id
         assert [job["id"] for job in emails[0]["jobs"]] == [first_job_id, second_job_id]
-        assert emails[0]["jobs"][0]["status"] == "added_to_sheet"
+        assert emails[0]["jobs"][0]["status"] == "applied"
         assert emails[0]["jobs"][1]["skip_reason"] == "duplicate"
     finally:
         repos["conn"].close()

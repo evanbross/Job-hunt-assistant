@@ -83,6 +83,23 @@ def _import_failure_detail(
     }
 
 
+def _import_outcome_detail(
+    url_row: dict[str, Any],
+    reason: str,
+    action: str,
+    job: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    job_row = job or {}
+    return {
+        "url": str(url_row.get("url") or job_row.get("url") or ""),
+        "platform": str(url_row.get("platform") or ""),
+        "job_title": str(url_row.get("job_title") or job_row.get("job_title") or ""),
+        "company": str(url_row.get("company") or job_row.get("company") or ""),
+        "action": action,
+        "reason": reason,
+    }
+
+
 _ENRICH_MIN_CHARS = 300
 _ENRICH_ADVANTAGE_CHARS = 300
 
@@ -123,7 +140,7 @@ def _enrich_job_description(repos: dict[str, Any], job: dict[str, Any], descript
             "fit_score": score,
             "fit_reasoning": result["reasoning"],
         }
-        if current_status not in {"skipped", "added_to_sheet"}:
+        if current_status not in {"skipped", "applied"}:
             score_updates["status"] = "pending_review" if score >= 70 else "triage"
         repos["jobs"].update(job_id, score_updates)
     except Exception as exc:
@@ -191,6 +208,10 @@ def run_import_task(
         repaired = 0
         enriched = 0
         failed = 0
+        queued_details: list[dict] = []
+        skipped_details: list[dict] = []
+        repaired_details: list[dict] = []
+        enriched_details: list[dict] = []
         failures: list[dict] = []
 
         for i, url_row in enumerate(extracted):
@@ -222,6 +243,14 @@ def run_import_task(
                     )
                 if repaired_ok:
                     repaired += 1
+                    repaired_details.append(
+                        _import_outcome_detail(
+                            url_row,
+                            "Existing job had missing or weak company data; company was inferred from the captured listing or URL.",
+                            "repaired",
+                            existing_job,
+                        )
+                    )
                     repos["conn"].commit()
                     updated = repos["jobs"].get_by_id(int(existing_job["id"]))
                     if updated:
@@ -233,7 +262,23 @@ def run_import_task(
                     _enrich_job_description(repos, existing_job, incoming_text)
                     repos["conn"].commit()
                     enriched += 1
+                    enriched_details.append(
+                        _import_outcome_detail(
+                            url_row,
+                            "Captured listing had a richer description than the stored job, so the existing job was updated and re-scored.",
+                            "enriched",
+                            existing_job,
+                        )
+                    )
                 skipped += 1
+                skipped_details.append(
+                    _import_outcome_detail(
+                        url_row,
+                        "A job with this URL is already in the database, so a duplicate queue card was not created.",
+                        "skipped",
+                        existing_job,
+                    )
+                )
                 continue
 
             try:
@@ -266,8 +311,24 @@ def run_import_task(
                         repos["jobs"].delete(int(new_job["id"]))
                         repos["conn"].commit()
                         enriched += 1
+                        enriched_details.append(
+                            _import_outcome_detail(
+                                url_row,
+                                "Captured listing matched an existing job and had a richer description, so the existing job was updated instead of creating a duplicate.",
+                                "enriched",
+                                original,
+                            )
+                        )
                         continue
                 queued += 1
+                queued_details.append(
+                    _import_outcome_detail(
+                        url_row,
+                        "New job was parsed, scored, and added to the queue.",
+                        "queued",
+                        new_job,
+                    )
+                )
                 repos["conn"].commit()
             except (ValueError, urllib.error.URLError, TimeoutError, socket.error) as exc:
                 repos["conn"].rollback()
@@ -288,6 +349,10 @@ def run_import_task(
             "repaired": repaired,
             "enriched": enriched,
             "failed": failed,
+            "queued_details": queued_details,
+            "skipped_details": skipped_details,
+            "repaired_details": repaired_details,
+            "enriched_details": enriched_details,
             "failures": failures,
             "capture_source": capture_source,
         }

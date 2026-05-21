@@ -43,6 +43,139 @@ import { dispositionLabel, formatJobTitles, formatScanAction, formatScanDisposit
 
 const JOB_QUEUE_SEARCH_STORAGE_KEY = "jha.jobQueue.search";
 
+const progressBox = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  padding: "16px 18px",
+  marginBottom: "16px",
+  boxShadow: "var(--shadow-sm)",
+};
+
+const modeToggleStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px",
+  marginBottom: "12px",
+};
+
+const modeButtonStyle = {
+  padding: "7px 14px",
+  fontSize: "13px",
+};
+
+const inputStyle = {
+  width: "100%",
+  minWidth: 0,
+  padding: "10px 12px",
+  borderRadius: "var(--radius)",
+  border: "1px solid var(--border)",
+  background: "var(--bg-elevated)",
+  color: "var(--text)",
+};
+
+const queueSearchInputStyle = {
+  ...inputStyle,
+  background: "var(--surface)",
+  flex: "1 1 260px",
+  marginLeft: "auto",
+  maxWidth: "420px",
+};
+
+const textareaStyle = {
+  width: "100%",
+  minHeight: "180px",
+  resize: "vertical",
+  padding: "12px",
+  borderRadius: "var(--radius)",
+  border: "1px solid var(--border)",
+  background: "var(--bg-elevated)",
+  color: "var(--text)",
+  fontFamily: "inherit",
+  fontSize: "13px",
+  lineHeight: 1.5,
+};
+
+const popupBackdropStyle = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 1000,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "20px",
+  background: "rgba(0, 0, 0, 0.55)",
+};
+
+const importDialogPanelStyle = {
+  width: "min(920px, 100%)",
+  maxHeight: "90vh",
+  overflowY: "auto",
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  boxShadow: "var(--shadow-lg)",
+  padding: "18px",
+};
+
+const popupHeaderStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: "12px",
+  marginBottom: "14px",
+};
+
+const popupTitleStyle = {
+  color: "var(--text)",
+  fontSize: "18px",
+  fontWeight: 700,
+};
+
+const popupSubtitleStyle = {
+  color: "var(--text-muted)",
+  fontSize: "13px",
+  marginTop: "4px",
+};
+
+const inlineImportProgressStyle = {
+  padding: "10px 12px",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  background: "var(--surface2)",
+  color: "var(--text-muted)",
+  fontSize: "13px",
+};
+
+const inlineImportSuccessStyle = {
+  padding: "10px 12px",
+  border: "1px solid rgba(76,175,129,0.3)",
+  borderRadius: "var(--radius)",
+  background: "rgba(76,175,129,0.12)",
+};
+
+const emailReportHeaderStyle = {
+  position: "sticky",
+  top: 0,
+  zIndex: 1,
+  padding: "8px 10px",
+  background: "var(--surface2)",
+  borderBottom: "1px solid var(--border)",
+  color: "var(--text-muted)",
+  fontSize: "11px",
+  fontWeight: 700,
+  textAlign: "left",
+  textTransform: "uppercase",
+  whiteSpace: "nowrap",
+};
+
+const emailReportCellStyle = {
+  padding: "8px 10px",
+  borderBottom: "1px solid var(--border)",
+  color: "var(--text-muted)",
+  verticalAlign: "top",
+};
+
 function readStoredSearch(storageKey) {
   if (typeof window === "undefined") return "";
   try {
@@ -51,7 +184,6 @@ function readStoredSearch(storageKey) {
     return "";
   }
 }
-
 function writeStoredSearch(storageKey, value) {
   if (typeof window === "undefined") return;
   try {
@@ -101,8 +233,13 @@ function FixCompaniesDialog({ progress, onClose }) {
   );
 }
 
-
-export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavigateToEmails, onNavigateToHistory }) {
+export default function JobQueue({
+  onTriageCountChange,
+  isAuthenticated,
+  onNavigateToEmails,
+  onNavigateToHistory,
+  focusJobId,
+}) {
   const [jobs, setJobs] = useState([]);
   const [searchText, setSearchText] = useState(() => readStoredSearch(JOB_QUEUE_SEARCH_STORAGE_KEY));
   const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
@@ -132,7 +269,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
   const [importState, setImportState] = useState(null);
   const [importPanelOpen, setImportPanelOpen] = useState(false);
   const [importMode, setImportMode] = useState("text");
-  const [recaptureDueSites, setRecaptureDueSites] = useState([]);
   const [moreToolsOpen, setMoreToolsOpen] = useState(false);
   const [fixingCompanies, setFixingCompanies] = useState(false);
   const [fixProgress, setFixProgress] = useState(null);
@@ -161,19 +297,8 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     }
   }, []);
 
-  const fetchRecaptureDueSites = useCallback(async () => {
-    try {
-      const res = await fetch("/api/career-sites/recapture-due");
-      const data = await res.json();
-      setRecaptureDueSites(Array.isArray(data) ? data : []);
-    } catch {
-      /* no-op */
-    }
-  }, []);
-
   useEffect(() => {
     fetchJobs();
-    fetchRecaptureDueSites();
     return () => {
       clearInterval(pollRef.current);
       clearInterval(boardPollRef.current);
@@ -181,7 +306,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
       clearInterval(reEvalPollRef.current);
       clearTimeout(reEvaluateResetTimeoutRef.current);
     };
-  }, [fetchJobs, fetchRecaptureDueSites]);
+  }, [fetchJobs]);
 
   const pollScanStatus = async (onDone) => {
     try {
@@ -222,6 +347,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     }
 
     setScanning(true);
+    clearInterval(pollRef.current);
     pollRef.current = setInterval(() => pollScanStatus(() => setScanning(false)), 1200);
   };
 
@@ -247,6 +373,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
 
     setRescanAllRunning(true);
     setScanState(null);
+    clearInterval(pollRef.current);
     pollRef.current = setInterval(
       () => pollScanStatus(() => setRescanAllRunning(false)),
       1200
@@ -465,7 +592,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         if (state.result) setImportSummary(state.result);
         await fetchJobs();
         await updateTriageCount();
-        await fetchRecaptureDueSites();
       }
     } catch {
       clearInterval(importPollRef.current);
@@ -481,6 +607,24 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
     return true;
   });
   const unscoredCount = jobs.filter((j) => j.fit_score == null).length;
+
+  useEffect(() => {
+    if (!focusJobId) return;
+    setSearchText("");
+    setShowOnlyUnscored(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusJobId]);
+
+  useEffect(() => {
+    if (!focusJobId || loading) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      document.getElementById(`job-card-${focusJobId}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [filteredJobs.length, focusJobId, loading]);
 
   const handleManualSubmit = async () => {
     if (!manualListingText.trim() && !manualSourceUrl.trim()) {
@@ -633,7 +777,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
         setImportSubmitting(false);
         await fetchJobs();
         await updateTriageCount();
-        await fetchRecaptureDueSites();
       }
     } catch {
       window.alert("Failed to import jobs");
@@ -654,6 +797,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
 
   return (
     <div>
+      <h2 style={{ fontSize: "18px", fontWeight: 700, lineHeight: 1.2, margin: "0 0 14px" }}>Job Queue</h2>
       {/* Toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px", flexWrap: "wrap" }}>
         <button
@@ -704,6 +848,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           type="search"
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
+          onFocus={(e) => e.target.select()}
           placeholder="Search queued jobs"
           style={queueSearchInputStyle}
         />
@@ -810,23 +955,6 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
           )}
         </div>
       </div>
-
-      {recaptureDueSites.length > 0 && (
-        <div style={{ ...progressBox, background: "rgba(255,193,7,0.08)", borderColor: "rgba(255,193,7,0.28)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-          <p style={{ margin: 0, fontSize: "13px", color: "var(--text)" }}>
-            Time to recapture {recaptureDueSites.length} job board{recaptureDueSites.length === 1 ? "" : "s"}:
-            {" "}
-            {recaptureDueSites.map((site) => site.name || site.url).join(", ")}
-          </p>
-          <button
-            onClick={() => setRecaptureDueSites([])}
-            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "16px", lineHeight: 1, padding: "0 2px", flexShrink: 0 }}
-            aria-label="Dismiss"
-          >
-            ×
-          </button>
-        </div>
-      )}
 
       {fixProgress && (
         <FixCompaniesDialog
@@ -1034,7 +1162,7 @@ export default function JobQueue({ onTriageCountChange, isAuthenticated, onNavig
                         </div>
                       )}
                     </div>
-                    <ImportFailureDetails summary={importSummary} compact />
+                    <ImportBreakdownDetails summary={importSummary} compact />
                   </div>
                 )}
               </>
@@ -1264,36 +1392,115 @@ function ImportSummaryPopup({ summary, onClose }) {
         {failed > 0 && <MetricItem label="failed" value={failed} tone="red" />}
       </MetricGrid>
 
-      <ImportFailureDetails summary={summary} />
+      <ImportBreakdownDetails summary={summary} />
     </Modal>
   );
 }
 
 
-function ImportFailureDetails({ summary, compact = false }) {
-  const failures = normalizeImportFailures(summary);
-  if (failures.length === 0) return null;
+function ImportBreakdownDetails({ summary, compact = false }) {
+  const sections = [
+    {
+      key: "queued",
+      title: "Queued",
+      tone: "var(--green)",
+      rows: normalizeImportOutcomeDetails(summary, "queued_details", Number(summary?.queued) || 0, {
+        action: "queued",
+        reason: "New job was parsed, scored, and added to the queue.",
+      }),
+    },
+    {
+      key: "skipped",
+      title: "Skipped",
+      tone: "var(--text-muted)",
+      rows: normalizeImportOutcomeDetails(summary, "skipped_details", Number(summary?.skipped) || 0, {
+        action: "skipped",
+        reason: "A duplicate or already-known job was skipped.",
+      }),
+    },
+    {
+      key: "repaired",
+      title: "Repaired",
+      tone: "var(--green)",
+      rows: normalizeImportOutcomeDetails(summary, "repaired_details", Number(summary?.repaired) || 0, {
+        action: "repaired",
+        reason: "An existing job was repaired during import.",
+      }),
+    },
+    {
+      key: "enriched",
+      title: "Description Enriched",
+      tone: "var(--green)",
+      rows: normalizeImportOutcomeDetails(summary, "enriched_details", Number(summary?.enriched) || 0, {
+        action: "enriched",
+        reason: "An existing job description was enriched during import.",
+      }),
+    },
+    {
+      key: "failed",
+      title: "Failed",
+      tone: "var(--red)",
+      rows: normalizeImportFailures(summary).map((failure) => ({
+        ...failure,
+        action: "failed",
+      })),
+    },
+  ].filter((section) => section.rows.length > 0);
+
+  if (sections.length === 0) return null;
 
   return (
     <div style={{ marginTop: "14px", borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
       <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
-        Failure details
+        Import breakdown
       </div>
-      <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "6px", maxHeight: compact ? "140px" : "200px", overflowY: "auto" }}>
-        {failures.map((failure, index) => (
-          <li key={`${failure.url || "import-failure"}-${index}`} style={{ fontSize: "12px", lineHeight: 1.5 }}>
-            <div style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={failure.url}>
-              {failureLabel(failure)}
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: compact ? "180px" : "320px", overflowY: "auto" }}>
+        {sections.map((section) => (
+          <div key={section.key}>
+            <div style={{ color: section.tone, fontSize: "12px", fontWeight: 700, marginBottom: "5px" }}>
+              {section.title} ({section.rows.length})
             </div>
-            <div style={{ color: "var(--red)", overflowWrap: "anywhere" }}>
-              {failure.reason}
-              {failure.error_type && ` (${failure.error_type}${failure.stage ? ` during ${failure.stage}` : ""})`}
-            </div>
-          </li>
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "6px" }}>
+              {section.rows.map((row, index) => (
+                <li key={`${section.key}-${row.url || row.job_title || "import-row"}-${index}`} style={{ fontSize: "12px", lineHeight: 1.5 }}>
+                  <div style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={row.url}>
+                    {failureLabel(row)}
+                  </div>
+                  <div style={{ color: section.tone, overflowWrap: "anywhere" }}>
+                    {row.reason}
+                    {row.error_type && ` (${row.error_type}${row.stage ? ` during ${row.stage}` : ""})`}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
         ))}
-      </ul>
+      </div>
     </div>
   );
+}
+
+function normalizeImportOutcomeDetails(summary, key, expectedCount, fallback) {
+  const rows = Array.isArray(summary?.[key]) ? summary[key] : [];
+  const normalized = rows.map((row) => ({
+    url: row?.url || "",
+    platform: row?.platform || "",
+    job_title: row?.job_title || "",
+    company: row?.company || "",
+    action: row?.action || fallback.action,
+    reason: row?.reason || fallback.reason,
+  }));
+  for (let index = normalized.length; index < expectedCount; index += 1) {
+    normalized.push({
+      url: "",
+      platform: "",
+      job_title: "",
+      company: "",
+      action: fallback.action,
+      reason: fallback.reason,
+    });
+  }
+  return normalized;
 }
 
 function normalizeImportFailures(summary) {
@@ -1905,47 +2112,3 @@ function formatJobDetails(jobDetails) {
     </div>
   );
 }
-
-const modeToggleStyle = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "8px",
-  marginBottom: "12px",
-};
-
-const modeButtonStyle = {
-  padding: "7px 14px",
-  fontSize: "13px",
-};
-
-const inputStyle = {
-  width: "100%",
-  minWidth: 0,
-  padding: "10px 12px",
-  borderRadius: "var(--radius)",
-  border: "1px solid var(--border)",
-  background: "var(--bg-elevated)",
-  color: "var(--text)",
-};
-
-const queueSearchInputStyle = {
-  ...inputStyle,
-  flex: "1 1 260px",
-  marginLeft: "auto",
-  maxWidth: "420px",
-};
-
-const textareaStyle = {
-  width: "100%",
-  minHeight: "180px",
-  resize: "vertical",
-  padding: "12px",
-  borderRadius: "var(--radius)",
-  border: "1px solid var(--border)",
-  background: "var(--bg-elevated)",
-  color: "var(--text)",
-  fontFamily: "inherit",
-  fontSize: "13px",
-  lineHeight: 1.5,
-};
-

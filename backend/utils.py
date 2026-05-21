@@ -172,7 +172,6 @@ def normalize_stage_status(raw_status: object) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
     aliases = {
         "applied": "applied",
-        "added_to_sheet": "applied",
         "rejected": "rejected",
         "employer_rejected": "rejected",
         "waiting": "waiting_call",

@@ -43,13 +43,20 @@ export function scoreDeltaLabel(previousScore, newScore) {
 
 export function dispositionLabel(status) {
   const labels = {
-    added_to_sheet: "Added to sheet",
+    applied: "Applied",
     pending_review: "Queued for review",
     possible_duplicate: "Possible duplicate",
     skipped: "Skipped",
     triage: "Moved to triage",
   };
   return labels[status] || status || "";
+}
+
+export function jobCardTabForStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "pending_review") return "queue";
+  if (normalized === "triage" || normalized === "possible_duplicate") return "triage";
+  return "";
 }
 
 export function statusTone(status) {

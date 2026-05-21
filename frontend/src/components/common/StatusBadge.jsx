@@ -30,7 +30,6 @@ export default function StatusBadge({ status, label, tone }) {
 
 function statusLabel(status) {
   const labels = {
-    added_to_sheet: "Added to Sheet",
     applied: "Applied",
     eval_test: "Eval Test",
     ghosted: "Ghosted",

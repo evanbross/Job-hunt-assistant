@@ -52,7 +52,7 @@ const JOB_STATUS_INFO = {
   pending_review:     { label: "Pending review",    cls: "badge-yellow" },
   triage:             { label: "Triage",             cls: "badge-yellow" },
   possible_duplicate: { label: "Possible duplicate", cls: "badge-gray" },
-  added_to_sheet:     { label: "Applied",            cls: "badge-green" },
+  applied:            { label: "Applied",            cls: "badge-green" },
   skipped:            { label: "Skipped",            cls: "badge-gray" },
 };
 
@@ -89,7 +89,7 @@ function gmailReadIndicator(email) {
   if (emailHasJobStatus(email, ["pending_review", "triage", "possible_duplicate"])) {
     return { label: "Keep unread", cls: "badge-yellow", canMoveToScanned: false };
   }
-  if (emailHasJobStatus(email, ["added_to_sheet", "skipped"])) {
+  if (emailHasJobStatus(email, ["applied", "skipped"])) {
     return { label: "Move To Scanned", cls: "badge-green", canMoveToScanned: true };
   }
   if (email.disposition === "noise") {
@@ -526,7 +526,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
   const counts = emails.reduce(
     (acc, e) => {
       if (emailHasJobStatus(e, ["pending_review", "triage", "possible_duplicate"])) acc.potential++;
-      else if (emailHasJobStatus(e, ["added_to_sheet", "skipped"])) acc.acted++;
+      else if (emailHasJobStatus(e, ["applied", "skipped"])) acc.acted++;
       return acc;
     },
     { potential: 0, acted: 0 }
@@ -615,6 +615,12 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
           <div className="loading-bar">
             <div className="loading-bar-fill" style={{ width: `${scanState.progress}%` }} />
           </div>
+          {scanState.connection_warning && (
+            <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--yellow, #e6a817)", display: "flex", alignItems: "center", gap: "5px" }}>
+              <span>⚠</span>
+              <span>{scanState.connection_warning}</span>
+            </div>
+          )}
         </div>
       )}
       {!rescanAllRunning && scanState && scanState.progress === 100 && (

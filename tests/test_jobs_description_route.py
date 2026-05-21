@@ -85,6 +85,20 @@ class FakePenaltyRepo:
         return []
 
 
+class FakeStagesRepo:
+    def __init__(self) -> None:
+        self.rows: list[dict[str, Any]] = [
+            {"id": 11, "job_id": 7, "status": "applied", "date": "2026-05-14", "notes": None},
+            {"id": 12, "job_id": 7, "status": "waiting_call", "date": "2026-05-15", "notes": "Keep"},
+        ]
+
+    def get_by_job_id(self, job_id: int) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.rows if row["job_id"] == job_id]
+
+    def delete(self, stage_id: int) -> None:
+        self.rows = [row for row in self.rows if row["id"] != stage_id]
+
+
 class FakeFitScorer:
     def score(
         self,
@@ -237,3 +251,32 @@ def test_patch_job_clears_stale_duplicate_when_no_match(monkeypatch) -> None:
     assert data["company"] == "Different Co"
     assert data["status"] == "pending_review"
     assert data["duplicate_hint"] is None
+
+
+def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(monkeypatch) -> None:
+    jobs_repo = FakeJobsRepo()
+    jobs_repo.row.update(
+        {
+            "date_added_to_sheet": "2026-05-14",
+            "status": "applied",
+        }
+    )
+    stages_repo = FakeStagesRepo()
+    repos = {
+        "conn": FakeConnection(),
+        "jobs": jobs_repo,
+        "stages": stages_repo,
+    }
+
+    monkeypatch.setattr("routes.jobs._get_repos", lambda: repos)
+
+    app = Flask(__name__)
+    app.register_blueprint(jobs_bp, url_prefix="/api")
+    client = app.test_client()
+
+    response = client.post("/api/jobs/7/return-to-queue")
+
+    assert response.status_code == 200
+    assert jobs_repo.row["status"] == "pending_review"
+    assert jobs_repo.row["date_added_to_sheet"] is None
+    assert [stage["id"] for stage in stages_repo.rows] == [12]

@@ -18,6 +18,7 @@
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
+// @connect      wellfound.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -213,6 +214,59 @@
         return best;
     }
 
+    // Same as longestText but operates on a DOMParser document (no layout, use textContent).
+    function longestTextFromDoc(doc, selectors) {
+        let best = '';
+        selectors.forEach(sel => {
+            doc.querySelectorAll(sel).forEach(el => {
+                const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+                if (text.length > best.length) best = text;
+            });
+        });
+        return best;
+    }
+
+    function fetchWellfoundDescription(slug) {
+        return new Promise((resolve) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `https://wellfound.com/jobs/${slug}`,
+                headers: { Accept: 'text/html,application/xhtml+xml' },
+                onload(res) {
+                    if (res.status !== 200) { resolve(''); return; }
+                    try {
+                        const doc = new DOMParser().parseFromString(res.responseText, 'text/html');
+
+                        // Prefer __NEXT_DATA__ JSON — more reliable than CSS selectors on minified class names.
+                        const nextDataEl = doc.getElementById('__NEXT_DATA__');
+                        if (nextDataEl) {
+                            try {
+                                const nd = JSON.parse(nextDataEl.textContent || '{}');
+                                const jl = nd?.props?.pageProps?.jobListing || nd?.props?.pageProps?.job || {};
+                                const raw = jl.description || jl.descriptionSnippet || jl.jobDescription || '';
+                                if (raw && raw.length > 100) {
+                                    resolve(raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim());
+                                    return;
+                                }
+                            } catch (_) { /* fall through to DOM selectors */ }
+                        }
+
+                        // Fallback: DOM selectors on the server-rendered HTML.
+                        resolve(longestTextFromDoc(doc, [
+                            '[class*="job-description"]',
+                            '[class*="description"] .prose',
+                            '[class*="jobDescription"]',
+                            '[data-test="JobDescription"]',
+                            'section article',
+                            'main article',
+                        ]));
+                    } catch (_) { resolve(''); }
+                },
+                onerror() { resolve(''); },
+            });
+        });
+    }
+
     function cleanLinkedInTitle(value) {
         return (value || '')
             .replace(/\s*\|\s*LinkedIn\s*$/i, '')
@@ -378,22 +432,175 @@
         return JSON.stringify({ content: document.documentElement.outerHTML, url: window.location.href });
     }
 
+    function buildWellfoundJobPayload() {
+        const title = pick([
+            'h1[class*="title"]',
+            'h1[class*="role"]',
+            '[data-test="JobTitle"]',
+            'h1',
+        ]);
+        const companyEl = document.querySelector(
+            'a[class*="startup-link"], a[class*="company"], [data-test="StartupLink"], ' +
+            '[class*="startup"] h2 a, header a[href*="/company/"], a[href*="/company/"]'
+        );
+        const company = companyEl ? companyEl.innerText.split('\n')[0].trim() : '';
+        const description = longestText([
+            '[class*="job-description"]',
+            '[class*="description"] .prose',
+            '[class*="jobDescription"]',
+            '[data-test="JobDescription"]',
+            'section article',
+            'main article',
+        ]);
+
+        const lines = [];
+        if (title) lines.push(title);
+        if (company) lines.push('Company: ' + company);
+        lines.push('URL: ' + window.location.href);
+        if (description) lines.push('', description);
+        if (!title && !company && !description) lines.push(document.body.innerText.trim().slice(0, 12000));
+
+        return JSON.stringify({
+            jobs: [{ url: window.location.href, job_title: title, company, listing_text: lines.join('\n') }],
+        });
+    }
+
+    async function buildWellfoundSearchPayload() {
+        const seen = new Set();
+        const items = [];
+
+        document.querySelectorAll('a[href*="/jobs/"]').forEach(jobLink => {
+            const m = jobLink.href.match(/wellfound\.com\/jobs\/(\d[^?#]*)/);
+            if (!m) return;
+
+            const slug = m[1].replace(/\/$/, '');
+            const url = 'https://wellfound.com/jobs?job_listing_slug=' + slug;
+            if (seen.has(url)) return;
+
+            const title = jobLink.innerText.split('\n')[0].trim();
+            if (!title) return;
+            seen.add(url);
+
+            // Walk up the DOM to find a nearby company link
+            let company = '';
+            let el = jobLink.parentElement;
+            for (let depth = 0; depth < 6 && el && !company; depth++) {
+                const companyLink = el.querySelector('a[href*="/company/"]');
+                if (companyLink && companyLink !== jobLink) {
+                    company = companyLink.innerText.split('\n')[0].trim();
+                }
+                el = el.parentElement;
+            }
+
+            // Fallback: "Title at Company" text pattern in the anchor
+            if (!company) {
+                const atMatch = title.match(/\bat\s+(.+)$/);
+                if (atMatch) company = atMatch[1].trim();
+            }
+
+            items.push({ slug, url, title, company });
+        });
+
+        // Cap at 20 to keep total fetch time reasonable (~8-10 seconds).
+        const capped = items.slice(0, 20);
+        const total = capped.length;
+
+        for (let i = 0; i < total; i++) {
+            btn.textContent = `Fetching ${i + 1}/${total}…`;
+            capped[i].description = await fetchWellfoundDescription(capped[i].slug);
+            if (i < total - 1) await sleep(400);
+        }
+
+        btn.textContent = 'Feed to App';
+
+        const jobs = capped.map(({ url, title, company, description }) => {
+            const lines = [title];
+            if (company) lines.push('Company: ' + company);
+            lines.push('URL: ' + url);
+            if (description) lines.push('', description);
+            return { url, job_title: title, company, listing_text: lines.join('\n') };
+        });
+
+        return JSON.stringify({ jobs });
+    }
+
+    async function buildGreenhouseSearchPayload() {
+        const seen = new Set();
+        const jobs = [];
+
+        function collectLinks() {
+            document.querySelectorAll(
+                'a[href*="job-boards.greenhouse.io"], a[href*="boards.greenhouse.io"]'
+            ).forEach(a => {
+                const url = a.href.replace(/#.*$/, '');
+                if (!url || seen.has(url)) return;
+                seen.add(url);
+
+                const titleText = (a.innerText || '').split('\n')[0].trim();
+
+                let company = '';
+                let el = a.parentElement;
+                for (let depth = 0; depth < 6 && el && !company; depth++) {
+                    const candidate = el.querySelector('[class*="company"], [class*="employer"]');
+                    if (candidate && candidate !== a) {
+                        const text = (candidate.innerText || '').split('\n')[0].trim();
+                        if (text && text !== titleText) company = text;
+                    }
+                    el = el.parentElement;
+                }
+
+                const lines = [titleText];
+                if (company) lines.push(`Company: ${company}`);
+                lines.push(`URL: ${url}`);
+                jobs.push({ url, job_title: titleText, company, listing_text: lines.join('\n') });
+            });
+        }
+
+        collectLinks();
+        let stallCount = 0;
+        const MAX_STALLS = 3;
+
+        while (stallCount < MAX_STALLS) {
+            const prevCount = jobs.length;
+            btn.textContent = `Loading… (${jobs.length} jobs)`;
+            window.scrollTo(0, document.body.scrollHeight);
+            await sleep(900);
+            collectLinks();
+            stallCount = jobs.length === prevCount ? stallCount + 1 : 0;
+        }
+
+        btn.textContent = 'Feed to App';
+        return JSON.stringify({ jobs, source: { url: window.location.href } });
+    }
+
     btn.onclick = async () => {
         if (suppressNextClick) {
             suppressNextClick = false;
             return;
         }
 
+        const isLinkedIn = window.location.hostname.includes('linkedin.com');
+        const isWellfound = window.location.hostname.includes('wellfound.com');
+        const isGreenhouse = window.location.hostname === 'my.greenhouse.io';
         const isJobView = /\/jobs\/view\/\d+/.test(window.location.pathname);
         const isSearch = /\/jobs\/search/.test(window.location.pathname) ||
                         /\/jobs\/collections/.test(window.location.pathname) ||
                         /\/jobs\/search-results/.test(window.location.pathname);
+        const isWellfoundSingleJob = isWellfound && /^\/jobs\/\d+/.test(window.location.pathname);
+        const isWellfoundJobs = isWellfound && /^\/jobs/.test(window.location.pathname);
+        const isGreenhouseJobs = isGreenhouse && /^\/jobs/.test(window.location.pathname);
 
         let data;
         if (isJobView) {
             data = await buildLinkedInJobPayload();
-        } else if (isSearch && window.location.hostname.includes('linkedin.com')) {
+        } else if (isSearch && isLinkedIn) {
             data = buildLinkedInSearchPayload();
+        } else if (isWellfoundSingleJob) {
+            data = buildWellfoundJobPayload();
+        } else if (isWellfoundJobs) {
+            data = await buildWellfoundSearchPayload();
+        } else if (isGreenhouseJobs) {
+            data = await buildGreenhouseSearchPayload();
         } else {
             data = buildHtmlPayload();
         }

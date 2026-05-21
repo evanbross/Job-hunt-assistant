@@ -239,6 +239,7 @@ export default function HistoryPanel() {
           placeholder="Search company, title, source… (wildcards * ? supported)"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          onFocus={(e) => e.target.select()}
           style={{
             width: "100%",
             padding: "8px 12px",

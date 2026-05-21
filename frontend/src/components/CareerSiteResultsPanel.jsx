@@ -35,9 +35,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 import Modal from "./common/Modal.jsx";
-import MetricGrid, { MetricItem } from "./common/MetricGrid.jsx";
 import StatusBadge from "./common/StatusBadge.jsx";
 import { scoreTone } from "../utils/fitScoringUtils.js";
+import { statusTone } from "../utils/jobQueueUtils.js";
+import { collectionModeLabel, isManualCollectionSite } from "../utils/careerSiteUtils.js";
+import { CareerScanErrorList, CareerScanProgressPopup, CareerScanSummaryPopup } from "./common/CareerScanModals.jsx";
 
 function getMatchLevel(score) {
   if (score >= 85) return { key: "ideal", label: "Ideal Match" };
@@ -52,7 +54,7 @@ export default function CareerSiteResultsPanel() {
   const [sites, setSites] = useState([]);
   const [rejectionRules, setRejectionRules] = useState([]);
   const [showSiteForm, setShowSiteForm] = useState(false);
-  const [siteForm, setSiteForm] = useState({ name: "", url: "", enabled: true, recapture_interval_days: "4" });
+  const [siteForm, setSiteForm] = useState({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
   const [editingSiteId, setEditingSiteId] = useState(null);
   const [showRuleForm, setShowRuleForm] = useState(false);
   const [ruleForm, setRuleForm] = useState({ rule_text: "", enabled: true });
@@ -217,7 +219,7 @@ export default function CareerSiteResultsPanel() {
 
   const startCreateSite = () => {
     setEditingSiteId(null);
-    setSiteForm({ name: "", url: "", enabled: true, recapture_interval_days: "4" });
+    setSiteForm({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
     setShowSiteForm(true);
   };
 
@@ -227,6 +229,7 @@ export default function CareerSiteResultsPanel() {
       name: site.name || "",
       url: site.url || "",
       enabled: !!site.enabled,
+      collection_mode: site.collection_mode || "automatic",
       recapture_interval_days: String(site.recapture_interval_days || 4),
     });
     setShowSiteForm(true);
@@ -248,6 +251,7 @@ export default function CareerSiteResultsPanel() {
         name: siteForm.name.trim(),
         url: siteForm.url.trim(),
         enabled: !!siteForm.enabled,
+        collection_mode: siteForm.collection_mode || "automatic",
         recapture_interval_days: intervalDays,
       }),
     });
@@ -258,7 +262,7 @@ export default function CareerSiteResultsPanel() {
     }
     setShowSiteForm(false);
     setEditingSiteId(null);
-    setSiteForm({ name: "", url: "", enabled: true, recapture_interval_days: "4" });
+    setSiteForm({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
     await fetchSites();
   };
 
@@ -440,6 +444,13 @@ export default function CareerSiteResultsPanel() {
                 onChange={(e) => setSiteForm((prev) => ({ ...prev, recapture_interval_days: e.target.value }))}
                 placeholder="Reminder interval days"
               />
+              <select
+                value={siteForm.collection_mode}
+                onChange={(e) => setSiteForm((prev) => ({ ...prev, collection_mode: e.target.value }))}
+              >
+                <option value="automatic">App can scan automatically</option>
+                <option value="manual">I collect manually</option>
+              </select>
             </div>
             <label style={{ display: "flex", gap: "6px", alignItems: "center", fontSize: "12px", color: "var(--text-muted)" }}>
               <input
@@ -474,7 +485,7 @@ export default function CareerSiteResultsPanel() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
-                  {["Name", "URL", "Platform", "Last Capture", "Reminder", "Enabled", "Actions"].map((h) => (
+                  {["Name", "URL", "Platform", "Collection", "Last Capture", "Reminder", "Enabled", "Actions"].map((h) => (
                     <th key={h} style={thStyle}>{h}</th>
                   ))}
                 </tr>
@@ -487,6 +498,11 @@ export default function CareerSiteResultsPanel() {
                       <div style={{ overflowX: "auto", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: "11px" }}>{site.url || "—"}</div>
                     </td>
                     <td style={tdStyle}>{site.detected_platform || "—"}</td>
+                    <td style={tdStyle}>
+                      <span className={`badge ${isManualCollectionSite(site) ? "badge-yellow" : "badge-green"}`}>
+                        {collectionModeLabel(site.collection_mode)}
+                      </span>
+                    </td>
                     <td style={tdStyle}>{site.last_captured_at?.slice(0, 10) || "—"}</td>
                     <td style={tdStyle}>{site.recapture_interval_days || 4} days</td>
                     <td style={tdStyle}>
@@ -496,14 +512,24 @@ export default function CareerSiteResultsPanel() {
                     </td>
                     <td style={tdStyle}>
                       <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                        <button
-                          className="btn-primary"
-                          style={{ padding: "2px 9px", fontSize: "11px" }}
-                          onClick={() => runScanForSite(site.id)}
-                          disabled={running || reEvaluating}
-                        >
-                          Rescan
-                        </button>
+                        {isManualCollectionSite(site) ? (
+                          <button
+                            className="btn-primary"
+                            style={{ padding: "2px 9px", fontSize: "11px" }}
+                            onClick={() => window.open(site.url, "_blank", "noopener,noreferrer")}
+                          >
+                            Open
+                          </button>
+                        ) : (
+                          <button
+                            className="btn-primary"
+                            style={{ padding: "2px 9px", fontSize: "11px" }}
+                            onClick={() => runScanForSite(site.id)}
+                            disabled={running || reEvaluating}
+                          >
+                            Rescan
+                          </button>
+                        )}
                         <button className="btn-secondary" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => startEditSite(site)}>Edit</button>
                         <button className="btn-secondary" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => setBookmarkletSite(site)}>Capture JS</button>
                         <button className="btn-danger" style={{ padding: "2px 9px", fontSize: "11px" }} onClick={() => deleteSite(site.id)}>Delete</button>
@@ -861,71 +887,6 @@ function isRejectedCareerRow(row) {
   );
 }
 
-function CareerScanProgressPopup({ title, status }) {
-  const progress = Math.max(0, Math.min(100, Number(status?.progress) || 0));
-  return (
-    <Modal
-      title={title}
-      subtitle={status?.message || "Working..."}
-      maxWidth="520px"
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
-        <span>Progress</span>
-        <span>{progress}%</span>
-      </div>
-      <div className="loading-bar">
-        <div className="loading-bar-fill" style={{ width: `${progress}%` }} />
-      </div>
-      <p style={{ margin: "10px 0 0", fontSize: "12px", color: "var(--text-muted)" }}>
-        Sites scanned: {status?.sites_scanned ?? 0} · Found: {status?.jobs_found ?? 0} · New: {status?.jobs_added ?? 0}
-      </p>
-      {status?.errors?.length > 0 && (
-        <CareerScanErrorList errors={status.errors} />
-      )}
-    </Modal>
-  );
-}
-
-function CareerScanSummaryPopup({ summary, onClose }) {
-  const errors = Array.isArray(summary?.errors) ? summary.errors : [];
-  const hasErrors = errors.length > 0;
-  return (
-    <Modal
-      title={hasErrors ? "Career-site scan completed with errors" : "Career-site scan complete"}
-      subtitle={summary?.message || "Finished."}
-      onClose={onClose}
-      maxWidth="620px"
-      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
-    >
-      <MetricGrid>
-        <MetricItem label="sites scanned" value={summary?.sites_scanned ?? 0} />
-        <MetricItem label="jobs found" value={summary?.jobs_found ?? 0} tone={(summary?.jobs_found ?? 0) > 0 ? "green" : "muted"} />
-        <MetricItem label="new jobs" value={summary?.jobs_added ?? 0} tone={(summary?.jobs_added ?? 0) > 0 ? "green" : "muted"} />
-        {hasErrors && <MetricItem label="errors" value={errors.length} tone="red" />}
-      </MetricGrid>
-
-      {hasErrors && (
-        <div style={{ marginTop: "14px", borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
-          <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
-            Error details
-          </div>
-          <CareerScanErrorList errors={errors} />
-        </div>
-      )}
-    </Modal>
-  );
-}
-
-function CareerScanErrorList({ errors }) {
-  if (!errors?.length) return null;
-  return (
-    <ul style={{ margin: 0, paddingLeft: "16px", maxHeight: "220px", overflowY: "auto", fontSize: "12px", color: "var(--red)", lineHeight: 1.45 }}>
-      {errors.map((error, index) => (
-        <li key={`${error}-${index}`} style={{ marginBottom: "4px" }}>{error}</li>
-      ))}
-    </ul>
-  );
-}
 
 function BookmarkletModal({ site, onClose }) {
   const [copied, setCopied] = useState(false);

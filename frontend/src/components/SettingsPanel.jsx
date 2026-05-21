@@ -33,6 +33,7 @@
  */
 
 import React, { useEffect, useState } from "react";
+import { collectionModeLabel } from "../utils/careerSiteUtils.js";
 import ResumeUpload from "./ResumeUpload.jsx";
 
 export default function SettingsPanel() {
@@ -663,7 +664,7 @@ function sourceSortValue(source, key) {
 function CareerSitesSection() {
   const [sites, setSites] = useState([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", url: "", enabled: true, recapture_interval_days: "4" });
+  const [form, setForm] = useState({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
   const [editId, setEditId] = useState(null);
 
   useEffect(() => { fetchSites(); }, []);
@@ -697,12 +698,18 @@ function CareerSitesSection() {
     await fetchSites();
   };
 
+  const openSite = (site) => {
+    if (!site?.url) return;
+    window.open(site.url, "_blank", "noopener,noreferrer");
+  };
+
   const startEdit = (site) => {
     setEditId(site.id);
     setForm({
       name: site.name,
       url: site.url,
       enabled: !!site.enabled,
+      collection_mode: site.collection_mode || "automatic",
       recapture_interval_days: String(site.recapture_interval_days || 4),
     });
     setShowForm(true);
@@ -739,13 +746,13 @@ function CareerSitesSection() {
     }
     setShowForm(false);
     setEditId(null);
-    setForm({ name: "", url: "", enabled: true, recapture_interval_days: "4" });
+    setForm({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
     fetchSites();
   };
 
   return (
     <div>
-      <SectionHeader title="Career Site URLs" action={{ label: "Add Site", onClick: () => { setEditId(null); setForm({ name: "", url: "", enabled: true, recapture_interval_days: "4" }); setShowForm(true); } }} />
+      <SectionHeader title="Career Site URLs" action={{ label: "Add Site", onClick: () => { setEditId(null); setForm({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" }); setShowForm(true); } }} />
       <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
         Add each company job/careers page URL here. The background scanner checks these while the app is running.
       </p>
@@ -762,6 +769,12 @@ function CareerSitesSection() {
             <label style={labelStyle}>Reminder Interval Days
               <input type="number" min="1" value={form.recapture_interval_days} onChange={(e) => setForm({ ...form, recapture_interval_days: e.target.value })} placeholder="4" />
             </label>
+            <label style={labelStyle}>Collection
+              <select value={form.collection_mode} onChange={(e) => setForm({ ...form, collection_mode: e.target.value })}>
+                <option value="automatic">App can scan automatically</option>
+                <option value="manual">I collect manually</option>
+              </select>
+            </label>
           </div>
           <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
             <button className="btn-primary" onClick={submitForm}>{editId ? "Save" : "Add"}</button>
@@ -772,7 +785,7 @@ function CareerSitesSection() {
 
       <table style={tableStyle}>
         <thead>
-          <tr>{["Name", "URL", "Last Capture", "Reminder", "Enabled", "Actions"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+          <tr>{["Name", "URL", "Collection", "Last Capture", "Reminder", "Enabled", "Actions"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
         </thead>
         <tbody>
           {sites.map((s) => (
@@ -781,11 +794,13 @@ function CareerSitesSection() {
               <td style={{ ...tdStyle, maxWidth: "320px" }}>
                 <div style={{ overflowX: "auto", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: "12px" }}>{s.url}</div>
               </td>
+              <td style={tdStyle}>{collectionModeLabel(s.collection_mode)}</td>
               <td style={tdStyle}>{s.last_captured_at?.slice(0, 10) || "—"}</td>
               <td style={tdStyle}>{s.recapture_interval_days || 4} days</td>
               <td style={tdStyle}><Toggle checked={!!s.enabled} onChange={() => toggleEnabled(s)} /></td>
               <td style={tdStyle}>
                 <div style={{ display: "flex", gap: "6px" }}>
+                  <button className="btn-secondary" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={() => openSite(s)}>Open</button>
                   <button className="btn-secondary" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={() => startEdit(s)}>Edit</button>
                   <button className="btn-danger" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={() => deleteSite(s.id)}>Delete</button>
                 </div>
