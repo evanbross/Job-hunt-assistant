@@ -112,7 +112,7 @@ class GmailClient:
                     "Token invalid and cannot be refreshed. Re-authenticate via /api/auth/google."
                 )
 
-        return build("gmail", "v1", credentials=creds)
+        return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
     # ── Message fetching ──────────────────────────────────────────────────────
 

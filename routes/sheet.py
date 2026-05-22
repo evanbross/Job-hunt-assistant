@@ -120,7 +120,13 @@ def add_application_sheet_row():
     }
     repos = _get_repos()
     try:
-        repos["jobs"].insert(job_data)
+        new_job_id = repos["jobs"].insert(job_data)
+        repos["stages"].insert({
+            "job_id": new_job_id,
+            "status": "applied",
+            "date": job_data["date_added_to_sheet"],
+            "notes": None,
+        })
         repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error inserting tracking row: %s", exc)

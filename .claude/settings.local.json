@@ -97,7 +97,9 @@
       "Bash(Select-Object Name, PSIsContainer)",
       "Bash(tasklist)",
       "Bash(npx vite *)",
-      "Bash(findstr /i \"career\")"
+      "Bash(findstr /i \"career\")",
+      "Bash(Select-Object -Property Name, PSIsContainer)",
+      "Bash(not exist *)"
     ]
   }
 }

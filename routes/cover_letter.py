@@ -47,6 +47,7 @@ from flask import Blueprint, jsonify, request
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.cover_letter_generator import CoverLetterGenerator
+from backend.resume_tailor import ResumeTailoringGenerator
 from backend.utils import (
     _ai_error_http_status,
     _get_repos,
@@ -126,6 +127,8 @@ def save_cover_letter():
         extension = "pdf"
     elif file_format in ("text", "txt"):
         extension = "txt"
+    elif file_format in ("markdown", "md"):
+        extension = "md"
         
     filename = f"{filename_stem} {safe_label}.{extension}"
     path = folder / filename
@@ -379,3 +382,97 @@ def cover_letter_chat(job_id: int):
         ).strip()
 
     return jsonify({"reply": reply_text, "updated_cover_letter": updated_cover_letter})
+
+
+@cover_letter_bp.route("/jobs/<int:job_id>/resume-tailor", methods=["POST"])
+def generate_resume_tailor(job_id: int):
+    repos = _get_repos()
+    job = repos["jobs"].get_by_id(job_id)
+    if not job:
+        repos["conn"].close()
+        return jsonify({"error": "Job not found"}), 404
+
+    resume_row = repos["resume"].get_latest()
+    resume_text = resume_row["content"] if resume_row else None
+    repos["conn"].close()
+
+    try:
+        generator = ResumeTailoringGenerator()
+        analysis = generator.generate(job, resume_text=resume_text)
+    except Exception as exc:
+        logger.error("Resume tailoring failed for job %d: %s", job_id, exc, exc_info=True)
+        return jsonify({"error": _safe_error_message(exc, "Resume tailoring failed")}), _ai_error_http_status(exc)
+
+    return jsonify({"analysis": analysis})
+
+
+@cover_letter_bp.route("/jobs/<int:job_id>/resume-tailor/chat", methods=["POST"])
+def resume_tailor_chat(job_id: int):
+    repos = _get_repos()
+    job = repos["jobs"].get_by_id(job_id)
+    repos["conn"].close()
+
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    messages: list[dict] = body.get("messages", [])
+    current_analysis = (body.get("analysis") or "").strip()
+
+    if not messages:
+        return jsonify({"error": "No messages provided"}), 400
+
+    company = job.get("company") or "the company"
+    job_title = job.get("job_title") or "the position"
+
+    system_prompt = (
+        f"You are helping a job applicant refine a resume tailoring analysis for the role of "
+        f"{job_title} at {company}.\n\n"
+        f"CURRENT ANALYSIS:\n{current_analysis}\n\n"
+        "The analysis has three sections: Keyword & Skill Gaps, Suggested Bullet Rewrites, "
+        "and Strengths to Lead With. Help the applicant adjust the suggestions — for example, "
+        "removing suggestions that don't apply, correcting bullet rewrites that overstated "
+        "experience, or refining language that sounds too corporate.\n\n"
+        "Critical rule: bullet rewrites must only reword existing experience, never add "
+        "accomplishments or skills the candidate did not have.\n\n"
+        "If you are providing a substantially revised version of the full analysis, wrap ONLY "
+        "the updated markdown (no preamble, no commentary outside the markdown) inside "
+        "<UPDATED_RESUME_TAILORING> and </UPDATED_RESUME_TAILORING> tags so the applicant "
+        "can apply it with one click. If you are only commenting or suggesting small tweaks, "
+        "do not include those tags."
+    )
+
+    try:
+        reply_text = AIProviderClient().complete(
+            system=system_prompt,
+            messages=[
+                AIMessage(
+                    role=str(message.get("role") or ""),
+                    content=str(message.get("content") or ""),
+                )
+                for message in messages
+                if isinstance(message, dict)
+                and message.get("role") in {"user", "assistant"}
+                and isinstance(message.get("content"), str)
+                and str(message.get("content") or "").strip()
+            ],
+            max_tokens=1400,
+        )
+    except Exception as exc:
+        logger.error("Resume tailor chat failed for job %d: %s", job_id, exc, exc_info=True)
+        return jsonify({"error": _safe_error_message(exc, "Resume tailor chat failed")}), _ai_error_http_status(exc)
+
+    updated_analysis: str | None = None
+    tag_match = re.search(
+        r"<UPDATED_RESUME_TAILORING>(.*?)</UPDATED_RESUME_TAILORING>", reply_text, re.DOTALL
+    )
+    if tag_match:
+        updated_analysis = tag_match.group(1).strip()
+        reply_text = re.sub(
+            r"\s*<UPDATED_RESUME_TAILORING>.*?</UPDATED_RESUME_TAILORING>\s*",
+            "\n\n[Updated analysis ready — click **Use this version** above to apply it.]\n\n",
+            reply_text,
+            flags=re.DOTALL,
+        ).strip()
+
+    return jsonify({"reply": reply_text, "updated_analysis": updated_analysis})

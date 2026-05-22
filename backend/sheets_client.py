@@ -119,7 +119,7 @@ class SheetsClient:
                     "Token invalid and cannot be refreshed. Re-authenticate via /api/auth/google."
                 )
 
-        return build("sheets", "v4", credentials=creds)
+        return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
     def append_job(
         self,

@@ -66,7 +66,7 @@ export default function JobCard({
   const [descriptionSaving, setDescriptionSaving] = useState(false);
   const [descriptionError, setDescriptionError] = useState("");
   const [descriptionSaved, setDescriptionSaved] = useState(false);
-  const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | "pitch" | null
+  const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | "pitch" | "tailor" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
   const [pitchText, setPitchText] = useState(null);
   const [pitchType, setPitchType] = useState(null); // "why_company" | "why_fit"
@@ -125,6 +125,17 @@ export default function JobCard({
   const [pendingReclassification, setPendingReclassification] = useState(null);
   const fitChatMessagesRef = useRef(null);
 
+  // Resume tailor state
+  const [resumeTailor, setResumeTailor] = useState(null);
+  const [resumeTailorOpen, setResumeTailorOpen] = useState(false);
+  const [tailorPhaseIdx, setTailorPhaseIdx] = useState(0);
+  const [resumeTailorCopied, setResumeTailorCopied] = useState(false);
+  const [resumeTailorChatMessages, setResumeTailorChatMessages] = useState([]);
+  const [resumeTailorChatInput, setResumeTailorChatInput] = useState("");
+  const [resumeTailorChatSending, setResumeTailorChatSending] = useState(false);
+  const [resumeTailorPendingUpdate, setResumeTailorPendingUpdate] = useState(null);
+  const resumeTailorChatMessagesRef = useRef(null);
+
   useEffect(() => {
     if (chatOpen && chatMessagesRef.current) {
       chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
@@ -142,6 +153,12 @@ export default function JobCard({
       fitChatMessagesRef.current.scrollTop = fitChatMessagesRef.current.scrollHeight;
     }
   }, [fitChatMessages, fitChatOpen]);
+
+  useEffect(() => {
+    if (resumeTailorOpen && resumeTailorChatMessagesRef.current) {
+      resumeTailorChatMessagesRef.current.scrollTop = resumeTailorChatMessagesRef.current.scrollHeight;
+    }
+  }, [resumeTailorChatMessages, resumeTailorOpen]);
 
   const score = job.fit_score;
   const salaryRange = salaryRangeForJob(job);
@@ -230,7 +247,7 @@ export default function JobCard({
     event.preventDefault();
     setContextMenu({
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - 240)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 260)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 300)),
     });
     setShowSkipMenu(false);
     setShowSaveAsMenu(false);
@@ -592,6 +609,82 @@ export default function JobCard({
     setSaveStatus(null);
   };
 
+  const handleResumeTailor = async () => {
+    if (resumeTailor) {
+      setResumeTailorOpen(true);
+      return;
+    }
+    setLoading("tailor");
+    setTailorPhaseIdx(0);
+    setSaveStatus(null);
+    setShowSaveAsMenu(false);
+
+    // Advance through phases while the AI call is in flight.
+    // Timers are cleared in finally so they never fire after completion.
+    const t1 = setTimeout(() => setTailorPhaseIdx(1), 3000);
+    const t2 = setTimeout(() => setTailorPhaseIdx(2), 7000);
+    const t3 = setTimeout(() => setTailorPhaseIdx(3), 12000);
+
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/resume-tailor`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Generation failed");
+      setResumeTailor(data.analysis);
+      setResumeTailorOpen(true);
+    } catch (e) {
+      alert("Resume tailoring failed: " + e.message);
+    } finally {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      setLoading(null);
+    }
+  };
+
+  const handleResumeTailorCopy = () => {
+    navigator.clipboard.writeText(resumeTailor || "");
+    setResumeTailorCopied(true);
+    setTimeout(() => setResumeTailorCopied(false), 2000);
+  };
+
+  const handleResumeTailorChatSend = async () => {
+    const text = resumeTailorChatInput.trim();
+    if (!text || resumeTailorChatSending) return;
+
+    const newMessages = [...resumeTailorChatMessages, { role: "user", content: text }];
+    setResumeTailorChatMessages(newMessages);
+    setResumeTailorChatInput("");
+    setResumeTailorChatSending(true);
+
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/resume-tailor/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: newMessages, analysis: resumeTailor }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Chat failed");
+
+      setResumeTailorChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+      if (data.updated_analysis) {
+        setResumeTailorPendingUpdate(data.updated_analysis);
+      }
+    } catch (e) {
+      setResumeTailorChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Error: ${e.message}` },
+      ]);
+    } finally {
+      setResumeTailorChatSending(false);
+    }
+  };
+
+  const applyResumeTailorPendingUpdate = () => {
+    setResumeTailor(resumeTailorPendingUpdate);
+    setResumeTailorPendingUpdate(null);
+    setSaveStatus(null);
+  };
+
   const saveTitleEdit = async () => {
     setEditingTitle(false);
     const value = titleDraft.trim();
@@ -747,6 +840,14 @@ export default function JobCard({
             disabled={busy}
           >
             {coverLetter ? "Show Cover Letter" : "Cover Letter"}
+          </button>
+          <button
+            type="button"
+            style={contextMenuItemStyle}
+            onClick={() => runContextAction(handleResumeTailor)}
+            disabled={busy}
+          >
+            {resumeTailor ? "Show Resume Tailoring" : "Tailor Resume"}
           </button>
           <button
             type="button"
@@ -1016,48 +1117,48 @@ export default function JobCard({
         </div>
       )}
 
-      {/* Action row */}
+      {/* Action row — utility buttons left, decision buttons right */}
       <div style={{ marginTop: "12px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
         {!job.url && !editingUrl && (
           <button
             type="button"
-            className="btn-secondary"
+            className="btn-secondary btn-sm"
             onClick={startUrlEdit}
-            style={{ fontSize: "13px" }}
           >
             Add Job URL
           </button>
         )}
         <button
-          className="btn-secondary"
+          className="btn-secondary btn-sm"
           onClick={() => {
             setFitChatOpen((open) => !open);
             setFitChatMessages([]);
             setPendingReclassification(null);
           }}
           disabled={busy}
-          style={{ fontSize: "13px" }}
         >
           {fitChatOpen ? "Close Fit Chat" : "Review Fit with AI"}
         </button>
         <button
-          className="btn-secondary"
+          className="btn-secondary btn-sm"
           onClick={handleReEvaluate}
           disabled={busy}
-          style={{ fontSize: "13px" }}
         >
           {loading === "reevaluate" ? "Re-evaluating..." : "Re-evaluate Fit"}
         </button>
+
+        <div style={{ flex: 1 }} />
+
         <button
           className="btn-success"
           onClick={handleApprove}
           disabled={busy}
         >
-          {loading === "approve" ? "Applying…" : "Applied"}
+          {loading === "approve" ? "Applying…" : "Mark Applied"}
         </button>
 
         <button
-          className="btn-secondary"
+          className="btn-secondary btn-sm"
           onClick={async () => {
             setLoading("skip:duplicate");
             try {
@@ -1067,7 +1168,6 @@ export default function JobCard({
             }
           }}
           disabled={busy}
-          style={{ fontSize: "13px" }}
         >
           {loading === "skip:duplicate" ? "Removing…" : "Duplicate"}
         </button>
@@ -1081,7 +1181,7 @@ export default function JobCard({
             style={{ display: "flex", alignItems: "center", gap: "5px" }}
           >
             {loading?.startsWith("skip:") ? "Skipping…" : "Skip"}
-            {!busy && <span style={{ fontSize: "10px", opacity: 0.7 }}>▾</span>}
+            {!busy && <span style={{ fontSize: "10px", opacity: 0.7, borderLeft: "1px solid rgba(204,47,47,0.35)", paddingLeft: "6px", marginLeft: "2px" }}>▾</span>}
           </button>
 
           {showSkipMenu && (
@@ -1469,6 +1569,176 @@ export default function JobCard({
                 Enter to send · Shift+Enter for new line
               </p>
             </div>
+        </div>
+        </Modal>
+      )}
+
+      {/* Resume tailor progress dialog */}
+      {loading === "tailor" && (
+        <TailorProgressModal job={job} phaseIdx={tailorPhaseIdx} />
+      )}
+
+      {/* Resume tailor panel */}
+      {resumeTailorOpen && resumeTailor && (
+        <Modal
+          title="Resume Tailoring"
+          subtitle={`${job.job_title || "Untitled role"}${job.company ? ` at ${job.company}` : ""}`}
+          onClose={() => setResumeTailorOpen(false)}
+          maxWidth="900px"
+        >
+        <div style={writingDialogBodyStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+            <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              Analysis
+            </span>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button
+                className="btn-secondary"
+                onClick={handleResumeTailorCopy}
+                style={{ fontSize: "11px", padding: "3px 10px" }}
+              >
+                {resumeTailorCopied ? "Copied!" : "Copy"}
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => handleSave(resumeTailor, "Resume Tailoring", "md")}
+                disabled={saveStatus === "saving"}
+                style={{ fontSize: "11px", padding: "3px 10px" }}
+              >
+                {saveStatus === "saving" ? "Saving…" : "Save .md"}
+              </button>
+            </div>
+          </div>
+
+          {resumeTailorPendingUpdate && (
+            <div style={{ marginBottom: "10px", padding: "8px 12px", background: "rgba(76,175,129,0.1)", border: "1px solid rgba(76,175,129,0.3)", borderRadius: "var(--radius)", display: "flex", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "12px", color: "var(--green)", flex: 1 }}>
+                AI suggested an updated analysis.
+              </span>
+              <button className="btn-success" onClick={applyResumeTailorPendingUpdate} style={{ fontSize: "11px", padding: "3px 10px", whiteSpace: "nowrap" }}>
+                Use updated version
+              </button>
+              <button className="btn-secondary" onClick={() => setResumeTailorPendingUpdate(null)} style={{ fontSize: "11px", padding: "3px 10px" }}>
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {saveStatus && saveStatus !== "saving" && saveStatus !== "error" && saveStatus.label === "Resume Tailoring" && (
+            <div style={saveStatusBoxStyle}>
+              <div style={{ fontSize: "12px", color: "var(--green)", fontWeight: "600", marginBottom: "4px" }}>
+                Saved as Markdown
+              </div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px", wordBreak: "break-all" }}>
+                {saveStatus.path}
+              </div>
+              <button
+                onClick={() => {
+                  setFolderEditOpen((o) => !o);
+                  setFolderInput(saveStatus.folder);
+                }}
+                style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: "12px", padding: 0, textDecoration: "underline", fontWeight: "500" }}
+              >
+                {folderEditOpen ? "Cancel folder edit" : "Change save folder"}
+              </button>
+            </div>
+          )}
+
+          {folderEditOpen && saveStatus?.label === "Resume Tailoring" && (
+            <div style={{ marginBottom: "10px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="text"
+                value={folderInput}
+                onChange={(e) => setFolderInput(e.target.value)}
+                placeholder="Choose a folder for saved analyses"
+                style={{ flex: 1, minWidth: "280px", fontSize: "12px", padding: "8px 10px", borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontFamily: "monospace" }}
+                onKeyDown={(e) => { if (e.key === "Enter") handleSave(resumeTailor, "Resume Tailoring", "md", folderInput); }}
+              />
+              <button className="btn-secondary" onClick={handleBrowseFolder} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
+                Browse…
+              </button>
+              <button className="btn-secondary" onClick={() => handleSave(resumeTailor, "Resume Tailoring", "md", folderInput)} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
+                Save here
+              </button>
+            </div>
+          )}
+
+          <p style={{ fontSize: "13px", lineHeight: "1.7", color: "var(--text)", whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit" }}>
+            {resumeTailor}
+          </p>
+
+          <div style={{ marginTop: "16px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
+            <p style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "10px" }}>
+              Chat with AI — ask for corrections, adjustments, or removals
+            </p>
+
+            {resumeTailorChatMessages.length > 0 && (
+              <div ref={resumeTailorChatMessagesRef} style={{ maxHeight: "300px", overflowY: "auto", marginBottom: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                {resumeTailorChatMessages.map((msg, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
+                      maxWidth: "85%",
+                      background: msg.role === "user" ? "var(--accent)" : "var(--surface)",
+                      color: msg.role === "user" ? "#fff" : "var(--text)",
+                      border: msg.role === "user" ? "none" : "1px solid var(--border)",
+                      borderRadius: "var(--radius)",
+                      padding: "8px 12px",
+                      fontSize: "13px",
+                      lineHeight: "1.5",
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
+                    {msg.content}
+                  </div>
+                ))}
+                {resumeTailorChatSending && (
+                  <div style={{ alignSelf: "flex-start", color: "var(--text-muted)", fontSize: "12px", padding: "4px 8px" }}>
+                    Thinking…
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "6px" }}>
+              <textarea
+                value={resumeTailorChatInput}
+                onChange={(e) => setResumeTailorChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleResumeTailorChatSend();
+                  }
+                }}
+                placeholder='e.g. "The Kubernetes suggestion doesn&apos;t apply — I have no K8s experience" or "The bullet rewrites sound too corporate"'
+                rows={2}
+                disabled={resumeTailorChatSending}
+                style={{
+                  flex: 1,
+                  fontSize: "13px",
+                  padding: "7px 10px",
+                  borderRadius: "var(--radius)",
+                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  color: "var(--text)",
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+              />
+              <button
+                className="btn-primary"
+                onClick={handleResumeTailorChatSend}
+                disabled={resumeTailorChatSending || !resumeTailorChatInput.trim()}
+                style={{ fontSize: "13px", padding: "7px 14px", alignSelf: "flex-end" }}
+              >
+                Send
+              </button>
+            </div>
+            <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "5px" }}>
+              Enter to send · Shift+Enter for new line
+            </p>
+          </div>
         </div>
         </Modal>
       )}
@@ -2169,3 +2439,74 @@ const skipMenuItemStyle = {
   borderRadius: "4px",
   width: "100%",
 };
+
+// ── Resume tailoring progress dialog ──────────────────────────────────────────
+
+const TAILOR_PHASES = [
+  { key: "jd",         label: "Analyzing job description" },
+  { key: "resume",     label: "Reviewing your resume" },
+  { key: "crosscheck", label: "Cross-checking requirements" },
+  { key: "generate",   label: "Generating suggestions" },
+];
+
+function TailorProgressModal({ job, phaseIdx }) {
+  const subtitle = [job.job_title, job.company].filter(Boolean).join(" at ");
+  return (
+    <Modal
+      title="Tailoring Your Resume"
+      subtitle={subtitle || undefined}
+      onClose={() => {}}
+      showCloseButton={false}
+      maxWidth="400px"
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+        {TAILOR_PHASES.map((phase, idx) => {
+          const isDone = idx < phaseIdx;
+          const isActive = idx === phaseIdx;
+          return (
+            <div
+              key={phase.key}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+                padding: "10px 14px",
+                background: isActive
+                  ? "var(--accent-light)"
+                  : isDone
+                  ? "var(--green-light)"
+                  : "var(--surface2)",
+                border: `1px solid ${
+                  isActive
+                    ? "rgba(74,92,247,0.2)"
+                    : isDone
+                    ? "rgba(14,158,110,0.2)"
+                    : "var(--border)"
+                }`,
+                borderRadius: "var(--radius)",
+                transition: "background 0.4s, border-color 0.4s",
+              }}
+            >
+              <span style={{ width: "18px", height: "18px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {isDone ? (
+                  <span style={{ color: "var(--green)", fontSize: "14px", fontWeight: 700, lineHeight: 1 }}>✓</span>
+                ) : isActive ? (
+                  <span className="inline-spinner" style={{ color: "var(--accent)", width: "14px", height: "14px", border: "2px solid currentColor", borderRightColor: "transparent" }} />
+                ) : (
+                  <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--border)", display: "inline-block" }} />
+                )}
+              </span>
+              <span style={{
+                fontSize: "13px",
+                fontWeight: isActive ? 600 : 400,
+                color: isActive ? "var(--accent)" : isDone ? "var(--green)" : "var(--text-muted)",
+              }}>
+                {phase.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </Modal>
+  );
+}

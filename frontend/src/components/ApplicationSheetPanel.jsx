@@ -875,7 +875,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                     <span style={oneLineStyle}>{entry.label}</span>
                     <span style={sortIndicatorStyle}>
                       {sortConfig?.key === entry.key
-                        ? (sortConfig.direction === "asc" ? "^" : "v")
+                        ? (sortConfig.direction === "asc" ? "▲" : "▼")
                       : ""}
                     </span>
                   </button>
@@ -905,7 +905,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
               return (
                 <React.Fragment key={row.row_number}>
                   <tr style={{ ...bodyRowStyle, background: rowShade }} onClick={() => toggleRow(row.row_number)}>
-                    <td style={{ ...rowNumberCellStyle, background: rowShade }}>{isOpen ? "v" : ">"}</td>
+                    <td style={{ ...rowNumberCellStyle, background: rowShade }}>{isOpen ? "▼" : "▶"}</td>
                     {parentColumns.map((entry) => {
                       const cell = getCell(row, entry.column);
                       return (

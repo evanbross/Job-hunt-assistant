@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import date
@@ -45,6 +46,7 @@ from flask import Blueprint, jsonify
 from googleapiclient.errors import HttpError
 
 import config
+from backend.career_site_scanner import CareerSiteScanner
 from backend.db import open_repositories
 from backend.duplicate_checker import DuplicateChecker
 from backend.ai_provider import AIProviderClient
@@ -60,6 +62,14 @@ from backend.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Matches job-boards.greenhouse.io and boards.greenhouse.io single-job URLs.
+# Used to detect emails where we can enrich the stored snippet with the full
+# JD fetched from the Greenhouse public API instead of storing the raw snippet.
+_GH_SINGLE_JOB_URL_RE = re.compile(
+    r"https?://[^/]*greenhouse\.io/[^/?#]+/jobs/\d+",
+    re.IGNORECASE,
+)
 
 scan_bp = Blueprint("scan", __name__)
 
@@ -412,7 +422,6 @@ def _run_scan(rescan_all: bool = False) -> None:
                 _update_scan(jobs_processed=idx + 1)
                 continue
 
-            snippet = body[:300]
             job_titles: list[str] = []
             job_details: list[dict[str, object]] = []
 
@@ -447,13 +456,29 @@ def _run_scan(rescan_all: bool = False) -> None:
                 else:
                     status = "triage"
 
+                # For Greenhouse single-job URLs, fetch the full JD from the
+                # public API so the stored snippet is the actual job description
+                # rather than the first 300 chars of the notification email.
+                job_url_str = str(parsed.get("url") or "").strip()
+                jd_text = ""
+                if job_url_str and _GH_SINGLE_JOB_URL_RE.match(job_url_str):
+                    try:
+                        fetched = CareerSiteScanner().scan_single_job_url("", job_url_str)
+                        fetched_text = fetched.get("job_text", "")
+                        if len(fetched_text) >= 200:
+                            jd_text = fetched_text
+                    except Exception as exc:
+                        logger.debug("Greenhouse JD enrichment failed for %s: %s", job_url_str, exc)
+
+                raw_snippet = jd_text[:6000] if jd_text else body[:300]
+
                 job_data: dict = {
                     "email_id": job_email_id,
                     "company": parsed.get("company", ""),
                     "job_title": parsed.get("job_title", ""),
                     "url": parsed.get("url", ""),
                     "source": parsed.get("source", ""),
-                    "raw_email_snippet": snippet,
+                    "raw_email_snippet": raw_snippet,
                     "fit_score": None,
                     "fit_reasoning": "",
                     "status": status,
@@ -475,7 +500,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                         score_result = scorer.score(
                             job_title=parsed.get("job_title", ""),
                             company=parsed.get("company", ""),
-                            email_body=body,
+                            email_body=jd_text if jd_text else body,
                             resume_text=resume_text,
                             penalty_rules=penalty_rules,
                             fit_feedback=fit_feedback,

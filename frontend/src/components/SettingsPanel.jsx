@@ -591,7 +591,7 @@ function EmailSourcesSection() {
                   {column.label}
                   {sourceSort.key === column.key && (
                     <span style={sortDirectionStyle}>
-                      {sourceSort.direction === "asc" ? "^" : "v"}
+                      {sourceSort.direction === "asc" ? "▲" : "▼"}
                     </span>
                   )}
                 </button>
@@ -1396,11 +1396,12 @@ const sideNav = {
 
 const navBtn = (active) => ({
   textAlign: "left",
-  padding: "8px 12px",
+  padding: "8px 12px 8px 9px",
   borderRadius: "var(--radius)",
-  background: active ? "var(--surface2)" : "transparent",
-  color: active ? "var(--text)" : "var(--text-muted)",
-  border: active ? "1px solid var(--border)" : "1px solid transparent",
+  background: active ? "var(--accent-light)" : "transparent",
+  color: active ? "var(--accent)" : "var(--text-muted)",
+  border: "none",
+  borderLeft: active ? "3px solid var(--accent)" : "3px solid transparent",
   cursor: "pointer",
   fontSize: "13px",
   fontWeight: active ? "600" : "400",

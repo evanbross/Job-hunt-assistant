@@ -152,9 +152,9 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                     {row.date && <span>{row.date}</span>}
                     {row.source && <span>{row.source}</span>}
                   </div>
-                  {row.notes && <div style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.5, marginTop: "6px", overflowWrap: "anywhere" }}>{row.notes}</div>}
+                  {row.notes && <div style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.5, marginTop: "6px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.notes}</div>}
                   {row.url && (
-                    <a href={row.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", display: "block", fontSize: "12px", marginTop: "6px", overflowWrap: "anywhere" }}>
+                    <a href={row.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", display: "block", fontSize: "12px", marginTop: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {row.url}
                     </a>
                   )}

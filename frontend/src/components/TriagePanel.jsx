@@ -725,7 +725,7 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
   return (
     <div
       id={`triage-card-${job.id}`}
-      style={{ ...cardStyle, borderColor: "var(--warning, #b45309)" }}
+      style={{ ...cardStyle, borderColor: "rgba(180,83,9,0.4)", background: "rgba(180,83,9,0.04)" }}
       onContextMenu={openContextMenu}
     >
       {contextMenu && (
@@ -899,26 +899,23 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
       {/* Actions */}
       <div style={{ display: "flex", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
         <button
-          className="btn-danger"
+          className="btn-danger btn-sm"
           onClick={() => act(onSameJob, "same")}
           disabled={loadingAction !== null}
-          style={{ flex: 1 }}
         >
           {loadingAction === "same" ? "Removing…" : "Yes, same job — skip it"}
         </button>
         <button
-          className="btn-secondary"
+          className="btn-secondary btn-sm"
           onClick={() => act(onMarkUnique, "unique")}
           disabled={loadingAction !== null}
-          style={{ flex: 1 }}
         >
           {loadingAction === "unique" ? "Moving…" : "Mark as Unique"}
         </button>
         <button
-          className="btn-success"
+          className="btn-success btn-sm"
           onClick={() => act(onDifferentJob, "different")}
           disabled={loadingAction !== null}
-          style={{ flex: 1 }}
         >
           {loadingAction === "different" ? "Moving…" : "No, it's a different role"}
         </button>

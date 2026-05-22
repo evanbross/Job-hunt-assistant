@@ -34,16 +34,22 @@
 
 export function applicationRowFromSheet(row) {
   const cells = Array.isArray(row.cells) ? row.cells : [];
+  const date = cellValue(cells, 3);
+  const rawStages = Array.isArray(row.stages) ? row.stages : [];
+  const hasAppliedStage = rawStages.some((s) => s.status === "applied");
+  const stages = hasAppliedStage || !date
+    ? rawStages
+    : [{ id: null, status: "applied", date }, ...rawStages];
   return {
     id: row.row_number,
     company: cellValue(cells, 0),
     status: cellValue(cells, 1),
     source: cellValue(cells, 2),
-    date: cellValue(cells, 3),
+    date,
     title: cellValue(cells, 4),
     url: cellValue(cells, 5),
     notes: cellValue(cells, 6),
-    stages: Array.isArray(row.stages) ? row.stages : [],
+    stages,
   };
 }
 

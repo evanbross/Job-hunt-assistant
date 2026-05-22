@@ -576,8 +576,40 @@ class CareerSiteScanner:
                 return self._greenhouse_single_job_from_api(site_name, job_url, parsed)
             except Exception as exc:
                 logger.debug("Greenhouse API failed for %s, falling back to HTML: %s", job_url, exc)
-        page_html = _fetch_html(job_url)
-        return self._job_from_detail_page(site_name, job_url, page_html)
+
+        # Fetch HTML while capturing the final URL after any HTTP redirects.
+        # Greenhouse tracking/redirect links resolve to job-boards.greenhouse.io
+        # pages that are JS-rendered; detecting the final URL lets us use the
+        # public API instead of scraping empty HTML.
+        req = Request(
+            job_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        with urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+            raw = resp.read(_MAX_PAGE_BYTES)
+            charset = resp.headers.get_content_charset() or "utf-8"
+            try:
+                final_url = resp.geturl()
+            except Exception:
+                final_url = job_url
+        page_html = raw.decode(charset, errors="replace")
+
+        if final_url != job_url:
+            final_parsed = urlparse(final_url)
+            if "greenhouse.io" in final_parsed.netloc.lower() and _is_greenhouse_single_job_url(final_parsed):
+                try:
+                    return self._greenhouse_single_job_from_api(site_name, final_url, final_parsed)
+                except Exception as exc:
+                    logger.debug("Greenhouse API failed for redirected URL %s: %s", final_url, exc)
+
+        return self._job_from_detail_page(site_name, final_url, page_html)
 
     def _greenhouse_single_job_from_api(
         self, site_name: str, job_url: str, parsed: ParseResult
