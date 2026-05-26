@@ -49,7 +49,7 @@ const DISPOSITION_INFO = {
 };
 
 const JOB_STATUS_INFO = {
-  pending_review:     { label: "Pending review",    cls: "badge-yellow" },
+  pending_review:     { label: "In Job Queue",       cls: "badge-yellow" },
   triage:             { label: "Triage",             cls: "badge-yellow" },
   possible_duplicate: { label: "Possible duplicate", cls: "badge-gray" },
   applied:            { label: "Applied",            cls: "badge-green" },

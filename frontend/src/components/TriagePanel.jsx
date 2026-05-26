@@ -68,6 +68,7 @@ import {
   titleCaseKnownSource,
   triageReasoningForJob,
 } from "../utils/triagePanelUtils.js";
+import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
 
 const TRIAGE_SEARCH_STORAGE_KEY = "jha.triage.search";
 
@@ -115,6 +116,7 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
   const [descriptionUpdatePopup, setDescriptionUpdatePopup] = useState(null);
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
+  const [showOnlyImportReview, setShowOnlyImportReview] = useState(false);
   const [allSheetRows, setAllSheetRows] = useState(null);
   const moreActionsRef = useRef(null);
 
@@ -410,9 +412,11 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
   const filteredJobs = jobs.filter((job) => {
     if (!jobMatchesSearch(job, searchText)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
+    if (showOnlyImportReview && parseImportWarnings(job.import_warnings).length === 0) return false;
     return true;
   });
   const unscoredCount = jobs.filter((j) => j.fit_score == null).length;
+  const importReviewCount = jobs.filter((j) => parseImportWarnings(j.import_warnings).length > 0).length;
   const visibleDupeCount = filteredJobs.filter((j) => j.status === "possible_duplicate").length;
   const visibleTriageCount = filteredJobs.length - visibleDupeCount;
   const refreshableCount = jobs.filter((job) => job.status !== "possible_duplicate" && job.url).length;
@@ -455,6 +459,17 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
                 style={{ cursor: "pointer" }}
               />
               Needs score ({unscoredCount})
+            </label>
+          )}
+          {(importReviewCount > 0 || showOnlyImportReview) && (
+            <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--red)", whiteSpace: "nowrap", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={showOnlyImportReview}
+                onChange={(e) => setShowOnlyImportReview(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              Review Import ({importReviewCount})
             </label>
           )}
           <p style={triageCountStyle}>
@@ -750,6 +765,22 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
             onClick={companyHistory.open}
           >
             {companySheetRows.length} tracked
+          </span>
+        )}
+        <span
+          className="badge badge-gray"
+          style={{ cursor: "pointer", fontFamily: "monospace" }}
+          title={`Job ID: ${job.id} — click to copy`}
+          onClick={() => navigator.clipboard.writeText(String(job.id))}
+        >
+          #{job.id}
+        </span>
+        {parseImportWarnings(job.import_warnings).length > 0 && (
+          <span
+            className="badge badge-red"
+            title={importWarningTooltip(parseImportWarnings(job.import_warnings))}
+          >
+            Review Import
           </span>
         )}
       </div>
@@ -1375,6 +1406,22 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
           <div style={triageMetaTextStyle}>
             <span>Parser: {parserConfidenceLabel(job)}</span>
             <span>Fit: {fitPercentageLabel(job)}</span>
+            <span
+              style={{ color: "var(--text-muted)", cursor: "pointer", fontFamily: "monospace" }}
+              title={`Job ID: ${job.id} — click to copy`}
+              onClick={() => navigator.clipboard.writeText(String(job.id))}
+            >
+              #{job.id}
+            </span>
+            {parseImportWarnings(job.import_warnings).length > 0 && (
+              <span
+                className="badge badge-red"
+                style={{ fontSize: "11px" }}
+                title={importWarningTooltip(parseImportWarnings(job.import_warnings))}
+              >
+                Review Import
+              </span>
+            )}
           </div>
           {isManualPastedJob(job) && (
             <div style={compactOriginStyle}>{job.email_subject || "Manual pasted job listing"}</div>

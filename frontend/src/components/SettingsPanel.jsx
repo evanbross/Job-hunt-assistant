@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { collectionModeLabel } from "../utils/careerSiteUtils.js";
 import ResumeUpload from "./ResumeUpload.jsx";
 
@@ -1245,6 +1245,17 @@ function ConfigSection() {
           </span>
         </label>
 
+        <label style={{ ...labelStyle, marginTop: "16px" }}>
+          Your Timezone
+          <TimezoneSelect
+            value={cfg.candidate_timezone || ""}
+            onChange={(tz) => setCfg({ ...cfg, candidate_timezone: tz })}
+          />
+          <span style={helpTextStyle}>
+            Used to flag remote jobs whose stated timezone window excludes your location.
+          </span>
+        </label>
+
         <div style={{ marginTop: "16px" }}>
           <label style={labelStyle}>
             AI Provider
@@ -1333,6 +1344,121 @@ function ConfigSection() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Timezone picker ───────────────────────────────────────────────────────────
+
+function TimezoneSelect({ value, onChange }) {
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+  const dropdownRef = useRef(null);
+
+  const allZones = useMemo(() => {
+    try { return Intl.supportedValuesOf("timeZone"); }
+    catch { return []; }
+  }, []);
+
+  const getOffset = (tz) => {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        timeZoneName: "shortOffset",
+      }).formatToParts(new Date());
+      return parts.find((p) => p.type === "timeZoneName")?.value || "";
+    } catch {
+      return "";
+    }
+  };
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    const matches = q
+      ? allZones.filter((tz) => tz.toLowerCase().includes(q))
+      : allZones;
+    return matches.slice(0, 80);
+  }, [search, allZones]);
+
+  const displayValue = value ? `${value} (${getOffset(value)})` : "";
+
+  const handleFocus = () => {
+    setSearch("");
+    setOpen(true);
+  };
+
+  const handleBlur = (e) => {
+    if (dropdownRef.current && dropdownRef.current.contains(e.relatedTarget)) return;
+    setOpen(false);
+  };
+
+  const select = (tz) => {
+    onChange(tz);
+    setOpen(false);
+    setSearch("");
+  };
+
+  return (
+    <div style={{ position: "relative" }} onBlur={handleBlur}>
+      <input
+        value={open ? search : displayValue}
+        onFocus={handleFocus}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search by city or region..."
+        style={{ width: "100%" }}
+      />
+      {open && (
+        <div
+          ref={dropdownRef}
+          tabIndex={-1}
+          style={{
+            position: "absolute",
+            top: "calc(100% + 2px)",
+            left: 0,
+            right: 0,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+            maxHeight: "220px",
+            overflowY: "auto",
+            zIndex: 200,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+          }}
+        >
+          {value && (
+            <div
+              onMouseDown={() => select("")}
+              style={{ padding: "6px 10px", cursor: "pointer", color: "var(--text-muted)", fontSize: "12px", borderBottom: "1px solid var(--border)" }}
+            >
+              Clear selection
+            </div>
+          )}
+          {filtered.length === 0 ? (
+            <div style={{ padding: "8px 10px", color: "var(--text-muted)", fontSize: "12px" }}>No matches</div>
+          ) : (
+            filtered.map((tz) => (
+              <div
+                key={tz}
+                onMouseDown={() => select(tz)}
+                style={{
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                  background: tz === value ? "var(--accent-light)" : "transparent",
+                  color: tz === value ? "var(--accent)" : "var(--text)",
+                  fontSize: "13px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <span>{tz}</span>
+                <span style={{ color: "var(--text-muted)", fontSize: "11px", flexShrink: 0 }}>{getOffset(tz)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

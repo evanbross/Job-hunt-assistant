@@ -146,6 +146,13 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                         Current card
                       </span>
                     )}
+                    <span
+                      style={{ background: "var(--surface)", borderRadius: "4px", color: "var(--text-muted)", cursor: "pointer", fontFamily: "monospace", fontSize: "11px", fontWeight: 400, padding: "1px 5px" }}
+                      title={`Job ID: ${row.id} — click to copy`}
+                      onClick={() => navigator.clipboard.writeText(String(row.id))}
+                    >
+                      #{row.id}
+                    </span>
                   </div>
                   <div style={{ color: "var(--text-muted)", display: "flex", flexWrap: "wrap", fontSize: "12px", gap: "5px 12px", marginTop: "4px" }}>
                     <span>{row.status || "No status"}</span>

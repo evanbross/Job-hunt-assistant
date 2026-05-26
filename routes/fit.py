@@ -49,11 +49,12 @@ from backend.ai_provider import AIMessage, AIProviderClient
 from backend.duplicate_checker import DuplicateChecker
 from backend.fit_scorer import FitScorer
 from backend.utils import (
-    _ACTIVE_QUEUE_STATUSES,
+    ACTIVE_JOB_STATUSES,
+    FIT_PANEL_STATUSES,
     _ai_error_http_status,
-    _get_repos,
     _safe_error_message,
     db_match_for_job,
+    get_repos,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,122 +83,121 @@ def _run_re_evaluate() -> None:
         _re_eval_state.result = None
         _re_eval_state.message = "Loading queue…"
 
-    repos = _get_repos()
     try:
-        jobs_repo = repos["jobs"]
-        resume_repo = repos["resume"]
-        penalties_repo = repos["penalties"]
+        with get_repos() as repos:
+            jobs_repo = repos["jobs"]
+            resume_repo = repos["resume"]
+            penalties_repo = repos["penalties"]
 
-        queue_jobs = jobs_repo.get_by_statuses(list(_ACTIVE_QUEUE_STATUSES))
-        total = len(queue_jobs)
+            queue_jobs = jobs_repo.get_by_statuses(list(ACTIVE_JOB_STATUSES))
+            total = len(queue_jobs)
 
-        with _re_eval_lock:
-            _re_eval_state.message = f"Re-evaluating {total} job{'s' if total != 1 else ''}…"
-
-        known_jobs = [
-            j for j in jobs_repo.get_all_ordered()
-            if j.get("status") not in _ACTIVE_QUEUE_STATUSES
-        ]
-        resume_row = resume_repo.get_latest()
-        resume_text: str = resume_row["content"] if resume_row else ""
-        penalty_rules: list[dict] = penalties_repo.get_enabled()
-        fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback()
-        scorer = FitScorer()
-        dedup_checker = DuplicateChecker()
-
-        rescored = 0
-        failed = 0
-        db_matches = 0
-        status_changed = 0
-
-        for i, job in enumerate(queue_jobs):
-            company = str(job.get("company") or "")
-            title = str(job.get("job_title") or "")
-            label = f"{company} — {title}" if company and title else (company or title or f"job {job.get('id')}")
             with _re_eval_lock:
-                _re_eval_state.progress = round((i / total) * 100) if total else 0
-                _re_eval_state.message = f"Job {i + 1} of {total}: {label}"
+                _re_eval_state.message = f"Re-evaluating {total} job{'s' if total != 1 else ''}…"
 
-            previous_status = str(job.get("status") or "")
-            updates: dict[str, object] = {}
-            score: int | None = None
+            known_jobs = [
+                j for j in jobs_repo.get_all_ordered()
+                if j.get("status") not in ACTIVE_JOB_STATUSES
+            ]
+            resume_row = resume_repo.get_latest()
+            resume_text: str = resume_row["content"] if resume_row else ""
+            penalty_rules: list[dict] = penalties_repo.get_enabled()
+            fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback()
+            scorer = FitScorer()
+            dedup_checker = DuplicateChecker()
 
-            tracked_status, _tracking_source, duplicate_hint = db_match_for_job(
-                job_title=title,
-                company=company,
-                job_url=str(job.get("url") or ""),
-                known_jobs=known_jobs,
-                dedup_checker=dedup_checker,
-                exclude_id=job.get("id"),
-            )
-            if duplicate_hint:
-                updates["duplicate_hint"] = duplicate_hint
-                updates["status"] = "possible_duplicate"
-                db_matches += 1
-            else:
-                updates["duplicate_hint"] = None
+            rescored = 0
+            failed = 0
+            db_matches = 0
+            status_changed = 0
 
-            try:
-                scoring_text = "\n".join(
-                    part for part in [
-                        job.get("email_subject", ""),
-                        job.get("raw_email_snippet", ""),
-                    ]
-                    if part
-                )
-                result = scorer.score(
+            for i, job in enumerate(queue_jobs):
+                company = str(job.get("company") or "")
+                title = str(job.get("job_title") or "")
+                label = f"{company} — {title}" if company and title else (company or title or f"job {job.get('id')}")
+                with _re_eval_lock:
+                    _re_eval_state.progress = round((i / total) * 100) if total else 0
+                    _re_eval_state.message = f"Job {i + 1} of {total}: {label}"
+
+                previous_status = str(job.get("status") or "")
+                updates: dict[str, object] = {}
+                score: int | None = None
+
+                tracked_status, _tracking_source, duplicate_hint = db_match_for_job(
                     job_title=title,
                     company=company,
-                    email_body=scoring_text,
-                    resume_text=resume_text,
-                    penalty_rules=penalty_rules,
-                    fit_feedback=fit_feedback,
+                    job_url=str(job.get("url") or ""),
+                    known_jobs=known_jobs,
+                    dedup_checker=dedup_checker,
+                    exclude_id=job.get("id"),
                 )
-                score = result["score"]
-                updates["fit_score"] = score
-                updates["fit_reasoning"] = result["reasoning"]
-                rescored += 1
-            except Exception as exc:
-                logger.warning("Re-evaluation failed for job %s: %s", job.get("id"), exc)
-                failed += 1
+                if duplicate_hint:
+                    updates["duplicate_hint"] = duplicate_hint
+                    updates["status"] = "possible_duplicate"
+                    db_matches += 1
+                else:
+                    updates["duplicate_hint"] = None
 
-            score_for_status = score
-            if score_for_status is None and job.get("fit_score") is not None:
                 try:
-                    score_for_status = int(job["fit_score"])
-                except (TypeError, ValueError):
-                    score_for_status = None
+                    scoring_text = "\n".join(
+                        part for part in [
+                            job.get("email_subject", ""),
+                            job.get("raw_email_snippet", ""),
+                        ]
+                        if part
+                    )
+                    result = scorer.score(
+                        job_title=title,
+                        company=company,
+                        email_body=scoring_text,
+                        resume_text=resume_text,
+                        penalty_rules=penalty_rules,
+                        fit_feedback=fit_feedback,
+                    )
+                    score = result["score"]
+                    updates["fit_score"] = score
+                    updates["fit_reasoning"] = result["reasoning"]
+                    rescored += 1
+                except Exception as exc:
+                    logger.warning("Re-evaluation failed for job %s: %s", job.get("id"), exc)
+                    failed += 1
 
-            if tracked_status is None and score_for_status is not None:
-                updates["status"] = "pending_review" if score_for_status >= 70 else "triage"
+                score_for_status = score
+                if score_for_status is None and job.get("fit_score") is not None:
+                    try:
+                        score_for_status = int(job["fit_score"])
+                    except (TypeError, ValueError):
+                        score_for_status = None
 
-            if updates.get("status") and updates["status"] != previous_status:
-                status_changed += 1
+                if tracked_status is None and score_for_status is not None:
+                    updates["status"] = "pending_review" if score_for_status >= 70 else "triage"
 
-            jobs_repo.update(job["id"], updates)
+                if updates.get("status") and updates["status"] != previous_status:
+                    status_changed += 1
 
-        repos["conn"].commit()
-        with _re_eval_lock:
-            _re_eval_state.progress = 100
-            _re_eval_state.message = (
-                f"Done — {rescored} rescored"
-                + (f", {db_matches} duplicate{'s' if db_matches != 1 else ''} flagged" if db_matches else "")
-                + (f", {status_changed} moved" if status_changed else "")
-                + (f", {failed} failed" if failed else "")
-            )
-            _re_eval_state.result = {
-                "evaluated": total,
-                "rescored": rescored,
-                "failed": failed,
-                "db_matches": db_matches,
-                "status_changed": status_changed,
-            }
+                jobs_repo.update(job["id"], updates)
+
+            repos["conn"].commit()
+            with _re_eval_lock:
+                _re_eval_state.progress = 100
+                _re_eval_state.message = (
+                    f"Done — {rescored} rescored"
+                    + (f", {db_matches} duplicate{'s' if db_matches != 1 else ''} flagged" if db_matches else "")
+                    + (f", {status_changed} moved" if status_changed else "")
+                    + (f", {failed} failed" if failed else "")
+                )
+                _re_eval_state.result = {
+                    "evaluated": total,
+                    "rescored": rescored,
+                    "failed": failed,
+                    "db_matches": db_matches,
+                    "status_changed": status_changed,
+                }
     except Exception as exc:
         logger.error("Re-evaluation thread failed: %s", exc)
         with _re_eval_lock:
             _re_eval_state.message = f"Re-evaluation failed: {exc}"
     finally:
-        repos["conn"].close()
         with _re_eval_lock:
             _re_eval_state.running = False
 
@@ -227,18 +227,17 @@ def re_evaluate_status():
 
 @fit_bp.route("/jobs/triage")
 def get_triage_jobs():
-    repos = _get_repos()
-    jobs = repos["jobs"].get_by_statuses(["triage", "possible_duplicate"])
-    repos["conn"].close()
+    with get_repos() as repos:
+        jobs = repos["jobs"].get_by_statuses(["triage", "possible_duplicate"])
     return jsonify(jobs)
 
 
 @fit_bp.route("/jobs/<int:job_id>/fit-chat", methods=["POST"])
 def fit_chat(job_id: int):
-    repos = _get_repos()
-    job = repos["jobs"].get_by_id(job_id)
-    resume = repos["resume"].get_latest()
-    repos["conn"].close()
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+        resume = repos["resume"].get_latest()
+    # Connection released before AI call
 
     if not job:
         return jsonify({"error": "Job not found"}), 404
@@ -307,7 +306,7 @@ def fit_chat(job_id: int):
             score = int(parsed.get("score"))
             status = str(parsed.get("status") or "").strip()
             reasoning = str(parsed.get("reasoning") or "").strip()
-            if 0 <= score <= 100 and status in {"pending_review", "triage", "skipped"} and reasoning:
+            if 0 <= score <= 100 and status in FIT_PANEL_STATUSES and reasoning:
                 reclassification = {
                     "fit_score": score,
                     "status": status,
@@ -337,54 +336,52 @@ def update_fit_classification(job_id: int):
     fit_reasoning = str(body.get("fit_reasoning") or "").strip()
     if fit_score < 0 or fit_score > 100:
         return jsonify({"error": "fit_score must be an integer from 0 to 100"}), 400
-    if status not in {"pending_review", "triage", "skipped"}:
-        return jsonify({"error": "status must be pending_review, triage, or skipped"}), 400
+    if status not in FIT_PANEL_STATUSES:
+        return jsonify({"error": f"status must be one of: {', '.join(sorted(FIT_PANEL_STATUSES))}"}), 400
     if not fit_reasoning:
         return jsonify({"error": "fit_reasoning is required"}), 400
 
-    repos = _get_repos()
-    job = repos["jobs"].get_by_id(job_id)
-    if not job:
-        repos["conn"].close()
-        return jsonify({"error": "Job not found"}), 404
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
 
-    updates: dict[str, object] = {
-        "fit_score": fit_score,
-        "fit_reasoning": fit_reasoning[:2000],
-        "status": status,
-    }
-    if status == "skipped":
-        updates["skip_reason"] = "not_a_fit"
-    repos["jobs"].update(job_id, updates)
-    updated_job = repos["jobs"].get_by_id(job_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+        updates: dict[str, object] = {
+            "fit_score": fit_score,
+            "fit_reasoning": fit_reasoning[:2000],
+            "status": status,
+        }
+        if status == "skipped":
+            updates["skip_reason"] = "not_a_fit"
+        repos["jobs"].update(job_id, updates)
+        updated_job = repos["jobs"].get_by_id(job_id)
+        repos["conn"].commit()
     return jsonify(updated_job)
 
 
 @fit_bp.route("/jobs/<int:job_id>/re-evaluate-fit", methods=["POST"])
 def re_evaluate_job_fit(job_id: int):
-    repos = _get_repos()
-    job = repos["jobs"].get_by_id(job_id)
-    if not job:
-        repos["conn"].close()
-        return jsonify({"error": "Job not found"}), 404
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
 
-    try:
         resume_row = repos["resume"].get_latest()
         resume_text = resume_row["content"] if resume_row else ""
         penalty_rules = repos["penalties"].get_enabled()
         fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
-        scorer = FitScorer()
-        scoring_text = job.get("job_description") or "\n".join(
-            part
-            for part in [
-                job.get("email_subject", ""),
-                job.get("raw_email_snippet", ""),
-            ]
-            if part
-        )
-        result = scorer.score(
+    # Connection released before AI scoring
+
+    scoring_text = job.get("job_description") or "\n".join(
+        part
+        for part in [
+            job.get("email_subject", ""),
+            job.get("raw_email_snippet", ""),
+        ]
+        if part
+    )
+    try:
+        result = FitScorer().score(
             job_title=str(job.get("job_title") or ""),
             company=str(job.get("company") or ""),
             email_body=scoring_text,
@@ -393,7 +390,6 @@ def re_evaluate_job_fit(job_id: int):
             fit_feedback=fit_feedback,
         )
     except Exception as exc:
-        repos["conn"].close()
         logger.warning("Fit re-evaluation failed for job %d: %s", job_id, exc, exc_info=True)
         return jsonify({"error": _safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
 
@@ -403,17 +399,18 @@ def re_evaluate_job_fit(job_id: int):
         new_status = current_status
     else:
         new_status = "pending_review" if score >= 70 else "triage"
-    repos["jobs"].update(
-        job_id,
-        {
-            "fit_score": score,
-            "fit_reasoning": result["reasoning"],
-            "status": new_status,
-        },
-    )
-    updated_job = repos["jobs"].get_by_id(job_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+
+    with get_repos() as repos:
+        repos["jobs"].update(
+            job_id,
+            {
+                "fit_score": score,
+                "fit_reasoning": result["reasoning"],
+                "status": new_status,
+            },
+        )
+        updated_job = repos["jobs"].get_by_id(job_id)
+        repos["conn"].commit()
     return jsonify(updated_job)
 
 
@@ -424,21 +421,22 @@ def save_job_description(job_id: int):
     if len(description) < 80:
         return jsonify({"error": "Description is too short to be useful (minimum 80 characters)"}), 400
 
-    repos = _get_repos()
-    job = repos["jobs"].get_by_id(job_id)
-    if not job:
-        repos["conn"].close()
-        return jsonify({"error": "Job not found"}), 404
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
 
-    repos["jobs"].update(job_id, {"job_description": description})
+        repos["jobs"].update(job_id, {"job_description": description})
+        repos["conn"].commit()
 
-    try:
         resume_row = repos["resume"].get_latest()
         resume_text = resume_row["content"] if resume_row else ""
         penalty_rules = repos["penalties"].get_enabled()
         fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
-        scorer = FitScorer()
-        result = scorer.score(
+    # Connection released before AI scoring
+
+    try:
+        result = FitScorer().score(
             job_title=str(job.get("job_title") or ""),
             company=str(job.get("company") or ""),
             email_body=description,
@@ -447,21 +445,21 @@ def save_job_description(job_id: int):
             fit_feedback=fit_feedback,
         )
     except Exception as exc:
-        repos["conn"].close()
         logger.warning("Fit scoring after description save failed for job %d: %s", job_id, exc, exc_info=True)
         return jsonify({"error": _safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
 
     score = int(result["score"])
     new_status = "pending_review" if score >= 70 else "triage"
-    repos["jobs"].update(
-        job_id,
-        {
-            "fit_score": score,
-            "fit_reasoning": result["reasoning"],
-            "status": new_status,
-        },
-    )
-    updated_job = repos["jobs"].get_by_id(job_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+
+    with get_repos() as repos:
+        repos["jobs"].update(
+            job_id,
+            {
+                "fit_score": score,
+                "fit_reasoning": result["reasoning"],
+                "status": new_status,
+            },
+        )
+        updated_job = repos["jobs"].get_by_id(job_id)
+        repos["conn"].commit()
     return jsonify(updated_job)

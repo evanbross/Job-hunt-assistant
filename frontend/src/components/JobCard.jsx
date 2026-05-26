@@ -41,7 +41,7 @@ import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
 import { applicationRowFromSheet, rowMatchesCompany } from "../utils/sheetUtils.js";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { scoreTone, scoreLabel, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
-import { statusTone } from "../utils/jobQueueUtils.js";
+import { statusTone, parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
 import {
   MISMATCH_REASONS,
   SKIP_REASONS,
@@ -954,18 +954,36 @@ export default function JobCard({
               </span>
             )}
           </div>
-          {sourceSummary && (
-            <div style={sourceSummaryStyle}>
-              <span style={{ fontWeight: 600, color: "var(--text)" }}>Source: </span>
-              {job.url ? (
-                <a href={job.url} target="_blank" rel="noreferrer" style={sourceLinkStyle}>
-                  {sourceSummary}
-                </a>
-              ) : (
-                <span>{sourceSummary}</span>
-              )}
-            </div>
-          )}
+          <div style={sourceSummaryStyle}>
+            {sourceSummary && (
+              <>
+                <span style={{ fontWeight: 600, color: "var(--text)" }}>Source: </span>
+                {job.url ? (
+                  <a href={job.url} target="_blank" rel="noreferrer" style={sourceLinkStyle}>
+                    {sourceSummary}
+                  </a>
+                ) : (
+                  <span>{sourceSummary}</span>
+                )}
+              </>
+            )}
+            <span
+              style={{ color: "var(--text-muted)", cursor: "pointer", fontFamily: "monospace", fontSize: "11px", marginLeft: sourceSummary ? "8px" : 0 }}
+              title={`Job ID: ${job.id} — click to copy`}
+              onClick={() => navigator.clipboard.writeText(String(job.id))}
+            >
+              #{job.id}
+            </span>
+            {parseImportWarnings(job.import_warnings).length > 0 && (
+              <span
+                className="badge badge-red"
+                style={{ fontSize: "11px", marginLeft: "6px" }}
+                title={importWarningTooltip(parseImportWarnings(job.import_warnings))}
+              >
+                Review Import
+              </span>
+            )}
+          </div>
           {(job.url || editingUrl) && (
             <div style={jobUrlEditRowStyle}>
               {editingUrl ? (
@@ -1389,6 +1407,22 @@ export default function JobCard({
           fitChatMessagesRef={fitChatMessagesRef}
           fitChatSending={fitChatSending}
           onDismissReclassification={() => setPendingReclassification(null)}
+          onApplyReclassification={async () => {
+            if (!pendingReclassification) return;
+            const res = await fetch(`/api/jobs/${job.id}/fit-classification`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(pendingReclassification),
+            });
+            if (!res.ok) {
+              const data = await res.json().catch(() => ({}));
+              window.alert(`Failed to apply: ${data.error || res.status}`);
+              return;
+            }
+            const updated = await res.json();
+            onUpdate?.(job.id, updated);
+            setPendingReclassification(null);
+          }}
           onInputChange={setFitChatInput}
           onSend={handleFitChatSend}
           onSaveDescriptionAndSend={() => handleFitChatSend({ saveAsDescription: true })}
@@ -1935,6 +1969,7 @@ function FitReviewPanel({
   fitChatMessages,
   fitChatMessagesRef,
   fitChatSending,
+  onApplyReclassification,
   onDismissReclassification,
   onInputChange,
   onSend,
@@ -1962,13 +1997,22 @@ function FitReviewPanel({
               {pendingReclassification.fit_reasoning}
             </div>
           </div>
-          <button
-            className="btn-secondary"
-            onClick={onDismissReclassification}
-            style={{ fontSize: "11px", padding: "3px 10px" }}
-          >
-            Dismiss
-          </button>
+          <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+            <button
+              className="btn-primary"
+              onClick={onApplyReclassification}
+              style={{ fontSize: "11px", padding: "3px 10px" }}
+            >
+              Apply
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={onDismissReclassification}
+              style={{ fontSize: "11px", padding: "3px 10px" }}
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 

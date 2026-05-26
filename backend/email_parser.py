@@ -42,6 +42,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
+import urllib.error
+import urllib.request
 from typing import Protocol, TypedDict
 from urllib.parse import unquote, urlparse
 
@@ -192,6 +195,14 @@ class EmailParser:
             except (TypeError, ValueError):
                 item["confidence_score"] = 50
             _normalize_title_company(item, subject, body_snippet)
+            # Resolve tracking/redirect URLs that the LLM may have extracted
+            # verbatim from the email body (e.g. SendGrid click-tracking links).
+            raw_url = str(item.get("url") or "")
+            if raw_url and _is_email_tracking_url(raw_url):
+                resolved = _resolve_tracking_url(raw_url)
+                if resolved != raw_url:
+                    item["url"] = resolved
+                    logger.debug("Resolved tracking URL %s → %s", raw_url, resolved)
             jobs.append(item)  # type: ignore[arg-type]
 
         return jobs
@@ -261,6 +272,7 @@ _LINKEDIN_NON_JOB_LINES = {
 }
 _WTTJ_SENDER_RE = re.compile(r"welcometothejungle\.com|welcome to the jungle", re.IGNORECASE)
 _WTTJ_JOB_URL_RE = re.compile(r"https?://[^\s<>()\"']*welcometothejungle\.com/[^\s<>()\"']+", re.IGNORECASE)
+_ANY_HTTP_URL_RE = re.compile(r"https?://[^\s<>()\"']+", re.IGNORECASE)
 _WTTJ_SKIP_TITLE_LINES = {
     "view job",
     "view offer",
@@ -338,6 +350,38 @@ def _linkedin_card_lines(raw_lines: list[str]) -> list[str]:
     return card_lines
 
 
+_TRACKING_DOMAIN_FRAGMENTS = frozenset({
+    "sendgrid.net",
+    "track.customer.io",
+    "mandrillapp.com",
+})
+
+
+def _is_email_tracking_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return any(frag in host for frag in _TRACKING_DOMAIN_FRAGMENTS)
+
+
+def _resolve_tracking_url(url: str, timeout: float = 3.0) -> str:
+    """Follow a tracking/redirect URL and return the final destination URL.
+
+    Uses HEAD first; falls back to GET if the server doesn't redirect on HEAD.
+    Returns the original URL on any failure so callers can proceed unchanged.
+    """
+    for method in ("HEAD", "GET"):
+        try:
+            req = urllib.request.Request(
+                url,
+                method=method,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; JobHuntBot/1.0)"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.url
+        except (urllib.error.URLError, socket.timeout, OSError):
+            continue
+    return url
+
+
 def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str) -> list[ParsedJob]:
     if not _looks_like_welcome_to_the_jungle(sender, body_snippet):
         return []
@@ -345,29 +389,49 @@ def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str) -> list[Pa
     lines = [line.strip() for line in body_snippet.splitlines()]
     jobs: list[ParsedJob] = []
     seen_urls: set[str] = set()
+
+    def _append_wttj_job(job_url: str, line_idx: int) -> None:
+        company, slug_title = _wttj_company_title_from_url(job_url)
+        if not company and not slug_title:
+            return
+        nearby_title = _wttj_title_from_nearby_lines(lines, line_idx, company)
+        job_title = nearby_title or slug_title
+        jobs.append(
+            {
+                "company": company,
+                "job_title": job_title,
+                "url": job_url,
+                "source": "Welcome to the Jungle",
+                "confidence": "high" if company and job_title else "low",
+                "confidence_score": 92 if company and job_title else 70,
+                "confidence_reason": "Parsed from a Welcome to the Jungle job URL and nearby email text.",
+            }
+        )
+        seen_urls.add(job_url)
+
+    # First pass: direct WTTJ URLs (no tracking wrapper).
     for line_idx, line in enumerate(lines):
         for url_match in _WTTJ_JOB_URL_RE.finditer(line):
             job_url = url_match.group(0).rstrip(".,;)")
-            if job_url in seen_urls:
-                continue
+            if job_url not in seen_urls:
+                _append_wttj_job(job_url, line_idx)
 
-            company, slug_title = _wttj_company_title_from_url(job_url)
-            if not company and not slug_title:
-                continue
-            nearby_title = _wttj_title_from_nearby_lines(lines, line_idx, company)
-            job_title = nearby_title or slug_title
-            jobs.append(
-                {
-                    "company": company,
-                    "job_title": job_title,
-                    "url": job_url,
-                    "source": "Welcome to the Jungle",
-                    "confidence": "high" if company and job_title else "low",
-                    "confidence_score": 92 if company and job_title else 70,
-                    "confidence_reason": "Parsed from a Welcome to the Jungle job URL and nearby email text.",
-                }
-            )
-            seen_urls.add(job_url)
+    # Second pass: WTTJ emails routed through SendGrid (or similar) wrap every
+    # link in a tracking redirect, so the first pass finds nothing.  Resolve
+    # any tracking URL found in the body and check whether the destination is a
+    # WTTJ job page.
+    if not jobs:
+        for line_idx, line in enumerate(lines):
+            for url_match in _ANY_HTTP_URL_RE.finditer(line):
+                raw_url = url_match.group(0).rstrip(".,;)")
+                if not _is_email_tracking_url(raw_url):
+                    continue
+                resolved = _resolve_tracking_url(raw_url)
+                if "welcometothejungle.com" not in resolved.lower():
+                    continue
+                resolved = resolved.rstrip(".,;)")
+                if resolved not in seen_urls:
+                    _append_wttj_job(resolved, line_idx)
 
     return jobs
 

@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import backend.email_parser as email_parser_module
 from backend.ai_provider import AIMessage
 from backend.email_parser import EmailParser, _normalize_title_company
 
@@ -180,6 +181,42 @@ View job: https://www.linkedin.com/comm/jobs/view/4410403022/
         "Principal Software Engineer",
     ]
     assert all(job["source"] == "LinkedIn" for job in jobs)
+
+
+def test_parser_resolves_sendgrid_tracking_urls_for_wttj_emails(monkeypatch) -> None:
+    """WTTJ emails routed through SendGrid wrap every link in a tracking URL.
+    The parser should follow the redirect and store the resolved WTTJ URL."""
+    real_wttj_url = (
+        "https://www.welcometothejungle.com/en/companies/acme-health/jobs/senior-backend-engineer_remote"
+    )
+    sendgrid_url = "https://u9999.ct.sendgrid.net/ls/click?upn=FAKETOKEN"
+
+    monkeypatch.setattr(
+        email_parser_module,
+        "_resolve_tracking_url",
+        lambda url, timeout=3.0: real_wttj_url if "sendgrid" in url else url,
+    )
+
+    client = FakeParserClient()
+    parser = EmailParser(client=client)
+    body = f"""New match for your search
+
+Senior Backend Engineer
+Acme Health
+View job: {sendgrid_url}
+"""
+
+    jobs = parser.parse(
+        "New match: Senior Backend Engineer",
+        "Welcome to the Jungle <hello@welcometothejungle.com>",
+        body,
+    )
+
+    assert client.messages == [], "LLM should not be called for a WTTJ email"
+    assert len(jobs) == 1
+    assert jobs[0]["url"] == real_wttj_url
+    assert jobs[0]["company"] == "Acme Health"
+    assert jobs[0]["job_title"] == "Senior Backend Engineer"
 
 
 def test_parser_extracts_welcome_to_the_jungle_jobs_from_urls_without_ai() -> None:

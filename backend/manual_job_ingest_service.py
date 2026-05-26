@@ -41,6 +41,7 @@ from datetime import date
 from typing import Any, Protocol, runtime_checkable
 
 from backend.duplicate_checker import DuplicateChecker
+from backend.job_validator import normalize_and_validate, import_warnings_to_json
 from backend.career_site_scanner import CareerSiteScanner
 from backend.email_parser import EmailParser, ParsedJob
 from backend.fit_scorer import FitScorer
@@ -188,27 +189,31 @@ class ManualJobIngestService:
         if not duplicate_hint:
             status = "pending_review" if fit_score >= 70 else "triage"
 
-        job_id = self._jobs_repo.insert(
-            {
-                "email_id": f"{email_id_prefix}:{date.today().isoformat()}:{secrets.token_hex(8)}",
-                "company": company,
-                "job_title": job_title,
-                "url": url,
-                "source": source,
-                "raw_email_snippet": score_body[:6000],
-                "fit_score": fit_score,
-                "fit_reasoning": score_result["reasoning"],
-                "status": status,
-                "parser_confidence": parsed.get("confidence", "low"),
-                "confidence_reason": parsed.get("confidence_reason", ""),
-                "date_found": date.today().isoformat(),
-                "date_added_to_sheet": None,
-                "duplicate_hint": duplicate_hint,
-                "sender_email": None,
-                "email_subject": email_subject,
-                "confidence_score": parsed.get("confidence_score", 50),
-            }
-        )
+        job_dict: dict = {
+            "email_id": f"{email_id_prefix}:{date.today().isoformat()}:{secrets.token_hex(8)}",
+            "company": company,
+            "job_title": job_title,
+            "url": url,
+            "source": source,
+            "raw_email_snippet": score_body[:6000],
+            "fit_score": fit_score,
+            "fit_reasoning": score_result["reasoning"],
+            "status": status,
+            "parser_confidence": parsed.get("confidence", "low"),
+            "confidence_reason": parsed.get("confidence_reason", ""),
+            "date_found": date.today().isoformat(),
+            "date_added_to_sheet": None,
+            "duplicate_hint": duplicate_hint,
+            "sender_email": None,
+            "email_subject": email_subject,
+            "confidence_score": parsed.get("confidence_score", 50),
+        }
+        job_dict, import_warnings = normalize_and_validate(job_dict)
+        job_dict["import_warnings"] = import_warnings_to_json(import_warnings)
+        if import_warnings and job_dict["status"] != "possible_duplicate":
+            job_dict["status"] = "triage"
+
+        job_id = self._jobs_repo.insert(job_dict)
 
         created_job = self._jobs_repo.get_by_id(job_id)
         if created_job is None:

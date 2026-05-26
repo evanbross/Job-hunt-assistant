@@ -42,7 +42,7 @@ from datetime import date, datetime, timedelta, UTC
 from flask import Blueprint, jsonify, request
 
 from backend.utils import (
-    _get_repos,
+    get_repos,
     _tracking_payload,
     normalize_stage_status,
     VALID_STAGE_STATUSES,
@@ -66,15 +66,12 @@ _TRACKING_COLUMNS: list[dict] = [
 @sheet_bp.route("/sheet/applications")
 def get_application_sheet():
     """Return all tracked job applications as a grid for the Sheet panel."""
-    repos = _get_repos()
-    try:
+    with get_repos() as repos:
         jobs = repos["jobs"].get_all_ordered()
         all_stages = repos["stages"].get_all()
         stages_by_job_id: dict[int, list] = {}
         for stage in all_stages:
             stages_by_job_id.setdefault(stage["job_id"], []).append(stage)
-    finally:
-        repos["conn"].close()
 
     def _make_row(job: dict) -> dict:
         stages = stages_by_job_id.get(job["id"], [])
@@ -118,21 +115,19 @@ def add_application_sheet_row():
             "notes":               row["notes"] or None,
         }.items() if v is not None
     }
-    repos = _get_repos()
     try:
-        new_job_id = repos["jobs"].insert(job_data)
-        repos["stages"].insert({
-            "job_id": new_job_id,
-            "status": "applied",
-            "date": job_data["date_added_to_sheet"],
-            "notes": None,
-        })
-        repos["conn"].commit()
+        with get_repos() as repos:
+            new_job_id = repos["jobs"].insert(job_data)
+            repos["stages"].insert({
+                "job_id": new_job_id,
+                "status": "applied",
+                "date": job_data["date_added_to_sheet"],
+                "notes": None,
+            })
+            repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error inserting tracking row: %s", exc)
         return jsonify({"error": "Failed to save application"}), 500
-    finally:
-        repos["conn"].close()
     return jsonify({"status": "ok"}), 201
 
 
@@ -155,15 +150,13 @@ def update_application_sheet_row(job_id: int):
     }
     if not fields:
         return jsonify({"error": "No fields to update"}), 400
-    repos = _get_repos()
     try:
-        repos["jobs"].update(job_id, fields)
-        repos["conn"].commit()
+        with get_repos() as repos:
+            repos["jobs"].update(job_id, fields)
+            repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error updating tracking row %s: %s", job_id, exc)
         return jsonify({"error": "Failed to update application"}), 500
-    finally:
-        repos["conn"].close()
     return jsonify({"status": "ok"})
 
 
@@ -180,15 +173,13 @@ def add_application_sheet_stage(job_id: int):
         return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(VALID_STAGE_STATUSES))}"}), 400
     if not stage_date:
         return jsonify({"error": "date is required"}), 400
-    repos = _get_repos()
     try:
-        repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
-        repos["conn"].commit()
+        with get_repos() as repos:
+            repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
+            repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error adding stage for job %s: %s", job_id, exc, exc_info=True)
         return jsonify({"error": "Failed to save stage"}), 500
-    finally:
-        repos["conn"].close()
     return jsonify({"status": "ok"}), 201
 
 
@@ -197,66 +188,64 @@ def mark_ghost_applications():
     """Mark applications whose latest state has been Applied for 30+ days as ghosted."""
     cutoff_date = date.today() - timedelta(days=30)
     today = date.today().isoformat()
-    repos = _get_repos()
     marked: list[dict[str, object]] = []
     try:
-        jobs = repos["jobs"].get_all_ordered()
-        all_stages = repos["stages"].get_all()
-        stages_by_job_id: dict[int, list[dict]] = {}
-        for stage in all_stages:
-            stages_by_job_id.setdefault(stage["job_id"], []).append(stage)
+        with get_repos() as repos:
+            jobs = repos["jobs"].get_all_ordered()
+            all_stages = repos["stages"].get_all()
+            stages_by_job_id: dict[int, list[dict]] = {}
+            for stage in all_stages:
+                stages_by_job_id.setdefault(stage["job_id"], []).append(stage)
 
-        for job in jobs:
-            stages = stages_by_job_id.get(job["id"], [])
-            latest_stage = stages[-1] if stages else None
-            latest_status = normalize_stage_status(
-                (latest_stage or {}).get("status") or job.get("status")
-            )
-            latest_date = str(
-                (latest_stage or {}).get("date")
-                or job.get("date_added_to_sheet")
-                or job.get("date_found")
-                or ""
-            ).strip()
-
-            if latest_status != "applied" or not latest_date:
-                continue
-            try:
-                applied_date = date.fromisoformat(latest_date[:10])
-            except ValueError:
-                logger.warning(
-                    "Skipping ghost check for job %s with invalid date %s",
-                    job.get("id"),
-                    latest_date,
+            for job in jobs:
+                stages = stages_by_job_id.get(job["id"], [])
+                latest_stage = stages[-1] if stages else None
+                latest_status = normalize_stage_status(
+                    (latest_stage or {}).get("status") or job.get("status")
                 )
-                continue
-            if applied_date > cutoff_date:
-                continue
+                latest_date = str(
+                    (latest_stage or {}).get("date")
+                    or job.get("date_added_to_sheet")
+                    or job.get("date_found")
+                    or ""
+                ).strip()
 
-            days_applied = (date.today() - applied_date).days
-            repos["stages"].insert(
-                {
-                    "job_id": job["id"],
-                    "status": "ghosted",
-                    "date": today,
-                    "notes": f"Marked ghosted after {days_applied} days in Applied.",
-                }
-            )
-            marked.append(
-                {
-                    "id": job["id"],
-                    "company": job.get("company") or "",
-                    "job_title": job.get("job_title") or "",
-                    "applied_date": applied_date.isoformat(),
-                    "days_applied": days_applied,
-                }
-            )
-        repos["conn"].commit()
+                if latest_status != "applied" or not latest_date:
+                    continue
+                try:
+                    applied_date = date.fromisoformat(latest_date[:10])
+                except ValueError:
+                    logger.warning(
+                        "Skipping ghost check for job %s with invalid date %s",
+                        job.get("id"),
+                        latest_date,
+                    )
+                    continue
+                if applied_date > cutoff_date:
+                    continue
+
+                days_applied = (date.today() - applied_date).days
+                repos["stages"].insert(
+                    {
+                        "job_id": job["id"],
+                        "status": "ghosted",
+                        "date": today,
+                        "notes": f"Marked ghosted after {days_applied} days in Applied.",
+                    }
+                )
+                marked.append(
+                    {
+                        "id": job["id"],
+                        "company": job.get("company") or "",
+                        "job_title": job.get("job_title") or "",
+                        "applied_date": applied_date.isoformat(),
+                        "days_applied": days_applied,
+                    }
+                )
+            repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error marking ghost applications: %s", exc, exc_info=True)
         return jsonify({"error": "Failed to mark ghosts"}), 500
-    finally:
-        repos["conn"].close()
 
     return jsonify({"marked": marked, "count": len(marked), "cutoff_date": cutoff_date.isoformat()})
 
@@ -264,30 +253,24 @@ def mark_ghost_applications():
 @sheet_bp.route("/sheet/stage-statuses")
 def get_stage_statuses():
     """Return all rows from the stage_statuses table, ordered by sort_order."""
-    repos = _get_repos()
-    try:
+    with get_repos() as repos:
         return jsonify(repos["stage_statuses"].get_all())
-    finally:
-        repos["conn"].close()
 
 
 @sheet_bp.route("/sheet/repair/normalize-stage-statuses", methods=["POST"])
 def normalize_stage_statuses():
     """One-time migration: normalise all stage status values to snake_case lowercase."""
-    repos = _get_repos()
     try:
-        stages = repos["stages"].get_all()
-        fixed = 0
-        for stage in stages:
-            normalized = normalize_stage_status(stage.get("status"))
-            if normalized != stage.get("status"):
-                repos["stages"].update(int(stage["id"]), {"status": normalized})
-                fixed += 1
-        repos["conn"].commit()
-        return jsonify({"fixed": fixed})
+        with get_repos() as repos:
+            stages = repos["stages"].get_all()
+            fixed = 0
+            for stage in stages:
+                normalized = normalize_stage_status(stage.get("status"))
+                if normalized != stage.get("status"):
+                    repos["stages"].update(int(stage["id"]), {"status": normalized})
+                    fixed += 1
+            repos["conn"].commit()
+            return jsonify({"fixed": fixed})
     except Exception as exc:
-        repos["conn"].rollback()
         logger.error("normalize-stage-statuses failed: %s", exc)
         return jsonify({"error": "Repair failed"}), 500
-    finally:
-        repos["conn"].close()

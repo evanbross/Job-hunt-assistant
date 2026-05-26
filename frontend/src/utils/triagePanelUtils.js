@@ -228,7 +228,7 @@ export function compareNullableScores(leftScore, rightScore, direction) {
 }
 
 export function dispositionLabel(status) {
-  if (status === "pending_review") return "Job queue";
+  if (status === "pending_review") return "In Job Queue";
   if (status === "triage") return "Still triage";
   if (status === "possible_duplicate") return "Duplicate review";
   if (status === "skipped") return "Skipped";

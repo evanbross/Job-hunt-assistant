@@ -42,7 +42,9 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, UTC
+from typing import Generator
 from urllib.parse import parse_qs, urlparse
 
 from flask import request
@@ -60,7 +62,23 @@ from backend.fit_scorer import FitScorer
 
 logger = logging.getLogger(__name__)
 
-_ACTIVE_QUEUE_STATUSES: tuple[str, ...] = ("pending_review", "triage", "possible_duplicate")
+ACTIVE_JOB_STATUSES: frozenset[str] = frozenset({
+    "pending_review",
+    "triage",
+    "possible_duplicate",
+})
+VALID_JOB_STATUSES: frozenset[str] = frozenset({
+    "pending_review",
+    "triage",
+    "possible_duplicate",
+    "skipped",
+    "applied",
+})
+FIT_PANEL_STATUSES: frozenset[str] = frozenset({
+    "pending_review",
+    "triage",
+    "skipped",
+})
 ACK_SUBJECT_PATTERNS: tuple[str, ...] = (
     "your application was sent",
     "your application has been sent",
@@ -79,9 +97,14 @@ VALID_STAGE_STATUSES: frozenset[str] = frozenset({
 })
 
 
-def _get_repos() -> dict:
-    """Return a dict of repository instances sharing one connection."""
-    return open_repositories(config.DATABASE_URL)
+@contextmanager
+def get_repos() -> Generator[dict, None, None]:
+    """Open a DB connection and yield repos; always closes the connection on exit."""
+    repos = open_repositories(config.DATABASE_URL)
+    try:
+        yield repos
+    finally:
+        repos["conn"].close()
 
 
 def _parse_bool(value: object, *, default: bool) -> bool:
@@ -331,7 +354,7 @@ def db_match_for_job(
     )
     if exact_match is not None:
         tracked_status = (exact_match.get("status") or "").strip() or "Tracked"
-        if tracked_status in _ACTIVE_QUEUE_STATUSES:
+        if tracked_status in ACTIVE_JOB_STATUSES:
             return None, None, None
         duplicate_hint = (
             f"Already tracked as \"{exact_match.get('job_title') or job_title}\" "
@@ -360,7 +383,7 @@ def db_match_for_job(
         None,
     )
     tracked_status = ((matched or {}).get("status") or "Tracked").strip()
-    if tracked_status in _ACTIVE_QUEUE_STATUSES:
+    if tracked_status in ACTIVE_JOB_STATUSES:
         return None, None, None
     duplicate_hint = (
         f"Possible duplicate of \"{dup['sheet_title']}\" "
@@ -376,7 +399,7 @@ def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
     resume_repo: IResumeRepository = repos["resume"]  # type: ignore[assignment]
     penalties_repo: IPenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
 
-    queue_jobs = jobs_repo.get_by_statuses(list(_ACTIVE_QUEUE_STATUSES))
+    queue_jobs = jobs_repo.get_by_statuses(list(ACTIVE_JOB_STATUSES))
     resume_row = resume_repo.get_latest()
     resume_text: str = resume_row["content"] if resume_row else ""
     penalty_rules: list[dict] = penalties_repo.get_enabled()

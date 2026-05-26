@@ -50,8 +50,8 @@ from backend.cover_letter_generator import CoverLetterGenerator
 from backend.resume_tailor import ResumeTailoringGenerator
 from backend.utils import (
     _ai_error_http_status,
-    _get_repos,
     _safe_error_message,
+    get_repos,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,15 +61,13 @@ cover_letter_bp = Blueprint("cover_letter", __name__)
 
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter", methods=["POST"])
 def generate_cover_letter(job_id: int):
-    repos = _get_repos()
-    job = repos["jobs"].get_by_id(job_id)
-    if not job:
-        repos["conn"].close()
-        return jsonify({"error": "Job not found"}), 404
-
-    resume_row = repos["resume"].get_latest()
-    resume_text = resume_row["content"] if resume_row else None
-    repos["conn"].close()
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        resume_row = repos["resume"].get_latest()
+        resume_text = resume_row["content"] if resume_row else None
+    # Connection released before AI generation
 
     try:
         generator = CoverLetterGenerator()
@@ -94,18 +92,15 @@ def save_cover_letter():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    repos = _get_repos()
-    settings = repos["settings"]
-
-    if folder_override:
-        folder = Path(folder_override)
-        settings.set("cover_letter_folder", str(folder))
-    else:
-        saved = settings.get("cover_letter_folder")
-        folder = Path(saved) if saved else Path.home() / "Documents" / "Cover Letters"
-
-    repos["conn"].commit()
-    repos["conn"].close()
+    with get_repos() as repos:
+        settings = repos["settings"]
+        if folder_override:
+            folder = Path(folder_override)
+            settings.set("cover_letter_folder", str(folder))
+        else:
+            saved = settings.get("cover_letter_folder")
+            folder = Path(saved) if saved else Path.home() / "Documents" / "Cover Letters"
+        repos["conn"].commit()
 
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -117,11 +112,11 @@ def save_cover_letter():
     safe_title = _illegal.sub("", job_title)[:60].strip()
     safe_company = _illegal.sub("", company)[:30].strip()
     safe_label = _illegal.sub("", label)[:30].strip()
-    
+
     filename_parts = [part for part in (safe_company, safe_title) if part]
     filename_stem = " - ".join(filename_parts)
     filename_stem = filename_stem or safe_label
-    
+
     extension = "docx"
     if file_format == "pdf":
         extension = "pdf"
@@ -129,37 +124,33 @@ def save_cover_letter():
         extension = "txt"
     elif file_format in ("markdown", "md"):
         extension = "md"
-        
+
     filename = f"{filename_stem} {safe_label}.{extension}"
     path = folder / filename
 
     try:
         if extension == "docx":
             doc = docx.Document()
-            # Remove the default empty paragraph that python-docx adds
             for para in doc.paragraphs:
                 p = para._element
                 p.getparent().remove(p)
-
-            # Add the cover letter as separate paragraphs, preserving line breaks
             for block in text.split("\n"):
                 doc.add_paragraph(block)
             doc.save(str(path))
-            
+
         elif extension == "pdf":
             doc = fitz.open()
             page = doc.new_page()
-            # 1 inch margin (72 points)
             margin = 72
             rect = fitz.Rect(margin, margin, page.rect.width - margin, page.rect.height - margin)
             page.insert_textbox(rect, text, fontsize=11, fontname="helv", align=0)
             doc.save(str(path))
             doc.close()
-            
-        else: # txt
+
+        else:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
-                
+
     except Exception as exc:
         logger.error("Failed to save %s: %s", extension, exc, exc_info=True)
         return jsonify({"error": f"Failed to write file: {exc}"}), 500
@@ -175,10 +166,10 @@ def generate_pitch(job_id: int):
     if pitch_type not in ("why_company", "why_fit"):
         return jsonify({"error": "type must be 'why_company' or 'why_fit'"}), 400
 
-    repos = _get_repos()
-    job = repos["jobs"].get_by_id(job_id)
-    resume_row = repos["resume"].get_latest()
-    repos["conn"].close()
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+        resume_row = repos["resume"].get_latest()
+    # Connection released before AI generation
 
     if not job:
         return jsonify({"error": "Job not found"}), 404
@@ -235,9 +226,9 @@ def generate_pitch(job_id: int):
 @cover_letter_bp.route("/jobs/<int:job_id>/pitch/chat", methods=["POST"])
 def pitch_chat(job_id: int):
     """AI chat for refining a why-company or why-fit pitch."""
-    repos = _get_repos()
-    job = repos["jobs"].get_by_id(job_id)
-    repos["conn"].close()
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+    # Connection released before AI call
 
     if not job:
         return jsonify({"error": "Job not found"}), 404
@@ -313,9 +304,9 @@ def pitch_chat(job_id: int):
 
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter/chat", methods=["POST"])
 def cover_letter_chat(job_id: int):
-    repos = _get_repos()
-    job = repos["jobs"].get_by_id(job_id)
-    repos["conn"].close()
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+    # Connection released before AI call
 
     if not job:
         return jsonify({"error": "Job not found"}), 404
@@ -366,14 +357,12 @@ def cover_letter_chat(job_id: int):
         logger.error("Cover letter chat failed for job %d: %s", job_id, exc, exc_info=True)
         return jsonify({"error": _safe_error_message(exc, "Cover letter chat failed")}), _ai_error_http_status(exc)
 
-    # Extract updated cover letter if the model wrapped one in tags
     updated_cover_letter: str | None = None
     tag_match = re.search(
         r"<UPDATED_COVER_LETTER>(.*?)</UPDATED_COVER_LETTER>", reply_text, re.DOTALL
     )
     if tag_match:
         updated_cover_letter = tag_match.group(1).strip()
-        # Replace the tagged block in the display text with a short notice
         reply_text = re.sub(
             r"\s*<UPDATED_COVER_LETTER>.*?</UPDATED_COVER_LETTER>\s*",
             "\n\n[Updated version ready — click **Use this version** above to apply it.]\n\n",
@@ -386,15 +375,13 @@ def cover_letter_chat(job_id: int):
 
 @cover_letter_bp.route("/jobs/<int:job_id>/resume-tailor", methods=["POST"])
 def generate_resume_tailor(job_id: int):
-    repos = _get_repos()
-    job = repos["jobs"].get_by_id(job_id)
-    if not job:
-        repos["conn"].close()
-        return jsonify({"error": "Job not found"}), 404
-
-    resume_row = repos["resume"].get_latest()
-    resume_text = resume_row["content"] if resume_row else None
-    repos["conn"].close()
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        resume_row = repos["resume"].get_latest()
+        resume_text = resume_row["content"] if resume_row else None
+    # Connection released before AI generation
 
     try:
         generator = ResumeTailoringGenerator()
@@ -408,9 +395,9 @@ def generate_resume_tailor(job_id: int):
 
 @cover_letter_bp.route("/jobs/<int:job_id>/resume-tailor/chat", methods=["POST"])
 def resume_tailor_chat(job_id: int):
-    repos = _get_repos()
-    job = repos["jobs"].get_by_id(job_id)
-    repos["conn"].close()
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+    # Connection released before AI call
 
     if not job:
         return jsonify({"error": "Job not found"}), 404

@@ -41,25 +41,45 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_from_directory
 
+try:
+    import tkinter as _tk
+    from tkinter import filedialog as _filedialog
+    _TKINTER_AVAILABLE = True
+except ImportError:
+    _TKINTER_AVAILABLE = False
+
 import config
+from backend.utils import get_repos
 
 logger = logging.getLogger(__name__)
 
 system_bp = Blueprint("system", __name__)
 
 
+@system_bp.route("/api/system/health")
+def health_check():
+    try:
+        with get_repos() as repos:
+            repos["conn"].execute("SELECT 1")
+    except Exception as exc:
+        logger.error("Health check DB probe failed: %s", exc)
+        return jsonify({"status": "error", "db": "unreachable"}), 503
+    return jsonify({"status": "ok", "db": "connected"})
+
+
 @system_bp.route("/api/system/select-folder", methods=["POST"])
 def select_folder():
+    if not _TKINTER_AVAILABLE:
+        return jsonify({"error": "tkinter is not available on this platform"}), 500
+
     body = request.get_json(silent=True) or {}
     initial_path = (body.get("initial_path") or "").strip()
 
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
+        root = _tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        selected = filedialog.askdirectory(
+        selected = _filedialog.askdirectory(
             initialdir=initial_path or str(Path.home()),
             title="Select cover letter folder",
             mustexist=False,
@@ -76,16 +96,17 @@ def select_folder():
 
 @system_bp.route("/api/system/select-file", methods=["POST"])
 def select_file():
+    if not _TKINTER_AVAILABLE:
+        return jsonify({"error": "tkinter is not available on this platform"}), 500
+
     body = request.get_json(silent=True) or {}
     initial_path = (body.get("initial_path") or "").strip()
 
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
+        root = _tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        selected = filedialog.askopenfilename(
+        selected = _filedialog.askopenfilename(
             initialdir=str(Path(initial_path).parent) if initial_path else str(Path.home()),
             title="Select candidate profile file",
             filetypes=[

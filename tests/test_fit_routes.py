@@ -34,11 +34,22 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any
 
 from flask import Flask
 
 from routes.fit import fit_bp
+
+
+def make_fake_get_repos(repos: dict) -> Any:
+    @contextmanager
+    def fake():
+        try:
+            yield repos
+        finally:
+            repos["conn"].close()
+    return fake
 
 
 class FakeConnection:
@@ -114,7 +125,7 @@ def test_re_evaluate_fit_preserves_possible_duplicate_status(monkeypatch) -> Non
         "penalties": FakePenaltyRepo(),
     }
 
-    monkeypatch.setattr("routes.fit._get_repos", lambda: repos)
+    monkeypatch.setattr("routes.fit.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.fit.FitScorer", FakeFitScorer)
 
     app = Flask(__name__)

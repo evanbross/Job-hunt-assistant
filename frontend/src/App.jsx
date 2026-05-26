@@ -42,9 +42,11 @@ import HistoryPanel from "./components/HistoryPanel.jsx";
 import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
 import CareerSiteResultsPanel from "./components/CareerSiteResultsPanel.jsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
+import StatsBar from "./components/StatsBar.jsx";
 import GreenhouseScanPanel from "./components/GreenhouseScanPanel.jsx";
 import WellfoundScanPanel from "./components/WellfoundScanPanel.jsx";
 import Modal from "./components/common/Modal.jsx";
+import RecentChangesModal from "./components/RecentChangesModal.jsx";
 import MetricGrid, { MetricItem } from "./components/common/MetricGrid.jsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 
@@ -182,6 +184,7 @@ export default function App() {
   const [listenerImportState, setListenerImportState] = useState(null);
   const [listenerImportDismissedAt, setListenerImportDismissedAt] = useState("");
   const [setupComplete, setSetupComplete] = useState(true); // optimistic; corrected on mount
+  const [showRecentChanges, setShowRecentChanges] = useState(false);
 
   const navigateToEmails = (emailId) => {
     setEmailFocusId(emailId);
@@ -345,6 +348,13 @@ export default function App() {
           </nav>
 
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+            <button
+              onClick={() => setShowRecentChanges(true)}
+              style={{ fontSize: "12px", padding: "5px 12px", background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "var(--radius)", cursor: "pointer" }}
+              title="View recent status changes and undo them"
+            >
+              ↩ Recent
+            </button>
             {authStatus === true && (
               <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.85)", fontWeight: "500", display: "flex", alignItems: "center", gap: "10px" }}>
                 <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -367,6 +377,7 @@ export default function App() {
             )}
           </div>
         </header>
+        <StatsBar />
       </div>
 
       {authStatus === false && (
@@ -447,6 +458,10 @@ export default function App() {
             onClose={() => setListenerImportDismissedAt(listenerImportState.started_at || "")}
           />
         )}
+
+      {showRecentChanges && (
+        <RecentChangesModal onClose={() => setShowRecentChanges(false)} />
+      )}
     </div>
   );
 }
@@ -542,6 +557,33 @@ function ListenerImportDialog({ state, onClose }) {
           <a href={state.current_job_url} target="_blank" rel="noreferrer">
             {state.current_job_url}
           </a>
+        </div>
+      )}
+
+      {running && (state.queued > 0 || state.skipped > 0 || state.failed > 0 || state.repaired > 0 || state.enriched > 0) && (
+        <div style={{
+          marginTop: "12px",
+          display: "flex",
+          gap: "16px",
+          flexWrap: "wrap",
+          fontSize: "12px",
+          color: "var(--text-muted)",
+        }}>
+          {state.queued > 0 && (
+            <span><strong style={{ color: "var(--green)" }}>{state.queued}</strong> new</span>
+          )}
+          {state.skipped > 0 && (
+            <span><strong>{state.skipped}</strong> already in DB</span>
+          )}
+          {state.repaired > 0 && (
+            <span><strong style={{ color: "var(--green)" }}>{state.repaired}</strong> company fixed</span>
+          )}
+          {state.enriched > 0 && (
+            <span><strong style={{ color: "var(--green)" }}>{state.enriched}</strong> description enriched</span>
+          )}
+          {state.failed > 0 && (
+            <span><strong style={{ color: "var(--red)" }}>{state.failed}</strong> failed</span>
+          )}
         </div>
       )}
 

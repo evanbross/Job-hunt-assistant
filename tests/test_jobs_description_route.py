@@ -34,11 +34,22 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any
 
 from flask import Flask
 
 from routes.jobs import jobs_bp
+
+
+def make_fake_get_repos(repos: dict) -> Any:
+    @contextmanager
+    def fake():
+        try:
+            yield repos
+        finally:
+            repos["conn"].close()
+    return fake
 
 
 class FakeConnection:
@@ -122,7 +133,7 @@ def test_update_job_description_replaces_text_and_rescores(monkeypatch) -> None:
         "penalties": FakePenaltyRepo(),
     }
 
-    monkeypatch.setattr("routes.jobs._get_repos", lambda: repos)
+    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.jobs.FitScorer", FakeFitScorer)
 
     app = Flask(__name__)
@@ -159,7 +170,7 @@ def test_patch_job_rechecks_duplicate_after_company_edit(monkeypatch) -> None:
     def fake_db_match_for_job(**_kwargs: Any) -> tuple[None, None, str]:
         return None, None, "Possible duplicate of \"Platform Engineer\" at Acme already tracked."
 
-    monkeypatch.setattr("routes.jobs._get_repos", lambda: repos)
+    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.jobs.db_match_for_job", fake_db_match_for_job)
 
     app = Flask(__name__)
@@ -184,7 +195,7 @@ def test_patch_job_accepts_manual_url(monkeypatch) -> None:
         "penalties": FakePenaltyRepo(),
     }
 
-    monkeypatch.setattr("routes.jobs._get_repos", lambda: repos)
+    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None))
 
     app = Flask(__name__)
@@ -206,7 +217,7 @@ def test_patch_job_rejects_invalid_manual_url(monkeypatch) -> None:
         "penalties": FakePenaltyRepo(),
     }
 
-    monkeypatch.setattr("routes.jobs._get_repos", lambda: repos)
+    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
 
     app = Flask(__name__)
     app.register_blueprint(jobs_bp, url_prefix="/api")
@@ -237,7 +248,7 @@ def test_patch_job_clears_stale_duplicate_when_no_match(monkeypatch) -> None:
     def fake_db_match_for_job(**_kwargs: Any) -> tuple[None, None, None]:
         return None, None, None
 
-    monkeypatch.setattr("routes.jobs._get_repos", lambda: repos)
+    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.jobs.db_match_for_job", fake_db_match_for_job)
 
     app = Flask(__name__)
@@ -268,7 +279,7 @@ def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(monke
         "stages": stages_repo,
     }
 
-    monkeypatch.setattr("routes.jobs._get_repos", lambda: repos)
+    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
 
     app = Flask(__name__)
     app.register_blueprint(jobs_bp, url_prefix="/api")

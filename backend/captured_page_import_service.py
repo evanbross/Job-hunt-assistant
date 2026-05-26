@@ -163,6 +163,7 @@ class CapturedPageImportService:
         ("myworkdayjobs.com", "Workday"),
         ("wellfound.com", "Wellfound"),
         ("linkedin.com", "LinkedIn"),
+        ("workatastartup.com", "WorkAtAStartup"),
     )
 
     def extract_public_job_urls(
@@ -286,6 +287,12 @@ class CapturedPageImportService:
                 continue
             raw_url = str(raw_job.get("url") or "").strip()
             public_url = self._normalize_public_job_url(raw_url)
+            if public_url is None:
+                # JSON payloads are explicit user submissions, so accept any valid HTTPS URL
+                # even if it's from a platform we don't have a specialized normalizer for.
+                parsed_raw = urlparse(raw_url)
+                if parsed_raw.scheme in {"http", "https"} and parsed_raw.netloc:
+                    public_url = parsed_raw._replace(fragment="").geturl()
             if not public_url or public_url in seen:
                 continue
             seen.add(public_url)
@@ -401,6 +408,8 @@ class CapturedPageImportService:
             return self._normalize_wellfound_job_url(parsed)
         if platform == "LinkedIn":
             return self._normalize_linkedin_job_url(parsed)
+        if platform == "WorkAtAStartup":
+            return self._normalize_workatastartup_job_url(parsed)
         cleaned = parsed._replace(fragment="", query="")
         return cleaned.geturl()
 
@@ -436,6 +445,13 @@ class CapturedPageImportService:
         if not re.match(r"^/jobs/view/\d+", parsed.path):
             return None
         return parsed._replace(query="", fragment="").geturl()
+
+    @staticmethod
+    def _normalize_workatastartup_job_url(parsed: ParseResult) -> str | None:
+        # Accept /jobs/<numeric-id> — excludes filter paths like /jobs/r/software-engineer
+        if re.match(r"^/jobs/\d+", parsed.path):
+            return parsed._replace(query="", fragment="").geturl()
+        return None
 
     def _wellfound_listing_fields(
         self,
@@ -603,6 +619,8 @@ class CapturedPageImportService:
         if host == "wellfound.com" and path_parts and path_parts[0] == "jobs":
             return parsed._replace(path="/jobs", query="", fragment="").geturl()
         if "linkedin.com" in host:
+            return parsed._replace(path="/jobs", query="", fragment="").geturl()
+        if "workatastartup.com" in host:
             return parsed._replace(path="/jobs", query="", fragment="").geturl()
         return None
 

@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-05-10
+// @version      2026-05-26
 // @match        https://wellfound.com/jobs/*
 // @match        https://wellfound.com/jobs
 // @match        https://app.welcometothejungle.com/jobs/*
@@ -14,7 +14,12 @@
 // @match        https://www.linkedin.com/jobs/collections/recommended/*
 // @match        https://www.linkedin.com/jobs/search/*
 // @match        https://www.linkedin.com/jobs/search-results*
+// @match        https://www.mongodb.com/company/careers/teams/engineering
 // @match        https://www.randstadusa.com/jobs/q-software-engineer/remote/
+// @match        https://hnhiring.com/*
+// @match        https://www.vanta.com/company/careers/*
+// @match        https://jobs.ashbyhq.com/vanta/*
+// @match        https://www.workatastartup.com/jobs*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
@@ -428,6 +433,104 @@
         return JSON.stringify({ jobs });
     }
 
+    function buildHnHiringPayload() {
+        // hnhiring.com aggregates HN "Who's Hiring" posts. Each job card contains a
+        // company heading, role text, description snippet, and an external apply link.
+        // We collect external links (non-hnhiring, non-HN) and capture surrounding
+        // card text as listing_text so the backend can parse company/title from it.
+        const seen = new Set();
+        const jobs = [];
+
+        document.querySelectorAll('a[href]').forEach(link => {
+            const href = link.href || '';
+            if (!href.startsWith('http')) return;
+            if (href.includes('hnhiring.com')) return;
+            if (href.includes('news.ycombinator.com')) return;
+            if (seen.has(href)) return;
+            try { new URL(href); } catch { return; }
+            seen.add(href);
+
+            // Walk up to find the nearest container with meaningful job context.
+            let container = link.parentElement;
+            for (let depth = 0; depth < 12 && container && container !== document.body; depth++) {
+                const len = (container.innerText || '').trim().length;
+                if (len >= 60 && len <= 6000) break;
+                container = container.parentElement;
+            }
+            if (!container || container === document.body) {
+                const text = link.innerText?.trim() || 'Job Posting';
+                jobs.push({ url: href, job_title: text, company: '', listing_text: `${text}\nURL: ${href}` });
+                return;
+            }
+
+            // First heading in the container is usually the company name, second is the role.
+            const headings = [...container.querySelectorAll('h1,h2,h3,h4')];
+            const company = headings[0]?.innerText?.split('\n')[0]?.trim() || '';
+            const title = headings[1]?.innerText?.split('\n')[0]?.trim() || link.innerText?.trim() || '';
+            const cardText = (container.innerText || '').trim().slice(0, 2000);
+
+            const lines = [title || company || 'Job Posting'];
+            if (company && company !== title) lines.push('Company: ' + company);
+            lines.push('URL: ' + href);
+            if (cardText) lines.push('', cardText);
+
+            jobs.push({
+                url: href,
+                job_title: title || company || 'Job Posting',
+                company: company !== title ? company : '',
+                listing_text: lines.join('\n'),
+            });
+        });
+
+        // Wrap in the content/format envelope so the listener preserves `url` at the
+        // top level, letting _resolve_capture_source find hnhiring.com as the capture
+        // source without prompting the user to enter it manually.
+        return JSON.stringify({ content: JSON.stringify({ jobs }), format: 'json', url: window.location.href });
+    }
+
+    function buildWorkAtAStartupPayload() {
+        const seen = new Set();
+        const jobs = [];
+
+        // Individual job pages live at /jobs/<numeric-id>
+        document.querySelectorAll('a[href]').forEach(link => {
+            const m = link.href.match(/workatastartup\.com\/jobs\/(\d+)/);
+            if (!m) return;
+            const url = `https://www.workatastartup.com/jobs/${m[1]}`;
+            if (seen.has(url)) return;
+            seen.add(url);
+
+            // Walk up to find a job card with meaningful context
+            let container = link.parentElement;
+            for (let depth = 0; depth < 10 && container && container !== document.body; depth++) {
+                const len = (container.innerText || '').trim().length;
+                if (len >= 80 && len <= 3000) break;
+                container = container.parentElement;
+            }
+
+            let title = link.innerText?.split('\n')[0]?.trim() || '';
+            let company = '';
+            if (container) {
+                const companyLink = container.querySelector('a[href*="/companies/"]');
+                if (companyLink) company = companyLink.innerText?.split('\n')[0]?.trim() || '';
+                if (!title) {
+                    const h = container.querySelector('h1,h2,h3,h4');
+                    if (h) title = h.innerText?.split('\n')[0]?.trim() || '';
+                }
+            }
+
+            const cardText = container ? (container.innerText || '').trim().slice(0, 2000) : '';
+            const lines = [title || 'Job Posting'];
+            if (company) lines.push('Company: ' + company);
+            lines.push('URL: ' + url);
+            if (cardText) lines.push('', cardText);
+
+            jobs.push({ url, job_title: title || 'Job Posting', company, listing_text: lines.join('\n') });
+        });
+
+        return JSON.stringify({ jobs, source: { url: window.location.href } });
+    }
+
     function buildHtmlPayload() {
         return JSON.stringify({ content: document.documentElement.outerHTML, url: window.location.href });
     }
@@ -524,6 +627,35 @@
         return JSON.stringify({ jobs });
     }
 
+    function buildMongoDBCareerPayload() {
+        const seen = new Set();
+        const jobs = [];
+
+        // MongoDB embeds Greenhouse and surfaces job links as /careers/job?gh_jid=<id>
+        // on their own domain. Convert to canonical Greenhouse URLs so the backend
+        // recognises them as a known platform.
+        document.querySelectorAll('a[href*="gh_jid="], a[href*="/careers/job"]').forEach(a => {
+            let ghJid = '';
+            try {
+                const urlObj = new URL(a.href, window.location.href);
+                ghJid = urlObj.searchParams.get('gh_jid') || '';
+            } catch (_) { return; }
+            if (!ghJid || seen.has(ghJid)) return;
+            seen.add(ghJid);
+
+            const title = (a.innerText || '').split('\n')[0].trim() || 'Software Engineer';
+            const url = `https://job-boards.greenhouse.io/mongodb/jobs/${ghJid}`;
+            jobs.push({
+                url,
+                job_title: title,
+                company: 'MongoDB',
+                listing_text: `${title}\nCompany: MongoDB\nURL: ${url}`,
+            });
+        });
+
+        return JSON.stringify({ jobs });
+    }
+
     async function buildGreenhouseSearchPayload() {
         const seen = new Set();
         const jobs = [];
@@ -582,6 +714,10 @@
         const isLinkedIn = window.location.hostname.includes('linkedin.com');
         const isWellfound = window.location.hostname.includes('wellfound.com');
         const isGreenhouse = window.location.hostname === 'my.greenhouse.io';
+        const isMongoDB = window.location.hostname.includes('mongodb.com') &&
+                          /\/careers/.test(window.location.pathname);
+        const isHnHiring = window.location.hostname === 'hnhiring.com';
+        const isWorkAtAStartup = window.location.hostname.includes('workatastartup.com');
         const isJobView = /\/jobs\/view\/\d+/.test(window.location.pathname);
         const isSearch = /\/jobs\/search/.test(window.location.pathname) ||
                         /\/jobs\/collections/.test(window.location.pathname) ||
@@ -601,6 +737,12 @@
             data = await buildWellfoundSearchPayload();
         } else if (isGreenhouseJobs) {
             data = await buildGreenhouseSearchPayload();
+        } else if (isMongoDB) {
+            data = buildMongoDBCareerPayload();
+        } else if (isHnHiring) {
+            data = buildHnHiringPayload();
+        } else if (isWorkAtAStartup) {
+            data = buildWorkAtAStartupPayload();
         } else {
             data = buildHtmlPayload();
         }

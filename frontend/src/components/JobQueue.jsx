@@ -1569,7 +1569,7 @@ function JobReEvaluatePopup({ popup, onClose }) {
   const isError = popup.phase === "error";
   const reasoningBullets = fitReasoningBullets(reasoningWithoutPenaltySummary(popup.fitReasoning));
   const statusText =
-    popup.status === "pending_review" ? "Queued for review"
+    popup.status === "pending_review" ? "In Job Queue"
     : popup.status === "triage" ? "Moved to triage"
     : popup.status ? dispositionLabel(popup.status)
     : "";
@@ -1664,11 +1664,11 @@ function ScanSummaryPopup({ summary, onClose }) {
   ].filter((item) => item.value > 0);
 
   const createdJobDetails = [
-    { label: "kept in queue", value: pending_review_jobs, tone: "green" },
-    { label: "moved to triage", value: triage_jobs, tone: "yellow" },
-    { label: "possible duplicates", value: possible_duplicate_jobs },
-    { label: "low fit score", value: low_fit_score_jobs, tone: "yellow" },
-    { label: "scoring failed", value: scoring_failed_jobs, tone: "red" },
+    { label: "Added to Queue", value: pending_review_jobs, tone: "green" },
+    { label: "Moved to Triage", value: triage_jobs, tone: "yellow" },
+    { label: "Possible Duplicates", value: possible_duplicate_jobs },
+    { label: "Low Fit Score", value: low_fit_score_jobs, tone: "yellow" },
+    { label: "Scoring Failed", value: scoring_failed_jobs, tone: "red" },
   ].filter((item) => item.value > 0);
 
   const [selectedEmailIds, setSelectedEmailIds] = useState(() => moveEligibleEmails.map((email) => email.email_id));
@@ -1952,7 +1952,7 @@ function ManualEvalDialog({ submitting, result, onClose }) {
     : score >= 50 ? "var(--yellow)"
     : "var(--red)";
   const statusLabel =
-    status === "pending_review" ? "Queued for review"
+    status === "pending_review" ? "In Job Queue"
     : status === "triage" ? "Moved to triage"
     : status || "";
   const statusColor = status === "pending_review" ? "var(--green)" : "var(--yellow)";

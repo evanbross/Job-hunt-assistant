@@ -35,7 +35,7 @@ function statusLabel(status) {
     ghosted: "Ghosted",
     job_filled: "Job Filled",
     not_a_fit: "Not a Fit",
-    pending_review: "Pending Review",
+    pending_review: "In Job Queue",
     possible_duplicate: "Possible Duplicate",
     rejected: "Rejected",
     skipped: "Skipped",

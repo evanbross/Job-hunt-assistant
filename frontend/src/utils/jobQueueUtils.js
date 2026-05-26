@@ -44,7 +44,7 @@ export function scoreDeltaLabel(previousScore, newScore) {
 export function dispositionLabel(status) {
   const labels = {
     applied: "Applied",
-    pending_review: "Queued for review",
+    pending_review: "In Job Queue",
     possible_duplicate: "Possible duplicate",
     skipped: "Skipped",
     triage: "Moved to triage",
@@ -91,4 +91,26 @@ export function formatJobTitles(jobTitles) {
   if (!Array.isArray(jobTitles) || jobTitles.length === 0) return "no jobs";
   if (jobTitles.length === 1) return jobTitles[0] || "1 job";
   return `${jobTitles.length} jobs: ${jobTitles.filter(Boolean).join(", ")}`;
+}
+
+const IMPORT_WARNING_LABELS = {
+  homepage_url: "URL is a homepage, not a job listing",
+  missing_company: "Company name is missing",
+  missing_job_title: "Job title is missing",
+  page_title: "Title looks like a browser page title (contains \"|\")",
+};
+
+export function parseImportWarnings(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function importWarningTooltip(warnings) {
+  if (!warnings || warnings.length === 0) return "";
+  return warnings.map((code) => IMPORT_WARNING_LABELS[code] || code).join("\n");
 }

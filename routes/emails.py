@@ -43,14 +43,15 @@ from flask import Blueprint, jsonify, request
 
 import config
 from backend.duplicate_checker import DuplicateChecker
+from backend.job_validator import normalize_and_validate, import_warnings_to_json
 from backend.email_cleanup_service import EmailCleanupService
 from backend.email_parser import EmailParser
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.utils import (
-    _get_repos,
     db_match_for_job,
     email_date_from_message,
+    get_repos,
     get_subject_rule_match,
     is_application_acknowledgement,
 )
@@ -91,10 +92,8 @@ def get_scanned_emails():
       - ``potential`` — only emails whose job is still in pending_review / triage / possible_duplicate
       - (omitted)    — all scanned emails
     """
-    repos = _get_repos()
-    scanned_repo = repos["scanned_emails"]
-    emails = scanned_repo.get_all_with_job_status()
-    repos["conn"].close()
+    with get_repos() as repos:
+        emails = repos["scanned_emails"].get_all_with_job_status()
 
     filter_param = request.args.get("filter", "")
     if filter_param == "acted":
@@ -124,10 +123,9 @@ def set_email_hidden(email_id: str):
     """Set or clear the hidden flag on a scanned email."""
     data = request.get_json(silent=True) or {}
     hidden = bool(data.get("hidden", True))
-    repos = _get_repos()
-    repos["scanned_emails"].set_hidden(email_id, hidden)
-    repos["conn"].commit()
-    repos["conn"].close()
+    with get_repos() as repos:
+        repos["scanned_emails"].set_hidden(email_id, hidden)
+        repos["conn"].commit()
     return jsonify({"hidden": hidden})
 
 
@@ -169,26 +167,21 @@ def move_scanned_emails():
 
     scanned_email_label = config.get_scanned_email_label()
     try:
-        repos = _get_repos()
-        scanned_repo = repos["scanned_emails"]
-        
-        # Filter out emails that are 'noise' (not a job email) to respect the 
-        # "leave it where it is" policy for non-job content.
-        filtered_email_ids = []
-        for eid in email_ids:
-            # Check the primary email_id (before any suffix)
-            base_eid = eid.split(":")[0]
-            status_info = scanned_repo.get_by_id(base_eid)
-            if status_info and status_info.get("disposition") == "noise":
-                logger.info("Skipping move of email %s because it is marked as 'noise'", base_eid)
-                continue
-            filtered_email_ids.append(eid)
-        
-        repos["conn"].close()
-        
+        with get_repos() as repos:
+            scanned_repo = repos["scanned_emails"]
+            filtered_email_ids = []
+            for eid in email_ids:
+                base_eid = eid.split(":")[0]
+                status_info = scanned_repo.get_by_id(base_eid)
+                if status_info and status_info.get("disposition") == "noise":
+                    logger.info("Skipping move of email %s because it is marked as 'noise'", base_eid)
+                    continue
+                filtered_email_ids.append(eid)
+        # Connection released before Gmail call
+
         if not filtered_email_ids:
             return jsonify({"status": "ok", "moved": 0, "message": "No eligible emails to move"})
-            
+
         moved_count = GmailClient().move_messages_to_label(filtered_email_ids, scanned_email_label)
     except NotAuthenticatedError as exc:
         return jsonify({"error": str(exc)}), 401
@@ -222,31 +215,31 @@ def clean_displayed_emails():
     if not email_ids:
         return jsonify({"checked": 0, "hidden": 0, "hidden_email_ids": []})
 
-    repos = _get_repos()
-    scanned_repo = repos["scanned_emails"]
-
     try:
-        cleanup_service = EmailCleanupService(scanned_repo, GmailClient())
+        gmail = GmailClient()
     except NotAuthenticatedError as exc:
-        repos["conn"].close()
         return jsonify({"error": str(exc)}), 401
 
-    visible_email_ids = set(email_ids)
-    displayed_emails = [
-        email_row
-        for email_row in scanned_repo.get_all_with_job_status()
-        if str(email_row.get("email_id") or "") in visible_email_ids
-    ]
-
     try:
-        result = cleanup_service.hide_stale_or_read_emails(displayed_emails)
-        repos["conn"].commit()
-    except Exception as exc:
-        logger.exception("Email cleanup failed")
-        repos["conn"].close()
-        return jsonify({"error": f"Failed to clean emails: {exc}"}), 500
+        with get_repos() as repos:
+            scanned_repo = repos["scanned_emails"]
+            visible_email_ids = set(email_ids)
+            displayed_emails = [
+                email_row
+                for email_row in scanned_repo.get_all_with_job_status()
+                if str(email_row.get("email_id") or "") in visible_email_ids
+            ]
+            cleanup_service = EmailCleanupService(scanned_repo, gmail)
+            try:
+                result = cleanup_service.hide_stale_or_read_emails(displayed_emails)
+                repos["conn"].commit()
+            except Exception as exc:
+                logger.exception("Email cleanup failed")
+                return jsonify({"error": f"Failed to clean emails: {exc}"}), 500
+    except Exception:
+        logger.exception("Email cleanup DB access failed")
+        return jsonify({"error": "Failed to clean emails"}), 500
 
-    repos["conn"].close()
     return jsonify(
         {
             "checked": result.checked_count,
@@ -265,138 +258,137 @@ def rescan_email(email_id: str):
     Applied/skipped jobs are preserved so a rescan can detect them as tracked
     duplicates instead of erasing application history.
     """
-    repos = _get_repos()
-    scanned_repo = repos["scanned_emails"]
-    job_repo = repos["jobs"]
-    resume_repo = repos["resume"]
-    penalty_repo = repos["penalties"]
-    feedback_repo = repos["feedback"]
+    with get_repos() as repos:
+        scanned_repo = repos["scanned_emails"]
+        job_repo = repos["jobs"]
+        resume_repo = repos["resume"]
+        penalty_repo = repos["penalties"]
+        feedback_repo = repos["feedback"]
 
-    try:
-        gmail = GmailClient()
-    except NotAuthenticatedError as exc:
-        repos["conn"].close()
-        return jsonify({"error": str(exc)}), 401
+        try:
+            gmail = GmailClient()
+        except NotAuthenticatedError as exc:
+            return jsonify({"error": str(exc)}), 401
 
-    # Remove prior scanned record so this email is treated as new
-    scanned_repo.delete(email_id)
+        # Remove prior scanned record so this email is treated as new
+        scanned_repo.delete(email_id)
 
-    # Delete active jobs produced from this email (base and suffixed). Preserve
-    # terminal history so applied/rejected jobs are still duplicate candidates.
-    existing_jobs = job_repo.get_by_statuses(list(_ACTIVE_RESCAN_STATUSES))
-    base_id = email_id.split(":")[0]
-    for job in existing_jobs:
-        eid = (job.get("email_id") or "")
-        if eid == email_id or eid.startswith(base_id + ":"):
-            job_repo.delete(job["id"])
+        # Delete active jobs produced from this email. Preserve terminal history
+        # so applied/rejected jobs are still duplicate candidates.
+        existing_jobs = job_repo.get_by_statuses(list(_ACTIVE_RESCAN_STATUSES))
+        base_id = email_id.split(":")[0]
+        for job in existing_jobs:
+            eid = (job.get("email_id") or "")
+            if eid == email_id or eid.startswith(base_id + ":"):
+                job_repo.delete(job["id"])
 
-    # Re-fetch and re-parse
-    try:
-        full_msg = gmail.get_message(base_id)
-        subject, sender, body = gmail.extract_text(full_msg)
-    except Exception as exc:
-        repos["conn"].close()
-        return jsonify({"error": f"Failed to fetch email from Gmail: {exc}"}), 500
+        # Re-fetch and re-parse
+        try:
+            full_msg = gmail.get_message(base_id)
+            subject, sender, email_body = gmail.extract_text(full_msg)
+        except Exception as exc:
+            return jsonify({"error": f"Failed to fetch email from Gmail: {exc}"}), 500
 
-    email_date = email_date_from_message(full_msg)
+        email_date = email_date_from_message(full_msg)
 
-    subject_rules = repos["email_subject_rules"].get_enabled()
-    subject_rule = get_subject_rule_match(subject, subject_rules)
-    if subject_rule == "blacklist":
-        scanned_repo.mark_scanned(email_id, sender, subject, disposition="ack", email_date=email_date, raw_body=body)
+        subject_rules = repos["email_subject_rules"].get_enabled()
+        subject_rule = get_subject_rule_match(subject, subject_rules)
+        if subject_rule == "blacklist":
+            scanned_repo.mark_scanned(email_id, sender, subject, disposition="ack", email_date=email_date, raw_body=email_body)
+            repos["conn"].commit()
+            return jsonify({"jobs": [], "message": "Acknowledged application email — no job extracted."})
+
+        try:
+            parsed_jobs = EmailParser().parse(subject, sender, email_body)
+        except Exception as exc:
+            scanned_repo.mark_scanned(email_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=email_body, parser_error_msg=str(exc))
+            repos["conn"].commit()
+            return jsonify({"jobs": [], "message": f"Parser error: {exc}"})
+
+        if not parsed_jobs:
+            scanned_repo.mark_scanned(email_id, sender, subject, disposition="noise", email_date=email_date, raw_body=email_body)
+            repos["conn"].commit()
+            return jsonify({"jobs": [], "message": "No job postings found in this email."})
+
+        snippet = email_body[:300]
+        resume_row = resume_repo.get_latest()
+        resume_text = resume_row["content"] if resume_row else ""
+        penalty_rules = penalty_repo.get_enabled()
+        fit_feedback = job_repo.get_not_a_fit_with_feedback()
+        scorer = FitScorer()
+        feedback = feedback_repo.find_match(sender, subject)
+        dedup_checker = DuplicateChecker()
+        known_jobs: list[dict] = job_repo.get_all_ordered()
+
+        created: list[dict] = []
+        for job_idx, parsed in enumerate(parsed_jobs):
+            job_email_id = _rescan_job_email_id(job_repo, base_id, job_idx)
+            confidence = parsed.get("confidence", "low")
+            if feedback and feedback["is_relevant"] == 1:
+                confidence = "high"
+            if subject_rule == "whitelist":
+                confidence = "high"
+
+            _tracked_status, _tracking_source, duplicate_hint = db_match_for_job(
+                job_title=str(parsed.get("job_title") or ""),
+                company=str(parsed.get("company") or ""),
+                job_url=str(parsed.get("url") or ""),
+                known_jobs=known_jobs,
+                dedup_checker=dedup_checker,
+            )
+
+            if duplicate_hint:
+                status = "possible_duplicate"
+            else:
+                status = "pending_review" if confidence == "high" else "triage"
+            job_data: dict = {
+                "email_id": job_email_id,
+                "company": parsed.get("company", ""),
+                "job_title": parsed.get("job_title", ""),
+                "url": parsed.get("url", ""),
+                "source": parsed.get("source", ""),
+                "raw_email_snippet": snippet,
+                "fit_score": None,
+                "fit_reasoning": "",
+                "status": status,
+                "parser_confidence": confidence,
+                "confidence_reason": parsed.get("confidence_reason", ""),
+                "date_found": date.today().isoformat(),
+                "date_added_to_sheet": None,
+                "duplicate_hint": duplicate_hint,
+                "sender_email": sender,
+                "email_subject": subject,
+                "confidence_score": parsed.get("confidence_score", 50),
+            }
+
+            if confidence == "high":
+                try:
+                    result = scorer.score(
+                        job_title=parsed.get("job_title", ""),
+                        company=parsed.get("company", ""),
+                        email_body=email_body,
+                        resume_text=resume_text,
+                        penalty_rules=penalty_rules,
+                        fit_feedback=fit_feedback,
+                    )
+                    job_data["fit_score"] = result["score"]
+                    job_data["fit_reasoning"] = result["reasoning"]
+                    if result["score"] < 70:
+                        job_data["status"] = "triage"
+                except Exception as exc:
+                    logger.warning("Scoring failed during rescan: %s", exc)
+
+            job_data, import_warnings = normalize_and_validate(job_data)
+            job_data["import_warnings"] = import_warnings_to_json(import_warnings)
+            if import_warnings and job_data["status"] != "possible_duplicate":
+                job_data["status"] = "triage"
+
+            new_id = job_repo.insert(job_data)
+            created.append(job_repo.get_by_id(new_id))
+
+        scanned_repo.mark_scanned(email_id, sender, subject, disposition="job_created", email_date=email_date, raw_body=email_body)
         repos["conn"].commit()
-        repos["conn"].close()
-        return jsonify({"jobs": [], "message": "Acknowledged application email — no job extracted."})
-
-    try:
-        parsed_jobs = EmailParser().parse(subject, sender, body)
-    except Exception as exc:
-        scanned_repo.mark_scanned(email_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=body, parser_error_msg=str(exc))
-        repos["conn"].commit()
-        repos["conn"].close()
-        return jsonify({"jobs": [], "message": f"Parser error: {exc}"})
-
-    if not parsed_jobs:
-        scanned_repo.mark_scanned(email_id, sender, subject, disposition="noise", email_date=email_date, raw_body=body)
-        repos["conn"].commit()
-        repos["conn"].close()
-        return jsonify({"jobs": [], "message": "No job postings found in this email."})
-
-    snippet = body[:300]
-    resume_row = resume_repo.get_latest()
-    resume_text = resume_row["content"] if resume_row else ""
-    penalty_rules = penalty_repo.get_enabled()
-    fit_feedback = job_repo.get_not_a_fit_with_feedback()
-    scorer = FitScorer()
-    feedback = feedback_repo.find_match(sender, subject)
-    dedup_checker = DuplicateChecker()
-    known_jobs: list[dict] = job_repo.get_all_ordered()
-
-    created: list[dict] = []
-    for job_idx, parsed in enumerate(parsed_jobs):
-        job_email_id = _rescan_job_email_id(job_repo, base_id, job_idx)
-        confidence = parsed.get("confidence", "low")
-        if feedback and feedback["is_relevant"] == 1:
-            confidence = "high"
-        if subject_rule == "whitelist":
-            confidence = "high"
-
-        _tracked_status, _tracking_source, duplicate_hint = db_match_for_job(
-            job_title=str(parsed.get("job_title") or ""),
-            company=str(parsed.get("company") or ""),
-            job_url=str(parsed.get("url") or ""),
-            known_jobs=known_jobs,
-            dedup_checker=dedup_checker,
-        )
-
-        if duplicate_hint:
-            status = "possible_duplicate"
-        else:
-            status = "pending_review" if confidence == "high" else "triage"
-        job_data: dict = {
-            "email_id": job_email_id,
-            "company": parsed.get("company", ""),
-            "job_title": parsed.get("job_title", ""),
-            "url": parsed.get("url", ""),
-            "source": parsed.get("source", ""),
-            "raw_email_snippet": snippet,
-            "fit_score": None,
-            "fit_reasoning": "",
-            "status": status,
-            "parser_confidence": confidence,
-            "confidence_reason": parsed.get("confidence_reason", ""),
-            "date_found": date.today().isoformat(),
-            "date_added_to_sheet": None,
-            "duplicate_hint": duplicate_hint,
-            "sender_email": sender,
-            "email_subject": subject,
-            "confidence_score": parsed.get("confidence_score", 50),
-        }
-
-        if confidence == "high":
-            try:
-                result = scorer.score(
-                    job_title=parsed.get("job_title", ""),
-                    company=parsed.get("company", ""),
-                    email_body=body,
-                    resume_text=resume_text,
-                    penalty_rules=penalty_rules,
-                    fit_feedback=fit_feedback,
-                )
-                job_data["fit_score"] = result["score"]
-                job_data["fit_reasoning"] = result["reasoning"]
-                if result["score"] < 70:
-                    job_data["status"] = "triage"
-            except Exception as exc:
-                logger.warning("Scoring failed during rescan: %s", exc)
-
-        new_id = job_repo.insert(job_data)
-        created.append(job_repo.get_by_id(new_id))
-
-    scanned_repo.mark_scanned(email_id, sender, subject, disposition="job_created", email_date=email_date, raw_body=body)
-    repos["conn"].commit()
-    repos["conn"].close()
-    return jsonify({"jobs": created, "message": f"Rescanned — {len(created)} job(s) extracted."})
+        return jsonify({"jobs": created, "message": f"Rescanned — {len(created)} job(s) extracted."})
 
 
 def _rescan_job_email_id(job_repo: object, base_email_id: str, job_idx: int) -> str:
@@ -416,9 +408,8 @@ def _rescan_job_email_id(job_repo: object, base_email_id: str, job_idx: int) -> 
 
 @emails_bp.route("/sources")
 def get_sources():
-    repos = _get_repos()
-    sources = repos["sources"].get_all()
-    repos["conn"].close()
+    with get_repos() as repos:
+        sources = repos["sources"].get_all()
     return jsonify(sources)
 
 
@@ -431,11 +422,10 @@ def create_source():
     if error_response is not None:
         return error_response
 
-    repos = _get_repos()
-    source_id = repos["sources"].insert(source_payload)
-    source = repos["sources"].get_by_id(source_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+    with get_repos() as repos:
+        source_id = repos["sources"].insert(source_payload)
+        source = repos["sources"].get_by_id(source_id)
+        repos["conn"].commit()
     return jsonify(source), 201
 
 
@@ -449,28 +439,24 @@ def update_source(source_id: int):
     if error_response is not None:
         return error_response
 
-    repos = _get_repos()
-    if not repos["sources"].get_by_id(source_id):
-        repos["conn"].close()
-        return jsonify({"error": "Source not found"}), 404
+    with get_repos() as repos:
+        if not repos["sources"].get_by_id(source_id):
+            return jsonify({"error": "Source not found"}), 404
 
-    repos["sources"].update(source_id, updates)
-    source = repos["sources"].get_by_id(source_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+        repos["sources"].update(source_id, updates)
+        source = repos["sources"].get_by_id(source_id)
+        repos["conn"].commit()
     return jsonify(source)
 
 
 @emails_bp.route("/sources/<int:source_id>", methods=["DELETE"])
 def delete_source(source_id: int):
-    repos = _get_repos()
-    if not repos["sources"].get_by_id(source_id):
-        repos["conn"].close()
-        return jsonify({"error": "Source not found"}), 404
+    with get_repos() as repos:
+        if not repos["sources"].get_by_id(source_id):
+            return jsonify({"error": "Source not found"}), 404
 
-    repos["sources"].delete(source_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+        repos["sources"].delete(source_id)
+        repos["conn"].commit()
     return jsonify({"status": "ok"})
 
 

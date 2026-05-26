@@ -52,7 +52,7 @@ from backend.import_dump import dump_import_capture
 from backend.import_repair import post_repair_duplicate_check, repair_linkedin_company
 from backend.tasks import run_import_task
 from backend.utils import (
-    _get_repos,
+    get_repos,
     _parse_positive_int,
     platform_for_site_url,
     platform_label,
@@ -202,7 +202,7 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
         existing = career_sites_repo.get_by_url(guessed_url) if guessed_url else None
         if existing:
             return existing, None
-        source_id = career_sites_repo.insert(
+        new_source_id = career_sites_repo.insert(
             {
                 "name": str(guessed_source.get("name") or "Captured Job Board").strip(),
                 "url": guessed_url,
@@ -213,7 +213,7 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             }
         )
-        return career_sites_repo.get_by_id(source_id), None
+        return career_sites_repo.get_by_id(new_source_id), None
 
     if source_query and not source_url:
         suggestions = _capture_source_suggestions(repos, source_query)
@@ -253,7 +253,7 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
         existing = career_sites_repo.get_by_url(source_url)
         if existing:
             return existing, None
-        source_id = career_sites_repo.insert(
+        new_source_id = career_sites_repo.insert(
             {
                 "name": source_name or platform_label(platform_for_site_url(source_url)),
                 "url": source_url,
@@ -264,7 +264,7 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             }
         )
-        return career_sites_repo.get_by_id(source_id), None
+        return career_sites_repo.get_by_id(new_source_id), None
 
     logger.warning("capture source could not be inferred for url=%s", source_url or "(none)")
     return None, (
@@ -309,10 +309,11 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
             )
             return {"error": "An import is already running"}, 409
 
-    repos = _get_repos()
     raw_content = str(body.get("content") or "")
     content_format = str(body.get("format") or "auto")
 
+    # Page analysis does not need a DB connection — open it only after we have
+    # validated URLs and are ready to resolve the capture source.
     try:
         _set_import_progress(
             ImportProgressState(
@@ -330,7 +331,6 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         )
         extracted = analysis["urls"]
     except ValueError as exc:
-        repos["conn"].close()
         _set_import_progress(
             ImportProgressState(
                 running=False,
@@ -343,7 +343,6 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         )
         return {"error": str(exc)}, 400
     except Exception as exc:
-        repos["conn"].close()
         logger.error("Captured page analysis failed: %s", exc)
         _set_import_progress(
             ImportProgressState(
@@ -358,7 +357,6 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         return {"error": "Captured page analysis failed"}, 500
 
     if not extracted:
-        repos["conn"].close()
         _set_import_progress(
             ImportProgressState(
                 running=False,
@@ -372,54 +370,52 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         )
         return {"queued": 0, "skipped": 0, "failed": 0, "jobs": []}, 200
 
-    try:
-        _set_import_progress(
-            ImportProgressState(
-                running=True,
-                phase="filtering",
-                progress=32,
-                message=f"Found {len(extracted)} job link{'s' if len(extracted) != 1 else ''}; resolving source.",
-                trigger=trigger,
-                started_at=started_at,
-                total=len(extracted),
-            )
+    _set_import_progress(
+        ImportProgressState(
+            running=True,
+            phase="filtering",
+            progress=32,
+            message=f"Found {len(extracted)} job link{'s' if len(extracted) != 1 else ''}; resolving source.",
+            trigger=trigger,
+            started_at=started_at,
+            total=len(extracted),
         )
-        capture_source, source_error = _resolve_capture_source(
-            repos, body, analysis["source"]
-        )
-    except ValueError as exc:
-        repos["conn"].close()
-        _set_import_progress(
-            ImportProgressState(
-                running=False,
-                phase="error",
-                progress=0,
-                message=str(exc),
-                trigger=trigger,
-                started_at=started_at,
-            )
-        )
-        return {"error": str(exc)}, 400
-    if source_error:
-        payload, status_code = source_error
-        repos["conn"].close()
-        _set_import_progress(
-            ImportProgressState(
-                running=False,
-                phase="error",
-                progress=0,
-                message=str(
-                    payload.get("error") or "Capture source could not be resolved."
-                ),
-                trigger=trigger,
-                started_at=started_at,
-                total=len(extracted),
-            )
-        )
-        return payload, status_code
+    )
 
-    repos["conn"].commit()
-    repos["conn"].close()
+    with get_repos() as repos:
+        try:
+            capture_source, source_error = _resolve_capture_source(
+                repos, body, analysis["source"]
+            )
+        except ValueError as exc:
+            _set_import_progress(
+                ImportProgressState(
+                    running=False,
+                    phase="error",
+                    progress=0,
+                    message=str(exc),
+                    trigger=trigger,
+                    started_at=started_at,
+                )
+            )
+            return {"error": str(exc)}, 400
+        if source_error:
+            payload, status_code = source_error
+            _set_import_progress(
+                ImportProgressState(
+                    running=False,
+                    phase="error",
+                    progress=0,
+                    message=str(
+                        payload.get("error") or "Capture source could not be resolved."
+                    ),
+                    trigger=trigger,
+                    started_at=started_at,
+                    total=len(extracted),
+                )
+            )
+            return payload, status_code
+        repos["conn"].commit()
 
     _set_import_progress(
         ImportProgressState(
@@ -446,49 +442,45 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
 
 @import_bp.route("/repair/fix-unknown-companies", methods=["POST"])
 def fix_unknown_companies():
-    repos = _get_repos()
-    try:
-        all_jobs = repos["jobs"].get_all_ordered()
-        batch = repos["jobs"].get_with_missing_company(limit=15)
-        fixed = 0
-        for job in batch:
-            url = str(job.get("url") or "")
-            if "linkedin.com" not in url.lower():
-                continue
-            if repair_linkedin_company(repos["jobs"], job, url):
-                fixed += 1
-                repos["conn"].commit()
-                updated_job = repos["jobs"].get_by_id(int(job["id"]))
-                if updated_job:
-                    post_repair_duplicate_check(repos["jobs"], updated_job, all_jobs)
+    with get_repos() as repos:
+        try:
+            all_jobs = repos["jobs"].get_all_ordered()
+            batch = repos["jobs"].get_with_missing_company(limit=15)
+            fixed = 0
+            for job in batch:
+                url = str(job.get("url") or "")
+                if "linkedin.com" not in url.lower():
+                    continue
+                if repair_linkedin_company(repos["jobs"], job, url):
+                    fixed += 1
                     repos["conn"].commit()
-        remaining = repos["jobs"].count_with_missing_company()
-        return jsonify({"fixed": fixed, "remaining": remaining})
-    except Exception as exc:
-        repos["conn"].rollback()
-        logger.error("fix-unknown-companies failed: %s", exc)
-        return jsonify({"error": "Repair failed"}), 500
-    finally:
-        repos["conn"].close()
+                    updated_job = repos["jobs"].get_by_id(int(job["id"]))
+                    if updated_job:
+                        post_repair_duplicate_check(repos["jobs"], updated_job, all_jobs)
+                        repos["conn"].commit()
+            remaining = repos["jobs"].count_with_missing_company()
+            return jsonify({"fixed": fixed, "remaining": remaining})
+        except Exception as exc:
+            repos["conn"].rollback()
+            logger.error("fix-unknown-companies failed: %s", exc)
+            return jsonify({"error": "Repair failed"}), 500
 
 
 @import_bp.route("/repair/delete-unknown-companies", methods=["POST"])
 def delete_unknown_companies():
-    repos = _get_repos()
-    try:
-        batch = repos["jobs"].get_with_missing_company(limit=10_000)
-        deleted = 0
-        for job in batch:
-            repos["jobs"].delete(int(job["id"]))
-            deleted += 1
-        repos["conn"].commit()
-        return jsonify({"deleted": deleted})
-    except Exception as exc:
-        repos["conn"].rollback()
-        logger.error("delete-unknown-companies failed: %s", exc)
-        return jsonify({"error": "Delete failed"}), 500
-    finally:
-        repos["conn"].close()
+    with get_repos() as repos:
+        try:
+            batch = repos["jobs"].get_with_missing_company(limit=10_000)
+            deleted = 0
+            for job in batch:
+                repos["jobs"].delete(int(job["id"]))
+                deleted += 1
+            repos["conn"].commit()
+            return jsonify({"deleted": deleted})
+        except Exception as exc:
+            repos["conn"].rollback()
+            logger.error("delete-unknown-companies failed: %s", exc)
+            return jsonify({"error": "Delete failed"}), 500
 
 
 @import_bp.route("/import/job-urls", methods=["POST"])
@@ -564,6 +556,11 @@ def import_status():
             "started_at": started_at,
             "capture_source": meta.get("capture_source"),
             "steps": _import_steps(str(meta.get("phase", "processing")), True),
+            "queued": meta.get("queued", 0),
+            "skipped": meta.get("skipped", 0),
+            "repaired": meta.get("repaired", 0),
+            "enriched": meta.get("enriched", 0),
+            "failed": meta.get("failed", 0),
         })
 
     if state == "PROGRESS":
@@ -581,6 +578,11 @@ def import_status():
             "started_at": started_at,
             "capture_source": meta.get("capture_source"),
             "steps": _import_steps(str(meta.get("phase", "processing")), True),
+            "queued": meta.get("queued", 0),
+            "skipped": meta.get("skipped", 0),
+            "repaired": meta.get("repaired", 0),
+            "enriched": meta.get("enriched", 0),
+            "failed": meta.get("failed", 0),
         })
 
     if state == "SUCCESS":

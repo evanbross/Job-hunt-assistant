@@ -47,11 +47,13 @@ import fitz
 from flask import Blueprint, jsonify, request
 
 import config
-from backend.utils import _get_repos, _rescore_active_queue_jobs
+from backend.utils import get_repos, _rescore_active_queue_jobs
 
 logger = logging.getLogger(__name__)
 
 settings_bp = Blueprint("settings", __name__)
+
+_VALID_PENALTY_SCOPES: frozenset[str] = frozenset({"title", "company", "body", "any"})
 
 
 # ─── Config routes ────────────────────────────────────────────────────────────
@@ -142,6 +144,9 @@ def update_config():
             data.get("job_import_listener_token") or ""
         ).strip()
 
+    if "candidate_timezone" in data:
+        cfg["candidate_timezone"] = str(data.get("candidate_timezone") or "").strip()
+
     if "job_import_listener_max_bytes" in data:
         try:
             max_bytes = int(data.get("job_import_listener_max_bytes") or 0)
@@ -156,12 +161,9 @@ def update_config():
     profile_changed = str(cfg.get("candidate_profile_path") or "").strip() != previous_profile_path
     rescore_summary = {"rescored": 0, "failed": 0}
     if profile_changed:
-        repos = _get_repos()
-        try:
+        with get_repos() as repos:
             rescore_summary = _rescore_active_queue_jobs(repos)
             repos["conn"].commit()
-        finally:
-            repos["conn"].close()
 
     return jsonify({
         **cfg,
@@ -212,9 +214,8 @@ def test_ollama_connection():
 
 @settings_bp.route("/penalties")
 def get_penalties():
-    repos = _get_repos()
-    rules = repos["penalties"].get_all()
-    repos["conn"].close()
+    with get_repos() as repos:
+        rules = repos["penalties"].get_all()
     return jsonify(rules)
 
 
@@ -224,18 +225,21 @@ def create_penalty():
     if not data or not all(k in data for k in ("rule_text", "penalty_points")):
         return jsonify({"error": "rule_text and penalty_points are required"}), 400
 
-    repos = _get_repos()
-    rule_id = repos["penalties"].insert(
-        {
-            "rule_text": data["rule_text"],
-            "penalty_points": int(data["penalty_points"]),
-            "enabled": data.get("enabled", 1),
-            "scope": data.get("scope", "any"),
-        }
-    )
-    rule = repos["penalties"].get_by_id(rule_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+    scope = str(data.get("scope") or "any").strip().lower()
+    if scope not in _VALID_PENALTY_SCOPES:
+        return jsonify({"error": f"scope must be one of: {', '.join(sorted(_VALID_PENALTY_SCOPES))}"}), 400
+
+    with get_repos() as repos:
+        rule_id = repos["penalties"].insert(
+            {
+                "rule_text": data["rule_text"],
+                "penalty_points": int(data["penalty_points"]),
+                "enabled": data.get("enabled", 1),
+                "scope": scope,
+            }
+        )
+        rule = repos["penalties"].get_by_id(rule_id)
+        repos["conn"].commit()
     return jsonify(rule), 201
 
 
@@ -249,29 +253,29 @@ def update_penalty(rule_id: int):
     updates = {k: v for k, v in data.items() if k in allowed}
     if "penalty_points" in updates:
         updates["penalty_points"] = int(updates["penalty_points"])
+    if "scope" in updates:
+        updates["scope"] = str(updates["scope"] or "any").strip().lower()
+        if updates["scope"] not in _VALID_PENALTY_SCOPES:
+            return jsonify({"error": f"scope must be one of: {', '.join(sorted(_VALID_PENALTY_SCOPES))}"}), 400
 
-    repos = _get_repos()
-    if not repos["penalties"].get_by_id(rule_id):
-        repos["conn"].close()
-        return jsonify({"error": "Rule not found"}), 404
+    with get_repos() as repos:
+        if not repos["penalties"].get_by_id(rule_id):
+            return jsonify({"error": "Rule not found"}), 404
 
-    repos["penalties"].update(rule_id, updates)
-    rule = repos["penalties"].get_by_id(rule_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+        repos["penalties"].update(rule_id, updates)
+        rule = repos["penalties"].get_by_id(rule_id)
+        repos["conn"].commit()
     return jsonify(rule)
 
 
 @settings_bp.route("/penalties/<int:rule_id>", methods=["DELETE"])
 def delete_penalty(rule_id: int):
-    repos = _get_repos()
-    if not repos["penalties"].get_by_id(rule_id):
-        repos["conn"].close()
-        return jsonify({"error": "Rule not found"}), 404
+    with get_repos() as repos:
+        if not repos["penalties"].get_by_id(rule_id):
+            return jsonify({"error": "Rule not found"}), 404
 
-    repos["penalties"].delete(rule_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+        repos["penalties"].delete(rule_id)
+        repos["conn"].commit()
     return jsonify({"status": "ok"})
 
 
@@ -279,18 +283,16 @@ def delete_penalty(rule_id: int):
 
 @settings_bp.route("/feedback")
 def get_feedback():
-    repos = _get_repos()
-    feedback = repos["feedback"].get_all()
-    repos["conn"].close()
+    with get_repos() as repos:
+        feedback = repos["feedback"].get_all()
     return jsonify(feedback)
 
 
 @settings_bp.route("/feedback/<int:feedback_id>", methods=["DELETE"])
 def delete_feedback(feedback_id: int):
-    repos = _get_repos()
-    repos["feedback"].delete(feedback_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+    with get_repos() as repos:
+        repos["feedback"].delete(feedback_id)
+        repos["conn"].commit()
     return jsonify({"status": "ok"})
 
 
@@ -298,9 +300,8 @@ def delete_feedback(feedback_id: int):
 
 @settings_bp.route("/email-subject-rules")
 def get_email_subject_rules():
-    repos = _get_repos()
-    rules = repos["email_subject_rules"].get_all()
-    repos["conn"].close()
+    with get_repos() as repos:
+        rules = repos["email_subject_rules"].get_all()
     return jsonify(rules)
 
 
@@ -315,13 +316,12 @@ def create_email_subject_rule():
     if rule_type not in {"blacklist", "whitelist"}:
         return jsonify({"error": "rule_type must be blacklist or whitelist"}), 400
 
-    repos = _get_repos()
-    rule_id = repos["email_subject_rules"].insert(
-        {"pattern": pattern, "enabled": 1, "rule_type": rule_type}
-    )
-    row = repos["email_subject_rules"].get_by_id(rule_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+    with get_repos() as repos:
+        rule_id = repos["email_subject_rules"].insert(
+            {"pattern": pattern, "enabled": 1, "rule_type": rule_type}
+        )
+        row = repos["email_subject_rules"].get_by_id(rule_id)
+        repos["conn"].commit()
     return jsonify(row), 201
 
 
@@ -342,28 +342,24 @@ def update_email_subject_rule(rule_id: int):
         if updates["rule_type"] not in {"blacklist", "whitelist"}:
             return jsonify({"error": "rule_type must be blacklist or whitelist"}), 400
 
-    repos = _get_repos()
-    if not repos["email_subject_rules"].get_by_id(rule_id):
-        repos["conn"].close()
-        return jsonify({"error": "Rule not found"}), 404
+    with get_repos() as repos:
+        if not repos["email_subject_rules"].get_by_id(rule_id):
+            return jsonify({"error": "Rule not found"}), 404
 
-    repos["email_subject_rules"].update(rule_id, updates)
-    row = repos["email_subject_rules"].get_by_id(rule_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+        repos["email_subject_rules"].update(rule_id, updates)
+        row = repos["email_subject_rules"].get_by_id(rule_id)
+        repos["conn"].commit()
     return jsonify(row)
 
 
 @settings_bp.route("/email-subject-rules/<int:rule_id>", methods=["DELETE"])
 def delete_email_subject_rule(rule_id: int):
-    repos = _get_repos()
-    if not repos["email_subject_rules"].get_by_id(rule_id):
-        repos["conn"].close()
-        return jsonify({"error": "Rule not found"}), 404
+    with get_repos() as repos:
+        if not repos["email_subject_rules"].get_by_id(rule_id):
+            return jsonify({"error": "Rule not found"}), 404
 
-    repos["email_subject_rules"].delete(rule_id)
-    repos["conn"].commit()
-    repos["conn"].close()
+        repos["email_subject_rules"].delete(rule_id)
+        repos["conn"].commit()
     return jsonify({"status": "ok"})
 
 
@@ -382,7 +378,6 @@ def upload_resume():
     save_path = config.UPLOADS_DIR / "resume.pdf"
     file.save(str(save_path))
 
-    # Extract text with PyMuPDF
     try:
         with fitz.open(str(save_path)) as doc:
             text = "\n".join(page.get_text() for page in doc)
@@ -390,20 +385,18 @@ def upload_resume():
         logger.error("PDF extraction failed: %s", exc)
         return jsonify({"error": f"PDF text extraction failed: {exc}"}), 500
 
-    repos = _get_repos()
-    repos["resume"].delete_all()
-    resume_id = repos["resume"].insert(
-        {
-            "filename": file.filename,
-            "content": text,
-            "uploaded_at": datetime.now(UTC).isoformat(),
-        }
-    )
-    resume = repos["resume"].get_latest()
-    repos["conn"].commit()
-    repos["conn"].close()
+    with get_repos() as repos:
+        repos["resume"].delete_all()
+        resume_id = repos["resume"].insert(
+            {
+                "filename": file.filename,
+                "content": text,
+                "uploaded_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        resume = repos["resume"].get_latest()
+        repos["conn"].commit()
 
-    # Return without full content (it can be large)
     return (
         jsonify(
             {
@@ -419,9 +412,8 @@ def upload_resume():
 
 @settings_bp.route("/resume")
 def get_resume():
-    repos = _get_repos()
-    resume = repos["resume"].get_latest()
-    repos["conn"].close()
+    with get_repos() as repos:
+        resume = repos["resume"].get_latest()
     if not resume:
         return jsonify(None)
     return jsonify(

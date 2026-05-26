@@ -99,7 +99,13 @@
       "Bash(npx vite *)",
       "Bash(findstr /i \"career\")",
       "Bash(Select-Object -Property Name, PSIsContainer)",
-      "Bash(not exist *)"
+      "Bash(not exist *)",
+      "Bash(curl -s -X PATCH http://localhost:5000/api/jobs/1041 -H \"Content-Type: application/json\" -d '{\"company\": \"Findigs\", \"job_title\": \"Senior Software Engineer\"}')",
+      "Bash(curl -s http://localhost:5000/api/jobs)",
+      "Bash(tasklist /FI \"IMAGENAME eq python.exe\" /FO LIST)",
+      "Bash(curl -s http://localhost:5000/api/scan/status)",
+      "Bash(curl -s http://localhost:5004/api/scan/status)",
+      "Bash(curl -s http://localhost:5001/api/scan/status)"
     ]
   }
 }

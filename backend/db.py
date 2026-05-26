@@ -65,6 +65,7 @@ class IJobRepository(Protocol):
     def get_not_a_fit_with_feedback(self, limit: int = 20) -> list[dict[str, Any]]: ...
     def get_with_missing_company(self, limit: int = 15) -> list[dict[str, Any]]: ...
     def count_with_missing_company(self) -> int: ...
+    def get_stats(self) -> dict[str, int]: ...
     def insert(self, job: dict[str, Any]) -> int: ...
     def update(self, job_id: int, fields: dict[str, Any]) -> None: ...
     def delete(self, job_id: int) -> None: ...
@@ -191,6 +192,14 @@ class IEmailSubjectRuleRepository(Protocol):
     def insert(self, row: dict[str, Any]) -> int: ...
     def update(self, rule_id: int, fields: dict[str, Any]) -> None: ...
     def delete(self, rule_id: int) -> None: ...
+
+
+@runtime_checkable
+class IJobStatusHistoryRepository(Protocol):
+    def insert(self, row: dict[str, Any]) -> int: ...
+    def get_recent(self, limit: int = 30) -> list[dict[str, Any]]: ...
+    def get_by_id(self, history_id: int) -> dict[str, Any] | None: ...
+    def delete(self, history_id: int) -> None: ...
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -325,6 +334,7 @@ class PostgresJobRepository(_BaseRepo):
         "skip_mismatch_reasons",
         "notes",
         "job_description",
+        "import_warnings",
     })
 
     def get_all_by_status(self, status: str) -> list[dict[str, Any]]:
@@ -407,6 +417,32 @@ class PostgresJobRepository(_BaseRepo):
             f"SELECT COUNT(*) AS n FROM jobs WHERE {self._MISSING_COMPANY_SQL}"
         )
         return int(cur.fetchone()["n"])
+
+    def get_stats(self) -> dict[str, int]:
+        cur = self._execute(
+            """
+            SELECT
+              COUNT(*) AS total,
+              COUNT(CASE WHEN NOT (
+                  status = 'possible_duplicate'
+                  OR (status = 'skipped' AND skip_reason = 'duplicate')
+              ) THEN 1 END) AS unique_jobs,
+              COUNT(CASE WHEN
+                  status = 'possible_duplicate'
+                  OR (status = 'skipped' AND skip_reason = 'duplicate')
+              THEN 1 END) AS duplicates,
+              COUNT(CASE WHEN status = 'applied' THEN 1 END) AS applied,
+              COUNT(CASE WHEN status = 'pending_review' THEN 1 END) AS in_queue,
+              COUNT(CASE WHEN status = 'triage' THEN 1 END) AS in_triage,
+              (SELECT COUNT(DISTINCT job_id) FROM application_stages
+               WHERE status IN ('rejected', 'job_filled')) AS rejected,
+              (SELECT COUNT(DISTINCT job_id) FROM application_stages
+               WHERE status = 'ghosted') AS ghosted
+            FROM jobs
+            """
+        )
+        row = _row_to_dict(cur.fetchone())
+        return {k: int(v or 0) for k, v in row.items()}
 
     def insert(self, job: dict[str, Any]) -> int:
         unknown = set(job.keys()) - self._ALLOWED_COLUMNS
@@ -608,6 +644,43 @@ class PostgresRelevanceFeedbackRepository(_BaseRepo):
         self._execute(
             "DELETE FROM relevance_feedback WHERE id = %s", (feedback_id,)
         )
+
+
+class PostgresJobStatusHistoryRepository(_BaseRepo):
+    def insert(self, row: dict[str, Any]) -> int:
+        cur = self._execute(
+            """
+            INSERT INTO job_status_history (job_id, from_status, to_status, changed_at, trigger, extra_data)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+            """,
+            (row["job_id"], row["from_status"], row["to_status"],
+             row["changed_at"], row["trigger"], row.get("extra_data")),
+        )
+        return cur.fetchone()["id"]
+
+    def get_recent(self, limit: int = 30) -> list[dict[str, Any]]:
+        cur = self._execute(
+            """
+            SELECT h.id, h.job_id, h.from_status, h.to_status, h.changed_at, h.trigger, h.extra_data,
+                   j.job_title, j.company
+            FROM job_status_history h
+            JOIN jobs j ON j.id = h.job_id
+            ORDER BY h.id DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_by_id(self, history_id: int) -> dict[str, Any] | None:
+        cur = self._execute(
+            "SELECT * FROM job_status_history WHERE id = %s", (history_id,)
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def delete(self, history_id: int) -> None:
+        self._execute("DELETE FROM job_status_history WHERE id = %s", (history_id,))
 
 
 def _feedback_subject_matches(feedback_row: dict[str, Any], subject: str) -> bool:
@@ -1392,6 +1465,7 @@ def _migrate(conn: Any) -> None:
         ("skip_mismatch_reasons", "TEXT"),
         ("notes", "TEXT"),
         ("job_description", "TEXT"),
+        ("import_warnings", "TEXT"),
     ]:
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {defn}")
 
@@ -1494,6 +1568,26 @@ def _migrate(conn: Any) -> None:
 
     cur.execute("UPDATE jobs SET date_found = CURRENT_DATE::text WHERE date_found IS NULL")
 
+    cur.execute(
+        "ALTER TABLE penalty_rules ADD COLUMN IF NOT EXISTS scope TEXT DEFAULT 'any'"
+        " CHECK (scope IN ('title', 'company', 'body', 'any'))"
+    )
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS job_status_history (
+            id           SERIAL PRIMARY KEY,
+            job_id       INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            from_status  TEXT NOT NULL,
+            to_status    TEXT NOT NULL,
+            changed_at   TEXT NOT NULL,
+            trigger      TEXT NOT NULL,
+            extra_data   TEXT
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_job_status_history_job ON job_status_history (job_id)"
+    )
+
     conn.commit()
 
 
@@ -1522,6 +1616,7 @@ def _migrate_sqlite(conn: Any) -> None:
         ("skip_mismatch_reasons", "TEXT"),
         ("notes", "TEXT"),
         ("job_description", "TEXT"),
+        ("import_warnings", "TEXT"),
     ]:
         _sqlite_add_column_if_missing(cur, "jobs", col, defn)
 
@@ -1619,6 +1714,21 @@ def _migrate_sqlite(conn: Any) -> None:
 
     cur.execute("UPDATE jobs SET date_found = date('now') WHERE date_found IS NULL")
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS job_status_history (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id       INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            from_status  TEXT NOT NULL,
+            to_status    TEXT NOT NULL,
+            changed_at   TEXT NOT NULL,
+            trigger      TEXT NOT NULL,
+            extra_data   TEXT
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_job_status_history_job ON job_status_history (job_id)"
+    )
+
     conn.commit()
 
 
@@ -1648,7 +1758,8 @@ def _create_tables(conn: Any) -> None:
             skip_reason           TEXT,
             skip_feedback         TEXT,
             skip_mismatch_reasons TEXT,
-            job_description       TEXT
+            job_description       TEXT,
+            import_warnings       TEXT
         )
         """,
         """
@@ -1668,7 +1779,8 @@ def _create_tables(conn: Any) -> None:
             id             SERIAL PRIMARY KEY,
             rule_text      TEXT,
             penalty_points INTEGER,
-            enabled        INTEGER DEFAULT 1
+            enabled        INTEGER DEFAULT 1,
+            scope          TEXT DEFAULT 'any' CHECK (scope IN ('title', 'company', 'body', 'any'))
         )
         """,
         """
@@ -1808,6 +1920,21 @@ def _create_tables(conn: Any) -> None:
             color_fg       TEXT
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS job_status_history (
+            id           SERIAL PRIMARY KEY,
+            job_id       INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            from_status  TEXT NOT NULL,
+            to_status    TEXT NOT NULL,
+            changed_at   TEXT NOT NULL,
+            trigger      TEXT NOT NULL,
+            extra_data   TEXT
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_job_status_history_job
+            ON job_status_history (job_id)
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()
@@ -1840,7 +1967,8 @@ def _create_tables_sqlite(conn: Any) -> None:
             skip_feedback         TEXT,
             skip_mismatch_reasons TEXT,
             notes                 TEXT,
-            job_description       TEXT
+            job_description       TEXT,
+            import_warnings       TEXT
         )
         """,
         """
@@ -2001,6 +2129,21 @@ def _create_tables_sqlite(conn: Any) -> None:
             color_fg       TEXT
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS job_status_history (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id       INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            from_status  TEXT NOT NULL,
+            to_status    TEXT NOT NULL,
+            changed_at   TEXT NOT NULL,
+            trigger      TEXT NOT NULL,
+            extra_data   TEXT
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_job_status_history_job
+            ON job_status_history (job_id)
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()
@@ -2072,4 +2215,5 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "career_rejection_rules": PostgresCareerRejectionRuleRepository(conn),
         "email_subject_rules": PostgresEmailSubjectRuleRepository(conn),
         "stage_statuses": PostgresStageStatusRepository(conn),
+        "job_status_history": PostgresJobStatusHistoryRepository(conn),
     }

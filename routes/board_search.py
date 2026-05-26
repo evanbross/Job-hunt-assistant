@@ -45,8 +45,9 @@ from flask import Blueprint, jsonify
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.db import open_repositories
+from backend.utils import get_repos
 from backend.duplicate_checker import DuplicateChecker
+from backend.job_validator import normalize_and_validate, import_warnings_to_json
 from backend.fit_scorer import FitScorer
 from backend.job_board_searcher import JobBoardSearcher, url_to_email_id
 
@@ -179,144 +180,145 @@ def _run_board_search() -> None:
             _update_board(progress=10, message="Searching boards (default queries)…")
 
         # ── 2. Open DB and load supporting data ──────────────────────────────
-        repos = open_repositories(config.DATABASE_URL)
-        conn = repos["conn"]
-        job_repo = repos["jobs"]
-        resume_repo = repos["resume"]
-        penalty_repo = repos["penalties"]
+        with get_repos() as repos:
+            conn = repos["conn"]
+            job_repo = repos["jobs"]
+            resume_repo = repos["resume"]
+            penalty_repo = repos["penalties"]
 
-        resume_row = resume_repo.get_latest()
-        resume_text = resume_row["content"] if resume_row else ""
-        penalty_rules = penalty_repo.get_enabled()
-        fit_feedback = job_repo.get_not_a_fit_with_feedback()
-        scorer = FitScorer()
-        dup_checker = DuplicateChecker()
+            resume_row = resume_repo.get_latest()
+            resume_text = resume_row["content"] if resume_row else ""
+            penalty_rules = penalty_repo.get_enabled()
+            fit_feedback = job_repo.get_not_a_fit_with_feedback()
+            scorer = FitScorer()
+            dup_checker = DuplicateChecker()
 
-        # ── 3. Load known jobs for duplicate detection ────────────────────────
-        all_known_jobs: list[dict] = job_repo.get_all_ordered()
+            # ── 3. Load known jobs for duplicate detection ────────────────────────
+            all_known_jobs: list[dict] = job_repo.get_all_ordered()
 
-        _update_board(progress=20, message="Fetching job listings from boards…")
+            _update_board(progress=20, message="Fetching job listings from boards…")
 
-        # ── 4. Fetch from boards ──────────────────────────────────────────────
-        searcher = JobBoardSearcher()
-        try:
-            candidates = searcher.search_all(search_queries)
-        except Exception as exc:
-            logger.error("Board search fetch failed: %s", exc)
-            _update_board(error=f"Board search failed: {exc}", message="Board search failed.")
-            conn.close()
-            return
-
-        total = len(candidates)
-        _update_board(
-            progress=40,
-            message=f"Found {total} candidates. Scoring and filtering…",
-            candidates_found=total,
-        )
-
-        if total == 0:
-            _update_board(progress=100, message="No listings found from boards.")
-            conn.close()
-            return
-
-        # ── 5. Score, dedup, and insert ───────────────────────────────────────
-        jobs_added = 0
-        duplicates_skipped = 0
-        fuzzy_duplicates_skipped = 0
-        scoring_failed = 0
-        below_min_score = 0
-        for idx, candidate in enumerate(candidates):
-            url = candidate["url"]
-            title = candidate["title"]
-            company = candidate["company"]
-
-            # URL-exact dedup: skip if already tracked in this DB
-            if url and job_repo.get_by_url(url):
-                duplicates_skipped += 1
-                _update_board(candidates_processed=idx + 1, duplicates_skipped=duplicates_skipped)
-                continue
-
-            # Fuzzy company+title dedup against sheet and existing DB rows
-            if all_known_jobs and company and title:
-                if dup_checker.check(job_title=title, company=company, sheet_jobs=all_known_jobs):
-                    fuzzy_duplicates_skipped += 1
-                    _update_board(candidates_processed=idx + 1, fuzzy_duplicates_skipped=fuzzy_duplicates_skipped)
-                    continue
-
-            # Score against candidate profile
+            # ── 4. Fetch from boards ──────────────────────────────────────────────
+            searcher = JobBoardSearcher()
             try:
-                score_result = scorer.score(
-                    job_title=title,
-                    company=company,
-                    email_body=candidate["description"],
-                    resume_text=resume_text,
-                    penalty_rules=penalty_rules,
-                    fit_feedback=fit_feedback,
-                )
-                fit_score: int = score_result["score"]
-                fit_reasoning: str = score_result["reasoning"]
+                candidates = searcher.search_all(search_queries)
             except Exception as exc:
-                logger.warning("Scoring failed for %s @ %s: %s", title, company, exc)
-                scoring_failed += 1
-                _update_board(candidates_processed=idx + 1, scoring_failed=scoring_failed)
-                continue
+                logger.error("Board search fetch failed: %s", exc)
+                _update_board(error=f"Board search failed: {exc}", message="Board search failed.")
+                return
 
-            if fit_score < config.BOARD_SEARCH_MIN_SCORE:
-                below_min_score += 1
-                _update_board(candidates_processed=idx + 1, below_min_score=below_min_score)
-                continue
-
-            status = "pending_review" if fit_score >= 70 else "triage"
-            email_id = url_to_email_id(url) if url else f"board:nurl:{idx}"
-
-            job_data: dict = {
-                "email_id": email_id,
-                "company": company,
-                "job_title": title,
-                "url": url,
-                "source": candidate["source"],
-                "raw_email_snippet": candidate["description"][:300],
-                "fit_score": fit_score,
-                "fit_reasoning": fit_reasoning,
-                "status": status,
-                "parser_confidence": "high",
-                "confidence_reason": "Loaded from a job board search result.",
-                "date_found": date.today().isoformat(),
-                "date_added_to_sheet": None,
-                "duplicate_hint": None,
-                "sender_email": None,
-                "email_subject": None,
-                "confidence_score": 100,
-            }
-
-            try:
-                job_repo.insert(job_data)
-                conn.commit()
-                jobs_added += 1
-            except Exception as exc:
-                conn.rollback()
-                # UNIQUE constraint hit if the same URL appeared twice in results
-                logger.debug("Insert skipped for %s: %s", url, exc)
-
-            progress = 40 + int((idx + 1) / total * 55)
+            total = len(candidates)
             _update_board(
-                progress=progress,
-                message=(
-                    f"Scored {idx + 1}/{total}: {title} @ {company} → {fit_score}"
-                ),
-                candidates_processed=idx + 1,
-                jobs_added=jobs_added,
+                progress=40,
+                message=f"Found {total} candidates. Scoring and filtering…",
+                candidates_found=total,
             )
 
-        conn.close()
-        _update_board(
-            progress=100,
-            message=(
-                f"Done. {jobs_added} new matching job{'s' if jobs_added != 1 else ''} "
-                f"found from {total} candidates."
-            ),
-            jobs_added=jobs_added,
-        )
+            if total == 0:
+                _update_board(progress=100, message="No listings found from boards.")
+                return
+
+            # ── 5. Score, dedup, and insert ───────────────────────────────────────
+            jobs_added = 0
+            duplicates_skipped = 0
+            fuzzy_duplicates_skipped = 0
+            scoring_failed = 0
+            below_min_score = 0
+            for idx, candidate in enumerate(candidates):
+                url = candidate["url"]
+                title = candidate["title"]
+                company = candidate["company"]
+
+                # URL-exact dedup: skip if already tracked in this DB
+                if url and job_repo.get_by_url(url):
+                    duplicates_skipped += 1
+                    _update_board(candidates_processed=idx + 1, duplicates_skipped=duplicates_skipped)
+                    continue
+
+                # Fuzzy company+title dedup against sheet and existing DB rows
+                if all_known_jobs and company and title:
+                    if dup_checker.check(job_title=title, company=company, sheet_jobs=all_known_jobs):
+                        fuzzy_duplicates_skipped += 1
+                        _update_board(candidates_processed=idx + 1, fuzzy_duplicates_skipped=fuzzy_duplicates_skipped)
+                        continue
+
+                # Score against candidate profile
+                try:
+                    score_result = scorer.score(
+                        job_title=title,
+                        company=company,
+                        email_body=candidate["description"],
+                        resume_text=resume_text,
+                        penalty_rules=penalty_rules,
+                        fit_feedback=fit_feedback,
+                    )
+                    fit_score: int = score_result["score"]
+                    fit_reasoning: str = score_result["reasoning"]
+                except Exception as exc:
+                    logger.warning("Scoring failed for %s @ %s: %s", title, company, exc)
+                    scoring_failed += 1
+                    _update_board(candidates_processed=idx + 1, scoring_failed=scoring_failed)
+                    continue
+
+                if fit_score < config.BOARD_SEARCH_MIN_SCORE:
+                    below_min_score += 1
+                    _update_board(candidates_processed=idx + 1, below_min_score=below_min_score)
+                    continue
+
+                status = "pending_review" if fit_score >= 70 else "triage"
+                email_id = url_to_email_id(url) if url else f"board:nurl:{idx}"
+
+                job_data: dict = {
+                    "email_id": email_id,
+                    "company": company,
+                    "job_title": title,
+                    "url": url,
+                    "source": candidate["source"],
+                    "raw_email_snippet": candidate["description"][:300],
+                    "fit_score": fit_score,
+                    "fit_reasoning": fit_reasoning,
+                    "status": status,
+                    "parser_confidence": "high",
+                    "confidence_reason": "Loaded from a job board search result.",
+                    "date_found": date.today().isoformat(),
+                    "date_added_to_sheet": None,
+                    "duplicate_hint": None,
+                    "sender_email": None,
+                    "email_subject": None,
+                    "confidence_score": 100,
+                }
+
+                try:
+                    job_data, import_warnings = normalize_and_validate(job_data)
+                    job_data["import_warnings"] = import_warnings_to_json(import_warnings)
+                    if import_warnings and job_data.get("status") != "possible_duplicate":
+                        job_data["status"] = "triage"
+                    job_repo.insert(job_data)
+                    conn.commit()
+                    jobs_added += 1
+                except Exception as exc:
+                    conn.rollback()
+                    # UNIQUE constraint hit if the same URL appeared twice in results
+                    logger.debug("Insert skipped for %s: %s", url, exc)
+
+                progress = 40 + int((idx + 1) / total * 55)
+                _update_board(
+                    progress=progress,
+                    message=(
+                        f"Scored {idx + 1}/{total}: {title} @ {company} → {fit_score}"
+                    ),
+                    candidates_processed=idx + 1,
+                    jobs_added=jobs_added,
+                )
+
+            _update_board(
+                progress=100,
+                message=(
+                    f"Done. {jobs_added} new matching job{'s' if jobs_added != 1 else ''} "
+                    f"found from {total} candidates."
+                ),
+                jobs_added=jobs_added,
+            )
 
     except Exception as exc:
         logger.exception("Board search failed with unexpected error")

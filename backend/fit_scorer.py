@@ -145,6 +145,19 @@ class FitScorer:
         return ScoreResult(score=final_score, reasoning=reasoning)
 
     def _build_system_prompt(self, resume_text: str, penalty_rules: list[dict], fit_feedback: list[dict]) -> str:
+        tz = (config.load_runtime_config().get("candidate_timezone") or "").strip()
+        if tz:
+            timezone_note = (
+                f"- TIMEZONE COMPATIBILITY: The candidate is in the {tz} timezone. "
+                f"When the job is remote and explicitly restricts hours to a timezone range that "
+                f"excludes {tz} (e.g. 'UTC-1 to UTC+2', 'EMEA hours required', 'must work European hours'), "
+                f"treat this as a significant disqualifier — similar weight to an on-site requirement. "
+                f"A soft timezone preference (not a hard requirement) is a moderate deduction only. "
+                f"If no timezone constraint is mentioned, do not penalize."
+            )
+        else:
+            timezone_note = ""
+
         penalty_list = "\n".join(
             f"  - '{r['rule_text']}' → -{r['penalty_points']} pts"
             for r in penalty_rules
@@ -184,6 +197,7 @@ SCORING INSTRUCTIONS:
 - 70-89: Good match; most skills apply, location ambiguous with some uncertainty, or minor level mismatch.
 - 40-69: Partial match; some relevant skills, ambiguous location, or level concerns.
 - 0-39: Poor match; wrong skills, explicitly on-site/hybrid required, or wrong level.
+{timezone_note}
 - IMPORTANT — location inference rule: a city or state name alone (e.g. "Redwood City, CA")
   does NOT mean the role is on-site. Many remote jobs list the company's HQ address.
   If the job header or early description explicitly states the role is remote (e.g.

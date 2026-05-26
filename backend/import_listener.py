@@ -157,6 +157,13 @@ class ImportListenerRequestParser:
                 "content": json.dumps(payload),
                 "format": "json",
             }
+            # Preserve the page URL so queue_import_capture can resolve the capture source.
+            # Accept it at top level (legacy) or nested inside a "source" dict (newer builders).
+            top_url = payload.get("url") or ""
+            source_url = (payload.get("source") or {}).get("url") or ""
+            resolved_url = top_url or source_url
+            if resolved_url:
+                body["url"] = resolved_url
         body.setdefault("format", "html")
         body.setdefault("recapture_interval_days", 4)
         body["import_trigger"] = "listener"

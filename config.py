@@ -171,6 +171,7 @@ DEFAULT_JOB_IMPORT_LISTENER_TOKEN: str = os.getenv("JOB_IMPORT_LISTENER_TOKEN", 
 DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES: int = int(
     os.getenv("JOB_IMPORT_LISTENER_MAX_BYTES", str(15 * 1024 * 1024))
 )
+DEFAULT_CANDIDATE_TIMEZONE: str = os.getenv("CANDIDATE_TIMEZONE", "")
 
 
 # ─── Runtime config helpers ───────────────────────────────────────────────────
@@ -214,6 +215,7 @@ def load_runtime_config() -> dict[str, Any]:
                         "job_import_listener_max_bytes",
                         DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
                     ),
+                    "candidate_timezone": raw_cfg.get("candidate_timezone", DEFAULT_CANDIDATE_TIMEZONE),
                 }
         except (json.JSONDecodeError, OSError):
             pass
@@ -232,6 +234,7 @@ def load_runtime_config() -> dict[str, Any]:
         "job_import_listener_port": DEFAULT_JOB_IMPORT_LISTENER_PORT,
         "job_import_listener_token": DEFAULT_JOB_IMPORT_LISTENER_TOKEN,
         "job_import_listener_max_bytes": DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
+        "candidate_timezone": DEFAULT_CANDIDATE_TIMEZONE,
     }
 
 

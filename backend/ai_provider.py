@@ -82,7 +82,10 @@ class AIProviderClient:
         self._anthropic_client: Anthropic | None = (
             Anthropic(
                 api_key=config.ANTHROPIC_API_KEY,
-                http_client=httpx.Client(verify=ssl.create_default_context()),
+                http_client=httpx.Client(
+                    verify=ssl.create_default_context(),
+                    timeout=httpx.Timeout(120.0),
+                ),
             )
             if config.ANTHROPIC_API_KEY
             else None

@@ -62,7 +62,7 @@ from backend.import_repair import (
     repair_linkedin_company,
 )
 from backend.manual_job_ingest_service import ManualJobIngestService
-from backend.utils import _get_repos, _parse_positive_int
+from backend.utils import get_repos, _parse_positive_int
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +197,7 @@ def run_import_task(
         },
     )
 
-    repos = _get_repos()
-    try:
+    with get_repos() as repos:
         known_jobs: list[dict] = repos["jobs"].get_all_ordered()
         service = ManualJobIngestService(
             repos["jobs"], repos["resume"], repos["penalties"]
@@ -229,6 +228,11 @@ def run_import_task(
                     "current_job_url": url,
                     "current_platform": platform,
                     "capture_source": capture_source,
+                    "queued": queued,
+                    "skipped": skipped,
+                    "repaired": repaired,
+                    "enriched": enriched,
+                    "failed": failed,
                 },
             )
 
@@ -292,6 +296,11 @@ def run_import_task(
                         "current_job_url": url,
                         "current_platform": platform,
                         "capture_source": capture_source,
+                        "queued": queued,
+                        "skipped": skipped,
+                        "repaired": repaired,
+                        "enriched": enriched,
+                        "failed": failed,
                     },
                 )
                 ingest_result = service.ingest(
@@ -356,8 +365,6 @@ def run_import_task(
             "failures": failures,
             "capture_source": capture_source,
         }
-    finally:
-        repos["conn"].close()
 
 
 def _record_capture_source(

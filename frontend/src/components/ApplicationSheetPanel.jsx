@@ -86,7 +86,7 @@ const DEFAULT_STATUS_OPTIONS = [
 // therefore not expected to be in the stage_statuses DB table.
 const FALLBACK_DISPLAY_NAMES = {
   triage:             "Triage",
-  pending_review:     "Pending Review",
+  pending_review:     "In Job Queue",
   possible_duplicate: "Possible Duplicate",
   not_a_fit:          "Not a Fit",
 };
