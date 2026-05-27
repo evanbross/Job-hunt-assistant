@@ -329,6 +329,11 @@ export default function JobQueue({
       }
     } catch {
       clearInterval(pollRef.current);
+      setScanState((prev) =>
+        prev
+          ? { ...prev, running: false, failed: true, message: "Lost connection to server — scan status unknown." }
+          : prev
+      );
       onDone?.();
     }
   };
@@ -1172,9 +1177,19 @@ export default function JobQueue({
       )}
 
       {/* Completed scan summary */}
-      {!anyScanRunning && scanState && scanState.progress === 100 && (
+      {!anyScanRunning && scanState && scanState.progress === 100 && !scanState.failed && (
         <div style={{ ...progressBox, background: "rgba(76,175,129,0.08)", borderColor: "rgba(76,175,129,0.25)", marginBottom: "16px" }}>
           <p style={{ fontSize: "13px", color: "var(--green)" }}>{scanState.message}</p>
+          <ErrorList errors={scanState.errors} onNavigateToEmails={onNavigateToEmails} />
+        </div>
+      )}
+
+      {/* Aborted / failed scan */}
+      {!anyScanRunning && scanState && (scanState.failed || (scanState.progress > 0 && scanState.progress < 100)) && (
+        <div style={{ ...progressBox, background: "rgba(220,53,69,0.08)", borderColor: "rgba(220,53,69,0.3)", marginBottom: "16px" }}>
+          <p style={{ fontSize: "13px", color: "var(--red, #dc3545)", marginBottom: "6px" }}>
+            Scan stopped: {scanState.message}
+          </p>
           <ErrorList errors={scanState.errors} onNavigateToEmails={onNavigateToEmails} />
         </div>
       )}
@@ -1200,6 +1215,10 @@ export default function JobQueue({
           title={rescanAllRunning ? "Rescanning Emails" : "Scanning Emails"}
           message={scanState.message}
           progress={scanState.progress}
+          connectionWarning={scanState.connection_warning}
+          currentEmailSender={scanState.current_email_sender}
+          currentEmailSubject={scanState.current_email_subject}
+          currentJobTitle={scanState.current_job_title}
         >
           <ErrorList errors={scanState.errors} onNavigateToEmails={onNavigateToEmails} />
         </ProgressPopup>
@@ -1345,7 +1364,7 @@ function ErrorList({ errors, onNavigateToEmails }) {
   );
 }
 
-function ProgressPopup({ title, message, progress, children }) {
+function ProgressPopup({ title, message, progress, connectionWarning, currentEmailSender, currentEmailSubject, currentJobTitle, children }) {
   const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
   return (
     <Modal
@@ -1356,6 +1375,11 @@ function ProgressPopup({ title, message, progress, children }) {
       maxWidth="520px"
     >
       <div style={{ paddingTop: "4px" }}>
+        {currentJobTitle && (
+          <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "-4px", marginBottom: "10px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {currentJobTitle}
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <span className="inline-spinner" style={{ color: "var(--accent)" }} />
@@ -1366,6 +1390,26 @@ function ProgressPopup({ title, message, progress, children }) {
         <div className="loading-bar">
           <div className="loading-bar-fill" style={{ width: `${safeProgress}%` }} />
         </div>
+        {(currentEmailSender || currentEmailSubject) && (
+          <div style={{ marginTop: "10px", padding: "8px 10px", background: "var(--surface-alt, rgba(255,255,255,0.04))", borderRadius: "6px", fontSize: "12px" }}>
+            {currentEmailSubject && (
+              <div style={{ color: "var(--text)", fontWeight: 500, marginBottom: currentEmailSender ? "3px" : 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {currentEmailSubject}
+              </div>
+            )}
+            {currentEmailSender && (
+              <div style={{ color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {currentEmailSender}
+              </div>
+            )}
+          </div>
+        )}
+        {connectionWarning && (
+          <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--yellow, #e6a817)", display: "flex", alignItems: "center", gap: "5px" }}>
+            <span>⚠</span>
+            <span>{connectionWarning}</span>
+          </div>
+        )}
         {children}
       </div>
     </Modal>

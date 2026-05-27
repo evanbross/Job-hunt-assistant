@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import backend.email_parser as email_parser_module
 from backend.ai_provider import AIMessage
-from backend.email_parser import EmailParser, _normalize_title_company
+from backend.email_parser import EmailParser, _normalize_title_company, _trim_company_tail
 
 
 class FakeParserClient:
@@ -116,6 +116,25 @@ def test_extracts_title_and_company_from_body_when_title_is_unknown() -> None:
 
     assert item["company"] == "Transcend Inc."
     assert item["job_title"] == "Senior Software Engineer - Workflows"
+
+
+def test_trim_company_tail_strips_bullet_separator() -> None:
+    # WorkAtAStartup/YC listings use "•" to separate company name from description
+    assert _trim_company_tail("Revamp (S23)•AI-Powered Customer Segmentation for eCommerce") == "Revamp (S23)"
+    assert _trim_company_tail("Acme Corp · Series B startup") == "Acme Corp"
+
+
+def test_parser_strips_bullet_from_ai_returned_company() -> None:
+    client = FakeParserClient()
+    client.complete = lambda **kwargs: (  # type: ignore[method-assign]
+        '[{"company": "Revamp (S23)•AI-Powered Customer Segmentation for eCommerce",'
+        ' "job_title": "Founding Engineer", "url": "https://www.workatastartup.com/jobs/78257",'
+        ' "source": "WorkAtAStartup", "confidence": "high", "confidence_score": 90,'
+        ' "confidence_reason": "test"}]'
+    )
+    parser = EmailParser(client=client)
+    results = parser.parse("Manual pasted job listing", "manual@local", "some listing text")
+    assert results[0]["company"] == "Revamp (S23)"
 
 
 def test_keeps_existing_known_company() -> None:

@@ -441,7 +441,21 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
     <div>
       <h2 style={{ fontSize: "18px", fontWeight: 700, lineHeight: 1.2, margin: "0 0 14px" }}>Triage</h2>
       <div style={triageToolbarStyle}>
+        {/* Row 1: sort on the left, search + kebab pushed right */}
         <div style={triageToolbarMainStyle}>
+          <label style={triageSortLabelStyle}>Sort:</label>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            style={sortSelectStyle}
+          >
+            <option value="date_desc">Newest first</option>
+            <option value="date_asc">Oldest first</option>
+            <option value="confidence_desc">Highest confidence</option>
+            <option value="confidence_asc">Lowest confidence</option>
+            <option value="fit_desc">Highest fit</option>
+            <option value="fit_asc">Lowest fit</option>
+          </select>
           <input
             type="search"
             value={searchText}
@@ -450,36 +464,6 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
             placeholder="Search triage jobs"
             style={triageSearchInputStyle}
           />
-          {(unscoredCount > 0 || showOnlyUnscored) && (
-            <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={showOnlyUnscored}
-                onChange={(e) => setShowOnlyUnscored(e.target.checked)}
-                style={{ cursor: "pointer" }}
-              />
-              Needs score ({unscoredCount})
-            </label>
-          )}
-          {(importReviewCount > 0 || showOnlyImportReview) && (
-            <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--red)", whiteSpace: "nowrap", cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={showOnlyImportReview}
-                onChange={(e) => setShowOnlyImportReview(e.target.checked)}
-                style={{ cursor: "pointer" }}
-              />
-              Review Import ({importReviewCount})
-            </label>
-          )}
-          <p style={triageCountStyle}>
-            {filteredJobs.length !== jobs.length && `${filteredJobs.length} of `}
-            {jobs.length} entr{jobs.length === 1 ? "y" : "ies"} waiting for review
-            {(visibleTriageCount > 0 || visibleDupeCount > 0) && " · "}
-            {visibleTriageCount > 0 && `${visibleTriageCount} low-confidence`}
-            {visibleTriageCount > 0 && visibleDupeCount > 0 && " · "}
-            {visibleDupeCount > 0 && `${visibleDupeCount} possible duplicate${visibleDupeCount !== 1 ? "s" : ""}`}
-          </p>
           <div ref={moreActionsRef} style={triageMoreActionsStyle}>
             <button
               type="button"
@@ -513,20 +497,38 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
             )}
           </div>
         </div>
-        <div style={triageSortRowStyle}>
-          <label style={triageSortLabelStyle}>Sort:</label>
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value)}
-            style={sortSelectStyle}
-          >
-            <option value="date_desc">Newest first</option>
-            <option value="date_asc">Oldest first</option>
-            <option value="confidence_desc">Highest confidence</option>
-            <option value="confidence_asc">Lowest confidence</option>
-            <option value="fit_desc">Highest fit</option>
-            <option value="fit_asc">Lowest fit</option>
-          </select>
+        {/* Row 2: checkboxes + count */}
+        <div style={triageFiltersRowStyle}>
+          {(unscoredCount > 0 || showOnlyUnscored) && (
+            <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={showOnlyUnscored}
+                onChange={(e) => setShowOnlyUnscored(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              Needs score ({unscoredCount})
+            </label>
+          )}
+          {(importReviewCount > 0 || showOnlyImportReview) && (
+            <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--red)", whiteSpace: "nowrap", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={showOnlyImportReview}
+                onChange={(e) => setShowOnlyImportReview(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              Review Import ({importReviewCount})
+            </label>
+          )}
+          <p style={triageCountStyle}>
+            {filteredJobs.length !== jobs.length && `${filteredJobs.length} of `}
+            {jobs.length} entr{jobs.length === 1 ? "y" : "ies"} waiting for review
+            {(visibleTriageCount > 0 || visibleDupeCount > 0) && " · "}
+            {visibleTriageCount > 0 && `${visibleTriageCount} low-confidence`}
+            {visibleTriageCount > 0 && visibleDupeCount > 0 && " · "}
+            {visibleDupeCount > 0 && `${visibleDupeCount} possible duplicate${visibleDupeCount !== 1 ? "s" : ""}`}
+          </p>
         </div>
       </div>
 
@@ -751,38 +753,51 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
         />
       )}
       {/* Meta */}
-      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
-        <span className="badge badge-orange">Possible duplicate</span>
-        <span className={`badge ${fitScoreClass(job)}`}>Fit: {fitPercentageLabel(job)}</span>
-        <SourceBadge job={job} />
-        <SalaryBadge job={job} />
-        {job.date_found && <span className="badge badge-gray">{job.date_found}</span>}
-        {companySheetRows !== null && companySheetRows.length > 0 && (
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "8px", marginBottom: "8px" }}>
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          <span className="badge badge-orange">Possible duplicate</span>
+          <span className={`badge ${fitScoreClass(job)}`}>Fit: {fitPercentageLabel(job)}</span>
+          <SalaryBadge job={job} />
+          {companySheetRows !== null && companySheetRows.length > 0 && (
+            <span
+              className={`badge ${companyHistoryBadgeClass(companySheetRows)}`}
+              style={{ cursor: "pointer" }}
+              title={Object.entries(companyRowSummary(companySheetRows)).map(([s, n]) => `${n}× ${s}`).join(" · ")}
+              onClick={companyHistory.open}
+            >
+              {companySheetRows.length} tracked
+            </span>
+          )}
           <span
-            className={`badge ${companyHistoryBadgeClass(companySheetRows)}`}
-            style={{ cursor: "pointer" }}
-            title={Object.entries(companyRowSummary(companySheetRows)).map(([s, n]) => `${n}× ${s}`).join(" · ")}
+            className="badge badge-gray"
+            style={{ cursor: "pointer", fontFamily: "monospace" }}
+            title={`Job ID: ${job.id} — click to copy`}
+            onClick={() => navigator.clipboard.writeText(String(job.id))}
+          >
+            #{job.id}
+          </span>
+          {parseImportWarnings(job.import_warnings).length > 0 && (
+            <span
+              className="badge badge-red"
+              title={importWarningTooltip(parseImportWarnings(job.import_warnings))}
+            >
+              Review Import
+            </span>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <button
+            type="button"
+            className="btn-secondary"
             onClick={companyHistory.open}
+            style={{ fontSize: "12px", padding: "3px 9px" }}
+            title="Show application tracking rows for this company"
           >
-            {companySheetRows.length} tracked
-          </span>
-        )}
-        <span
-          className="badge badge-gray"
-          style={{ cursor: "pointer", fontFamily: "monospace" }}
-          title={`Job ID: ${job.id} — click to copy`}
-          onClick={() => navigator.clipboard.writeText(String(job.id))}
-        >
-          #{job.id}
-        </span>
-        {parseImportWarnings(job.import_warnings).length > 0 && (
-          <span
-            className="badge badge-red"
-            title={importWarningTooltip(parseImportWarnings(job.import_warnings))}
-          >
-            Review Import
-          </span>
-        )}
+            Company History
+          </button>
+          <SourceBadge job={job} />
+          <span className="badge badge-gray">{job.date_found || "—"}</span>
+        </div>
       </div>
 
       {/* Email origin */}
@@ -1527,9 +1542,18 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
         </div>
 
         <div style={triageHeaderActionsStyle}>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={companyHistory.open}
+            style={{ fontSize: "12px", padding: "3px 9px" }}
+            title="Show application tracking rows for this company"
+          >
+            Company History
+          </button>
           <SourceBadge job={job} />
           {salaryRange && <span className="badge badge-green">Salary: {salaryRange}</span>}
-          {job.date_found && <span className="badge badge-gray">{job.date_found}</span>}
+          <span className="badge badge-gray">{job.date_found || "—"}</span>
           {companySheetRows !== null && companySheetRows.length > 0 && (
             <span
               className={`badge ${companyHistoryBadgeClass(companySheetRows)}`}
@@ -2244,9 +2268,15 @@ const triageToolbarStyle = {
 const triageToolbarMainStyle = {
   alignItems: "center",
   display: "flex",
-  flexWrap: "wrap",
   gap: "12px",
   width: "100%",
+};
+
+const triageFiltersRowStyle = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "12px",
 };
 
 const triageSearchInputStyle = {
@@ -2254,10 +2284,10 @@ const triageSearchInputStyle = {
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
   color: "var(--text)",
-  flex: "1 1 260px",
   fontSize: "13px",
+  marginLeft: "auto",
   maxWidth: "420px",
-  minWidth: 0,
+  minWidth: "200px",
   padding: "8px 11px",
 };
 
@@ -2268,7 +2298,6 @@ const triageCountStyle = {
 };
 
 const triageMoreActionsStyle = {
-  marginLeft: "auto",
   position: "relative",
 };
 
@@ -2303,18 +2332,10 @@ const triageMenuItemStyle = {
   width: "100%",
 };
 
-const triageSortRowStyle = {
-  alignItems: "center",
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "6px",
-  justifyContent: "flex-end",
-  width: "100%",
-};
-
 const triageSortLabelStyle = {
   color: "var(--text-muted)",
   fontSize: "12px",
+  whiteSpace: "nowrap",
 };
 
 const cardStyle = {

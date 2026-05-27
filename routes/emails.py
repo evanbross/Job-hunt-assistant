@@ -51,6 +51,7 @@ from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.utils import (
     db_match_for_job,
     email_date_from_message,
+    expand_board_url_parsed_jobs,
     get_repos,
     get_subject_rule_match,
     is_application_acknowledgement,
@@ -309,6 +310,9 @@ def rescan_email(email_id: str):
             scanned_repo.mark_scanned(email_id, sender, subject, disposition="noise", email_date=email_date, raw_body=email_body)
             repos["conn"].commit()
             return jsonify({"jobs": [], "message": "No job postings found in this email."})
+
+        # Expand board-listing URLs into individual job entries
+        parsed_jobs = expand_board_url_parsed_jobs(parsed_jobs)
 
         snippet = email_body[:300]
         resume_row = resume_repo.get_latest()

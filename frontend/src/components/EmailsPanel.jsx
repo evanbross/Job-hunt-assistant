@@ -448,6 +448,11 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
         }
       } catch {
         clearInterval(pollRef.current);
+        setScanState((prev) =>
+          prev
+            ? { ...prev, running: false, failed: true, message: "Lost connection to server — scan status unknown." }
+            : prev
+        );
         setRescanAllRunning(false);
       }
     }, 1200);
@@ -623,9 +628,14 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
           )}
         </div>
       )}
-      {!rescanAllRunning && scanState && scanState.progress === 100 && (
+      {!rescanAllRunning && scanState && scanState.progress === 100 && !scanState.failed && (
         <div style={{ ...progressBox, background: "rgba(76,175,129,0.08)", borderColor: "rgba(76,175,129,0.25)", marginBottom: "16px" }}>
           <p style={{ fontSize: "13px", color: "var(--green)" }}>{scanState.message}</p>
+        </div>
+      )}
+      {!rescanAllRunning && scanState && (scanState.failed || (scanState.progress > 0 && scanState.progress < 100)) && (
+        <div style={{ ...progressBox, background: "rgba(220,53,69,0.08)", borderColor: "rgba(220,53,69,0.3)", marginBottom: "16px" }}>
+          <p style={{ fontSize: "13px", color: "var(--red, #dc3545)" }}>Scan stopped: {scanState.message}</p>
         </div>
       )}
 

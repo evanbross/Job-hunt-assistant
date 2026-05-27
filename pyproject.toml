@@ -3,7 +3,7 @@ name = "job-hunt-assistant"
 version = "0.1.0"
 description = "AI-powered job hunt assistant with Gmail integration and Google Sheets logging"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "flask>=3.0.0",
     "flask-cors>=4.0.0",

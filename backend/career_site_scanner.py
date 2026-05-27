@@ -434,6 +434,45 @@ def _is_unsupported_greenhouse_search_url(parsed: ParseResult) -> bool:
     return segments[0].lower() == "jobs"
 
 
+def is_job_board_url(url: str) -> bool:
+    """Return True if url points to a job-board listing page rather than a single job.
+
+    Covers Greenhouse boards, Lever boards, and Ashby boards. Returns False for
+    unknown platforms so callers treat unrecognized URLs as potential single jobs.
+    """
+    if not url:
+        return False
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+
+    if "greenhouse.io" in host:
+        return _has_greenhouse_board_token(parsed) and not _is_greenhouse_single_job_url(parsed)
+
+    if "lever.co" in host:
+        segments = [s for s in parsed.path.split("/") if s]
+        # Board: jobs.lever.co/<company>  — exactly one segment, no UUID
+        return len(segments) == 1
+
+    if "jobs.ashbyhq.com" in host:
+        segments = [s for s in parsed.path.split("/") if s]
+        has_job_id = bool(parse_qs(parsed.query).get("jobId"))
+        # Board: jobs.ashbyhq.com/<board>  — one segment and no jobId query param
+        return len(segments) <= 1 and not has_job_id
+
+    return False
+
+
+_LINKEDIN_JOB_ID_RE = re.compile(r"/(?:comm/)?jobs/view/(\d+)", re.IGNORECASE)
+
+
+def _linkedin_job_id(parsed: ParseResult) -> str | None:
+    """Return the numeric job ID from a linkedin.com/jobs/view or /comm/jobs/view URL."""
+    if "linkedin.com" not in parsed.netloc.lower():
+        return None
+    m = _LINKEDIN_JOB_ID_RE.search(parsed.path)
+    return m.group(1) if m else None
+
+
 def _workday_parts(site_url: str) -> tuple[str, str] | None:
     parsed = urlparse(site_url)
     host_parts = parsed.netloc.split(".")
@@ -577,6 +616,13 @@ class CareerSiteScanner:
             except Exception as exc:
                 logger.debug("Greenhouse API failed for %s, falling back to HTML: %s", job_url, exc)
 
+        job_id = _linkedin_job_id(parsed)
+        if job_id:
+            try:
+                return self._linkedin_job_from_guest_api(site_name, job_url, job_id)
+            except Exception as exc:
+                logger.debug("LinkedIn guest API failed for %s, falling back to HTML: %s", job_url, exc)
+
         # Fetch HTML while capturing the final URL after any HTTP redirects.
         # Greenhouse tracking/redirect links resolve to job-boards.greenhouse.io
         # pages that are JS-rendered; detecting the final URL lets us use the
@@ -608,8 +654,42 @@ class CareerSiteScanner:
                     return self._greenhouse_single_job_from_api(site_name, final_url, final_parsed)
                 except Exception as exc:
                     logger.debug("Greenhouse API failed for redirected URL %s: %s", final_url, exc)
+            redirect_job_id = _linkedin_job_id(final_parsed)
+            if redirect_job_id:
+                try:
+                    return self._linkedin_job_from_guest_api(site_name, final_url, redirect_job_id)
+                except Exception as exc:
+                    logger.debug("LinkedIn guest API failed for redirected URL %s: %s", final_url, exc)
 
         return self._job_from_detail_page(site_name, final_url, page_html)
+
+    def _linkedin_job_from_guest_api(
+        self, site_name: str, job_url: str, job_id: str
+    ) -> CareerSiteJob:
+        # LinkedIn's guest jobs API returns server-rendered HTML with the complete
+        # job description (no JS, no login required, no truncation).
+        api_url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
+        page_html = _fetch_html(api_url)
+
+        details = _TextParser()
+        details.feed(page_html)
+
+        page_title = _clean_text(" ".join(details.title_chunks)) or "Untitled Job"
+        page_text = _clean_text(" ".join(details.text_chunks))
+        if not page_text:
+            raise ValueError(f"LinkedIn guest API returned no text for job {job_id}")
+
+        confidence_level, confidence_score = _confidence_for(page_title, page_text)
+        return CareerSiteJob(
+            site_name=site_name,
+            site_url=job_url,
+            job_title=page_title[:300],
+            job_url=job_url,
+            job_text=page_text[:8000],
+            posted_at=None,
+            confidence_level=confidence_level,
+            confidence_score=confidence_score,
+        )
 
     def _greenhouse_single_job_from_api(
         self, site_name: str, job_url: str, parsed: ParseResult

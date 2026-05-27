@@ -37,7 +37,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import threading
 from dataclasses import dataclass, field
 from datetime import date
@@ -58,6 +57,7 @@ from backend.utils import (
     ACTIVE_JOB_STATUSES,
     db_match_for_job,
     email_date_from_message,
+    expand_board_url_parsed_jobs,
     get_repos,
     get_subject_rule_match,
 )
@@ -65,12 +65,6 @@ from backend.utils import (
 logger = logging.getLogger(__name__)
 
 # Matches job-boards.greenhouse.io and boards.greenhouse.io single-job URLs.
-# Used to detect emails where we can enrich the stored snippet with the full
-# JD fetched from the Greenhouse public API instead of storing the raw snippet.
-_GH_SINGLE_JOB_URL_RE = re.compile(
-    r"https?://[^/]*greenhouse\.io/[^/?#]+/jobs/\d+",
-    re.IGNORECASE,
-)
 
 scan_bp = Blueprint("scan", __name__)
 
@@ -86,6 +80,10 @@ class ScanState:
     errors: list[dict] = field(default_factory=list)
     summary: dict | None = None
     connection_warning: str = ""
+    failed: bool = False
+    current_email_sender: str = ""
+    current_email_subject: str = ""
+    current_job_title: str = ""
 
 
 _scan_state = ScanState()
@@ -129,6 +127,10 @@ def _update_scan(
     error_email_id: str | None = None,
     summary: dict | None = None,
     connection_warning: str | None = None,
+    failed: bool | None = None,
+    current_email_sender: str | None = None,
+    current_email_subject: str | None = None,
+    current_job_title: str | None = None,
 ) -> None:
     with _scan_lock:
         if progress is not None:
@@ -145,6 +147,14 @@ def _update_scan(
             _scan_state.summary = summary
         if connection_warning is not None:
             _scan_state.connection_warning = connection_warning
+        if failed is not None:
+            _scan_state.failed = failed
+        if current_email_sender is not None:
+            _scan_state.current_email_sender = current_email_sender
+        if current_email_subject is not None:
+            _scan_state.current_email_subject = current_email_subject
+        if current_job_title is not None:
+            _scan_state.current_job_title = current_job_title
 
 
 # ─── Gmail helpers ────────────────────────────────────────────────────────────
@@ -178,6 +188,10 @@ def _run_scan(rescan_all: bool = False) -> None:
         _scan_state.jobs_processed = 0
         _scan_state.errors.clear()
         _scan_state.summary = None
+        _scan_state.failed = False
+        _scan_state.current_email_sender = ""
+        _scan_state.current_email_subject = ""
+        _scan_state.current_job_title = ""
 
     try:
         _update_scan(progress=5, message="Connecting to Gmail...")
@@ -265,6 +279,8 @@ def _run_scan(rescan_all: bool = False) -> None:
 
             for idx, msg_stub in enumerate(messages):
                 msg_id = msg_stub["id"]
+                email_label = f"email {idx + 1}/{total}"
+                done_progress = 20 + int((idx + 1) / total * 75)
 
                 # Primary dedup: skip if this exact Gmail message ID was already processed.
                 # Uses scanned_emails table so rejected/deleted jobs are still remembered.
@@ -286,9 +302,14 @@ def _run_scan(rescan_all: bool = False) -> None:
                             reason="Skipped because this Gmail message ID is already in scanned-email history.",
                         )
                     )
-                    _update_scan(jobs_processed=idx + 1)
+                    _update_scan(
+                        progress=done_progress,
+                        message=f"Skipping {email_label} — already processed.",
+                        jobs_processed=idx + 1,
+                    )
                     continue
 
+                _update_scan(message=f"Fetching {email_label} from Gmail...")
                 try:
                     full_msg = gmail.get_message(msg_id)
                     subject, sender, email_body = gmail.extract_text(full_msg)
@@ -302,12 +323,21 @@ def _run_scan(rescan_all: bool = False) -> None:
                             reason="Could not fetch the full message from Gmail.",
                         )
                     )
-                    _update_scan(error=f"Failed to fetch message {msg_id}: {exc}")
-                    _update_scan(jobs_processed=idx + 1)
+                    _update_scan(
+                        progress=done_progress,
+                        error=f"Failed to fetch message {msg_id}: {exc}",
+                        message=f"Fetch failed for {email_label}.",
+                        jobs_processed=idx + 1,
+                    )
                     continue
 
                 email_date = email_date_from_message(full_msg)
+                _update_scan(
+                    current_email_sender=sender,
+                    current_email_subject=subject,
+                )
 
+                _update_scan(message=f"Filtering {email_label}...")
                 if not email_matches_source_filters(
                     sender=sender,
                     subject=subject,
@@ -327,7 +357,14 @@ def _run_scan(rescan_all: bool = False) -> None:
                             reason="Skipped because the sender matched a source query but the source subject filter did not match.",
                         )
                     )
-                    _update_scan(jobs_processed=idx + 1)
+                    _update_scan(
+                        progress=done_progress,
+                        message=f"Filtered {email_label} (subject rule).",
+                        jobs_processed=idx + 1,
+                        current_email_sender="",
+                        current_email_subject="",
+                        current_job_title="",
+                    )
                     continue
 
                 subject_rule = get_subject_rule_match(subject, subject_rules)
@@ -349,7 +386,14 @@ def _run_scan(rescan_all: bool = False) -> None:
                             reason="Skipped by an enabled subject-rule blacklist pattern.",
                         )
                     )
-                    _update_scan(jobs_processed=idx + 1)
+                    _update_scan(
+                        progress=done_progress,
+                        message=f"Filtered {email_label} — application acknowledgement.",
+                        jobs_processed=idx + 1,
+                        current_email_sender="",
+                        current_email_subject="",
+                        current_job_title="",
+                    )
                     continue
 
                 # Secondary dedup: same sender + subject seen within the lookback window.
@@ -369,7 +413,14 @@ def _run_scan(rescan_all: bool = False) -> None:
                             reason="Skipped because the same sender and subject were already scanned within the lookback window.",
                         )
                     )
-                    _update_scan(jobs_processed=idx + 1)
+                    _update_scan(
+                        progress=done_progress,
+                        message=f"Skipping {email_label} — duplicate content.",
+                        jobs_processed=idx + 1,
+                        current_email_sender="",
+                        current_email_subject="",
+                        current_job_title="",
+                    )
                     continue
 
                 # Relevance feedback can boost known-good sources after parsing.
@@ -378,6 +429,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                 feedback = feedback_repo.find_match(sender, subject)
 
                 # Parse the email — returns a list (empty if not a job email)
+                _update_scan(message=f"AI evaluation underway for {email_label}...")
                 try:
                     parsed_jobs = parser.parse(subject, sender, email_body)
                     _update_scan(connection_warning="")
@@ -397,9 +449,14 @@ def _run_scan(rescan_all: bool = False) -> None:
                         )
                     )
                     _update_scan(
+                        progress=done_progress,
                         error=f"Parser error: {exc}",
                         error_email_id=msg_id,
+                        message=f"Parse failed for {email_label}.",
                         jobs_processed=idx + 1,
+                        current_email_sender="",
+                        current_email_subject="",
+                        current_job_title="",
                     )
                     continue
 
@@ -419,8 +476,19 @@ def _run_scan(rescan_all: bool = False) -> None:
                             reason="Parser returned no job postings for this email.",
                         )
                     )
-                    _update_scan(jobs_processed=idx + 1)
+                    _update_scan(
+                        progress=done_progress,
+                        message=f"No jobs found in {email_label}.",
+                        jobs_processed=idx + 1,
+                        current_email_sender="",
+                        current_email_subject="",
+                        current_job_title="",
+                    )
                     continue
+
+                # Expand board-listing URLs (e.g. Greenhouse/Lever/Ashby boards)
+                # into individual job entries before the per-job loop.
+                parsed_jobs = expand_board_url_parsed_jobs(parsed_jobs)
 
                 job_titles: list[str] = []
                 job_details: list[dict[str, object]] = []
@@ -428,9 +496,10 @@ def _run_scan(rescan_all: bool = False) -> None:
                 for job_idx, parsed in enumerate(parsed_jobs):
                     _update_scan(
                         message=(
-                            f"Email {idx + 1}/{total}: processing job {job_idx + 1}/{len(parsed_jobs)} "
+                            f"Processing {email_label}: job {job_idx + 1}/{len(parsed_jobs)} "
                             f"from {parsed.get('source', '?')} ({parsed.get('company', '?')} …)"
-                        )
+                        ),
+                        current_job_title=str(parsed.get("job_title") or ""),
                     )
 
                     # First job keeps the raw msg_id; subsequent jobs get a suffix so the
@@ -463,19 +532,24 @@ def _run_scan(rescan_all: bool = False) -> None:
                     else:
                         status = "triage"
 
-                    # For Greenhouse single-job URLs, fetch the full JD from the
-                    # public API so the stored snippet is the actual job description
-                    # rather than the first 300 chars of the notification email.
+                    # Attempt to fetch the full JD from the job URL so the scorer
+                    # sees the actual description rather than the email digest body.
+                    # scan_single_job_url handles Greenhouse (via API), Lever, and
+                    # plain HTML pages; it also follows redirects, so LinkedIn tracking
+                    # links that resolve to a structured ATS page are handled correctly.
                     job_url_str = str(parsed.get("url") or "").strip()
                     jd_text = ""
-                    if job_url_str and _GH_SINGLE_JOB_URL_RE.match(job_url_str):
+                    if job_url_str and job_url_str.startswith("https://"):
                         try:
                             fetched = CareerSiteScanner().scan_single_job_url("", job_url_str)
                             fetched_text = fetched.get("job_text", "")
-                            if len(fetched_text) >= 200:
+                            if len(fetched_text) >= 400:
                                 jd_text = fetched_text
+                                logger.debug("JD enrichment succeeded for %s (%d chars)", job_url_str, len(fetched_text))
+                            else:
+                                logger.debug("JD enrichment returned too little content for %s (%d chars)", job_url_str, len(fetched_text))
                         except Exception as exc:
-                            logger.debug("Greenhouse JD enrichment failed for %s: %s", job_url_str, exc)
+                            logger.debug("JD enrichment failed for %s: %s", job_url_str, exc)
 
                     raw_snippet = jd_text[:6000] if jd_text else email_body[:300]
 
@@ -600,16 +674,17 @@ def _run_scan(rescan_all: bool = False) -> None:
 
                 n_found = len(parsed_jobs)
                 first = parsed_jobs[0]
-                progress = 20 + int((idx + 1) / total * 75)
                 _update_scan(
-                    progress=progress,
+                    progress=done_progress,
                     message=(
-                        f"Processed {idx + 1}/{total}: "
+                        f"Done {email_label}: "
                         f"{n_found} job{'s' if n_found != 1 else ''} from "
                         f"{first.get('source', 'unknown')} "
                         f"({first.get('company', '')} …)"
                     ),
                     jobs_processed=idx + 1,
+                    current_email_sender="",
+                    current_email_subject="",
                 )
 
             _update_scan(
@@ -649,7 +724,12 @@ def _run_scan(rescan_all: bool = False) -> None:
 
     except Exception as exc:
         logger.exception("Scan failed with unexpected error")
-        _update_scan(error=f"Scan failed: {exc}", message="Scan failed with an error.")
+        _update_scan(
+            progress=100,
+            failed=True,
+            error=f"Scan failed: {exc}",
+            message=f"Scan stopped unexpectedly: {exc}",
+        )
     finally:
         with _scan_lock:
             _scan_state.running = False
@@ -681,6 +761,10 @@ def scan_status():
                 "errors": list(_scan_state.errors),
                 "summary": _scan_state.summary,
                 "connection_warning": _scan_state.connection_warning,
+                "failed": _scan_state.failed,
+                "current_email_sender": _scan_state.current_email_sender,
+                "current_email_subject": _scan_state.current_email_subject,
+                "current_job_title": _scan_state.current_job_title,
             }
         )
 

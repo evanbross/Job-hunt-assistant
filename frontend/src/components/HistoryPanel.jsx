@@ -36,6 +36,7 @@ import React, { useEffect, useState } from "react";
 import StatusBadge from "./common/StatusBadge.jsx";
 import { scoreTone } from "../utils/fitScoringUtils.js";
 import { statusTone } from "../utils/jobQueueUtils.js";
+import { formatJobDescription } from "../utils/triagePanelUtils.js";
 
 const HISTORY_SEARCH_STORAGE_KEY = "jha.history.search";
 
@@ -165,6 +166,7 @@ export default function HistoryPanel() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(new Set());
+  const [descriptionOpen, setDescriptionOpen] = useState(new Set());
   const [search, setSearch] = useState(() => readStoredSearch(HISTORY_SEARCH_STORAGE_KEY));
 
   useEffect(() => {
@@ -183,6 +185,15 @@ export default function HistoryPanel() {
 
   const toggleExpand = (id) => {
     setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const toggleDescription = (e, id) => {
+    e.stopPropagation();
+    setDescriptionOpen((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
@@ -274,6 +285,9 @@ export default function HistoryPanel() {
             const displayStatus = latestStage ? latestStage.status : job.status;
             const isOpen = expanded.has(job.id);
             const hasStages = stages.length > 0;
+            const rawDesc = String(job.job_description || job.raw_email_snippet || "").trim();
+            const formattedDesc = rawDesc ? formatJobDescription(rawDesc) : null;
+            const isDescOpen = descriptionOpen.has(job.id);
 
             return (
               <React.Fragment key={job.id}>
@@ -339,6 +353,23 @@ export default function HistoryPanel() {
                               </button>
                             </div>
                           ))}
+                        </div>
+                      )}
+
+                      {formattedDesc && (
+                        <div style={{ marginTop: "10px" }}>
+                          <button
+                            className="btn-secondary"
+                            style={{ fontSize: "12px", padding: "4px 10px", marginBottom: "6px" }}
+                            onClick={(e) => toggleDescription(e, job.id)}
+                          >
+                            {isDescOpen ? "Hide Description" : "Job Description"}
+                          </button>
+                          {isDescOpen && (
+                            <div style={descriptionBoxStyle}>
+                              {formattedDesc}
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -437,4 +468,18 @@ const inputStyle = {
   border: "1px solid var(--border)",
   background: "var(--surface)",
   color: "var(--text)",
+};
+
+const descriptionBoxStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  color: "var(--text)",
+  fontSize: "13px",
+  lineHeight: 1.6,
+  marginBottom: "12px",
+  maxHeight: "360px",
+  overflowY: "auto",
+  padding: "12px 14px",
+  whiteSpace: "pre-wrap",
 };

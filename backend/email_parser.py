@@ -195,6 +195,8 @@ class EmailParser:
             except (TypeError, ValueError):
                 item["confidence_score"] = 50
             _normalize_title_company(item, subject, body_snippet)
+            if item.get("company"):
+                item["company"] = _trim_company_tail(item["company"])
             # Resolve tracking/redirect URLs that the LLM may have extracted
             # verbatim from the email body (e.g. SendGrid click-tracking links).
             raw_url = str(item.get("url") or "")
@@ -258,7 +260,9 @@ def _extract_title_company(value: str) -> tuple[str, str] | None:
 
 
 def _trim_company_tail(value: str) -> str:
-    for delimiter in (" | ", " — ", " – "):
+    # "•" and "·" are used by YC/WorkAtAStartup to visually separate company
+    # name from company description — they never appear in a company name itself.
+    for delimiter in (" | ", " — ", " – ", "•", "·"):
         value = value.split(delimiter, 1)[0]
     return value.strip(" -–—\t\r\n")
 
