@@ -94,7 +94,8 @@ ACK_SUBJECT_PATTERNS: tuple[str, ...] = (
     "successfully submitted",  # Wellfound: "Application to <company> successfully submitted"
 )
 VALID_STAGE_STATUSES: frozenset[str] = frozenset({
-    "applied", "waiting_call", "waiting_second", "eval_test",
+    "applied", "waiting_call", "waiting_second",
+    "eval_1", "eval_2", "eval_3",
     "rejected", "job_filled", "ghosted",
 })
 
@@ -206,9 +207,12 @@ def normalize_stage_status(raw_status: object) -> str:
         "waiting_2nd": "waiting_second",
         "waiting_for_second": "waiting_second",
         "waiting_second": "waiting_second",
-        "need_to_do_eval": "eval_test",
-        "eval": "eval_test",
-        "eval_test": "eval_test",
+        "need_to_do_eval": "eval_1",
+        "eval": "eval_1",
+        "eval_test": "eval_1",
+        "eval_1": "eval_1",
+        "eval_2": "eval_2",
+        "eval_3": "eval_3",
         "job_was_filled": "job_filled",
         "job_filled": "job_filled",
         "filled": "job_filled",
@@ -231,6 +235,8 @@ def platform_for_site_url(site_url: str) -> str:
         return "linkedin"
     if "myworkdayjobs.com" in host:
         return "workday"
+    if "discord.com/careers" in host or "discord.com/jobs" in host:
+        return "greenhouse"
     return "generic"
 
 
@@ -321,6 +327,25 @@ def extract_ashby_job_id(url: str) -> str | None:
         return None
 
 
+def extract_linkedin_job_id(url: str) -> str | None:
+    """Return the LinkedIn numeric job ID from a linkedin.com jobs URL, or None.
+
+    LinkedIn sends different tracking URLs for the same posting across emails
+    (different trackingId, refId, etc.) but the job ID in the path is stable:
+      /jobs/view/4385602723/  →  "4385602723"
+    """
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        if "linkedin.com" not in parsed.netloc.lower():
+            return None
+        m = re.search(r"/jobs/view/(\d+)", parsed.path)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
 def db_match_for_job(
     *,
     job_title: str,
@@ -333,9 +358,11 @@ def db_match_for_job(
     """Check known_jobs for an exact URL match or fuzzy title/company duplicate.
 
     Returns (tracked_status, source_key, duplicate_hint), all None when no match.
+    Duplicates are always flagged regardless of the original job's current status.
     """
     current_job_url = job_url.strip()
     current_ashby_job_id = extract_ashby_job_id(current_job_url)
+    current_linkedin_job_id = extract_linkedin_job_id(current_job_url)
 
     exact_match = next(
         (
@@ -350,14 +377,17 @@ def db_match_for_job(
                     and extract_ashby_job_id((row.get("url") or "").strip())
                     == current_ashby_job_id
                 )
+                or (
+                    current_linkedin_job_id is not None
+                    and extract_linkedin_job_id((row.get("url") or "").strip())
+                    == current_linkedin_job_id
+                )
             )
         ),
         None,
     )
     if exact_match is not None:
         tracked_status = (exact_match.get("status") or "").strip() or "Tracked"
-        if tracked_status in ACTIVE_JOB_STATUSES:
-            return None, None, None
         duplicate_hint = (
             f"Already tracked as \"{exact_match.get('job_title') or job_title}\" "
             f"at {exact_match.get('company') or company} with status \"{tracked_status}\"."
@@ -367,10 +397,14 @@ def db_match_for_job(
     if not company.strip() or not job_title.strip() or not known_jobs:
         return None, None, None
 
+    fuzzy_candidates = [
+        row for row in known_jobs
+        if exclude_id is None or row.get("id") != exclude_id
+    ]
     dup = dedup_checker.check(
         job_title=job_title,
         company=company,
-        sheet_jobs=known_jobs,
+        sheet_jobs=fuzzy_candidates,
     )
     if dup is None:
         return None, None, None
@@ -378,15 +412,13 @@ def db_match_for_job(
     matched = next(
         (
             row
-            for row in known_jobs
+            for row in fuzzy_candidates
             if (row.get("company") or "") == dup["sheet_company"]
             and (row.get("job_title") or "") == dup["sheet_title"]
         ),
         None,
     )
     tracked_status = ((matched or {}).get("status") or "Tracked").strip()
-    if tracked_status in ACTIVE_JOB_STATUSES:
-        return None, None, None
     duplicate_hint = (
         f"Possible duplicate of \"{dup['sheet_title']}\" "
         f"at {dup['sheet_company']} already tracked "

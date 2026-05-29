@@ -52,11 +52,14 @@ import {
   platformLabelForUrl,
 } from "../utils/triagePanelUtils.js";
 
+const _DEFAULT_SNOOZE_DAYS_KEY = "jobcard_snooze_days";
+
 export default function JobCard({
   job,
   onApprove,
   onReEvaluate,
   onSkip,
+  onSnooze,
   onUpdate,
 }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
@@ -66,8 +69,13 @@ export default function JobCard({
   const [descriptionSaving, setDescriptionSaving] = useState(false);
   const [descriptionError, setDescriptionError] = useState("");
   const [descriptionSaved, setDescriptionSaved] = useState(false);
-  const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "cover" | "pitch" | "tailor" | null
+  const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "snooze" | "cover" | "pitch" | "tailor" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const [snoozeDays, setSnoozeDays] = useState(() => {
+    const stored = parseInt(localStorage.getItem(_DEFAULT_SNOOZE_DAYS_KEY), 10);
+    return Number.isFinite(stored) && stored >= 1 ? stored : 4;
+  });
   const [pitchText, setPitchText] = useState(null);
   const [pitchType, setPitchType] = useState(null); // "why_company" | "why_fit"
   const [pitchOpen, setPitchOpen] = useState(false);
@@ -197,6 +205,19 @@ export default function JobCard({
     setLoading("approve");
     try {
       await onApprove(job.id);
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleSnoozeConfirm = async () => {
+    const days = parseInt(snoozeDays, 10);
+    if (!Number.isFinite(days) || days < 1) return;
+    localStorage.setItem(_DEFAULT_SNOOZE_DAYS_KEY, String(days));
+    setSnoozeOpen(false);
+    setLoading("snooze");
+    try {
+      await onSnooze(job.id, days);
     } finally {
       setLoading(null);
     }
@@ -1190,11 +1211,21 @@ export default function JobCard({
           {loading === "skip:duplicate" ? "Removing…" : "Duplicate"}
         </button>
 
+        {/* Snooze */}
+        <button
+          className="btn-secondary btn-sm"
+          onClick={() => { setSnoozeOpen((v) => !v); setShowSkipMenu(false); }}
+          disabled={busy}
+          title="Hide this job for a few days, then show it again"
+        >
+          {loading === "snooze" ? "Snoozing…" : "Snooze"}
+        </button>
+
         {/* Skip with reason picker */}
         <div style={{ position: "relative" }}>
           <button
             className="btn-danger"
-            onClick={() => setShowSkipMenu((v) => !v)}
+            onClick={() => { setShowSkipMenu((v) => !v); setSnoozeOpen(false); }}
             disabled={busy}
             style={{ display: "flex", alignItems: "center", gap: "5px" }}
           >
@@ -1327,6 +1358,47 @@ export default function JobCard({
               saving={undoSaving}
             />
           )}
+        </div>
+      )}
+
+      {/* Snooze panel */}
+      {snoozeOpen && (
+        <div style={{ marginTop: "12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 14px" }}>
+          <p style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "8px" }}>
+            Hide this job for how many days?
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <input
+              type="number"
+              min="1"
+              max="365"
+              value={snoozeDays}
+              onChange={(e) => setSnoozeDays(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleSnoozeConfirm(); if (e.key === "Escape") setSnoozeOpen(false); }}
+              autoFocus
+              style={{
+                width: "72px",
+                fontSize: "13px",
+                padding: "7px 10px",
+                borderRadius: "var(--radius)",
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontFamily: "inherit",
+              }}
+            />
+            <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>days</span>
+            <button className="btn-secondary btn-sm" onClick={handleSnoozeConfirm} disabled={busy}>
+              Snooze
+            </button>
+            <button
+              className="btn-secondary btn-sm"
+              onClick={() => setSnoozeOpen(false)}
+              style={{ color: "var(--text-muted)" }}
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 

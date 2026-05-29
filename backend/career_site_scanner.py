@@ -84,6 +84,12 @@ _GENERIC_ANCHOR_TEXTS = {
     "apply",
 }
 
+# Companies that host their careers page on their own domain but use Greenhouse
+# as the ATS backend.  Maps bare hostname → Greenhouse board token.
+_EMBEDDED_GREENHOUSE_TOKENS: dict[str, str] = {
+    "discord.com": "discord",
+}
+
 _DATE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b"),
     re.compile(r"\b(\d{4}/\d{2}/\d{2})\b"),
@@ -596,6 +602,20 @@ class CareerSiteScanner:
                 self._record_failure(platform="ashby", stage="adapter", exc=exc)
                 logger.warning("Ashby adapter failed for %s: %s", site_url, exc)
 
+        # Companies that serve a React SPA on their own domain but use Greenhouse
+        # as the ATS backend — fetch via the public Greenhouse API instead.
+        embedded_gh_token = _EMBEDDED_GREENHOUSE_TOKENS.get(host)
+        if embedded_gh_token:
+            try:
+                gh_board_url = f"https://boards.greenhouse.io/{embedded_gh_token}"
+                return ScanOutcome(
+                    jobs=self._scan_greenhouse(site_name, gh_board_url, display_url=site_url),
+                    detected_platform="greenhouse",
+                )
+            except Exception as exc:
+                self._record_failure(platform="greenhouse", stage="embedded", exc=exc)
+                logger.warning("Embedded Greenhouse adapter failed for %s: %s", site_url, exc)
+
         # Platform-specific adapter failed (or the URL is not a known platform);
         # fall back to the generic HTML scanner.
         try:
@@ -719,17 +739,24 @@ class CareerSiteScanner:
             company=company,
         )
 
-    def _scan_greenhouse(self, site_name: str, site_url: str) -> list[CareerSiteJob]:
+    def _scan_greenhouse(
+        self,
+        site_name: str,
+        site_url: str,
+        *,
+        display_url: str | None = None,
+    ) -> list[CareerSiteJob]:
         parsed = urlparse(site_url)
         token = _greenhouse_board_token(parsed)
         if not token:
             raise ValueError("Could not infer Greenhouse board token from URL")
 
+        stored_url = display_url or site_url
         api_url = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true"
         data = _fetch_json(api_url)
 
         jobs: list[CareerSiteJob] = []
-        for row in data.get("jobs", [])[:_MAX_JOBS_PER_SITE]:
+        for row in data.get("jobs", []):
             title = _clean_text(row.get("title", ""))
             job_url = row.get("absolute_url", "")
             content = _clean_text(row.get("content", ""))
@@ -741,7 +768,7 @@ class CareerSiteScanner:
             jobs.append(
                 CareerSiteJob(
                     site_name=site_name,
-                    site_url=site_url,
+                    site_url=stored_url,
                     job_title=title[:300] or "Untitled Job",
                     job_url=job_url,
                     job_text=text[:8000],
@@ -786,7 +813,7 @@ class CareerSiteScanner:
             raise ValueError("Unexpected Lever API response")
 
         jobs: list[CareerSiteJob] = []
-        for row in data[:_MAX_JOBS_PER_SITE]:
+        for row in data:
             title = _clean_text(row.get("text", ""))
             job_url = row.get("hostedUrl", "")
             location = _clean_text((row.get("categories") or {}).get("location", ""))
@@ -933,7 +960,7 @@ class CareerSiteScanner:
             raise ValueError("No Ashby job postings found in board payload")
 
         jobs: list[CareerSiteJob] = []
-        for row in postings[:_MAX_JOBS_PER_SITE]:
+        for row in postings:
             title = _clean_text(str(row.get("title") or ""))
             job_id = str(row.get("jobId") or row.get("id") or "").strip()
             if not title or not job_id:

@@ -31,7 +31,9 @@ export default function StatusBadge({ status, label, tone }) {
 function statusLabel(status) {
   const labels = {
     applied: "Applied",
-    eval_test: "Eval Test",
+    eval_1: "Eval 1",
+    eval_2: "Eval 2",
+    eval_3: "Eval 3",
     ghosted: "Ghosted",
     job_filled: "Job Filled",
     not_a_fit: "Not a Fit",

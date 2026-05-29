@@ -335,11 +335,14 @@ class PostgresJobRepository(_BaseRepo):
         "notes",
         "job_description",
         "import_warnings",
+        "snoozed_until",
     })
 
     def get_all_by_status(self, status: str) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM jobs WHERE status = %s ORDER BY fit_score DESC NULLS LAST",
+            "SELECT * FROM jobs WHERE status = %s"
+            " AND (snoozed_until IS NULL OR snoozed_until::date <= (NOW() AT TIME ZONE 'UTC')::date)"
+            " ORDER BY fit_score DESC NULLS LAST",
             (status,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
@@ -1466,6 +1469,7 @@ def _migrate(conn: Any) -> None:
         ("notes", "TEXT"),
         ("job_description", "TEXT"),
         ("import_warnings", "TEXT"),
+        ("snoozed_until", "TEXT"),
     ]:
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {defn}")
 
@@ -1617,6 +1621,7 @@ def _migrate_sqlite(conn: Any) -> None:
         ("notes", "TEXT"),
         ("job_description", "TEXT"),
         ("import_warnings", "TEXT"),
+        ("snoozed_until", "TEXT"),
     ]:
         _sqlite_add_column_if_missing(cur, "jobs", col, defn)
 
@@ -1759,7 +1764,8 @@ def _create_tables(conn: Any) -> None:
             skip_feedback         TEXT,
             skip_mismatch_reasons TEXT,
             job_description       TEXT,
-            import_warnings       TEXT
+            import_warnings       TEXT,
+            snoozed_until         TEXT
         )
         """,
         """
@@ -1968,7 +1974,8 @@ def _create_tables_sqlite(conn: Any) -> None:
             skip_mismatch_reasons TEXT,
             notes                 TEXT,
             job_description       TEXT,
-            import_warnings       TEXT
+            import_warnings       TEXT,
+            snoozed_until         TEXT
         )
         """,
         """

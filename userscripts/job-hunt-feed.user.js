@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-05-26
+// @version      2026-05-28.02
 // @match        https://wellfound.com/jobs/*
 // @match        https://wellfound.com/jobs
 // @match        https://app.welcometothejungle.com/jobs/*
@@ -10,6 +10,7 @@
 // @match        https://careers.teradata.com/jobs*
 // @match        https://my.greenhouse.io/jobs*
 // @match        https://job-boards.greenhouse.io/*/jobs/*
+// @match        https://discord.com/careehrs*
 // @match        https://www.linkedin.com/jobs/view/*
 // @match        https://www.linkedin.com/jobs/collections/recommended/*
 // @match        https://www.linkedin.com/jobs/search/*
@@ -19,7 +20,7 @@
 // @match        https://hnhiring.com/*
 // @match        https://www.vanta.com/company/careers/*
 // @match        https://jobs.ashbyhq.com/vanta/*
-// @match        https://www.workatastartup.com/jobs*
+// @match        https://www.workatastartup.com/jobs/r/software-engineer
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
@@ -531,6 +532,44 @@
         return JSON.stringify({ jobs, source: { url: window.location.href } });
     }
 
+    function buildDiscordCareersPayload() {
+        const seen = new Set();
+        const jobs = [];
+
+        document.querySelectorAll('a[href]').forEach(link => {
+            // Discord job links are at /jobs/<numeric-id> (not /careers/<slug>).
+            const raw = link.getAttribute('href') || '';
+            const m = raw.match(/^\/jobs\/(\d+)/)
+                   || link.href.match(/discord\.com\/jobs\/(\d+)/);
+            if (!m) return;
+
+            const url = `https://discord.com/jobs/${m[1]}`;
+            if (seen.has(url)) return;
+            seen.add(url);
+
+            // Walk up to find a card-sized container (30–800 chars of text).
+            let container = link.parentElement;
+            for (let d = 0; d < 10 && container && container !== document.body; d++) {
+                const len = (container.innerText || '').trim().length;
+                if (len >= 30 && len <= 800) break;
+                container = container.parentElement;
+            }
+            if (!container || container === document.body) container = link.parentElement;
+
+            // Prefer a heading in the container; fall back to the link text.
+            const headingEl = container && container.querySelector('h1,h2,h3,h4,h5');
+            const title = (headingEl?.innerText?.trim()) || link.innerText.trim() || 'Discord Job';
+
+            const cardText = (container?.innerText || '').trim().slice(0, 600);
+            const lines = [title, 'Company: Discord', `URL: ${url}`];
+            if (cardText && cardText !== title) lines.push('', cardText);
+
+            jobs.push({ url, job_title: title, company: 'Discord', listing_text: lines.join('\n') });
+        });
+
+        return JSON.stringify({ jobs, source: { url: 'https://discord.com/careers' } });
+    }
+
     function buildHtmlPayload() {
         return JSON.stringify({ content: document.documentElement.outerHTML, url: window.location.href });
     }
@@ -718,6 +757,8 @@
                           /\/careers/.test(window.location.pathname);
         const isHnHiring = window.location.hostname === 'hnhiring.com';
         const isWorkAtAStartup = window.location.hostname.includes('workatastartup.com');
+        const isDiscordCareers = window.location.hostname === 'discord.com' &&
+                                 /^\/careers/.test(window.location.pathname);
         const isJobView = /\/jobs\/view\/\d+/.test(window.location.pathname);
         const isSearch = /\/jobs\/search/.test(window.location.pathname) ||
                         /\/jobs\/collections/.test(window.location.pathname) ||
@@ -743,6 +784,8 @@
             data = buildHnHiringPayload();
         } else if (isWorkAtAStartup) {
             data = buildWorkAtAStartupPayload();
+        } else if (isDiscordCareers) {
+            data = buildDiscordCareersPayload();
         } else {
             data = buildHtmlPayload();
         }

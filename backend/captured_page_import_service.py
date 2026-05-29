@@ -622,6 +622,8 @@ class CapturedPageImportService:
             return parsed._replace(path="/jobs", query="", fragment="").geturl()
         if "workatastartup.com" in host:
             return parsed._replace(path="/jobs", query="", fragment="").geturl()
+        if host == "discord.com" and path_parts and path_parts[0] in {"careers", "jobs"}:
+            return parsed._replace(path="/careers", query="", fragment="").geturl()
         return None
 
     def _source_name_for_url(self, source_url: str, platform: str) -> str:

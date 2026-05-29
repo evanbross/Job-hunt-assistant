@@ -70,7 +70,7 @@ export function rowMatchesCompany(rowCompany, targetCompany) {
   const rowName = normalizeCompany(rowCompany);
   const targetName = normalizeCompany(targetCompany);
   if (!rowName || !targetName) return false;
-  return rowName.includes(targetName) || targetName.includes(rowName);
+  return rowName === targetName;
 }
 
 export function isAppliedStatus(status) {

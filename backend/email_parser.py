@@ -205,6 +205,13 @@ class EmailParser:
                 if resolved != raw_url:
                     item["url"] = resolved
                     logger.debug("Resolved tracking URL %s → %s", raw_url, resolved)
+            # If the LLM left the URL empty, try to salvage one directly from
+            # the email body using known job-board URL patterns.
+            if not item.get("url"):
+                fallback = _fallback_job_url(body_snippet)
+                if fallback:
+                    item["url"] = fallback
+                    logger.debug("URL fallback: extracted %s from email body", fallback)
             jobs.append(item)  # type: ignore[arg-type]
 
         return jobs
@@ -360,10 +367,31 @@ _TRACKING_DOMAIN_FRAGMENTS = frozenset({
     "mandrillapp.com",
 })
 
+# Job-board URL patterns used as a fallback when the LLM returns an empty URL.
+# Ordered by specificity — more specific patterns first.
+_JOBBOARD_URL_FALLBACK_RES: list[re.Pattern[str]] = [
+    re.compile(r"https?://(?:www\.)?linkedin\.com/jobs/view/[^\s<>()\"']+", re.IGNORECASE),
+    re.compile(r"https?://jobs\.lever\.co/[^\s<>()\"']+", re.IGNORECASE),
+    re.compile(r"https?://[^\s<>()\"']*greenhouse\.io/[^\s<>()\"']*jobs[^\s<>()\"']+", re.IGNORECASE),
+    re.compile(r"https?://[^\s<>()\"']*myworkdayjobs\.com/[^\s<>()\"']+", re.IGNORECASE),
+]
+
 
 def _is_email_tracking_url(url: str) -> bool:
     host = urlparse(url).netloc.lower()
     return any(frag in host for frag in _TRACKING_DOMAIN_FRAGMENTS)
+
+
+def _fallback_job_url(body_snippet: str) -> str:
+    """Return the first recognizable job-board URL found in the email body.
+
+    Used when the LLM extraction left the URL field empty.
+    """
+    for pattern in _JOBBOARD_URL_FALLBACK_RES:
+        m = pattern.search(body_snippet)
+        if m:
+            return m.group(0).rstrip(".,;)")
+    return ""
 
 
 def _resolve_tracking_url(url: str, timeout: float = 3.0) -> str:

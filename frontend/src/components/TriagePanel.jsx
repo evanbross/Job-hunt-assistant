@@ -231,6 +231,18 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
     }
   };
 
+  const handleMarkApplied = async (job) => {
+    const res = await fetch(`/api/jobs/${job.id}/add-to-sheet`, { method: "POST" });
+    if (res.ok) {
+      const updated = jobs.filter((j) => j.id !== job.id);
+      setJobs(updated);
+      onCountChange(updated.length);
+    } else {
+      const err = await res.json().catch(() => ({}));
+      window.alert(err.error || "Failed to mark job as applied");
+    }
+  };
+
   const handleRefreshFromUrl = async (job) => {
     setReEvaluatePopup({
       action: "Re-fetch",
@@ -565,6 +577,7 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
             onSameJob={() => handleSkipAsDuplicate(job)}
             onDifferentJob={() => handleApprove(job)}
             onMarkUnique={() => handleMarkUnique(job)}
+            onMarkApplied={() => handleMarkApplied(job)}
             onReEvaluate={() => handleReEvaluateFit(job)}
             onReprocessed={(updated) => {
               const triageStatuses = new Set(["triage", "possible_duplicate"]);
@@ -586,6 +599,7 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
             job={job}
             onApprove={() => handleApprove(job)}
             onSkip={(reason, feedback, mismatchReasons) => handleSkip(job, reason, feedback, mismatchReasons)}
+            onMarkApplied={() => handleMarkApplied(job)}
             onReEvaluate={() => handleReEvaluateFit(job)}
             onRefreshFromUrl={() => handleRefreshFromUrl(job)}
             companySheetRows={allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))}
@@ -658,7 +672,7 @@ function CardContextMenu({ contextMenu, company, onShowCompanyHistory }) {
   );
 }
 
-function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvaluate, onReprocessed, companySheetRows = null }) {
+function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onReEvaluate, onReprocessed, companySheetRows = null }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -965,6 +979,13 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
         >
           {loadingAction === "different" ? "Moving…" : "No, it's a different role"}
         </button>
+        <button
+          className="btn-secondary btn-sm"
+          onClick={() => act(onMarkApplied, "applied")}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "applied" ? "Saving…" : "Mark Applied"}
+        </button>
       </div>
 
       {descriptionPasteOpen && (
@@ -993,7 +1014,7 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onReEvalu
   );
 }
 
-function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, companySheetRows = null }) {
+function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, companySheetRows = null }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingCompany, setEditingCompany] = useState(false);
   const [companyDraft, setCompanyDraft] = useState("");
@@ -1738,6 +1759,14 @@ function TriageCard({ job, onApprove, onSkip, onReEvaluate, onRefreshFromUrl, on
           style={{ flex: 1 }}
         >
           {loadingAction === "approve" ? "Moving…" : "It's a Job Posting"}
+        </button>
+        <button
+          className="btn-secondary"
+          onClick={() => act(onMarkApplied, "applied")}
+          disabled={loadingAction !== null}
+          style={{ flexShrink: 0 }}
+        >
+          {loadingAction === "applied" ? "Saving…" : "Mark Applied"}
         </button>
         <div style={{ position: "relative", flex: 1 }}>
           <button

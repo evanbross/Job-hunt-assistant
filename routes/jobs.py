@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime, UTC
+from datetime import datetime, timedelta, UTC
 from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, request
@@ -326,7 +326,7 @@ def undo_status_change(history_id: int):
             repos["stages"].insert({
                 "job_id": job_id,
                 "status": "applied",
-                "date": prev_date or date.today().isoformat(),
+                "date": prev_date or datetime.now(UTC).date().isoformat(),
                 "notes": None,
             })
 
@@ -354,7 +354,7 @@ def approve_job(job_id: int):
             return jsonify({"error": "Job not found"}), 404
 
         from_status = str(job.get("status") or "")
-        today = date.today().isoformat()
+        today = datetime.now(UTC).date().isoformat()
         repos["jobs"].update(
             job_id, {"status": "applied", "date_added_to_sheet": today}
         )
@@ -429,6 +429,31 @@ def dismiss_duplicate(job_id: int):
         )
         repos["conn"].commit()
     return jsonify({"status": "ok"})
+
+
+@jobs_bp.route("/jobs/<int:job_id>/snooze", methods=["POST"])
+def snooze_job(job_id: int):
+    body = request.get_json(silent=True) or {}
+    try:
+        days = int(body.get("days", 4))
+    except (TypeError, ValueError):
+        days = 4
+    if days < 1:
+        return jsonify({"error": "days must be at least 1"}), 400
+    if days > 365:
+        return jsonify({"error": "days must be at most 365"}), 400
+
+    snoozed_until = (datetime.now(UTC).date() + timedelta(days=days)).isoformat()
+
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+
+        repos["jobs"].update(job_id, {"snoozed_until": snoozed_until})
+        repos["conn"].commit()
+
+    return jsonify({"status": "ok", "snoozed_until": snoozed_until})
 
 
 @jobs_bp.route("/jobs/<int:job_id>/approve", methods=["POST"])
@@ -713,7 +738,7 @@ def add_application_stage(job_id: int):
     if status not in VALID_STAGE_STATUSES:
         return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(VALID_STAGE_STATUSES))}"}), 400
 
-    stage_date = data.get("date") or date.today().isoformat()
+    stage_date = data.get("date") or datetime.now(UTC).date().isoformat()
     notes = data.get("notes") or None
 
     with get_repos() as repos:

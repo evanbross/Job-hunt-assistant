@@ -105,7 +105,12 @@
       "Bash(tasklist /FI \"IMAGENAME eq python.exe\" /FO LIST)",
       "Bash(curl -s http://localhost:5000/api/scan/status)",
       "Bash(curl -s http://localhost:5004/api/scan/status)",
-      "Bash(curl -s http://localhost:5001/api/scan/status)"
+      "Bash(curl -s http://localhost:5001/api/scan/status)",
+      "Bash(Get-ChildItem -Path \"F:\\\\Evan-F\\\\Projects\\\\JobHuntAssistant\" -Recurse -Filter \"*.tsx\" -o File)",
+      "Bash(Select-Object -First 20 FullName)",
+      "Bash(.venv/Scripts/python -c ' *)",
+      "Bash(.venv/Scripts/python -m pytest tests/ -x -q)",
+      "Bash(.venv/Scripts/python -m pytest tests/ -q --ignore=tests/test_jobs_description_route.py)"
     ]
   }
 }

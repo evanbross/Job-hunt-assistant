@@ -61,7 +61,9 @@ const STATUS_FALLBACKS = {
   rejected:           { background: "var(--red-light)", color: "var(--red)" },
   waiting_call:       { background: "var(--accent-light)", color: "var(--accent)" },
   waiting_second:     { background: "var(--orange-light)", color: "var(--orange)" },
-  eval_test:          { background: "var(--green-light)", color: "var(--green)" },
+  eval_1:             { background: "var(--green-light)", color: "var(--green)" },
+  eval_2:             { background: "var(--green-light)", color: "var(--green)" },
+  eval_3:             { background: "var(--green-light)", color: "var(--green)" },
   job_filled:         { background: "var(--red-light)", color: "var(--red)" },
   ghosted:            { background: "var(--orange-light)", color: "var(--orange)" },
   skipped:            { background: "var(--surface2)", color: "var(--text-muted)" },
@@ -116,7 +118,7 @@ function defaultEmptyForm() {
 
 function defaultStageForm() {
   return {
-    status: "Waiting for Call",
+    status: "",
     date: new Date().toLocaleDateString('en-CA'),
     notes: "",
   };
@@ -136,7 +138,7 @@ function getStatusStyle(value, colorMap = {}) {
     return STATUS_FALLBACKS.waiting_second;
   }
   if (normalizedValue.includes("waiting")) return STATUS_FALLBACKS.waiting_call;
-  if (normalizedValue.includes("eval")) return STATUS_FALLBACKS.eval_test;
+  if (normalizedValue.includes("eval")) return STATUS_FALLBACKS.eval_1;
   if (normalizedValue.includes("filled")) return STATUS_FALLBACKS.job_filled;
   if (normalizedValue.includes("applied")) return STATUS_FALLBACKS.applied;
   if (normalizedValue.includes("ghost")) return STATUS_FALLBACKS.ghosted;
@@ -310,10 +312,12 @@ function cellStyle(isHeader = false, width = null) {
   };
 }
 
-function textMatches(row, query) {
+function textMatches(row, query, columns) {
   if (!query) return true;
   const normalizedQuery = query.trim().toLowerCase();
-  return row.cells.some((cell) => String(cell.value || "").toLowerCase().includes(normalizedQuery));
+  return columns.some((entry) =>
+    String(getCell(row, entry.column).value || "").toLowerCase().includes(normalizedQuery),
+  );
 }
 
 function compareCellValues(leftValue, rightValue, key) {
@@ -426,7 +430,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   );
 
   const visibleRows = useMemo(() => {
-    const filteredRows = sheet.rows.filter((row) => textMatches(row, search));
+    const filteredRows = sheet.rows.filter((row) => textMatches(row, search, parentColumns));
     if (!sortConfig) return filteredRows;
 
     const sortColumn = parentColumns.find((entry) => entry.key === sortConfig.key);
@@ -661,6 +665,32 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         window.alert(data.error || `Move failed (${res.status})`);
+        return;
+      }
+      await loadSheet();
+    } finally {
+      setSavingKey("");
+    }
+  };
+
+  const confirmDuplicate = async (row) => {
+    setSavingKey(`confirm-dup:${row.row_number}`);
+    try {
+      const base = formForRow(row, trackingColumns);
+      const existingNotes = base.notes.trim();
+      const rowData = {
+        ...base,
+        status: "Skipped",
+        notes: existingNotes ? `${existingNotes}; Confirmed duplicate` : "Confirmed duplicate",
+      };
+      const res = await fetch(`/api/sheet/applications/${row.row_number}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rowData),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        window.alert(data.error || `Save failed (${res.status})`);
         return;
       }
       await loadSheet();
@@ -999,6 +1029,15 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                                 {savingKey === `queue:${row.row_number}` ? "Moving..." : "Move Back to Queue"}
                               </button>
                             )}
+                            {normalizeStatus(getCell(row, trackingColumns.status).value) === "possible_duplicate" && (
+                              <button
+                                className="btn-danger"
+                                onClick={() => confirmDuplicate(row)}
+                                disabled={!!savingKey}
+                              >
+                                {savingKey === `confirm-dup:${row.row_number}` ? "Saving…" : "Yes, it's a duplicate — skip it"}
+                              </button>
+                            )}
                           </div>
                         )}
                         {row.stages?.length > 0 && (
@@ -1025,10 +1064,11 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                         )}
                         <div style={stageFormStyle}>
                           <select
-                            value={(stageRows[row.row_number]?.status) || "Waiting for Call"}
+                            value={stageRows[row.row_number]?.status || ""}
                             onChange={(event) => updateStageRow(row.row_number, "status", event.target.value)}
-                            style={stageSelectStyle((stageRows[row.row_number]?.status) || "Waiting for Call", statusColorMap)}
+                            style={stageSelectStyle(stageRows[row.row_number]?.status || "", statusColorMap)}
                           >
+                            <option value="" disabled>— select status —</option>
                             {statusOptions.map((status) => (
                               <option key={status} value={status} style={stageOptionStyle(status, statusColorMap)}>{status}</option>
                             ))}
@@ -1045,7 +1085,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                             placeholder="Stage notes"
                             style={stageControlStyle}
                           />
-                          <button className="btn-primary" onClick={() => addStage(row.row_number)} disabled={savingKey === `stage:${row.row_number}`}>
+                          <button className="btn-primary" onClick={() => addStage(row.row_number)} disabled={savingKey === `stage:${row.row_number}` || !stageRows[row.row_number]?.status}>
                             Add Stage
                           </button>
                         </div>

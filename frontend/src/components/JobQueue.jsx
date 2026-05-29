@@ -457,6 +457,17 @@ export default function JobQueue({
     }
   };
 
+  const handleSnooze = async (jobId, days) => {
+    const res = await fetch(`/api/jobs/${jobId}/snooze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ days }),
+    });
+    if (res.ok) {
+      setJobs((prev) => prev.filter((j) => j.id !== jobId));
+    }
+  };
+
   const handleJobReEvaluate = async (job) => {
     setJobReEvaluatePopup({
       company: job.company || "",
@@ -1302,6 +1313,7 @@ export default function JobQueue({
             onApprove={handleApprove}
             onReEvaluate={handleJobReEvaluate}
             onSkip={handleSkip}
+            onSnooze={handleSnooze}
             onUpdate={(jobId, updatedJob) => {
               if (updatedJob.fit_score !== job.fit_score || updatedJob.fit_reasoning !== job.fit_reasoning) {
                 setJobReEvaluatePopup({
