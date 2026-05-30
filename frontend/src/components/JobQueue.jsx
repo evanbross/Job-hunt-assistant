@@ -1778,7 +1778,7 @@ function ScanSummaryPopup({ summary, onClose }) {
         </div>
         <div>
           <div style={{ fontSize: "28px", fontWeight: 700, color: new_jobs > 0 ? "var(--green)" : "var(--text-muted)" }}>{new_jobs}</div>
-          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>new jobs</div>
+          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>Job Listings</div>
         </div>
         {new_jobs > 0 && (
           <div>

@@ -47,22 +47,25 @@ Task: run_import_task
 """
 from __future__ import annotations
 
+import json
 import logging
+import pathlib
+import re
 import socket
 import urllib.error
 from datetime import datetime, UTC
 from typing import Any
 
+from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
 from backend.duplicate_checker import DuplicateChecker
-from backend.fit_scorer import FitScorer
 from backend.import_repair import (
     post_repair_duplicate_check,
     repair_existing_job_company,
     repair_linkedin_company,
 )
 from backend.manual_job_ingest_service import ManualJobIngestService
-from backend.utils import get_repos, _parse_positive_int
+from backend.utils import enrich_job_description, get_repos, is_richer_description, jd_blocklist_match, _parse_positive_int
 
 logger = logging.getLogger(__name__)
 
@@ -100,51 +103,101 @@ def _import_outcome_detail(
     }
 
 
-_ENRICH_MIN_CHARS = 300
-_ENRICH_ADVANTAGE_CHARS = 300
+_LLM_ENRICH_MIN_TEXT = 100
+_LLM_ENRICH_MAX_BATCH = 20
+_LLM_ENRICH_MAX_TEXT = 3000
 
 
-def _is_richer_description(incoming_text: str, existing_job: dict[str, Any]) -> bool:
-    """Return True if incoming_text is substantially richer than what is stored."""
-    if len(incoming_text) < _ENRICH_MIN_CHARS:
-        return False
-    existing = str(
-        existing_job.get("job_description") or existing_job.get("raw_email_snippet") or ""
+def _llm_enrich_batch(url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bundle listing_text values into one LLM call to fill missing job_title/company.
+
+    Only runs on rows where listing_text is substantial and at least one of
+    job_title or company is empty. Falls back silently on any LLM failure so
+    the import pipeline stays live regardless.
+    """
+    candidates = [
+        (i, row)
+        for i, row in enumerate(url_rows)
+        if len(str(row.get("listing_text") or "")) >= _LLM_ENRICH_MIN_TEXT
+        and (not str(row.get("job_title") or "").strip() or not str(row.get("company") or "").strip())
+    ]
+    if not candidates:
+        return url_rows
+
+    batch = candidates[:_LLM_ENRICH_MAX_BATCH]
+    snippets = []
+    for seq, (_, row) in enumerate(batch, start=1):
+        text = str(row.get("listing_text") or "")[:_LLM_ENRICH_MAX_TEXT]
+        snippets.append(f"[{seq}]\n{text}")
+
+    prompt = (
+        "Extract the job title and company name from each numbered listing below.\n"
+        "Return a JSON array with exactly one object per listing, in the same order:\n"
+        '[{"job_title": "...", "company": "..."}, ...]\n'
+        "Use null for any field you cannot determine. Return ONLY the JSON array, no other text.\n\n"
+        + "\n\n---\n\n".join(snippets)
     )
-    return len(incoming_text) > len(existing) + _ENRICH_ADVANTAGE_CHARS
+
+    try:
+        log_path = pathlib.Path(__file__).resolve().parent.parent / "tmp" / "jha_llm_prompts.log"
+        try:
+            log_path.parent.mkdir(exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(f"\n{'='*60}\n{datetime.now(UTC).isoformat(timespec='seconds')} _llm_enrich_batch ({len(batch)} jobs)\n{'='*60}\n{prompt}\n")
+        except OSError as log_exc:
+            logger.debug("Could not write LLM prompt log: %s", log_exc)
+
+        raw = AIProviderClient().complete(
+            messages=[AIMessage(role="user", content=prompt)],
+            max_tokens=2048,
+        )
+        raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+        raw = re.sub(r"\s*```$", "", raw.strip())
+        results = json.loads(raw)
+        if not isinstance(results, list) or len(results) != len(batch):
+            logger.warning(
+                "LLM enrichment: expected %d results, got %s; skipping",
+                len(batch),
+                len(results) if isinstance(results, list) else type(results).__name__,
+            )
+            return url_rows
+    except Exception as exc:
+        logger.warning("LLM batch enrichment failed; import continues with original data: %s", exc)
+        return url_rows
+
+    enriched = list(url_rows)
+    filled = 0
+    for (orig_idx, orig_row), result in zip(batch, results):
+        if not isinstance(result, dict):
+            continue
+        row = dict(orig_row)
+        if not str(row.get("job_title") or "").strip():
+            title_text = str(result.get("job_title") or "").strip()
+            if title_text and title_text.lower() != "null":
+                row["job_title"] = title_text[:300]
+                filled += 1
+        if not str(row.get("company") or "").strip():
+            company_text = str(result.get("company") or "").strip()
+            if company_text and company_text.lower() != "null":
+                row["company"] = company_text[:200]
+                filled += 1
+        enriched[orig_idx] = row
+
+    logger.info("LLM enrichment filled %d missing field(s) across %d job(s)", filled, len(batch))
+    return enriched
 
 
 def _enrich_job_description(repos: dict[str, Any], job: dict[str, Any], description: str) -> None:
-    """Overwrite a job's description fields and re-score against the candidate profile."""
-    job_id = int(job["id"])
-    repos["jobs"].update(job_id, {
-        "job_description": description,
-        "raw_email_snippet": description[:6000],
-    })
-    try:
-        resume_row = repos["resume"].get_latest()
-        resume_text = str(resume_row.get("content") or "") if resume_row else ""
-        penalty_rules = repos["penalties"].get_enabled()
-        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
-        result = FitScorer().score(
-            job_title=str(job.get("job_title") or ""),
-            company=str(job.get("company") or ""),
-            email_body=description,
-            resume_text=resume_text,
-            penalty_rules=penalty_rules,
-            fit_feedback=fit_feedback,
-        )
-        score = int(result["score"])
-        current_status = str(job.get("status") or "")
-        score_updates: dict[str, Any] = {
-            "fit_score": score,
-            "fit_reasoning": result["reasoning"],
-        }
-        if current_status not in {"skipped", "applied"}:
-            score_updates["status"] = "pending_review" if score >= 70 else "triage"
-        repos["jobs"].update(job_id, score_updates)
-    except Exception as exc:
-        logger.warning("Re-scoring failed for enriched job %d: %s", job_id, exc)
+    resume_row = repos["resume"].get_latest()
+    resume_text = str(resume_row.get("content") or "") if resume_row else ""
+    enrich_job_description(
+        repos,
+        job,
+        description,
+        resume_text=resume_text,
+        penalty_rules=repos["penalties"].get_enabled(),
+        fit_feedback=repos["jobs"].get_not_a_fit_with_feedback(),
+    )
 
 
 def _find_duplicate_original(
@@ -197,8 +250,13 @@ def run_import_task(
         },
     )
 
+    # One bundled LLM call to fill in missing job_title/company from listing_text.
+    # Falls back silently if the LLM is unavailable — the loop below is unaffected.
+    extracted = _llm_enrich_batch(extracted)
+
     with get_repos() as repos:
         known_jobs: list[dict] = repos["jobs"].get_all_ordered()
+        blocklist_rules: list[dict] = repos["career_rejection_rules"].get_enabled()
         service = ManualJobIngestService(
             repos["jobs"], repos["resume"], repos["penalties"]
         )
@@ -206,11 +264,13 @@ def run_import_task(
         skipped = 0
         repaired = 0
         enriched = 0
+        filtered = 0
         failed = 0
         queued_details: list[dict] = []
         skipped_details: list[dict] = []
         repaired_details: list[dict] = []
         enriched_details: list[dict] = []
+        filtered_details: list[dict] = []
         failures: list[dict] = []
 
         for i, url_row in enumerate(extracted):
@@ -262,7 +322,7 @@ def run_import_task(
                             repos["jobs"], updated, known_jobs
                         )
                         repos["conn"].commit()
-                if _is_richer_description(incoming_text, existing_job):
+                if is_richer_description(incoming_text, existing_job):
                     _enrich_job_description(repos, existing_job, incoming_text)
                     repos["conn"].commit()
                     enriched += 1
@@ -284,6 +344,21 @@ def run_import_task(
                     )
                 )
                 continue
+
+            if blocklist_rules:
+                _haystack = " ".join(str(url_row.get(f) or "") for f in ("job_title", "company", "listing_text", "url", "platform"))
+                matched_rule = jd_blocklist_match(_haystack, blocklist_rules)
+                if matched_rule is not None:
+                    filtered += 1
+                    filtered_details.append(
+                        _import_outcome_detail(
+                            url_row,
+                            f"Blocked by global JD filter: \"{matched_rule.get('rule_text', '')}\"",
+                            "filtered",
+                        )
+                    )
+                    logger.debug("JD blocklist filtered %s (rule: %s)", url, matched_rule.get("rule_text"))
+                    continue
 
             try:
                 self.update_state(
@@ -315,7 +390,7 @@ def run_import_task(
                 new_job = ingest_result.job
                 if new_job.get("status") == "possible_duplicate":
                     original = _find_duplicate_original(new_job, known_jobs)
-                    if original and _is_richer_description(incoming_text, original):
+                    if original and is_richer_description(incoming_text, original):
                         _enrich_job_description(repos, original, incoming_text)
                         repos["jobs"].delete(int(new_job["id"]))
                         repos["conn"].commit()
@@ -357,11 +432,13 @@ def run_import_task(
             "skipped": skipped,
             "repaired": repaired,
             "enriched": enriched,
+            "filtered": filtered,
             "failed": failed,
             "queued_details": queued_details,
             "skipped_details": skipped_details,
             "repaired_details": repaired_details,
             "enriched_details": enriched_details,
+            "filtered_details": filtered_details,
             "failures": failures,
             "capture_source": capture_source,
         }

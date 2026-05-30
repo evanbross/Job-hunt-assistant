@@ -2,24 +2,25 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-05-28.02
-// @match        https://wellfound.com/jobs/*
-// @match        https://wellfound.com/jobs
+// @version      2026-05-29.01
 // @match        https://app.welcometothejungle.com/jobs/*
-// @match        https://wellfound.com/jobs?*
 // @match        https://careers.teradata.com/jobs*
-// @match        https://my.greenhouse.io/jobs*
-// @match        https://job-boards.greenhouse.io/*/jobs/*
 // @match        https://discord.com/careehrs*
-// @match        https://www.linkedin.com/jobs/view/*
+// @match        https://hnhiring.com/*
+// @match        https://job-boards.greenhouse.io/*/jobs/*
+// @match        https://jobs.ashbyhq.com/vanta/*
+// @match        https://my.greenhouse.io/jobs*
+// @match        https://wellfound.com/jobs
+// @match        https://wellfound.com/jobs/*
+// @match        https://wellfound.com/jobs?*
 // @match        https://www.linkedin.com/jobs/collections/recommended/*
-// @match        https://www.linkedin.com/jobs/search/*
 // @match        https://www.linkedin.com/jobs/search-results*
+// @match        https://www.linkedin.com/jobs/search/*
+// @match        https://www.linkedin.com/jobs/view/*
 // @match        https://www.mongodb.com/company/careers/teams/engineering
 // @match        https://www.randstadusa.com/jobs/q-software-engineer/remote/
-// @match        https://hnhiring.com/*
-// @match        https://www.vanta.com/company/careers/*
-// @match        https://jobs.ashbyhq.com/vanta/*
+// @match        https://www.vanta.com/company/careers*
+// @match        https://app.welcometothejungle.com/jobs/*
 // @match        https://www.workatastartup.com/jobs/r/software-engineer
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        GM_xmlhttpRequest
@@ -570,6 +571,32 @@
         return JSON.stringify({ jobs, source: { url: 'https://discord.com/careers' } });
     }
 
+    function buildAshbyJobPayload() {
+        const appData = window.__appData;
+        const posting = appData && appData.posting;
+        if (!posting || !posting.title) return buildHtmlPayload();
+
+        const company = (appData.organization && appData.organization.name) || '';
+        const title = posting.title || '';
+        const location = posting.locationExternalName || posting.locationName || '';
+        const department = posting.departmentExternalName || posting.departmentName || '';
+        const workplace = posting.workplaceType || '';
+        const employment = posting.employmentType || '';
+        const desc = posting.descriptionPlainText || posting.description || '';
+
+        const lines = [];
+        if (title) lines.push(title);
+        if (company) lines.push('Company: ' + company);
+        lines.push('URL: ' + window.location.href);
+        const meta = [department, location, workplace, employment].filter(Boolean);
+        if (meta.length) lines.push(meta.join(' | '));
+        if (desc) lines.push('', desc);
+
+        return JSON.stringify({
+            jobs: [{ url: window.location.href, job_title: title, company, listing_text: lines.join('\n') }],
+        });
+    }
+
     function buildHtmlPayload() {
         return JSON.stringify({ content: document.documentElement.outerHTML, url: window.location.href });
     }
@@ -759,6 +786,8 @@
         const isWorkAtAStartup = window.location.hostname.includes('workatastartup.com');
         const isDiscordCareers = window.location.hostname === 'discord.com' &&
                                  /^\/careers/.test(window.location.pathname);
+        const isAshbyJob = window.location.hostname === 'jobs.ashbyhq.com' &&
+                           window.location.pathname.split('/').filter(Boolean).length >= 2;
         const isJobView = /\/jobs\/view\/\d+/.test(window.location.pathname);
         const isSearch = /\/jobs\/search/.test(window.location.pathname) ||
                         /\/jobs\/collections/.test(window.location.pathname) ||
@@ -786,6 +815,8 @@
             data = buildWorkAtAStartupPayload();
         } else if (isDiscordCareers) {
             data = buildDiscordCareersPayload();
+        } else if (isAshbyJob) {
+            data = buildAshbyJobPayload();
         } else {
             data = buildHtmlPayload();
         }

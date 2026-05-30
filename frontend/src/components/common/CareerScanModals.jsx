@@ -87,7 +87,8 @@ export function CareerScanSummaryPopup({ summary, onClose }) {
       <MetricGrid>
         <MetricItem label="sites scanned" value={summary?.sites_scanned ?? 0} />
         <MetricItem label="jobs found" value={summary?.jobs_found ?? 0} tone={(summary?.jobs_found ?? 0) > 0 ? "green" : "muted"} />
-        <MetricItem label="new jobs" value={summary?.jobs_added ?? 0} tone={(summary?.jobs_added ?? 0) > 0 ? "green" : "muted"} />
+        <MetricItem label="new listings" value={summary?.jobs_added ?? 0} tone={(summary?.jobs_added ?? 0) > 0 ? "green" : "muted"} />
+        <MetricItem label="promoted to queue" value={summary?.jobs_promoted ?? 0} tone={(summary?.jobs_promoted ?? 0) > 0 ? "green" : "muted"} />
         {hasErrors && <MetricItem label="errors" value={errors.length} tone="red" />}
       </MetricGrid>
 

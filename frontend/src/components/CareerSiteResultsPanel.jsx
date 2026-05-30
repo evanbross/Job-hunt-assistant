@@ -382,7 +382,7 @@ export default function CareerSiteResultsPanel() {
   };
 
   const deleteRule = async (ruleId) => {
-    if (!window.confirm("Delete this career-site rejection rule?")) return;
+    if (!window.confirm("Delete this global JD filter rule?")) return;
     const res = await fetch(`/api/career-rejection-rules/${ruleId}`, { method: "DELETE" });
     const data = await res.json();
     if (!res.ok) {
@@ -607,6 +607,7 @@ export default function CareerSiteResultsPanel() {
                               </div>
                               <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                                 {row.tracking_status || "New"}
+                                {row.scanned_at ? ` · ${row.scanned_at.slice(0, 10)}` : ""}
                               </div>
                             </div>
                             <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
@@ -719,7 +720,7 @@ export default function CareerSiteResultsPanel() {
                     checked={!!addRejectRule}
                     onChange={(e) => setAddRejectRule(e.target.checked)}
                   />
-                  Add this as a future rejection rule
+                  Add this as a global JD filter rule
                 </label>
                 <div>
                   <button className="btn-danger" onClick={rejectSelectedJob} disabled={rejectingJob || !rejectReason.trim()}>
@@ -738,7 +739,7 @@ export default function CareerSiteResultsPanel() {
 
       <div style={{ background: "var(--surface)", borderRadius: "var(--radius-lg)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border)", marginBottom: "14px" }}>
         <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          <strong style={{ fontSize: "12px" }}>Career-Site Rejection Rules</strong>
+          <strong style={{ fontSize: "12px" }}>Global JD Filters</strong>
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
             <button className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={fetchRejectionRules}>Refresh Rules</button>
             <button className="btn-primary" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={startCreateRule}>Add Rule</button>

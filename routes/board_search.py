@@ -45,7 +45,7 @@ from flask import Blueprint, jsonify
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.utils import get_repos
+from backend.utils import get_repos, jd_blocklist_match
 from backend.duplicate_checker import DuplicateChecker
 from backend.job_validator import normalize_and_validate, import_warnings_to_json
 from backend.fit_scorer import FitScorer
@@ -68,6 +68,7 @@ class BoardSearchState:
     jobs_added: int = 0
     duplicates_skipped: int = 0
     fuzzy_duplicates_skipped: int = 0
+    blocklist_filtered: int = 0
     scoring_failed: int = 0
     below_min_score: int = 0
     errors: list[str] = field(default_factory=list)
@@ -86,6 +87,7 @@ def _update_board(
     jobs_added: int | None = None,
     duplicates_skipped: int | None = None,
     fuzzy_duplicates_skipped: int | None = None,
+    blocklist_filtered: int | None = None,
     scoring_failed: int | None = None,
     below_min_score: int | None = None,
     error: str | None = None,
@@ -105,6 +107,8 @@ def _update_board(
             _board_state.duplicates_skipped = duplicates_skipped
         if fuzzy_duplicates_skipped is not None:
             _board_state.fuzzy_duplicates_skipped = fuzzy_duplicates_skipped
+        if blocklist_filtered is not None:
+            _board_state.blocklist_filtered = blocklist_filtered
         if scoring_failed is not None:
             _board_state.scoring_failed = scoring_failed
         if below_min_score is not None:
@@ -162,6 +166,7 @@ def _run_board_search() -> None:
         _board_state.jobs_added = 0
         _board_state.duplicates_skipped = 0
         _board_state.fuzzy_duplicates_skipped = 0
+        _board_state.blocklist_filtered = 0
         _board_state.scoring_failed = 0
         _board_state.below_min_score = 0
         _board_state.errors.clear()
@@ -189,6 +194,7 @@ def _run_board_search() -> None:
             resume_row = resume_repo.get_latest()
             resume_text = resume_row["content"] if resume_row else ""
             penalty_rules = penalty_repo.get_enabled()
+            blocklist_rules = repos["career_rejection_rules"].get_enabled()
             fit_feedback = job_repo.get_not_a_fit_with_feedback()
             scorer = FitScorer()
             dup_checker = DuplicateChecker()
@@ -222,6 +228,7 @@ def _run_board_search() -> None:
             jobs_added = 0
             duplicates_skipped = 0
             fuzzy_duplicates_skipped = 0
+            blocklist_filtered = 0
             scoring_failed = 0
             below_min_score = 0
             for idx, candidate in enumerate(candidates):
@@ -240,6 +247,16 @@ def _run_board_search() -> None:
                     if dup_checker.check(job_title=title, company=company, sheet_jobs=all_known_jobs):
                         fuzzy_duplicates_skipped += 1
                         _update_board(candidates_processed=idx + 1, fuzzy_duplicates_skipped=fuzzy_duplicates_skipped)
+                        continue
+
+                # Blocklist check — skip before spending tokens on scoring
+                if blocklist_rules:
+                    _haystack = " ".join(str(candidate.get(f) or "") for f in ("title", "company", "description", "url"))
+                    matched_rule = jd_blocklist_match(_haystack, blocklist_rules)
+                    if matched_rule is not None:
+                        blocklist_filtered += 1
+                        _update_board(candidates_processed=idx + 1, blocklist_filtered=blocklist_filtered)
+                        logger.debug("JD blocklist filtered %s @ %s (rule: %s)", title, company, matched_rule.get("rule_text"))
                         continue
 
                 # Score against candidate profile
@@ -357,6 +374,7 @@ def board_search_status():
                 "jobs_added": _board_state.jobs_added,
                 "duplicates_skipped": _board_state.duplicates_skipped,
                 "fuzzy_duplicates_skipped": _board_state.fuzzy_duplicates_skipped,
+                "blocklist_filtered": _board_state.blocklist_filtered,
                 "scoring_failed": _board_state.scoring_failed,
                 "below_min_score": _board_state.below_min_score,
                 "errors": list(_board_state.errors),

@@ -1373,6 +1373,19 @@ SQLiteStageStatusRepository = PostgresStageStatusRepository
 
 # ─── Seed data ────────────────────────────────────────────────────────────────
 
+# (key, label, sort_order, ghost_eligible, is_terminal)
+_SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
+    ("applied",        "Applied",          1, True,  False),
+    ("waiting_call",   "Waiting for Call", 2, True,  False),
+    ("waiting_second", "Waiting for 2nd",  3, True,  False),
+    ("eval_1",         "Eval 1",           4, False, False),
+    ("eval_2",         "Eval 2",           5, False, False),
+    ("eval_3",         "Eval 3",           6, False, False),
+    ("rejected",       "Rejected",         7, False, True),
+    ("job_filled",     "Job Filled",       8, False, True),
+    ("ghosted",        "Ghosted",          9, False, True),
+]
+
 _SEED_SOURCES: list[tuple[str, str, str]] = [
     ("LinkedIn Jobs", "sender_domain", "linkedin.com"),
     ("Dice", "sender_domain", "dice.com"),
@@ -2178,6 +2191,15 @@ def _seed_data(conn: Any) -> None:
             "INSERT INTO ack_patterns (pattern, rule_type) VALUES (%s, %s)",
             _SEED_EMAIL_SUBJECT_RULES,
         )
+
+    cur.executemany(
+        """
+        INSERT INTO stage_statuses (key, label, sort_order, ghost_eligible, is_terminal)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (key) DO NOTHING
+        """,
+        _SEED_STAGE_STATUSES,
+    )
 
     conn.commit()
 

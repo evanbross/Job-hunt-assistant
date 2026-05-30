@@ -44,7 +44,7 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, UTC
-from typing import Generator
+from typing import Any, Generator
 from urllib.parse import parse_qs, urlparse
 
 from flask import request
@@ -170,6 +170,21 @@ def get_subject_rule_match(subject: str, rules: list[dict]) -> str | None:
                 return "whitelist"
             matched_blacklist = True
     return "blacklist" if matched_blacklist else None
+
+
+def jd_blocklist_match(haystack: str, rules: list[dict]) -> dict | None:
+    """Return the first blocklist rule whose text appears in *haystack*, or None.
+
+    *haystack* should be a lowercased concatenation of all searchable fields for
+    the job (title, body, company, URL, etc.) — the caller decides what to include.
+    Rules are expected to come from ``career_rejection_rules.get_enabled()``.
+    """
+    lowered = haystack.lower()
+    for rule in rules:
+        rule_text = str(rule.get("rule_text") or "").strip().lower()
+        if rule_text and rule_text in lowered:
+            return rule
+    return None
 
 
 def is_application_acknowledgement(subject: str, patterns: list[str] | None = None) -> bool:
@@ -476,6 +491,60 @@ def expand_board_url_parsed_jobs(parsed_jobs: list[ParsedJob]) -> list[ParsedJob
         logger.info("Expanded board URL %s into %d individual jobs", url, len(expanded))
 
     return result
+
+
+_ENRICH_MIN_CHARS = 300
+_ENRICH_ADVANTAGE_CHARS = 300
+
+
+def is_richer_description(incoming_text: str, existing_job: dict[str, Any]) -> bool:
+    """Return True if incoming_text is substantially richer than the stored description."""
+    if len(incoming_text) < _ENRICH_MIN_CHARS:
+        return False
+    existing = str(
+        existing_job.get("job_description") or existing_job.get("raw_email_snippet") or ""
+    )
+    return len(incoming_text) > len(existing) + _ENRICH_ADVANTAGE_CHARS
+
+
+def enrich_job_description(
+    repos: dict[str, Any],
+    job: dict[str, Any],
+    description: str,
+    *,
+    resume_text: str,
+    penalty_rules: list[dict],
+    fit_feedback: list[dict],
+) -> None:
+    """Overwrite a job's description and re-score it against the candidate profile.
+
+    Does not change status for applied or skipped jobs.
+    """
+    job_id = int(job["id"])
+    repos["jobs"].update(job_id, {
+        "job_description": description,
+        "raw_email_snippet": description[:6000],
+    })
+    try:
+        result = FitScorer().score(
+            job_title=str(job.get("job_title") or ""),
+            company=str(job.get("company") or ""),
+            email_body=description,
+            resume_text=resume_text,
+            penalty_rules=penalty_rules,
+            fit_feedback=fit_feedback,
+        )
+        score = int(result["score"])
+        current_status = str(job.get("status") or "")
+        score_updates: dict[str, Any] = {
+            "fit_score": score,
+            "fit_reasoning": result["reasoning"],
+        }
+        if current_status not in {"skipped", "applied"}:
+            score_updates["status"] = "pending_review" if score >= 70 else "triage"
+        repos["jobs"].update(job_id, score_updates)
+    except Exception as exc:
+        logger.warning("Re-scoring failed for enriched job %d: %s", job_id, exc)
 
 
 def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:

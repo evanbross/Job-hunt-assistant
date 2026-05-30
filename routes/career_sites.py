@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
@@ -56,14 +57,18 @@ from backend.db import (
 )
 from backend.duplicate_checker import DuplicateChecker
 from backend.fit_scorer import FitScorer
+from backend.job_validator import import_warnings_to_json, normalize_and_validate
 from backend.utils import (
     _parse_bool,
     _parse_positive_int,
     _safe_error_message,
     configure_career_site_scheduler,
     db_match_for_job,
+    enrich_job_description,
     extract_ashby_job_id,
     get_repos,
+    is_richer_description,
+    jd_blocklist_match,
     platform_for_site_url,
 )
 
@@ -85,6 +90,7 @@ class CareerSiteScanState:
     sites_scanned: int = 0
     jobs_found: int = 0
     jobs_added: int = 0
+    jobs_promoted: int = 0
     listings_filtered: int = 0
     listings_evaluated: int = 0
     last_run_at: str | None = None
@@ -98,17 +104,6 @@ _career_lock = threading.Lock()
 
 # ─── Career-site helpers ──────────────────────────────────────────────────────
 
-
-def _career_rejection_rule_match(job: dict[str, object], rules: list[dict[str, object]]) -> dict[str, object] | None:
-    haystack = " ".join(
-        str(job.get(fld) or "")
-        for fld in ("job_title", "job_text", "site_name", "job_url", "site_url")
-    ).lower()
-    for rule in rules:
-        rule_text = str(rule.get("rule_text") or "").strip().lower()
-        if rule_text and rule_text in haystack:
-            return rule
-    return None
 
 
 def _tracking_status_for_career_job(
@@ -152,6 +147,7 @@ def _update_career_scan(
     sites_scanned: int | None = None,
     jobs_found: int | None = None,
     jobs_added: int | None = None,
+    jobs_promoted: int | None = None,
     listings_filtered: int | None = None,
     listings_evaluated: int | None = None,
     last_run_at: str | None = None,
@@ -171,6 +167,8 @@ def _update_career_scan(
             _career_state.jobs_found = jobs_found
         if jobs_added is not None:
             _career_state.jobs_added = jobs_added
+        if jobs_promoted is not None:
+            _career_state.jobs_promoted = jobs_promoted
         if listings_filtered is not None:
             _career_state.listings_filtered = listings_filtered
         if listings_evaluated is not None:
@@ -234,13 +232,16 @@ def _re_evaluate_career_scan_results(
             if tracking_source in {"db_url", "db_fuzzy"}:
                 db_matches += 1
 
-            matched_rejection_rule = _career_rejection_rule_match(row, rejection_rules)
+            _haystack = " ".join(str(row.get(f) or "") for f in ("job_title", "job_text", "site_name", "job_url", "site_url"))
+            matched_rejection_rule = jd_blocklist_match(_haystack, rejection_rules)
             if matched_rejection_rule is not None:
-                tracking_status = "Rejected"
+                tracking_status = "Filtered"
                 tracking_source = "career_rule"
                 rejection_reason = matched_rejection_rule["rule_text"]
                 rejection_source = "career_rule"
                 rejected_by_rule += 1
+
+        row_filtered = tracking_source == "career_rule"
 
         updates.update(
             {
@@ -251,23 +252,27 @@ def _re_evaluate_career_scan_results(
             }
         )
 
-        try:
-            result = scorer.score(
-                job_title=str(row.get("job_title") or ""),
-                company=str(row.get("site_name") or ""),
-                email_body=str(row.get("job_text") or ""),
-                resume_text=resume_text,
-                penalty_rules=penalty_rules,
-                fit_feedback=fit_feedback,
-            )
-            updates["match_score"] = result["score"]
-            updates["match_reasoning"] = result["reasoning"]
-            rescored += 1
-        except Exception as exc:
-            logger.warning("Career result re-evaluation failed for row %s: %s", row.get("id"), exc, exc_info=True)
+        if row_filtered:
             updates["match_score"] = None
-            updates["match_reasoning"] = f"Scoring failed: {_safe_error_message(exc, 'Anthropic scoring failed')}"
-            failed += 1
+            updates["match_reasoning"] = "Filtered before scoring."
+        else:
+            try:
+                result = scorer.score(
+                    job_title=str(row.get("job_title") or ""),
+                    company=str(row.get("site_name") or ""),
+                    email_body=str(row.get("job_text") or ""),
+                    resume_text=resume_text,
+                    penalty_rules=penalty_rules,
+                    fit_feedback=fit_feedback,
+                )
+                updates["match_score"] = result["score"]
+                updates["match_reasoning"] = result["reasoning"]
+                rescored += 1
+            except Exception as exc:
+                logger.warning("Career result re-evaluation failed for row %s: %s", row.get("id"), exc, exc_info=True)
+                updates["match_score"] = None
+                updates["match_reasoning"] = f"Scoring failed: {_safe_error_message(exc, 'Anthropic scoring failed')}"
+                failed += 1
 
         results_repo.update(row["id"], updates)
 
@@ -289,6 +294,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
         _career_state.sites_scanned = 0
         _career_state.jobs_found = 0
         _career_state.jobs_added = 0
+        _career_state.jobs_promoted = 0
         _career_state.listings_filtered = 0
         _career_state.listings_evaluated = 0
         _career_state.errors.clear()
@@ -373,6 +379,7 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
             scanned_sites = 0
             jobs_found_total = 0
             jobs_added_total = 0
+            jobs_promoted_total = 0
             listings_filtered_total = 0
             listings_evaluated_total = 0
             source_count = len(target_sources)
@@ -563,9 +570,10 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                         tracking_status = "New"
                     rejection_reason = None
                     rejection_source = None
-                    matched_rejection_rule = _career_rejection_rule_match(job, rejection_rules)
+                    _haystack = " ".join(str(job.get(f) or "") for f in ("job_title", "job_text", "site_name", "job_url", "site_url"))
+                    matched_rejection_rule = jd_blocklist_match(_haystack, rejection_rules)
                     if matched_rejection_rule is not None:
-                        tracking_status = "Rejected"
+                        tracking_status = "Filtered"
                         tracking_source = "career_rule"
                         rejection_reason = matched_rejection_rule["rule_text"]
                         rejection_source = "career_rule"
@@ -573,27 +581,32 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     if listing_filtered:
                         listings_filtered_total += 1
 
-                    try:
-                        score_result = scorer.score(
-                            job_title=job["job_title"],
-                            company=job["site_name"],
-                            email_body=job["job_text"],
-                            resume_text=resume_text,
-                            penalty_rules=penalty_rules,
-                            fit_feedback=fit_feedback,
-                        )
-                        match_score: int | None = score_result["score"]
-                        match_reasoning: str = score_result["reasoning"]
-                        listings_evaluated_total += 1
-                    except Exception as exc:
-                        logger.warning(
-                            "Fit scoring failed for career job %s: %s",
-                            job["job_url"],
-                            exc,
-                        )
+                    if listing_filtered:
                         match_score = None
-                        match_reasoning = f"Scoring failed: {exc}"
+                        match_reasoning = "Filtered before scoring."
                         listings_evaluated_total += 1
+                    else:
+                        try:
+                            score_result = scorer.score(
+                                job_title=job["job_title"],
+                                company=job["site_name"],
+                                email_body=job["job_text"],
+                                resume_text=resume_text,
+                                penalty_rules=penalty_rules,
+                                fit_feedback=fit_feedback,
+                            )
+                            match_score = score_result["score"]
+                            match_reasoning = score_result["reasoning"]
+                            listings_evaluated_total += 1
+                        except Exception as exc:
+                            logger.warning(
+                                "Fit scoring failed for career job %s: %s",
+                                job["job_url"],
+                                exc,
+                            )
+                            match_score = None
+                            match_reasoning = f"Scoring failed: {exc}"
+                            listings_evaluated_total += 1
 
                     row_data = {
                         "site_source_id": current_source_id,
@@ -624,9 +637,91 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     except Exception as exc:
                         conn.rollback()
                         logger.debug("Career-scan insert skipped for %s: %s", job["job_url"], exc)
+
+                    if local_job is not None and not listing_filtered:
+                        incoming_text = str(job.get("job_text") or "").strip()
+                        if is_richer_description(incoming_text, local_job):
+                            try:
+                                enrich_job_description(
+                                    repos,
+                                    local_job,
+                                    incoming_text,
+                                    resume_text=resume_text,
+                                    penalty_rules=penalty_rules,
+                                    fit_feedback=fit_feedback,
+                                )
+                                conn.commit()
+                                logger.info(
+                                    "Enriched queue job %s with richer career-scan text (%d chars)",
+                                    job["job_url"],
+                                    len(incoming_text),
+                                )
+                            except Exception as exc:
+                                conn.rollback()
+                                logger.warning(
+                                    "Queue job enrichment failed for %s: %s",
+                                    job["job_url"],
+                                    exc,
+                                )
+
+                    # Auto-promote genuinely new jobs (not filtered, not already in queue,
+                    # no fuzzy duplicate match) into the main job queue so they appear in
+                    # triage/pending_review without requiring a separate export/import step.
+                    if local_job is None and not listing_filtered and tracking_source is None:
+                        queue_status = (
+                            "pending_review"
+                            if (match_score is not None and match_score >= 70)
+                            else "triage"
+                        )
+                        job_dict = {
+                            "email_id": f"career-site:{current_source_id}:{secrets.token_hex(8)}",
+                            "company": str(job.get("site_name") or ""),
+                            "job_title": str(job.get("job_title") or ""),
+                            "url": str(job.get("job_url") or ""),
+                            "source": source_name,
+                            "raw_email_snippet": str(job.get("job_text") or "")[:6000],
+                            "fit_score": match_score,
+                            "fit_reasoning": match_reasoning,
+                            "status": queue_status,
+                            "parser_confidence": str(job.get("confidence_level") or "low"),
+                            "confidence_reason": "",
+                            "date_found": datetime.now(UTC).date().isoformat(),
+                            "date_added_to_sheet": None,
+                            "duplicate_hint": None,
+                            "sender_email": None,
+                            "email_subject": f"Career site: {source_name}",
+                            "confidence_score": int(job.get("confidence_score") or 50),
+                        }
+                        job_dict, import_warnings = normalize_and_validate(job_dict)
+                        job_dict["import_warnings"] = import_warnings_to_json(import_warnings)
+                        if import_warnings and job_dict["status"] != "possible_duplicate":
+                            job_dict["status"] = "triage"
+                        try:
+                            new_job_id = jobs_repo.insert(job_dict)
+                            conn.commit()
+                            new_job = jobs_repo.get_by_id(new_job_id)
+                            if new_job:
+                                known_jobs.append(new_job)
+                            jobs_promoted_total += 1
+                            logger.info(
+                                "Auto-promoted to queue: %s @ %s (score=%s, status=%s)",
+                                job_dict["job_title"],
+                                job_dict["company"],
+                                match_score,
+                                job_dict["status"],
+                            )
+                        except Exception as exc:
+                            conn.rollback()
+                            logger.warning(
+                                "Auto-promote failed for %s: %s",
+                                job.get("job_url"),
+                                exc,
+                            )
+
                     _update_career_scan(
                         jobs_found=jobs_found_total,
                         jobs_added=jobs_added_total,
+                        jobs_promoted=jobs_promoted_total,
                         listings_filtered=listings_filtered_total,
                         listings_evaluated=listings_evaluated_total,
                     )
@@ -638,22 +733,28 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     sites_scanned=scanned_sites,
                     jobs_found=jobs_found_total,
                     jobs_added=jobs_added_total,
+                    jobs_promoted=jobs_promoted_total,
                     listings_filtered=listings_filtered_total,
                     listings_evaluated=listings_evaluated_total,
                 )
 
             logger.info(
-                "Career-site scan complete: %d site(s) scanned, %d job(s) found, %d added",
+                "Career-site scan complete: %d site(s) scanned, %d job(s) found, %d added, %d promoted",
                 scanned_sites,
                 jobs_found_total,
                 jobs_added_total,
+                jobs_promoted_total,
             )
             _update_career_scan(
                 progress=100,
-                message=f"Career-site scan complete. {jobs_added_total} new job(s) added.",
+                message=(
+                    f"Career-site scan complete. {jobs_added_total} new listing(s) added"
+                    + (f", {jobs_promoted_total} promoted to queue." if jobs_promoted_total else ".")
+                ),
                 sites_scanned=scanned_sites,
                 jobs_found=jobs_found_total,
                 jobs_added=jobs_added_total,
+                jobs_promoted=jobs_promoted_total,
                 listings_filtered=listings_filtered_total,
                 listings_evaluated=listings_evaluated_total,
                 last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
@@ -849,6 +950,7 @@ def career_scan_status():
                 "sites_total": _career_state.sites_total,
                 "jobs_found": _career_state.jobs_found,
                 "jobs_added": _career_state.jobs_added,
+                "jobs_promoted": _career_state.jobs_promoted,
                 "job_listings": _career_state.jobs_found,
                 "listings_filtered": _career_state.listings_filtered,
                 "listings_evaluated": _career_state.listings_evaluated,

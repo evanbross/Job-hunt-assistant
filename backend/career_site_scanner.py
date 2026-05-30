@@ -315,6 +315,54 @@ def _is_generic_anchor(text: str) -> bool:
     return normalized in _GENERIC_ANCHOR_TEXTS
 
 
+def _ashby_job_from_html(page_html: str) -> dict | None:
+    """Extract job posting data from an Ashby job detail page.
+
+    Ashby is a Vite SPA (not Next.js); job data is embedded in a
+    window.__appData script tag as __appData.posting. The visible DOM is an
+    empty loading spinner — only the embedded JSON has the content.
+    """
+    # Find "posting": { ... } inside the __appData block using brace-matching
+    # so we handle arbitrarily large objects without DOTALL catastrophic backtracking.
+    match = re.search(r'[{,]\s*"posting"\s*:\s*\{', page_html)
+    if not match:
+        return None
+
+    i = match.end() - 1  # position of the opening '{' of the posting value
+    depth = 0
+    in_str = False
+    escaped = False
+    end = -1
+    for idx, ch in enumerate(page_html[i:], start=i):
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = idx
+                break
+
+    if end < 0:
+        return None
+
+    try:
+        posting = json.loads(page_html[i : end + 1])
+    except json.JSONDecodeError:
+        return None
+
+    return posting if isinstance(posting, dict) and posting.get("title") else None
+
+
 def _detect_embedded_ashby_base_url(listing_html: str) -> str | None:
     match = re.search(
         r"https://jobs\.ashbyhq\.com/([A-Za-z0-9_-]+)/embed(?:\?[^\"'>\s]*)?",
@@ -681,7 +729,51 @@ class CareerSiteScanner:
                 except Exception as exc:
                     logger.debug("LinkedIn guest API failed for redirected URL %s: %s", final_url, exc)
 
+        # Ashby single-job pages are JS-rendered; extract from embedded __NEXT_DATA__ JSON
+        if "jobs.ashbyhq.com" in urlparse(final_url).netloc.lower():
+            ashby_posting = _ashby_job_from_html(page_html)
+            if ashby_posting:
+                return self._ashby_job_from_posting(site_name, final_url, ashby_posting)
+
         return self._job_from_detail_page(site_name, final_url, page_html)
+
+    def _ashby_job_from_posting(
+        self, site_name: str, job_url: str, posting: dict
+    ) -> CareerSiteJob:
+        title = _clean_text(str(posting.get("title") or "")) or "Untitled Job"
+        department = _clean_text(str(posting.get("departmentExternalName") or posting.get("departmentName") or ""))
+        team = _clean_text(str(posting.get("teamExternalName") or posting.get("teamName") or ""))
+        location = _clean_text(str(posting.get("locationExternalName") or posting.get("locationName") or ""))
+        workplace = _clean_text(str(posting.get("workplaceType") or ""))
+        employment = _clean_text(str(posting.get("employmentType") or ""))
+
+        desc_html = str(posting.get("descriptionHtml") or "")
+        if desc_html:
+            desc_parser = _TextParser()
+            desc_parser.feed(desc_html)
+            desc = _clean_text(" ".join(desc_parser.text_chunks))
+        else:
+            desc = _clean_text(str(posting.get("descriptionPlainText") or posting.get("description") or ""))
+
+        details = [f for f in [department, team, location, workplace, employment] if f]
+        text_parts = [title]
+        if details:
+            text_parts.append(" | ".join(details))
+        if desc:
+            text_parts.append(desc)
+        text = _clean_text(" ".join(text_parts))
+
+        confidence_level, confidence_score = _confidence_for(title, text)
+        return CareerSiteJob(
+            site_name=site_name,
+            site_url=job_url,
+            job_title=title[:300],
+            job_url=job_url,
+            job_text=text[:8000],
+            posted_at=_normalize_date(str(posting.get("publishedDate") or posting.get("updatedAt") or "")),
+            confidence_level=confidence_level,
+            confidence_score=confidence_score,
+        )
 
     def _linkedin_job_from_guest_api(
         self, site_name: str, job_url: str, job_id: str

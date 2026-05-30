@@ -867,7 +867,7 @@ function EmailScanSummaryModal({ summary, onClose }) {
       footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
     >
       <MetricGrid>
-        <MetricItem label="new jobs" value={summary.new_jobs || 0} tone="green" />
+        <MetricItem label="Job Listings" value={summary.new_jobs || 0} tone="green" />
         <MetricItem label="emails with jobs" value={summary.emails_with_jobs || 0} />
         <MetricItem label="triage" value={summary.triage_jobs || 0} tone="yellow" />
         <MetricItem label="duplicates" value={summary.duplicates || 0} />
