@@ -420,12 +420,14 @@ export default function App() {
             onNavigateToEmails={navigateToEmails}
             onNavigateToHistory={navigateToHistory}
             focusJobId={focusedJobCard?.tabKey === "queue" ? focusedJobCard.id : null}
+            onNavigateToJobCard={navigateToJobCard}
           />
         )}
         {activeTab === "triage" && (
           <TriagePanel
             onCountChange={setTriageCount}
             focusJobId={focusedJobCard?.tabKey === "triage" ? focusedJobCard.id : null}
+            onNavigateToJobCard={navigateToJobCard}
           />
         )}
         {activeTab === HISTORY_TAB_KEY && <HistoryPanel />}

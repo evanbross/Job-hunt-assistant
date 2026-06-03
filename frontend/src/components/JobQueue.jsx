@@ -239,6 +239,7 @@ export default function JobQueue({
   onNavigateToEmails,
   onNavigateToHistory,
   focusJobId,
+  onNavigateToJobCard,
 }) {
   const [jobs, setJobs] = useState([]);
   const [searchText, setSearchText] = useState(() => readStoredSearch(JOB_QUEUE_SEARCH_STORAGE_KEY));
@@ -1229,6 +1230,7 @@ export default function JobQueue({
           connectionWarning={scanState.connection_warning}
           currentEmailSender={scanState.current_email_sender}
           currentEmailSubject={scanState.current_email_subject}
+          currentEmailId={scanState.current_email_id}
           currentJobTitle={scanState.current_job_title}
         >
           <ErrorList errors={scanState.errors} onNavigateToEmails={onNavigateToEmails} />
@@ -1314,6 +1316,7 @@ export default function JobQueue({
             onReEvaluate={handleJobReEvaluate}
             onSkip={handleSkip}
             onSnooze={handleSnooze}
+            onNavigateToJobCard={onNavigateToJobCard}
             onUpdate={(jobId, updatedJob) => {
               if (updatedJob.fit_score !== job.fit_score || updatedJob.fit_reasoning !== job.fit_reasoning) {
                 setJobReEvaluatePopup({
@@ -1376,7 +1379,7 @@ function ErrorList({ errors, onNavigateToEmails }) {
   );
 }
 
-function ProgressPopup({ title, message, progress, connectionWarning, currentEmailSender, currentEmailSubject, currentJobTitle, children }) {
+function ProgressPopup({ title, message, progress, connectionWarning, currentEmailSender, currentEmailSubject, currentEmailId, currentJobTitle, children }) {
   const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
   return (
     <Modal
@@ -1402,16 +1405,21 @@ function ProgressPopup({ title, message, progress, connectionWarning, currentEma
         <div className="loading-bar">
           <div className="loading-bar-fill" style={{ width: `${safeProgress}%` }} />
         </div>
-        {(currentEmailSender || currentEmailSubject) && (
+        {(currentEmailSender || currentEmailSubject || currentEmailId) && (
           <div style={{ marginTop: "10px", padding: "8px 10px", background: "var(--surface-alt, rgba(255,255,255,0.04))", borderRadius: "6px", fontSize: "12px" }}>
             {currentEmailSubject && (
-              <div style={{ color: "var(--text)", fontWeight: 500, marginBottom: currentEmailSender ? "3px" : 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <div style={{ color: "var(--text)", fontWeight: 500, marginBottom: (currentEmailSender || currentEmailId) ? "3px" : 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {currentEmailSubject}
               </div>
             )}
             {currentEmailSender && (
-              <div style={{ color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <div style={{ color: "var(--text-muted)", marginBottom: currentEmailId ? "3px" : 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {currentEmailSender}
+              </div>
+            )}
+            {currentEmailId && (
+              <div style={{ color: "var(--text-muted)", fontFamily: "monospace", fontSize: "11px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {currentEmailId}
               </div>
             )}
           </div>

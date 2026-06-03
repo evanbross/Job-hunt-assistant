@@ -36,6 +36,7 @@ import { useState } from "react";
 import Modal from "./Modal.jsx";
 import StatusBadge from "./StatusBadge.jsx";
 import { applicationRowFromSheet, isAppliedStatus, rowMatchesCompany, titleLooksSimilar } from "../../utils/sheetUtils.js";
+import { jobCardTabForStatus } from "../../utils/jobQueueUtils.js";
 
 export function useCompanyHistoryLookup(job) {
   const [opened, setOpened] = useState(false);
@@ -83,7 +84,7 @@ export function useCompanyHistoryLookup(job) {
   };
 }
 
-export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose }) {
+export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose, onNavigateToJobCard }) {
   const previousRows = rows.filter((row) => row.id !== currentJobId);
   const currentRows = rows.filter((row) => row.id === currentJobId);
   const appliedCount = previousRows.filter((row) => isAppliedStatus(row.status)).length;
@@ -124,7 +125,9 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
             {duplicateHints > 0 && <span>{duplicateHints} similar title{duplicateHints === 1 ? "" : "s"}</span>}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {[...currentRows, ...previousRows].map((row) => (
+            {[...currentRows, ...previousRows].map((row) => {
+              const navigable = Boolean(onNavigateToJobCard && row.id && jobCardTabForStatus(row.status));
+              return (
               <div
                 key={row.id || `${row.company}-${row.title}-${row.date}`}
                 style={{
@@ -132,11 +135,14 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                   background: "var(--surface2)",
                   border: "1px solid var(--border)",
                   borderRadius: "var(--radius)",
+                  cursor: navigable ? "pointer" : undefined,
                   display: "flex",
                   gap: "12px",
                   justifyContent: "space-between",
                   padding: "10px 12px",
                 }}
+                title={navigable ? "Click to go to this job card" : undefined}
+                onClick={navigable ? () => { onNavigateToJobCard(row.id, row.status); onClose(); } : undefined}
               >
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ alignItems: "center", color: "var(--text)", display: "flex", flexWrap: "wrap", fontSize: "13px", fontWeight: 700, gap: "7px", overflowWrap: "anywhere" }}>
@@ -175,9 +181,15 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                     </div>
                   )}
                 </div>
-                <StatusBadge status={row.status} />
+                <div style={{ alignItems: "flex-end", display: "flex", flexDirection: "column", flexShrink: 0, gap: "6px" }}>
+                  <StatusBadge status={row.status} />
+                  {navigable && (
+                    <span style={{ color: "var(--accent)", fontSize: "11px", whiteSpace: "nowrap" }}>Go to card →</span>
+                  )}
+                </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </>
       )}

@@ -61,6 +61,7 @@ export default function JobCard({
   onSkip,
   onSnooze,
   onUpdate,
+  onNavigateToJobCard,
 }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
@@ -1118,6 +1119,7 @@ export default function JobCard({
           loading={companyLookupLoading}
           rows={companyLookupRows}
           onClose={() => setCompanyLookupOpen(false)}
+          onNavigateToJobCard={onNavigateToJobCard}
         />
       )}
 

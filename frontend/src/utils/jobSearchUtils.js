@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-export function jobMatchesSearch(job, searchText) {
+export function jobMatchesSearch(job, searchText, searchAllFields = false) {
   const terms = String(searchText || "")
     .trim()
     .toLowerCase()
@@ -40,20 +40,24 @@ export function jobMatchesSearch(job, searchText) {
     .filter(Boolean);
   if (terms.length === 0) return true;
 
-  const haystack = [
-    job.company,
-    job.job_title,
-    job.source,
-    job.url,
-    job.status,
-    job.email_subject,
-    job.sender_email,
-    job.raw_email_snippet,
-    job.fit_reasoning,
-    job.duplicate_hint,
-    job.date_found,
-    job.fit_score == null ? "" : `${job.fit_score}`,
-  ]
+  const fields = searchAllFields
+    ? [
+        job.company,
+        job.job_title,
+        job.source,
+        job.url,
+        job.status,
+        job.email_subject,
+        job.sender_email,
+        job.raw_email_snippet,
+        job.fit_reasoning,
+        job.duplicate_hint,
+        job.date_found,
+        job.fit_score == null ? "" : `${job.fit_score}`,
+      ]
+    : [job.company];
+
+  const haystack = fields
     .filter((value) => value !== null && value !== undefined)
     .join(" ")
     .toLowerCase();

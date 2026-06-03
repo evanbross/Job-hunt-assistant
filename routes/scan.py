@@ -83,6 +83,7 @@ class ScanState:
     failed: bool = False
     current_email_sender: str = ""
     current_email_subject: str = ""
+    current_email_id: str = ""
     current_job_title: str = ""
 
 
@@ -130,6 +131,7 @@ def _update_scan(
     failed: bool | None = None,
     current_email_sender: str | None = None,
     current_email_subject: str | None = None,
+    current_email_id: str | None = None,
     current_job_title: str | None = None,
 ) -> None:
     with _scan_lock:
@@ -153,6 +155,8 @@ def _update_scan(
             _scan_state.current_email_sender = current_email_sender
         if current_email_subject is not None:
             _scan_state.current_email_subject = current_email_subject
+        if current_email_id is not None:
+            _scan_state.current_email_id = current_email_id
         if current_job_title is not None:
             _scan_state.current_job_title = current_job_title
 
@@ -191,6 +195,7 @@ def _run_scan(rescan_all: bool = False) -> None:
         _scan_state.failed = False
         _scan_state.current_email_sender = ""
         _scan_state.current_email_subject = ""
+        _scan_state.current_email_id = ""
         _scan_state.current_job_title = ""
 
     try:
@@ -335,6 +340,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                 _update_scan(
                     current_email_sender=sender,
                     current_email_subject=subject,
+                    current_email_id=msg_id,
                 )
 
                 _update_scan(message=f"Filtering {email_label}...")
@@ -363,6 +369,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                         jobs_processed=idx + 1,
                         current_email_sender="",
                         current_email_subject="",
+                        current_email_id="",
                         current_job_title="",
                     )
                     continue
@@ -392,6 +399,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                         jobs_processed=idx + 1,
                         current_email_sender="",
                         current_email_subject="",
+                        current_email_id="",
                         current_job_title="",
                     )
                     continue
@@ -419,6 +427,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                         jobs_processed=idx + 1,
                         current_email_sender="",
                         current_email_subject="",
+                        current_email_id="",
                         current_job_title="",
                     )
                     continue
@@ -456,6 +465,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                         jobs_processed=idx + 1,
                         current_email_sender="",
                         current_email_subject="",
+                        current_email_id="",
                         current_job_title="",
                     )
                     continue
@@ -482,6 +492,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                         jobs_processed=idx + 1,
                         current_email_sender="",
                         current_email_subject="",
+                        current_email_id="",
                         current_job_title="",
                     )
                     continue
@@ -685,6 +696,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                     jobs_processed=idx + 1,
                     current_email_sender="",
                     current_email_subject="",
+                    current_email_id="",
                 )
 
             _update_scan(
@@ -764,6 +776,7 @@ def scan_status():
                 "failed": _scan_state.failed,
                 "current_email_sender": _scan_state.current_email_sender,
                 "current_email_subject": _scan_state.current_email_subject,
+                "current_email_id": _scan_state.current_email_id,
                 "current_job_title": _scan_state.current_job_title,
             }
         )

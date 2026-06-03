@@ -54,6 +54,9 @@ logger = logging.getLogger(__name__)
 
 MAX_EMAIL_BODY_CHARS = 20000
 
+_URL_TOKEN_RE = re.compile(r"https?://[^\s<>\"'()]+")
+_URL_TOKEN_PLACEHOLDER_RE = re.compile(r"\[URL_\d+\]")
+
 
 class ParsedJob(TypedDict):
     company: str
@@ -120,6 +123,32 @@ Each element schema:
 """
 
 
+def _tokenize_urls(text: str) -> tuple[str, dict[str, str]]:
+    """Replace every URL with a short [URL_N] token to reduce output token count.
+
+    Digest emails contain many long tracking URLs that cost 100-150 tokens each
+    to reproduce in the JSON output. Tokenizing them before the LLM call and
+    restoring them afterward keeps output small without losing any information.
+    """
+    token_map: dict[str, str] = {}
+    counter = 0
+
+    def _replace(match: re.Match) -> str:  # type: ignore[type-arg]
+        nonlocal counter
+        token = f"[URL_{counter}]"
+        token_map[token] = match.group(0).rstrip(".,;)")
+        counter += 1
+        return token
+
+    return _URL_TOKEN_RE.sub(_replace, text), token_map
+
+
+def _detokenize_url(value: str, token_map: dict[str, str]) -> str:
+    """Restore a [URL_N] token to its original URL, or return the value unchanged."""
+    stripped = value.strip()
+    return token_map.get(stripped, stripped)
+
+
 class EmailParser:
     """Parses job emails using the Anthropic API."""
 
@@ -139,16 +168,20 @@ class EmailParser:
         if wttj_jobs:
             return wttj_jobs
 
-        user_content = (
+        raw_content = (
             f"From: {sender}\n"
             f"Subject: {subject}\n\n"
             f"Body:\n{body_snippet[:MAX_EMAIL_BODY_CHARS]}"
+        )
+        user_content, url_token_map = _tokenize_urls(raw_content)
+        logger.debug(
+            "Email parser: tokenized %d URLs before LLM call", len(url_token_map)
         )
 
         raw = self._client.complete(
             system=_SYSTEM_PROMPT,
             messages=[AIMessage(role="user", content=user_content)],
-            max_tokens=8192,
+            max_tokens=4096,
             json_response=True,
         )
 
@@ -197,6 +230,10 @@ class EmailParser:
             _normalize_title_company(item, subject, body_snippet)
             if item.get("company"):
                 item["company"] = _trim_company_tail(item["company"])
+            # Restore any [URL_N] token the LLM returned to the original URL.
+            if url_token_map and _URL_TOKEN_PLACEHOLDER_RE.fullmatch(str(item.get("url") or "").strip()):
+                item["url"] = _detokenize_url(str(item["url"]), url_token_map)
+
             # Resolve tracking/redirect URLs that the LLM may have extracted
             # verbatim from the email body (e.g. SendGrid click-tracking links).
             raw_url = str(item.get("url") or "")

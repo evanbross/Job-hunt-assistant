@@ -71,6 +71,7 @@ import {
 import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
 
 const TRIAGE_SEARCH_STORAGE_KEY = "jha.triage.search";
+const TRIAGE_SEARCH_ALL_FIELDS_KEY = "jha.triage.searchAllFields";
 
 function readStoredSearch(storageKey) {
   if (typeof window === "undefined") return "";
@@ -106,11 +107,14 @@ function companyHistoryBadgeClass(rows) {
   return "badge-gray";
 }
 
-export default function TriagePanel({ onCountChange, focusJobId }) {
+export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJobCard }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState("date_desc");
   const [searchText, setSearchText] = useState(() => readStoredSearch(TRIAGE_SEARCH_STORAGE_KEY));
+  const [searchAllFields, setSearchAllFields] = useState(
+    () => readStoredSearch(TRIAGE_SEARCH_ALL_FIELDS_KEY) === "true"
+  );
   const [reEvaluatePopup, setReEvaluatePopup] = useState(null);
   const [batchRefreshPopup, setBatchRefreshPopup] = useState(null);
   const [descriptionUpdatePopup, setDescriptionUpdatePopup] = useState(null);
@@ -141,6 +145,10 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
   useEffect(() => {
     writeStoredSearch(TRIAGE_SEARCH_STORAGE_KEY, searchText);
   }, [searchText]);
+
+  useEffect(() => {
+    writeStoredSearch(TRIAGE_SEARCH_ALL_FIELDS_KEY, String(searchAllFields));
+  }, [searchAllFields]);
 
   useEffect(() => {
     if (!moreActionsOpen) return;
@@ -422,7 +430,7 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
   }
 
   const filteredJobs = jobs.filter((job) => {
-    if (!jobMatchesSearch(job, searchText)) return false;
+    if (!jobMatchesSearch(job, searchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     if (showOnlyImportReview && parseImportWarnings(job.import_warnings).length === 0) return false;
     return true;
@@ -511,6 +519,17 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
         </div>
         {/* Row 2: checkboxes + count */}
         <div style={triageFiltersRowStyle}>
+          {searchText && (
+            <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={searchAllFields}
+                onChange={(e) => setSearchAllFields(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              Search all fields
+            </label>
+          )}
           {(unscoredCount > 0 || showOnlyUnscored) && (
             <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
               <input
@@ -592,6 +611,7 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
               });
             }}
             companySheetRows={allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))}
+            onNavigateToJobCard={onNavigateToJobCard}
           />
         ) : (
           <TriageCard
@@ -636,6 +656,7 @@ export default function TriagePanel({ onCountChange, focusJobId }) {
                 return nextJobs;
               });
             }}
+            onNavigateToJobCard={onNavigateToJobCard}
           />
         )
       )}
@@ -672,7 +693,7 @@ function CardContextMenu({ contextMenu, company, onShowCompanyHistory }) {
   );
 }
 
-function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onReEvaluate, onReprocessed, companySheetRows = null }) {
+function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onReEvaluate, onReprocessed, companySheetRows = null, onNavigateToJobCard }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -1008,13 +1029,14 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApp
           loading={companyHistory.loading}
           rows={companyHistory.rows}
           onClose={companyHistory.close}
+          onNavigateToJobCard={onNavigateToJobCard}
         />
       )}
     </div>
   );
 }
 
-function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, companySheetRows = null }) {
+function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, companySheetRows = null, onNavigateToJobCard }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingCompany, setEditingCompany] = useState(false);
   const [companyDraft, setCompanyDraft] = useState("");
@@ -1891,6 +1913,7 @@ function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRef
           loading={companyHistory.loading}
           rows={companyHistory.rows}
           onClose={companyHistory.close}
+          onNavigateToJobCard={onNavigateToJobCard}
         />
       )}
 

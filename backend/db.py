@@ -48,8 +48,12 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse, unquote
 
+import logging
+
 import psycopg2
 import psycopg2.extras
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Repository Protocols (interfaces) ───────────────────────────────────────
@@ -292,6 +296,53 @@ def _sqlite_path_from_dsn(dsn: str) -> Path:
     return Path(dsn)
 
 
+class _ReconnectingPgConn:
+    """
+    Wraps a psycopg2 connection with TCP keepalives and transparent reconnect.
+
+    All repositories share one instance, so reconnect() replaces the underlying
+    psycopg2 connection in place — every repo and every conn.commit() caller
+    automatically uses the new connection without any re-wiring.
+    """
+
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+        self._conn = self._connect()
+        self.autocommit = False
+
+    def _connect(self) -> Any:
+        conn = psycopg2.connect(
+            self._dsn,
+            cursor_factory=psycopg2.extras.RealDictCursor,
+            keepalives=1,
+            keepalives_idle=60,
+            keepalives_interval=10,
+            keepalives_count=5,
+        )
+        conn.autocommit = False
+        return conn
+
+    def cursor(self) -> Any:
+        return self._conn.cursor()
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def reconnect(self) -> None:
+        """Replace the underlying connection with a fresh one after a drop."""
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+        self._conn = self._connect()
+
+
 # ─── Base repository ──────────────────────────────────────────────────────────
 
 class _BaseRepo:
@@ -299,12 +350,24 @@ class _BaseRepo:
         self._conn = conn
 
     def _execute(self, sql: str, params: tuple | list = ()) -> Any:
-        cur = self._conn.cursor()
-        if params:
-            cur.execute(sql, params)
-        else:
-            cur.execute(sql)
-        return cur
+        try:
+            cur = self._conn.cursor()
+            if params:
+                cur.execute(sql, params)
+            else:
+                cur.execute(sql)
+            return cur
+        except psycopg2.OperationalError:
+            if not hasattr(self._conn, "reconnect"):
+                raise
+            logger.warning("DB connection lost; reconnecting and retrying (db.py:_BaseRepo._execute)")
+            self._conn.reconnect()
+            cur = self._conn.cursor()
+            if params:
+                cur.execute(sql, params)
+            else:
+                cur.execute(sql)
+            return cur
 
 
 # ─── PostgreSQL implementations ───────────────────────────────────────────────
@@ -2208,10 +2271,7 @@ def get_connection(dsn: str) -> Any:
     """Open a database connection for the configured backend."""
     if dsn.startswith("sqlite://") or dsn.endswith(".sqlite") or dsn.endswith(".sqlite3"):
         return _SQLiteConnection(_sqlite_path_from_dsn(dsn))
-
-    conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
-    conn.autocommit = False
-    return conn
+    return _ReconnectingPgConn(dsn)
 
 
 def open_repositories(dsn: str) -> dict[str, Any]:
