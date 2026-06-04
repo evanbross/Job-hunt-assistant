@@ -164,6 +164,9 @@ class EmailParser:
         linkedin_jobs = _parse_linkedin_alert_jobs(subject, sender, body_snippet)
         if linkedin_jobs:
             return linkedin_jobs
+        jymbii_jobs = _parse_linkedin_jymbii_jobs(subject, sender, body_snippet)
+        if jymbii_jobs:
+            return jymbii_jobs
         wttj_jobs = _parse_welcome_to_the_jungle_jobs(sender, body_snippet)
         if wttj_jobs:
             return wttj_jobs
@@ -318,6 +321,17 @@ _LINKEDIN_NON_JOB_LINES = {
     "Fast growing",
     "This company is actively hiring",
 }
+
+# Matches the anchor-text: URL format emitted by _HTMLTextExtractor for JYMBII emails.
+# Groups: (1) anchor text, (2) full URL, (3) numeric job ID
+_LINKEDIN_JYMBII_ANCHOR_RE = re.compile(
+    r"^(.+):\s+(https?://(?:www\.)?linkedin\.com/comm/jobs/view/(\d+)/[^\s<>()\"']*)",
+    re.IGNORECASE,
+)
+_LINKEDIN_COMM_JOB_URL_RE = re.compile(
+    r"https?://(?:www\.)?linkedin\.com/comm/jobs/view/\d+/",
+    re.IGNORECASE,
+)
 _WTTJ_SENDER_RE = re.compile(r"welcometothejungle\.com|welcome to the jungle", re.IGNORECASE)
 _WTTJ_JOB_URL_RE = re.compile(r"https?://[^\s<>()\"']*welcometothejungle\.com/[^\s<>()\"']+", re.IGNORECASE)
 _ANY_HTTP_URL_RE = re.compile(r"https?://[^\s<>()\"']+", re.IGNORECASE)
@@ -398,6 +412,64 @@ def _linkedin_card_lines(raw_lines: list[str]) -> list[str]:
     return card_lines
 
 
+def _parse_linkedin_jymbii_jobs(subject: str, sender: str, body_snippet: str) -> list[ParsedJob]:
+    """Parse LinkedIn JYMBII ('Jobs You Might Be Interested In') digest emails.
+
+    The HTML extractor turns each job card anchor into lines like:
+        Principal Python Engineer: https://linkedin.com/comm/jobs/view/4422360760/?...
+        Needl · United States (Remote)   Actively recruiting: https://...same URL...
+
+    We group both by job ID, infer title (no '·') and company (has '·'), then
+    emit a canonical linkedin.com/jobs/view/JOBID/ URL.
+    """
+    if not _LINKEDIN_SENDER_RE.search(sender):
+        return []
+    if not _LINKEDIN_COMM_JOB_URL_RE.search(body_snippet):
+        return []
+
+    # job_id -> {title, company, url}
+    cards: dict[str, dict[str, str]] = {}
+
+    for raw_line in body_snippet.splitlines():
+        line = raw_line.strip()
+        m = _LINKEDIN_JYMBII_ANCHOR_RE.match(line)
+        if not m:
+            continue
+
+        anchor_text = m.group(1).strip()
+        job_id = m.group(3)
+
+        if job_id not in cards:
+            canonical_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
+            cards[job_id] = {"title": "", "company": "", "url": canonical_url}
+
+        if "·" in anchor_text:
+            # "Company · Location   Badge1   Badge2" → take everything before ·
+            company = anchor_text.split("·")[0].strip()
+            if company and not cards[job_id]["company"]:
+                cards[job_id]["company"] = company
+        else:
+            if anchor_text and not cards[job_id]["title"]:
+                cards[job_id]["title"] = anchor_text
+
+    results: list[ParsedJob] = []
+    for card in cards.values():
+        if not card["title"] or not card["company"]:
+            continue
+        results.append(
+            {
+                "company": card["company"],
+                "job_title": card["title"],
+                "url": card["url"],
+                "source": "LinkedIn",
+                "confidence": "high",
+                "confidence_score": 95,
+                "confidence_reason": "Parsed from LinkedIn job recommendation email card with title, company, and job URL.",
+            }
+        )
+    return results
+
+
 _TRACKING_DOMAIN_FRAGMENTS = frozenset({
     "sendgrid.net",
     "track.customer.io",
@@ -408,6 +480,7 @@ _TRACKING_DOMAIN_FRAGMENTS = frozenset({
 # Ordered by specificity — more specific patterns first.
 _JOBBOARD_URL_FALLBACK_RES: list[re.Pattern[str]] = [
     re.compile(r"https?://(?:www\.)?linkedin\.com/jobs/view/[^\s<>()\"']+", re.IGNORECASE),
+    re.compile(r"https?://(?:www\.)?linkedin\.com/comm/jobs/view/[^\s<>()\"']+", re.IGNORECASE),
     re.compile(r"https?://jobs\.lever\.co/[^\s<>()\"']+", re.IGNORECASE),
     re.compile(r"https?://[^\s<>()\"']*greenhouse\.io/[^\s<>()\"']*jobs[^\s<>()\"']+", re.IGNORECASE),
     re.compile(r"https?://[^\s<>()\"']*myworkdayjobs\.com/[^\s<>()\"']+", re.IGNORECASE),

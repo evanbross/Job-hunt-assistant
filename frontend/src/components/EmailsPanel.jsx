@@ -158,9 +158,49 @@ function RawBodyModal({ email, onClose }) {
   );
 }
 
-// ── Detail panel shown when a row is selected ─────────────────────────────────
+// ── Rescan progress modal ─────────────────────────────────────────────────────
 
-function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRescan, onShowBody, onSetHidden }) {
+function RescanProgressModal({ status, onClose }) {
+  const isDone = !status.loading;
+  return (
+    <Modal
+      title="Rescanning Email"
+      onClose={isDone ? onClose : undefined}
+      showCloseButton={isDone}
+      maxWidth="480px"
+      footer={isDone ? <button className="btn-secondary" onClick={onClose}>Close</button> : null}
+    >
+      {status.loading ? (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "14px", padding: "20px 0" }}>
+          <span className="inline-spinner" style={{ width: "28px", height: "28px", borderWidth: "3px", color: "var(--accent)" }} />
+          <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)" }}>
+            Fetching email from Gmail and parsing…
+          </p>
+        </div>
+      ) : status.error ? (
+        <p style={{ margin: 0, fontSize: "13px", color: "var(--red, #dc3545)" }}>{status.message}</p>
+      ) : (
+        <div>
+          <p style={{ margin: "0 0 12px", fontSize: "13px", color: "var(--green, #4caf81)" }}>{status.message}</p>
+          {Array.isArray(status.jobs) && status.jobs.length > 0 && (
+            <div style={{ display: "grid", gap: "6px" }}>
+              {status.jobs.map((job) => (
+                <div key={job.id} style={{ padding: "8px 10px", background: "var(--surface2)", borderRadius: "var(--radius)", border: "1px solid var(--border)", fontSize: "13px" }}>
+                  <span style={{ fontWeight: "600", color: "var(--text)" }}>{job.job_title || "Untitled"}</span>
+                  {job.company && <span style={{ color: "var(--text-muted)", marginLeft: "8px" }}>{job.company}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ── Email detail modal ────────────────────────────────────────────────────────
+
+function EmailDetailModal({ email, movingToScanned, onMoveToScanned, rescanning, onRescan, onShowBody, onSetHidden, onClose }) {
   const gmailIndicator = gmailReadIndicator(email);
   const isMovingToScanned = movingToScanned[email.email_id];
   const isRescanning = rescanning[email.email_id];
@@ -168,133 +208,109 @@ function DetailPanel({ email, movingToScanned, onMoveToScanned, rescanning, onRe
   const emailJobs = Array.isArray(email.jobs) ? email.jobs : [];
 
   return (
-    <div className="card" style={{ padding: "20px" }}>
-      {/* Header row */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px", flexWrap: "wrap", marginBottom: "16px" }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text)", marginBottom: "3px", wordBreak: "break-word" }}>
-            {email.email_subject || <em style={{ color: "var(--text-muted)" }}>No subject</em>}
-          </div>
-          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{email.sender_email || "—"}</div>
+    <Modal
+      title={email.email_subject || "(No subject)"}
+      subtitle={email.sender_email || "—"}
+      onClose={onClose}
+      maxWidth="680px"
+      footer={
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+          <button
+            className="btn-secondary"
+            onClick={() => onRescan(email.email_id)}
+            disabled={isRescanning}
+            style={{ fontSize: "13px" }}
+          >
+            {isRescanning ? "Rescanning…" : "Rescan This Email"}
+          </button>
+          {isParserError && (
+            <button
+              className="btn-secondary"
+              onClick={onShowBody}
+              style={{ fontSize: "13px" }}
+            >
+              View Raw Email
+            </button>
+          )}
+          {gmailIndicator.canMoveToScanned && (
+            <button
+              className="btn-secondary"
+              onClick={() => onMoveToScanned(email.email_id)}
+              disabled={isMovingToScanned}
+              style={{ fontSize: "13px" }}
+            >
+              {isMovingToScanned ? "Moving…" : "Move to Scanned"}
+            </button>
+          )}
+          <button
+            className="btn-secondary"
+            onClick={() => { onSetHidden(email.email_id, !email.hidden); onClose(); }}
+            style={{ fontSize: "13px", marginLeft: "auto" }}
+          >
+            {email.hidden ? "Unhide" : "Hide"}
+          </button>
         </div>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexShrink: 0 }}>
+      }
+    >
+      {/* Metadata row */}
+      <div style={{ display: "flex", gap: "24px", flexWrap: "wrap", marginBottom: "16px", fontSize: "12px", color: "var(--text-muted)" }}>
+        <div><strong style={{ color: "var(--text)" }}>Received</strong><br />{formatLocalDateTime(email.email_date || email.scanned_at)}</div>
+        <div><strong style={{ color: "var(--text)" }}>Scanned</strong><br />{formatLocalDateTime(email.scanned_at)}</div>
+        <div>
+          <strong style={{ color: "var(--text)" }}>Disposition</strong><br />
           {isParserError ? (
             <button
               onClick={onShowBody}
-              style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}
+              style={{ background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit" }}
             >
               <StatusBadge status="parser_error" label="Parser Error" />
             </button>
           ) : (
-            <StatusBadge status={email.job_status || email.disposition} />
+            (DISPOSITION_INFO[email.disposition] || { label: email.disposition || "—" }).label
           )}
-          {email.job_status === "skipped" && email.skip_reason && (
-            <StatusBadge status="skipped" label={SKIP_REASON_LABELS[email.skip_reason] || email.skip_reason} tone="gray" />
-          )}
+        </div>
+        <div>
+          <strong style={{ color: "var(--text)" }}>Gmail</strong><br />
+          <span className={`badge ${gmailIndicator.cls}`}>{gmailIndicator.label}</span>
         </div>
       </div>
 
-      {/* Two-column grid for metadata + job info */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
-        {/* Left: email metadata */}
-        <div>
-          <div style={sectionLabel}>Email</div>
-          <dl style={dlStyle}>
-            <dt style={dtStyle}>Date</dt>
-            <dd style={ddStyle}>{formatLocalDateTime(email.email_date || email.scanned_at)}</dd>
-            <dt style={dtStyle}>Scanned at</dt>
-            <dd style={ddStyle}>{formatLocalDateTime(email.scanned_at)}</dd>
-            <dt style={dtStyle}>Disposition</dt>
-            <dd style={ddStyle}>
-              {(DISPOSITION_INFO[email.disposition] || { label: email.disposition || "—" }).label}
-            </dd>
-            <dt style={dtStyle}>Gmail</dt>
-            <dd style={ddStyle}>
-              {gmailIndicator.canMoveToScanned ? (
-                <button
-                  className={`badge badge-${gmailIndicator.cls.replace("badge-", "")}`}
-                  onClick={() => onMoveToScanned(email.email_id)}
-                  disabled={isMovingToScanned}
-                  style={{ border: "none", cursor: "pointer", font: "inherit" }}
-                >
-                  {isMovingToScanned ? "Moving..." : gmailIndicator.label}
-                </button>
-              ) : (
-                <StatusBadge status={gmailIndicator.cls.replace("badge-", "")} label={gmailIndicator.label} />
-              )}
-            </dd>
-          </dl>
-        </div>
-
-        {/* Right: job info (if any) */}
-        <div>
-          <div style={sectionLabel}>Jobs</div>
-          {emailJobs.length > 0 ? (
-            <div style={{ display: "grid", gap: "8px" }}>
-              {emailJobs.map((job) => (
-                <div key={job.id} style={jobSummaryStyle}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ ...ddStyle, fontWeight: "600" }}>
-                      {job.url ? (
-                        <a href={job.url} target="_blank" rel="noreferrer">
-                          {job.job_title || "Untitled job"}
-                        </a>
-                      ) : (
-                        job.job_title || "Untitled job"
-                      )}
-                    </div>
-                    <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
-                      {job.company || "—"}
-                      {job.fit_score != null && (
-                        <span style={{ marginLeft: "8px" }}>Fit {job.fit_score}%</span>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                    <StatusBadge status={job.status} />
-                    {job.skip_reason && (
-                      <StatusBadge status="skipped" label={SKIP_REASON_LABELS[job.skip_reason] || job.skip_reason} tone="gray" />
-                    )}
-                  </div>
+      {/* Jobs */}
+      <div style={{ fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--text-muted)", marginBottom: "8px" }}>
+        Jobs ({emailJobs.length})
+      </div>
+      {emailJobs.length > 0 ? (
+        <div style={{ display: "grid", gap: "6px" }}>
+          {emailJobs.map((job) => (
+            <div key={job.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", padding: "8px 10px", background: "var(--surface2)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {job.url ? (
+                    <a href={job.url} target="_blank" rel="noreferrer">{job.job_title || "Untitled job"}</a>
+                  ) : (
+                    job.job_title || "Untitled job"
+                  )}
                 </div>
-              ))}
+                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
+                  {job.company || "—"}
+                  {job.fit_score != null && <span style={{ marginLeft: "8px" }}>Fit {job.fit_score}</span>}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "6px", alignItems: "center", flexShrink: 0 }}>
+                <StatusBadge status={job.status} />
+                {job.skip_reason && (
+                  <StatusBadge status="skipped" label={SKIP_REASON_LABELS[job.skip_reason] || job.skip_reason} tone="gray" />
+                )}
+              </div>
             </div>
-          ) : (
-            <p style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>
-              No job record linked to this email.
-            </p>
-          )}
+          ))}
         </div>
-      </div>
-
-      {/* Actions */}
-      <div style={{ marginTop: "16px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-        <button
-          className="btn-secondary"
-          onClick={() => onRescan(email.email_id)}
-          disabled={isRescanning}
-          style={{ fontSize: "13px" }}
-        >
-          {isRescanning ? "Rescanning…" : "Rescan This Email"}
-        </button>
-        {isParserError && (
-          <button
-            className="btn-secondary"
-            onClick={onShowBody}
-            style={{ fontSize: "13px" }}
-          >
-            View Raw Email
-          </button>
-        )}
-        <button
-          className="btn-secondary"
-          onClick={() => onSetHidden(email.email_id, !email.hidden)}
-          style={{ fontSize: "13px", marginLeft: "auto" }}
-        >
-          {email.hidden ? "Unhide" : "Hide"}
-        </button>
-      </div>
-    </div>
+      ) : (
+        <p style={{ fontSize: "12px", color: "var(--text-muted)", margin: 0 }}>
+          No job records linked to this email.
+        </p>
+      )}
+    </Modal>
   );
 }
 
@@ -305,6 +321,8 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState(null);
+  const [detailModalEmail, setDetailModalEmail] = useState(null);
+  const [rescanStatus, setRescanStatus] = useState(null);
   const [rescanning, setRescanning] = useState({});
   const [rescanAllRunning, setRescanAllRunning] = useState(false);
   const [cleaning, setCleaning] = useState(false);
@@ -331,7 +349,9 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
       const q = activeFilter && activeFilter !== "all" ? `?filter=${activeFilter}` : "";
       const res = await fetch(`/api/emails${q}`);
       const data = await res.json();
-      setEmails(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      setEmails(list);
+      return list;
     } catch {
       /* no-op */
     } finally {
@@ -344,7 +364,6 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
     return () => clearInterval(pollRef.current);
   }, [filter, fetchEmails]);
 
-  const selectedEmail = emails.find((e) => e.email_id === selected) ?? null;
 
   const handleColSort = (col) => {
     if (sortCol === col) {
@@ -381,23 +400,29 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
       return;
     }
     setRescanning((prev) => ({ ...prev, [emailId]: true }));
+    setRescanStatus({ emailId, loading: true, message: null, jobs: null, error: false });
     try {
       const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/rescan`, {
         method: "POST",
       });
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || "Rescan failed");
+        setRescanStatus({ emailId, loading: false, message: data.error || "Rescan failed", jobs: null, error: true });
         return;
       }
-      await fetchEmails(filter);
+      const updatedEmails = await fetchEmails(filter);
+      if (detailModalEmail?.email_id === emailId && Array.isArray(updatedEmails)) {
+        const refreshed = updatedEmails.find((e) => e.email_id === emailId);
+        if (refreshed) setDetailModalEmail(refreshed);
+      }
+      setRescanStatus({ emailId, loading: false, message: data.message || "Rescan complete.", jobs: data.jobs || [], error: false });
       try {
         const t = await fetch("/api/jobs/triage");
         const td = await t.json();
         onTriageCountChange?.(Array.isArray(td) ? td.length : 0);
       } catch { /* no-op */ }
     } catch (e) {
-      alert("Rescan failed: " + e.message);
+      setRescanStatus({ emailId, loading: false, message: "Rescan failed: " + e.message, jobs: null, error: true });
     } finally {
       setRescanning((prev) => ({ ...prev, [emailId]: false }));
     }
@@ -669,6 +694,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
                     Status <SortIndicator col="status" />
                   </th>
                   <th style={{ ...thStyle, position: "sticky", top: 0, zIndex: 1 }}>Gmail</th>
+                  <th style={{ ...thStyle, position: "sticky", top: 0, zIndex: 1, width: "36px" }} />
                 </tr>
               </thead>
               <tbody>
@@ -749,11 +775,22 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
                             </span>
                           )}
                         </td>
+                        <td style={{ ...tdStyle, width: "36px", textAlign: "center" }}>
+                          <button
+                            title="View details & actions"
+                            onClick={(e) => { e.stopPropagation(); setDetailModalEmail(email); }}
+                            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "16px", lineHeight: 1, padding: "2px 4px", borderRadius: "var(--radius)" }}
+                            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; e.currentTarget.style.background = "var(--surface2)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "none"; }}
+                          >
+                            ⋯
+                          </button>
+                        </td>
                       </tr>
                       {isSelected && (
                         <tr style={{ background: "var(--surface2)" }}>
                           <td style={{ ...tdStyle, borderBottom: "1px solid var(--border)" }} />
-                          <td colSpan={5} style={{ padding: "12px 14px 14px", borderBottom: "1px solid var(--border)" }}>
+                          <td colSpan={6} style={{ padding: "12px 14px 14px", borderBottom: "1px solid var(--border)" }}>
                             {childJobs.length > 0 ? (
                               <div style={{ display: "grid", gap: "8px" }}>
                                 {childJobs.map((job) => {
@@ -814,27 +851,27 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
         </>
       )}
 
-      {/* Details panel below the list */}
-      <div style={{ marginTop: "16px" }}>
-        <div style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "8px" }}>
-          Details
-        </div>
-        {selectedEmail ? (
-          <DetailPanel
-            email={selectedEmail}
-            movingToScanned={movingToScanned}
-            onMoveToScanned={handleMoveToScanned}
-            rescanning={rescanning}
-            onRescan={handleRescan}
-            onShowBody={() => setErrorModalEmail(selectedEmail)}
-            onSetHidden={handleSetHidden}
-          />
-        ) : (
-          <div style={{ ...detailPanelStyle, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "80px" }}>
-            <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Select a row to see details.</p>
-          </div>
-        )}
-      </div>
+      {/* Email detail modal */}
+      {detailModalEmail && (
+        <EmailDetailModal
+          email={detailModalEmail}
+          movingToScanned={movingToScanned}
+          onMoveToScanned={handleMoveToScanned}
+          rescanning={rescanning}
+          onRescan={handleRescan}
+          onShowBody={() => setErrorModalEmail(detailModalEmail)}
+          onSetHidden={handleSetHidden}
+          onClose={() => setDetailModalEmail(null)}
+        />
+      )}
+
+      {/* Rescan progress modal — rendered after detail modal so it stacks on top */}
+      {rescanStatus && (
+        <RescanProgressModal
+          status={rescanStatus}
+          onClose={() => setRescanStatus(null)}
+        />
+      )}
 
       {/* Parser error body modal */}
       {errorModalEmail && (
@@ -958,25 +995,6 @@ const progressBox = {
   boxShadow: "var(--shadow-sm)",
 };
 
-const detailPanelStyle = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  padding: "20px",
-  boxShadow: "var(--shadow-sm)",
-};
-
-const jobSummaryStyle = {
-  display: "grid",
-  gridTemplateColumns: "minmax(0, 1fr) auto",
-  gap: "12px",
-  alignItems: "center",
-  padding: "10px 12px",
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-};
-
 const treeJobRowStyle = {
   display: "grid",
   gridTemplateColumns: "minmax(0, 1fr) auto",
@@ -995,29 +1013,6 @@ const sectionLabel = {
   letterSpacing: "0.07em",
   color: "var(--text-muted)",
   marginBottom: "8px",
-};
-
-const dlStyle = {
-  display: "grid",
-  gridTemplateColumns: "max-content 1fr",
-  columnGap: "16px",
-  rowGap: "5px",
-  margin: 0,
-};
-
-const dtStyle = {
-  fontSize: "12px",
-  color: "var(--text-muted)",
-  fontWeight: "500",
-  whiteSpace: "nowrap",
-  paddingTop: "1px",
-};
-
-const ddStyle = {
-  fontSize: "13px",
-  color: "var(--text)",
-  margin: 0,
-  wordBreak: "break-word",
 };
 
 const summarySectionStyle = {
