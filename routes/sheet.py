@@ -45,7 +45,6 @@ from backend.utils import (
     get_repos,
     _tracking_payload,
     normalize_stage_status,
-    VALID_STAGE_STATUSES,
 )
 
 logger = logging.getLogger(__name__)
@@ -169,12 +168,13 @@ def add_application_sheet_stage(job_id: int):
     notes = str(data.get("notes") or "").strip()
     if not status:
         return jsonify({"error": "status is required"}), 400
-    if status not in VALID_STAGE_STATUSES:
-        return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(VALID_STAGE_STATUSES))}"}), 400
     if not stage_date:
         return jsonify({"error": "date is required"}), 400
     try:
         with get_repos() as repos:
+            valid_keys = {s["key"] for s in repos["stage_statuses"].get_all()}
+            if status not in valid_keys:
+                return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(valid_keys))}"}), 400
             repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
             repos["conn"].commit()
     except Exception as exc:

@@ -57,7 +57,6 @@ from backend.utils import (
     db_match_for_job,
     get_repos,
     normalize_stage_status,
-    VALID_STAGE_STATUSES,
 )
 
 logger = logging.getLogger(__name__)
@@ -735,13 +734,13 @@ def reject_triage_job(job_id: int):
 def add_application_stage(job_id: int):
     data = request.get_json(silent=True) or {}
     status = normalize_stage_status(data.get("status"))
-    if status not in VALID_STAGE_STATUSES:
-        return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(VALID_STAGE_STATUSES))}"}), 400
-
     stage_date = data.get("date") or datetime.now(UTC).date().isoformat()
     notes = data.get("notes") or None
 
     with get_repos() as repos:
+        valid_keys = {s["key"] for s in repos["stage_statuses"].get_all()}
+        if status not in valid_keys:
+            return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(valid_keys))}"}), 400
         if not repos["jobs"].get_by_id(job_id):
             return jsonify({"error": "Job not found"}), 404
 

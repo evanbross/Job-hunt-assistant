@@ -93,12 +93,6 @@ ACK_SUBJECT_PATTERNS: tuple[str, ...] = (
     "you applied to",
     "successfully submitted",  # Wellfound: "Application to <company> successfully submitted"
 )
-VALID_STAGE_STATUSES: frozenset[str] = frozenset({
-    "applied", "waiting_call", "waiting_second",
-    "eval_1", "eval_2", "eval_3",
-    "rejected", "job_filled", "ghosted",
-})
-
 
 @contextmanager
 def get_repos() -> Generator[dict, None, None]:

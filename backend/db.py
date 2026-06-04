@@ -1446,7 +1446,8 @@ _SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
     ("eval_3",         "Eval 3",           6, False, False),
     ("rejected",       "Rejected",         7, False, True),
     ("job_filled",     "Job Filled",       8, False, True),
-    ("ghosted",        "Ghosted",          9, False, True),
+    ("req_closed",     "Req Closed",       9, False, True),
+    ("ghosted",        "Ghosted",         10, False, True),
 ]
 
 _SEED_SOURCES: list[tuple[str, str, str]] = [

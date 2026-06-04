@@ -65,6 +65,7 @@ const STATUS_FALLBACKS = {
   eval_2:             { background: "var(--green-light)", color: "var(--green)" },
   eval_3:             { background: "var(--green-light)", color: "var(--green)" },
   job_filled:         { background: "var(--red-light)", color: "var(--red)" },
+  req_closed:         { background: "var(--red-light)", color: "var(--red)" },
   ghosted:            { background: "var(--orange-light)", color: "var(--orange)" },
   skipped:            { background: "var(--surface2)", color: "var(--text-muted)" },
   triage:             { background: "var(--yellow-light)", color: "var(--yellow)" },
