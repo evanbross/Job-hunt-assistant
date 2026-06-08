@@ -69,13 +69,7 @@ ACTIVE_JOB_STATUSES: frozenset[str] = frozenset({
     "triage",
     "possible_duplicate",
 })
-VALID_JOB_STATUSES: frozenset[str] = frozenset({
-    "pending_review",
-    "triage",
-    "possible_duplicate",
-    "skipped",
-    "applied",
-})
+
 FIT_PANEL_STATUSES: frozenset[str] = frozenset({
     "pending_review",
     "triage",
@@ -146,7 +140,9 @@ def _tracking_payload() -> dict[str, str]:
 
 
 def _safe_error_message(exc: BaseException, fallback: str) -> str:
-    return str(exc) or fallback
+    if isinstance(exc, AIProviderError):
+        return str(exc) or fallback
+    return fallback
 
 
 def get_subject_rule_match(subject: str, rules: list[dict]) -> str | None:

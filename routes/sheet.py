@@ -186,8 +186,9 @@ def add_application_sheet_stage(job_id: int):
 @sheet_bp.route("/sheet/applications/mark-ghosts", methods=["POST"])
 def mark_ghost_applications():
     """Mark applications whose latest state has been Applied for 30+ days as ghosted."""
-    cutoff_date = date.today() - timedelta(days=30)
-    today = date.today().isoformat()
+    utc_today = datetime.now(UTC).date()
+    cutoff_date = utc_today - timedelta(days=30)
+    today = utc_today.isoformat()
     marked: list[dict[str, object]] = []
     try:
         with get_repos() as repos:
@@ -224,7 +225,7 @@ def mark_ghost_applications():
                 if applied_date > cutoff_date:
                     continue
 
-                days_applied = (date.today() - applied_date).days
+                days_applied = (utc_today - applied_date).days
                 repos["stages"].insert(
                     {
                         "job_id": job["id"],

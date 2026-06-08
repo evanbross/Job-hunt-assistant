@@ -264,7 +264,10 @@ class _SQLiteConnection:
 
 
 def _sqlite_sql(sql: str) -> str:
+    # Add a new entry here whenever you introduce a Postgres-specific expression
+    # (date function, cast, type name) in schema DDL or migration SQL above.
     translated = sql.replace("%s", "?")
+    translated = translated.replace("(NOW() AT TIME ZONE 'UTC')::date::text", "date('now')")
     translated = translated.replace("NOW()::text", "datetime('now')")
     translated = translated.replace("NOW()", "datetime('now')")
     translated = translated.replace("CURRENT_DATE::text", "date('now')")
@@ -1640,14 +1643,14 @@ def _migrate(conn: Any) -> None:
     # Backfill application_stages for existing applied jobs
     cur.execute("""
         INSERT INTO application_stages (job_id, status, date)
-        SELECT id, 'applied', COALESCE(date_added_to_sheet, date_found, CURRENT_DATE::text)
+        SELECT id, 'applied', COALESCE(date_added_to_sheet, date_found, (NOW() AT TIME ZONE 'UTC')::date::text)
         FROM jobs
         WHERE status IN ('added_to_sheet', 'applied')
           AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
     """)
     cur.execute("UPDATE jobs SET status = 'applied' WHERE status = 'added_to_sheet'")
 
-    cur.execute("UPDATE jobs SET date_found = CURRENT_DATE::text WHERE date_found IS NULL")
+    cur.execute("UPDATE jobs SET date_found = (NOW() AT TIME ZONE 'UTC')::date::text WHERE date_found IS NULL")
 
     cur.execute(
         "ALTER TABLE penalty_rules ADD COLUMN IF NOT EXISTS scope TEXT DEFAULT 'any'"
@@ -1831,7 +1834,7 @@ def _create_tables(conn: Any) -> None:
             status                TEXT,
             parser_confidence     TEXT,
             confidence_reason     TEXT,
-            date_found            TEXT DEFAULT (CURRENT_DATE::text),
+            date_found            TEXT DEFAULT ((NOW() AT TIME ZONE 'UTC')::date::text),
             date_added_to_sheet   TEXT,
             duplicate_hint        TEXT,
             sender_email          TEXT,

@@ -37,7 +37,7 @@ from __future__ import annotations
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from backend.duplicate_checker import DuplicateChecker
@@ -190,7 +190,7 @@ class ManualJobIngestService:
             status = "pending_review" if fit_score >= 70 else "triage"
 
         job_dict: dict = {
-            "email_id": f"{email_id_prefix}:{date.today().isoformat()}:{secrets.token_hex(8)}",
+            "email_id": f"{email_id_prefix}:{datetime.now(UTC).date().isoformat()}:{secrets.token_hex(8)}",
             "company": company,
             "job_title": job_title,
             "url": url,
@@ -201,7 +201,7 @@ class ManualJobIngestService:
             "status": status,
             "parser_confidence": parsed.get("confidence", "low"),
             "confidence_reason": parsed.get("confidence_reason", ""),
-            "date_found": date.today().isoformat(),
+            "date_found": datetime.now(UTC).date().isoformat(),
             "date_added_to_sheet": None,
             "duplicate_hint": duplicate_hint,
             "sender_email": None,
@@ -260,7 +260,7 @@ class ManualJobIngestService:
 
     @staticmethod
     def _manual_email_id() -> str:
-        return f"manual:{date.today().isoformat()}:{secrets.token_hex(8)}"
+        return f"manual:{datetime.now(UTC).date().isoformat()}:{secrets.token_hex(8)}"
 
     @staticmethod
     def _source_name_for_url(source_url: str) -> str:

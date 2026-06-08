@@ -41,7 +41,7 @@ Column order: Company, Status, Source, Date of Application, Contact/Notes, URL
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import UTC, datetime
 from typing import Any
 
 from google.auth.exceptions import RefreshError, TransportError
@@ -142,7 +142,7 @@ class SheetsClient:
                 "GOOGLE_SHEETS_ID is not set. Add it to your .env file."
             )
 
-        today = date.today().strftime("%m/%d/%Y")
+        today = datetime.now(UTC).date().strftime("%m/%d/%Y")
         row = [company, "Applied", source, today, job_title, url]
 
         try:

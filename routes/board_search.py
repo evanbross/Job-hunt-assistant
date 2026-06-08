@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, datetime
 
 from flask import Blueprint, jsonify
 
@@ -297,7 +297,7 @@ def _run_board_search() -> None:
                     "status": status,
                     "parser_confidence": "high",
                     "confidence_reason": "Loaded from a job board search result.",
-                    "date_found": date.today().isoformat(),
+                    "date_found": datetime.now(UTC).date().isoformat(),
                     "date_added_to_sheet": None,
                     "duplicate_hint": None,
                     "sender_email": None,
