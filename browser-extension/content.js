@@ -115,7 +115,12 @@
       return { site: 'MongoDB Careers', type: 'mongoDBCareer', jobCount: count, description: `${count} jobs` };
     }
 
-    return { site: location.hostname, type: 'html', jobCount: 0, description: 'Will send full page HTML for parsing' };
+    // Generic fallback: scan for job-shaped links before giving up on counting.
+    const smartCount = countSmartGenericJobs();
+    if (smartCount >= 2) {
+      return { site: location.hostname, type: 'smartGeneric', jobCount: smartCount, description: `${smartCount} jobs detected` };
+    }
+    return { site: location.hostname, type: 'html', jobCount: 0, description: 'Will send page HTML for parsing' };
   }
 
   function countLinkedInJobs() {
@@ -129,6 +134,31 @@
       if (m) ids.add(m[1]);
     });
     return ids.size;
+  }
+
+  // Job-URL heuristic: matches paths like /job/123, /jobs/abc, /careers/job/456, etc.
+  // Excludes navigation-only pages (search filters, category pages, apply form).
+  const _JOB_PATH_RE = /\/jobs?\/[\w%.-]{2,}/i;
+  const _JOB_EXCLUDE_RE = /\/(search|filter|categories?|department|location|apply|login|signin|signup|about|contact|faq|privacy|terms)\b/i;
+  // Cross-origin job links are only trusted if they're on a known ATS domain.
+  // This prevents email tracker URLs (Sendgrid, Mailchimp, etc.) from being
+  // picked up just because the encoded redirect path contains "/job/".
+  const _KNOWN_ATS_RE = /\.(greenhouse\.io|lever\.co|myworkdayjobs\.com|ashbyhq\.com|taleo\.net|icims\.com|smartrecruiters\.com|jobvite\.com|workday\.com|jazz\.co|bamboohr\.com|recruitee\.com)$/i;
+
+  function isJobLink(u) {
+    if (!_JOB_PATH_RE.test(u.pathname) || _JOB_EXCLUDE_RE.test(u.pathname)) return false;
+    return u.hostname === location.hostname || _KNOWN_ATS_RE.test(u.hostname);
+  }
+
+  function countSmartGenericJobs() {
+    const seen = new Set();
+    document.querySelectorAll('a[href]').forEach(a => {
+      try {
+        const u = new URL(a.href);
+        if (isJobLink(u)) seen.add(u.origin + u.pathname);
+      } catch { /* skip */ }
+    });
+    return seen.size;
   }
 
   function collectWellfoundSlugs() {
@@ -598,6 +628,53 @@
     return JSON.stringify({ jobs, source: { url: location.href } });
   }
 
+  // Generic job-link harvester — works on Phenom People (Cisco), Workday, Lever,
+  // and any other career-site structure the specialised builders don't cover.
+  function buildSmartGenericPayload() {
+    const seen = new Set();
+    const jobs = [];
+
+    document.querySelectorAll('a[href]').forEach(link => {
+      let u;
+      try { u = new URL(link.href); } catch { return; }
+      if (!isJobLink(u)) return;
+      const url = u.origin + u.pathname; // strip query/hash to deduplicate
+      if (seen.has(url)) return;
+      seen.add(url);
+
+      // Walk up to find a card-sized container (20–1500 chars of visible text).
+      let container = link.parentElement;
+      for (let d = 0; d < 8 && container && container !== document.body; d++) {
+        const len = (container.innerText || '').trim().length;
+        if (len >= 20 && len <= 1500) break;
+        container = container.parentElement;
+      }
+
+      // Prefer Phenom People data attributes, then headings, then link text.
+      const titleEl =
+        container?.querySelector('[data-ph-at-id*="title"]') ||
+        container?.querySelector('h1,h2,h3,h4') ||
+        link;
+      const title = titleEl?.innerText?.split('\n')[0]?.trim() || '';
+
+      const locationEl = container?.querySelector(
+        '[data-ph-at-id*="location"], [class*="location"], [data-automation-id*="location"]'
+      );
+      const jobLocation = locationEl?.innerText?.split('\n')[0]?.trim() || '';
+
+      const cardText = container ? (container.innerText || '').trim().slice(0, 500) : '';
+      const lines = [title || url.split('/').filter(Boolean).pop()];
+      if (jobLocation) lines.push('Location: ' + jobLocation);
+      lines.push('URL: ' + link.href); // use original href so redirect params are preserved
+      if (cardText && cardText !== title) lines.push('', cardText);
+
+      jobs.push({ url: link.href, job_title: title, company: '', listing_text: lines.join('\n') });
+    });
+
+    if (jobs.length === 0) return buildHtmlPayload();
+    return JSON.stringify({ jobs, source: { url: location.href } });
+  }
+
   // ─── Build Dispatcher ──────────────────────────────────────────────────────
 
   async function buildPayload() {
@@ -613,6 +690,7 @@
       case 'workAtAStartup':   return buildWorkAtAStartupPayload();
       case 'discordCareers':   return buildDiscordCareersPayload();
       case 'ashbyJob':         return buildAshbyJobPayload();
+      case 'smartGeneric':     return buildSmartGenericPayload();
       default:                 return buildHtmlPayload();
     }
   }

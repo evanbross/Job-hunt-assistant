@@ -53,6 +53,9 @@ chrome.runtime.onMessage.addListener(msg => {
 });
 
 document.addEventListener('DOMContentLoaded', async () => {
+  const { version } = chrome.runtime.getManifest();
+  document.querySelector('.header-title').textContent = `Job Hunt Assistant v${version}`;
+
   document.getElementById('settings-link').addEventListener('click', () => {
     chrome.runtime.openOptionsPage();
   });
