@@ -302,5 +302,9 @@ def start_job_import_listener(submit_capture: SubmitCapture) -> None:
         try:
             _listener.start()
         except OSError as exc:
-            logger.warning("Job import listener could not start: %s", exc)
+            logger.warning(
+                "Job import listener could not start on port %s: %s",
+                listener_config["port"],
+                exc,
+            )
             _listener = None

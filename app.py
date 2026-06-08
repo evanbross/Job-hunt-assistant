@@ -72,6 +72,12 @@ from backend.db import init_db
 from backend.import_listener import start_job_import_listener
 from backend.utils import start_career_site_scheduler
 
+sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
+try:
+    import caddy_registry as _caddy_registry
+except ImportError:
+    _caddy_registry = None
+
 # Allow Google to return a superset of the requested OAuth scopes without
 # requests_oauthlib raising a scope-mismatch error. This happens when the
 # account previously granted broader scopes to this OAuth client.
@@ -400,6 +406,18 @@ def _stop_vite() -> None:
 _celery_proc: _subprocess.Popen | None = None
 
 
+def _find_free_port(start: int, end: int) -> int:
+    for port in range(start, end + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(f"No free port found in range {start}–{end}")
+
+
 def _start_celery_worker() -> None:
     global _celery_proc
 
@@ -441,9 +459,28 @@ if __name__ == "__main__":
     _maybe_rebuild_frontend()
     _start_vite()
     _start_celery_worker()
-    app.run(
-        debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",
-        host=os.environ.get("FLASK_HOST", "127.0.0.1"),
-        port=int(os.environ.get("FLASK_PORT", "5004")),
-        threaded=True,
-    )
+    _preferred_port = int(os.environ.get("FLASK_PORT", "5004"))
+    try:
+        _flask_port = _find_free_port(_preferred_port, 5999)
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+    if _flask_port != _preferred_port:
+        logger.warning(
+            "Port %s is not available; using port %s instead.",
+            _preferred_port,
+            _flask_port,
+        )
+    if _caddy_registry is not None:
+        _caddy_registry.register("jha", _flask_port)
+        atexit.register(_caddy_registry.deregister, "jha")
+    try:
+        app.run(
+            debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",
+            host=os.environ.get("FLASK_HOST", "127.0.0.1"),
+            port=_flask_port,
+            threaded=True,
+        )
+    except OSError as exc:
+        logger.error("Could not start Flask server on port %s: %s", _flask_port, exc)
+        sys.exit(1)
