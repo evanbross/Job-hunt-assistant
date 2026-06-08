@@ -343,6 +343,15 @@ _WTTJ_SKIP_TITLE_LINES = {
     "see job",
     "see offer",
 }
+# Lines that contain salary/compensation info or bullet-separated metadata (location,
+# contract type, etc.) should never be mistaken for job titles.
+_WTTJ_METADATA_LINE_RE = re.compile(
+    r"[\$£€₹¥]"            # currency symbols → salary
+    r"|[•·]"               # bullet separators → "Paris • Full-time" metadata
+    r"|\b\d+\s*[kK]\s*[-–—]"  # "80k –" → salary range
+    r"|\bsalary\b|\bcompensation\b",
+    re.IGNORECASE,
+)
 
 
 def _parse_linkedin_alert_jobs(subject: str, sender: str, body_snippet: str) -> list[ParsedJob]:
@@ -587,11 +596,21 @@ def _wttj_company_title_from_url(job_url: str) -> tuple[str, str]:
     path_parts = [unquote(part) for part in parsed.path.split("/") if part]
     company = ""
     job_title = ""
+    job_slug = ""
     for idx, part in enumerate(path_parts):
         if part == "companies" and idx + 1 < len(path_parts):
             company = _title_case_slug(path_parts[idx + 1])
         if part == "jobs" and idx + 1 < len(path_parts):
-            job_title = _title_case_slug(path_parts[idx + 1].split("_", 1)[0])
+            job_slug = path_parts[idx + 1]
+            job_title = _title_case_slug(job_slug.split("_", 1)[0])
+    # Fallback: WTTJ sometimes omits /companies/ and encodes "title-at-company" in
+    # the job slug (e.g. /en/jobs/senior-engineer-at-acme_paris_CODE).
+    if not company and job_slug:
+        title_part = job_slug.split("_", 1)[0]
+        at_match = re.search(r"^(.+)-at-(.+)$", title_part)
+        if at_match:
+            job_title = _title_case_slug(at_match.group(1))
+            company = _title_case_slug(at_match.group(2))
     return company, job_title
 
 
@@ -608,6 +627,8 @@ def _wttj_title_from_nearby_lines(lines: list[str], url_line_idx: int, company: 
         if normalized_candidate.startswith(("http://", "https://")):
             continue
         if len(candidate) > 120:
+            continue
+        if _WTTJ_METADATA_LINE_RE.search(candidate):
             continue
         return candidate.strip(" -–—\t\r\n")
     return ""
