@@ -67,7 +67,7 @@ const SKIP_REASON_LABELS = {
 
 function statusBadge(email) {
   if (email.job_status) {
-    return JOB_STATUS_INFO[email.job_status] || { label: email.job_status, cls: "badge-gray" };
+    return JOB_STATUS_INFO[email.job_status] || { label: email.job_status, cls: `badge-${statusTone(email.job_status)}` };
   }
   return DISPOSITION_INFO[email.disposition] || { label: email.disposition || "Unknown", cls: "badge-gray" };
 }
@@ -77,7 +77,7 @@ function statusSortKey(email) {
 }
 
 function jobStatusBadge(job) {
-  return JOB_STATUS_INFO[job.status] || { label: job.status || "Unknown", cls: "badge-gray" };
+  return JOB_STATUS_INFO[job.status] || { label: job.status || "Unknown", cls: `badge-${statusTone(job.status || "")}` };
 }
 
 function emailHasJobStatus(email, statuses) {

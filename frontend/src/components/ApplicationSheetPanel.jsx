@@ -103,7 +103,7 @@ const DEFAULT_COLUMN_WIDTHS = {
 };
 
 const MIN_COLUMN_WIDTH = 90;
-const ROW_CONTROL_WIDTH = 42;
+const ROW_CONTROL_WIDTH = 56;
 
 function defaultEmptyForm() {
   return {
@@ -936,7 +936,12 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
               return (
                 <React.Fragment key={row.row_number}>
                   <tr style={{ ...bodyRowStyle, background: rowShade }} onClick={() => toggleRow(row.row_number)}>
-                    <td style={{ ...rowNumberCellStyle, background: rowShade }}>{isOpen ? "▼" : "▶"}</td>
+                    <td style={{ ...rowNumberCellStyle, background: rowShade }}>
+                      <span style={{ display: "flex", flexDirection: "column", alignItems: "center", lineHeight: 1.2 }}>
+                        <span>{isOpen ? "▼" : "▶"}</span>
+                        <span style={{ fontSize: "10px", fontWeight: 400, color: "var(--text-muted)" }}>{row.row_number}</span>
+                      </span>
+                    </td>
                     {parentColumns.map((entry) => {
                       const cell = getCell(row, entry.column);
                       return (
@@ -950,7 +955,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                             <button
                               type="button"
                               style={jobTitleLinkStyle}
-                              title={`Show this job on ${jobCardTab === "queue" ? "Job Queue" : "Triage"}`}
+                              title="Show this job on Job Queue"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 onNavigateToJobCard?.(row.row_number, rowStatus);
@@ -1290,9 +1295,9 @@ const bodyRowStyle = {
 
 const rowNumberCellStyle = {
   ...baseCellStyle,
-  width: "42px",
-  minWidth: "42px",
-  maxWidth: "42px",
+  width: "56px",
+  minWidth: "56px",
+  maxWidth: "56px",
   textAlign: "center",
   color: "var(--text-muted)",
   fontWeight: 700,

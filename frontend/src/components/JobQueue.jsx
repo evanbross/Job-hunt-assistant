@@ -34,12 +34,15 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
+import { TriageCard, DuplicateCard, ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "./TriagePanel.jsx";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 import Modal from "./common/Modal.jsx";
 import MetricGrid, { MetricItem } from "./common/MetricGrid.jsx";
 import { fitReasoningBullets, reasoningWithoutPenaltySummary, scoreLabel } from "../utils/fitScoringUtils.js";
 import { dispositionLabel, formatJobTitles, formatScanAction, formatScanDisposition, scoreDeltaLabel } from "../utils/jobQueueUtils.js";
+import { compareNullableScores, extractSender, extractSubjectWords } from "../utils/triagePanelUtils.js";
+import { applicationRowFromSheet, rowMatchesCompany } from "../utils/sheetUtils.js";
 
 const JOB_QUEUE_SEARCH_STORAGE_KEY = "jha.jobQueue.search";
 
@@ -193,6 +196,53 @@ function writeStoredSearch(storageKey, value) {
   }
 }
 
+const VIEW_MODE_STORAGE_KEY = "jha.jobQueue.viewMode";
+const SORT_STORAGE_KEY = "jha.jobQueue.sort";
+const SEARCH_ALL_FIELDS_KEY = "jha.jobQueue.searchAllFields";
+
+const VIEW_MODES = [
+  { key: "queue", label: "Job Queue" },
+  { key: "triage", label: "Triage" },
+  { key: "both", label: "Jobs & Triage" },
+  { key: "company", label: "Company" },
+];
+
+const SORT_OPTIONS = [
+  { key: "date_desc", label: "Newest first" },
+  { key: "date_asc", label: "Oldest first" },
+  { key: "fit_desc", label: "Highest fit" },
+  { key: "fit_asc", label: "Lowest fit" },
+  { key: "confidence_desc", label: "Highest confidence" },
+  { key: "confidence_asc", label: "Lowest confidence" },
+  { key: "company_asc", label: "Company A–Z" },
+];
+
+function sortJobList(list, sortKey) {
+  return [...list].sort((a, b) => {
+    if (sortKey === "date_desc" || sortKey === "date_asc") {
+      const da = new Date(a.date_found || 0);
+      const db = new Date(b.date_found || 0);
+      return sortKey === "date_desc" ? db - da : da - db;
+    }
+    if (sortKey === "fit_desc" || sortKey === "fit_asc") {
+      return compareNullableScores(a.fit_score, b.fit_score, sortKey === "fit_desc" ? "desc" : "asc");
+    }
+    if (sortKey === "confidence_desc" || sortKey === "confidence_asc") {
+      const ca = a.confidence_score ?? (a.status === "possible_duplicate" ? -1 : 50);
+      const cb = b.confidence_score ?? (b.status === "possible_duplicate" ? -1 : 50);
+      return sortKey === "confidence_desc" ? cb - ca : ca - cb;
+    }
+    if (sortKey === "company_asc") {
+      return String(a.company || "").localeCompare(String(b.company || ""));
+    }
+    return 0;
+  });
+}
+
+function readStoredViewPref(key, fallback) {
+  try { return window.localStorage.getItem(key) || fallback; } catch { return fallback; }
+}
+
 function FixCompaniesDialog({ progress, onClose }) {
   const { totalFixed, remaining, done, error } = progress;
   const footer = done && (
@@ -239,10 +289,20 @@ export default function JobQueue({
   onNavigateToEmails,
   onNavigateToHistory,
   focusJobId,
+  requestedViewMode,
   onNavigateToJobCard,
 }) {
   const [jobs, setJobs] = useState([]);
   const [searchText, setSearchText] = useState(() => readStoredSearch(JOB_QUEUE_SEARCH_STORAGE_KEY));
+  const [searchAllFields, setSearchAllFields] = useState(() => readStoredViewPref(SEARCH_ALL_FIELDS_KEY, "false") === "true");
+  const [viewMode, setViewMode] = useState(() => readStoredViewPref(VIEW_MODE_STORAGE_KEY, "queue"));
+  const [sortBy, setSortBy] = useState(() => readStoredViewPref(SORT_STORAGE_KEY, "date_desc"));
+  const [triageJobs, setTriageJobs] = useState([]);
+  const [triageLoading, setTriageLoading] = useState(false);
+  const [allSheetRows, setAllSheetRows] = useState(null);
+  const [triageReEvaluatePopup, setTriageReEvaluatePopup] = useState(null);
+  const [triageBatchRefreshPopup, setTriageBatchRefreshPopup] = useState(null);
+  const [triageDescriptionUpdatePopup, setTriageDescriptionUpdatePopup] = useState(null);
   const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -285,6 +345,52 @@ export default function JobQueue({
   useEffect(() => {
     writeStoredSearch(JOB_QUEUE_SEARCH_STORAGE_KEY, searchText);
   }, [searchText]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode); } catch { /* ignore */ }
+  }, [viewMode]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(SORT_STORAGE_KEY, sortBy); } catch { /* ignore */ }
+  }, [sortBy]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(SEARCH_ALL_FIELDS_KEY, String(searchAllFields)); } catch { /* ignore */ }
+  }, [searchAllFields]);
+
+  // Switch view mode when navigating to a specific job card
+  useEffect(() => {
+    if (!requestedViewMode) return;
+    setViewMode(requestedViewMode);
+  }, [requestedViewMode]);
+
+  const fetchTriageJobs = useCallback(async () => {
+    setTriageLoading(true);
+    try {
+      const res = await fetch("/api/jobs/triage");
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : [];
+      setTriageJobs(list);
+      onTriageCountChange(list.length);
+    } catch {
+      /* no-op */
+    } finally {
+      setTriageLoading(false);
+    }
+  }, [onTriageCountChange]);
+
+  useEffect(() => {
+    if (viewMode === "queue") return;
+    fetchTriageJobs();
+  }, [viewMode, fetchTriageJobs]);
+
+  useEffect(() => {
+    if (viewMode === "queue") return;
+    fetch("/api/sheet/applications")
+      .then((res) => res.json())
+      .then((data) => setAllSheetRows(Array.isArray(data.rows) ? data.rows.map(applicationRowFromSheet) : []))
+      .catch(() => setAllSheetRows([]));
+  }, [viewMode]);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -515,10 +621,252 @@ export default function JobQueue({
     try {
       const t = await fetch("/api/jobs/triage");
       const td = await t.json();
-      onTriageCountChange(Array.isArray(td) ? td.length : 0);
+      const list = Array.isArray(td) ? td : [];
+      onTriageCountChange(list.length);
+      setTriageJobs(list);
     } catch {
       /* no-op */
     }
+  };
+
+  // ── Triage handlers ───────────────────────────────────────────────────────────
+
+  const handleTriageApprove = async (job) => {
+    const senderEmail = extractSender(job.raw_email_snippet, job);
+    const subjectPattern = extractSubjectWords(job.job_title || "");
+    const res = await fetch(`/api/jobs/${job.id}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sender_email: senderEmail, subject_pattern: subjectPattern }),
+    });
+    if (res.ok) {
+      setTriageJobs((prev) => {
+        const updated = prev.filter((j) => j.id !== job.id);
+        onTriageCountChange(updated.length);
+        return updated;
+      });
+    } else {
+      const err = await res.json().catch(() => ({}));
+      window.alert(err.error || "Failed to approve");
+    }
+  };
+
+  const handleTriageSkip = async (job, reason, feedback = "", mismatchReasons = []) => {
+    const res = await fetch(`/api/jobs/${job.id}/skip`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason, feedback, mismatch_reasons: mismatchReasons }),
+    });
+    if (res.ok) {
+      setTriageJobs((prev) => {
+        const updated = prev.filter((j) => j.id !== job.id);
+        onTriageCountChange(updated.length);
+        return updated;
+      });
+    } else {
+      const err = await res.json().catch(() => ({}));
+      window.alert(err.error || "Failed to skip job");
+    }
+  };
+
+  const handleTriageMarkUnique = async (job) => {
+    const res = await fetch(`/api/jobs/${job.id}/dismiss-duplicate`, { method: "POST" });
+    if (res.ok) {
+      setTriageJobs((prev) => {
+        const updated = prev.filter((j) => j.id !== job.id);
+        onTriageCountChange(updated.length);
+        return updated;
+      });
+    } else {
+      const err = await res.json().catch(() => ({}));
+      window.alert(err.error || "Failed to mark job as unique");
+    }
+  };
+
+  const handleTriageMarkApplied = async (job) => {
+    const res = await fetch(`/api/jobs/${job.id}/add-to-sheet`, { method: "POST" });
+    if (res.ok) {
+      setTriageJobs((prev) => {
+        const updated = prev.filter((j) => j.id !== job.id);
+        onTriageCountChange(updated.length);
+        return updated;
+      });
+    } else {
+      const err = await res.json().catch(() => ({}));
+      window.alert(err.error || "Failed to mark job as applied");
+    }
+  };
+
+  const handleTriageReprocessed = (job, updated) => {
+    const triageStatuses = new Set(["triage", "possible_duplicate"]);
+    if (triageStatuses.has(updated.status)) {
+      setTriageJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
+      return;
+    }
+    setTriageJobs((prev) => {
+      const next = prev.filter((j) => j.id !== job.id);
+      onTriageCountChange(next.length);
+      return next;
+    });
+  };
+
+  const handleTriageDescriptionUpdated = (job, updated, previous) => {
+    setTriageDescriptionUpdatePopup({
+      company: updated.company || job.company || "",
+      jobTitle: updated.job_title || job.job_title || "",
+      newScore: updated.fit_score,
+      newStatus: updated.status,
+      previousScore: previous.previousScore,
+      previousStatus: previous.previousStatus,
+    });
+    handleTriageReprocessed(job, updated);
+  };
+
+  const handleTriageRefreshFromUrl = async (job) => {
+    setTriageReEvaluatePopup({
+      action: "Re-fetch",
+      runningText: "Fetching job details and scoring…",
+      company: job.company || "",
+      jobTitle: job.job_title || "",
+      phase: "running",
+      previousScore: job.fit_score,
+    });
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setTriageReEvaluatePopup({
+          action: "Re-fetch",
+          company: job.company || "",
+          error: data.error || "Failed to re-fetch job",
+          jobTitle: job.job_title || "",
+          phase: "error",
+          previousScore: job.fit_score,
+        });
+        return;
+      }
+      setTriageReEvaluatePopup({
+        action: "Re-fetch",
+        company: data.company || job.company || "",
+        jobTitle: data.job_title || job.job_title || "",
+        newScore: data.fit_score,
+        phase: "done",
+        previousScore: job.fit_score,
+        status: data.status,
+      });
+      handleTriageReprocessed(job, data);
+    } catch (err) {
+      setTriageReEvaluatePopup({
+        action: "Re-fetch",
+        company: job.company || "",
+        error: err.message || "Failed to re-fetch job",
+        jobTitle: job.job_title || "",
+        phase: "error",
+        previousScore: job.fit_score,
+      });
+    }
+  };
+
+  const handleTriageReEvaluateFit = async (job) => {
+    setTriageReEvaluatePopup({
+      company: job.company || "",
+      jobTitle: job.job_title || "",
+      phase: "running",
+      previousScore: job.fit_score,
+    });
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/re-evaluate-fit`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setTriageReEvaluatePopup({
+          company: job.company || "",
+          error: data.error || "Failed to re-evaluate fit",
+          jobTitle: job.job_title || "",
+          phase: "error",
+          previousScore: job.fit_score,
+        });
+        throw new Error(data.error || "Failed to re-evaluate fit");
+      }
+      setTriageReEvaluatePopup({
+        company: data.company || job.company || "",
+        jobTitle: data.job_title || job.job_title || "",
+        newScore: data.fit_score,
+        phase: "done",
+        previousScore: job.fit_score,
+        status: data.status,
+      });
+      handleTriageReprocessed(job, data);
+      return data;
+    } catch (err) {
+      if (err.message && !triageReEvaluatePopup) {
+        setTriageReEvaluatePopup({
+          company: job.company || "",
+          error: err.message,
+          jobTitle: job.job_title || "",
+          phase: "error",
+          previousScore: job.fit_score,
+        });
+      }
+      throw err;
+    }
+  };
+
+  const handleTriageBatchRefreshFromUrls = async () => {
+    const refreshable = triageJobs.filter((job) => job.status !== "possible_duplicate" && job.url);
+    if (refreshable.length === 0) return;
+
+    const results = [];
+    let nextJobs = [...triageJobs];
+
+    setTriageBatchRefreshPopup({
+      currentIndex: 0,
+      currentJob: refreshable[0],
+      phase: "running",
+      results: [],
+      total: refreshable.length,
+    });
+
+    for (let index = 0; index < refreshable.length; index += 1) {
+      const job = refreshable[index];
+      setTriageBatchRefreshPopup((popup) => ({ ...popup, currentIndex: index, currentJob: job }));
+
+      try {
+        const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to re-fetch job");
+
+        results.push({
+          company: data.company || job.company || "",
+          error: "",
+          jobTitle: data.job_title || job.job_title || "",
+          newScore: data.fit_score,
+          previousScore: job.fit_score,
+          status: data.status,
+        });
+
+        const triageStatuses = new Set(["triage", "possible_duplicate"]);
+        if (triageStatuses.has(data.status)) {
+          nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
+        } else {
+          nextJobs = nextJobs.filter((item) => item.id !== job.id);
+        }
+        setTriageJobs(nextJobs);
+        onTriageCountChange(nextJobs.length);
+      } catch (err) {
+        results.push({
+          company: job.company || "",
+          error: err.message || "Failed to re-fetch job",
+          jobTitle: job.job_title || "",
+          newScore: null,
+          previousScore: job.fit_score,
+          status: "error",
+        });
+      }
+
+      setTriageBatchRefreshPopup((popup) => ({ ...popup, currentIndex: index + 1, results: [...results] }));
+    }
+
+    setTriageBatchRefreshPopup({ phase: "done", results, total: refreshable.length });
   };
 
   const handleReEvaluate = async () => {
@@ -618,12 +966,40 @@ export default function JobQueue({
 
   const anyScanRunning = scanning || rescanAllRunning;
   const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies;
+
   const filteredJobs = jobs.filter((job) => {
-    if (!jobMatchesSearch(job, searchText)) return false;
+    if (!jobMatchesSearch(job, searchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     return true;
   });
-  const unscoredCount = jobs.filter((j) => j.fit_score == null).length;
+
+  const filteredTriageJobs = triageJobs.filter((job) => {
+    if (!jobMatchesSearch(job, searchText, searchAllFields)) return false;
+    if (showOnlyUnscored && job.fit_score != null) return false;
+    return true;
+  });
+
+  const unscoredCount = jobs.filter((j) => j.fit_score == null).length
+    + (viewMode !== "queue" ? triageJobs.filter((j) => j.fit_score == null).length : 0);
+
+  const showsQueue = viewMode === "queue" || viewMode === "both" || viewMode === "company";
+  const showsTriage = viewMode === "triage" || viewMode === "both" || viewMode === "company";
+
+  const sortedQueueJobs = showsQueue ? sortJobList(filteredJobs, sortBy) : [];
+  const sortedTriageJobs = showsTriage ? sortJobList(filteredTriageJobs, sortBy) : [];
+  const combinedJobs = (viewMode === "both" || viewMode === "company")
+    ? sortJobList([...filteredJobs, ...filteredTriageJobs], sortBy)
+    : [];
+
+  const companiesMap = viewMode === "company"
+    ? combinedJobs.reduce((acc, job) => {
+        const key = String(job.company || "").trim() || "Unknown Company";
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(job);
+        return acc;
+      }, {})
+    : {};
+  const companiesList = Object.entries(companiesMap).sort(([a], [b]) => a.localeCompare(b));
 
   useEffect(() => {
     if (!focusJobId) return;
@@ -635,13 +1011,12 @@ export default function JobQueue({
   useEffect(() => {
     if (!focusJobId || loading) return undefined;
     const timeoutId = window.setTimeout(() => {
-      document.getElementById(`job-card-${focusJobId}`)?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-    }, 0);
+      const el = document.getElementById(`job-card-${focusJobId}`)
+               || document.getElementById(`triage-card-${focusJobId}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
     return () => window.clearTimeout(timeoutId);
-  }, [filteredJobs.length, focusJobId, loading]);
+  }, [focusJobId, loading, viewMode]);
 
   const handleManualSubmit = async () => {
     if (!manualListingText.trim() && !manualSourceUrl.trim()) {
@@ -812,9 +1187,63 @@ export default function JobQueue({
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [moreToolsOpen]);
 
+  const triageHandlers = {
+    approve: handleTriageApprove,
+    skip: handleTriageSkip,
+    markUnique: handleTriageMarkUnique,
+    markApplied: handleTriageMarkApplied,
+    reEvaluateFit: handleTriageReEvaluateFit,
+    refreshFromUrl: handleTriageRefreshFromUrl,
+    reprocessed: handleTriageReprocessed,
+    descriptionUpdated: handleTriageDescriptionUpdated,
+  };
+
+  const isBatchRefreshing = triageBatchRefreshPopup?.phase === "running";
+  const refreshableCount = triageJobs.filter((job) => job.status !== "possible_duplicate" && job.url).length;
+
   return (
     <div>
-      <h2 style={{ fontSize: "18px", fontWeight: 700, lineHeight: 1.2, margin: "0 0 14px" }}>Job Queue</h2>
+      {/* View mode selector */}
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginBottom: "16px" }}>
+        {VIEW_MODES.map((mode) => {
+          const active = viewMode === mode.key;
+          return (
+            <label
+              key={mode.key}
+              style={{
+                alignItems: "center",
+                background: active ? "var(--accent-light)" : "var(--surface)",
+                border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
+                borderRadius: "var(--radius)",
+                color: active ? "var(--accent)" : "var(--text)",
+                cursor: "pointer",
+                display: "flex",
+                fontSize: "13px",
+                fontWeight: active ? 600 : 400,
+                gap: "6px",
+                padding: "6px 14px",
+                userSelect: "none",
+              }}
+            >
+              <input
+                type="radio"
+                name="viewMode"
+                value={mode.key}
+                checked={active}
+                onChange={() => setViewMode(mode.key)}
+                style={{ display: "none" }}
+              />
+              {mode.label}
+              {mode.key === "triage" && triageJobs.length > 0 && (
+                <span style={{ background: "#ff5c5c", borderRadius: "999px", color: "#fff", fontSize: "10px", fontWeight: 700, padding: "1px 7px" }}>
+                  {triageJobs.length}
+                </span>
+              )}
+            </label>
+          );
+        })}
+      </div>
+
       {/* Toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px", flexWrap: "wrap" }}>
         <button
@@ -861,14 +1290,48 @@ export default function JobQueue({
           History
         </button>
 
+        {showsTriage && (
+          <button
+            className="btn-secondary"
+            onClick={handleTriageBatchRefreshFromUrls}
+            disabled={anyQueueActionRunning || isBatchRefreshing || refreshableCount === 0}
+            style={{ padding: "8px 20px", fontSize: "14px" }}
+          >
+            {isBatchRefreshing ? "Re-fetching…" : `Re-fetch Triage${refreshableCount > 0 ? ` (${refreshableCount})` : ""}`}
+          </button>
+        )}
+
+        <label style={{ color: "var(--text-muted)", fontSize: "12px", whiteSpace: "nowrap" }}>Sort:</label>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", cursor: "pointer", fontSize: "12px", padding: "4px 8px" }}
+        >
+          {SORT_OPTIONS.map((opt) => (
+            <option key={opt.key} value={opt.key}>{opt.label}</option>
+          ))}
+        </select>
+
         <input
           type="search"
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           onFocus={(e) => e.target.select()}
-          placeholder="Search queued jobs"
+          placeholder="Search jobs"
           style={queueSearchInputStyle}
         />
+
+        {searchText && (
+          <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={searchAllFields}
+              onChange={(e) => setSearchAllFields(e.target.checked)}
+              style={{ cursor: "pointer" }}
+            />
+            All fields
+          </label>
+        )}
 
         {unscoredCount > 0 && (
           <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
@@ -882,12 +1345,21 @@ export default function JobQueue({
           </label>
         )}
 
-        {jobs.length > 0 && (
-          <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
-            {filteredJobs.length !== jobs.length && `${filteredJobs.length} of `}
-            {jobs.length} job{jobs.length !== 1 ? "s" : ""} ready to review
-          </span>
-        )}
+        {(() => {
+          const totalVisible = viewMode === "queue" ? filteredJobs.length
+            : viewMode === "triage" ? filteredTriageJobs.length
+            : combinedJobs.length;
+          const totalAll = viewMode === "queue" ? jobs.length
+            : viewMode === "triage" ? triageJobs.length
+            : jobs.length + triageJobs.length;
+          if (totalAll === 0) return null;
+          return (
+            <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+              {totalVisible !== totalAll && `${totalVisible} of `}
+              {totalAll} job{totalAll !== 1 ? "s" : ""}
+            </span>
+          );
+        })()}
 
         <div ref={moreToolsRef} style={{ position: "relative", marginLeft: "auto" }}>
           <button
@@ -1296,37 +1768,96 @@ export default function JobQueue({
         />
       )}
 
+      {/* Triage popups (rendered regardless of viewMode) */}
+      {triageReEvaluatePopup && (
+        <TriageReEvaluatePopup popup={triageReEvaluatePopup} onClose={() => setTriageReEvaluatePopup(null)} />
+      )}
+      {triageBatchRefreshPopup && (
+        <TriageBatchRefreshPopup popup={triageBatchRefreshPopup} onClose={() => setTriageBatchRefreshPopup(null)} />
+      )}
+      {triageDescriptionUpdatePopup && (
+        <DescriptionUpdatePopup popup={triageDescriptionUpdatePopup} onClose={() => setTriageDescriptionUpdatePopup(null)} />
+      )}
+
+      {/* Content */}
       {loading ? (
         <p style={{ color: "var(--text-muted)" }}>Loading jobs…</p>
-      ) : jobs.length === 0 ? (
+      ) : viewMode === "queue" && jobs.length === 0 ? (
         <div className="empty-state">
           <p style={{ fontSize: "32px" }}>🎯</p>
           <p>No jobs queued. Click "Scan Emails" to check your inbox.</p>
         </div>
-      ) : filteredJobs.length === 0 ? (
+      ) : viewMode === "triage" && triageLoading ? (
+        <p style={{ color: "var(--text-muted)" }}>Loading triage…</p>
+      ) : viewMode === "triage" && triageJobs.length === 0 ? (
         <div className="empty-state">
-          <p>No queued jobs match your search.</p>
+          <p style={{ fontSize: "32px" }}>✅</p>
+          <p>No emails waiting for review.</p>
         </div>
-      ) : (
-        filteredJobs.map((job) => (
-          <JobCard
-            key={job.id}
-            job={job}
-            onApprove={handleApprove}
-            onReEvaluate={handleJobReEvaluate}
-            onSkip={handleSkip}
-            onSnooze={handleSnooze}
-            onNavigateToJobCard={onNavigateToJobCard}
-            onUpdate={(jobId, updatedJob) => {
-              if (updatedJob.fit_score !== job.fit_score || updatedJob.fit_reasoning !== job.fit_reasoning) {
+      ) : viewMode === "triage" ? (
+        sortedTriageJobs.length === 0 ? (
+          <div className="empty-state"><p>No triage jobs match your search.</p></div>
+        ) : (
+          sortedTriageJobs.map((job) => renderJobOrTriageCard(job, null, triageHandlers, allSheetRows, onNavigateToJobCard))
+        )
+      ) : viewMode === "company" ? (
+        companiesList.length === 0 ? (
+          <div className="empty-state"><p>No jobs match your search.</p></div>
+        ) : (
+          companiesList.map(([company, companyJobs]) => (
+            <CompanyGroup
+              key={company}
+              company={company}
+              jobs={companyJobs}
+              triageHandlers={triageHandlers}
+              allSheetRows={allSheetRows}
+              onNavigateToJobCard={onNavigateToJobCard}
+              onQueueApprove={handleApprove}
+              onQueueReEvaluate={handleJobReEvaluate}
+              onQueueSkip={handleSkip}
+              onQueueSnooze={handleSnooze}
+              onQueueUpdate={(jobId, updatedJob, originalJob) => {
+                if (updatedJob.fit_score !== originalJob.fit_score || updatedJob.fit_reasoning !== originalJob.fit_reasoning) {
+                  setJobReEvaluatePopup({
+                    company: updatedJob.company || originalJob.company || "",
+                    fitReasoning: updatedJob.fit_reasoning,
+                    heading: "Description re-evaluated",
+                    jobTitle: updatedJob.job_title || originalJob.job_title || "",
+                    newScore: updatedJob.fit_score,
+                    phase: "done",
+                    previousScore: originalJob.fit_score,
+                    status: updatedJob.status,
+                  });
+                }
+                if (updatedJob.status === "pending_review") {
+                  setJobs((prev) => prev.map((j) => (j.id === jobId ? updatedJob : j)));
+                  return;
+                }
+                setJobs((prev) => prev.filter((j) => j.id !== jobId));
+                updateTriageCount();
+              }}
+            />
+          ))
+        )
+      ) : viewMode === "both" ? (
+        combinedJobs.length === 0 ? (
+          <div className="empty-state"><p>No jobs match your search.</p></div>
+        ) : (
+          combinedJobs.map((job) => renderJobOrTriageCard(job, {
+            onApprove: handleApprove,
+            onReEvaluate: handleJobReEvaluate,
+            onSkip: handleSkip,
+            onSnooze: handleSnooze,
+            onUpdate: (jobId, updatedJob, originalJob) => {
+              if (updatedJob.fit_score !== originalJob.fit_score || updatedJob.fit_reasoning !== originalJob.fit_reasoning) {
                 setJobReEvaluatePopup({
-                  company: updatedJob.company || job.company || "",
+                  company: updatedJob.company || originalJob.company || "",
                   fitReasoning: updatedJob.fit_reasoning,
                   heading: "Description re-evaluated",
-                  jobTitle: updatedJob.job_title || job.job_title || "",
+                  jobTitle: updatedJob.job_title || originalJob.job_title || "",
                   newScore: updatedJob.fit_score,
                   phase: "done",
-                  previousScore: job.fit_score,
+                  previousScore: originalJob.fit_score,
                   status: updatedJob.status,
                 });
               }
@@ -1336,9 +1867,163 @@ export default function JobQueue({
               }
               setJobs((prev) => prev.filter((j) => j.id !== jobId));
               updateTriageCount();
-            }}
-          />
-        ))
+            },
+          }, triageHandlers, allSheetRows, onNavigateToJobCard))
+        )
+      ) : (
+        /* viewMode === "queue" */
+        sortedQueueJobs.length === 0 ? (
+          <div className="empty-state"><p>No queued jobs match your search.</p></div>
+        ) : (
+          sortedQueueJobs.map((job) => (
+            <JobCard
+              key={job.id}
+              job={job}
+              onApprove={handleApprove}
+              onReEvaluate={handleJobReEvaluate}
+              onSkip={handleSkip}
+              onSnooze={handleSnooze}
+              onNavigateToJobCard={onNavigateToJobCard}
+              onUpdate={(jobId, updatedJob) => {
+                if (updatedJob.fit_score !== job.fit_score || updatedJob.fit_reasoning !== job.fit_reasoning) {
+                  setJobReEvaluatePopup({
+                    company: updatedJob.company || job.company || "",
+                    fitReasoning: updatedJob.fit_reasoning,
+                    heading: "Description re-evaluated",
+                    jobTitle: updatedJob.job_title || job.job_title || "",
+                    newScore: updatedJob.fit_score,
+                    phase: "done",
+                    previousScore: job.fit_score,
+                    status: updatedJob.status,
+                  });
+                }
+                if (updatedJob.status === "pending_review") {
+                  setJobs((prev) => prev.map((j) => (j.id === jobId ? updatedJob : j)));
+                  return;
+                }
+                setJobs((prev) => prev.filter((j) => j.id !== jobId));
+                updateTriageCount();
+              }}
+            />
+          ))
+        )
+      )}
+    </div>
+  );
+}
+
+function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard) {
+  const companyRows = allSheetRows
+    ? allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))
+    : null;
+
+  if (job.status === "pending_review") {
+    return (
+      <JobCard
+        key={job.id}
+        job={job}
+        onApprove={queueHandlers.onApprove}
+        onReEvaluate={queueHandlers.onReEvaluate}
+        onSkip={queueHandlers.onSkip}
+        onSnooze={queueHandlers.onSnooze}
+        onNavigateToJobCard={onNavigateToJobCard}
+        onUpdate={(jobId, updatedJob) => queueHandlers.onUpdate(jobId, updatedJob, job)}
+      />
+    );
+  }
+  if (job.status === "possible_duplicate") {
+    return (
+      <DuplicateCard
+        key={job.id}
+        job={job}
+        onSameJob={() => triageHandlers.skip(job, "duplicate", "", [])}
+        onDifferentJob={() => triageHandlers.approve(job)}
+        onMarkUnique={() => triageHandlers.markUnique(job)}
+        onMarkApplied={() => triageHandlers.markApplied(job)}
+        onReEvaluate={() => triageHandlers.reEvaluateFit(job)}
+        onReprocessed={(updated) => triageHandlers.reprocessed(job, updated)}
+        companySheetRows={companyRows}
+        onNavigateToJobCard={onNavigateToJobCard}
+      />
+    );
+  }
+  return (
+    <TriageCard
+      key={job.id}
+      job={job}
+      onApprove={() => triageHandlers.approve(job)}
+      onSkip={(reason, feedback, mismatchReasons) => triageHandlers.skip(job, reason, feedback, mismatchReasons)}
+      onMarkApplied={() => triageHandlers.markApplied(job)}
+      onReEvaluate={() => triageHandlers.reEvaluateFit(job)}
+      onRefreshFromUrl={() => triageHandlers.refreshFromUrl(job)}
+      companySheetRows={companyRows}
+      onReprocessed={(updated) => triageHandlers.reprocessed(job, updated)}
+      onDescriptionUpdated={(updated, previous) => triageHandlers.descriptionUpdated(job, updated, previous)}
+      onNavigateToJobCard={onNavigateToJobCard}
+    />
+  );
+}
+
+const companyGroupStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-lg)",
+  marginBottom: "10px",
+  overflow: "hidden",
+};
+
+const companyGroupHeaderStyle = {
+  alignItems: "center",
+  cursor: "pointer",
+  display: "flex",
+  gap: "10px",
+  padding: "14px 18px",
+  userSelect: "none",
+};
+
+function CompanyGroup({
+  company, jobs, triageHandlers, allSheetRows, onNavigateToJobCard,
+  onQueueApprove, onQueueReEvaluate, onQueueSkip, onQueueSnooze, onQueueUpdate,
+}) {
+  const [open, setOpen] = useState(false);
+  const queueCount = jobs.filter((j) => j.status === "pending_review").length;
+  const triageCount = jobs.filter((j) => j.status !== "pending_review").length;
+
+  const queueHandlers = {
+    onApprove: onQueueApprove,
+    onReEvaluate: onQueueReEvaluate,
+    onSkip: onQueueSkip,
+    onSnooze: onQueueSnooze,
+    onUpdate: onQueueUpdate,
+  };
+
+  return (
+    <div style={companyGroupStyle}>
+      <div style={companyGroupHeaderStyle} onClick={() => setOpen((o) => !o)}>
+        <span style={{ color: "var(--text-muted)", flexShrink: 0, fontSize: "12px" }}>
+          {open ? "▼" : "▶"}
+        </span>
+        <span style={{ color: "var(--text)", flex: 1, fontSize: "15px", fontWeight: 700 }}>
+          {company}
+        </span>
+        <span style={{ color: "var(--text-muted)", flexShrink: 0, fontSize: "13px" }}>
+          {jobs.length} job{jobs.length !== 1 ? "s" : ""}
+        </span>
+        {queueCount > 0 && (
+          <span className="badge badge-gray" style={{ flexShrink: 0 }}>
+            {queueCount} queue
+          </span>
+        )}
+        {triageCount > 0 && (
+          <span className="badge badge-yellow" style={{ flexShrink: 0 }}>
+            {triageCount} triage
+          </span>
+        )}
+      </div>
+      {open && (
+        <div style={{ borderTop: "1px solid var(--border)", padding: "12px 18px" }}>
+          {jobs.map((job) => renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard))}
+        </div>
       )}
     </div>
   );

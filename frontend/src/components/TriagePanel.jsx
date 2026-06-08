@@ -693,7 +693,7 @@ function CardContextMenu({ contextMenu, company, onShowCompanyHistory }) {
   );
 }
 
-function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onReEvaluate, onReprocessed, companySheetRows = null, onNavigateToJobCard }) {
+export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onReEvaluate, onReprocessed, companySheetRows = null, onNavigateToJobCard }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -1036,7 +1036,7 @@ function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApp
   );
 }
 
-function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, companySheetRows = null, onNavigateToJobCard }) {
+export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, companySheetRows = null, onNavigateToJobCard }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingCompany, setEditingCompany] = useState(false);
   const [companyDraft, setCompanyDraft] = useState("");
@@ -2007,7 +2007,7 @@ function FitChatPanel({
   );
 }
 
-function ReEvaluatePopup({ popup, onClose }) {
+export function ReEvaluatePopup({ popup, onClose }) {
   const title = popup.jobTitle || "Job";
   const companyText = popup.company ? ` at ${popup.company}` : "";
   const isRunning = popup.phase === "running";
@@ -2055,7 +2055,7 @@ function ReEvaluatePopup({ popup, onClose }) {
   );
 }
 
-function BatchRefreshPopup({ popup, onClose }) {
+export function BatchRefreshPopup({ popup, onClose }) {
   const results = popup.results || [];
   const isRunning = popup.phase === "running";
   const currentJob = popup.currentJob || {};
@@ -2264,7 +2264,7 @@ function DescriptionPasteModal({ job, value, saving, onChange, onClose, onSubmit
   );
 }
 
-function DescriptionUpdatePopup({ popup, onClose }) {
+export function DescriptionUpdatePopup({ popup, onClose }) {
   const title = popup.jobTitle || "Job";
   const companyText = popup.company ? ` at ${popup.company}` : "";
   const movedToQueue = popup.newStatus === "pending_review" && popup.previousStatus !== "pending_review";

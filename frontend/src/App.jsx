@@ -34,7 +34,6 @@
 
 import React, { useEffect, useState } from "react";
 import JobQueue from "./components/JobQueue.jsx";
-import TriagePanel from "./components/TriagePanel.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import SetupWizardPanel from "./components/SetupWizardPanel.jsx";
 import EmailsPanel from "./components/EmailsPanel.jsx";
@@ -52,7 +51,6 @@ import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 
 const TABS = [
   { key: "queue", label: "Job Queue" },
-  { key: "triage", label: "Triage" },
   { key: "applications", label: "Applications" },
   { key: "emails", label: "Email History" },
   { key: "career", label: "Career Sites" },
@@ -198,15 +196,20 @@ export default function App() {
   };
 
   const navigateToJobCard = (jobId, status) => {
-    const tabKey = jobCardTabForStatus(status);
-    if (!tabKey) {
+    if (!jobCardTabForStatus(status)) {
       window.alert("That job is not currently on the Job Queue or Triage page.");
       return;
     }
-    setFocusedJobCard({ id: Number(jobId), tabKey, requestedAt: Date.now() });
-    setActiveTab(tabKey);
-    localStorage.setItem("activeTab", tabKey);
-    if (tabKey === "triage") fetchTriageCount();
+    const isTriageStatus = status === "triage" || status === "possible_duplicate";
+    setFocusedJobCard({
+      id: Number(jobId),
+      tabKey: "queue",
+      requestedViewMode: isTriageStatus ? "both" : undefined,
+      requestedAt: Date.now(),
+    });
+    setActiveTab("queue");
+    localStorage.setItem("activeTab", "queue");
+    if (isTriageStatus) fetchTriageCount();
   };
 
   useEffect(() => {
@@ -336,13 +339,9 @@ export default function App() {
                 onClick={() => {
                   setActiveTab(tab.key);
                   localStorage.setItem("activeTab", tab.key);
-                  if (tab.key === "triage") fetchTriageCount();
                 }}
               >
                 {tab.label}
-                {tab.key === "triage" && triageCount > 0 && (
-                  <span style={styles.countBadge}>{triageCount}</span>
-                )}
               </button>
             ))}
           </nav>
@@ -420,13 +419,7 @@ export default function App() {
             onNavigateToEmails={navigateToEmails}
             onNavigateToHistory={navigateToHistory}
             focusJobId={focusedJobCard?.tabKey === "queue" ? focusedJobCard.id : null}
-            onNavigateToJobCard={navigateToJobCard}
-          />
-        )}
-        {activeTab === "triage" && (
-          <TriagePanel
-            onCountChange={setTriageCount}
-            focusJobId={focusedJobCard?.tabKey === "triage" ? focusedJobCard.id : null}
+            requestedViewMode={focusedJobCard?.tabKey === "queue" ? (focusedJobCard.requestedViewMode || null) : null}
             onNavigateToJobCard={navigateToJobCard}
           />
         )}

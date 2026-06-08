@@ -54,8 +54,7 @@ export function dispositionLabel(status) {
 
 export function jobCardTabForStatus(status) {
   const normalized = String(status || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
-  if (normalized === "pending_review") return "queue";
-  if (normalized === "triage" || normalized === "possible_duplicate") return "triage";
+  if (normalized === "pending_review" || normalized === "triage" || normalized === "possible_duplicate") return "queue";
   return "";
 }
 
