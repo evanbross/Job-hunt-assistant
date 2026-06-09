@@ -392,6 +392,7 @@ class PostgresJobRepository(_BaseRepo):
         "date_found",
         "date_added_to_sheet",
         "duplicate_hint",
+        "duplicate_of_id",
         "sender_email",
         "email_subject",
         "confidence_score",
@@ -1539,6 +1540,7 @@ def _migrate(conn: Any) -> None:
 
     for col, defn in [
         ("duplicate_hint", "TEXT"),
+        ("duplicate_of_id", "INTEGER"),
         ("sender_email", "TEXT"),
         ("email_subject", "TEXT"),
         ("confidence_score", "INTEGER"),
@@ -1691,6 +1693,7 @@ def _migrate_sqlite(conn: Any) -> None:
 
     for col, defn in [
         ("duplicate_hint", "TEXT"),
+        ("duplicate_of_id", "INTEGER"),
         ("sender_email", "TEXT"),
         ("email_subject", "TEXT"),
         ("confidence_score", "INTEGER"),
@@ -1837,6 +1840,7 @@ def _create_tables(conn: Any) -> None:
             date_found            TEXT DEFAULT ((NOW() AT TIME ZONE 'UTC')::date::text),
             date_added_to_sheet   TEXT,
             duplicate_hint        TEXT,
+            duplicate_of_id       INTEGER,
             sender_email          TEXT,
             email_subject         TEXT,
             confidence_score      INTEGER,
@@ -2046,6 +2050,7 @@ def _create_tables_sqlite(conn: Any) -> None:
             date_found            TEXT DEFAULT (date('now')),
             date_added_to_sheet   TEXT,
             duplicate_hint        TEXT,
+            duplicate_of_id       INTEGER,
             sender_email          TEXT,
             email_subject         TEXT,
             confidence_score      INTEGER,

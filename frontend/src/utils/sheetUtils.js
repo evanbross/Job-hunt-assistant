@@ -50,6 +50,7 @@ export function applicationRowFromSheet(row) {
     url: cellValue(cells, 5),
     notes: cellValue(cells, 6),
     stages,
+    duplicate_of_id: row.duplicate_of_id ?? null, // ai: claude-sonnet-4-6 | 2026-06-09
   };
 }
 

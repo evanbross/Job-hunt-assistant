@@ -167,8 +167,8 @@ def test_patch_job_rechecks_duplicate_after_company_edit(monkeypatch) -> None:
         "penalties": FakePenaltyRepo(),
     }
 
-    def fake_db_match_for_job(**_kwargs: Any) -> tuple[None, None, str]:
-        return None, None, "Possible duplicate of \"Platform Engineer\" at Acme already tracked."
+    def fake_db_match_for_job(**_kwargs: Any) -> tuple[None, None, str, None]:
+        return None, None, "Possible duplicate of \"Platform Engineer\" at Acme already tracked.", None
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.jobs.db_match_for_job", fake_db_match_for_job)
@@ -196,7 +196,7 @@ def test_patch_job_accepts_manual_url(monkeypatch) -> None:
     }
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
-    monkeypatch.setattr("routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None))
+    monkeypatch.setattr("routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None, None))
 
     app = Flask(__name__)
     app.register_blueprint(jobs_bp, url_prefix="/api")
@@ -245,8 +245,8 @@ def test_patch_job_clears_stale_duplicate_when_no_match(monkeypatch) -> None:
         "penalties": FakePenaltyRepo(),
     }
 
-    def fake_db_match_for_job(**_kwargs: Any) -> tuple[None, None, None]:
-        return None, None, None
+    def fake_db_match_for_job(**_kwargs: Any) -> tuple[None, None, None, None]:
+        return None, None, None, None
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.jobs.db_match_for_job", fake_db_match_for_job)

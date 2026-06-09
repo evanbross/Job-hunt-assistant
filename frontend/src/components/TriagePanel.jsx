@@ -68,7 +68,7 @@ import {
   titleCaseKnownSource,
   triageReasoningForJob,
 } from "../utils/triagePanelUtils.js";
-import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
+import { parseImportWarnings, importWarningTooltip, possibleDuplicateLabel } from "../utils/jobQueueUtils.js";
 
 const TRIAGE_SEARCH_STORAGE_KEY = "jha.triage.search";
 const TRIAGE_SEARCH_ALL_FIELDS_KEY = "jha.triage.searchAllFields";
@@ -787,76 +787,21 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
           onShowCompanyHistory={() => runContextAction(companyHistory.open)}
         />
       )}
-      {/* Meta */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "8px", marginBottom: "8px" }}>
-        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-          <span className="badge badge-orange">Possible duplicate</span>
-          <span className={`badge ${fitScoreClass(job)}`}>Fit: {fitPercentageLabel(job)}</span>
-          <SalaryBadge job={job} />
-          {companySheetRows !== null && companySheetRows.length > 0 && (
-            <span
-              className={`badge ${companyHistoryBadgeClass(companySheetRows)}`}
-              style={{ cursor: "pointer" }}
-              title={Object.entries(companyRowSummary(companySheetRows)).map(([s, n]) => `${n}× ${s}`).join(" · ")}
-              onClick={companyHistory.open}
-            >
-              {companySheetRows.length} tracked
-            </span>
-          )}
-          <span
-            className="badge badge-gray"
-            style={{ cursor: "pointer", fontFamily: "monospace" }}
-            title={`Job ID: ${job.id} — click to copy`}
-            onClick={() => navigator.clipboard.writeText(String(job.id))}
-          >
-            #{job.id}
-          </span>
-          {parseImportWarnings(job.import_warnings).length > 0 && (
-            <span
-              className="badge badge-red"
-              title={importWarningTooltip(parseImportWarnings(job.import_warnings))}
-            >
-              Review Import
-            </span>
-          )}
-        </div>
-        <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={companyHistory.open}
-            style={{ fontSize: "12px", padding: "3px 9px" }}
-            title="Show application tracking rows for this company"
-          >
-            Company History
-          </button>
-          <SourceBadge job={job} />
-          <span className="badge badge-gray">{job.date_found || "—"}</span>
-        </div>
+      {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
+      {/* Triage reason */}
+      <div style={{ marginBottom: "8px" }}>
+        <span className="badge badge-orange">{possibleDuplicateLabel(job)}</span>
       </div>
 
-      {/* Email origin */}
-      {(job.sender_email || job.email_subject) && (
-        <div style={emailMetaStyle}>
-          {job.email_subject && (
-            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
-          )}
-          {job.sender_email && (
-            <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" }}>
-              <span style={{ fontWeight: "500", color: "var(--text)" }}>From: </span>
-              {job.sender_email}
-            </div>
-          )}
-        </div>
-      )}
+      {/* Header row */}
+      <div style={triageHeaderStyle}>
+        <StatusBadge
+          tone={fitScoreClass(job).replace("badge-", "")}
+          label={fitPercentageLabel(job)}
+        />
 
-      {/* Job details */}
-      <div style={{ marginBottom: "10px" }}>
-        {job.company && (
-          <div style={{ fontSize: "15px", fontWeight: "600" }}>{job.company}</div>
-        )}
-        {(job.job_title || editingTitle) && (
-          <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+        <div style={triageHeaderBodyStyle}>
+          <div style={triageTitleStyle}>
             {editingTitle ? (
               <input
                 autoFocus
@@ -879,32 +824,119 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
                   setEditingTitle(true);
                 }}
               >
-                {job.job_title}
+                {job.job_title || <em style={{ color: "var(--text-muted)" }}>Unknown Title</em>}
+              </span>
+            )}
+            <span style={{ fontWeight: "400", color: "var(--text-muted)", margin: "0 5px" }}>at</span>
+            <span style={{ fontWeight: 600, color: "var(--text)" }}>
+              {job.company || <em style={{ fontWeight: "400", color: "var(--text-muted)" }}>Unknown Company</em>}
+            </span>
+          </div>
+
+          <div style={triageMetaTextStyle}>
+            {job.date_found && <span>{job.date_found}</span>}
+            <span>Parser: {parserConfidenceLabel(job)}</span>
+            {companySheetRows !== null && companySheetRows.length > 0 && (
+              <span
+                style={{ cursor: "pointer" }}
+                title={Object.entries(companyRowSummary(companySheetRows)).map(([s, n]) => `${n}× ${s}`).join(" · ")}
+                onClick={companyHistory.open}
+              >
+                {companySheetRows.length} tracked
+              </span>
+            )}
+            <span
+              style={{ cursor: "pointer", fontFamily: "monospace" }}
+              title={`Job ID: ${job.id} — click to copy`}
+              onClick={() => navigator.clipboard.writeText(String(job.id))}
+            >
+              #{job.id}
+            </span>
+            {parseImportWarnings(job.import_warnings).length > 0 && (
+              <span
+                className="badge badge-red"
+                style={{ fontSize: "11px" }}
+                title={importWarningTooltip(parseImportWarnings(job.import_warnings))}
+              >
+                Review Import
               </span>
             )}
           </div>
-        )}
-        {job.url && (
-          <a
-            href={job.url}
-            target="_blank"
-            rel="noreferrer"
-            style={{ fontSize: "12px", wordBreak: "break-all" }}
-            title={job.url.length > 100 ? job.url : undefined}
+
+          <div style={compactOriginStyle}>
+            {isManualPastedJob(job)
+              ? (job.email_subject || "Manual pasted job listing")
+              : <SourceText job={job} />}
+          </div>
+
+          {job.url && (
+            <div style={triageUrlRowStyle}>
+              <a
+                href={job.url}
+                target="_blank"
+                rel="noreferrer"
+                style={triageUrlLinkStyle}
+                title={job.url.length > 100 ? job.url : undefined}
+              >
+                {job.url.length > 100 ? (
+                  <>
+                    {job.url.slice(0, 80)}
+                    <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+                      {"…"} ({job.url.length} chars)
+                    </span>
+                  </>
+                ) : (
+                  job.url
+                )}
+              </a>
+            </div>
+          )}
+        </div>
+
+        <div style={triageHeaderActionsStyle}>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={companyHistory.open}
+            style={{ fontSize: "12px", padding: "3px 9px" }}
+            title="Show application tracking rows for this company"
           >
-            {job.url.length > 100 ? (
-              <>
-                {job.url.slice(0, 80)}
-                <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
-                  {"…"} ({job.url.length} chars)
-                </span>
-              </>
+            Company History
+          </button>
+          <SalaryBadge job={job} />
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ fontSize: "12px", padding: "5px 11px", whiteSpace: "nowrap" }}
+            onClick={handleReEvaluateClick}
+            disabled={loadingAction !== null}
+          >
+            {loadingAction === "reevaluate" ? (
+              <span style={buttonSpinnerContentStyle}>
+                <span className="inline-spinner" />
+                Re-evaluating...
+              </span>
             ) : (
-              job.url
+              "Re-evaluate Fit"
             )}
-          </a>
-        )}
+          </button>
+        </div>
       </div>
+
+      {/* Email origin */}
+      {(job.sender_email || job.email_subject) && !isManualPastedJob(job) && (
+        <div style={emailMetaStyle}>
+          {job.email_subject && (
+            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
+          )}
+          {job.sender_email && (
+            <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" }}>
+              <span style={{ fontWeight: "500", color: "var(--text)" }}>From: </span>
+              {job.sender_email}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Duplicate hint */}
       {job.duplicate_hint && (
@@ -918,22 +950,6 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
       )}
 
       <div style={{ display: "flex", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
-        <button
-          type="button"
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "5px 11px", whiteSpace: "nowrap" }}
-          onClick={handleReEvaluateClick}
-          disabled={loadingAction !== null}
-        >
-          {loadingAction === "reevaluate" ? (
-            <span style={buttonSpinnerContentStyle}>
-              <span className="inline-spinner" />
-              Re-evaluating...
-            </span>
-          ) : (
-            "Re-evaluate Fit"
-          )}
-        </button>
         <button
           className="btn-secondary"
           style={{ fontSize: "12px", padding: "5px 11px" }}
@@ -1405,11 +1421,30 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
           onShowCompanyHistory={() => runContextAction(companyHistory.open)}
         />
       )}
+      {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
+      {/* Triage reason */}
+      <div style={{ marginBottom: "8px" }}>
+        {(() => {
+          if (parseImportWarnings(job.import_warnings).length > 0)
+            return <span className="badge badge-red">Review Import</span>;
+          if (job.confidence_score != null && job.confidence_score < 70)
+            return <span className="badge badge-orange">Low Confidence</span>;
+          if (String(job.parser_confidence || "").toLowerCase() === "low")
+            return <span className="badge badge-orange">Low Confidence</span>;
+          if (!job.job_description && !String(job.raw_email_snippet || "").trim())
+            return <span className="badge badge-orange">Missing Job Details</span>;
+          if (job.fit_score != null && job.fit_score < 50)
+            return <span className={`badge ${fitScoreClass(job)}`}>Low Fit</span>;
+          return <span className="badge badge-orange">Low Confidence</span>;
+        })()}
+      </div>
       {/* Header row */}
       <div style={triageHeaderStyle}>
-        <span className={`badge ${fitScoreClass(job)}`} style={scoreBadgeStyle}>
-          {job.fit_score !== null && job.fit_score !== undefined ? job.fit_score : "-"}
-        </span>
+        {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
+        <StatusBadge
+          tone={fitScoreClass(job).replace("badge-", "")}
+          label={fitPercentageLabel(job)}
+        />
 
         <div style={triageHeaderBodyStyle}>
           <div style={triageTitleStyle}>
@@ -1461,9 +1496,10 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
               </span>
             )}
           </div>
+          {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
           <div style={triageMetaTextStyle}>
+            {job.date_found && <span>{job.date_found}</span>}
             <span>Parser: {parserConfidenceLabel(job)}</span>
-            <span>Fit: {fitPercentageLabel(job)}</span>
             <span
               style={{ color: "var(--text-muted)", cursor: "pointer", fontFamily: "monospace" }}
               title={`Job ID: ${job.id} — click to copy`}
@@ -1481,9 +1517,11 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
               </span>
             )}
           </div>
-          {isManualPastedJob(job) && (
-            <div style={compactOriginStyle}>{job.email_subject || "Manual pasted job listing"}</div>
-          )}
+          <div style={compactOriginStyle}>
+            {isManualPastedJob(job)
+              ? (job.email_subject || "Manual pasted job listing")
+              : <SourceText job={job} />}
+          </div>
           <div style={triageUrlRowStyle}>
             {editingUrl ? (
               <>
@@ -1594,9 +1632,7 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
           >
             Company History
           </button>
-          <SourceBadge job={job} />
           {salaryRange && <span className="badge badge-green">Salary: {salaryRange}</span>}
-          <span className="badge badge-gray">{job.date_found || "—"}</span>
           {companySheetRows !== null && companySheetRows.length > 0 && (
             <span
               className={`badge ${companyHistoryBadgeClass(companySheetRows)}`}
@@ -2446,11 +2482,6 @@ const triageHeaderActionsStyle = {
   justifyContent: "flex-end",
 };
 
-const scoreBadgeStyle = {
-  fontSize: "14px",
-  padding: "4px 10px",
-  flexShrink: 0,
-};
 
 const triageTitleStyle = {
   fontSize: "15px",

@@ -36,7 +36,7 @@ import { useState } from "react";
 import Modal from "./Modal.jsx";
 import StatusBadge from "./StatusBadge.jsx";
 import { applicationRowFromSheet, isAppliedStatus, rowMatchesCompany, titleLooksSimilar } from "../../utils/sheetUtils.js";
-import { jobCardTabForStatus } from "../../utils/jobQueueUtils.js";
+import { jobCardTabForStatus, possibleDuplicateLabel } from "../../utils/jobQueueUtils.js";
 
 export function useCompanyHistoryLookup(job) {
   const [opened, setOpened] = useState(false);
@@ -160,8 +160,9 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                       #{row.id}
                     </span>
                   </div>
+                  {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
                   <div style={{ color: "var(--text-muted)", display: "flex", flexWrap: "wrap", fontSize: "12px", gap: "5px 12px", marginTop: "4px" }}>
-                    <span>{row.status || "No status"}</span>
+                    <span>{row.status === "possible_duplicate" ? possibleDuplicateLabel(row) : (row.status || "No status")}</span>
                     {row.date && <span>{row.date}</span>}
                     {row.source && <span>{row.source}</span>}
                   </div>
@@ -182,7 +183,10 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                   )}
                 </div>
                 <div style={{ alignItems: "flex-end", display: "flex", flexDirection: "column", flexShrink: 0, gap: "6px" }}>
-                  <StatusBadge status={row.status} />
+                  <StatusBadge
+                    status={row.status}
+                    label={row.status === "possible_duplicate" ? possibleDuplicateLabel(row) : undefined}
+                  />
                   {navigable && (
                     <span style={{ color: "var(--accent)", fontSize: "11px", whiteSpace: "nowrap" }}>Go to card →</span>
                   )}

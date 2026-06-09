@@ -169,7 +169,8 @@ class ManualJobIngestService:
         if not company and not job_title:
             raise ValueError("Enter a company name or job title when the parser cannot extract them.")
 
-        duplicate_hint = self._duplicate_hint_for(
+        # ai: claude-sonnet-4-6 | 2026-06-09
+        duplicate_hint, duplicate_of_id = self._duplicate_hint_for(
             job_title=job_title,
             company=company,
             sheet_jobs=sheet_jobs or [],
@@ -204,6 +205,7 @@ class ManualJobIngestService:
             "date_found": datetime.now(UTC).date().isoformat(),
             "date_added_to_sheet": None,
             "duplicate_hint": duplicate_hint,
+            "duplicate_of_id": duplicate_of_id,
             "sender_email": None,
             "email_subject": email_subject,
             "confidence_score": parsed.get("confidence_score", 50),
@@ -235,28 +237,37 @@ class ManualJobIngestService:
 
         return max(parsed_jobs, key=sort_key)
 
+    # ai: claude-sonnet-4-6 | 2026-06-09
     def _duplicate_hint_for(
         self,
         *,
         job_title: str,
         company: str,
         sheet_jobs: list[dict[str, Any]],
-    ) -> str | None:
+    ) -> tuple[str | None, int | None]:
         if not sheet_jobs or not job_title or not company:
-            return None
+            return None, None
         duplicate_match = self._duplicate_checker.check(
             job_title=job_title,
             company=company,
             sheet_jobs=sheet_jobs,
         )
         if not duplicate_match:
-            return None
-        return (
+            return None, None
+        hint = (
             f"Possible duplicate of \"{duplicate_match['sheet_title']}\" "
             f"at {duplicate_match['sheet_company']} already in your sheet "
             f"(title match: {duplicate_match['title_score']}%, "
             f"company match: {duplicate_match['company_score']}%)"
         )
+        matched_job = next(
+            (j for j in sheet_jobs
+             if (j.get("company") or "") == duplicate_match["sheet_company"]
+             and (j.get("job_title") or "") == duplicate_match["sheet_title"]),
+            None,
+        )
+        matched_id = matched_job.get("id") if matched_job else None
+        return hint, (int(matched_id) if matched_id is not None else None)
 
     @staticmethod
     def _manual_email_id() -> str:

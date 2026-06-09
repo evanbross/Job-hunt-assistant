@@ -88,6 +88,7 @@ def get_application_sheet():
             "row_number": job["id"],
             "cells": [{"column_index": i, "value": v} for i, v in enumerate(values)],
             "stages": stages,
+            "duplicate_of_id": job.get("duplicate_of_id"),  # ai: claude-sonnet-4-6 | 2026-06-09
         }
 
     return jsonify({

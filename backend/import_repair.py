@@ -108,7 +108,15 @@ def post_repair_duplicate_check(
         f'(title match: {match["title_score"]}%, '
         f'company match: {match["company_score"]}%)'
     )
-    jobs_repo.update(job_id, {"duplicate_hint": hint, "status": "possible_duplicate"})
+    # ai: claude-sonnet-4-6 | 2026-06-09
+    matched_job = next(
+        (j for j in candidates
+         if (j.get("company") or "") == match["sheet_company"]
+         and (j.get("job_title") or "") == match["sheet_title"]),
+        None,
+    )
+    duplicate_of_id = int(matched_job["id"]) if matched_job and matched_job.get("id") is not None else None
+    jobs_repo.update(job_id, {"duplicate_hint": hint, "duplicate_of_id": duplicate_of_id, "status": "possible_duplicate"})
     return True
 
 

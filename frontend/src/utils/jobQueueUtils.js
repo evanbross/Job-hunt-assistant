@@ -52,6 +52,14 @@ export function dispositionLabel(status) {
   return labels[status] || status || "";
 }
 
+// ai: claude-sonnet-4-6 | 2026-06-09
+export function possibleDuplicateLabel(job) {
+  if (job && job.duplicate_of_id != null) {
+    return `Possible Duplicate of #${job.duplicate_of_id}`;
+  }
+  return "Possible Duplicate";
+}
+
 export function jobCardTabForStatus(status) {
   const normalized = String(status || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "pending_review" || normalized === "triage" || normalized === "possible_duplicate") return "queue";

@@ -123,7 +123,8 @@ def _run_re_evaluate() -> None:
                 updates: dict[str, object] = {}
                 score: int | None = None
 
-                tracked_status, _tracking_source, duplicate_hint = db_match_for_job(
+                # ai: claude-sonnet-4-6 | 2026-06-09
+                tracked_status, _tracking_source, duplicate_hint, duplicate_of_id = db_match_for_job(
                     job_title=title,
                     company=company,
                     job_url=str(job.get("url") or ""),
@@ -133,10 +134,12 @@ def _run_re_evaluate() -> None:
                 )
                 if duplicate_hint:
                     updates["duplicate_hint"] = duplicate_hint
+                    updates["duplicate_of_id"] = duplicate_of_id
                     updates["status"] = "possible_duplicate"
                     db_matches += 1
                 else:
                     updates["duplicate_hint"] = None
+                    updates["duplicate_of_id"] = None
 
                 try:
                     scoring_text = "\n".join(

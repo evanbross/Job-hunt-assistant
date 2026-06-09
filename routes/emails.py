@@ -333,7 +333,8 @@ def rescan_email(email_id: str):
             if subject_rule == "whitelist":
                 confidence = "high"
 
-            _tracked_status, _tracking_source, duplicate_hint = db_match_for_job(
+            # ai: claude-sonnet-4-6 | 2026-06-09
+            _tracked_status, _tracking_source, duplicate_hint, duplicate_of_id = db_match_for_job(
                 job_title=str(parsed.get("job_title") or ""),
                 company=str(parsed.get("company") or ""),
                 job_url=str(parsed.get("url") or ""),
@@ -360,6 +361,7 @@ def rescan_email(email_id: str):
                 "date_found": datetime.now(UTC).date().isoformat(),
                 "date_added_to_sheet": None,
                 "duplicate_hint": duplicate_hint,
+                "duplicate_of_id": duplicate_of_id,
                 "sender_email": sender,
                 "email_subject": subject,
                 "confidence_score": parsed.get("confidence_score", 50),

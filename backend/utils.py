@@ -351,6 +351,7 @@ def extract_linkedin_job_id(url: str) -> str | None:
         return None
 
 
+# ai: claude-sonnet-4-6 | 2026-06-09
 def db_match_for_job(
     *,
     job_title: str,
@@ -359,10 +360,11 @@ def db_match_for_job(
     known_jobs: list[dict],
     dedup_checker: DuplicateChecker,
     exclude_id: int | None = None,
-) -> tuple[str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None, int | None]:
     """Check known_jobs for an exact URL match or fuzzy title/company duplicate.
 
-    Returns (tracked_status, source_key, duplicate_hint), all None when no match.
+    Returns (tracked_status, source_key, duplicate_hint, matched_job_id), all None when no match.
+    matched_job_id is the DB id of the job that this is a duplicate of, when available.
     Duplicates are always flagged regardless of the original job's current status.
     """
     current_job_url = job_url.strip()
@@ -397,10 +399,11 @@ def db_match_for_job(
             f"Already tracked as \"{exact_match.get('job_title') or job_title}\" "
             f"at {exact_match.get('company') or company} with status \"{tracked_status}\"."
         )
-        return tracked_status, "db_url", duplicate_hint
+        matched_id = exact_match.get("id")
+        return tracked_status, "db_url", duplicate_hint, (int(matched_id) if matched_id is not None else None)
 
     if not company.strip() or not job_title.strip() or not known_jobs:
-        return None, None, None
+        return None, None, None, None
 
     fuzzy_candidates = [
         row for row in known_jobs
@@ -412,7 +415,7 @@ def db_match_for_job(
         sheet_jobs=fuzzy_candidates,
     )
     if dup is None:
-        return None, None, None
+        return None, None, None, None
 
     matched = next(
         (
@@ -429,7 +432,8 @@ def db_match_for_job(
         f"at {dup['sheet_company']} already tracked "
         f"(title match: {dup['title_score']}%, company match: {dup['company_score']}%)"
     )
-    return tracked_status, "db_fuzzy", duplicate_hint
+    matched_id = matched.get("id") if matched else None
+    return tracked_status, "db_fuzzy", duplicate_hint, (int(matched_id) if matched_id is not None else None)
 
 
 def expand_board_url_parsed_jobs(parsed_jobs: list[ParsedJob]) -> list[ParsedJob]:
