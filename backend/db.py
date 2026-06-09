@@ -1676,6 +1676,82 @@ def _migrate(conn: Any) -> None:
 
     conn.commit()
 
+    _backfill_duplicate_of_id(conn, is_postgres=True)
+
+
+# ai: claude-sonnet-4-6 | 2026-06-09
+_HINT_TITLE_RE = re.compile(
+    r'(?:Already tracked as|Possible duplicate of)\s+"([^"]+)"',
+    re.IGNORECASE,
+)
+_HINT_COMPANY_RE = re.compile(
+    r'"\s+at\s+([^\s(]+(?:\s+[^\s(]+)*?)\s+(?:already|with\s+status)',
+    re.IGNORECASE,
+)
+
+
+def _backfill_duplicate_of_id(conn: Any, is_postgres: bool) -> None:
+    """Populate duplicate_of_id for existing possible_duplicate jobs that lack it.
+
+    Tries URL exact match first, then falls back to extracting title/company
+    from the duplicate_hint text and doing an exact DB lookup.
+    """
+    cur = conn.cursor()
+    ph = "%s" if is_postgres else "?"
+
+    cur.execute(
+        f"SELECT id, url, company, duplicate_hint FROM jobs"
+        f" WHERE status = {ph} AND duplicate_of_id IS NULL",
+        ("possible_duplicate",),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return
+
+    cur.execute("SELECT id, url, company, job_title FROM jobs")
+    all_jobs = cur.fetchall()
+
+    for row in rows:
+        job_id = row["id"]
+        job_url = (row["url"] or "").strip().lower()
+        hint = row["duplicate_hint"] or ""
+
+        matched_id = None
+
+        # 1. URL exact match
+        if job_url:
+            for candidate in all_jobs:
+                if candidate["id"] == job_id:
+                    continue
+                if (candidate["url"] or "").strip().lower() == job_url:
+                    matched_id = candidate["id"]
+                    break
+
+        # 2. Parse hint to extract title + company, then exact DB lookup
+        if matched_id is None and hint:
+            title_m = _HINT_TITLE_RE.search(hint)
+            company_m = _HINT_COMPANY_RE.search(hint)
+            if title_m and company_m:
+                hint_title = title_m.group(1).strip()
+                hint_company = company_m.group(1).strip()
+                for candidate in all_jobs:
+                    if candidate["id"] == job_id:
+                        continue
+                    if (
+                        (candidate["job_title"] or "").strip() == hint_title
+                        and (candidate["company"] or "").strip() == hint_company
+                    ):
+                        matched_id = candidate["id"]
+                        break
+
+        if matched_id is not None:
+            cur.execute(
+                f"UPDATE jobs SET duplicate_of_id = {ph} WHERE id = {ph}",
+                (matched_id, job_id),
+            )
+
+    conn.commit()
+
 
 def _sqlite_has_column(cur: Any, table: str, column: str) -> bool:
     cur.execute(f"PRAGMA table_info({table})")
@@ -1818,6 +1894,8 @@ def _migrate_sqlite(conn: Any) -> None:
     )
 
     conn.commit()
+
+    _backfill_duplicate_of_id(conn, is_postgres=False)
 
 
 def _create_tables(conn: Any) -> None:
