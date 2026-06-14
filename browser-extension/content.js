@@ -61,7 +61,7 @@
       }
       if (/^\/jobs/.test(path)) {
         const slugs = collectWellfoundSlugs();
-        const count = Math.min(slugs.length, 20);
+        const count = slugs.length;
         return {
           site: 'Wellfound Jobs',
           type: 'wellfoundSearch',
@@ -173,6 +173,11 @@
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  // ai: claude-sonnet-4-6 | 2026-06-13
+  function promptForCompanyName() {
+    return window.prompt('Company name could not be detected. Please enter the company name:') || '';
+  }
 
   function pick(selectors) {
     for (const sel of selectors) {
@@ -383,7 +388,7 @@
   }
 
   async function buildWellfoundSearchPayload() {
-    const slugs = collectWellfoundSlugs().slice(0, 20);
+    const slugs = collectWellfoundSlugs();
     const total = slugs.length;
 
     const items = slugs.map(slug => {
@@ -547,7 +552,15 @@
     const posting = appData?.posting;
     if (!posting?.title) return buildHtmlPayload();
 
-    const company = appData.organization?.name || '';
+    // ai: claude-sonnet-4-6 | 2026-06-08
+    let company = appData.organization?.name || '';
+    if (!company) {
+      const slug = window.location.pathname.split('/').filter(Boolean)[0] || '';
+      company = slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    }
+    if (!company) {
+      company = promptForCompanyName();
+    }
     const title = posting.title || '';
     const jobLocation = posting.locationExternalName || posting.locationName || '';
     const department = posting.departmentExternalName || posting.departmentName || '';
@@ -672,6 +685,12 @@
     });
 
     if (jobs.length === 0) return buildHtmlPayload();
+
+    // ai: claude-sonnet-4-6 | 2026-06-08
+    if (jobs.length === 1 && !jobs[0].company) {
+      const name = promptForCompanyName();
+      if (name) jobs[0].company = name;
+    }
     return JSON.stringify({ jobs, source: { url: location.href } });
   }
 
