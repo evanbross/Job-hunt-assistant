@@ -164,6 +164,7 @@ class CapturedPageImportService:
         ("wellfound.com", "Wellfound"),
         ("linkedin.com", "LinkedIn"),
         ("workatastartup.com", "WorkAtAStartup"),
+        ("welcometothejungle.com", "WelcomeToTheJungle"),
     )
 
     def extract_public_job_urls(
@@ -624,11 +625,29 @@ class CapturedPageImportService:
             return parsed._replace(path="/jobs", query="", fragment="").geturl()
         if host == "discord.com" and path_parts and path_parts[0] in {"careers", "jobs"}:
             return parsed._replace(path="/careers", query="", fragment="").geturl()
+        # ai: claude-sonnet-4-6 | 2026-06-16
+        if "welcometothejungle.com" in host:
+            if "companies" in path_parts:
+                co_idx = path_parts.index("companies")
+                if len(path_parts) > co_idx + 1:
+                    co_slug = path_parts[co_idx + 1]
+                    return parsed._replace(
+                        path=f"/en/companies/{co_slug}/jobs",
+                        query="",
+                        fragment="",
+                    ).geturl()
+            return parsed._replace(path="/en/jobs", query="", fragment="").geturl()
         return None
 
     def _source_name_for_url(self, source_url: str, platform: str) -> str:
         parsed = urlparse(source_url)
         path_parts = [part for part in parsed.path.split("/") if part]
+        # For WTTJ the slug is at /en/companies/<slug>/jobs — use <slug> as the name.
+        if "welcometothejungle.com" in parsed.netloc and "companies" in path_parts:
+            co_idx = path_parts.index("companies")
+            if len(path_parts) > co_idx + 1:
+                return f"{path_parts[co_idx + 1]} WelcomeToTheJungle"
+            return "WelcomeToTheJungle"
         if path_parts:
             return f"{path_parts[0]} {platform}".strip()
         return platform or parsed.netloc.lower()

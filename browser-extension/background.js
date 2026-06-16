@@ -34,18 +34,102 @@
 
 'use strict';
 
+// ─── Queue capture state ───────────────────────────────────────────────────
+// _queueTabs: tabId → { url, siteName } — tabs currently loading for the queue.
+// _pendingCaptureTabs: Set of tabIds whose content script has been injected
+//   and we are waiting for a payloadReady message from.
+// Both Maps/Sets are in-memory. If the service worker is killed mid-capture
+// those tabs become orphaned (they just never close), which is acceptable
+// since the full cycle takes under 30 seconds and stale queue items are reset
+// after 10 minutes by the backend.
+// ai: claude-sonnet-4-6 | 2026-06-16
+const _queueTabs = new Map();
+const _pendingCaptureTabs = new Set();
+let _queuePolling = false;
+
+// ─── Alarm setup ──────────────────────────────────────────────────────────
+// Alarms survive service-worker dormancy; re-register on each startup in case
+// the worker was killed after the last `onInstalled` fired.
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: 'send-to-jha',
     title: 'Send to Job Hunt App',
     contexts: ['page'],
   });
+  chrome.alarms.create('jha-queue-poll', { delayInMinutes: 0, periodInMinutes: 1 });
 });
 
-// Context menu: inject content script, trigger build, POST to app, show notification.
-// The content script sends { action: "payloadReady", payload } back via runtime message
-// rather than responding to a tab sendMessage, which avoids service-worker sleep issues
-// during long-running builds (e.g. Wellfound multi-page fetch).
+// Re-create alarm if the service worker restarted and it was lost.
+chrome.alarms.get('jha-queue-poll', (alarm) => {
+  if (!alarm) {
+    chrome.alarms.create('jha-queue-poll', { delayInMinutes: 0, periodInMinutes: 1 });
+  }
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'jha-queue-poll') pollQueue();
+});
+
+// ─── Queue polling ─────────────────────────────────────────────────────────
+
+async function pollQueue() {
+  if (_queuePolling) return;
+  _queuePolling = true;
+  try {
+    const settings = await loadSettings();
+    const headers = {};
+    if (settings.token) headers['X-Job-Import-Token'] = settings.token;
+
+    let res;
+    try {
+      res = await fetch(`${settings.listenerUrl}/queue`, { headers });
+    } catch {
+      return; // JHA not running — silently skip
+    }
+    if (!res.ok) return;
+
+    const data = await res.json().catch(() => ({ items: [] }));
+    const items = data.items || [];
+    if (!items.length) return;
+
+    // URLs we are already handling — don't open duplicate tabs.
+    const alreadyOpenUrls = new Set([..._queueTabs.values()].map(info => info.url));
+
+    for (const item of items) {
+      if (!item.url || alreadyOpenUrls.has(item.url)) continue;
+      chrome.tabs.create({ url: item.url, active: false }, (tab) => {
+        if (tab?.id) {
+          _queueTabs.set(tab.id, { url: item.url, siteName: item.site_name || '' });
+        }
+      });
+    }
+  } finally {
+    _queuePolling = false;
+  }
+}
+
+// ─── Tab lifecycle for queue captures ─────────────────────────────────────
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!_queueTabs.has(tabId) || changeInfo.status !== 'complete') return;
+  _queueTabs.delete(tabId);
+  _pendingCaptureTabs.add(tabId);
+  triggerQueueCapture(tabId);
+});
+
+async function triggerQueueCapture(tabId) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    chrome.tabs.sendMessage(tabId, { action: 'buildForBackground' });
+  } catch {
+    _pendingCaptureTabs.delete(tabId);
+    chrome.tabs.remove(tabId).catch(() => {});
+  }
+}
+
+// ─── Context menu (manual capture) ────────────────────────────────────────
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== 'send-to-jha' || !tab?.id) return;
   triggerContextMenuCapture(tab.id);
@@ -60,13 +144,17 @@ async function triggerContextMenuCapture(tabId) {
   }
 }
 
-// Receives the completed payload from content script (context menu flow only).
+// ─── Message handler ───────────────────────────────────────────────────────
+
 chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.action !== 'payloadReady') return;
-  postToApp(message.payload, sender.tab?.id);
+  const tabId = sender.tab?.id;
+  const isQueueCapture = tabId !== undefined && _pendingCaptureTabs.has(tabId);
+  if (isQueueCapture) _pendingCaptureTabs.delete(tabId);
+  postToApp(message.payload, tabId, isQueueCapture);
 });
 
-async function postToApp(payload, tabId) {
+async function postToApp(payload, tabId, isQueueCapture = false) {
   const settings = await loadSettings();
   const headers = { 'Content-Type': 'application/json' };
   if (settings.token) headers['X-Job-Import-Token'] = settings.token;
@@ -77,14 +165,24 @@ async function postToApp(payload, tabId) {
       headers,
       body: payload,
     });
-    if (res.ok) {
-      showNotification('Jobs queued for import!', true);
-    } else {
-      const data = await res.json().catch(() => ({}));
-      showNotification(`Error ${res.status}: ${data.error || 'Unknown error'}`, false);
+    if (isQueueCapture && tabId) {
+      chrome.tabs.remove(tabId).catch(() => {});
+    }
+    if (!isQueueCapture) {
+      if (res.ok) {
+        showNotification('Jobs queued for import!', true);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showNotification(`Error ${res.status}: ${data.error || 'Unknown error'}`, false);
+      }
     }
   } catch {
-    showNotification('Cannot reach Job Hunt App — is it running?', false);
+    if (isQueueCapture && tabId) {
+      chrome.tabs.remove(tabId).catch(() => {});
+    }
+    if (!isQueueCapture) {
+      showNotification('Cannot reach Job Hunt App — is it running?', false);
+    }
   }
 }
 

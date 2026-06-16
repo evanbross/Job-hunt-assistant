@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Job Hunt Assistant",
   "description": "Capture job listings from any page and send them to Job Hunt Assistant",
-  "version": "1.0.4",
-  "permissions": ["activeTab", "scripting", "contextMenus", "storage", "notifications"],
+  "version": "1.1.0",
+  "permissions": ["activeTab", "scripting", "contextMenus", "storage", "notifications", "alarms", "tabs"],
   "host_permissions": ["http://localhost/*"],
   "background": {
     "service_worker": "background.js"

@@ -240,6 +240,7 @@ def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
 
 from routes.auth import auth_bp
 from routes.board_search import board_search_bp
+from routes.browser_capture import browser_capture_bp
 from routes.career_sites import career_sites_bp
 from routes.cover_letter import cover_letter_bp
 from routes.emails import emails_bp
@@ -256,6 +257,7 @@ from routes.wellfound import wellfound_bp
 
 app.register_blueprint(auth_bp, url_prefix="/api")
 app.register_blueprint(board_search_bp, url_prefix="/api")
+app.register_blueprint(browser_capture_bp, url_prefix="/api")
 app.register_blueprint(career_sites_bp, url_prefix="/api")
 app.register_blueprint(cover_letter_bp, url_prefix="/api")
 app.register_blueprint(emails_bp, url_prefix="/api")
@@ -270,9 +272,23 @@ app.register_blueprint(sheet_bp, url_prefix="/api")
 app.register_blueprint(wellfound_bp, url_prefix="/api")
 app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /api/system/*
 
+
+def _claim_browser_capture_queue() -> list[dict]:
+    """Called from the import listener thread — opens a short-lived DB connection."""
+    from backend.utils import get_repos
+    with get_repos() as repos:
+        items = repos["browser_capture_queue"].claim_pending(limit=10)
+        repos["conn"].commit()
+    return items
+
+
 # Auto-scheduler disabled — use the manual scan banner in the UI instead
 # start_career_site_scheduler()
-start_job_import_listener(lambda body: queue_import_capture(body, trigger="listener"))
+# ai: claude-sonnet-4-6 | 2026-06-16
+start_job_import_listener(
+    lambda body: queue_import_capture(body, trigger="listener"),
+    claim_queue=_claim_browser_capture_queue,
+)
 
 # Register generated Swagger docs after API routes are loaded and before the SPA
 # catch-all. The UI is available at /apidocs/ and the JSON spec at /apispec_1.json.

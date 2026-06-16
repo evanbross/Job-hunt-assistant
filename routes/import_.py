@@ -435,6 +435,17 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         _current_trigger = trigger
         _current_started_at = started_at
     logger.info("Import task dispatched: %s (%d URLs) trigger=%s", task.id, len(extracted), trigger)
+
+    # ai: claude-sonnet-4-6 | 2026-06-16
+    # Mark any browser capture queue items done so the extension doesn't re-capture them.
+    extracted_urls = [e["url"] for e in extracted]
+    try:
+        with get_repos() as repos:
+            repos["browser_capture_queue"].mark_done_by_urls(extracted_urls)
+            repos["conn"].commit()
+    except Exception as exc:
+        logger.warning("Failed to mark browser capture queue items done: %s", exc)
+
     return {"status": "started", "task_id": task.id}, 202
 
 

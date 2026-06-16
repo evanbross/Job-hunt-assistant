@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse, unquote
@@ -204,6 +204,17 @@ class IJobStatusHistoryRepository(Protocol):
     def get_recent(self, limit: int = 30) -> list[dict[str, Any]]: ...
     def get_by_id(self, history_id: int) -> dict[str, Any] | None: ...
     def delete(self, history_id: int) -> None: ...
+
+
+@runtime_checkable
+class IBrowserCaptureQueueRepository(Protocol):
+    def enqueue(self, url: str, site_name: str) -> int: ...
+    def claim_pending(self, limit: int = 10) -> list[dict[str, Any]]: ...
+    def mark_done_by_urls(self, urls: list[str]) -> None: ...
+    def mark_failed(self, item_id: int, error_msg: str) -> None: ...
+    def get_all(self) -> list[dict[str, Any]]: ...
+    def delete(self, item_id: int) -> None: ...
+    def delete_done(self) -> None: ...
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1421,6 +1432,78 @@ class PostgresEmailSubjectRuleRepository(_BaseRepo):
         self._execute("DELETE FROM ack_patterns WHERE id = %s", (rule_id,))
 
 
+# ai: claude-sonnet-4-6 | 2026-06-16
+class PostgresBrowserCaptureQueueRepository(_BaseRepo):
+    """Queue of URLs to be captured by the browser extension."""
+
+    def enqueue(self, url: str, site_name: str) -> int:
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        cur = self._execute(
+            "INSERT INTO browser_capture_queue (url, site_name, status, created_at, updated_at)"
+            " VALUES (%s, %s, 'pending', %s, %s) RETURNING id",
+            (url, site_name, now, now),
+        )
+        return cur.fetchone()["id"]
+
+    def claim_pending(self, limit: int = 10) -> list[dict[str, Any]]:
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        stale_cutoff = (datetime.now(UTC) - timedelta(minutes=10)).isoformat(timespec="seconds")
+        self._execute(
+            "UPDATE browser_capture_queue SET status = 'pending', updated_at = %s"
+            " WHERE status = 'processing' AND updated_at < %s",
+            (now, stale_cutoff),
+        )
+        cur = self._execute(
+            "SELECT id, url, site_name FROM browser_capture_queue"
+            " WHERE status = 'pending' ORDER BY created_at LIMIT %s",
+            (limit,),
+        )
+        rows = [_row_to_dict(r) for r in cur.fetchall()]
+        if not rows:
+            return []
+        ids = [r["id"] for r in rows]
+        placeholders = ", ".join(["%s"] * len(ids))
+        self._execute(
+            f"UPDATE browser_capture_queue SET status = 'processing', updated_at = %s"
+            f" WHERE id IN ({placeholders})",
+            [now, *ids],
+        )
+        return rows
+
+    def mark_done_by_urls(self, urls: list[str]) -> None:
+        if not urls:
+            return
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        placeholders = ", ".join(["%s"] * len(urls))
+        self._execute(
+            f"UPDATE browser_capture_queue SET status = 'done', updated_at = %s"
+            f" WHERE url IN ({placeholders}) AND status = 'processing'",
+            [now, *urls],
+        )
+
+    def mark_failed(self, item_id: int, error_msg: str) -> None:
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        self._execute(
+            "UPDATE browser_capture_queue SET status = 'failed', error_msg = %s, updated_at = %s"
+            " WHERE id = %s",
+            (error_msg[:500], now, item_id),
+        )
+
+    def get_all(self) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM browser_capture_queue ORDER BY created_at DESC"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def delete(self, item_id: int) -> None:
+        self._execute("DELETE FROM browser_capture_queue WHERE id = %s", (item_id,))
+
+    def delete_done(self) -> None:
+        self._execute(
+            "DELETE FROM browser_capture_queue WHERE status IN ('done', 'failed')"
+        )
+
+
 # ─── Backward-compat aliases (app.py imports these names) ────────────────────
 
 SQLiteJobRepository = PostgresJobRepository
@@ -1436,6 +1519,7 @@ SQLiteCareerScanFailureRepository = PostgresCareerScanFailureRepository
 SQLiteCareerRejectionRuleRepository = PostgresCareerRejectionRuleRepository
 SQLiteEmailSubjectRuleRepository = PostgresEmailSubjectRuleRepository
 SQLiteStageStatusRepository = PostgresStageStatusRepository
+SQLiteBrowserCaptureQueueRepository = PostgresBrowserCaptureQueueRepository
 
 
 # ─── Seed data ────────────────────────────────────────────────────────────────
@@ -1674,6 +1758,22 @@ def _migrate(conn: Any) -> None:
         "CREATE INDEX IF NOT EXISTS idx_job_status_history_job ON job_status_history (job_id)"
     )
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS browser_capture_queue (
+            id         SERIAL PRIMARY KEY,
+            url        TEXT NOT NULL,
+            site_name  TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            error_msg  TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_browser_capture_queue_status"
+        " ON browser_capture_queue (status, created_at)"
+    )
+
     conn.commit()
 
     _backfill_duplicate_of_id(conn, is_postgres=True)
@@ -1893,6 +1993,22 @@ def _migrate_sqlite(conn: Any) -> None:
         "CREATE INDEX IF NOT EXISTS idx_job_status_history_job ON job_status_history (job_id)"
     )
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS browser_capture_queue (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            url        TEXT NOT NULL,
+            site_name  TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            error_msg  TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_browser_capture_queue_status"
+        " ON browser_capture_queue (status, created_at)"
+    )
+
     conn.commit()
 
     _backfill_duplicate_of_id(conn, is_postgres=False)
@@ -2102,6 +2218,21 @@ def _create_tables(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_job_status_history_job
             ON job_status_history (job_id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS browser_capture_queue (
+            id         SERIAL PRIMARY KEY,
+            url        TEXT NOT NULL,
+            site_name  TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            error_msg  TEXT NOT NULL DEFAULT ''
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_browser_capture_queue_status
+            ON browser_capture_queue (status, created_at)
         """,
     ]:
         cur.execute(stmt)
@@ -2314,6 +2445,21 @@ def _create_tables_sqlite(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_job_status_history_job
             ON job_status_history (job_id)
         """,
+        """
+        CREATE TABLE IF NOT EXISTS browser_capture_queue (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            url        TEXT NOT NULL,
+            site_name  TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            error_msg  TEXT NOT NULL DEFAULT ''
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_browser_capture_queue_status
+            ON browser_capture_queue (status, created_at)
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()
@@ -2392,4 +2538,5 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "email_subject_rules": PostgresEmailSubjectRuleRepository(conn),
         "stage_statuses": PostgresStageStatusRepository(conn),
         "job_status_history": PostgresJobStatusHistoryRepository(conn),
+        "browser_capture_queue": PostgresBrowserCaptureQueueRepository(conn),
     }

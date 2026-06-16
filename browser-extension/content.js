@@ -106,6 +106,13 @@
       return { site: 'Ashby', type: 'ashbyJob', jobCount: 1, description: 'Single job listing' };
     }
 
+    // ai: claude-sonnet-4-6 | 2026-06-16
+    if (host.includes('welcometothejungle.com')) {
+      if (/\/companies\/[^/?#]+\/jobs\/[^/?#]{2,}/.test(path)) {
+        return { site: 'Welcome to the Jungle', type: 'wttjJob', jobCount: 1, description: 'Single job listing' };
+      }
+    }
+
     if (host.includes('mongodb.com') && /\/careers/.test(path)) {
       const count = new Set(
         [...document.querySelectorAll('a[href*="gh_jid="]')]
@@ -694,6 +701,79 @@
     return JSON.stringify({ jobs, source: { url: location.href } });
   }
 
+  // ai: claude-sonnet-4-6 | 2026-06-16
+  function buildWttjJobPayload() {
+    let title = '', company = '', description = '';
+
+    // WTTJ uses Next.js; __NEXT_DATA__ is the most reliable source.
+    const nextData = document.getElementById('__NEXT_DATA__');
+    if (nextData) {
+      try {
+        const parsed = JSON.parse(nextData.textContent || '');
+        const props = parsed?.props?.pageProps || {};
+        // Field names vary by locale/version; try common ones.
+        const job = props.job || props.jobOffer || props.jobListing || props.data?.job || {};
+        const org = props.organization || props.company || props.employer || {};
+
+        title = job.name || job.title || '';
+        company = org.name || org.title || job.organization?.name || '';
+        const contractType = job.contract_type?.label || job.contractType?.label || '';
+        const jobLocation = (job.offices || []).map(o => o.city || o.name).filter(Boolean).join(', ')
+          || (job.remote ? 'Remote' : '');
+        const tasks = (job.tasks_attributes || []).map(t => t.description).join('\n');
+        const profile = (job.profile_attributes || []).map(t => t.description).join('\n');
+        const partsSections = [tasks, profile].filter(Boolean).join('\n\n');
+
+        const descParts = [
+          title && `Title: ${title}`,
+          company && `Company: ${company}`,
+          contractType && `Type: ${contractType}`,
+          jobLocation && `Location: ${jobLocation}`,
+          `URL: ${location.href}`,
+          partsSections,
+        ].filter(Boolean);
+        description = descParts.join('\n');
+      } catch { /* fall through to DOM extraction */ }
+    }
+
+    if (!title) {
+      title = pick(['h1[class*="job"]', 'h1[class*="title"]', '[data-testid="job-title"]', 'h1']);
+    }
+    if (!company) {
+      company = pick([
+        '[data-testid="company-name"]',
+        '[class*="organization-name"]',
+        'a[href*="/companies/"] h2',
+        'a[href*="/companies/"]',
+      ]);
+    }
+    if (!description) {
+      description = longestText([
+        '[data-testid="job-description"]',
+        '[class*="job-description"]',
+        'section[class*="description"]',
+        'article',
+        'main',
+      ]);
+    }
+
+    const lines = [];
+    if (title) lines.push(title);
+    if (company) lines.push(`Company: ${company}`);
+    lines.push(`URL: ${location.href}`);
+    if (description) lines.push('', description);
+
+    return JSON.stringify({
+      jobs: [{
+        url: location.href,
+        job_title: title,
+        company,
+        listing_text: lines.join('\n'),
+      }],
+      source: { url: location.href },
+    });
+  }
+
   // ─── Build Dispatcher ──────────────────────────────────────────────────────
 
   async function buildPayload() {
@@ -709,6 +789,7 @@
       case 'workAtAStartup':   return buildWorkAtAStartupPayload();
       case 'discordCareers':   return buildDiscordCareersPayload();
       case 'ashbyJob':         return buildAshbyJobPayload();
+      case 'wttjJob':          return buildWttjJobPayload();
       case 'smartGeneric':     return buildSmartGenericPayload();
       default:                 return buildHtmlPayload();
     }

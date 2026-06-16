@@ -52,6 +52,7 @@ import config
 logger = logging.getLogger(__name__)
 
 SubmitCapture = Callable[[dict[str, Any]], tuple[dict[str, Any], int]]
+ClaimQueue = Callable[[], list[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,7 @@ class ListenerCaptureRequest:
 class ImportListenerRequestParser:
     """Converts inbound listener requests into the existing import payload shape."""
 
-    _ALLOWED_PATHS: frozenset[str] = frozenset({"/", "/import", "/capture"})
+    _ALLOWED_PATHS: frozenset[str] = frozenset({"/", "/import", "/capture", "/queue"})
 
     def __init__(self, *, token: str, max_bytes: int) -> None:
         self._token = token
@@ -181,12 +182,14 @@ class JobImportListener:
         token: str,
         max_bytes: int,
         submit_capture: SubmitCapture,
+        claim_queue: ClaimQueue | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._token = token
         self._max_bytes = max_bytes
         self._submit_capture = submit_capture
+        self._claim_queue = claim_queue
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -197,23 +200,45 @@ class JobImportListener:
         parser = ImportListenerRequestParser(token=self._token, max_bytes=self._max_bytes)
         max_bytes = self._max_bytes
         submit_capture = self._submit_capture
+        claim_queue = self._claim_queue
+        listener_token = self._token
 
         class ImportRequestHandler(BaseHTTPRequestHandler):
             def log_message(self, message_format: str, *args: object) -> None:
                 logger.info("Import listener: " + message_format, *args)
 
+            def _check_token(self) -> bool:
+                if not listener_token:
+                    return True
+                parsed_url = urlparse(self.path)
+                query = parse_qs(parsed_url.query)
+                header_token = str(self.headers.get("X-Job-Import-Token") or "").strip()
+                query_token = (query.get("token") or [""])[0].strip()
+                return listener_token in {header_token, query_token}
+
             def do_GET(self) -> None:
-                if urlparse(self.path).path != "/health":
-                    self._send_json(
-                        {
-                            "error": (
-                                "Use POST /import to submit captured job-board HTML."
-                            )
-                        },
-                        HTTPStatus.NOT_FOUND,
-                    )
+                path = urlparse(self.path).path
+                if path == "/health":
+                    self._send_json({"status": "ok"})
                     return
-                self._send_json({"status": "ok"})
+                if path == "/queue":
+                    if not self._check_token():
+                        self._send_json({"error": "Invalid import listener token."}, HTTPStatus.UNAUTHORIZED)
+                        return
+                    if claim_queue is None:
+                        self._send_json({"items": []})
+                        return
+                    try:
+                        items = claim_queue()
+                        self._send_json({"items": items})
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Browser capture queue claim failed: %s", exc)
+                        self._send_json({"error": "Queue unavailable."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                    return
+                self._send_json(
+                    {"error": "Use POST /import to submit captured job-board HTML."},
+                    HTTPStatus.NOT_FOUND,
+                )
 
             def do_POST(self) -> None:
                 try:
@@ -275,7 +300,10 @@ _listener_lock = threading.Lock()
 _listener: JobImportListener | None = None
 
 
-def start_job_import_listener(submit_capture: SubmitCapture) -> None:
+def start_job_import_listener(
+    submit_capture: SubmitCapture,
+    claim_queue: ClaimQueue | None = None,
+) -> None:
     """Start the optional captured-page import listener once per process."""
     global _listener
 
@@ -298,6 +326,7 @@ def start_job_import_listener(submit_capture: SubmitCapture) -> None:
             token=str(listener_config["token"]),
             max_bytes=int(listener_config["max_bytes"]),
             submit_capture=submit_capture,
+            claim_queue=claim_queue,
         )
         try:
             _listener.start()
