@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import StatusBadge from "./common/StatusBadge.jsx";
 import Modal from "./common/Modal.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
@@ -40,11 +40,12 @@ import UndoEditNotice from "./common/UndoEditNotice.jsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
 import { applicationRowFromSheet, rowMatchesCompany } from "../utils/sheetUtils.js";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
-import { scoreTone, scoreLabel, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
-import { statusTone, parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
+import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
+import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
 import {
   MISMATCH_REASONS,
   SKIP_REASONS,
+  isDescriptionUnavailable,
   isNegativeReasoningBullet,
   negativeReasoningBulletStyleFor,
   normalizeManualJobUrl,
@@ -72,6 +73,8 @@ export default function JobCard({
   const [descriptionSaved, setDescriptionSaved] = useState(false);
   const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "snooze" | "cover" | "pitch" | "tailor" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
+  const skipBtnRef = useRef(null);
+  const [skipMenuAnchor, setSkipMenuAnchor] = useState(null);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [snoozeDays, setSnoozeDays] = useState(() => {
     const stored = parseInt(localStorage.getItem(_DEFAULT_SNOOZE_DAYS_KEY), 10);
@@ -93,6 +96,8 @@ export default function JobCard({
   const [urlDraft, setUrlDraft] = useState("");
   const [urlSaving, setUrlSaving] = useState(false);
   const [urlError, setUrlError] = useState("");
+  const [refreshError, setRefreshError] = useState(null);
+  const [refreshQueued, setRefreshQueued] = useState(false);
   const [undoEdit, setUndoEdit] = useState(null);
   const [undoSaving, setUndoSaving] = useState(false);
   const [coverLetter, setCoverLetter] = useState(null);
@@ -201,6 +206,8 @@ export default function JobCard({
 
   const showEmailOrigin = shouldShowEmailOrigin(job);
   const jobDescription = String(job.job_description || job.raw_email_snippet || "").trim();
+  // ai: claude-sonnet-4-6 | 2026-06-16
+  const descriptionUnavailable = isDescriptionUnavailable(jobDescription);
 
   const handleApprove = async () => {
     setLoading("approve");
@@ -476,6 +483,29 @@ export default function JobCard({
       await onReEvaluate(job);
     } catch {
       /* Error details are shown in the re-evaluation popup. */
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  // ai: claude-sonnet-4-6 | 2026-06-16
+  const handleRefreshFromUrl = async () => {
+    setLoading("refresh");
+    setRefreshError(null);
+    setRefreshQueued(false);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Re-fetch failed (${res.status})`);
+      }
+      if (data.queued_for_browser_capture) {
+        setRefreshQueued(true);
+        return;
+      }
+      onUpdate?.(job.id, data);
+    } catch (e) {
+      setRefreshError(e.message || "Re-fetch from URL failed");
     } finally {
       setLoading(null);
     }
@@ -931,12 +961,21 @@ export default function JobCard({
                 style={editableJobTitleInputStyle}
               />
             ) : (
+              // ai: claude-sonnet-4-6 | 2026-06-16
               <span
                 style={editableJobTitleStyle}
                 title="Click to edit job title"
+                tabIndex={0}
                 onClick={() => {
                   setTitleDraft(job.job_title || "");
                   setEditingTitle(true);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setTitleDraft(job.job_title || "");
+                    setEditingTitle(true);
+                  }
                 }}
               >
                 {job.job_title || <em style={{ color: "var(--text-muted)" }}>Unknown Title</em>}
@@ -970,7 +1009,15 @@ export default function JobCard({
               <span
                 style={editableCompanyStyle}
                 title="Click to edit company name"
+                tabIndex={0}
                 onClick={() => { setCompanyDraft(job.company || ""); setEditingCompany(true); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setCompanyDraft(job.company || "");
+                    setEditingCompany(true);
+                  }
+                }}
               >
                 {job.company || <em style={{ fontWeight: "400", color: "var(--text-muted)" }}>Unknown Company</em>}
               </span>
@@ -1120,7 +1167,101 @@ export default function JobCard({
           rows={companyLookupRows}
           onClose={() => setCompanyLookupOpen(false)}
           onNavigateToJobCard={onNavigateToJobCard}
+          onSkipDuplicate={(rowId) => onSkip(rowId, "duplicate", "", [])}
         />
+      )}
+
+      {/* Description unavailable banner */}
+      {/* ai: claude-sonnet-4-6 | 2026-06-16 */}
+      {descriptionUnavailable && job.url && (
+        <div style={amberBannerStyle}>
+          <span style={{ fontSize: "12px", color: "var(--text)", flex: 1, minWidth: "180px" }}>
+            <strong style={{ color: "#c87000" }}>No description loaded.</strong>{" "}
+            This job&rsquo;s page may require a browser to render.
+          </span>
+          <button
+            type="button"
+            className="btn-secondary btn-sm"
+            onClick={handleRefreshFromUrl}
+            disabled={busy}
+            style={{ borderColor: "rgba(220,140,0,0.45)", whiteSpace: "nowrap" }}
+          >
+            {loading === "refresh" ? "Fetching…" : "Re-fetch from URL"}
+          </button>
+        </div>
+      )}
+      {/* ai: claude-sonnet-4-6 | 2026-06-16 */}
+      {descriptionUnavailable && !job.url && !editingUrl && (
+        <div style={amberBannerStyle}>
+          <span style={{ fontSize: "12px", color: "var(--text)", flex: 1, minWidth: "180px" }}>
+            <strong style={{ color: "#c87000" }}>No description or URL.</strong>{" "}
+            Add a URL to fetch details, or paste the job description manually.
+          </span>
+          <button
+            type="button"
+            className="btn-secondary btn-sm"
+            onClick={startUrlEdit}
+            disabled={busy}
+            style={{ borderColor: "rgba(220,140,0,0.45)", whiteSpace: "nowrap" }}
+          >
+            Add URL
+          </button>
+          <button
+            type="button"
+            className="btn-secondary btn-sm"
+            onClick={startDescriptionEdit}
+            disabled={busy || descriptionSaving}
+            style={{ borderColor: "rgba(220,140,0,0.45)", whiteSpace: "nowrap" }}
+          >
+            Add Description
+          </button>
+        </div>
+      )}
+      {refreshQueued && (
+        <div style={{
+          marginTop: "8px",
+          padding: "9px 13px",
+          background: "rgba(76,175,129,0.08)",
+          border: "1px solid rgba(76,175,129,0.35)",
+          borderRadius: "var(--radius)",
+          fontSize: "12px",
+          color: "var(--text-muted)",
+        }}>
+          <strong style={{ color: "var(--green)", display: "block", marginBottom: "4px" }}>
+            Queued for browser extension
+          </strong>
+          The page requires sign-in. URL queued — the extension will auto-capture it on the next poll (~1 min) and update this card&apos;s description in place.
+          <button
+            type="button"
+            onClick={() => setRefreshQueued(false)}
+            style={{ marginLeft: "10px", background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "11px", textDecoration: "underline" }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {refreshError && (
+        <div style={{
+          marginTop: "8px",
+          padding: "9px 13px",
+          background: "rgba(220,140,0,0.08)",
+          border: "1px solid rgba(220,140,0,0.35)",
+          borderRadius: "var(--radius)",
+          fontSize: "12px",
+          color: "var(--text-muted)",
+        }}>
+          <strong style={{ color: "var(--text)", display: "block", marginBottom: "4px" }}>
+            Server couldn&rsquo;t fetch this page ({refreshError})
+          </strong>
+          Open the job URL in your browser, then use the browser extension to capture and send the page content to this card — it will update the description in place without creating a duplicate.
+          <button
+            type="button"
+            onClick={() => setRefreshError(null)}
+            style={{ marginLeft: "10px", background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "11px", textDecoration: "underline" }}
+          >
+            Dismiss
+          </button>
+        </div>
       )}
 
       {/* Reasoning (collapsible) */}
@@ -1188,6 +1329,17 @@ export default function JobCard({
           {loading === "reevaluate" ? "Re-evaluating..." : "Re-evaluate Fit"}
         </button>
 
+        {job.url && (
+          <button
+            className="btn-secondary btn-sm"
+            onClick={handleRefreshFromUrl}
+            disabled={busy}
+            title="Re-fetch the job description from its URL and re-score"
+          >
+            {loading === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
+          </button>
+        )}
+
         <div style={{ flex: 1 }} />
 
         <button
@@ -1226,8 +1378,15 @@ export default function JobCard({
         {/* Skip with reason picker */}
         <div style={{ position: "relative" }}>
           <button
+            ref={skipBtnRef}
             className="btn-danger"
-            onClick={() => { setShowSkipMenu((v) => !v); setSnoozeOpen(false); }}
+            onClick={() => {
+              if (!showSkipMenu && skipBtnRef.current) {
+                setSkipMenuAnchor(skipBtnRef.current.getBoundingClientRect());
+              }
+              setShowSkipMenu((v) => !v);
+              setSnoozeOpen(false);
+            }}
             disabled={busy}
             style={{ display: "flex", alignItems: "center", gap: "5px" }}
           >
@@ -1235,8 +1394,17 @@ export default function JobCard({
             {!busy && <span style={{ fontSize: "10px", opacity: 0.7, borderLeft: "1px solid rgba(204,47,47,0.35)", paddingLeft: "6px", marginLeft: "2px" }}>▾</span>}
           </button>
 
-          {showSkipMenu && (
-            <div style={skipMenuStyle}>
+          {showSkipMenu && skipMenuAnchor && (
+            <div style={{
+              ...skipMenuStyle,
+              position: "fixed",
+              bottom: `${window.innerHeight - skipMenuAnchor.top + 4}px`,
+              top: "auto",
+              left: `${skipMenuAnchor.left}px`,
+              maxHeight: `${skipMenuAnchor.top - 8}px`,
+              overflowY: "auto",
+              zIndex: 1000,
+            }}>
               {SKIP_REASONS.map((reason) => (
                 <button
                   key={reason.key}
@@ -2167,8 +2335,11 @@ function sourceSummaryForJob(job) {
   const platform = platformLabelForUrl(job.url);
   const sourceLabel = source ? titleCaseKnownSource(source) : "";
 
-  if (sourceLabel.toLowerCase().startsWith("tampermonkey")) {
-    return sourceLabel;
+  if (
+    sourceLabel.toLowerCase().startsWith("browser extension")
+    || sourceLabel.toLowerCase().startsWith("tampermonkey") // backward compat
+  ) {
+    return sourceLabel.replace(/^tampermonkey/i, "Browser Extension");
   }
 
   const manual = isManualJob(job);
@@ -2199,11 +2370,14 @@ function isManualJob(job) {
   const source = String(job.source || "").toLowerCase();
   return (
     emailSubject.includes("manual pasted job listing") ||
-    emailSubject.includes("tampermonkey streamed job listing") ||
+    emailSubject.includes("browser extension streamed job listing") ||
+    emailSubject.includes("tampermonkey streamed job listing") || // backward compat
     emailId.startsWith("manual:") ||
-    emailId.startsWith("tampermonkey:") ||
+    emailId.startsWith("browser_ext:") ||
+    emailId.startsWith("tampermonkey:") || // backward compat
     source.includes("manual paste") ||
-    source.includes("tampermonkey")
+    source.includes("browser extension") ||
+    source.includes("tampermonkey") // backward compat
   );
 }
 
@@ -2221,7 +2395,8 @@ function titleCaseKnownSource(source) {
   if (normalizedSource === "manual paste") return "Manual paste";
   if (normalizedSource === "manual pasted job listing") return "Manual paste";
   if (normalizedSource === "manual url") return "Manual URL";
-  if (normalizedSource === "tampermonkey") return "Tampermonkey";
+  if (normalizedSource === "browser extension") return "Browser Extension";
+  if (normalizedSource === "tampermonkey") return "Browser Extension"; // backward compat: remap old label
   return source;
 }
 
@@ -2355,6 +2530,19 @@ const editableCompanyStyle = {
   fontWeight: 600,
   lineHeight: 1.25,
   padding: "1px 6px",
+};
+
+// ai: claude-sonnet-4-6 | 2026-06-16
+const amberBannerStyle = {
+  marginTop: "10px",
+  padding: "10px 14px",
+  background: "rgba(220,140,0,0.12)",
+  border: "1px solid rgba(220,140,0,0.45)",
+  borderRadius: "var(--radius)",
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "10px",
 };
 
 const emailMetaStyle = {

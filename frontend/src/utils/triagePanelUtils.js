@@ -47,7 +47,9 @@ export const SKIP_REASONS = [
   { key: "req_closed", label: "Req Closed" },
   { key: "not_remote", label: "Not Remote" },
   { key: "not_a_fit", label: "Not a Fit" },
+  { key: "salary_too_low", label: "Salary Too Low" },
   { key: "not_interested", label: "Not Interested" },
+  { key: "wrong_role", label: "Wrong Role" },
   { key: "other", label: "Other" },
 ];
 
@@ -83,7 +85,8 @@ export function isManualSource(source) {
     "manual paste",
     "manual pasted job listing",
     "manual url",
-    "tampermonkey",
+    "browser extension",
+    "tampermonkey", // kept for backward compat with existing DB records
   ].includes(normalizedSource);
 }
 
@@ -91,7 +94,8 @@ export function isManualPastedJob(job) {
   const subject = String(job.email_subject || "").trim().toLowerCase();
   return (
     subject === "manual pasted job listing"
-    || subject === "tampermonkey streamed job listing"
+    || subject === "browser extension streamed job listing"
+    || subject === "tampermonkey streamed job listing" // backward compat
     || isManualSource(String(job.source || ""))
   );
 }
@@ -105,7 +109,8 @@ export function titleCaseKnownSource(source) {
   if (normalizedSource === "manual paste") return "Manual Paste";
   if (normalizedSource === "manual pasted job listing") return "Manual Paste";
   if (normalizedSource === "manual url") return "Manual URL";
-  if (normalizedSource === "tampermonkey") return "Tampermonkey";
+  if (normalizedSource === "browser extension") return "Browser Extension";
+  if (normalizedSource === "tampermonkey") return "Browser Extension"; // backward compat: remap old label
   return source;
 }
 
@@ -113,8 +118,12 @@ export function sourceLabel(job) {
   const source = String(job.source || "").trim();
   const platform = platformLabelForUrl(job.url);
 
-  if (source.toLowerCase().startsWith("tampermonkey")) {
-    return source;
+  if (
+    source.toLowerCase().startsWith("browser extension")
+    || source.toLowerCase().startsWith("tampermonkey") // backward compat
+  ) {
+    // Replace "Tampermonkey" prefix in old DB records with the current label
+    return source.replace(/^tampermonkey/i, "Browser Extension");
   }
 
   if (!source) return platform;
@@ -179,8 +188,9 @@ export function penaltiesAppliedForJob(job) {
     }));
 }
 
+// ai: claude-sonnet-4-6 | 2026-06-16
 export function isNegativeReasoningBullet(item) {
-  return /\b(penalt|deduct|below|low|missing|uncertain|not|no|failed|mismatch|triage)\b/i.test(
+  return /\b(penalt|deduct|below|low|missing|uncertain|failed|mismatch|triage)\b/i.test(
     String(item || "")
   );
 }
@@ -275,4 +285,23 @@ export function extractSubjectWords(text) {
     .filter((w) => w.length > 3)
     .slice(0, 6)
     .join(" ");
+}
+
+const _TRACKING_DOMAINS = [
+  "sendgrid.net",
+  "track.customer.io",
+  "mandrillapp.com",
+  "click.exacttarget.com",
+  "links.email",
+  "email.mg",
+];
+
+// ai: claude-sonnet-4-6 | 2026-06-16
+export function isDescriptionUnavailable(description) {
+  if (!description) return true;
+  const trimmed = description.trim();
+  if (!trimmed) return true;
+  if (/^https?:\/\/\S+$/.test(trimmed)) return true;
+  if (trimmed.length < 400 && _TRACKING_DOMAINS.some((d) => trimmed.includes(d))) return true;
+  return false;
 }

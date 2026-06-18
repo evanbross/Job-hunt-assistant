@@ -69,7 +69,9 @@ _VALID_SKIP_REASONS = frozenset({
     "req_closed",
     "not_remote",
     "not_a_fit",
+    "salary_too_low",
     "not_interested",
+    "wrong_role",
     "other",
 })
 _VALID_MISMATCH_REASONS = frozenset({
@@ -216,7 +218,7 @@ def patch_job(job_id: int):
 
             known_jobs: list[dict] = repos["jobs"].get_all_ordered()
             # ai: claude-sonnet-4-6 | 2026-06-09
-            _tracked_status, _tracking_source, duplicate_hint, duplicate_of_id = db_match_for_job(
+            _tracked_status, _tracking_source, duplicate_hint, duplicate_of_id, _match_scores = db_match_for_job(
                 job_title=str(updated_job.get("job_title") or ""),
                 company=str(updated_job.get("company") or ""),
                 job_url=str(updated_job.get("url") or ""),
@@ -558,12 +560,28 @@ def refresh_job_from_url(job_id: int):
         scanner = CareerSiteScanner()
         logger.info("refresh_job_from_url calling scan_single_job_url")
         fetched = scanner.scan_single_job_url(job.get("source") or "", url)
+        new_text = fetched["job_text"]
     except Exception as exc:
         logger.warning("refresh-from-url: fetch failed for job %d (%s): %s", job_id, url, exc)
-        return jsonify({"error": f"Failed to fetch job from URL: {exc}"}), 500
+        new_text = ""
 
-    logger.info("refresh_job_from_url reload returned")
-    new_text = fetched["job_text"]
+    logger.info("refresh_job_from_url reload returned, text length %d", len(new_text))
+
+    # ai: claude-sonnet-4-6 | 2026-06-16
+    # Direct fetch got a login wall, redirect, or empty page — queue for browser extension.
+    if len(new_text) < 150:
+        site_name = urlparse(url).netloc
+        try:
+            with get_repos() as repos:
+                repos["browser_capture_queue"].enqueue(url, site_name)
+                repos["conn"].commit()
+            logger.info("refresh-from-url: queued job %d (%s) for browser extension capture", job_id, url)
+        except Exception as q_exc:
+            logger.warning("refresh-from-url: failed to enqueue job %d for browser capture: %s", job_id, q_exc)
+        return jsonify({
+            "queued_for_browser_capture": True,
+            "message": "Direct fetch returned no content — the page likely requires sign-in. URL queued for browser extension; it will auto-capture on the next poll (~1 min) and update this card in place.",
+        }), 200
 
     try:
         score_result = FitScorer().score(

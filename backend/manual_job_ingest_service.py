@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 from dataclasses import dataclass
@@ -45,6 +46,13 @@ from backend.job_validator import normalize_and_validate, import_warnings_to_jso
 from backend.career_site_scanner import CareerSiteScanner
 from backend.email_parser import EmailParser, ParsedJob
 from backend.fit_scorer import FitScorer
+
+logger = logging.getLogger(__name__)
+
+# Minimum captured-text length below which we attempt to re-fetch the full job
+# description from its URL. Mirrors the threshold in routes/scan.py's JD
+# enrichment for email-sourced jobs.
+_MIN_DESCRIPTION_CHARS = 400
 
 
 @runtime_checkable
@@ -110,14 +118,15 @@ class ManualJobIngestService:
         if not normalized_text and not normalized_source_url:
             raise ValueError("Job listing text or a public job URL is required.")
 
-        # If this is coming from the browser listener (Tampermonkey), use distinct labeling
+        # ai: claude-sonnet-4-6 | 2026-06-18
+        # If this is coming from the browser extension listener, use distinct labeling.
         is_streamed = (trigger == "listener")
-        email_id_prefix = "tampermonkey" if is_streamed else "manual"
+        email_id_prefix = "browser_ext" if is_streamed else "manual"
         email_subject = (
-            "Tampermonkey streamed job listing" if is_streamed
+            "Browser Extension streamed job listing" if is_streamed
             else "Manual pasted job listing"
         )
-        source_prefix = "Tampermonkey" if is_streamed else "Manual Paste"
+        source_prefix = "Browser Extension" if is_streamed else "Manual Paste"
 
         parsed_jobs: list[ParsedJob] = []
         parsed: ParsedJob = ParsedJob(
@@ -139,6 +148,26 @@ class ManualJobIngestService:
             )
             if parsed_jobs:
                 parsed = self._select_best_match(parsed_jobs)
+
+            # ai: claude-sonnet-4-6 | 2026-06-14
+            # Browser-extension captures sometimes carry only a title + URL (e.g.
+            # a Greenhouse job page misclassified as a generic listing). Re-fetch
+            # the full description from the job URL so scoring and the stored
+            # snippet aren't based on near-empty text.
+            job_url = str(parsed.get("url") or "").strip()
+            if len(score_body) < _MIN_DESCRIPTION_CHARS and job_url.startswith("https://"):
+                try:
+                    fetched_job = self._career_site_scanner.scan_single_job_url("", job_url)
+                    fetched_text = fetched_job.get("job_text", "")
+                    if len(fetched_text) >= _MIN_DESCRIPTION_CHARS:
+                        score_body = fetched_text
+                    else:
+                        logger.debug(
+                            "JD enrichment returned too little content for %s (%d chars)",
+                            job_url, len(fetched_text),
+                        )
+                except (ValueError, OSError) as exc:
+                    logger.debug("JD enrichment failed for %s: %s", job_url, exc)
         elif normalized_source_url:
             fetched_job = self._career_site_scanner.scan_single_job_url("Manual URL", normalized_source_url)
             inferred_company, clean_title = self._company_and_title_from_fetched(
@@ -309,5 +338,6 @@ class ManualJobIngestService:
             "manual paste",
             "manual pasted job listing",
             "manual url",
-            "tampermonkey",
+            "browser extension",
+            "tampermonkey",  # kept for backward compat with existing DB records
         }
