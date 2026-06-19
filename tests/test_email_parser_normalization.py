@@ -268,3 +268,38 @@ View job: https://www.welcometothejungle.com/en/companies/globex/jobs/staff-plat
         "https://www.welcometothejungle.com/en/companies/acme-health/jobs/senior-backend-engineer_remote",
         "https://www.welcometothejungle.com/en/companies/globex/jobs/staff-platform-engineer_new-york",
     ]
+
+
+# ai: claude-sonnet-4-6 | 2026-06-19
+def test_parser_joins_split_title_for_wttj_short_token_url() -> None:
+    """WTTJ notification emails for short token URLs (app.welcometothejungle.com/jobs/{id})
+    sometimes split a parenthetical title qualifier onto its own line.  The parser must
+    rejoin them into a single title string.
+
+    Regression for jobs 2389/2390 which were imported as '(Guardian Monitoring)' and
+    '(Storage)' instead of the full title."""
+    client = FakeParserClient()
+    parser = EmailParser(client=client)
+    body = """New matches for you
+
+Full Stack Engineer
+(Guardian Monitoring)
+View job
+https://app.welcometothejungle.com/jobs/P3afNng7?token=abc123&position=1&count=2
+
+Senior Software Engineer
+(Storage)
+View job
+https://app.welcometothejungle.com/jobs/1Jw-S0hu?token=abc123&position=2&count=2
+"""
+
+    jobs = parser.parse(
+        "New job matches",
+        "Welcome to the Jungle <hello@welcometothejungle.com>",
+        body,
+    )
+
+    assert client.messages == [], "LLM should not be called for a WTTJ email"
+    assert len(jobs) == 2
+    assert jobs[0]["job_title"] == "Full Stack Engineer (Guardian Monitoring)"
+    assert jobs[1]["job_title"] == "Senior Software Engineer (Storage)"

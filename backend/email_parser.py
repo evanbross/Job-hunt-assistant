@@ -614,9 +614,11 @@ def _wttj_company_title_from_url(job_url: str) -> tuple[str, str]:
     return company, job_title
 
 
+# ai: claude-sonnet-4-6 | 2026-06-19
 def _wttj_title_from_nearby_lines(lines: list[str], url_line_idx: int, company: str) -> str:
     normalized_company = _normalized_line(company)
-    for candidate in reversed(lines[max(0, url_line_idx - 8):url_line_idx]):
+    window = list(reversed(lines[max(0, url_line_idx - 8):url_line_idx]))
+    for i, candidate in enumerate(window):
         normalized_candidate = _normalized_line(candidate)
         if not normalized_candidate:
             continue
@@ -630,7 +632,25 @@ def _wttj_title_from_nearby_lines(lines: list[str], url_line_idx: int, company: 
             continue
         if _WTTJ_METADATA_LINE_RE.search(candidate):
             continue
-        return candidate.strip(" -–—\t\r\n")
+
+        result = candidate.strip(" -–—\t\r\n")
+
+        # Some WTTJ notification emails split the job title across two lines,
+        # putting the parenthetical qualifier on its own line directly before the
+        # URL, e.g.: "Full Stack Engineer" / "(Guardian Monitoring)" / "View job" / URL.
+        # The loop hits "(Guardian Monitoring)" first; look one step further back to
+        # pick up the prefix line and rejoin them.
+        if result.startswith("(") and i + 1 < len(window):
+            prev = window[i + 1].strip(" -–—\t\r\n")
+            prev_norm = _normalized_line(prev)
+            if (prev_norm
+                    and prev_norm not in _WTTJ_SKIP_TITLE_LINES
+                    and not prev_norm.startswith(("http://", "https://"))
+                    and not _WTTJ_METADATA_LINE_RE.search(prev)
+                    and len(prev) <= 80):
+                result = f"{prev} {result}"
+
+        return result
     return ""
 
 
