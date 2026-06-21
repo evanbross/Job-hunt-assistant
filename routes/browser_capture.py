@@ -41,6 +41,7 @@ from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, request
 
+from backend.db import BROWSER_QUEUE_MAX_RETRIES
 from backend.utils import get_repos
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ def list_queue() -> tuple:
     try:
         with get_repos() as repos:
             items = repos["browser_capture_queue"].get_all()
-        return jsonify({"items": items}), 200
+        return jsonify({"items": items, "max_retries": BROWSER_QUEUE_MAX_RETRIES}), 200
     except Exception as exc:
         logger.warning("Failed to list browser capture queue: %s", exc)
         return jsonify({"error": "Could not retrieve queue."}), 500
@@ -108,3 +109,17 @@ def clear_done() -> tuple:
     except Exception as exc:
         logger.warning("Failed to clear done browser capture queue items: %s", exc)
         return jsonify({"error": "Could not clear done items."}), 500
+
+
+# ai: claude-sonnet-4-6 | 2026-06-20
+@browser_capture_bp.route("/browser-capture-queue", methods=["DELETE"])
+def clear_all_queue_items() -> tuple:
+    """Delete every item in the queue regardless of status — nuclear reset."""
+    try:
+        with get_repos() as repos:
+            repos["browser_capture_queue"].delete_all()
+            repos["conn"].commit()
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        logger.warning("Failed to clear all browser capture queue items: %s", exc)
+        return jsonify({"error": "Could not clear queue."}), 500

@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { collectionModeLabel } from "../utils/careerSiteUtils.js";
 import ResumeUpload from "./ResumeUpload.jsx";
 
@@ -45,6 +45,7 @@ export default function SettingsPanel() {
     { id: "email_subject_rules", label: "Subject Rules" },
     { id: "career_sites", label: "Career Sites" },
     { id: "import_listener", label: "Import Listener" },
+    { id: "fetch_queue", label: "Fetch Queue" },
     { id: "penalties", label: "Scoring Rules" },
     { id: "feedback", label: "Learned Patterns" },
     { id: "config", label: "Configuration" },
@@ -72,6 +73,7 @@ export default function SettingsPanel() {
         {activeSection === "email_subject_rules" && <EmailSubjectRulesSection />}
         {activeSection === "career_sites" && <CareerSitesSection />}
         {activeSection === "import_listener" && <ImportListenerSection />}
+        {activeSection === "fetch_queue" && <FetchQueueSection />}
         {activeSection === "penalties" && <PenaltiesSection />}
         {activeSection === "feedback" && <FeedbackSection />}
         {activeSection === "config" && <ConfigSection />}
@@ -402,8 +404,8 @@ function EmailSourcesSection() {
     }));
   };
 
-  const sortedSources = [...sources].sort((leftSource, rightSource) =>
-    compareSourceRows(leftSource, rightSource, sourceSort.key, sourceSort.direction)
+  const sortedSources = [...sources].sort((a, b) =>
+    compareRows(sourceSortValue, a, b, sourceSort.key, sourceSort.direction)
   );
   const sourceColumns = [
     { key: "name", label: "Name" },
@@ -626,10 +628,10 @@ function EmailSourcesSection() {
   );
 }
 
-function compareSourceRows(leftSource, rightSource, key, direction) {
+function compareRows(getValue, left, right, key, direction) {
   const directionMultiplier = direction === "desc" ? -1 : 1;
-  const leftValue = sourceSortValue(leftSource, key);
-  const rightValue = sourceSortValue(rightSource, key);
+  const leftValue = getValue(left, key);
+  const rightValue = getValue(right, key);
 
   if (typeof leftValue === "number" && typeof rightValue === "number") {
     return (leftValue - rightValue) * directionMultiplier;
@@ -641,7 +643,7 @@ function compareSourceRows(leftSource, rightSource, key, direction) {
   });
   if (compared !== 0) return compared * directionMultiplier;
 
-  return String(leftSource.name || "").localeCompare(String(rightSource.name || ""), undefined, {
+  return String(left.name || "").localeCompare(String(right.name || ""), undefined, {
     numeric: true,
     sensitivity: "base",
   });
@@ -661,11 +663,28 @@ function sourceSortValue(source, key) {
 
 // ── Career Site Sources ──────────────────────────────────────────────────────
 
+function siteSortValue(site, key) {
+  if (key === "enabled") return site.enabled ? 1 : 0;
+  if (key === "recapture_interval_days") return site.recapture_interval_days || 0;
+  if (key === "last_captured_at") return site.last_captured_at || "￿";
+  return site[key] || "";
+}
+
+const SITE_COLUMNS = [
+  { key: "name", label: "Name" },
+  { key: "url", label: "URL" },
+  { key: "collection_mode", label: "Collection" },
+  { key: "last_captured_at", label: "Last Capture" },
+  { key: "recapture_interval_days", label: "Reminder" },
+  { key: "enabled", label: "Enabled" },
+];
+
 function CareerSitesSection() {
   const [sites, setSites] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
   const [editId, setEditId] = useState(null);
+  const [siteSort, setSiteSort] = useState({ key: "name", direction: "asc" });
 
   useEffect(() => { fetchSites(); }, []);
 
@@ -714,6 +733,18 @@ function CareerSitesSection() {
     });
     setShowForm(true);
   };
+
+  const requestSiteSort = (key) => {
+    setSiteSort((currentSort) => ({
+      key,
+      direction: currentSort.key === key && currentSort.direction === "asc" ? "desc" : "asc",
+    }));
+  };
+
+  const sortedSites = useMemo(
+    () => [...sites].sort((a, b) => compareRows(siteSortValue, a, b, siteSort.key, siteSort.direction)),
+    [sites, siteSort.key, siteSort.direction],
+  );
 
   const submitForm = async () => {
     if (!form.name || !form.url) return;
@@ -785,10 +816,22 @@ function CareerSitesSection() {
 
       <table style={tableStyle}>
         <thead>
-          <tr>{["Name", "URL", "Collection", "Last Capture", "Reminder", "Enabled", "Actions"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+          <tr>
+            {SITE_COLUMNS.map((column) => (
+              <th key={column.key} style={thStyle}>
+                <button type="button" style={sortableHeaderButtonStyle} onClick={() => requestSiteSort(column.key)}>
+                  {column.label}
+                  {siteSort.key === column.key && (
+                    <span style={sortDirectionStyle}>{siteSort.direction === "asc" ? "▲" : "▼"}</span>
+                  )}
+                </button>
+              </th>
+            ))}
+            <th style={thStyle}>Actions</th>
+          </tr>
         </thead>
         <tbody>
-          {sites.map((s) => (
+          {sortedSites.map((s) => (
             <tr key={s.id}>
               <td style={tdStyle}>{s.name}</td>
               <td style={{ ...tdStyle, maxWidth: "320px" }}>
@@ -961,6 +1004,166 @@ function ImportListenerSection() {
           {saved && <span style={{ color: "var(--green)", fontSize: "13px" }}>Saved. Restart the app to apply listener changes.</span>}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Fetch Queue ───────────────────────────────────────────────────────────────
+
+// ai: claude-sonnet-4-6 | 2026-06-21
+const QUEUE_STATUS_BADGE = {
+  pending: "badge-yellow",
+  processing: "badge-accent",
+  done: "badge-green",
+  failed: "badge-red",
+};
+
+// ai: claude-sonnet-4-6 | 2026-06-21
+function FetchQueueSection() {
+  const [items, setItems] = useState([]);
+  const [maxRetries, setMaxRetries] = useState(5);
+  const [loading, setLoading] = useState(true);
+  const [showDone, setShowDone] = useState(false);
+  const pollRef = useRef(null);
+
+  const fetchQueue = async () => {
+    const res = await fetch("/api/browser-capture-queue");
+    if (!res.ok) return;
+    const data = await res.json();
+    setItems(Array.isArray(data.items) ? data.items : []);
+    if (typeof data.max_retries === "number") setMaxRetries(data.max_retries);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchQueue();
+    clearInterval(pollRef.current);
+    pollRef.current = setInterval(fetchQueue, 10000);
+    return () => clearInterval(pollRef.current);
+  }, []);
+
+  const deleteItem = async (id) => {
+    const res = await fetch(`/api/browser-capture-queue/${id}`, { method: "DELETE" });
+    if (!res.ok) { window.alert(`Remove failed (${res.status})`); return; }
+    await fetchQueue();
+  };
+
+  const clearDone = async () => {
+    if (!window.confirm("Clear all done and failed items from the queue?")) return;
+    const res = await fetch("/api/browser-capture-queue/clear-done", { method: "POST" });
+    if (!res.ok) { window.alert(`Failed (${res.status})`); return; }
+    await fetchQueue();
+  };
+
+  const clearAll = async () => {
+    if (!window.confirm("Clear ALL items from the fetch queue? The browser extension will stop retrying them.")) return;
+    const res = await fetch("/api/browser-capture-queue", { method: "DELETE" });
+    if (!res.ok) { window.alert(`Failed (${res.status})`); return; }
+    await fetchQueue();
+  };
+
+  const visible = showDone ? items : items.filter((i) => i.status !== "done");
+
+  if (loading) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+
+  const hasDoneOrFailed = items.some((i) => i.status === "done" || i.status === "failed");
+
+  return (
+    <div>
+      <SectionHeader title="Fetch Queue" />
+      <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
+        URLs waiting to be opened by the browser extension. <em>Processing</em> items are currently
+        open in a tab; they reset to <em>pending</em> after 10 minutes if the tab never posts back.
+        Items that fail {maxRetries} times are permanently marked <em>failed</em>.
+      </p>
+
+      <div style={{ display: "flex", gap: "8px", marginBottom: "14px", flexWrap: "wrap", alignItems: "center" }}>
+        <button className="btn-secondary" onClick={clearDone} disabled={!hasDoneOrFailed}>
+          Clear done &amp; failed
+        </button>
+        <button className="btn-danger" onClick={clearAll} disabled={!items.length}>
+          Clear all
+        </button>
+        <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer", fontSize: "13px", color: "var(--text-muted)", marginLeft: "auto", fontWeight: 400 }}>
+          <input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} />
+          Show completed
+        </label>
+      </div>
+
+      {visible.length === 0 ? (
+        <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+          {items.length === 0
+            ? "Queue is empty."
+            : "No pending or failed items. Enable Show completed to see done items."}
+        </p>
+      ) : (
+        <table style={tableStyle}>
+          <thead>
+            <tr>
+              {["Site", "URL", "Status", "Attempts", "Last Updated", "Error", ""].map((h, i) => (
+                <th key={i} style={thStyle}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((item) => {
+              const retryCount = item.retry_count ?? 0;
+              const isTerminal = item.status === "done" || item.status === "failed";
+              const isExhausted = retryCount >= maxRetries;
+              const attemptsColor = isExhausted
+                ? "var(--red)"
+                : retryCount >= Math.floor(maxRetries * 0.6)
+                ? "var(--yellow)"
+                : "var(--text)";
+              return (
+                <tr key={item.id}>
+                  <td style={tdStyle}>{item.site_name || "—"}</td>
+                  <td style={{ ...tdStyle, maxWidth: "260px" }}>
+                    <a
+                      href={item.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontFamily: "monospace", fontSize: "11px", color: "var(--accent)", wordBreak: "break-all" }}
+                    >
+                      {item.url}
+                    </a>
+                  </td>
+                  <td style={tdStyle}>
+                    <span className={`badge ${QUEUE_STATUS_BADGE[item.status] || "badge-gray"}`}>
+                      {item.status}
+                    </span>
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    <span style={{ fontSize: "12px", fontWeight: 600, color: attemptsColor }}>
+                      {retryCount} / {maxRetries}
+                    </span>
+                    {!isTerminal && (
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "2px" }}>
+                        {maxRetries - retryCount} left
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ ...tdStyle, fontSize: "11px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                    {item.updated_at ? item.updated_at.slice(0, 19).replace("T", " ") : "—"}
+                  </td>
+                  <td style={{ ...tdStyle, maxWidth: "220px", fontSize: "11px", color: "var(--red)" }}>
+                    {item.error_msg || "—"}
+                  </td>
+                  <td style={tdStyle}>
+                    <button
+                      className="btn-danger"
+                      style={{ padding: "3px 10px", fontSize: "12px" }}
+                      onClick={() => deleteItem(item.id)}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -1275,7 +1478,7 @@ function ConfigSection() {
               <input
                 value={cfg.anthropic_model || ""}
                 onChange={(e) => setCfg({ ...cfg, anthropic_model: e.target.value })}
-                placeholder="claude-sonnet-4-20250514"
+                placeholder="claude-sonnet-4-6"
               />
             </label>
           )}

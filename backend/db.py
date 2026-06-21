@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse, unquote
@@ -215,6 +215,7 @@ class IBrowserCaptureQueueRepository(Protocol):
     def get_all(self) -> list[dict[str, Any]]: ...
     def delete(self, item_id: int) -> None: ...
     def delete_done(self) -> None: ...
+    def delete_all(self) -> None: ...
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -459,7 +460,21 @@ class PostgresJobRepository(_BaseRepo):
     def get_by_url(self, url: str) -> dict[str, Any] | None:
         cur = self._execute("SELECT * FROM jobs WHERE url = %s", (url,))
         row = cur.fetchone()
-        return _row_to_dict(row) if row else None
+        if row:
+            return _row_to_dict(row)
+        # ai: claude-sonnet-4-6 | 2026-06-20
+        # Fallback: match stored URLs that share the same base (path without query/fragment).
+        # Handles auth-token URLs like WTTJ email links — the stored URL may have a ?token=
+        # but the captured URL has it stripped by normalization.
+        base_url = urlparse(url)._replace(query="", fragment="").geturl()
+        if base_url != url:
+            cur = self._execute(
+                "SELECT * FROM jobs WHERE split_part(url, '?', 1) = %s LIMIT 1",
+                (base_url,),
+            )
+            row = cur.fetchone()
+            return _row_to_dict(row) if row else None
+        return None
 
     def get_not_a_fit_with_feedback(self, limit: int = 20) -> list[dict[str, Any]]:
         cur = self._execute(
@@ -1433,11 +1448,24 @@ class PostgresEmailSubjectRuleRepository(_BaseRepo):
 
 
 # ai: claude-sonnet-4-6 | 2026-06-16
+BROWSER_QUEUE_MAX_RETRIES = 5
+
+
 class PostgresBrowserCaptureQueueRepository(_BaseRepo):
     """Queue of URLs to be captured by the browser extension."""
 
+    # ai: claude-sonnet-4-6 | 2026-06-20
     def enqueue(self, url: str, site_name: str) -> int:
+        """Insert a URL into the queue, or return the existing row id if it is already active."""
         now = datetime.now(UTC).isoformat(timespec="seconds")
+        existing = self._execute(
+            "SELECT id FROM browser_capture_queue"
+            " WHERE split_part(url, '?', 1) = split_part(%s, '?', 1)"
+            " AND status IN ('pending', 'processing')",
+            (url,),
+        ).fetchone()
+        if existing:
+            return existing["id"]
         cur = self._execute(
             "INSERT INTO browser_capture_queue (url, site_name, status, created_at, updated_at)"
             " VALUES (%s, %s, 'pending', %s, %s) RETURNING id",
@@ -1445,13 +1473,20 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         )
         return cur.fetchone()["id"]
 
+    # ai: claude-sonnet-4-6 | 2026-06-21
     def claim_pending(self, limit: int = 10) -> list[dict[str, Any]]:
         now = datetime.now(UTC).isoformat(timespec="seconds")
         stale_cutoff = (datetime.now(UTC) - timedelta(minutes=10)).isoformat(timespec="seconds")
+        # Stale processing items are re-queued with an incremented retry_count.
+        # Once retry_count reaches the max they are marked failed instead.
         self._execute(
-            "UPDATE browser_capture_queue SET status = 'pending', updated_at = %s"
+            "UPDATE browser_capture_queue"
+            " SET retry_count = retry_count + 1,"
+            "     status = CASE WHEN retry_count + 1 >= %s THEN 'failed' ELSE 'pending' END,"
+            "     error_msg = CASE WHEN retry_count + 1 >= %s THEN 'Max retries exceeded' ELSE error_msg END,"
+            "     updated_at = %s"
             " WHERE status = 'processing' AND updated_at < %s",
-            (now, stale_cutoff),
+            (BROWSER_QUEUE_MAX_RETRIES, BROWSER_QUEUE_MAX_RETRIES, now, stale_cutoff),
         )
         cur = self._execute(
             "SELECT id, url, site_name FROM browser_capture_queue"
@@ -1475,16 +1510,22 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
             return
         now = datetime.now(UTC).isoformat(timespec="seconds")
         placeholders = ", ".join(["%s"] * len(urls))
+        # ai: claude-sonnet-4-6 | 2026-06-20
+        # Also match by base URL (strip query) so token-bearing queue items (e.g. WTTJ
+        # email links) are marked done when the captured URL has the token stripped.
         self._execute(
             f"UPDATE browser_capture_queue SET status = 'done', updated_at = %s"
-            f" WHERE url IN ({placeholders}) AND status = 'processing'",
-            [now, *urls],
+            f" WHERE (url IN ({placeholders}) OR split_part(url, '?', 1) IN ({placeholders}))"
+            f" AND status = 'processing'",
+            [now, *urls, *urls],
         )
 
+    # ai: claude-sonnet-4-6 | 2026-06-21
     def mark_failed(self, item_id: int, error_msg: str) -> None:
         now = datetime.now(UTC).isoformat(timespec="seconds")
         self._execute(
-            "UPDATE browser_capture_queue SET status = 'failed', error_msg = %s, updated_at = %s"
+            "UPDATE browser_capture_queue"
+            " SET status = 'failed', error_msg = %s, retry_count = retry_count + 1, updated_at = %s"
             " WHERE id = %s",
             (error_msg[:500], now, item_id),
         )
@@ -1502,6 +1543,10 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         self._execute(
             "DELETE FROM browser_capture_queue WHERE status IN ('done', 'failed')"
         )
+
+    # ai: claude-sonnet-4-6 | 2026-06-20
+    def delete_all(self) -> None:
+        self._execute("DELETE FROM browser_capture_queue")
 
 
 # ─── Backward-compat aliases (app.py imports these names) ────────────────────
@@ -1760,18 +1805,24 @@ def _migrate(conn: Any) -> None:
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS browser_capture_queue (
-            id         SERIAL PRIMARY KEY,
-            url        TEXT NOT NULL,
-            site_name  TEXT NOT NULL DEFAULT '',
-            status     TEXT NOT NULL DEFAULT 'pending',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            error_msg  TEXT NOT NULL DEFAULT ''
+            id          SERIAL PRIMARY KEY,
+            url         TEXT NOT NULL,
+            site_name   TEXT NOT NULL DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'pending',
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            error_msg   TEXT NOT NULL DEFAULT '',
+            retry_count INTEGER NOT NULL DEFAULT 0
         )
     """)
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_browser_capture_queue_status"
         " ON browser_capture_queue (status, created_at)"
+    )
+    # ai: claude-sonnet-4-6 | 2026-06-21
+    cur.execute(
+        "ALTER TABLE browser_capture_queue"
+        " ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0"
     )
 
     conn.commit()
@@ -1995,19 +2046,28 @@ def _migrate_sqlite(conn: Any) -> None:
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS browser_capture_queue (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            url        TEXT NOT NULL,
-            site_name  TEXT NOT NULL DEFAULT '',
-            status     TEXT NOT NULL DEFAULT 'pending',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            error_msg  TEXT NOT NULL DEFAULT ''
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            url         TEXT NOT NULL,
+            site_name   TEXT NOT NULL DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'pending',
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            error_msg   TEXT NOT NULL DEFAULT '',
+            retry_count INTEGER NOT NULL DEFAULT 0
         )
     """)
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_browser_capture_queue_status"
         " ON browser_capture_queue (status, created_at)"
     )
+    # ai: claude-sonnet-4-6 | 2026-06-21
+    try:
+        cur.execute(
+            "ALTER TABLE browser_capture_queue ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
 
     conn.commit()
 
@@ -2221,13 +2281,14 @@ def _create_tables(conn: Any) -> None:
         """,
         """
         CREATE TABLE IF NOT EXISTS browser_capture_queue (
-            id         SERIAL PRIMARY KEY,
-            url        TEXT NOT NULL,
-            site_name  TEXT NOT NULL DEFAULT '',
-            status     TEXT NOT NULL DEFAULT 'pending',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            error_msg  TEXT NOT NULL DEFAULT ''
+            id          SERIAL PRIMARY KEY,
+            url         TEXT NOT NULL,
+            site_name   TEXT NOT NULL DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'pending',
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            error_msg   TEXT NOT NULL DEFAULT '',
+            retry_count INTEGER NOT NULL DEFAULT 0
         )
         """,
         """
@@ -2447,13 +2508,14 @@ def _create_tables_sqlite(conn: Any) -> None:
         """,
         """
         CREATE TABLE IF NOT EXISTS browser_capture_queue (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            url        TEXT NOT NULL,
-            site_name  TEXT NOT NULL DEFAULT '',
-            status     TEXT NOT NULL DEFAULT 'pending',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            error_msg  TEXT NOT NULL DEFAULT ''
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            url         TEXT NOT NULL,
+            site_name   TEXT NOT NULL DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'pending',
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            error_msg   TEXT NOT NULL DEFAULT '',
+            retry_count INTEGER NOT NULL DEFAULT 0
         )
         """,
         """
