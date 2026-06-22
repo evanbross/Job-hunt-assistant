@@ -60,6 +60,7 @@ from backend.utils import (
     expand_board_url_parsed_jobs,
     get_repos,
     get_subject_rule_match,
+    is_near_certain_duplicate,
 )
 
 logger = logging.getLogger(__name__)
@@ -272,6 +273,7 @@ def _run_scan(rescan_all: bool = False) -> None:
             pending_review_jobs: int = 0
             triage_jobs: int = 0
             possible_duplicate_jobs: int = 0
+            auto_skipped_duplicate_jobs: int = 0
             low_fit_score_jobs: int = 0
             scoring_failed_jobs: int = 0
             moved_successful_emails: int = 0
@@ -528,8 +530,8 @@ def _run_scan(rescan_all: bool = False) -> None:
                         confidence = "high"
 
                     # Check for exact URL and fuzzy title/company duplicates.
-                    # ai: claude-sonnet-4-6 | 2026-06-09
-                    _tracked_status, tracking_source, duplicate_hint, duplicate_of_id = db_match_for_job(
+                    # ai: claude-sonnet-4-6 | 2026-06-10
+                    _tracked_status, tracking_source, duplicate_hint, duplicate_of_id, match_scores = db_match_for_job(
                         job_title=str(parsed.get("job_title") or ""),
                         company=str(parsed.get("company") or ""),
                         job_url=str(parsed.get("url") or ""),
@@ -537,7 +539,10 @@ def _run_scan(rescan_all: bool = False) -> None:
                         dedup_checker=dup_checker,
                     )
 
-                    if duplicate_hint:
+                    # ai: claude-sonnet-4-6 | 2026-06-10
+                    if duplicate_hint and confidence == "high" and is_near_certain_duplicate(tracking_source, match_scores):
+                        status = "skipped"
+                    elif duplicate_hint:
                         status = "possible_duplicate"
                     elif confidence == "high":
                         status = "pending_review"
@@ -586,10 +591,22 @@ def _run_scan(rescan_all: bool = False) -> None:
                         "confidence_score": parsed.get("confidence_score", 50),
                     }
 
+                    # ai: claude-sonnet-4-6 | 2026-06-10
+                    if status == "skipped":
+                        job_data["skip_reason"] = "duplicate"
+                        job_data["skip_feedback"] = (
+                            f"Auto-rejected: near-certain duplicate of job #{duplicate_of_id} ({duplicate_hint})."
+                        )
+
                     # Score high-confidence jobs immediately
-                    outcome = "queued for review" if status == "pending_review" else status.replace("_", " ")
+                    if status == "skipped":
+                        outcome = "auto-rejected duplicate"
+                    elif status == "pending_review":
+                        outcome = "queued for review"
+                    else:
+                        outcome = status.replace("_", " ")
                     scoring_error = ""
-                    if confidence == "high":
+                    if confidence == "high" and status != "skipped":
                         try:
                             score_result = scorer.score(
                                 job_title=parsed.get("job_title", ""),
@@ -613,12 +630,12 @@ def _run_scan(rescan_all: bool = False) -> None:
                             logger.warning("Scoring failed for %s job %d: %s", msg_id, job_idx, exc)
                     elif status == "triage":
                         outcome = "parser confidence low"
-                    if duplicate_hint:
+                    if duplicate_hint and status != "skipped":
                         outcome = "possible duplicate"
 
                     job_data, import_warnings = normalize_and_validate(job_data)
                     job_data["import_warnings"] = import_warnings_to_json(import_warnings)
-                    if import_warnings and job_data["status"] != "possible_duplicate":
+                    if import_warnings and job_data["status"] not in ("possible_duplicate", "skipped"):
                         job_data["status"] = "triage"
                         status = "triage"
                         if outcome not in ("low fit score", "possible duplicate"):
@@ -629,7 +646,9 @@ def _run_scan(rescan_all: bool = False) -> None:
                     job_title = str(parsed.get("job_title") or "").strip()
                     if job_title:
                         job_titles.append(job_title)
-                    if status == "possible_duplicate":
+                    if status == "skipped":
+                        auto_skipped_duplicate_jobs += 1
+                    elif status == "possible_duplicate":
                         possible_duplicate_jobs += 1
                     elif status == "triage":
                         triage_jobs += 1
@@ -720,6 +739,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                     "pending_review_jobs": pending_review_jobs,
                     "triage_jobs": triage_jobs,
                     "possible_duplicate_jobs": possible_duplicate_jobs,
+                    "auto_skipped_duplicate_jobs": auto_skipped_duplicate_jobs,
                     "low_fit_score_jobs": low_fit_score_jobs,
                     "scoring_failed_jobs": scoring_failed_jobs,
                     "move_successfully_processed_emails": move_successfully_processed_emails,

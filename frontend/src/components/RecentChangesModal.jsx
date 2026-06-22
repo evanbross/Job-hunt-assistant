@@ -5,7 +5,7 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Modal from "./common/Modal.jsx";
 
 const STATUS_LABELS = {

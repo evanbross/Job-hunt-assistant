@@ -5,7 +5,6 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
-import React from "react";
 
 /**
  * Standard Metric Item component for showing a single count/label pair.

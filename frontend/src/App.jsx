@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import JobQueue from "./components/JobQueue.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import SetupWizardPanel from "./components/SetupWizardPanel.jsx";
@@ -43,6 +43,7 @@ import CareerSiteResultsPanel from "./components/CareerSiteResultsPanel.jsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
 import StatsBar from "./components/StatsBar.jsx";
 import GreenhouseScanPanel from "./components/GreenhouseScanPanel.jsx";
+import JobanniScanPanel from "./components/JobanniScanPanel.jsx";
 import WellfoundScanPanel from "./components/WellfoundScanPanel.jsx";
 import Modal from "./components/common/Modal.jsx";
 import RecentChangesModal from "./components/RecentChangesModal.jsx";
@@ -175,7 +176,7 @@ export default function App() {
     }
     return "queue";
   });
-  const [triageCount, setTriageCount] = useState(0);
+  const [, setTriageCount] = useState(0);
   const [authStatus, setAuthStatus] = useState(null); // null | true | false
   const [emailFocusId, setEmailFocusId] = useState(null);
   const [focusedJobCard, setFocusedJobCard] = useState(null);
@@ -436,6 +437,7 @@ export default function App() {
           <>
             <GreenhouseScanPanel />
             <WellfoundScanPanel />
+            <JobanniScanPanel />
             <CareerSiteResultsPanel />
           </>
         )}
@@ -586,10 +588,30 @@ function ListenerImportDialog({ state, onClose }) {
         <div style={{ marginTop: "18px", paddingTop: "14px", borderTop: "1px solid var(--border)" }}>
           <MetricGrid>
             <MetricItem label="queued" value={result.queued || 0} tone="green" />
+            <MetricItem label="enriched" value={result.enriched || 0} tone={result.enriched ? "green" : ""} />
+            <MetricItem label="repaired" value={result.repaired || 0} tone={result.repaired ? "green" : ""} />
             <MetricItem label="skipped" value={result.skipped || 0} />
-            <MetricItem label="repaired" value={result.repaired || 0} tone="green" />
             <MetricItem label="failed" value={result.failed || 0} tone={result.failed ? "red" : ""} />
           </MetricGrid>
+          {/* ai: claude-sonnet-4-6 | 2026-06-22 */}
+          {[...(result.skipped_details || []), ...(result.enriched_details || [])].map((d, i) => (
+            <div
+              key={i}
+              style={{
+                marginTop: "10px",
+                padding: "8px 10px",
+                background: "var(--surface2)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                fontSize: "12px",
+              }}
+            >
+              <div style={{ fontWeight: 600, color: d.action === "enriched" ? "var(--green)" : "var(--text-muted)", marginBottom: "2px", textTransform: "uppercase", fontSize: "11px" }}>
+                {d.action} {d.job_title ? `· ${d.job_title}` : ""}{d.company ? ` @ ${d.company}` : ""}
+              </div>
+              <div style={{ color: "var(--text)" }}>{d.reason}</div>
+            </div>
+          ))}
         </div>
       )}
     </Modal>

@@ -52,6 +52,7 @@ import logging
 import pathlib
 import re
 import socket
+import time
 import urllib.error
 from datetime import datetime, UTC
 from typing import Any
@@ -61,6 +62,7 @@ from backend.celery_app import celery_app
 from backend.duplicate_checker import DuplicateChecker
 from backend.import_repair import (
     post_repair_duplicate_check,
+    repair_ats_url_company,
     repair_existing_job_company,
     repair_linkedin_company,
 )
@@ -188,6 +190,13 @@ def _llm_enrich_batch(url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _enrich_job_description(repos: dict[str, Any], job: dict[str, Any], description: str) -> None:
+    # ai: claude-sonnet-4-6 | 2026-06-21
+    job_id = job.get("id")
+    t0 = time.monotonic()
+    logger.info(
+        "_enrich_job_description: starting FitScorer for job=%s text_len=%d",
+        job_id, len(description),
+    )
     resume_row = repos["resume"].get_latest()
     resume_text = str(resume_row.get("content") or "") if resume_row else ""
     enrich_job_description(
@@ -198,6 +207,7 @@ def _enrich_job_description(repos: dict[str, Any], job: dict[str, Any], descript
         penalty_rules=repos["penalties"].get_enabled(),
         fit_feedback=repos["jobs"].get_not_a_fit_with_feedback(),
     )
+    logger.info("_enrich_job_description: FitScorer done in %.1fs for job=%s", time.monotonic() - t0, job_id)
 
 
 def _find_duplicate_original(
@@ -237,6 +247,12 @@ def run_import_task(
     Returns a summary dict: {queued, skipped, repaired, failed, capture_source}.
     """
     total = len(extracted)
+    # ai: claude-sonnet-4-6 | 2026-06-21
+    t_task_start = time.monotonic()
+    logger.info(
+        "run_import_task: started task=%s total=%d queue_url=%s",
+        self.request.id, total, str(body.get("queue_url") or "")[:120],
+    )
     self.update_state(
         state="PROGRESS",
         meta={
@@ -252,7 +268,24 @@ def run_import_task(
 
     # One bundled LLM call to fill in missing job_title/company from listing_text.
     # Falls back silently if the LLM is unavailable — the loop below is unaffected.
+    # ai: claude-sonnet-4-6 | 2026-06-21
+    t_llm = time.monotonic()
+    needs_llm_enrich = any(
+        len(str(r.get("listing_text") or "")) >= _LLM_ENRICH_MIN_TEXT
+        and (not str(r.get("job_title") or "").strip() or not str(r.get("company") or "").strip())
+        for r in extracted
+    )
+    if needs_llm_enrich:
+        logger.info("run_import_task: _llm_enrich_batch starting for %d rows (missing title/company)", total)
     extracted = _llm_enrich_batch(extracted)
+    if needs_llm_enrich:
+        logger.info("run_import_task: _llm_enrich_batch done in %.1fs", time.monotonic() - t_llm)
+
+    # ai: claude-sonnet-4-6 | 2026-06-21
+    # queue_url is the original URL stored in the browser capture queue before any SPA
+    # redirect or query-param normalization. Used as a fallback when the captured URL
+    # (e.g. WTTJ canonical URL, or URL with JWT token stripped) doesn't match the DB.
+    body_queue_url = str(body.get("queue_url") or "").strip() or None
 
     with get_repos() as repos:
         known_jobs: list[dict] = repos["jobs"].get_all_ordered()
@@ -297,10 +330,23 @@ def run_import_task(
             )
 
             existing_job = repos["jobs"].get_by_url(url)
+            # ai: claude-sonnet-4-6 | 2026-06-21
+            # Fallback: WTTJ email links store a URL with a JWT token in the DB, but
+            # _normalize_public_job_url strips query params before lookup. If the
+            # normalized URL misses, try the original queue URL (still has the token).
+            if existing_job is None and body_queue_url and body_queue_url != url:
+                existing_job = repos["jobs"].get_by_url(body_queue_url)
+                if existing_job is not None:
+                    logger.info(
+                        "queue_url fallback matched job %d (captured url=%s, queue_url=%s)",
+                        existing_job["id"], url, body_queue_url,
+                    )
             if existing_job is not None:
                 repaired_ok = repair_existing_job_company(
                     repos["jobs"], existing_job, url_row
                 )
+                if not repaired_ok:
+                    repaired_ok = repair_ats_url_company(repos["jobs"], existing_job)
                 if not repaired_ok and platform == "LinkedIn":
                     repaired_ok = repair_linkedin_company(
                         repos["jobs"], existing_job, url
@@ -322,6 +368,11 @@ def run_import_task(
                             repos["jobs"], updated, known_jobs
                         )
                         repos["conn"].commit()
+                # ai: claude-sonnet-4-6 | 2026-06-22
+                incoming_len = len(incoming_text)
+                existing_desc_len = len(str(
+                    existing_job.get("job_description") or existing_job.get("raw_email_snippet") or ""
+                ))
                 if is_richer_description(incoming_text, existing_job):
                     _enrich_job_description(repos, existing_job, incoming_text)
                     repos["conn"].commit()
@@ -334,11 +385,28 @@ def run_import_task(
                             existing_job,
                         )
                     )
+                    skip_reason = "Job already in database; description updated from captured content."
+                elif incoming_len < 300:
+                    skip_reason = (
+                        f"Captured content too short to update description "
+                        f"({incoming_len} chars captured; 300 required). "
+                        f"The page may not have fully rendered, or the link may have expired."
+                    )
+                    logger.warning(
+                        "skip: job %d — captured only %d chars (url=%s)",
+                        existing_job.get("id"), incoming_len, url,
+                    )
+                else:
+                    skip_reason = (
+                        f"Captured content ({incoming_len} chars) was not significantly "
+                        f"richer than the stored description ({existing_desc_len} chars); "
+                        f"need {existing_desc_len + 300} chars to trigger an update."
+                    )
                 skipped += 1
                 skipped_details.append(
                     _import_outcome_detail(
                         url_row,
-                        "A job with this URL is already in the database, so a duplicate queue card was not created.",
+                        skip_reason,
                         "skipped",
                         existing_job,
                     )
@@ -378,6 +446,12 @@ def run_import_task(
                         "failed": failed,
                     },
                 )
+                # ai: claude-sonnet-4-6 | 2026-06-21
+                t_ingest = time.monotonic()
+                logger.info(
+                    "run_import_task [%d/%d]: ingest starting url=%s platform=%s text_len=%d",
+                    i + 1, total, url, platform, len(incoming_text),
+                )
                 ingest_result = service.ingest(
                     incoming_text,
                     source_url=url,
@@ -388,9 +462,18 @@ def run_import_task(
                     trigger=body.get("import_trigger", "ui"),
                 )
                 new_job = ingest_result.job
+                logger.info(
+                    "run_import_task [%d/%d]: ingest done in %.1fs status=%s job_id=%s title=%s",
+                    i + 1, total, time.monotonic() - t_ingest,
+                    new_job.get("status"), new_job.get("id"), str(new_job.get("job_title") or "")[:60],
+                )
                 if new_job.get("status") == "possible_duplicate":
                     original = _find_duplicate_original(new_job, known_jobs)
                     if original and is_richer_description(incoming_text, original):
+                        logger.info(
+                            "run_import_task [%d/%d]: enriching original job %s via possible_duplicate path",
+                            i + 1, total, original.get("id"),
+                        )
                         _enrich_job_description(repos, original, incoming_text)
                         repos["jobs"].delete(int(new_job["id"]))
                         repos["conn"].commit()
@@ -427,6 +510,11 @@ def run_import_task(
 
         _record_capture_source(capture_source, repos, body)
 
+        # ai: claude-sonnet-4-6 | 2026-06-21
+        logger.info(
+            "run_import_task: completed in %.1fs — queued=%d skipped=%d enriched=%d repaired=%d filtered=%d failed=%d",
+            time.monotonic() - t_task_start, queued, skipped, enriched, repaired, filtered, failed,
+        )
         return {
             "queued": queued,
             "skipped": skipped,

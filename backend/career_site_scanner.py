@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import UTC, datetime
 from html import unescape
 from html.parser import HTMLParser
@@ -197,6 +198,20 @@ class _TextParser(HTMLParser):
 
 def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", unescape(text)).strip()
+
+
+# ai: claude-sonnet-4-6 | 2026-06-14
+def _html_to_text(html: str) -> str:
+    """Strip tags from an HTML description field returned by an ATS API.
+
+    Some APIs (e.g. Greenhouse) HTML-entity-encode the markup itself
+    (e.g. "&lt;div&gt;...&lt;/div&gt;"), so the field must be unescaped into real
+    tags before HTMLParser can strip them. Unescaping plain HTML (e.g. Workday's
+    "&#39;"/"&quot;" entities within already-real tags) is also safe and correct.
+    """
+    parser = _TextParser()
+    parser.feed(unescape(html))
+    return _clean_text(" ".join(parser.text_chunks))
 
 
 def _fetch_html(url: str) -> str:
@@ -556,6 +571,34 @@ def _workday_job_url(site_url: str, external_path: str) -> str:
     return f"{base}{path}"
 
 
+# ai: claude-sonnet-4-6 | 2026-06-16
+def _is_workday_single_job_url(parsed: ParseResult) -> bool:
+    """True for a Workday URL pointing at one job."""
+    return _workday_single_job_parts(parsed) is not None
+
+
+# ai: claude-sonnet-4-6 | 2026-06-14
+def _workday_single_job_parts(parsed: ParseResult) -> tuple[str, str, str] | None:
+    """Extract (tenant, site_slug, job_posting_id) from a single Workday job URL.
+
+    e.g. https://acme.wd1.myworkdayjobs.com/en-US/External/job/Loc/Title_JR123
+    -> ("acme", "External", "Title_JR123")
+    """
+    host_parts = parsed.netloc.split(".")
+    if not host_parts:
+        return None
+    tenant = host_parts[0]
+    segments = [s for s in parsed.path.split("/") if s]
+    if "job" not in segments:
+        return None
+    job_index = segments.index("job")
+    before_job = [s for s in segments[:job_index] if not re.match(r"^[a-z]{2}-[A-Z]{2}$", s)]
+    after_job = segments[job_index + 1:]
+    if not before_job or not after_job:
+        return None
+    return tenant, before_job[-1], after_job[-1]
+
+
 def _confidence_for(job_title: str, job_text: str) -> tuple[str, int]:
     score = 55
     if len(job_title) >= 8:
@@ -631,6 +674,15 @@ class CareerSiteScanner:
             except Exception as exc:
                 self._record_failure(platform="lever", stage="adapter", exc=exc)
                 logger.warning("Lever adapter failed for %s: %s", site_url, exc)
+        elif "myworkdayjobs.com" in host and _is_workday_single_job_url(parsed):
+            try:
+                return ScanOutcome(
+                    jobs=[self.scan_single_job_url(site_name, site_url)],
+                    detected_platform="workday",
+                )
+            except Exception as exc:
+                self._record_failure(platform="workday", stage="adapter", exc=exc)
+                logger.warning("Workday single-job adapter failed for %s: %s", site_url, exc)
         elif "myworkdayjobs.com" in host:
             try:
                 return ScanOutcome(
@@ -676,25 +728,55 @@ class CareerSiteScanner:
             self._record_failure(platform="generic", stage="fallback", exc=exc)
             raise
 
+    # ai: claude-sonnet-4-6 | 2026-06-21
     def scan_single_job_url(self, site_name: str, job_url: str) -> CareerSiteJob:
+        t0 = time.monotonic()
+        logger.info("scan_single_job_url: starting for %s", job_url)
         parsed = urlparse(job_url)
         if "greenhouse.io" in parsed.netloc.lower() and _is_greenhouse_single_job_url(parsed):
+            logger.info("scan_single_job_url: trying Greenhouse API for %s", job_url)
             try:
-                return self._greenhouse_single_job_from_api(site_name, job_url, parsed)
+                result = self._greenhouse_single_job_from_api(site_name, job_url, parsed)
+                logger.info("scan_single_job_url: Greenhouse API succeeded in %.1fs", time.monotonic() - t0)
+                return result
             except Exception as exc:
-                logger.debug("Greenhouse API failed for %s, falling back to HTML: %s", job_url, exc)
+                logger.info(
+                    "scan_single_job_url: Greenhouse API failed in %.1fs, falling back to HTML: %s",
+                    time.monotonic() - t0, exc,
+                )
+
+        # ai: claude-sonnet-4-6 | 2026-06-14
+        if "myworkdayjobs.com" in parsed.netloc.lower() and _is_workday_single_job_url(parsed):
+            logger.info("scan_single_job_url: trying Workday API for %s", job_url)
+            try:
+                result = self._workday_single_job_from_api(site_name, job_url, parsed)
+                logger.info("scan_single_job_url: Workday API succeeded in %.1fs", time.monotonic() - t0)
+                return result
+            except Exception as exc:
+                logger.info(
+                    "scan_single_job_url: Workday API failed in %.1fs, falling back to HTML: %s",
+                    time.monotonic() - t0, exc,
+                )
 
         job_id = _linkedin_job_id(parsed)
         if job_id:
+            logger.info("scan_single_job_url: trying LinkedIn guest API for job_id=%s", job_id)
             try:
-                return self._linkedin_job_from_guest_api(site_name, job_url, job_id)
+                result = self._linkedin_job_from_guest_api(site_name, job_url, job_id)
+                logger.info("scan_single_job_url: LinkedIn guest API succeeded in %.1fs", time.monotonic() - t0)
+                return result
             except Exception as exc:
-                logger.debug("LinkedIn guest API failed for %s, falling back to HTML: %s", job_url, exc)
+                logger.info(
+                    "scan_single_job_url: LinkedIn guest API failed in %.1fs, falling back to HTML: %s",
+                    time.monotonic() - t0, exc,
+                )
 
         # Fetch HTML while capturing the final URL after any HTTP redirects.
         # Greenhouse tracking/redirect links resolve to job-boards.greenhouse.io
         # pages that are JS-rendered; detecting the final URL lets us use the
         # public API instead of scraping empty HTML.
+        logger.info("scan_single_job_url: fetching HTML for %s (timeout=%ds)", job_url, _REQUEST_TIMEOUT_SECONDS)
+        t_fetch = time.monotonic()
         req = Request(
             job_url,
             headers={
@@ -714,28 +796,44 @@ class CareerSiteScanner:
             except Exception:
                 final_url = job_url
         page_html = raw.decode(charset, errors="replace")
+        logger.info(
+            "scan_single_job_url: HTML fetch done in %.1fs — %d bytes, final_url=%s",
+            time.monotonic() - t_fetch, len(raw), final_url,
+        )
 
         if final_url != job_url:
             final_parsed = urlparse(final_url)
             if "greenhouse.io" in final_parsed.netloc.lower() and _is_greenhouse_single_job_url(final_parsed):
+                logger.info("scan_single_job_url: redirect → Greenhouse API for %s", final_url)
                 try:
-                    return self._greenhouse_single_job_from_api(site_name, final_url, final_parsed)
+                    result = self._greenhouse_single_job_from_api(site_name, final_url, final_parsed)
+                    logger.info("scan_single_job_url: redirected Greenhouse API succeeded in %.1fs total", time.monotonic() - t0)
+                    return result
                 except Exception as exc:
-                    logger.debug("Greenhouse API failed for redirected URL %s: %s", final_url, exc)
+                    logger.info("scan_single_job_url: redirected Greenhouse API failed: %s", exc)
             redirect_job_id = _linkedin_job_id(final_parsed)
             if redirect_job_id:
+                logger.info("scan_single_job_url: redirect → LinkedIn guest API for job_id=%s", redirect_job_id)
                 try:
-                    return self._linkedin_job_from_guest_api(site_name, final_url, redirect_job_id)
+                    result = self._linkedin_job_from_guest_api(site_name, final_url, redirect_job_id)
+                    logger.info("scan_single_job_url: redirected LinkedIn API succeeded in %.1fs total", time.monotonic() - t0)
+                    return result
                 except Exception as exc:
-                    logger.debug("LinkedIn guest API failed for redirected URL %s: %s", final_url, exc)
+                    logger.info("scan_single_job_url: redirected LinkedIn API failed: %s", exc)
 
         # Ashby single-job pages are JS-rendered; extract from embedded __NEXT_DATA__ JSON
         if "jobs.ashbyhq.com" in urlparse(final_url).netloc.lower():
+            logger.info("scan_single_job_url: trying Ashby __NEXT_DATA__ extraction")
             ashby_posting = _ashby_job_from_html(page_html)
             if ashby_posting:
+                logger.info("scan_single_job_url: Ashby extraction succeeded in %.1fs total", time.monotonic() - t0)
                 return self._ashby_job_from_posting(site_name, final_url, ashby_posting)
+            logger.info("scan_single_job_url: Ashby extraction found nothing, falling through to generic parser")
 
-        return self._job_from_detail_page(site_name, final_url, page_html)
+        logger.info("scan_single_job_url: parsing HTML with generic detail-page parser")
+        result = self._job_from_detail_page(site_name, final_url, page_html)
+        logger.info("scan_single_job_url: completed in %.1fs total, job_text length=%d", time.monotonic() - t0, len(result.get("job_text") or ""))
+        return result
 
     def _ashby_job_from_posting(
         self, site_name: str, job_url: str, posting: dict
@@ -803,6 +901,40 @@ class CareerSiteScanner:
             confidence_score=confidence_score,
         )
 
+    # ai: claude-sonnet-4-6 | 2026-06-14
+    def _workday_single_job_from_api(
+        self, site_name: str, job_url: str, parsed: ParseResult
+    ) -> CareerSiteJob:
+        """Fetch a single Workday job posting via its CXS detail API.
+
+        Workday job pages are JS-rendered, so scraping the raw HTML returns no
+        text. The CXS API used by the site's own frontend returns the full
+        posting (title, location, HTML description) as JSON.
+        """
+        parts = _workday_single_job_parts(parsed)
+        if not parts:
+            raise ValueError(f"Cannot extract Workday tenant/site/job from {job_url}")
+        tenant, site_slug, job_posting_id = parts
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        api_url = f"{base}/wday/cxs/{tenant}/{site_slug}/job/{job_posting_id}"
+        data = _fetch_json(api_url)
+        info = data.get("jobPostingInfo", {})
+        title = _clean_text(str(info.get("title", ""))) or "Untitled Job"
+        location = _clean_text(str(info.get("location", "")))
+        description = _html_to_text(str(info.get("jobDescription", "")))
+        text = f"Location: {location}. {description}" if location else description
+        confidence_level, confidence_score = _confidence_for(title, text)
+        return CareerSiteJob(
+            site_name=site_name,
+            site_url=job_url,
+            job_title=title[:300],
+            job_url=job_url,
+            job_text=text[:8000],
+            posted_at=_normalize_date(str(info.get("startDate") or "")),
+            confidence_level=confidence_level,
+            confidence_score=confidence_score,
+        )
+
     def _greenhouse_single_job_from_api(
         self, site_name: str, job_url: str, parsed: ParseResult
     ) -> CareerSiteJob:
@@ -815,7 +947,7 @@ class CareerSiteScanner:
         )
         title = _clean_text(data.get("title", "")) or "Untitled Job"
         company = _clean_text((data.get("company") or {}).get("name", "")) or token
-        content = _clean_text(data.get("content", ""))
+        content = _html_to_text(data.get("content", ""))
         location = _clean_text((data.get("location") or {}).get("name", ""))
         text = f"Location: {location}. {content}" if location else content
         confidence_level, confidence_score = _confidence_for(title, text)
@@ -851,7 +983,7 @@ class CareerSiteScanner:
         for row in data.get("jobs", []):
             title = _clean_text(row.get("title", ""))
             job_url = row.get("absolute_url", "")
-            content = _clean_text(row.get("content", ""))
+            content = _html_to_text(row.get("content", ""))
             location = _clean_text((row.get("location") or {}).get("name", ""))
             text = content
             if location:

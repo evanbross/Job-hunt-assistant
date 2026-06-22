@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { parseUtcTimestamp } from "../utils/dateTimeUtils.js";
 import { isManualCollectionSite } from "../utils/careerSiteUtils.js";
 import { CareerScanProgressPopup, CareerScanSummaryPopup } from "./common/CareerScanModals.jsx";
@@ -59,7 +59,12 @@ export default function CareerSiteScanBanner() {
   const fetchDueSites = useCallback(async () => {
     try {
       const res = await fetch("/api/career-sites/recapture-due");
-      if (res.ok) setDueSites(await res.json());
+      if (res.ok) {
+        const sites = await res.json();
+        // ai: claude-sonnet-4-6 | 2026-06-17
+        sites.sort((a, b) => (a.name || a.url || "").localeCompare(b.name || b.url || ""));
+        setDueSites(sites);
+      }
     } catch {
       /* no-op */
     }

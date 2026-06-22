@@ -51,6 +51,7 @@ export function applicationRowFromSheet(row) {
     notes: cellValue(cells, 6),
     stages,
     duplicate_of_id: row.duplicate_of_id ?? null, // ai: claude-sonnet-4-6 | 2026-06-09
+    skip_reason: row.skip_reason ?? null, // ai: claude-sonnet-4-6 | 2026-06-10
   };
 }
 
@@ -67,11 +68,14 @@ export function normalizeCompany(value) {
     .trim();
 }
 
+// ai: claude-sonnet-4-6 | 2026-06-16
 export function rowMatchesCompany(rowCompany, targetCompany) {
   const rowName = normalizeCompany(rowCompany);
   const targetName = normalizeCompany(targetCompany);
   if (!rowName || !targetName) return false;
-  return rowName === targetName;
+  if (rowName === targetName) return true;
+  // Handle merged-word variants (e.g. "obsidiansecurity" vs "obsidian security")
+  return rowName.replace(/\s+/g, "") === targetName.replace(/\s+/g, "");
 }
 
 export function isAppliedStatus(status) {

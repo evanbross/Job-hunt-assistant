@@ -217,6 +217,98 @@ def test_ingest_marks_possible_duplicate_when_sheet_match_exists() -> None:
     assert "Possible duplicate" in result.job["duplicate_hint"]
 
 
+# ai: claude-sonnet-4-6 | 2026-06-14
+def test_ingest_enriches_thin_listener_text_from_job_url() -> None:
+    """A browser-extension capture with only a title + URL should be enriched
+    with the full description fetched from the job URL."""
+    job_repo = StubJobRepo()
+    parser = StubParser(
+        [
+            {
+                "company": "Breezeway",
+                "job_title": "Senior Software Engineer",
+                "url": "https://job-boards.greenhouse.io/breezeway/jobs/5222431008",
+                "source": "Greenhouse",
+                "confidence": "high",
+                "confidence_score": 90,
+                "confidence_reason": "",
+            }
+        ]
+    )
+    long_description = "Full job description text. " * 30  # >= 400 chars
+    scanner = StubCareerSiteScanner(
+        job={
+            "site_name": "",
+            "site_url": "https://job-boards.greenhouse.io/breezeway/jobs/5222431008",
+            "job_title": "Senior Software Engineer",
+            "job_url": "https://job-boards.greenhouse.io/breezeway/jobs/5222431008",
+            "job_text": long_description,
+            "posted_at": None,
+            "confidence_level": "high",
+            "confidence_score": 90,
+        }
+    )
+    service = ManualJobIngestService(
+        job_repo,
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=parser,
+        scorer=StubScorer(score=85),
+        career_site_scanner=scanner,
+    )
+
+    result = service.ingest(
+        "Senior Software Engineer\nURL: https://job-boards.greenhouse.io/breezeway/jobs/5222431008",
+        trigger="listener",
+    )
+
+    assert result.job["raw_email_snippet"] == long_description[:6000]
+
+
+# ai: claude-sonnet-4-6 | 2026-06-14
+def test_ingest_keeps_short_text_when_enrichment_returns_too_little() -> None:
+    """If the URL fetch doesn't return enough content, keep the original text."""
+    job_repo = StubJobRepo()
+    parser = StubParser(
+        [
+            {
+                "company": "Breezeway",
+                "job_title": "Senior Software Engineer",
+                "url": "https://job-boards.greenhouse.io/breezeway/jobs/5222431008",
+                "source": "Greenhouse",
+                "confidence": "high",
+                "confidence_score": 90,
+                "confidence_reason": "",
+            }
+        ]
+    )
+    scanner = StubCareerSiteScanner(
+        job={
+            "site_name": "",
+            "site_url": "https://job-boards.greenhouse.io/breezeway/jobs/5222431008",
+            "job_title": "Senior Software Engineer",
+            "job_url": "https://job-boards.greenhouse.io/breezeway/jobs/5222431008",
+            "job_text": "Too short",
+            "posted_at": None,
+            "confidence_level": "high",
+            "confidence_score": 90,
+        }
+    )
+    short_text = "Senior Software Engineer\nURL: https://job-boards.greenhouse.io/breezeway/jobs/5222431008"
+    service = ManualJobIngestService(
+        job_repo,
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=parser,
+        scorer=StubScorer(score=85),
+        career_site_scanner=scanner,
+    )
+
+    result = service.ingest(short_text, trigger="listener")
+
+    assert result.job["raw_email_snippet"] == short_text[:6000]
+
+
 def test_ingest_from_public_job_url_without_pasted_text() -> None:
     job_repo = StubJobRepo()
     service = ManualJobIngestService(

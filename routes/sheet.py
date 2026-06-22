@@ -75,11 +75,18 @@ def get_application_sheet():
     def _make_row(job: dict) -> dict:
         stages = stages_by_job_id.get(job["id"], [])
         latest_stage = stages[-1] if stages else None
+        # ai: claude-sonnet-4-6 | 2026-06-17
+        status_date = (
+            (latest_stage or {}).get("date")
+            or job.get("date_added_to_sheet")
+            or job.get("date_found")
+            or ""
+        )
         values = [
             job.get("company") or "",
             (latest_stage or {}).get("status") or job.get("status") or "",
             job.get("source") or "",
-            job.get("date_added_to_sheet") or "",
+            status_date,
             job.get("job_title") or "",
             job.get("url") or "",
             job.get("notes") or "",
@@ -89,6 +96,7 @@ def get_application_sheet():
             "cells": [{"column_index": i, "value": v} for i, v in enumerate(values)],
             "stages": stages,
             "duplicate_of_id": job.get("duplicate_of_id"),  # ai: claude-sonnet-4-6 | 2026-06-09
+            "skip_reason": job.get("skip_reason"),  # ai: claude-sonnet-4-6 | 2026-06-10
         }
 
     return jsonify({

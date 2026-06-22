@@ -32,14 +32,14 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 import Modal from "./common/Modal.jsx";
 import StatusBadge from "./common/StatusBadge.jsx";
 import { scoreTone } from "../utils/fitScoringUtils.js";
 import { statusTone } from "../utils/jobQueueUtils.js";
 import { collectionModeLabel, isManualCollectionSite } from "../utils/careerSiteUtils.js";
-import { CareerScanErrorList, CareerScanProgressPopup, CareerScanSummaryPopup } from "./common/CareerScanModals.jsx";
+import { CareerScanProgressPopup, CareerScanSummaryPopup } from "./common/CareerScanModals.jsx";
 
 function getMatchLevel(score) {
   if (score >= 85) return { key: "ideal", label: "Ideal Match" };
@@ -135,6 +135,8 @@ export default function CareerSiteResultsPanel() {
       cancelled = true;
       clearInterval(pollRef.current);
     };
+    // fetch* and pollStatus are redefined every render; run once on mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

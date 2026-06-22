@@ -32,6 +32,8 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+import { SKIP_REASONS } from "./triagePanelUtils.js";
+
 export function scoreDeltaLabel(previousScore, newScore) {
   if (previousScore === null || previousScore === undefined || newScore === null || newScore === undefined) {
     return "";
@@ -58,6 +60,14 @@ export function possibleDuplicateLabel(job) {
     return `Possible Duplicate of #${job.duplicate_of_id}`;
   }
   return "Possible Duplicate";
+}
+
+// ai: claude-sonnet-4-6 | 2026-06-10
+export function skippedLabel(job) {
+  const reason = job && job.skip_reason;
+  if (!reason) return "Skipped";
+  const match = SKIP_REASONS.find((r) => r.key === reason);
+  return `Skipped - ${match ? match.label : String(reason).replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}`;
 }
 
 export function jobCardTabForStatus(status) {

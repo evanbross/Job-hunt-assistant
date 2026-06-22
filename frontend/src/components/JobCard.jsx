@@ -1228,9 +1228,9 @@ export default function JobCard({
           color: "var(--text-muted)",
         }}>
           <strong style={{ color: "var(--green)", display: "block", marginBottom: "4px" }}>
-            Queued for browser extension
+            Opening in browser shortly
           </strong>
-          The page requires sign-in. URL queued — the extension will auto-capture it on the next poll (~1 min) and update this card&apos;s description in place.
+          Direct fetch returned no content — the page likely requires sign-in. The browser extension will open this URL in a visible tab (within ~1 min). If you&apos;re already logged in, it auto-captures and closes the tab. If a login page appears, sign in and the tab captures automatically once you reach the job page.
           <button
             type="button"
             onClick={() => setRefreshQueued(false)}
@@ -1339,6 +1339,15 @@ export default function JobCard({
             {loading === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
           </button>
         )}
+
+        {/* ai: claude-sonnet-4-6 | 2026-06-20 */}
+        <button
+          className="btn-secondary btn-sm"
+          onClick={handleCoverLetter}
+          disabled={busy}
+        >
+          {loading === "cover" ? "Generating..." : "Cover Letter"}
+        </button>
 
         <div style={{ flex: 1 }} />
 

@@ -14,7 +14,7 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const POLL_MS = 60_000;
 

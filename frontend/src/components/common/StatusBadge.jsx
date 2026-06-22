@@ -5,7 +5,6 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
-import React from "react";
 import { statusTone } from "../../utils/jobQueueUtils.js";
 
 /**

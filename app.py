@@ -91,7 +91,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Suppress Werkzeug access-log noise from high-frequency polling endpoints.
-_SILENT_PATHS = {"/api/import/status", "/api/scan/status", "/api/career-scan/status"}
+_SILENT_PATHS = {
+    "/api/import/status",
+    "/api/scan/status",
+    "/api/career-scan/status",
+    "/api/browser-capture-queue",
+    "/api/career-sites/recapture-due",
+    "/api/jobs/stats",
+}
 
 class _PollFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -253,6 +260,7 @@ from routes.settings import settings_bp
 from routes.setup import setup_bp
 from routes.sheet import sheet_bp
 from routes.system import system_bp
+from routes.jobanni import jobanni_bp
 from routes.wellfound import wellfound_bp
 
 app.register_blueprint(auth_bp, url_prefix="/api")
@@ -269,6 +277,7 @@ app.register_blueprint(scan_bp, url_prefix="/api")
 app.register_blueprint(settings_bp, url_prefix="/api")
 app.register_blueprint(setup_bp, url_prefix="/api")
 app.register_blueprint(sheet_bp, url_prefix="/api")
+app.register_blueprint(jobanni_bp, url_prefix="/api")
 app.register_blueprint(wellfound_bp, url_prefix="/api")
 app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /api/system/*
 

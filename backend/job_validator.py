@@ -32,6 +32,8 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from backend.utils import company_from_ats_url
+
 logger = logging.getLogger(__name__)
 
 # Matches "Company Name - Job Title" or "Company – Title" (en/em dash variants).
@@ -56,6 +58,7 @@ def normalize_and_validate(job_data: dict[str, Any]) -> tuple[dict[str, Any], li
 
     company = str(job.get("company") or "").strip()
     job_title = str(job.get("job_title") or "").strip()
+    url = str(job.get("url") or "").strip()
 
     # Auto-fix: company name embedded in title as "Company - Job Title"
     if not company and job_title:
@@ -71,7 +74,16 @@ def normalize_and_validate(job_data: dict[str, Any]) -> tuple[dict[str, Any], li
     if not job_title:
         warnings.append("missing_job_title")
 
-    # Flag: missing company after auto-fix attempt
+    # Auto-fix: company slug embedded in Ashby / Lever / Greenhouse URL path
+    # ai: claude-sonnet-4-6 | 2026-06-18
+    if not company:
+        inferred = company_from_ats_url(url)
+        if inferred:
+            job["company"] = inferred
+            company = inferred
+            logger.debug("Auto-inferred company from ATS URL: %r → %r", url, inferred)
+
+    # Flag: missing company after auto-fix attempts
     if not company:
         warnings.append("missing_company")
 
@@ -80,7 +92,6 @@ def normalize_and_validate(job_data: dict[str, Any]) -> tuple[dict[str, Any], li
         warnings.append("page_title")
 
     # Flag: URL has no meaningful path — likely an ATS or aggregator homepage
-    url = str(job.get("url") or "").strip()
     if url:
         try:
             parsed = urlparse(url)

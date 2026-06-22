@@ -95,6 +95,9 @@ RUNTIME_CONFIG_PATH: Path = DATA_DIR / "runtime_config.json"
 DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(
     os.getenv("CANDIDATE_PROFILE_PATH", str(BASE_DIR / "candidate_profile.md"))
 )
+DEFAULT_COVER_LETTER_PROMPT_PATH: Path = Path(
+    os.getenv("COVER_LETTER_PROMPT_PATH", str(BASE_DIR / "cover_letter_prompt.md"))
+)
 
 # ─── Redis / Celery ───────────────────────────────────────────────────────────
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -104,6 +107,14 @@ WELLFOUND_EMAIL: str = os.getenv("WELLFOUND_EMAIL", "")
 WELLFOUND_PASSWORD: str = os.getenv("WELLFOUND_PASSWORD", "")
 WELLFOUND_SEARCH_URL: str = os.getenv("WELLFOUND_SEARCH_URL", "https://wellfound.com/jobs")
 WELLFOUND_SESSION_FILE: Path = CREDENTIALS_DIR / "wellfound_session.json"
+
+# ─── Jobanni scanner ─────────────────────────────────────────────────────────
+# ai: claude-sonnet-4-6 | 2026-06-20
+JOBANNI_SEARCH_URL: str = os.getenv(
+    "JOBANNI_SEARCH_URL",
+    "https://jobanni.com/search?q=software+engineer&location=United+States&type=remote",
+)
+JOBANNI_MAX_JOBS: int = int(os.getenv("JOBANNI_MAX_JOBS", "50"))
 
 # ─── Greenhouse scraper ───────────────────────────────────────────────────────
 GREENHOUSE_EMAIL: str = os.getenv("GREENHOUSE_EMAIL", "")
@@ -138,8 +149,9 @@ GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:5004/api/auth/google/callback
 
 # ─── AI Models ────────────────────────────────────────────────────────────────
 AI_PROVIDER: str = os.getenv("AI_PROVIDER", "anthropic")
-PARSER_MODEL: str = "claude-sonnet-4-20250514"
-SCORER_MODEL: str = "claude-sonnet-4-20250514"
+# ai: claude-sonnet-4-6 | 2026-06-16
+PARSER_MODEL: str = "claude-sonnet-4-6"
+SCORER_MODEL: str = "claude-sonnet-4-6"
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1")
 OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5:32b")
@@ -172,6 +184,33 @@ DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES: int = int(
     os.getenv("JOB_IMPORT_LISTENER_MAX_BYTES", str(15 * 1024 * 1024))
 )
 DEFAULT_CANDIDATE_TIMEZONE: str = os.getenv("CANDIDATE_TIMEZONE", "")
+
+# ai: claude-sonnet-4-6 | 2026-06-10
+# Default cover letter prompt template, written to DEFAULT_COVER_LETTER_PROMPT_PATH
+# on first run so customers can edit it without touching Python code.
+# {{TOKEN}} placeholders are replaced via str.replace() in CoverLetterGenerator.
+DEFAULT_COVER_LETTER_PROMPT_TEMPLATE: str = (
+    "Write a concise, professional cover letter for the following job.\n\n"
+    "TARGET ROLE: {{JOB_TITLE}} at {{COMPANY}}{{JOB_URL_LINE}}\n\n"
+    "CANDIDATE PROFILE:\n{{CANDIDATE_PROFILE}}"
+    "{{RESUME_SECTION}}"
+    "{{FIT_SECTION}}\n\n"
+    "Instructions:\n"
+    "- 2 short paragraphs, no salutation or sign-off (the caller will add those), after all, this is an elevator pitch.\n"
+    "- Opening: lead with a specific candidate experience, skill, or achievement that "
+    "connects directly to this role. Do NOT open by describing what the company does, "
+    "its mission, or its business — they know their own business. Vary the sentence "
+    "structure across generations.\n"
+    '- Do not use generic openings such as "I am excited about", '
+    '"I am writing to express", or "I am thrilled to apply".\n'
+    '- Avoid the exact phrase "<job title> opportunity at <company>".\n'
+    "- Body: 1–2 paragraphs highlighting 2–3 concrete experiences or skills that are "
+    "most relevant to THIS job. Be specific — use real details from the profile/resume, "
+    "not generic claims.\n"
+    "- Closing: one sentence with a call to action.\n"
+    "- Tone: confident, direct, not sycophantic.\n"
+    "- Output plain text only — no markdown, no bullet points, no headers."
+)
 
 
 # ─── Runtime config helpers ───────────────────────────────────────────────────
@@ -269,6 +308,31 @@ def load_candidate_profile() -> str:
     except OSError as exc:
         raise RuntimeError(
             f"Could not read candidate profile file at {candidate_profile_path}: {exc}"
+        ) from exc
+
+
+# ai: claude-sonnet-4-6 | 2026-06-10
+def load_cover_letter_prompt_template() -> str:
+    """Load the external cover letter prompt template, creating it with
+    DEFAULT_COVER_LETTER_PROMPT_TEMPLATE on first run if it doesn't exist."""
+    if not DEFAULT_COVER_LETTER_PROMPT_PATH.exists():
+        try:
+            DEFAULT_COVER_LETTER_PROMPT_PATH.write_text(
+                DEFAULT_COVER_LETTER_PROMPT_TEMPLATE, encoding="utf-8"
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not create cover letter prompt file at "
+                f"{DEFAULT_COVER_LETTER_PROMPT_PATH}: {exc}"
+            ) from exc
+        return DEFAULT_COVER_LETTER_PROMPT_TEMPLATE
+
+    try:
+        return DEFAULT_COVER_LETTER_PROMPT_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not read cover letter prompt file at "
+            f"{DEFAULT_COVER_LETTER_PROMPT_PATH}: {exc}"
         ) from exc
 
 

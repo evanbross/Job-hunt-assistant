@@ -35,60 +35,45 @@
 import { useState } from "react";
 import Modal from "./Modal.jsx";
 import StatusBadge from "./StatusBadge.jsx";
-import { applicationRowFromSheet, isAppliedStatus, rowMatchesCompany, titleLooksSimilar } from "../../utils/sheetUtils.js";
-import { jobCardTabForStatus, possibleDuplicateLabel } from "../../utils/jobQueueUtils.js";
+import { isAppliedStatus, titleLooksSimilar } from "../../utils/sheetUtils.js";
+import { jobCardTabForStatus, possibleDuplicateLabel, skippedLabel } from "../../utils/jobQueueUtils.js";
 
-export function useCompanyHistoryLookup(job) {
-  const [opened, setOpened] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [rows, setRows] = useState([]);
-
-  const open = async () => {
-    const company = String(job.company || "").trim();
-    setOpened(true);
-    setError("");
-    setRows([]);
-    if (!company) {
-      setError("This card does not have a company name to search.");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const res = await fetch("/api/sheet/applications");
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || `Application lookup failed (${res.status})`);
-      }
-      const sheetRows = Array.isArray(data.rows) ? data.rows : [];
-      setRows(
-        sheetRows
-          .map(applicationRowFromSheet)
-          .filter((row) => rowMatchesCompany(row.company, company))
-      );
-    } catch (lookupError) {
-      setError(lookupError.message || "Application lookup failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return {
-    close: () => setOpened(false),
-    error,
-    loading,
-    open,
-    opened,
-    rows,
-  };
+// ai: claude-sonnet-4-6 | 2026-06-10
+function rowStatusLabel(row) {
+  if (row.status === "possible_duplicate") return possibleDuplicateLabel(row);
+  if (row.status === "skipped") return skippedLabel(row);
+  return row.status || "No status";
 }
 
-export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose, onNavigateToJobCard }) {
-  const previousRows = rows.filter((row) => row.id !== currentJobId);
+// ai: claude-sonnet-4-6 | 2026-06-12
+function isDeclaredDuplicate(row) {
+  return row.status === "skipped" && row.skip_reason === "duplicate";
+}
+
+// ai: claude-sonnet-4-6 | 2026-06-11
+export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose, onNavigateToJobCard, onSkipDuplicate }) {
+  const [skippedIds, setSkippedIds] = useState(new Set());
+  const [skippingId, setSkippingId] = useState(null);
+  const [showDuplicates, setShowDuplicates] = useState(false); // ai: claude-sonnet-4-6 | 2026-06-12
+
+  const handleSkipDuplicate = async (row) => {
+    setSkippingId(row.id);
+    try {
+      await onSkipDuplicate(row.id);
+      setSkippedIds((prev) => new Set(prev).add(row.id));
+    } finally {
+      setSkippingId(null);
+    }
+  };
+
+  // ai: claude-sonnet-4-6 | 2026-06-11
+  const previousRows = rows.filter((row) => row.id !== currentJobId).sort((a, b) => (b.id || 0) - (a.id || 0));
   const currentRows = rows.filter((row) => row.id === currentJobId);
   const appliedCount = previousRows.filter((row) => isAppliedStatus(row.status)).length;
   const duplicateHints = previousRows.filter((row) => titleLooksSimilar(row.title, currentJobTitle)).length;
+  // ai: claude-sonnet-4-6 | 2026-06-12
+  const declaredDuplicateCount = previousRows.filter(isDeclaredDuplicate).length;
+  const visiblePreviousRows = showDuplicates ? previousRows : previousRows.filter((row) => !isDeclaredDuplicate(row));
 
   return (
     <Modal
@@ -120,13 +105,24 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
 
       {!loading && !error && rows.length > 0 && (
         <>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 18px", color: "var(--text-muted)", fontSize: "12px", marginBottom: "10px" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 18px", color: "var(--text-muted)", fontSize: "12px", marginBottom: "10px" }}>
             <span>{previousRows.length > 0 ? "Previous activity found" : "Only this card matched"}</span>
             {duplicateHints > 0 && <span>{duplicateHints} similar title{duplicateHints === 1 ? "" : "s"}</span>}
+            {declaredDuplicateCount > 0 && (
+              <label style={{ alignItems: "center", display: "flex", gap: "6px", marginLeft: "auto", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={showDuplicates}
+                  onChange={(e) => setShowDuplicates(e.target.checked)}
+                />
+                Show duplicates ({declaredDuplicateCount})
+              </label>
+            )}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {[...currentRows, ...previousRows].map((row) => {
+            {[...currentRows, ...visiblePreviousRows].map((row) => {
               const navigable = Boolean(onNavigateToJobCard && row.id && jobCardTabForStatus(row.status));
+              const effectiveRow = skippedIds.has(row.id) ? { ...row, status: "skipped" } : row;
               return (
               <div
                 key={row.id || `${row.company}-${row.title}-${row.date}`}
@@ -160,9 +156,9 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                       #{row.id}
                     </span>
                   </div>
-                  {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
+                  {/* ai: claude-sonnet-4-6 | 2026-06-10 */}
                   <div style={{ color: "var(--text-muted)", display: "flex", flexWrap: "wrap", fontSize: "12px", gap: "5px 12px", marginTop: "4px" }}>
-                    <span>{row.status === "possible_duplicate" ? possibleDuplicateLabel(row) : (row.status || "No status")}</span>
+                    <span>{rowStatusLabel(effectiveRow)}</span>
                     {row.date && <span>{row.date}</span>}
                     {row.source && <span>{row.source}</span>}
                   </div>
@@ -184,9 +180,19 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                 </div>
                 <div style={{ alignItems: "flex-end", display: "flex", flexDirection: "column", flexShrink: 0, gap: "6px" }}>
                   <StatusBadge
-                    status={row.status}
-                    label={row.status === "possible_duplicate" ? possibleDuplicateLabel(row) : undefined}
+                    status={effectiveRow.status}
+                    label={effectiveRow.status === "possible_duplicate" || effectiveRow.status === "skipped" ? rowStatusLabel(effectiveRow) : undefined}
                   />
+                  {effectiveRow.status === "possible_duplicate" && onSkipDuplicate && (
+                    <button
+                      type="button"
+                      className="btn-danger btn-sm"
+                      onClick={(e) => { e.stopPropagation(); handleSkipDuplicate(row); }}
+                      disabled={skippingId !== null}
+                    >
+                      {skippingId === row.id ? "Skipping…" : "Yes, Same Job - Skip It"}
+                    </button>
+                  )}
                   {navigable && (
                     <span style={{ color: "var(--accent)", fontSize: "11px", whiteSpace: "nowrap" }}>Go to card →</span>
                   )}

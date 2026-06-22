@@ -76,6 +76,11 @@
       return { site: 'Greenhouse', type: 'greenhouseSearch', jobCount: count, description: `${count}+ jobs (auto-scrolls to load all)` };
     }
 
+    // ai: claude-sonnet-4-6 | 2026-06-20
+    if (host.includes('jobanni.com') && /^\/search/.test(path)) {
+      return { site: 'Jobanni', type: 'jobanni', jobCount: 0, description: 'Fetches job data via RSC API (~3s)' };
+    }
+
     if (host === 'hnhiring.com') {
       let count = 0;
       document.querySelectorAll('a[href]').forEach(a => {
@@ -106,9 +111,10 @@
       return { site: 'Ashby', type: 'ashbyJob', jobCount: 1, description: 'Single job listing' };
     }
 
-    // ai: claude-sonnet-4-6 | 2026-06-16
+    // ai: claude-sonnet-4-6 | 2026-06-20
     if (host.includes('welcometothejungle.com')) {
-      if (/\/companies\/[^/?#]+\/jobs\/[^/?#]{2,}/.test(path)) {
+      // Match canonical /companies/<slug>/jobs/<id> AND email-notification /jobs/<id> links.
+      if (/\/companies\/[^/?#]+\/jobs\/[^/?#]{2,}/.test(path) || /^\/jobs\/[^/?#]{2,}/.test(path)) {
         return { site: 'Welcome to the Jungle', type: 'wttjJob', jobCount: 1, description: 'Single job listing' };
       }
     }
@@ -120,6 +126,18 @@
           .filter(Boolean)
       ).size;
       return { site: 'MongoDB Careers', type: 'mongoDBCareer', jobCount: count, description: `${count} jobs` };
+    }
+
+    // ai: claude-sonnet-4-6 | 2026-06-17
+    if (isPhenomSearchPage()) {
+      const total = phenomTotalHits();
+      const company = (document.title.match(/[-–]\s*(.+?)\s+Careers/i) || [])[1] || host;
+      return {
+        site: company,
+        type: 'phenomSearch',
+        jobCount: total,
+        description: `${total} jobs — auto-fetches all pages`,
+      };
     }
 
     // Generic fallback: scan for job-shaped links before giving up on counting.
@@ -648,6 +666,247 @@
     return JSON.stringify({ jobs, source: { url: location.href } });
   }
 
+  // ─── Phenom People ─────────────────────────────────────────────────────────
+
+  // ai: claude-sonnet-4-6 | 2026-06-17
+  // Detects Phenom People search-results pages by the presence of the
+  // eagerLoadRefineSearch DDO key that is always SSR'd into an inline script.
+  function isPhenomSearchPage() {
+    if (!location.pathname.includes('search-results')) return false;
+    for (const s of document.querySelectorAll('script:not([src])')) {
+      if (s.textContent.includes('eagerLoadRefineSearch')) return true;
+    }
+    return false;
+  }
+
+  // ai: claude-sonnet-4-6 | 2026-06-17
+  function phenomTotalHits() {
+    for (const s of document.querySelectorAll('script:not([src])')) {
+      const m = s.textContent.match(/"totalHits"\s*:\s*(\d+)/);
+      if (m) return parseInt(m[1], 10);
+    }
+    return 0;
+  }
+
+  // ai: claude-sonnet-4-6 | 2026-06-17
+  // Walk HTML/JS text to extract the JSON object that immediately follows `afterKey`.
+  // Properly handles string literals (including escaped characters) so that braces
+  // inside string values are not counted toward the depth.
+  function extractJsonAfterKey(text, afterKey) {
+    const keyIdx = text.indexOf(afterKey);
+    if (keyIdx === -1) return null;
+    const braceStart = text.indexOf('{', keyIdx + afterKey.length);
+    if (braceStart === -1) return null;
+
+    let depth = 0, inStr = false, esc = false;
+    for (let i = braceStart; i < text.length; i++) {
+      const c = text[i];
+      if (esc) { esc = false; continue; }
+      if (inStr) { if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') { inStr = true; continue; }
+      if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) {
+        try { return JSON.parse(text.slice(braceStart, i + 1)); } catch { return null; }
+      }
+    }
+    return null;
+  }
+
+  // ai: claude-sonnet-4-6 | 2026-06-17
+  // Fetches every page of a Phenom People search-results page and aggregates jobs.
+  // Page data is SSR'd into phApp.ddo.eagerLoadRefineSearch inside an inline <script>;
+  // we read it from the raw HTML of each fetched page without needing eval or injection.
+  async function buildPhenomSearchPayload() {
+    const company = (document.title.match(/[-–]\s*(.+?)\s+Careers/i) || [])[1]
+      || location.hostname.replace(/^(?:careers|jobs)\./, '').split('.')[0];
+
+    const totalHits = phenomTotalHits();
+    if (!totalHits) return buildHtmlPayload();
+
+    // Canonical base URL without pagination params
+    const baseUrl = new URL(location.href);
+    baseUrl.searchParams.delete('from');
+    baseUrl.searchParams.delete('s');
+
+    // Strip "/search-results…" to get the locale prefix for job detail URLs
+    const jobBase = location.origin + location.pathname.replace(/\/search-results.*$/, '');
+
+    const PAGE_SIZE = 10; // confirmed from siteConfig "size":"10"
+    const totalPages = Math.ceil(totalHits / PAGE_SIZE);
+    const seen = new Set();
+    const allJobs = [];
+
+    for (let page = 0; page < totalPages; page++) {
+      const from = page * PAGE_SIZE;
+      sendProgress(
+        `Fetching page ${page + 1} of ${totalPages}…`,
+        Math.min(from + PAGE_SIZE, totalHits) / totalHits
+      );
+
+      const pageUrl = new URL(baseUrl.href);
+      if (from > 0) {
+        pageUrl.searchParams.set('from', String(from));
+        pageUrl.searchParams.set('s', '1');
+      }
+
+      let refineSearch = null;
+      try {
+        const res = await fetch(pageUrl.href, { credentials: 'include' });
+        if (!res.ok) break;
+        refineSearch = extractJsonAfterKey(await res.text(), '"eagerLoadRefineSearch"');
+      } catch { break; }
+
+      if (!refineSearch?.data?.jobs) break;
+
+      for (const job of refineSearch.data.jobs) {
+        if (seen.has(job.jobId)) continue;
+        seen.add(job.jobId);
+
+        const title = job.title || '';
+        const slug = title.toLowerCase()
+          .replace(/[–—]/g, '-').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        const url = `${jobBase}/job/${job.jobId}/${slug}`;
+        const locs = (job.multi_location?.length ? job.multi_location : [job.location])
+          .filter(Boolean).join('; ');
+
+        const lines = [
+          title,
+          `Company: ${company}`,
+          `URL: ${url}`,
+          locs && `Location: ${locs}`,
+          job.RemoteType && `Work Environment: ${job.RemoteType}`,
+          job.descriptionTeaser && `\n${job.descriptionTeaser}`,
+        ].filter(Boolean);
+
+        allJobs.push({ url, job_title: title, company, listing_text: lines.join('\n') });
+      }
+
+      if (from + PAGE_SIZE < totalHits) await sleep(400);
+    }
+
+    return allJobs.length
+      ? JSON.stringify({ jobs: allJobs, source: { url: location.href } })
+      : buildHtmlPayload();
+  }
+
+  // ai: claude-sonnet-4-6 | 2026-06-20
+  // Jobanni uses Next.js App Router with RSC.  The search results page streams
+  // job data (including companyName) via the RSC navigation endpoint, exactly
+  // as the server-side scanner does.  Fetching that endpoint from the content
+  // script (same origin → no CORS) gives us accurate company names that the
+  // generic DOM-walk cannot reliably extract.
+  async function buildJobanniPayload() {
+    sendProgress('Connecting to Jobanni RSC API…', 5);
+
+    // Extract the Next.js build hash — it appears in _buildManifest.js script URLs.
+    let buildHash = null;
+    document.querySelectorAll('script[src*="/_next/static/"]').forEach(s => {
+      const m = (s.src || '').match(/\/static\/([^/]+)\/_buildManifest/);
+      if (m) buildHash = m[1];
+    });
+    if (!buildHash && window.__NEXT_DATA__?.buildId) {
+      buildHash = window.__NEXT_DATA__.buildId;
+    }
+    if (!buildHash) {
+      return buildSmartGenericPayload();  // fallback
+    }
+
+    // Build the RSC endpoint URL (same path+query, plus _rsc=<buildHash>).
+    const parsed = new URL(location.href);
+    const navSearch = parsed.search;         // keep original query params
+    const rscParams = new URLSearchParams(navSearch);
+    rscParams.set('_rsc', buildHash);
+    const rscUrl = `${parsed.origin}${parsed.pathname}?${rscParams}`;
+    const nextUrl = parsed.pathname + navSearch;
+
+    let rscText;
+    try {
+      const res = await fetch(rscUrl, {
+        headers: { 'RSC': '1', 'Next-Url': nextUrl },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      rscText = await res.text();
+    } catch {
+      return buildSmartGenericPayload();  // fallback
+    }
+
+    sendProgress('Parsing Jobanni job data…', 40);
+
+    // Locate the {"total":N,"jobs":[...]} object in the RSC stream.
+    const jobsStart = rscText.indexOf('{"total":');
+    if (jobsStart === -1) return buildSmartGenericPayload();
+
+    // Walk braces to find the matching closing brace (handles nested JSON cleanly).
+    let depth = 0, inStr = false, esc = false, jobsEnd = -1;
+    for (let i = jobsStart; i < rscText.length; i++) {
+      const ch = rscText[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\' && inStr) { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) { jobsEnd = i + 1; break; }
+    }
+    if (jobsEnd === -1) return buildSmartGenericPayload();
+
+    let jobsData;
+    try {
+      jobsData = JSON.parse(rscText.slice(jobsStart, jobsEnd));
+    } catch {
+      return buildSmartGenericPayload();
+    }
+
+    const rawJobs = Array.isArray(jobsData.jobs) ? jobsData.jobs : [];
+    if (!rawJobs.length) return buildSmartGenericPayload();
+
+    sendProgress(`Found ${rawJobs.length} jobs, extracting descriptions…`, 60);
+
+    // Resolve "$ref" description pointers to their T-format text blocks.
+    // The blocks appear in the RSC stream after the jobs object: {ref}:T{hex_len},{text}
+    const afterJobs = rscText.slice(jobsEnd);
+    const descMap = {};
+    rawJobs.forEach(job => {
+      if (typeof job.description !== 'string' || !job.description.startsWith('$')) return;
+      const ref = job.description.slice(1);
+      const escaped = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const m = afterJobs.match(new RegExp(escaped + ':T([0-9a-f]+),'));
+      if (!m) return;
+      const textLen = parseInt(m[1], 16);
+      const blockStart = afterJobs.indexOf(m[0]) + m[0].length;
+      const rawHtml = afterJobs.slice(blockStart, blockStart + textLen);
+      descMap[ref] = rawHtml
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&(?:[a-z]+|#\d+);/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    });
+
+    const jobs = rawJobs
+      .map(job => {
+        const url = (job.url || '').trim();
+        if (!url) return null;
+        const descRef = typeof job.description === 'string' && job.description.startsWith('$')
+          ? job.description.slice(1) : null;
+        const listingText = descRef ? (descMap[descRef] || '') : '';
+        return {
+          url,
+          job_title: (job.title || '').trim(),
+          company:   (job.companyName || '').trim(),
+          listing_text: listingText,
+          platform: 'Jobanni',
+        };
+      })
+      .filter(Boolean);
+
+    if (!jobs.length) return buildSmartGenericPayload();
+
+    sendProgress(`Sending ${jobs.length} jobs…`, 80);
+    return JSON.stringify({
+      jobs,
+      source: { url: location.href, name: 'Jobanni', platform: 'jobanni' },
+    });
+  }
+
   // Generic job-link harvester — works on Phenom People (Cisco), Workday, Lever,
   // and any other career-site structure the specialised builders don't cover.
   function buildSmartGenericPayload() {
@@ -790,6 +1049,8 @@
       case 'discordCareers':   return buildDiscordCareersPayload();
       case 'ashbyJob':         return buildAshbyJobPayload();
       case 'wttjJob':          return buildWttjJobPayload();
+      case 'phenomSearch':     return await buildPhenomSearchPayload();
+      case 'jobanni':          return await buildJobanniPayload();
       case 'smartGeneric':     return buildSmartGenericPayload();
       default:                 return buildHtmlPayload();
     }

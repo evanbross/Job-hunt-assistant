@@ -237,7 +237,7 @@ class LauncherWindow:
                     [
                         _python_executable(), "-m", "celery",
                         "-A", "backend.celery_app", "worker",
-                        "--loglevel=warning",
+                        "--loglevel=info",
                         "--concurrency=2",
                         "--pool=threads",
                     ],

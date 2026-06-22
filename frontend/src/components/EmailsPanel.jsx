@@ -38,6 +38,7 @@ import Modal from "./common/Modal.jsx";
 import MetricGrid, { MetricItem } from "./common/MetricGrid.jsx";
 import StatusBadge from "./common/StatusBadge.jsx";
 import { statusTone } from "../utils/jobQueueUtils.js";
+import { SKIP_REASONS } from "../utils/triagePanelUtils.js";
 
 const DISPOSITION_INFO = {
   job_created:       { label: "Job extracted",      cls: "badge-accent" },
@@ -56,14 +57,10 @@ const JOB_STATUS_INFO = {
   skipped:            { label: "Skipped",            cls: "badge-gray" },
 };
 
-const SKIP_REASON_LABELS = {
-  rejected:       "Rejected",
-  duplicate:      "Duplicate",
-  req_closed:     "Req Closed",
-  not_remote:     "Not Remote",
-  not_interested: "Not Interested",
-  other:          "Other",
-};
+// ai: claude-sonnet-4-6 | 2026-06-13
+function skipReasonLabel(reason) {
+  return SKIP_REASONS.find((r) => r.key === reason)?.label || reason;
+}
 
 function statusBadge(email) {
   if (email.job_status) {
@@ -299,7 +296,7 @@ function EmailDetailModal({ email, movingToScanned, onMoveToScanned, rescanning,
               <div style={{ display: "flex", gap: "6px", alignItems: "center", flexShrink: 0 }}>
                 <StatusBadge status={job.status} />
                 {job.skip_reason && (
-                  <StatusBadge status="skipped" label={SKIP_REASON_LABELS[job.skip_reason] || job.skip_reason} tone="gray" />
+                  <StatusBadge status="skipped" label={skipReasonLabel(job.skip_reason)} tone="gray" />
                 )}
               </div>
             </div>
@@ -818,7 +815,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
                                         <span className={`badge ${jobBadge.cls}`}>{jobBadge.label}</span>
                                         {job.skip_reason && (
                                           <span className="badge badge-gray">
-                                            {SKIP_REASON_LABELS[job.skip_reason] || job.skip_reason}
+                                            {skipReasonLabel(job.skip_reason)}
                                           </span>
                                         )}
                                       </div>

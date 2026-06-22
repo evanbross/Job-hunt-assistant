@@ -32,6 +32,7 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 /candidate_profile.md
+/cover_letter_prompt.md
 /data/jobhunt.db-shm
 /data/jobhunt.db-wal
 /data/xjobhunt.db

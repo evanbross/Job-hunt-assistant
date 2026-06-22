@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 
 const POLL_INTERVAL_MS = 1500;

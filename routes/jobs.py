@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timedelta, UTC
 from urllib.parse import urlparse
 
@@ -556,16 +557,17 @@ def refresh_job_from_url(job_id: int):
         fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
     # Connection released before external fetch and AI scoring
 
+    # ai: claude-sonnet-4-6 | 2026-06-21
+    t0 = time.monotonic()
     try:
         scanner = CareerSiteScanner()
-        logger.info("refresh_job_from_url calling scan_single_job_url")
+        logger.info("refresh-from-url: calling scan_single_job_url for job %d url=%s", job_id, url)
         fetched = scanner.scan_single_job_url(job.get("source") or "", url)
         new_text = fetched["job_text"]
+        logger.info("refresh-from-url: scan_single_job_url returned in %.1fs, text length=%d", time.monotonic() - t0, len(new_text))
     except Exception as exc:
-        logger.warning("refresh-from-url: fetch failed for job %d (%s): %s", job_id, url, exc)
+        logger.warning("refresh-from-url: fetch failed for job %d (%s) after %.1fs: %s", job_id, url, time.monotonic() - t0, exc)
         new_text = ""
-
-    logger.info("refresh_job_from_url reload returned, text length %d", len(new_text))
 
     # ai: claude-sonnet-4-6 | 2026-06-16
     # Direct fetch got a login wall, redirect, or empty page — queue for browser extension.
@@ -583,6 +585,9 @@ def refresh_job_from_url(job_id: int):
             "message": "Direct fetch returned no content — the page likely requires sign-in. URL queued for browser extension; it will auto-capture on the next poll (~1 min) and update this card in place.",
         }), 200
 
+    # ai: claude-sonnet-4-6 | 2026-06-21
+    t_score = time.monotonic()
+    logger.info("refresh-from-url: starting FitScorer for job %d", job_id)
     try:
         score_result = FitScorer().score(
             job_title=job.get("job_title") or "",
@@ -592,8 +597,9 @@ def refresh_job_from_url(job_id: int):
             penalty_rules=penalty_rules,
             fit_feedback=fit_feedback,
         )
+        logger.info("refresh-from-url: FitScorer returned in %.1fs for job %d", time.monotonic() - t_score, job_id)
     except Exception as exc:
-        logger.warning("refresh-from-url: scoring failed for job %d: %s", job_id, exc)
+        logger.warning("refresh-from-url: scoring failed for job %d after %.1fs: %s", job_id, time.monotonic() - t_score, exc)
         return jsonify({"error": _safe_error_message(exc, "Scoring failed")}), _ai_error_http_status(exc)
 
     fit_score = score_result["score"]
@@ -601,6 +607,11 @@ def refresh_job_from_url(job_id: int):
     if current_status not in {"possible_duplicate", "skipped", "applied"}:
         current_status = "pending_review" if fit_score >= 70 else "triage"
 
+    # ai: claude-sonnet-4-6 | 2026-06-21
+    logger.info(
+        "refresh-from-url: saving results for job %d — fit_score=%s status=%s total=%.1fs",
+        job_id, fit_score, current_status, time.monotonic() - t0,
+    )
     with get_repos() as repos:
         repos["jobs"].update(job_id, {
             "raw_email_snippet": new_text[:6000],
@@ -610,6 +621,7 @@ def refresh_job_from_url(job_id: int):
         })
         updated_job = repos["jobs"].get_by_id(job_id)
         repos["conn"].commit()
+    logger.info("refresh-from-url: completed for job %d in %.1fs total", job_id, time.monotonic() - t0)
     return jsonify(updated_job)
 
 

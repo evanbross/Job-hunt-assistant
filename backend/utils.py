@@ -317,6 +317,53 @@ def _ai_error_http_status(exc: BaseException, fallback_status: int = 500) -> int
     return fallback_status
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
+
+# ai: claude-sonnet-4-6 | 2026-06-18
+def slug_to_title_case(slug: str) -> str:
+    """Convert a hyphen/underscore slug to a title-cased name.
+
+    Consecutive separators are collapsed, and all-caps words (e.g. "AI", "AWS")
+    are preserved: "ai-company_name" → "AI Company Name".
+    """
+    value = re.sub(r"[-_]+", " ", slug)
+    value = re.sub(r"\s+", " ", value).strip()
+    return " ".join(word.capitalize() if not word.isupper() else word for word in value.split())
+
+
+# ai: claude-sonnet-4-6 | 2026-06-18
+def company_from_ats_url(url: str) -> str | None:
+    """Extract a company name from a known ATS URL by parsing the slug in path position 1.
+
+    Handles direct job-board URLs where the company slug is the first path segment:
+    - https://jobs.ashbyhq.com/{company}/{job-id}
+    - https://jobs.lever.co/{company}/{job-id}
+    - https://boards.greenhouse.io/{company}/jobs/{job-id}  (incl. job-boards.greenhouse.io)
+
+    Returns None for non-matching, unparseable, or UUID-looking first segments.
+    """
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        path_parts = [p for p in parsed.path.split("/") if p]
+
+        ats_fragments = ("ashbyhq.com", "lever.co", "greenhouse.io")
+        if not any(f in host for f in ats_fragments) or not path_parts:
+            return None
+
+        slug = path_parts[0]
+        if "." in slug or _UUID_RE.match(slug):
+            return None
+
+        return slug_to_title_case(slug)
+    except Exception:
+        return None
+
+
 def extract_ashby_job_id(url: str) -> str | None:
     """Return the Ashby job ID from an ashbyhq.com URL, or None for any other URL."""
     if not url:
@@ -351,7 +398,7 @@ def extract_linkedin_job_id(url: str) -> str | None:
         return None
 
 
-# ai: claude-sonnet-4-6 | 2026-06-09
+# ai: claude-sonnet-4-6 | 2026-06-10
 def db_match_for_job(
     *,
     job_title: str,
@@ -360,11 +407,13 @@ def db_match_for_job(
     known_jobs: list[dict],
     dedup_checker: DuplicateChecker,
     exclude_id: int | None = None,
-) -> tuple[str | None, str | None, str | None, int | None]:
+) -> tuple[str | None, str | None, str | None, int | None, dict[str, int] | None]:
     """Check known_jobs for an exact URL match or fuzzy title/company duplicate.
 
-    Returns (tracked_status, source_key, duplicate_hint, matched_job_id), all None when no match.
-    matched_job_id is the DB id of the job that this is a duplicate of, when available.
+    Returns (tracked_status, source_key, duplicate_hint, matched_job_id, match_scores),
+    all None when no match. matched_job_id is the DB id of the job that this is a
+    duplicate of, when available. match_scores holds the rapidfuzz "title_score" and
+    "company_score" for db_fuzzy matches (None for db_url matches and non-matches).
     Duplicates are always flagged regardless of the original job's current status.
     """
     current_job_url = job_url.strip()
@@ -400,10 +449,10 @@ def db_match_for_job(
             f"at {exact_match.get('company') or company} with status \"{tracked_status}\"."
         )
         matched_id = exact_match.get("id")
-        return tracked_status, "db_url", duplicate_hint, (int(matched_id) if matched_id is not None else None)
+        return tracked_status, "db_url", duplicate_hint, (int(matched_id) if matched_id is not None else None), None
 
     if not company.strip() or not job_title.strip() or not known_jobs:
-        return None, None, None, None
+        return None, None, None, None, None
 
     fuzzy_candidates = [
         row for row in known_jobs
@@ -415,7 +464,7 @@ def db_match_for_job(
         sheet_jobs=fuzzy_candidates,
     )
     if dup is None:
-        return None, None, None, None
+        return None, None, None, None, None
 
     matched = next(
         (
@@ -433,7 +482,32 @@ def db_match_for_job(
         f"(title match: {dup['title_score']}%, company match: {dup['company_score']}%)"
     )
     matched_id = matched.get("id") if matched else None
-    return tracked_status, "db_fuzzy", duplicate_hint, (int(matched_id) if matched_id is not None else None)
+    match_scores: dict[str, int] = {"title_score": dup["title_score"], "company_score": dup["company_score"]}
+    return tracked_status, "db_fuzzy", duplicate_hint, (int(matched_id) if matched_id is not None else None), match_scores
+
+
+# Thresholds for treating a duplicate match as near-certain enough to auto-skip
+# instead of routing to the triage queue for manual review. Stricter than
+# DuplicateChecker's own thresholds (80/70), which only flag a "possible duplicate".
+AUTO_REJECT_DUPLICATE_TITLE_THRESHOLD: int = 95
+AUTO_REJECT_DUPLICATE_COMPANY_THRESHOLD: int = 95
+
+
+def is_near_certain_duplicate(tracking_source: str | None, match_scores: dict[str, int] | None) -> bool:
+    """True when a duplicate match is confident enough to auto-skip without review.
+
+    An exact URL/Ashby/LinkedIn job-id match (tracking_source == "db_url") is always
+    near-certain. A fuzzy match (tracking_source == "db_fuzzy") is near-certain only
+    when both the title and company similarity scores clear the auto-reject thresholds.
+    """
+    if tracking_source == "db_url":
+        return True
+    if tracking_source == "db_fuzzy" and match_scores:
+        return (
+            match_scores.get("title_score", 0) >= AUTO_REJECT_DUPLICATE_TITLE_THRESHOLD
+            and match_scores.get("company_score", 0) >= AUTO_REJECT_DUPLICATE_COMPANY_THRESHOLD
+        )
+    return False
 
 
 def expand_board_url_parsed_jobs(parsed_jobs: list[ParsedJob]) -> list[ParsedJob]:

@@ -102,7 +102,9 @@ export default function SetupWizardPanel({ onSetupComplete }) {
   const [profileSaveResult, setProfileSaveResult] = useState(null);
 
   useEffect(() => {
+    // fetchStatus is redefined every render; run once on mount only.
     fetchStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Poll auth status when on the auth step
@@ -323,9 +325,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
   };
 
   const aiNextEnabled = stepDone.ai || (aiTestResult?.ok && apiKey.trim());
-  const credsNextEnabled = true; // always skippable
   const authNextEnabled = true;  // always skippable
-  const profileNextEnabled = stepDone.profile;
 
   return (
     <div style={styles.container}>
@@ -362,9 +362,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
               parseError={credParseError}
               fileReady={!!credFileContent}
               uploadResult={credUploadResult}
-              uploading={credUploading}
               onFileChange={handleCredFileChange}
-              onUpload={handleUploadCredentials}
               fileInputRef={fileInputRef}
               alreadyDone={stepDone.creds}
             />
@@ -650,8 +648,8 @@ function StepAI({
 // ─── Step 1: Google Credentials ───────────────────────────────────────────────
 
 function StepCredentials({
-  fileName, parseError, fileReady, uploadResult, uploading,
-  onFileChange, onUpload, fileInputRef, alreadyDone,
+  fileName, parseError, fileReady, uploadResult,
+  onFileChange, fileInputRef, alreadyDone,
 }) {
   return (
     <div>

@@ -39,6 +39,7 @@ from typing import Any, Protocol
 
 from backend.career_site_scanner import CareerSiteScanner
 from backend.duplicate_checker import DuplicateChecker
+from backend.utils import company_from_ats_url
 
 
 class JobUpdater(Protocol):
@@ -117,6 +118,25 @@ def post_repair_duplicate_check(
     )
     duplicate_of_id = int(matched_job["id"]) if matched_job and matched_job.get("id") is not None else None
     jobs_repo.update(job_id, {"duplicate_hint": hint, "duplicate_of_id": duplicate_of_id, "status": "possible_duplicate"})
+    return True
+
+
+# ai: claude-sonnet-4-6 | 2026-06-18
+def repair_ats_url_company(
+    jobs_repo: JobUpdater,
+    existing_job: dict[str, Any],
+) -> bool:
+    """Infer a missing company name from the job's ATS URL (Ashby, Lever, Greenhouse).
+
+    Returns True if the job was updated.
+    """
+    if not is_missing_company(existing_job.get("company")):
+        return False
+    url = str(existing_job.get("url") or "")
+    company = company_from_ats_url(url)
+    if not company:
+        return False
+    jobs_repo.update(int(existing_job["id"]), {"company": company})
     return True
 
 

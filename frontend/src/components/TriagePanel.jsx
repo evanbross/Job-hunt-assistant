@@ -32,10 +32,11 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Modal from "./common/Modal.jsx";
 import StatusBadge from "./common/StatusBadge.jsx";
-import CompanyHistoryDialog, { useCompanyHistoryLookup } from "./common/CompanyHistoryDialog.jsx";
+import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
+import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
 import { applicationRowFromSheet, isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.js";
 import UndoEditNotice from "./common/UndoEditNotice.jsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
@@ -44,28 +45,23 @@ import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 import { fitReasoningBullets } from "../utils/fitScoringUtils.js";
 import {
   MISMATCH_REASONS,
-  PLATFORM_LABELS,
   SKIP_REASONS,
   compareNullableScores,
   dispositionLabel,
   extractSender,
   extractSubjectWords,
-  fitConfidenceLabel,
   fitPercentageLabel,
   fitScoreClass,
   formatJobDescription,
   isManualPastedJob,
-  isManualSource,
   jobDisplayName,
   negativeReasoningBulletStyleFor,
   normalizeManualJobUrl,
   parserConfidenceLabel,
   penaltiesAppliedForJob,
-  platformLabelForUrl,
   scoreLabel,
   scoreDeltaLabel,
   sourceLabel,
-  titleCaseKnownSource,
   triageReasoningForJob,
 } from "../utils/triagePanelUtils.js";
 import { parseImportWarnings, importWarningTooltip, possibleDuplicateLabel } from "../utils/jobQueueUtils.js";
@@ -139,7 +135,9 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   };
 
   useEffect(() => {
+    // fetchTriage is redefined every render; run once on mount only.
     fetchTriage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -165,7 +163,6 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     if (!focusJobId) return;
     setSearchText("");
     setShowOnlyUnscored(false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusJobId]);
 
   useEffect(() => {
@@ -276,6 +273,17 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
       throw new Error(data.error || "Failed to re-fetch job");
     }
 
+    if (data.queued_for_browser_capture) {
+      setReEvaluatePopup({
+        action: "Re-fetch",
+        company: job.company || "",
+        jobTitle: job.job_title || "",
+        phase: "queued",
+        previousScore: job.fit_score,
+      });
+      return;
+    }
+
     setReEvaluatePopup({
       action: "Re-fetch",
       company: data.company || job.company || "",
@@ -367,23 +375,34 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to re-fetch job");
 
-        results.push({
-          company: data.company || job.company || "",
-          error: "",
-          jobTitle: data.job_title || job.job_title || "",
-          newScore: data.fit_score,
-          previousScore: job.fit_score,
-          status: data.status,
-        });
-
-        const triageStatuses = new Set(["triage", "possible_duplicate"]);
-        if (triageStatuses.has(data.status)) {
-          nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
+        if (data.queued_for_browser_capture) {
+          results.push({
+            company: job.company || "",
+            error: "",
+            jobTitle: job.job_title || "",
+            newScore: null,
+            previousScore: job.fit_score,
+            status: "queued",
+          });
         } else {
-          nextJobs = nextJobs.filter((item) => item.id !== job.id);
+          results.push({
+            company: data.company || job.company || "",
+            error: "",
+            jobTitle: data.job_title || job.job_title || "",
+            newScore: data.fit_score,
+            previousScore: job.fit_score,
+            status: data.status,
+          });
+
+          const triageStatuses = new Set(["triage", "possible_duplicate"]);
+          if (triageStatuses.has(data.status)) {
+            nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
+          } else {
+            nextJobs = nextJobs.filter((item) => item.id !== job.id);
+          }
+          setJobs(nextJobs);
+          onCountChange(nextJobs.length);
         }
-        setJobs(nextJobs);
-        onCountChange(nextJobs.length);
       } catch (err) {
         results.push({
           company: job.company || "",
@@ -597,7 +616,10 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
             onDifferentJob={() => handleApprove(job)}
             onMarkUnique={() => handleMarkUnique(job)}
             onMarkApplied={() => handleMarkApplied(job)}
+            onReqClosed={() => handleSkip(job, "req_closed", "", [])}
+            onSkipDuplicate={(jobId) => handleSkip({ id: jobId }, "duplicate", "", [])}
             onReEvaluate={() => handleReEvaluateFit(job)}
+            onRefreshFromUrl={() => handleRefreshFromUrl(job)}
             onReprocessed={(updated) => {
               const triageStatuses = new Set(["triage", "possible_duplicate"]);
               if (triageStatuses.has(updated.status)) {
@@ -622,6 +644,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
             onMarkApplied={() => handleMarkApplied(job)}
             onReEvaluate={() => handleReEvaluateFit(job)}
             onRefreshFromUrl={() => handleRefreshFromUrl(job)}
+            onSkipDuplicate={(jobId) => handleSkip({ id: jobId }, "duplicate", "", [])}
             companySheetRows={allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))}
             onReprocessed={(updated) => {
               const triageStatuses = new Set(["triage", "possible_duplicate"]);
@@ -693,7 +716,55 @@ function CardContextMenu({ contextMenu, company, onShowCompanyHistory }) {
   );
 }
 
-export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onReEvaluate, onReprocessed, companySheetRows = null, onNavigateToJobCard }) {
+// ai: claude-sonnet-4-6 | 2026-06-16
+function CompanyNameEditor({ jobId, company, onSave, onError }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const save = async () => {
+    setEditing(false);
+    const value = draft.trim();
+    if (value === (company || "")) return;
+    const res = await fetch(`/api/jobs/${jobId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ company: value }),
+    });
+    if (!res.ok) {
+      onError?.(`Company update failed (${res.status})`);
+      return;
+    }
+    onSave?.(await res.json());
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        style={editableCompanyInputStyle}
+      />
+    );
+  }
+
+  return (
+    <span
+      style={editableCompanyStyle}
+      title="Click to edit company name"
+      onClick={() => { setDraft(company || ""); setEditing(true); }}
+    >
+      {company || <em style={{ fontWeight: "400", color: "var(--text-muted)" }}>Unknown Company</em>}
+    </span>
+  );
+}
+
+export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onReqClosed, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, companySheetRows = null, onNavigateToJobCard }) {
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -701,6 +772,9 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
   const [reEvaluateError, setReEvaluateError] = useState(null);
   const [descriptionPasteOpen, setDescriptionPasteOpen] = useState(false);
   const [pastedDescription, setPastedDescription] = useState("");
+  // ai: claude-sonnet-4-6 | 2026-06-20
+  const [coverLetter, setCoverLetter] = useState(null);
+  const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
   const companyHistory = useCompanyHistoryLookup(job);
   const triageReasoning = triageReasoningForJob(job);
@@ -774,6 +848,37 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
     onReprocessed?.(updated);
   };
 
+  // ai: claude-sonnet-4-6 | 2026-06-19
+  const handleRefreshFromUrl = async () => {
+    setLoadingAction("refresh");
+    setReEvaluateError(null);
+    try {
+      await onRefreshFromUrl?.();
+    } catch (err) {
+      setReEvaluateError(err.message || "Re-fetch failed");
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  // ai: claude-sonnet-4-6 | 2026-06-20
+  const handleGenerateCoverLetter = async () => {
+    if (coverLetter) { setCoverLetterOpen(true); return; }
+    setLoadingAction("cover");
+    setReEvaluateError(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Generation failed");
+      setCoverLetter(data.cover_letter);
+      setCoverLetterOpen(true);
+    } catch (err) {
+      setReEvaluateError(err.message || "Cover letter generation failed");
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
   return (
     <div
       id={`triage-card-${job.id}`}
@@ -828,9 +933,12 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
               </span>
             )}
             <span style={{ fontWeight: "400", color: "var(--text-muted)", margin: "0 5px" }}>at</span>
-            <span style={{ fontWeight: 600, color: "var(--text)" }}>
-              {job.company || <em style={{ fontWeight: "400", color: "var(--text-muted)" }}>Unknown Company</em>}
-            </span>
+            <CompanyNameEditor
+              jobId={job.id}
+              company={job.company}
+              onSave={onReprocessed}
+              onError={(msg) => setReEvaluateError(msg)}
+            />
           </div>
 
           <div style={triageMetaTextStyle}>
@@ -889,6 +997,17 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
                   job.url
                 )}
               </a>
+              {onRefreshFromUrl && (
+                <button
+                  className="btn-secondary"
+                  style={triageUrlButtonStyle}
+                  type="button"
+                  onClick={handleRefreshFromUrl}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -971,6 +1090,23 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
         >
           {job.job_description ? "Update description" : "Add description"}
         </button>
+        {/* ai: claude-sonnet-4-6 | 2026-06-20 */}
+        <button
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "5px 11px" }}
+          type="button"
+          onClick={handleGenerateCoverLetter}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "cover" ? (
+            <span style={buttonSpinnerContentStyle}>
+              <span className="inline-spinner" />
+              Generating...
+            </span>
+          ) : (
+            "Cover Letter"
+          )}
+        </button>
       </div>
 
       {reasoningOpen && (
@@ -1023,6 +1159,14 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
         >
           {loadingAction === "applied" ? "Saving…" : "Mark Applied"}
         </button>
+        {/* ai: claude-sonnet-4-6 | 2026-06-10 */}
+        <button
+          className="btn-secondary btn-sm"
+          onClick={() => act(onReqClosed, "req_closed")}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "req_closed" ? "Skipping…" : "Skip - Req Closed"}
+        </button>
       </div>
 
       {descriptionPasteOpen && (
@@ -1036,6 +1180,15 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
         />
       )}
 
+      {/* ai: claude-sonnet-4-6 | 2026-06-20 */}
+      {coverLetterOpen && coverLetter && (
+        <CoverLetterModal
+          job={job}
+          coverLetter={coverLetter}
+          onClose={() => setCoverLetterOpen(false)}
+        />
+      )}
+
       {companyHistory.opened && (
         <CompanyHistoryDialog
           company={job.company || "Unknown Company"}
@@ -1046,16 +1199,15 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
           rows={companyHistory.rows}
           onClose={companyHistory.close}
           onNavigateToJobCard={onNavigateToJobCard}
+          onSkipDuplicate={onSkipDuplicate}
         />
       )}
     </div>
   );
 }
 
-export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, companySheetRows = null, onNavigateToJobCard }) {
+export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, companySheetRows = null, onNavigateToJobCard }) {
   const [loadingAction, setLoadingAction] = useState(null);
-  const [editingCompany, setEditingCompany] = useState(false);
-  const [companyDraft, setCompanyDraft] = useState("");
   const [editingUrl, setEditingUrl] = useState(false);
   const [urlDraft, setUrlDraft] = useState("");
   const [reprocessError, setReprocessError] = useState(null);
@@ -1072,6 +1224,9 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [descriptionPasteOpen, setDescriptionPasteOpen] = useState(false);
   const [pastedDescription, setPastedDescription] = useState("");
+  // ai: claude-sonnet-4-6 | 2026-06-20
+  const [coverLetter, setCoverLetter] = useState(null);
+  const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
@@ -1182,6 +1337,24 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
     }
   };
 
+  // ai: claude-sonnet-4-6 | 2026-06-20
+  const handleGenerateCoverLetter = async () => {
+    if (coverLetter) { setCoverLetterOpen(true); return; }
+    setLoadingAction("cover");
+    setReEvaluateError(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Generation failed");
+      setCoverLetter(data.cover_letter);
+      setCoverLetterOpen(true);
+    } catch (err) {
+      setReEvaluateError(err.message || "Cover letter generation failed");
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
   const handleDescriptionSubmit = async () => {
     const description = pastedDescription.trim();
     if (description.length < 80) {
@@ -1278,11 +1451,6 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
     }
   };
 
-  const startCompanyEdit = () => {
-    setCompanyDraft(job.company || "");
-    setEditingCompany(true);
-  };
-
   const saveTitleEdit = async () => {
     setEditingTitle(false);
     const value = titleDraft.trim();
@@ -1295,24 +1463,6 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
     });
     if (!res.ok) {
       setReprocessError(`Job title update failed (${res.status})`);
-      return;
-    }
-    const updated = await res.json();
-    onReprocessed(updated);
-  };
-
-  const saveCompanyEdit = async () => {
-    setEditingCompany(false);
-    const value = companyDraft.trim();
-    if (value === (job.company || "")) return;
-
-    const res = await fetch(`/api/jobs/${job.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ company: value }),
-    });
-    if (!res.ok) {
-      setReprocessError(`Company update failed (${res.status})`);
       return;
     }
     const updated = await res.json();
@@ -1474,27 +1624,12 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
               </span>
             )}
             <span style={{ fontWeight: "400", color: "var(--text-muted)", margin: "0 5px" }}>at</span>
-            {editingCompany ? (
-              <input
-                autoFocus
-                value={companyDraft}
-                onChange={(event) => setCompanyDraft(event.target.value)}
-                onBlur={saveCompanyEdit}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
-                  if (event.key === "Escape") setEditingCompany(false);
-                }}
-                style={editableCompanyInputStyle}
-              />
-            ) : (
-              <span
-                style={editableCompanyStyle}
-                title="Click to edit company name"
-                onClick={startCompanyEdit}
-              >
-                {job.company || <em style={{ fontWeight: "400", color: "var(--text-muted)" }}>Unknown Company</em>}
-              </span>
-            )}
+            <CompanyNameEditor
+              jobId={job.id}
+              company={job.company}
+              onSave={onReprocessed}
+              onError={(msg) => setReprocessError(msg)}
+            />
           </div>
           {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
           <div style={triageMetaTextStyle}>
@@ -1709,6 +1844,23 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
           }}
         >
           {chatOpen ? "Close AI chat" : "Chat with AI about fit"}
+        </button>
+        {/* ai: claude-sonnet-4-6 | 2026-06-20 */}
+        <button
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "4px 10px", marginLeft: "8px" }}
+          type="button"
+          onClick={handleGenerateCoverLetter}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "cover" ? (
+            <span style={buttonSpinnerContentStyle}>
+              <span className="inline-spinner" />
+              Generating...
+            </span>
+          ) : (
+            "Cover Letter"
+          )}
         </button>
         {reasoningOpen && (
           <div style={reasoningBoxStyle}>
@@ -1940,6 +2092,15 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
         />
       )}
 
+      {/* ai: claude-sonnet-4-6 | 2026-06-20 */}
+      {coverLetterOpen && coverLetter && (
+        <CoverLetterModal
+          job={job}
+          coverLetter={coverLetter}
+          onClose={() => setCoverLetterOpen(false)}
+        />
+      )}
+
       {companyHistory.opened && (
         <CompanyHistoryDialog
           company={job.company || "Unknown Company"}
@@ -1950,10 +2111,41 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
           rows={companyHistory.rows}
           onClose={companyHistory.close}
           onNavigateToJobCard={onNavigateToJobCard}
+          onSkipDuplicate={onSkipDuplicate}
         />
       )}
 
     </div>
+  );
+}
+
+// ai: claude-sonnet-4-6 | 2026-06-20
+function CoverLetterModal({ job, coverLetter, onClose }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(coverLetter);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <Modal
+      title="Cover Letter"
+      subtitle={`${job.job_title || "Job"} at ${job.company || "Unknown"}`}
+      onClose={onClose}
+      maxWidth="660px"
+      footer={
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="btn-secondary" onClick={handleCopy} style={{ fontSize: "13px" }}>
+            {copied ? "Copied!" : "Copy to Clipboard"}
+          </button>
+          <button className="btn-secondary" onClick={onClose} style={{ fontSize: "13px" }}>Close</button>
+        </div>
+      }
+    >
+      <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: "13px", lineHeight: 1.6, margin: 0 }}>
+        {coverLetter}
+      </pre>
+    </Modal>
   );
 }
 
@@ -2048,6 +2240,7 @@ export function ReEvaluatePopup({ popup, onClose }) {
   const companyText = popup.company ? ` at ${popup.company}` : "";
   const isRunning = popup.phase === "running";
   const isError = popup.phase === "error";
+  const isQueued = popup.phase === "queued";
   const action = popup.action || "Re-evaluation";
   const runningText = popup.runningText || "Applying current scoring rules…";
 
@@ -2059,7 +2252,7 @@ export function ReEvaluatePopup({ popup, onClose }) {
 
   return (
     <Modal
-      title={isRunning ? `${action} in progress` : isError ? `${action} failed` : `${action} complete`}
+      title={isRunning ? `${action} in progress` : isError ? `${action} failed` : isQueued ? "Queued for browser extension" : `${action} complete`}
       subtitle={`${title}${companyText}`}
       onClose={onClose}
       showCloseButton={!isRunning}
@@ -2074,6 +2267,10 @@ export function ReEvaluatePopup({ popup, onClose }) {
       ) : isError ? (
         <div style={{ color: "var(--red)", fontSize: "14px" }}>
           {popup.error || "Failed to re-evaluate fit."}
+        </div>
+      ) : isQueued ? (
+        <div style={{ color: "var(--text-muted)", fontSize: "14px" }}>
+          The page requires sign-in. URL queued — the extension will auto-capture it on the next poll (~1 min) and update this job&apos;s description in place.
         </div>
       ) : (
         <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "22px", fontWeight: 700, color: "var(--text)" }}>
@@ -2096,7 +2293,8 @@ export function BatchRefreshPopup({ popup, onClose }) {
   const isRunning = popup.phase === "running";
   const currentJob = popup.currentJob || {};
   const processedCount = Math.min(popup.currentIndex || 0, popup.total || 0);
-  const successCount = results.filter((result) => !result.error).length;
+  const queuedCount = results.filter((result) => result.status === "queued").length;
+  const successCount = results.filter((result) => !result.error && result.status !== "queued").length;
   const movedCount = results.filter((result) => result.status === "pending_review").length;
   const errorCount = results.filter((result) => result.error).length;
 
@@ -2111,7 +2309,7 @@ export function BatchRefreshPopup({ popup, onClose }) {
       title={isRunning ? "Re-fetch all in progress" : "Re-fetch all complete"}
       subtitle={isRunning
         ? `${processedCount} of ${popup.total} complete`
-        : `${successCount} refreshed, ${movedCount} moved to job queue, ${errorCount} failed`}
+        : `${successCount} refreshed, ${movedCount} moved to queue${queuedCount ? `, ${queuedCount} queued for extension` : ""}, ${errorCount} failed`}
       onClose={onClose}
       showCloseButton={!isRunning}
       footer={footer}
@@ -2148,6 +2346,10 @@ export function BatchRefreshPopup({ popup, onClose }) {
                 </div>
                 {result.error ? (
                   <div style={{ color: "var(--red)", fontSize: "12px", marginTop: "3px", overflowWrap: "anywhere" }}>{result.error}</div>
+                ) : result.status === "queued" ? (
+                  <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "3px" }}>
+                    Page requires sign-in — queued for browser extension (~1 min)
+                  </div>
                 ) : (
                   <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "3px" }}>
                     {scoreLabel(result.previousScore)} to {scoreLabel(result.newScore)}
@@ -2156,10 +2358,10 @@ export function BatchRefreshPopup({ popup, onClose }) {
                 )}
               </div>
               <span
-                className={`badge ${result.error ? "badge-red" : result.status === "pending_review" ? "badge-green" : "badge-yellow"}`}
+                className={`badge ${result.error ? "badge-red" : result.status === "queued" ? "badge-accent" : result.status === "pending_review" ? "badge-green" : "badge-yellow"}`}
                 style={{ flexShrink: 0, whiteSpace: "nowrap" }}
               >
-                {result.error ? "Failed" : dispositionLabel(result.status)}
+                {result.error ? "Failed" : result.status === "queued" ? "Queued" : dispositionLabel(result.status)}
               </span>
             </div>
           ))
@@ -2170,12 +2372,6 @@ export function BatchRefreshPopup({ popup, onClose }) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function SourceBadge({ job }) {
-  const label = sourceLabel(job);
-  if (!label) return null;
-  return <span className="badge badge-accent">{label}</span>;
-}
 
 function SourceText({ job }) {
   const label = sourceLabel(job);

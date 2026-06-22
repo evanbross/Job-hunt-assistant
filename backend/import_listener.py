@@ -165,6 +165,13 @@ class ImportListenerRequestParser:
             resolved_url = top_url or source_url
             if resolved_url:
                 body["url"] = resolved_url
+        # ai: claude-sonnet-4-6 | 2026-06-21
+        # Pass queue_url through when the extension injects it. For SPA redirects
+        # (e.g. WTTJ email links), this is the original queue URL that must be marked
+        # done, which differs from the canonical URL captured after the redirect.
+        queue_url = str(payload.get("queue_url") or "").strip()
+        if queue_url:
+            body["queue_url"] = queue_url
         body.setdefault("format", "html")
         body.setdefault("recapture_interval_days", 4)
         body["import_trigger"] = "listener"
@@ -197,7 +204,9 @@ class JobImportListener:
         if self._server is not None:
             return
 
-        parser = ImportListenerRequestParser(token=self._token, max_bytes=self._max_bytes)
+        parser = ImportListenerRequestParser(
+            token=self._token, max_bytes=self._max_bytes
+        )
         max_bytes = self._max_bytes
         submit_capture = self._submit_capture
         claim_queue = self._claim_queue
@@ -205,7 +214,7 @@ class JobImportListener:
 
         class ImportRequestHandler(BaseHTTPRequestHandler):
             def log_message(self, message_format: str, *args: object) -> None:
-                logger.info("Import listener: " + message_format, *args)
+                logger.debug("Import listener: " + message_format, *args)
 
             def _check_token(self) -> bool:
                 if not listener_token:
@@ -223,7 +232,10 @@ class JobImportListener:
                     return
                 if path == "/queue":
                     if not self._check_token():
-                        self._send_json({"error": "Invalid import listener token."}, HTTPStatus.UNAUTHORIZED)
+                        self._send_json(
+                            {"error": "Invalid import listener token."},
+                            HTTPStatus.UNAUTHORIZED,
+                        )
                         return
                     if claim_queue is None:
                         self._send_json({"items": []})
@@ -233,7 +245,10 @@ class JobImportListener:
                         self._send_json({"items": items})
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("Browser capture queue claim failed: %s", exc)
-                        self._send_json({"error": "Queue unavailable."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                        self._send_json(
+                            {"error": "Queue unavailable."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
                     return
                 self._send_json(
                     {"error": "Use POST /import to submit captured job-board HTML."},
@@ -244,7 +259,10 @@ class JobImportListener:
                 try:
                     content_length = int(self.headers.get("Content-Length") or "0")
                 except ValueError:
-                    self._send_json({"error": "Invalid Content-Length header."}, HTTPStatus.BAD_REQUEST)
+                    self._send_json(
+                        {"error": "Invalid Content-Length header."},
+                        HTTPStatus.BAD_REQUEST,
+                    )
                     return
                 if content_length > max_bytes:
                     self._send_json(
@@ -260,7 +278,9 @@ class JobImportListener:
                     raw_body=raw_body,
                 )
                 if parsed_request.error:
-                    self._send_json({"error": parsed_request.error}, parsed_request.status_code)
+                    self._send_json(
+                        {"error": parsed_request.error}, parsed_request.status_code
+                    )
                     return
 
                 payload, status_code = submit_capture(parsed_request.body)
@@ -278,7 +298,9 @@ class JobImportListener:
                 self.end_headers()
                 self.wfile.write(response_body)
 
-        self._server = ThreadingHTTPServer((self._host, self._port), ImportRequestHandler)
+        self._server = ThreadingHTTPServer(
+            (self._host, self._port), ImportRequestHandler
+        )
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         logger.info(

@@ -170,6 +170,10 @@ class EmailParser:
         wttj_jobs = _parse_welcome_to_the_jungle_jobs(sender, body_snippet)
         if wttj_jobs:
             return wttj_jobs
+        # ai: claude-sonnet-4-6 | 2026-06-22
+        matcha_jobs = _parse_matcha_jobs(sender, body_snippet)
+        if matcha_jobs:
+            return matcha_jobs
 
         raw_content = (
             f"From: {sender}\n"
@@ -342,6 +346,7 @@ _WTTJ_SKIP_TITLE_LINES = {
     "apply now",
     "see job",
     "see offer",
+    "see all top matches",
 }
 # Lines that contain salary/compensation info or bullet-separated metadata (location,
 # contract type, etc.) should never be mistaken for job titles.
@@ -483,7 +488,18 @@ _TRACKING_DOMAIN_FRAGMENTS = frozenset({
     "sendgrid.net",
     "track.customer.io",
     "mandrillapp.com",
+    "link.matcha.fm",
 })
+
+_MATCHA_SENDER_RE = re.compile(r"matcha\.fm", re.IGNORECASE)
+# After HTML extraction each job link renders as: "Title at Company: https://link.matcha.fm/..."
+# The salary/description text (e.g. " - $245k") may follow on the same line, so no $ anchor.
+_MATCHA_JOB_LINE_RE = re.compile(
+    r"^(.+?):\s+(https?://link\.matcha\.fm/\S+)",
+    re.IGNORECASE,
+)
+# UUID path segment identifies a matcha.fm/job/{uuid} URL vs other matcha links
+_MATCHA_JOB_PATH_RE = re.compile(r"/job/[0-9a-f-]{36}", re.IGNORECASE)
 
 # Job-board URL patterns used as a fallback when the LLM returns an empty URL.
 # Ordered by specificity — more specific patterns first.
@@ -539,14 +555,22 @@ def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str) -> list[Pa
 
     lines = [line.strip() for line in body_snippet.splitlines()]
     jobs: list[ParsedJob] = []
-    seen_urls: set[str] = set()
+    # Deduplicate by WTTJ job ID (the path segment after /jobs/) so that the
+    # "See all top matches" CTA link — which resolves to the same job page as
+    # position=1 but with a different query string — is not double-imported.
+    seen_job_ids: set[str] = set()
 
     def _append_wttj_job(job_url: str, line_idx: int) -> None:
-        company, slug_title = _wttj_company_title_from_url(job_url)
-        if not company and not slug_title:
+        job_id = _wttj_job_id_from_url(job_url)
+        if not job_id:
+            return  # not a job page (e.g. settings or unsubscribe URL)
+        if job_id in seen_job_ids:
             return
+        company, slug_title = _wttj_company_title_from_url(job_url)
         nearby_title = _wttj_title_from_nearby_lines(lines, line_idx, company)
         job_title = nearby_title or slug_title
+        if not job_title:
+            return
         jobs.append(
             {
                 "company": company,
@@ -558,14 +582,13 @@ def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str) -> list[Pa
                 "confidence_reason": "Parsed from a Welcome to the Jungle job URL and nearby email text.",
             }
         )
-        seen_urls.add(job_url)
+        seen_job_ids.add(job_id)
 
     # First pass: direct WTTJ URLs (no tracking wrapper).
     for line_idx, line in enumerate(lines):
         for url_match in _WTTJ_JOB_URL_RE.finditer(line):
             job_url = url_match.group(0).rstrip(".,;)")
-            if job_url not in seen_urls:
-                _append_wttj_job(job_url, line_idx)
+            _append_wttj_job(job_url, line_idx)
 
     # Second pass: WTTJ emails routed through SendGrid (or similar) wrap every
     # link in a tracking redirect, so the first pass finds nothing.  Resolve
@@ -580,15 +603,108 @@ def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str) -> list[Pa
                 resolved = _resolve_tracking_url(raw_url)
                 if "welcometothejungle.com" not in resolved.lower():
                     continue
-                resolved = resolved.rstrip(".,;)")
-                if resolved not in seen_urls:
-                    _append_wttj_job(resolved, line_idx)
+                _append_wttj_job(resolved.rstrip(".,;)"), line_idx)
 
     return jobs
 
 
 def _looks_like_welcome_to_the_jungle(sender: str, body_snippet: str) -> bool:
     return bool(_WTTJ_SENDER_RE.search(sender) or _WTTJ_SENDER_RE.search(body_snippet))
+
+
+# ai: claude-sonnet-4-6 | 2026-06-22
+def _parse_matcha_jobs(sender: str, body_snippet: str) -> list[ParsedJob]:
+    """Parse job digest emails from Matcha.fm (fico@matcha.fm).
+
+    Each job is an HTML anchor whose text is 'Title at Company' and whose href
+    is a link.matcha.fm tracking URL with the destination matcha.fm job URL
+    URL-encoded in the path as /CL0/ENCODED_DEST_URL/1/... We decode it
+    directly without a network request.
+    """
+    if not _MATCHA_SENDER_RE.search(sender):
+        return []
+
+    lines = [line.strip() for line in body_snippet.splitlines()]
+    jobs: list[ParsedJob] = []
+    seen_job_ids: set[str] = set()
+
+    for line in lines:
+        m = _MATCHA_JOB_LINE_RE.match(line)
+        if not m:
+            continue
+
+        anchor_text = m.group(1).strip()
+        tracking_url = m.group(2).rstrip(".,;)")
+
+        # Decode the destination URL from the tracking path; skip non-job links
+        # (e.g. the "preferences" link whose decoded URL has no /job/{uuid} path)
+        job_url = _decode_matcha_tracking_url(tracking_url)
+        if not job_url or not _MATCHA_JOB_PATH_RE.search(job_url):
+            continue
+
+        job_id = _matcha_job_id_from_url(job_url)
+        if job_id in seen_job_ids:
+            continue
+        seen_job_ids.add(job_id)
+
+        title, company = _split_matcha_anchor(anchor_text)
+        if not title:
+            continue
+
+        jobs.append(
+            {
+                "company": company,
+                "job_title": title,
+                "url": job_url,
+                "source": "Matcha",
+                "confidence": "high" if company else "low",
+                "confidence_score": 90 if company else 60,
+                "confidence_reason": "Parsed from Matcha.fm job digest email anchor text.",
+            }
+        )
+
+    return jobs
+
+
+def _decode_matcha_tracking_url(tracking_url: str) -> str:
+    """Decode the destination URL from a link.matcha.fm tracking URL.
+
+    link.matcha.fm encodes the destination URL as the second path segment after
+    /CL0/, percent-encoded:
+      /CL0/https:%2F%2Fmatcha.fm%2Fjob%2F{uuid}/1/{tracking-id}/{signature}
+    Returns the decoded URL, or empty string if the format is unrecognised.
+    """
+    path = urlparse(tracking_url).path
+    segments = [s for s in path.split("/") if s]
+    if len(segments) >= 2 and segments[0].upper() == "CL0":
+        decoded = unquote(segments[1])
+        if decoded.startswith(("http://", "https://")):
+            return decoded
+    return ""
+
+
+def _matcha_job_id_from_url(job_url: str) -> str:
+    """Extract the job UUID from a matcha.fm/job/{uuid} URL for deduplication."""
+    parts = [p for p in urlparse(job_url).path.split("/") if p]
+    for i, part in enumerate(parts):
+        if part == "job" and i + 1 < len(parts):
+            return parts[i + 1]
+    return ""
+
+
+def _split_matcha_anchor(anchor_text: str) -> tuple[str, str]:
+    """Split 'Title at Company' anchor text into (title, company).
+
+    Normalises internal whitespace and splits on the last ' at ' to handle
+    titles that themselves contain ' at ' (e.g. 'Staff Engineer at Scale at Acme').
+    """
+    normalized = re.sub(r"\s+", " ", anchor_text).strip()
+    idx = normalized.lower().rfind(" at ")
+    if idx == -1:
+        return normalized, ""
+    title = normalized[:idx].strip()
+    company = _trim_company_tail(normalized[idx + 4:].strip())
+    return title, company
 
 
 def _wttj_company_title_from_url(job_url: str) -> tuple[str, str]:
@@ -602,7 +718,10 @@ def _wttj_company_title_from_url(job_url: str) -> tuple[str, str]:
             company = _title_case_slug(path_parts[idx + 1])
         if part == "jobs" and idx + 1 < len(path_parts):
             job_slug = path_parts[idx + 1]
-            job_title = _title_case_slug(job_slug.split("_", 1)[0])
+            # Opaque IDs (e.g. "qjWc0XPp") have no hyphens or underscores.
+            # Only convert word-slug forms (e.g. "senior-engineer-at-acme_paris").
+            if "-" in job_slug or "_" in job_slug:
+                job_title = _title_case_slug(job_slug.split("_", 1)[0])
     # Fallback: WTTJ sometimes omits /companies/ and encodes "title-at-company" in
     # the job slug (e.g. /en/jobs/senior-engineer-at-acme_paris_CODE).
     if not company and job_slug:
@@ -614,10 +733,21 @@ def _wttj_company_title_from_url(job_url: str) -> tuple[str, str]:
     return company, job_title
 
 
-# ai: claude-sonnet-4-6 | 2026-06-19
+def _wttj_job_id_from_url(job_url: str) -> str:
+    """Extract the opaque job ID or slug from a WTTJ URL for deduplication."""
+    path_parts = [p for p in urlparse(job_url).path.split("/") if p]
+    for i, part in enumerate(path_parts):
+        if part == "jobs" and i + 1 < len(path_parts):
+            return path_parts[i + 1]
+    return ""
+
+
+# ai: claude-sonnet-4-6 | 2026-06-22
 def _wttj_title_from_nearby_lines(lines: list[str], url_line_idx: int, company: str) -> str:
     normalized_company = _normalized_line(company)
-    window = list(reversed(lines[max(0, url_line_idx - 8):url_line_idx]))
+    # Window of 12 (up from 8): WTTJ emails can place the title 10 lines above
+    # the tracking URL due to salary and empty lines between them.
+    window = list(reversed(lines[max(0, url_line_idx - 12):url_line_idx]))
     for i, candidate in enumerate(window):
         normalized_candidate = _normalized_line(candidate)
         if not normalized_candidate:
@@ -635,20 +765,23 @@ def _wttj_title_from_nearby_lines(lines: list[str], url_line_idx: int, company: 
 
         result = candidate.strip(" -–—\t\r\n")
 
-        # Some WTTJ notification emails split the job title across two lines,
-        # putting the parenthetical qualifier on its own line directly before the
-        # URL, e.g.: "Full Stack Engineer" / "(Guardian Monitoring)" / "View job" / URL.
-        # The loop hits "(Guardian Monitoring)" first; look one step further back to
-        # pick up the prefix line and rejoin them.
-        if result.startswith("(") and i + 1 < len(window):
-            prev = window[i + 1].strip(" -–—\t\r\n")
-            prev_norm = _normalized_line(prev)
-            if (prev_norm
-                    and prev_norm not in _WTTJ_SKIP_TITLE_LINES
-                    and not prev_norm.startswith(("http://", "https://"))
-                    and not _WTTJ_METADATA_LINE_RE.search(prev)
-                    and len(prev) <= 80):
-                result = f"{prev} {result}"
+        # WTTJ notification emails split the job title across two lines when a
+        # parenthetical qualifier is present: "Senior Software Engineer" /
+        # "(Backend)" / salary / location:URL.  The loop hits "(Backend)" first.
+        # Scan further back in the window (skipping blank lines) to find the
+        # prefix title line and rejoin them.
+        if result.startswith("("):
+            for j in range(i + 1, len(window)):
+                prev = window[j].strip(" -–—\t\r\n")
+                prev_norm = _normalized_line(prev)
+                if not prev_norm:
+                    continue  # skip blank lines, keep looking
+                if (prev_norm not in _WTTJ_SKIP_TITLE_LINES
+                        and not prev_norm.startswith(("http://", "https://"))
+                        and not _WTTJ_METADATA_LINE_RE.search(prev)
+                        and len(prev) <= 80):
+                    result = f"{prev} {result}"
+                break  # stop at first non-empty line regardless of validity
 
         return result
     return ""

@@ -111,7 +111,11 @@
       "Bash(.venv/Scripts/python -c ' *)",
       "Bash(.venv/Scripts/python -m pytest tests/ -x -q)",
       "Bash(.venv/Scripts/python -m pytest tests/ -q --ignore=tests/test_jobs_description_route.py)",
-      "Bash(npx --yes vite build --mode development)"
+      "Bash(npx --yes vite build --mode development)",
+      "Bash(npx eslint *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(find . -iname \"*tampermonkey*\" -not -path \"./node_modules/*\" -not -path \"./frontend/node_modules/*\")",
+      "Bash(grep -rn \"trigger.*listener\\\\|'listener'\\\\|\\\\\"listener\\\\\"\" backend/ routes/ browser-extension/)"
     ]
   }
 }

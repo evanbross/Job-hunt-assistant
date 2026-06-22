@@ -113,7 +113,7 @@ def _tracking_status_for_career_job(
     jobs_repo: IJobRepository,
     dedup_checker: DuplicateChecker,
 ) -> tuple[str, str | None]:
-    sheet_status, tracking_source, _duplicate_hint, _duplicate_of_id = db_match_for_job(
+    sheet_status, tracking_source, _duplicate_hint, _duplicate_of_id, _match_scores = db_match_for_job(
         job_title=str(job.get("job_title") or ""),
         company=str(job.get("site_name") or ""),
         job_url=str(job.get("job_url") or ""),

@@ -32,9 +32,10 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-4-6 | 2026-06-17
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import JobCard from "./JobCard.jsx";
 import Modal from "./common/Modal.jsx";
-import { jobCardTabForStatus } from "../utils/jobQueueUtils.js";
 
 const APPLICATION_SHEET_SEARCH_STORAGE_KEY = "jha.applicationSheet.search";
 
@@ -366,6 +367,9 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   const [stageRows, setStageRows] = useState({});
   const [savingKey, setSavingKey] = useState("");
   const [columnWidths, setColumnWidths] = useState(DEFAULT_COLUMN_WIDTHS);
+  const [jobDialog, setJobDialog] = useState(null);
+  // ai: claude-sonnet-4-6 | 2026-06-17
+  const [statusFilters, setStatusFilters] = useState(new Set());
   const resizeCleanupRef = useRef(null);
 
   const loadSheet = async () => {
@@ -431,7 +435,12 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   );
 
   const visibleRows = useMemo(() => {
-    const filteredRows = sheet.rows.filter((row) => textMatches(row, search, parentColumns));
+    const filteredRows = sheet.rows
+      .filter((row) => textMatches(row, search, parentColumns))
+      .filter((row) => {
+        if (statusFilters.size === 0) return true;
+        return statusFilters.has(normalizeStatus(getCell(row, trackingColumns.status).value));
+      });
     if (!sortConfig) return filteredRows;
 
     const sortColumn = parentColumns.find((entry) => entry.key === sortConfig.key);
@@ -446,7 +455,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
       }
       return sortConfig.direction === "asc" ? valueComparison : -valueComparison;
     });
-  }, [parentColumns, search, sheet.rows, sortConfig]);
+  }, [parentColumns, search, sheet.rows, sortConfig, statusFilters, trackingColumns.status]);
 
   const statusCounts = useMemo(() => {
     return sheet.rows.reduce((acc, row) => {
@@ -463,12 +472,15 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     return map;
   }, [stageStatuses]);
 
+  const sortedStageStatuses = useMemo(
+    () => [...stageStatuses].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
+    [stageStatuses],
+  );
+
   const statusOptions = useMemo(() => {
-    if (stageStatuses.length === 0) return DEFAULT_STATUS_OPTIONS;
-    return [...stageStatuses]
-      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-      .map((s) => s.label);
-  }, [stageStatuses]);
+    if (sortedStageStatuses.length === 0) return DEFAULT_STATUS_OPTIONS;
+    return sortedStageStatuses.map((s) => s.label);
+  }, [sortedStageStatuses]);
 
   const statusColorMap = useMemo(() => {
     const map = {};
@@ -479,6 +491,32 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     });
     return map;
   }, [stageStatuses]);
+
+  // ai: claude-sonnet-4-6 | 2026-06-17
+  const filterOptions = useMemo(() => {
+    const knownKeys = new Set();
+    const statusChips = sortedStageStatuses
+      .filter((s) => { if (!statusCounts[s.key]) return false; knownKeys.add(s.key); return true; })
+      .map((s) => ({ key: s.key, label: s.label, count: statusCounts[s.key] }));
+    const overflowChips = Object.entries(statusCounts)
+      .filter(([key]) => !knownKeys.has(key))
+      .sort((a, b) => b[1] - a[1])
+      .map(([key, count]) => ({ key, label: FALLBACK_DISPLAY_NAMES[key] || key.replace(/_/g, " "), count }));
+    const total = Object.values(statusCounts).reduce((acc, n) => acc + n, 0);
+    return [{ key: "all", label: "All", count: total }, ...statusChips, ...overflowChips];
+  }, [sortedStageStatuses, statusCounts]);
+
+  const toggleStatusFilter = (key) => {
+    if (key === "all") {
+      setStatusFilters(new Set());
+    } else {
+      setStatusFilters((prev) => {
+        const next = new Set(prev);
+        next.has(key) ? next.delete(key) : next.add(key);
+        return next;
+      });
+    }
+  };
 
   const toggleSort = (key) => {
     setSortConfig((previousConfig) => {
@@ -700,6 +738,21 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     }
   };
 
+  const openJobDialog = async (rowNumber, title, company) => {
+    setJobDialog({ loading: true, title, company });
+    try {
+      const res = await fetch(`/api/jobs/${rowNumber}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setJobDialog({ error: data.error || `Failed to load job (${res.status})`, title, company });
+        return;
+      }
+      setJobDialog({ job: data });
+    } catch (err) {
+      setJobDialog({ error: err.message || "Failed to load job", title, company });
+    }
+  };
+
   if (loading) {
     return <p style={{ color: "var(--text-muted)" }}>Loading sheet...</p>;
   }
@@ -731,7 +784,11 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
       <div style={toolbarStyle}>
         <div>
           <h2 style={titleStyle}>Application Tracking</h2>
-          <p style={summaryStyle}>{sheet.rows.length} row{sheet.rows.length === 1 ? "" : "s"}</p>
+          <p style={summaryStyle}>
+            {visibleRows.length === sheet.rows.length
+              ? `${sheet.rows.length} row${sheet.rows.length === 1 ? "" : "s"}`
+              : `${visibleRows.length} of ${sheet.rows.length} row${sheet.rows.length === 1 ? "" : "s"}`}
+          </p>
         </div>
         <div style={toolbarActionsStyle}>
           <input
@@ -791,6 +848,24 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
         </div>
       </div>
 
+      {filterOptions.length > 1 && (
+        <div style={filterBarStyle}>
+          {filterOptions.map(({ key, label, count }) => {
+            const isActive = key === "all" ? statusFilters.size === 0 : statusFilters.has(key);
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => toggleStatusFilter(key)}
+                style={isActive ? { ...filterChipStyle, ...filterChipActiveStyle } : filterChipStyle}
+              >
+                {label}<span style={filterCountStyle}> {count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {ghostDialog && (
         <GhostDialog
           result={ghostDialog}
@@ -806,6 +881,66 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
           onClose={() => setShowStatusSummary(false)}
           labelMap={statusLabelMap}
         />
+      )}
+
+      {jobDialog && (
+        <Modal
+          title={jobDialog.job?.job_title || jobDialog.title || "Job Details"}
+          subtitle={jobDialog.job?.company || jobDialog.company || undefined}
+          onClose={() => setJobDialog(null)}
+          maxWidth="960px"
+        >
+          {jobDialog.loading && (
+            <p style={{ color: "var(--text-muted)" }}>Loading...</p>
+          )}
+          {jobDialog.error && (
+            <p style={{ color: "var(--red)" }}>{jobDialog.error}</p>
+          )}
+          {jobDialog.job && (
+            <JobCard
+              job={jobDialog.job}
+              onApprove={async (jobId) => {
+                const res = await fetch(`/api/jobs/${jobId}/add-to-sheet`, { method: "POST" });
+                if (!res.ok) {
+                  const data = await res.json().catch(() => ({}));
+                  window.alert(data.error || "Failed to approve job");
+                  return;
+                }
+                setJobDialog(null);
+                await loadSheet();
+              }}
+              onSkip={async (jobId, reason = "other", feedback = "", mismatchReasons = []) => {
+                const res = await fetch(`/api/jobs/${jobId}/skip`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ reason, feedback, mismatch_reasons: mismatchReasons }),
+                });
+                if (res.ok) {
+                  setJobDialog(null);
+                  await loadSheet();
+                }
+              }}
+              onSnooze={async (jobId, days) => {
+                const res = await fetch(`/api/jobs/${jobId}/snooze`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ days }),
+                });
+                if (res.ok) {
+                  setJobDialog(null);
+                  await loadSheet();
+                }
+              }}
+              onUpdate={(jobId, updatedJob) => {
+                setJobDialog((prev) => (prev?.job ? { ...prev, job: { ...prev.job, ...updatedJob } } : prev));
+              }}
+              onNavigateToJobCard={(jobId, status) => {
+                setJobDialog(null);
+                onNavigateToJobCard?.(jobId, status);
+              }}
+            />
+          )}
+        </Modal>
       )}
 
       {showAddApplication && (
@@ -925,14 +1060,14 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
             {visibleRows.length === 0 ? (
               <tr>
                 <td colSpan={parentColumns.length + 1} style={emptyCellStyle}>
-                  No rows match "{search}".
+                  {search
+                    ? `No rows match "${search}"${statusFilters.size > 0 ? " with the current filter" : ""}.`
+                    : "No rows match the current filter."}
                 </td>
               </tr>
             ) : visibleRows.map((row, rowIndex) => {
               const isOpen = expandedRows.has(row.row_number);
               const rowShade = rowIndex % 2 === 0 ? "var(--surface)" : "#f7f8fd";
-              const rowStatus = getCell(row, trackingColumns.status).value;
-              const jobCardTab = jobCardTabForStatus(rowStatus);
               return (
                 <React.Fragment key={row.row_number}>
                   <tr style={{ ...bodyRowStyle, background: rowShade }} onClick={() => toggleRow(row.row_number)}>
@@ -951,14 +1086,18 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                         >
                           {entry.key === "status" ? (
                             <StatusIndicator cell={cell} colorMap={statusColorMap} labelMap={statusLabelMap} />
-                          ) : entry.key === "job_title" && jobCardTab ? (
+                          ) : entry.key === "job_title" ? (
                             <button
                               type="button"
                               style={jobTitleLinkStyle}
-                              title="Show this job on Job Queue"
+                              title="View job card"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                onNavigateToJobCard?.(row.row_number, rowStatus);
+                                openJobDialog(
+                                  row.row_number,
+                                  cell.value || "Untitled role",
+                                  getCell(row, trackingColumns.company).value || "",
+                                );
                               }}
                             >
                               {cell.value || "Untitled role"}
@@ -1412,5 +1551,38 @@ const emptyCellStyle = {
   textAlign: "center",
   color: "var(--text-muted)",
   background: "var(--surface)",
+};
+
+// ai: claude-sonnet-4-6 | 2026-06-17
+const filterBarStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "6px",
+  marginBottom: "10px",
+};
+
+const filterChipStyle = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "999px",
+  color: "var(--text-muted)",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: "12px",
+  fontWeight: 600,
+  lineHeight: 1,
+  padding: "5px 13px",
+  whiteSpace: "nowrap",
+};
+
+const filterChipActiveStyle = {
+  background: "var(--accent)",
+  borderColor: "var(--accent)",
+  color: "#fff",
+};
+
+const filterCountStyle = {
+  fontWeight: 400,
+  opacity: 0.8,
 };
 

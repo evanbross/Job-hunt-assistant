@@ -37,6 +37,7 @@ Cover letter generator — uses the Anthropic API to produce a concise, tailored
 cover letter for a specific job posting based on the candidate's profile and
 (optionally) their uploaded resume.
 """
+
 from __future__ import annotations
 
 import config
@@ -75,25 +76,15 @@ class CoverLetterGenerator:
 
         job_url_line = f"\nJob posting URL: {url}" if url else ""
 
+        # ai: claude-sonnet-4-6 | 2026-06-10
         prompt = (
-            f"Write a concise, professional cover letter for the following job.\n\n"
-            f"TARGET ROLE: {job_title} at {company}{job_url_line}\n\n"
-            f"CANDIDATE PROFILE:\n{config.load_candidate_profile()}"
-            f"{resume_section}"
-            f"{fit_section}\n\n"
-            "Instructions:\n"
-            "- 3–4 short paragraphs, no salutation or sign-off (the caller will add those).\n"
-            "- Opening: use a specific hook based on the company, role, product, mission, "
-            "or a relevant candidate strength. Vary the sentence structure across generations.\n"
-            "- Do not use generic openings such as \"I am excited about\", "
-            "\"I am writing to express\", or \"I am thrilled to apply\".\n"
-            "- Avoid the exact phrase \"<job title> opportunity at <company>\".\n"
-            "- Body: 1–2 paragraphs highlighting 2–3 concrete experiences or skills that are "
-            "most relevant to THIS job. Be specific — use real details from the profile/resume, "
-            "not generic claims.\n"
-            "- Closing: one sentence with a call to action.\n"
-            "- Tone: confident, direct, not sycophantic.\n"
-            "- Output plain text only — no markdown, no bullet points, no headers."
+            config.load_cover_letter_prompt_template()
+            .replace("{{JOB_TITLE}}", job_title)
+            .replace("{{COMPANY}}", company)
+            .replace("{{JOB_URL_LINE}}", job_url_line)
+            .replace("{{CANDIDATE_PROFILE}}", config.load_candidate_profile())
+            .replace("{{RESUME_SECTION}}", resume_section)
+            .replace("{{FIT_SECTION}}", fit_section)
         )
 
         return self._client.complete(

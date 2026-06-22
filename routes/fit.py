@@ -124,7 +124,7 @@ def _run_re_evaluate() -> None:
                 score: int | None = None
 
                 # ai: claude-sonnet-4-6 | 2026-06-09
-                tracked_status, _tracking_source, duplicate_hint, duplicate_of_id = db_match_for_job(
+                tracked_status, _tracking_source, duplicate_hint, duplicate_of_id, _match_scores = db_match_for_job(
                     job_title=title,
                     company=company,
                     job_url=str(job.get("url") or ""),

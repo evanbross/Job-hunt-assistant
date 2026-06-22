@@ -5,7 +5,7 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
-import React, { useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 
 /**
  * Standard Modal component for consistent dialogs across the app.

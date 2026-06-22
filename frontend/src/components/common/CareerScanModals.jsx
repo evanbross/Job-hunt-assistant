@@ -32,7 +32,6 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React from "react";
 import Modal from "./Modal.jsx";
 import MetricGrid, { MetricItem } from "./MetricGrid.jsx";
 import { careerScanStatusLine } from "../../utils/careerSiteUtils.js";

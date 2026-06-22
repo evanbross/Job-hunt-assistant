@@ -43,13 +43,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, UTC
 from typing import Any
 
+_STUCK_TASK_TIMEOUT_SECONDS = 900  # 15 minutes — tasks stuck PENDING/STARTED longer than this are auto-cleared
+
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 
 from backend.captured_page_import_service import CapturedPageImportService
 from backend.celery_app import celery_app
 from backend.import_dump import dump_import_capture
-from backend.import_repair import post_repair_duplicate_check, repair_linkedin_company
+from backend.import_repair import post_repair_duplicate_check, repair_ats_url_company, repair_linkedin_company
 from backend.tasks import run_import_task
 from backend.utils import (
     get_repos,
@@ -174,6 +176,31 @@ def _capture_source_suggestions(repos: dict[str, object], query: str) -> list[di
     return []
 
 
+# ai: claude-sonnet-4-6 | 2026-06-20
+# ai: claude-sonnet-4-6 | 2026-06-20
+def _is_task_stale(started_at: str) -> bool:
+    """Return True if started_at is more than _STUCK_TASK_TIMEOUT_SECONDS ago."""
+    if not started_at:
+        return False
+    try:
+        started_dt = datetime.fromisoformat(started_at)
+        return (datetime.now(UTC) - started_dt).total_seconds() > _STUCK_TASK_TIMEOUT_SECONDS
+    except (ValueError, TypeError):
+        return False
+
+
+def _dismiss_capture_queue_item(page_url: str | None) -> None:
+    """Mark the browser capture queue item for page_url done so the extension won't retry it."""
+    if not page_url:
+        return
+    try:
+        with get_repos() as repos:
+            repos["browser_capture_queue"].mark_done_by_urls([page_url])
+            repos["conn"].commit()
+    except Exception as exc:
+        logger.warning("Failed to dismiss browser capture queue item for %s: %s", page_url, exc)
+
+
 def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source: dict | None) -> tuple[dict | None, dict | None]:
     career_sites_repo = repos["career_sites"]
     interval_days = _parse_positive_int(
@@ -294,23 +321,34 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     )
     with _task_id_lock:
         existing_task_id = _current_task_id
+        existing_started_at = _current_started_at
     if existing_task_id:
         existing = AsyncResult(existing_task_id, app=celery_app)
         if existing.state not in ("SUCCESS", "FAILURE", "REVOKED"):
-            _set_import_progress(
-                ImportProgressState(
-                    running=False,
-                    phase="error",
-                    progress=0,
-                    message="An import is already running.",
-                    trigger=trigger,
-                    started_at=started_at,
+            if _is_task_stale(existing_started_at):
+                # Stale PENDING/STARTED task — treat as timed out and allow new import
+                logger.warning("Clearing stale import task %s (started %s)", existing_task_id, existing_started_at)
+                with _task_id_lock:
+                    _current_task_id = None
+            else:
+                _set_import_progress(
+                    ImportProgressState(
+                        running=False,
+                        phase="error",
+                        progress=0,
+                        message="An import is already running.",
+                        trigger=trigger,
+                        started_at=started_at,
+                    )
                 )
-            )
-            return {"error": "An import is already running"}, 409
+                return {"error": "An import is already running"}, 409
 
     raw_content = str(body.get("content") or "")
     content_format = str(body.get("format") or "auto")
+    # ai: claude-sonnet-4-6 | 2026-06-20
+    # Extract page_url before the try block so it's available in except clauses
+    # for marking the browser capture queue item done on all early-exit paths.
+    page_url = str(body.get("url") or "").strip() or None
 
     # Page analysis does not need a DB connection — open it only after we have
     # validated URLs and are ready to resolve the capture source.
@@ -325,12 +363,12 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
                 started_at=started_at,
             )
         )
-        page_url = str(body.get("url") or "").strip() or None
         analysis = CapturedPageImportService().analyze_capture(
             raw_content, content_format, base_url=page_url
         )
         extracted = analysis["urls"]
     except ValueError as exc:
+        _dismiss_capture_queue_item(page_url)
         _set_import_progress(
             ImportProgressState(
                 running=False,
@@ -344,6 +382,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         return {"error": str(exc)}, 400
     except Exception as exc:
         logger.error("Captured page analysis failed: %s", exc)
+        _dismiss_capture_queue_item(page_url)
         _set_import_progress(
             ImportProgressState(
                 running=False,
@@ -357,6 +396,10 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         return {"error": "Captured page analysis failed"}, 500
 
     if not extracted:
+        # ai: claude-sonnet-4-6 | 2026-06-20
+        # Mark the queue item done so the extension doesn't open another tab for
+        # a page that consistently yields no jobs (e.g. a login wall or dead ad).
+        _dismiss_capture_queue_item(page_url)
         _set_import_progress(
             ImportProgressState(
                 running=False,
@@ -436,12 +479,22 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         _current_started_at = started_at
     logger.info("Import task dispatched: %s (%d URLs) trigger=%s", task.id, len(extracted), trigger)
 
-    # ai: claude-sonnet-4-6 | 2026-06-16
+    # ai: claude-sonnet-4-6 | 2026-06-21
     # Mark any browser capture queue items done so the extension doesn't re-capture them.
+    # Include queue_url (the original URL from the queue, injected by the extension for
+    # SPA redirects), page_url (final location.href after any redirect), and all extracted
+    # job URLs. For WTTJ email links the queue URL differs from both the canonical page URL
+    # and the extracted job URL, so all three are needed to guarantee a match.
+    queue_url = str(body.get("queue_url") or "").strip() or None
     extracted_urls = [e["url"] for e in extracted]
+    urls_to_mark_done = (
+        ([queue_url] if queue_url else [])
+        + ([page_url] if page_url else [])
+        + extracted_urls
+    )
     try:
         with get_repos() as repos:
-            repos["browser_capture_queue"].mark_done_by_urls(extracted_urls)
+            repos["browser_capture_queue"].mark_done_by_urls(urls_to_mark_done)
             repos["conn"].commit()
     except Exception as exc:
         logger.warning("Failed to mark browser capture queue items done: %s", exc)
@@ -450,6 +503,18 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
 
 
 # ─── Import routes ────────────────────────────────────────────────────────────
+
+# ai: claude-sonnet-4-6 | 2026-06-20
+@import_bp.route("/import/reset", methods=["POST"])
+def reset_import():
+    """Force-clear a stuck import task so a new import can be started."""
+    global _current_task_id, _current_listener_status
+    with _task_id_lock:
+        _current_task_id = None
+        _current_listener_status = None
+    logger.info("Import state force-reset by user request")
+    return jsonify({"ok": True}), 200
+
 
 @import_bp.route("/repair/fix-unknown-companies", methods=["POST"])
 def fix_unknown_companies():
@@ -460,9 +525,10 @@ def fix_unknown_companies():
             fixed = 0
             for job in batch:
                 url = str(job.get("url") or "")
-                if "linkedin.com" not in url.lower():
-                    continue
-                if repair_linkedin_company(repos["jobs"], job, url):
+                repaired = repair_ats_url_company(repos["jobs"], job)
+                if not repaired and "linkedin.com" in url.lower():
+                    repaired = repair_linkedin_company(repos["jobs"], job, url)
+                if repaired:
                     fixed += 1
                     repos["conn"].commit()
                     updated_job = repos["jobs"].get_by_id(int(job["id"]))
@@ -522,6 +588,7 @@ def import_and_queue_all_jobs():
 
 @import_bp.route("/import/status")
 def import_status():
+    global _current_task_id
     with _task_id_lock:
         task_id = _current_task_id
         trigger = _current_trigger
@@ -553,6 +620,41 @@ def import_status():
     state = result.state
 
     if state in ("PENDING", "STARTED"):
+        # ai: claude-sonnet-4-6 | 2026-06-20
+        # Auto-clear tasks that have been stuck PENDING/STARTED for over 15 minutes;
+        # the Celery worker likely died without updating the result backend.
+        if _is_task_stale(started_at):
+            logger.warning("Auto-clearing stuck import task %s (started %s)", task_id, started_at)
+            with _task_id_lock:
+                _current_task_id = None
+            return jsonify({
+                "running": False,
+                "phase": "error",
+                "progress": 0,
+                "message": "Import task timed out and was cleared automatically. You may start a new import.",
+                "total": 0,
+                "result": None,
+                "current_job_url": "",
+                "current_platform": "",
+                "trigger": trigger,
+                "started_at": started_at,
+                "capture_source": None,
+                "steps": _import_steps("error", False),
+            })
+        # ai: claude-sonnet-4-6 | 2026-06-21
+        # Log when stuck in PENDING/STARTED > 15s; fires roughly every 30s so
+        # it's visible without flooding the log. Most likely cause: worker not running.
+        try:
+            if started_at:
+                elapsed = (datetime.now(UTC) - datetime.fromisoformat(started_at)).total_seconds()
+                if elapsed > 15 and int(elapsed) % 30 < 3:
+                    logger.warning(
+                        "import_status: task=%s stuck in %s for %.0fs — "
+                        "worker may not be running (check: celery -A backend.celery_app worker)",
+                        task_id[:12], state, elapsed,
+                    )
+        except (ValueError, TypeError):
+            pass
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify({
             "running": True,

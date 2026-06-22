@@ -55,6 +55,7 @@ from backend.utils import (
     get_repos,
     get_subject_rule_match,
     is_application_acknowledgement,
+    is_near_certain_duplicate,
 )
 
 logger = logging.getLogger(__name__)
@@ -333,8 +334,8 @@ def rescan_email(email_id: str):
             if subject_rule == "whitelist":
                 confidence = "high"
 
-            # ai: claude-sonnet-4-6 | 2026-06-09
-            _tracked_status, _tracking_source, duplicate_hint, duplicate_of_id = db_match_for_job(
+            # ai: claude-sonnet-4-6 | 2026-06-10
+            _tracked_status, tracking_source, duplicate_hint, duplicate_of_id, match_scores = db_match_for_job(
                 job_title=str(parsed.get("job_title") or ""),
                 company=str(parsed.get("company") or ""),
                 job_url=str(parsed.get("url") or ""),
@@ -342,7 +343,10 @@ def rescan_email(email_id: str):
                 dedup_checker=dedup_checker,
             )
 
-            if duplicate_hint:
+            # ai: claude-sonnet-4-6 | 2026-06-10
+            if duplicate_hint and confidence == "high" and is_near_certain_duplicate(tracking_source, match_scores):
+                status = "skipped"
+            elif duplicate_hint:
                 status = "possible_duplicate"
             else:
                 status = "pending_review" if confidence == "high" else "triage"
@@ -367,7 +371,14 @@ def rescan_email(email_id: str):
                 "confidence_score": parsed.get("confidence_score", 50),
             }
 
-            if confidence == "high":
+            # ai: claude-sonnet-4-6 | 2026-06-10
+            if status == "skipped":
+                job_data["skip_reason"] = "duplicate"
+                job_data["skip_feedback"] = (
+                    f"Auto-rejected: near-certain duplicate of job #{duplicate_of_id} ({duplicate_hint})."
+                )
+
+            if confidence == "high" and status != "skipped":
                 try:
                     result = scorer.score(
                         job_title=parsed.get("job_title", ""),
@@ -386,7 +397,7 @@ def rescan_email(email_id: str):
 
             job_data, import_warnings = normalize_and_validate(job_data)
             job_data["import_warnings"] = import_warnings_to_json(import_warnings)
-            if import_warnings and job_data["status"] != "possible_duplicate":
+            if import_warnings and job_data["status"] not in ("possible_duplicate", "skipped"):
                 job_data["status"] = "triage"
 
             new_id = job_repo.insert(job_data)

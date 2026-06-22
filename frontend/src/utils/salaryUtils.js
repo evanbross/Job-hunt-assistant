@@ -41,7 +41,7 @@ export function salaryRangeForJob(job) {
 
 export function extractSalaryRange(text) {
   const normalizedText = String(text || "")
-    .replace(/ /g, " ")
+    .replace(/\u00A0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!normalizedText) return "";

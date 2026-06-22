@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
 import { TriageCard, DuplicateCard, ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "./TriagePanel.jsx";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
@@ -170,6 +170,26 @@ const emailReportHeaderStyle = {
   textAlign: "left",
   textTransform: "uppercase",
   whiteSpace: "nowrap",
+};
+
+const backToTopButtonStyle = {
+  position: "fixed",
+  bottom: "28px",
+  right: "28px",
+  zIndex: 200,
+  width: "44px",
+  height: "44px",
+  borderRadius: "50%",
+  border: "1px solid var(--border)",
+  background: "var(--accent)",
+  color: "#fff",
+  fontSize: "20px",
+  lineHeight: 1,
+  cursor: "pointer",
+  boxShadow: "var(--shadow-lg, 0 4px 12px rgba(0,0,0,0.25))",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
 };
 
 const emailReportCellStyle = {
@@ -334,11 +354,13 @@ export default function JobQueue({
   const [fixingCompanies, setFixingCompanies] = useState(false);
   const [fixProgress, setFixProgress] = useState(null);
   const [deletingUnknownCompanies, setDeletingUnknownCompanies] = useState(false);
+  const [showBackToTop, setShowBackToTop] = useState(false);
   const pollRef = useRef(null);
   const boardPollRef = useRef(null);
   const importPollRef = useRef(null);
   const reEvalPollRef = useRef(null);
   const reEvaluateResetTimeoutRef = useRef(null);
+  const scrollAnchorRef = useRef(null);
   const fileInputRef = useRef(null);
   const moreToolsRef = useRef(null);
 
@@ -711,6 +733,7 @@ export default function JobQueue({
   };
 
   const handleTriageDescriptionUpdated = (job, updated, previous) => {
+    captureScrollAnchor(job.id);
     setTriageDescriptionUpdatePopup({
       company: updated.company || job.company || "",
       jobTitle: updated.job_title || job.job_title || "",
@@ -741,6 +764,16 @@ export default function JobQueue({
           error: data.error || "Failed to re-fetch job",
           jobTitle: job.job_title || "",
           phase: "error",
+          previousScore: job.fit_score,
+        });
+        return;
+      }
+      if (data.queued_for_browser_capture) {
+        setTriageReEvaluatePopup({
+          action: "Re-fetch",
+          company: job.company || "",
+          jobTitle: job.job_title || "",
+          phase: "queued",
           previousScore: job.fit_score,
         });
         return;
@@ -835,23 +868,34 @@ export default function JobQueue({
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to re-fetch job");
 
-        results.push({
-          company: data.company || job.company || "",
-          error: "",
-          jobTitle: data.job_title || job.job_title || "",
-          newScore: data.fit_score,
-          previousScore: job.fit_score,
-          status: data.status,
-        });
-
-        const triageStatuses = new Set(["triage", "possible_duplicate"]);
-        if (triageStatuses.has(data.status)) {
-          nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
+        if (data.queued_for_browser_capture) {
+          results.push({
+            company: job.company || "",
+            error: "",
+            jobTitle: job.job_title || "",
+            newScore: null,
+            previousScore: job.fit_score,
+            status: "queued",
+          });
         } else {
-          nextJobs = nextJobs.filter((item) => item.id !== job.id);
+          results.push({
+            company: data.company || job.company || "",
+            error: "",
+            jobTitle: data.job_title || job.job_title || "",
+            newScore: data.fit_score,
+            previousScore: job.fit_score,
+            status: data.status,
+          });
+
+          const triageStatuses = new Set(["triage", "possible_duplicate"]);
+          if (triageStatuses.has(data.status)) {
+            nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
+          } else {
+            nextJobs = nextJobs.filter((item) => item.id !== job.id);
+          }
+          setTriageJobs(nextJobs);
+          onTriageCountChange(nextJobs.length);
         }
-        setTriageJobs(nextJobs);
-        onTriageCountChange(nextJobs.length);
       } catch (err) {
         results.push({
           company: job.company || "",
@@ -1005,7 +1049,6 @@ export default function JobQueue({
     if (!focusJobId) return;
     setSearchText("");
     setShowOnlyUnscored(false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusJobId]);
 
   useEffect(() => {
@@ -1017,6 +1060,26 @@ export default function JobQueue({
     }, 100);
     return () => window.clearTimeout(timeoutId);
   }, [focusJobId, loading, viewMode]);
+
+  // Re-sorting after a re-evaluation can move a job card to a new position;
+  // record its viewport offset beforehand so we can scroll back to it.
+  const captureScrollAnchor = useCallback((jobId) => {
+    const el = document.getElementById(`job-card-${jobId}`)
+             || document.getElementById(`triage-card-${jobId}`);
+    if (!el) return;
+    scrollAnchorRef.current = { jobId, top: el.getBoundingClientRect().top };
+  }, []);
+
+  useLayoutEffect(() => {
+    const anchor = scrollAnchorRef.current;
+    if (!anchor) return;
+    scrollAnchorRef.current = null;
+    const el = document.getElementById(`job-card-${anchor.jobId}`)
+             || document.getElementById(`triage-card-${anchor.jobId}`);
+    if (!el) return;
+    const delta = el.getBoundingClientRect().top - anchor.top;
+    if (delta !== 0) window.scrollBy(0, delta);
+  }, [jobs, triageJobs, sortBy, viewMode]);
 
   const handleManualSubmit = async () => {
     if (!manualListingText.trim() && !manualSourceUrl.trim()) {
@@ -1083,6 +1146,17 @@ export default function JobQueue({
     } finally {
       event.target.value = "";
     }
+  };
+
+  // ai: claude-sonnet-4-6 | 2026-06-20
+  const handleForceResetImport = async () => {
+    if (!window.confirm("Force-clear the stuck import? This does not cancel any running Celery worker — it just unblocks the queue so a new import can start.")) return;
+    try {
+      await fetch("/api/import/reset", { method: "POST" });
+    } catch { /* no-op */ }
+    clearInterval(importPollRef.current);
+    setImportSubmitting(false);
+    setImportState(null);
   };
 
   const buildImportPayload = (sourceFields = {}) => ({
@@ -1175,6 +1249,16 @@ export default function JobQueue({
       setImportSubmitting(false);
     }
   };
+
+  useEffect(() => {
+    const handleScroll = () => {
+      const next = window.scrollY > 400;
+      setShowBackToTop((prev) => (prev === next ? prev : next));
+    };
+    handleScroll();
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   useEffect(() => {
     if (!moreToolsOpen) return;
@@ -1305,7 +1389,7 @@ export default function JobQueue({
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", cursor: "pointer", fontSize: "12px", padding: "4px 8px" }}
+          style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", cursor: "pointer", fontSize: "12px", padding: "4px 8px", width: "fit-content" }}
         >
           {SORT_OPTIONS.map((opt) => (
             <option key={opt.key} value={opt.key}>{opt.label}</option>
@@ -1604,9 +1688,19 @@ export default function JobQueue({
 
                 {importSubmitting && (
                   <div style={inlineImportProgressStyle}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-                      <span className="inline-spinner" />
-                      <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>{importState?.message || "Starting import…"}</span>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginBottom: "8px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span className="inline-spinner" />
+                        <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>{importState?.message || "Starting import…"}</span>
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        onClick={handleForceResetImport}
+                        style={{ fontSize: "11px", padding: "3px 10px", flexShrink: 0 }}
+                        title="Force-clear a stuck import so you can start a new one"
+                      >
+                        Force Reset
+                      </button>
                     </div>
                     {importState?.current_job_url && (
                       <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -1817,6 +1911,7 @@ export default function JobQueue({
               onQueueSkip={handleSkip}
               onQueueSnooze={handleSnooze}
               onQueueUpdate={(jobId, updatedJob, originalJob) => {
+                captureScrollAnchor(jobId);
                 if (updatedJob.fit_score !== originalJob.fit_score || updatedJob.fit_reasoning !== originalJob.fit_reasoning) {
                   setJobReEvaluatePopup({
                     company: updatedJob.company || originalJob.company || "",
@@ -1849,6 +1944,7 @@ export default function JobQueue({
             onSkip: handleSkip,
             onSnooze: handleSnooze,
             onUpdate: (jobId, updatedJob, originalJob) => {
+              captureScrollAnchor(jobId);
               if (updatedJob.fit_score !== originalJob.fit_score || updatedJob.fit_reasoning !== originalJob.fit_reasoning) {
                 setJobReEvaluatePopup({
                   company: updatedJob.company || originalJob.company || "",
@@ -1885,6 +1981,7 @@ export default function JobQueue({
               onSnooze={handleSnooze}
               onNavigateToJobCard={onNavigateToJobCard}
               onUpdate={(jobId, updatedJob) => {
+                captureScrollAnchor(jobId);
                 if (updatedJob.fit_score !== job.fit_score || updatedJob.fit_reasoning !== job.fit_reasoning) {
                   setJobReEvaluatePopup({
                     company: updatedJob.company || job.company || "",
@@ -1907,6 +2004,18 @@ export default function JobQueue({
             />
           ))
         )
+      )}
+
+      {showBackToTop && (
+        <button
+          type="button"
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          aria-label="Back to top"
+          title="Back to top"
+          style={backToTopButtonStyle}
+        >
+          ↑
+        </button>
       )}
     </div>
   );
@@ -1940,7 +2049,10 @@ function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows,
         onDifferentJob={() => triageHandlers.approve(job)}
         onMarkUnique={() => triageHandlers.markUnique(job)}
         onMarkApplied={() => triageHandlers.markApplied(job)}
+        onReqClosed={() => triageHandlers.skip(job, "req_closed", "", [])}
+        onSkipDuplicate={(jobId) => triageHandlers.skip({ id: jobId }, "duplicate", "", [])}
         onReEvaluate={() => triageHandlers.reEvaluateFit(job)}
+        onRefreshFromUrl={() => triageHandlers.refreshFromUrl(job)}
         onReprocessed={(updated) => triageHandlers.reprocessed(job, updated)}
         companySheetRows={companyRows}
         onNavigateToJobCard={onNavigateToJobCard}
@@ -1956,6 +2068,7 @@ function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows,
       onMarkApplied={() => triageHandlers.markApplied(job)}
       onReEvaluate={() => triageHandlers.reEvaluateFit(job)}
       onRefreshFromUrl={() => triageHandlers.refreshFromUrl(job)}
+      onSkipDuplicate={(jobId) => triageHandlers.skip({ id: jobId }, "duplicate", "", [])}
       companySheetRows={companyRows}
       onReprocessed={(updated) => triageHandlers.reprocessed(job, updated)}
       onDescriptionUpdated={(updated, previous) => triageHandlers.descriptionUpdated(job, updated, previous)}
@@ -2391,6 +2504,7 @@ function ScanSummaryPopup({ summary, onClose }) {
     pending_review_jobs = 0,
     triage_jobs = 0,
     possible_duplicate_jobs = 0,
+    auto_skipped_duplicate_jobs = 0,
     low_fit_score_jobs = 0,
     scoring_failed_jobs = 0,
   } = summary;
@@ -2416,6 +2530,7 @@ function ScanSummaryPopup({ summary, onClose }) {
     { label: "Added to Queue", value: pending_review_jobs, tone: "green" },
     { label: "Moved to Triage", value: triage_jobs, tone: "yellow" },
     { label: "Possible Duplicates", value: possible_duplicate_jobs },
+    { label: "Auto-Rejected Duplicates", value: auto_skipped_duplicate_jobs },
     { label: "Low Fit Score", value: low_fit_score_jobs, tone: "yellow" },
     { label: "Scoring Failed", value: scoring_failed_jobs, tone: "red" },
   ].filter((item) => item.value > 0);
@@ -2603,7 +2718,7 @@ function ScanSummaryPopup({ summary, onClose }) {
               <tfoot>
                 <tr>
                   <td style={{ ...emailReportCellStyle, background: "var(--surface2)", color: "var(--text)", fontWeight: 700 }} colSpan={8}>
-                    {new_jobs} job{new_jobs === 1 ? "" : "s"} · {non_job_emails + acknowledgement_emails + feedback_filtered_emails + source_filtered_emails} ignored · {duplicates} duplicate{duplicates === 1 ? "" : "s"} · {triage_jobs} triage · {possible_duplicate_jobs} possible duplicate{possible_duplicate_jobs === 1 ? "" : "s"} · {parser_error_emails + fetch_error_emails} error{parser_error_emails + fetch_error_emails === 1 ? "" : "s"}
+                    {new_jobs} job{new_jobs === 1 ? "" : "s"} · {non_job_emails + acknowledgement_emails + feedback_filtered_emails + source_filtered_emails} ignored · {duplicates} duplicate{duplicates === 1 ? "" : "s"} · {triage_jobs} triage · {possible_duplicate_jobs} possible duplicate{possible_duplicate_jobs === 1 ? "" : "s"} · {auto_skipped_duplicate_jobs} auto-rejected duplicate{auto_skipped_duplicate_jobs === 1 ? "" : "s"} · {parser_error_emails + fetch_error_emails} error{parser_error_emails + fetch_error_emails === 1 ? "" : "s"}
                   </td>
                 </tr>
               </tfoot>
