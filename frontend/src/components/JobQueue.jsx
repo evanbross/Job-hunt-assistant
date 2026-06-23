@@ -314,6 +314,7 @@ export default function JobQueue({
 }) {
   const [jobs, setJobs] = useState([]);
   const [searchText, setSearchText] = useState(() => readStoredSearch(JOB_QUEUE_SEARCH_STORAGE_KEY));
+  const [debouncedSearchText, setDebouncedSearchText] = useState(searchText);
   const [searchAllFields, setSearchAllFields] = useState(() => readStoredViewPref(SEARCH_ALL_FIELDS_KEY, "false") === "true");
   const [viewMode, setViewMode] = useState(() => readStoredViewPref(VIEW_MODE_STORAGE_KEY, "queue"));
   const [sortBy, setSortBy] = useState(() => readStoredViewPref(SORT_STORAGE_KEY, "date_desc"));
@@ -366,6 +367,16 @@ export default function JobQueue({
 
   useEffect(() => {
     writeStoredSearch(JOB_QUEUE_SEARCH_STORAGE_KEY, searchText);
+  }, [searchText]);
+
+  // ai: claude-sonnet-4-6 | 2026-06-23
+  // Debounce the value used for filtering so re-rendering the (potentially large)
+  // job list only happens after the user pauses typing, not on every keystroke.
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearchText(searchText);
+    }, 200);
+    return () => window.clearTimeout(timeoutId);
   }, [searchText]);
 
   useEffect(() => {
@@ -605,8 +616,29 @@ export default function JobQueue({
       previousScore: job.fit_score,
     });
 
-    const res = await fetch(`/api/jobs/${job.id}/re-evaluate-fit`, { method: "POST" });
-    const data = await res.json();
+    // ai: claude-sonnet-4-6 | 2026-06-23
+    // Network failures and non-JSON error bodies (e.g. an upstream 529 "overloaded"
+    // response) must also surface the error popup, not just a !res.ok JSON error.
+    // Previously these threw before the popup was set, so the caller's catch block
+    // swallowed them silently and the button just re-enabled with no feedback.
+    let res;
+    let data;
+    try {
+      res = await fetch(`/api/jobs/${job.id}/re-evaluate-fit`, { method: "POST" });
+      data = await res.json();
+    } catch (networkError) {
+      const message = networkError instanceof Error && networkError.message
+        ? networkError.message
+        : "Failed to reach the server. The AI provider may be temporarily overloaded.";
+      setJobReEvaluatePopup({
+        company: job.company || "",
+        error: message,
+        jobTitle: job.job_title || "",
+        phase: "error",
+        previousScore: job.fit_score,
+      });
+      throw networkError;
+    }
 
     if (!res.ok) {
       setJobReEvaluatePopup({
@@ -1012,13 +1044,13 @@ export default function JobQueue({
   const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies;
 
   const filteredJobs = jobs.filter((job) => {
-    if (!jobMatchesSearch(job, searchText, searchAllFields)) return false;
+    if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     return true;
   });
 
   const filteredTriageJobs = triageJobs.filter((job) => {
-    if (!jobMatchesSearch(job, searchText, searchAllFields)) return false;
+    if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     return true;
   });
@@ -1048,6 +1080,7 @@ export default function JobQueue({
   useEffect(() => {
     if (!focusJobId) return;
     setSearchText("");
+    setDebouncedSearchText("");
     setShowOnlyUnscored(false);
   }, [focusJobId]);
 
