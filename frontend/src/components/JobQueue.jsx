@@ -42,7 +42,7 @@ import MetricGrid, { MetricItem } from "./common/MetricGrid.jsx";
 import { fitReasoningBullets, reasoningWithoutPenaltySummary, scoreLabel } from "../utils/fitScoringUtils.js";
 import { dispositionLabel, formatJobTitles, formatScanAction, formatScanDisposition, scoreDeltaLabel } from "../utils/jobQueueUtils.js";
 import { compareNullableScores, extractSender, extractSubjectWords } from "../utils/triagePanelUtils.js";
-import { applicationRowFromSheet, rowMatchesCompany } from "../utils/sheetUtils.js";
+import { applicationRowFromSheet } from "../utils/sheetUtils.js";
 
 const JOB_QUEUE_SEARCH_STORAGE_KEY = "jha.jobQueue.search";
 
@@ -2055,10 +2055,6 @@ export default function JobQueue({
 }
 
 function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard) {
-  const companyRows = allSheetRows
-    ? allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))
-    : null;
-
   if (job.status === "pending_review") {
     return (
       <JobCard
@@ -2087,7 +2083,7 @@ function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows,
         onReEvaluate={() => triageHandlers.reEvaluateFit(job)}
         onRefreshFromUrl={() => triageHandlers.refreshFromUrl(job)}
         onReprocessed={(updated) => triageHandlers.reprocessed(job, updated)}
-        companySheetRows={companyRows}
+        allSheetRows={allSheetRows}
         onNavigateToJobCard={onNavigateToJobCard}
       />
     );
@@ -2102,7 +2098,7 @@ function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows,
       onReEvaluate={() => triageHandlers.reEvaluateFit(job)}
       onRefreshFromUrl={() => triageHandlers.refreshFromUrl(job)}
       onSkipDuplicate={(jobId) => triageHandlers.skip({ id: jobId }, "duplicate", "", [])}
-      companySheetRows={companyRows}
+      allSheetRows={allSheetRows}
       onReprocessed={(updated) => triageHandlers.reprocessed(job, updated)}
       onDescriptionUpdated={(updated, previous) => triageHandlers.descriptionUpdated(job, updated, previous)}
       onNavigateToJobCard={onNavigateToJobCard}

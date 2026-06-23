@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import StatusBadge from "./common/StatusBadge.jsx";
 import Modal from "./common/Modal.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
@@ -42,6 +42,7 @@ import { applicationRowFromSheet, rowMatchesCompany } from "../utils/sheetUtils.
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
 import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
+import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.js";
 import {
   MISMATCH_REASONS,
   SKIP_REASONS,
@@ -55,7 +56,12 @@ import {
 
 const _DEFAULT_SNOOZE_DAYS_KEY = "jobcard_snooze_days";
 
-export default function JobCard({
+// ai: claude-sonnet-4-6 | 2026-06-23
+// Memoized: parent re-renders on every search keystroke, and callback props
+// here are rebuilt as fresh closures each time (they capture the per-item
+// job), so identity-based comparison would never skip a re-render. See
+// arePropsEqualIgnoringFunctions for why ignoring function identity is safe.
+function JobCard({
   job,
   onApprove,
   onReEvaluate,
@@ -2213,6 +2219,8 @@ export default function JobCard({
     </div>
   );
 }
+
+export default memo(JobCard, arePropsEqualIgnoringFunctions);
 
 function FitReviewPanel({
   currentScore,

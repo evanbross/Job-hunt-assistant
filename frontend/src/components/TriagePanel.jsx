@@ -32,12 +32,13 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Modal from "./common/Modal.jsx";
 import StatusBadge from "./common/StatusBadge.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
 import { applicationRowFromSheet, isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.js";
+import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.js";
 import UndoEditNotice from "./common/UndoEditNotice.jsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
@@ -632,7 +633,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
                 return nextJobs;
               });
             }}
-            companySheetRows={allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))}
+            allSheetRows={allSheetRows}
             onNavigateToJobCard={onNavigateToJobCard}
           />
         ) : (
@@ -645,7 +646,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
             onReEvaluate={() => handleReEvaluateFit(job)}
             onRefreshFromUrl={() => handleRefreshFromUrl(job)}
             onSkipDuplicate={(jobId) => handleSkip({ id: jobId }, "duplicate", "", [])}
-            companySheetRows={allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))}
+            allSheetRows={allSheetRows}
             onReprocessed={(updated) => {
               const triageStatuses = new Set(["triage", "possible_duplicate"]);
               if (triageStatuses.has(updated.status)) {
@@ -764,7 +765,12 @@ function CompanyNameEditor({ jobId, company, onSave, onError }) {
   );
 }
 
-export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onReqClosed, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, companySheetRows = null, onNavigateToJobCard }) {
+// ai: claude-sonnet-4-6 | 2026-06-23
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onReqClosed, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, allSheetRows = null, onNavigateToJobCard }) {
+  const companySheetRows = useMemo(
+    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
+    [allSheetRows, job.company],
+  );
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -1206,7 +1212,14 @@ export function DuplicateCard({ job, onSameJob, onDifferentJob, onMarkUnique, on
   );
 }
 
-export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, companySheetRows = null, onNavigateToJobCard }) {
+export const DuplicateCard = memo(DuplicateCardImpl, arePropsEqualIgnoringFunctions);
+
+// ai: claude-sonnet-4-6 | 2026-06-23
+function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, allSheetRows = null, onNavigateToJobCard }) {
+  const companySheetRows = useMemo(
+    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
+    [allSheetRows, job.company],
+  );
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingUrl, setEditingUrl] = useState(false);
   const [urlDraft, setUrlDraft] = useState("");
@@ -2118,6 +2131,8 @@ export function TriageCard({ job, onApprove, onSkip, onMarkApplied, onReEvaluate
     </div>
   );
 }
+
+export const TriageCard = memo(TriageCardImpl, arePropsEqualIgnoringFunctions);
 
 // ai: claude-sonnet-4-6 | 2026-06-20
 function CoverLetterModal({ job, coverLetter, onClose }) {
