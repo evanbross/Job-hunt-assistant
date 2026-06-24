@@ -1,6 +1,7 @@
 @../Dev-Standards/COMMON_CODING_STANDARDS.md
 @../Dev-Standards/PYTHON_STANDARDS.md
 @../Dev-Standards/FLASK_STANDARDS.md
+@../Dev-Standards/JAVASCRIPT_TYPESCRIPT_STANDARDS.md
 @../Dev-Standards/REACT_STANDARDS.md
 
 # Read before touching these areas (use Read tool at session start if relevant):
