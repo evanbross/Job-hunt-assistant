@@ -194,19 +194,21 @@ function statusColor(cell, colorMap = {}) {
 
 function stageSelectStyle(status, colorMap = {}) {
   const colors = statusColor({ value: status }, colorMap);
+  const isRejected = normalizeStatus(status).includes("reject");
   return {
     ...stageControlStyle,
-    background: colors.background,
-    color: colors.color,
+    background: isRejected ? "var(--red)" : colors.background,
+    color: isRejected ? "#fff" : colors.color,
     fontWeight: 700,
   };
 }
 
 function stageOptionStyle(status, colorMap = {}) {
   const colors = statusColor({ value: status }, colorMap);
+  const isRejected = normalizeStatus(status).includes("reject");
   return {
-    backgroundColor: colors.background,
-    color: colors.color,
+    backgroundColor: isRejected ? "var(--red)" : colors.background,
+    color: isRejected ? "#fff" : colors.color,
   };
 }
 
@@ -481,6 +483,11 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     if (sortedStageStatuses.length === 0) return DEFAULT_STATUS_OPTIONS;
     return sortedStageStatuses.map((s) => s.label);
   }, [sortedStageStatuses]);
+
+  const alphabeticalStatusOptions = useMemo(
+    () => [...statusOptions].sort((a, b) => a.localeCompare(b)),
+    [statusOptions],
+  );
 
   const statusColorMap = useMemo(() => {
     const map = {};
@@ -1214,7 +1221,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                             style={stageSelectStyle(stageRows[row.row_number]?.status || "", statusColorMap)}
                           >
                             <option value="" disabled>— select status —</option>
-                            {statusOptions.map((status) => (
+                            {alphabeticalStatusOptions.map((status) => (
                               <option key={status} value={status} style={stageOptionStyle(status, statusColorMap)}>{status}</option>
                             ))}
                           </select>

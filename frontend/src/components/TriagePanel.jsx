@@ -617,7 +617,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
             onDifferentJob={() => handleApprove(job)}
             onMarkUnique={() => handleMarkUnique(job)}
             onMarkApplied={() => handleMarkApplied(job)}
-            onReqClosed={() => handleSkip(job, "req_closed", "", [])}
+            onSkip={(reason, feedback, mismatchReasons) => handleSkip(job, reason, feedback, mismatchReasons)}
             onSkipDuplicate={(jobId) => handleSkip({ id: jobId }, "duplicate", "", [])}
             onReEvaluate={() => handleReEvaluateFit(job)}
             onRefreshFromUrl={() => handleRefreshFromUrl(job)}
@@ -766,7 +766,7 @@ function CompanyNameEditor({ jobId, company, onSave, onError }) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onReqClosed, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, allSheetRows = null, onNavigateToJobCard }) {
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, allSheetRows = null, onNavigateToJobCard }) {
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
@@ -774,6 +774,10 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMar
   const [loadingAction, setLoadingAction] = useState(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [showSkipMenu, setShowSkipMenu] = useState(false);
+  const [skipConfirm, setSkipConfirm] = useState(null);
+  const [skipNote, setSkipNote] = useState("");
+  const [skipMismatchReasons, setSkipMismatchReasons] = useState([]);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [reEvaluateError, setReEvaluateError] = useState(null);
   const [descriptionPasteOpen, setDescriptionPasteOpen] = useState(false);
@@ -805,6 +809,46 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMar
     } finally {
       setLoadingAction(null);
     }
+  };
+
+  const handleSkipReasonClick = async (reason) => {
+    setShowSkipMenu(false);
+    setSkipNote("");
+    setSkipMismatchReasons([]);
+    if (reason.key === "other" || reason.key === "not_a_fit") {
+      setSkipConfirm(reason);
+      return;
+    }
+    setSkipConfirm(null);
+    setLoadingAction(`skip:${reason.key}`);
+    try {
+      await onSkip(reason.key, "", []);
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const handleSkipConfirm = async () => {
+    if (!skipConfirm) return;
+    const note = skipNote.trim();
+    const mismatchReasons = skipMismatchReasons;
+    setLoadingAction(`skip:${skipConfirm.key}`);
+    setSkipConfirm(null);
+    setSkipNote("");
+    setSkipMismatchReasons([]);
+    try {
+      await onSkip(skipConfirm.key, note, mismatchReasons);
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const toggleMismatchReason = (reason) => {
+    setSkipMismatchReasons((previousReasons) =>
+      previousReasons.includes(reason)
+        ? previousReasons.filter((currentReason) => currentReason !== reason)
+        : [...previousReasons, reason]
+    );
   };
 
   const handleDescriptionSubmit = async () => {
@@ -1165,15 +1209,108 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMar
         >
           {loadingAction === "applied" ? "Saving…" : "Mark Applied"}
         </button>
-        {/* ai: claude-sonnet-4-6 | 2026-06-10 */}
-        <button
-          className="btn-secondary btn-sm"
-          onClick={() => act(onReqClosed, "req_closed")}
-          disabled={loadingAction !== null}
-        >
-          {loadingAction === "req_closed" ? "Skipping…" : "Skip - Req Closed"}
-        </button>
+        {/* ai: claude-sonnet-4-6 | 2026-06-24 */}
+        <div style={{ position: "relative" }}>
+          <button
+            className="btn-danger btn-sm"
+            onClick={() => setShowSkipMenu((open) => !open)}
+            disabled={loadingAction !== null}
+            style={{ display: "flex", alignItems: "center", gap: "5px" }}
+          >
+            {String(loadingAction || "").startsWith("skip:") ? "Skipping…" : "Skip"}
+            {loadingAction === null && <span style={{ fontSize: "10px", opacity: 0.7 }}>▾</span>}
+          </button>
+
+          {showSkipMenu && (
+            <div style={skipMenuStyle}>
+              {SKIP_REASONS.filter((reason) => reason.key !== "duplicate").map((reason) => (
+                <button
+                  key={reason.key}
+                  onClick={() => handleSkipReasonClick(reason)}
+                  style={reason.color ? { ...skipMenuItemStyle, color: reason.color } : skipMenuItemStyle}
+                  onMouseEnter={(event) => { event.currentTarget.style.background = "var(--surface2)"; }}
+                  onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+                >
+                  {reason.label}
+                </button>
+              ))}
+              <hr style={{ margin: "4px 0", border: "none", borderTop: "1px solid var(--border)" }} />
+              <button
+                onClick={() => setShowSkipMenu(false)}
+                style={{ ...skipMenuItemStyle, color: "var(--text-muted)", fontSize: "11px" }}
+                onMouseEnter={(event) => { event.currentTarget.style.background = "var(--surface2)"; }}
+                onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+
+      {skipConfirm && (
+        <div style={skipConfirmPanelStyle}>
+          <p style={skipConfirmTextStyle}>
+            Skip as <strong style={{ color: "var(--text)" }}>{skipConfirm.label}</strong>
+            {skipConfirm.key === "not_a_fit" && (
+              <span style={{ opacity: 0.7 }}> — select one or more mismatch reasons to train future scoring</span>
+            )}
+          </p>
+          {skipConfirm.key === "not_a_fit" && (
+            <div style={mismatchChipRowStyle}>
+              {MISMATCH_REASONS.map((reason) => {
+                const selected = skipMismatchReasons.includes(reason);
+                return (
+                  <button
+                    key={reason}
+                    type="button"
+                    onClick={() => toggleMismatchReason(reason)}
+                    style={{
+                      ...mismatchChipStyle,
+                      background: selected ? "var(--accent-light)" : "var(--surface)",
+                      borderColor: selected ? "rgba(74,92,247,0.35)" : "var(--border)",
+                      color: selected ? "var(--accent)" : "var(--text)",
+                    }}
+                  >
+                    {reason}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <input
+            type="text"
+            value={skipNote}
+            onChange={(event) => setSkipNote(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") handleSkipConfirm();
+              if (event.key === "Escape") {
+                setSkipConfirm(null);
+                setSkipNote("");
+                setSkipMismatchReasons([]);
+              }
+            }}
+            placeholder={skipConfirm.key === "not_a_fit" ? "Optional note about the mismatch..." : "Optional note..."}
+            autoFocus
+            style={skipNoteInputStyle}
+          />
+          <div style={skipConfirmActionsStyle}>
+            <button className="btn-danger" onClick={handleSkipConfirm} disabled={loadingAction !== null}>
+              Confirm Skip
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                setSkipConfirm(null);
+                setSkipNote("");
+                setSkipMismatchReasons([]);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {descriptionPasteOpen && (
         <DescriptionPasteModal
@@ -2008,7 +2145,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
                 <button
                   key={reason.key}
                   onClick={() => handleSkipReasonClick(reason)}
-                  style={skipMenuItemStyle}
+                  style={reason.color ? { ...skipMenuItemStyle, color: reason.color } : skipMenuItemStyle}
                   onMouseEnter={(event) => { event.currentTarget.style.background = "var(--surface2)"; }}
                   onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
                 >

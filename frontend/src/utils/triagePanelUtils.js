@@ -44,12 +44,13 @@ export const PLATFORM_LABELS = {
 export const SKIP_REASONS = [
   { key: "rejected", label: "Rejected" },
   { key: "duplicate", label: "Duplicate" },
-  { key: "req_closed", label: "Req Closed" },
+  { key: "req_closed", label: "Req Closed", color: "var(--red-medium)" },
   { key: "not_remote", label: "Not Remote" },
   { key: "not_a_fit", label: "Not a Fit" },
   { key: "salary_too_low", label: "Salary Too Low" },
   { key: "not_interested", label: "Not Interested" },
-  { key: "wrong_role", label: "Wrong Role" },
+  { key: "wrong_role", label: "Wrong Role", color: "var(--red-medium)" },
+  { key: "wrong_tech", label: "Wrong Tech", color: "var(--red-medium)" },
   { key: "other", label: "Other" },
 ];
 

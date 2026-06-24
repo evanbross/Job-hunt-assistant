@@ -1424,7 +1424,7 @@ function JobCard({
                 <button
                   key={reason.key}
                   onClick={() => handleSkipReasonClick(reason)}
-                  style={skipMenuItemStyle}
+                  style={reason.color ? { ...skipMenuItemStyle, color: reason.color } : skipMenuItemStyle}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface2)")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                 >

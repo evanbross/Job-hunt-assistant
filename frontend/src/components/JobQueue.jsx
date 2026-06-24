@@ -2078,7 +2078,7 @@ function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows,
         onDifferentJob={() => triageHandlers.approve(job)}
         onMarkUnique={() => triageHandlers.markUnique(job)}
         onMarkApplied={() => triageHandlers.markApplied(job)}
-        onReqClosed={() => triageHandlers.skip(job, "req_closed", "", [])}
+        onSkip={(reason, feedback, mismatchReasons) => triageHandlers.skip(job, reason, feedback, mismatchReasons)}
         onSkipDuplicate={(jobId) => triageHandlers.skip({ id: jobId }, "duplicate", "", [])}
         onReEvaluate={() => triageHandlers.reEvaluateFit(job)}
         onRefreshFromUrl={() => triageHandlers.refreshFromUrl(job)}
