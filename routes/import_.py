@@ -221,7 +221,12 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
         return source, None
 
     source_query = str(body.get("capture_source_query") or "").strip()
-    source_url = str(body.get("capture_source_url") or body.get("url") or "").strip()
+    # ai: claude-sonnet-4-6 | 2026-06-25
+    # Do NOT fall back to body["url"] here. body["url"] is the raw page URL (an individual
+    # job page), not the career-site board root. Using it as source_url bypasses the
+    # guessed_source path, which correctly normalises to the board root and derives the
+    # proper name (e.g. "greenlightguru Greenhouse" not "Greenhouse").
+    source_url = str(body.get("capture_source_url") or "").strip()
     source_name = str(body.get("capture_source_name") or "").strip()
 
     if guessed_source and not source_query and not source_url and not source_name:
