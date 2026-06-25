@@ -71,8 +71,24 @@
       }
     }
 
+    // ai: claude-sonnet-4-6 | 2026-06-25
+    // my.greenhouse.io/<slug>/jobs/<numeric-id> is the individual job apply page —
+    // must be checked first because the search check below matches any path with "jobs".
+    if (host === 'my.greenhouse.io' && /^\/[^/]+\/jobs\/\d+/.test(path)) {
+      return { site: 'Greenhouse', type: 'greenhouseJob', jobCount: 1, description: 'Single job listing' };
+    }
+
     if (host === 'my.greenhouse.io' && /^\/jobs/.test(path)) {
-      const count = document.querySelectorAll('a[href*="greenhouse.io/"]').length;
+      // ai: claude-sonnet-4-6 | 2026-06-25
+      // CSS attribute selectors match the raw href value, not the resolved URL, so
+      // relative hrefs like /jobs/12345 would miss the greenhouse.io check. Use a.href
+      // (always the resolved absolute URL) via JS iteration instead.
+      const count = [...document.querySelectorAll('a[href]')].filter(a => {
+        try {
+          const u = new URL(a.href);
+          return u.hostname.includes('greenhouse.io') && /\/jobs\/[\w-]{3,}/.test(u.pathname);
+        } catch { return false; }
+      }).length;
       return { site: 'Greenhouse', type: 'greenhouseSearch', jobCount: count, description: `${count}+ jobs (auto-scrolls to load all)` };
     }
 
@@ -622,16 +638,57 @@
     return JSON.stringify({ jobs });
   }
 
+  // ai: claude-sonnet-4-6 | 2026-06-25
+  // Handles individual Greenhouse apply pages at my.greenhouse.io/<slug>/jobs/<id>.
+  // Company comes reliably from the URL slug; document.title refines it when the
+  // "Job Title at Company Name" pattern is present.
+  function buildGreenhouseJobPayload() {
+    const pathParts = location.pathname.split('/').filter(Boolean);
+    const companySlug = pathParts[0] || '';
+    let company = companySlug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+    const titleAtMatch = document.title.match(/\bat\s+(.+?)(?:\s*[-–|]|$)/i);
+    if (titleAtMatch) company = titleAtMatch[1].trim();
+
+    let title = pick(['h1.app-title', 'h1[class*="title"]', 'h1']);
+    if (!title) {
+      const docTitleMatch = document.title.match(/^(.+?)\s+at\s+/i);
+      if (docTitleMatch) title = docTitleMatch[1].trim();
+    }
+    if (!title) title = document.title.replace(/\s*[-–|].*$/, '').trim();
+
+    const description = longestText([
+      '#content', '.content', '#job-details', '.job-description',
+      '[class*="job-description"]', '[class*="job-details"]',
+      'section', 'main',
+    ]);
+
+    const lines = [];
+    if (title) lines.push(title);
+    if (company) lines.push('Company: ' + company);
+    lines.push('URL: ' + location.href);
+    if (description) lines.push('', description);
+
+    return JSON.stringify({
+      jobs: [{ url: location.href, job_title: title, company, listing_text: lines.join('\n') }],
+    });
+  }
+
   async function buildGreenhouseSearchPayload() {
     const seen = new Set();
     const jobs = [];
 
+    // ai: claude-sonnet-4-6 | 2026-06-25
+    // Use a.href (resolved absolute URL) rather than CSS attribute selectors so that
+    // relative hrefs like /jobs/12345 on my.greenhouse.io are matched correctly.
     function collectLinks() {
-      document.querySelectorAll(
-        'a[href*="job-boards.greenhouse.io"], a[href*="boards.greenhouse.io"]'
-      ).forEach(a => {
-        const url = a.href.replace(/#.*$/, '');
-        if (!url || seen.has(url)) return;
+      document.querySelectorAll('a[href]').forEach(a => {
+        let u;
+        try { u = new URL(a.href); } catch { return; }
+        if (!u.hostname.includes('greenhouse.io')) return;
+        if (!/\/jobs\/[\w-]{3,}/.test(u.pathname)) return;
+        const url = u.origin + u.pathname;
+        if (seen.has(url)) return;
         seen.add(url);
 
         const titleText = (a.innerText || '').split('\n')[0].trim();
@@ -1042,6 +1099,7 @@
       case 'linkedInSearch':   return buildLinkedInSearchPayload();
       case 'wellfoundJob':     return buildWellfoundJobPayload();
       case 'wellfoundSearch':  return await buildWellfoundSearchPayload();
+      case 'greenhouseJob':    return buildGreenhouseJobPayload();
       case 'greenhouseSearch': return await buildGreenhouseSearchPayload();
       case 'mongoDBCareer':    return buildMongoDBCareerPayload();
       case 'hnHiring':         return buildHnHiringPayload();
