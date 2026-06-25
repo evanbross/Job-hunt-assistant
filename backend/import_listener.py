@@ -159,12 +159,13 @@ class ImportListenerRequestParser:
                 "format": "json",
             }
             # Preserve the page URL so queue_import_capture can resolve the capture source.
-            # Accept it at top level (legacy) or nested inside a "source" dict (newer builders).
+            # Only use the top-level "url" field, not "source.url" — source.url is often an
+            # individual job page URL (e.g. WTTJ) that would bypass the guessed-source path in
+            # _resolve_capture_source and create spurious "Generic" career_site_sources entries.
+            # ai: claude-sonnet-4-6 | 2026-06-25
             top_url = payload.get("url") or ""
-            source_url = (payload.get("source") or {}).get("url") or ""
-            resolved_url = top_url or source_url
-            if resolved_url:
-                body["url"] = resolved_url
+            if top_url:
+                body["url"] = top_url
         # ai: claude-sonnet-4-6 | 2026-06-21
         # Pass queue_url through when the extension injects it. For SPA redirects
         # (e.g. WTTJ email links), this is the original queue URL that must be marked

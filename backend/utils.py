@@ -242,6 +242,9 @@ def platform_for_site_url(site_url: str) -> str:
         return "workday"
     if "discord.com/careers" in host or "discord.com/jobs" in host:
         return "greenhouse"
+    # ai: claude-sonnet-4-6 | 2026-06-25
+    if "welcometothejungle.com" in host:
+        return "welcometothejungle"
     return "generic"
 
 
@@ -253,6 +256,7 @@ def platform_label(platform: str) -> str:
         "ashby": "Ashby",
         "wellfound": "Wellfound",
         "linkedin": "LinkedIn",
+        "welcometothejungle": "Welcome to the Jungle",
     }
     return labels.get(platform.lower(), platform.title() or "Career Site")
 
