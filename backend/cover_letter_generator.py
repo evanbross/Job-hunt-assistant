@@ -53,7 +53,8 @@ class CoverLetterGenerator:
         Generate a concise cover letter for *job*.
 
         job should contain at minimum: company, job_title.
-        Optional fields used when present: url, source, fit_reasoning.
+        Optional fields used when present: url, job_description, raw_email_snippet,
+        fit_reasoning.
         resume_text is the plain-text content of the candidate's uploaded resume.
         Returns plain text (no markdown).
         """
@@ -61,6 +62,11 @@ class CoverLetterGenerator:
         job_title = job.get("job_title") or "the position"
         fit_reasoning = job.get("fit_reasoning") or ""
         url = job.get("url") or ""
+        # ai: claude-sonnet-4-6 | 2026-06-25
+        # Prefer the full stored job description; fall back to the email snippet used
+        # for fit scoring. Without this the prompt only contains the URL which Claude
+        # cannot visit, causing "can't access the URL" errors.
+        job_description = (job.get("job_description") or job.get("raw_email_snippet") or "").strip()
 
         resume_section = (
             f"\n\nCANDIDATE RESUME:\n{resume_text.strip()}"
@@ -71,6 +77,13 @@ class CoverLetterGenerator:
         fit_section = (
             f"\n\nFIT ANALYSIS (why this job was flagged as a good match):\n{fit_reasoning}"
             if fit_reasoning
+            else ""
+        )
+
+        # ai: claude-sonnet-4-6 | 2026-06-25
+        job_description_section = (
+            f"\n\nJOB DESCRIPTION:\n{job_description}"
+            if job_description
             else ""
         )
 
@@ -85,6 +98,7 @@ class CoverLetterGenerator:
             .replace("{{CANDIDATE_PROFILE}}", config.load_candidate_profile())
             .replace("{{RESUME_SECTION}}", resume_section)
             .replace("{{FIT_SECTION}}", fit_section)
+            .replace("{{JOB_DESCRIPTION_SECTION}}", job_description_section)
         )
 
         return self._client.complete(

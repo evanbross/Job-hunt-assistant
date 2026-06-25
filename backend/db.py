@@ -70,6 +70,7 @@ class IJobRepository(Protocol):
     def get_with_missing_company(self, limit: int = 15) -> list[dict[str, Any]]: ...
     def count_with_missing_company(self) -> int: ...
     def get_stats(self) -> dict[str, int]: ...
+    def get_sheet_entries(self) -> list[dict[str, Any]]: ...
     def insert(self, job: dict[str, Any]) -> int: ...
     def update(self, job_id: int, fields: dict[str, Any]) -> None: ...
     def delete(self, job_id: int) -> None: ...
@@ -494,6 +495,20 @@ class PostgresJobRepository(_BaseRepo):
     def get_all_ordered(self) -> list[dict[str, Any]]:
         cur = self._execute(
             "SELECT * FROM jobs ORDER BY date_added_to_sheet DESC NULLS LAST, id DESC"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    # ai: claude-sonnet-4-6 | 2026-06-25
+    def get_sheet_entries(self) -> list[dict[str, Any]]:
+        """Return only jobs that have been confirmed as applications (date_added_to_sheet set).
+
+        Excludes triage, queue, skipped, and possible-duplicate jobs that share the
+        same jobs table but have never been approved onto the application sheet.
+        """
+        cur = self._execute(
+            "SELECT * FROM jobs"
+            " WHERE date_added_to_sheet IS NOT NULL"
+            " ORDER BY date_added_to_sheet DESC NULLS LAST, id DESC"
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 

@@ -91,8 +91,9 @@ _TRACKING_COLUMNS: list[dict] = [
 @sheet_bp.route("/sheet/applications")
 def get_application_sheet():
     """Return all tracked job applications as a grid for the Sheet panel."""
+    # ai: claude-sonnet-4-6 | 2026-06-25
     with get_repos() as repos:
-        jobs = repos["jobs"].get_all_ordered()
+        jobs = repos["jobs"].get_sheet_entries()
         all_stages = repos["stages"].get_all()
         stages_by_job_id: dict[int, list] = {}
         for stage in all_stages:
