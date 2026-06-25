@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, UTC
 from urllib.parse import urlparse
 
@@ -47,7 +49,7 @@ from flask import Blueprint, jsonify, request
 import config
 from backend.career_site_scanner import CareerSiteScanner
 from backend.duplicate_checker import DuplicateChecker
-from backend.email_parser import EmailParser
+from backend.email_parser import EmailParser, _resolve_tracking_url
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.manual_job_ingest_service import ManualJobIngestService
@@ -803,3 +805,184 @@ def delete_application_stage(job_id: int, stage_id: int):
         repos["stages"].delete(stage_id)
         repos["conn"].commit()
     return jsonify({"status": "ok"})
+
+
+# ── WTTJ sendgrid URL repair ───────────────────────────────────────────────────
+
+@dataclass
+class WttjRepairState:
+    running: bool = False
+    progress: int = 0
+    total: int = 0
+    message: str = "Idle"
+    current_company: str = ""
+    current_title: str = ""
+    repaired: list[dict] = field(default_factory=list)
+    url_only: list[dict] = field(default_factory=list)
+    failed: list[dict] = field(default_factory=list)
+    skipped: list[dict] = field(default_factory=list)
+    error: str | None = None
+
+
+_wttj_repair_state = WttjRepairState()
+_wttj_repair_lock = threading.Lock()
+
+
+def _wttj_repair_candidates(repos: dict) -> list[dict]:
+    """Non-terminal WTTJ jobs whose URL is a sendgrid/tracking link or empty."""
+    jobs = repos["jobs"].get_all_ordered()
+    terminal_keys = {s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")}
+    all_stages = repos["stages"].get_all()
+    stages_by_job: dict[int, list] = {}
+    for stage in all_stages:
+        stages_by_job.setdefault(stage["job_id"], []).append(stage)
+
+    candidates: list[dict] = []
+    for job in jobs:
+        source = (job.get("source") or "").lower()
+        if "welcome to the jungle" not in source and "wttj" not in source:
+            continue
+        url = (job.get("url") or "").strip()
+        if "welcometothejungle.com/jobs/" in url or "app.welcometothejungle.com/jobs/" in url:
+            continue
+        stages = stages_by_job.get(job["id"], [])
+        latest_status = normalize_stage_status(
+            (stages[-1] if stages else {}).get("status") or job.get("status")
+        )
+        if latest_status in terminal_keys:
+            continue
+        candidates.append(job)
+    return candidates
+
+
+# ai: claude-sonnet-4-6 | 2026-06-25
+def _run_wttj_repair() -> None:
+    """Background thread: follow sendgrid redirects → real WTTJ URL → fetch JD → patch in-place."""
+    with _wttj_repair_lock:
+        _wttj_repair_state.running = True
+        _wttj_repair_state.progress = 0
+        _wttj_repair_state.total = 0
+        _wttj_repair_state.message = "Finding WTTJ jobs with broken URLs…"
+        _wttj_repair_state.current_company = ""
+        _wttj_repair_state.current_title = ""
+        _wttj_repair_state.repaired = []
+        _wttj_repair_state.url_only = []
+        _wttj_repair_state.failed = []
+        _wttj_repair_state.skipped = []
+        _wttj_repair_state.error = None
+
+    try:
+        with get_repos() as repos:
+            candidates = _wttj_repair_candidates(repos)
+
+        total = len(candidates)
+        with _wttj_repair_lock:
+            _wttj_repair_state.total = total
+            _wttj_repair_state.message = f"Repairing {total} job{'s' if total != 1 else ''}…"
+
+        repaired: list[dict] = []
+        url_only: list[dict] = []
+        failed: list[dict] = []
+        skipped: list[dict] = []
+
+        scanner = CareerSiteScanner()
+
+        for i, job in enumerate(candidates):
+            company = job.get("company") or ""
+            title = job.get("job_title") or "Untitled"
+            url = (job.get("url") or "").strip()
+            summary = {"id": job["id"], "company": company, "job_title": title}
+
+            with _wttj_repair_lock:
+                _wttj_repair_state.progress = i
+                _wttj_repair_state.current_company = company
+                _wttj_repair_state.current_title = title
+                _wttj_repair_state.message = f"Repairing {i + 1}/{total}: {company} — {title}…"
+
+            # Jobs with no URL at all can't be auto-resolved.
+            if not url:
+                skipped.append({**summary, "reason": "no url"})
+                with _wttj_repair_lock:
+                    _wttj_repair_state.skipped = list(skipped)
+                continue
+
+            # Follow the sendgrid redirect with a generous timeout.
+            resolved = _resolve_tracking_url(url, timeout=10.0)
+            if "welcometothejungle.com" not in resolved.lower():
+                failed.append({**summary, "reason": "redirect did not reach WTTJ"})
+                with _wttj_repair_lock:
+                    _wttj_repair_state.failed = list(failed)
+                continue
+
+            # Fetch the actual job description from WTTJ.
+            jd_text = ""
+            try:
+                fetched = scanner.scan_single_job_url(company, resolved)
+                if len(fetched.get("job_text") or "") >= 200:
+                    jd_text = fetched["job_text"]
+            except Exception as exc:
+                logger.warning("WTTJ repair: JD fetch failed for job %d (%s): %s", job["id"], resolved, exc)
+
+            updates: dict = {"url": resolved}
+            if jd_text:
+                updates["raw_email_snippet"] = jd_text[:6000]
+                updates["job_description"] = jd_text
+
+            with get_repos() as repos:
+                repos["jobs"].update(job["id"], updates)
+                repos["conn"].commit()
+
+            if jd_text:
+                repaired.append({**summary, "url": resolved})
+                with _wttj_repair_lock:
+                    _wttj_repair_state.repaired = list(repaired)
+            else:
+                url_only.append({**summary, "url": resolved})
+                with _wttj_repair_lock:
+                    _wttj_repair_state.url_only = list(url_only)
+
+        with _wttj_repair_lock:
+            _wttj_repair_state.running = False
+            _wttj_repair_state.progress = total
+            _wttj_repair_state.current_company = ""
+            _wttj_repair_state.current_title = ""
+            _wttj_repair_state.message = (
+                f"Done — {len(repaired)} fully repaired, {len(url_only)} URL only, "
+                f"{len(failed)} failed, {len(skipped)} skipped (no URL)."
+            )
+
+    except Exception as exc:
+        logger.warning("WTTJ URL repair failed: %s", exc, exc_info=True)
+        with _wttj_repair_lock:
+            _wttj_repair_state.running = False
+            _wttj_repair_state.error = str(exc)
+            _wttj_repair_state.message = "Repair failed — see server logs"
+
+
+@jobs_bp.route("/jobs/repair-wttj-urls", methods=["POST"])
+def start_wttj_repair():
+    """Kick off a background repair of WTTJ jobs with sendgrid/broken URLs."""
+    with _wttj_repair_lock:
+        if _wttj_repair_state.running:
+            return jsonify({"error": "Repair already running"}), 409
+    threading.Thread(target=_run_wttj_repair, daemon=True, name="wttj-url-repair").start()
+    return jsonify({"status": "started"})
+
+
+@jobs_bp.route("/jobs/repair-wttj-urls/status", methods=["GET"])
+def wttj_repair_status():
+    """Return the current WTTJ URL repair state."""
+    with _wttj_repair_lock:
+        return jsonify({
+            "running": _wttj_repair_state.running,
+            "progress": _wttj_repair_state.progress,
+            "total": _wttj_repair_state.total,
+            "message": _wttj_repair_state.message,
+            "current_company": _wttj_repair_state.current_company,
+            "current_title": _wttj_repair_state.current_title,
+            "repaired": _wttj_repair_state.repaired,
+            "url_only": _wttj_repair_state.url_only,
+            "failed": _wttj_repair_state.failed,
+            "skipped": _wttj_repair_state.skipped,
+            "error": _wttj_repair_state.error,
+        })

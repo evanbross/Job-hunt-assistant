@@ -359,11 +359,15 @@ export default function JobQueue({
   const [fixingCompanies, setFixingCompanies] = useState(false);
   const [fixProgress, setFixProgress] = useState(null);
   const [deletingUnknownCompanies, setDeletingUnknownCompanies] = useState(false);
+  const [wttjRepairRunning, setWttjRepairRunning] = useState(false);
+  const [wttjRepairDialog, setWttjRepairDialog] = useState(null);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const pollRef = useRef(null);
   const boardPollRef = useRef(null);
   const reqClosedPollRef = useRef(null);
   const reqClosedDismissedRef = useRef(false);
+  const wttjRepairPollRef = useRef(null);
+  const wttjRepairDismissedRef = useRef(false);
   const importPollRef = useRef(null);
   const reEvalPollRef = useRef(null);
   const reEvaluateResetTimeoutRef = useRef(null);
@@ -451,6 +455,7 @@ export default function JobQueue({
       clearInterval(importPollRef.current);
       clearInterval(reEvalPollRef.current);
       clearInterval(reqClosedPollRef.current);
+      clearInterval(wttjRepairPollRef.current);
       clearTimeout(reEvaluateResetTimeoutRef.current);
     };
   }, [fetchJobs]);
@@ -1047,6 +1052,39 @@ export default function JobQueue({
     }
   };
 
+  // ai: claude-sonnet-4-6 | 2026-06-25
+  const startWttjRepair = async () => {
+    setMoreToolsOpen(false);
+    wttjRepairDismissedRef.current = false;
+    const res = await fetch("/api/jobs/repair-wttj-urls", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      window.alert(data.error || `Repair failed to start (${res.status})`);
+      return;
+    }
+    setWttjRepairRunning(true);
+    setWttjRepairDialog({ running: true, progress: 0, total: 0, repaired: [], url_only: [], failed: [], skipped: [] });
+    clearInterval(wttjRepairPollRef.current);
+    wttjRepairPollRef.current = setInterval(pollWttjRepairStatus, 2500);
+  };
+
+  const pollWttjRepairStatus = async () => {
+    try {
+      const res = await fetch("/api/jobs/repair-wttj-urls/status");
+      const data = await res.json();
+      if (!wttjRepairDismissedRef.current) setWttjRepairDialog(data);
+      if (!data.running) {
+        clearInterval(wttjRepairPollRef.current);
+        setWttjRepairRunning(false);
+        await fetchJobs();
+        await updateTriageCount();
+      }
+    } catch {
+      clearInterval(wttjRepairPollRef.current);
+      setWttjRepairRunning(false);
+    }
+  };
+
   const startBoardSearch = async () => {
     const res = await fetch("/api/board-search", { method: "POST" });
     if (!res.ok) {
@@ -1098,7 +1136,7 @@ export default function JobQueue({
   };
 
   const anyScanRunning = scanning || rescanAllRunning;
-  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning;
+  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning || wttjRepairRunning;
 
   const filteredJobs = jobs.filter((job) => {
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
@@ -1595,6 +1633,24 @@ export default function JobQueue({
               >
                 {deletingUnknownCompanies ? "Deleting…" : "Delete Unknown Companies"}
               </button>
+              <button
+                onClick={startWttjRepair}
+                disabled={anyQueueActionRunning}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 14px",
+                  fontSize: "13px",
+                  background: "none",
+                  border: "none",
+                  color: "var(--text)",
+                  cursor: anyQueueActionRunning ? "not-allowed" : "pointer",
+                  opacity: anyQueueActionRunning ? 0.5 : 1,
+                }}
+              >
+                {wttjRepairRunning ? "Repairing…" : "Repair WTTJ Sendgrid URLs"}
+              </button>
               <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
               <button
                 onClick={startReqClosedScan}
@@ -1651,6 +1707,16 @@ export default function JobQueue({
           onClose={() => {
             reqClosedDismissedRef.current = true;
             setReqClosedDialog(null);
+          }}
+        />
+      )}
+
+      {wttjRepairDialog && (
+        <WttjRepairDialog
+          result={wttjRepairDialog}
+          onClose={() => {
+            wttjRepairDismissedRef.current = true;
+            setWttjRepairDialog(null);
           }}
         />
       )}
@@ -3089,5 +3155,74 @@ function formatJobDetails(jobDetails) {
         );
       })}
     </div>
+  );
+}
+
+// ai: claude-sonnet-4-6 | 2026-06-25
+function WttjRepairDialog({ result, onClose }) {
+  const repaired = result.repaired ?? [];
+  const urlOnly = result.url_only ?? [];
+  const failed = result.failed ?? [];
+  const skipped = result.skipped ?? [];
+  const running = !!result.running;
+  const progress = result.total ? Math.round((result.progress / result.total) * 100) : 0;
+  const allItems = [...repaired.map((j) => ({ ...j, outcome: "repaired" })),
+                   ...urlOnly.map((j) => ({ ...j, outcome: "url only" })),
+                   ...failed.map((j) => ({ ...j, outcome: "failed" })),
+                   ...skipped.map((j) => ({ ...j, outcome: "skipped" }))];
+  const title = running ? "Repairing WTTJ Sendgrid URLs…" : "WTTJ URL Repair Complete";
+  const subtitle = result.error
+    ? `Repair failed: ${result.error}`
+    : result.message || (running ? "Repairing…" : "Done.");
+  return (
+    <Modal
+      title={title}
+      subtitle={subtitle}
+      onClose={onClose}
+      maxWidth="600px"
+      footer={<button className="btn-secondary" onClick={onClose}>{running ? "Run in background" : "Close"}</button>}
+    >
+      {running && (
+        <>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
+            <span>Progress</span>
+            <span>{result.progress ?? 0} of {result.total ?? 0}</span>
+          </div>
+          <div className="loading-bar">
+            <div className="loading-bar-fill" style={{ width: `${progress}%` }} />
+          </div>
+          {(result.current_company || result.current_title) && (
+            <p style={{ margin: "10px 0 0", fontSize: "12px", color: "var(--text-muted)", overflowWrap: "anywhere" }}>
+              {[result.current_company, result.current_title].filter(Boolean).join(" — ")}
+            </p>
+          )}
+        </>
+      )}
+      <div className="metric-grid" style={{ marginTop: running ? "14px" : "0" }}>
+        <div className="metric-item"><div className="metric-value" style={{ color: "var(--green)" }}>{repaired.length}</div><div className="metric-label">url + JD fixed</div></div>
+        <div className="metric-item"><div className="metric-value">{urlOnly.length}</div><div className="metric-label">url only</div></div>
+        <div className="metric-item"><div className="metric-value" style={{ color: urlOnly.length + failed.length > 0 ? "var(--orange)" : undefined }}>{failed.length}</div><div className="metric-label">failed</div></div>
+        <div className="metric-item"><div className="metric-value" style={{ color: "var(--text-muted)" }}>{skipped.length}</div><div className="metric-label">skipped</div></div>
+      </div>
+      {allItems.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "380px", overflowY: "auto", marginTop: "14px" }}>
+          {allItems.map((job) => (
+            <div key={job.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "8px 12px" }}>
+              <div style={{ minWidth: 0, fontSize: "13px" }}>
+                <span style={{ fontWeight: 600 }}>{job.job_title || "Untitled"}</span>
+                {job.company && <span style={{ color: "var(--text-muted)" }}> at {job.company}</span>}
+                {job.url && <div style={{ color: "var(--text-muted)", fontSize: "11px", overflowWrap: "anywhere" }}>{job.url}</div>}
+              </div>
+              <span style={{
+                flexShrink: 0, fontSize: "11px", fontWeight: 700, padding: "2px 8px", borderRadius: "999px",
+                background: job.outcome === "repaired" ? "var(--green-bg, #1a3a1a)" : job.outcome === "url only" ? "var(--surface)" : "var(--red-bg, #3a1f1f)",
+                color: job.outcome === "repaired" ? "var(--green)" : job.outcome === "url only" ? "var(--text-muted)" : "var(--red)",
+                border: "1px solid var(--border)",
+              }}>{job.outcome}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
   );
 }
