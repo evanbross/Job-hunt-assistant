@@ -37,7 +37,13 @@
 from __future__ import annotations
 
 import logging
+import socket
+import threading
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, UTC
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from flask import Blueprint, jsonify, request
 
@@ -50,6 +56,26 @@ from backend.utils import (
 logger = logging.getLogger(__name__)
 
 sheet_bp = Blueprint("sheet", __name__)
+
+_CLOSED_REQ_FETCH_TIMEOUT_SECONDS = 15
+_CLOSED_REQ_FETCH_MAX_BYTES = 2_000_000
+
+_CLOSED_PHRASES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
+    "linkedin": (
+        "no longer accepting applications",
+        "this job is no longer available",
+        "this listing has expired",
+    ),
+    "wttj": (
+        "job no longer available",
+        "ce poste n'est plus disponible",
+    ),
+}
+
+_PLATFORM_LABELS: dict[str, str] = {
+    "linkedin": "LinkedIn",
+    "wttj": "Welcome to the Jungle",
+}
 
 _TRACKING_COLUMNS: list[dict] = [
     {"index": 0, "label": "Company",   "hidden": False},
@@ -258,6 +284,243 @@ def mark_ghost_applications():
         return jsonify({"error": "Failed to mark ghosts"}), 500
 
     return jsonify({"marked": marked, "count": len(marked), "cutoff_date": cutoff_date.isoformat()})
+
+
+def _detect_closed_req_platform(job: dict, url: str) -> str | None:
+    """Return 'linkedin' or 'wttj' if job/url belongs to a supported platform, else None."""
+    source = str(job.get("source") or "").lower()
+    netloc = urlparse(url).netloc.lower()
+    if "linkedin" in source or "linkedin.com" in netloc or "lnkd.in" in netloc:
+        return "linkedin"
+    if "welcome to the jungle" in source or "wttj" in source or "welcometothejungle.com" in netloc:
+        return "wttj"
+    return None
+
+
+def _check_closed_req(url: str, platform: str) -> str:
+    """Fetch a job URL and classify it as 'closed', 'open', 'bad_url', or 'unreachable'.
+
+    'closed' covers both a closed-req banner on a page that loaded fine and an
+    HTTP 404/410 (the listing was removed entirely). 'bad_url' is an unrelated
+    HTTP error (e.g. 400/403/500) suggesting the URL itself is broken rather
+    than the job being closed. 'unreachable' is a network-level failure
+    (timeout, DNS, etc.) unrelated to the job's status, so the caller can skip
+    it rather than risk a false positive from a transient error.
+    """
+    req = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
+    try:
+        with urlopen(req, timeout=_CLOSED_REQ_FETCH_TIMEOUT_SECONDS) as resp:
+            raw = resp.read(_CLOSED_REQ_FETCH_MAX_BYTES)
+            charset = resp.headers.get_content_charset() or "utf-8"
+        page_text = raw.decode(charset, errors="replace").lower()
+    except HTTPError as exc:
+        if exc.code in (404, 410):
+            return "closed"
+        logger.warning("Closed-req check got HTTP %s for %s", exc.code, url)
+        return "bad_url"
+    except (URLError, TimeoutError, socket.error) as exc:
+        logger.warning("Closed-req check failed for %s: %s", url, exc)
+        return "unreachable"
+    phrases = _CLOSED_PHRASES_BY_PLATFORM.get(platform, ())
+    return "closed" if any(phrase in page_text for phrase in phrases) else "open"
+
+
+# ── Req-closed scan state (in-memory, protected by a lock) ────────────────────
+# Co-located with the routes that read/control it per FLASK_STANDARDS.md.
+
+@dataclass
+class ReqClosedScanState:
+    running: bool = False
+    progress: int = 0
+    total: int = 0
+    message: str = "Idle"
+    marked: list[dict[str, object]] = field(default_factory=list)
+    errors: list[dict[str, object]] = field(default_factory=list)
+    checked: int = 0
+    kept_count: int = 0
+    closed_count: int = 0
+    bad_url_count: int = 0
+    unreachable_count: int = 0
+    current_platform: str = ""
+    current_company: str = ""
+    current_job_title: str = ""
+    last_run_at: str | None = None
+    error: str | None = None
+
+
+_req_closed_state = ReqClosedScanState()
+_req_closed_lock = threading.Lock()
+
+
+def _update_req_closed_state(**kwargs) -> None:
+    with _req_closed_lock:
+        for key, value in kwargs.items():
+            setattr(_req_closed_state, key, value)
+
+
+def _closed_req_candidates(repos: dict) -> list[tuple[dict, str, str]]:
+    """Non-terminal jobs sourced from LinkedIn or Welcome to the Jungle, with their platform."""
+    jobs = repos["jobs"].get_all_ordered()
+    all_stages = repos["stages"].get_all()
+    terminal_keys = {s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")}
+    stages_by_job_id: dict[int, list[dict]] = {}
+    for stage in all_stages:
+        stages_by_job_id.setdefault(stage["job_id"], []).append(stage)
+
+    candidates: list[tuple[dict, str, str]] = []
+    for job in jobs:
+        url = str(job.get("url") or "").strip()
+        if not url:
+            continue
+        platform = _detect_closed_req_platform(job, url)
+        if not platform:
+            continue
+        stages = stages_by_job_id.get(job["id"], [])
+        latest_stage = stages[-1] if stages else None
+        latest_status = normalize_stage_status(
+            (latest_stage or {}).get("status") or job.get("status")
+        )
+        if latest_status in terminal_keys:
+            continue
+        candidates.append((job, url, platform))
+    return candidates
+
+
+def _run_req_closed_scan() -> None:
+    today = datetime.now(UTC).date().isoformat()
+    _update_req_closed_state(
+        running=True, progress=0, total=0,
+        message="Finding LinkedIn and Welcome to the Jungle jobs to check…",
+        marked=[], errors=[], checked=0,
+        kept_count=0, closed_count=0, bad_url_count=0, unreachable_count=0,
+        current_platform="", current_company="", current_job_title="", error=None,
+    )
+    try:
+        with get_repos() as repos:
+            candidates = _closed_req_candidates(repos)
+        # Connection released before the external fetches below.
+
+        total = len(candidates)
+        _update_req_closed_state(total=total, message=f"Checking {total} job{'s' if total != 1 else ''}…")
+
+        marked: list[dict[str, object]] = []
+        errors: list[dict[str, object]] = []
+        kept_count = 0
+        closed_count = 0
+        bad_url_count = 0
+        unreachable_count = 0
+        for i, (job, url, platform) in enumerate(candidates):
+            platform_label = _PLATFORM_LABELS.get(platform, platform)
+            job_title = job.get("job_title") or "Untitled"
+            _update_req_closed_state(
+                current_platform=platform_label,
+                current_company=str(job.get("company") or ""),
+                current_job_title=str(job_title),
+                message=f"Checking {i + 1} of {total} — {platform_label}: {job_title}…",
+            )
+
+            result = _check_closed_req(url, platform)
+            job_summary = {
+                "id": job["id"],
+                "company": job.get("company") or "",
+                "job_title": job.get("job_title") or "",
+                "platform": platform_label,
+            }
+            if result == "closed":
+                with get_repos() as repos:
+                    repos["stages"].insert(
+                        {
+                            "job_id": job["id"],
+                            "status": "req_closed",
+                            "date": today,
+                            "notes": f"Req closed on {platform_label} (auto-detected).",
+                        }
+                    )
+                    repos["conn"].commit()
+                marked.append(job_summary)
+                closed_count += 1
+            elif result == "open":
+                kept_count += 1
+            elif result == "bad_url":
+                errors.append({**job_summary, "reason": "bad_url"})
+                bad_url_count += 1
+            else:  # unreachable
+                errors.append({**job_summary, "reason": "unreachable"})
+                unreachable_count += 1
+
+            _update_req_closed_state(
+                progress=i + 1,
+                checked=i + 1,
+                marked=list(marked),
+                errors=list(errors),
+                kept_count=kept_count,
+                closed_count=closed_count,
+                bad_url_count=bad_url_count,
+                unreachable_count=unreachable_count,
+                message=f"Checked {i + 1} of {total} — {closed_count} closed, {kept_count} kept so far…",
+            )
+
+        _update_req_closed_state(
+            running=False,
+            message=(
+                f"Done — {closed_count} marked Req Closed, {kept_count} still open, "
+                f"{bad_url_count} bad URLs, {unreachable_count} unreachable."
+            ),
+            current_platform="", current_company="", current_job_title="",
+            last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
+    except Exception as exc:
+        logger.warning("Closed-req scan failed: %s", exc, exc_info=True)
+        _update_req_closed_state(running=False, error=str(exc), message="Scan failed — see server logs")
+
+
+@sheet_bp.route("/sheet/applications/scan-closed-reqs", methods=["POST"])
+def start_closed_req_scan():
+    """Kick off a background scan of LinkedIn and Welcome to the Jungle job URLs for closed-req banners."""
+    with _req_closed_lock:
+        if _req_closed_state.running:
+            return jsonify({"error": "Scan already running"}), 409
+
+    threading.Thread(
+        target=_run_req_closed_scan,
+        daemon=True,
+        name="closed-req-scan",
+    ).start()
+    return jsonify({"status": "started"})
+
+
+@sheet_bp.route("/sheet/applications/scan-closed-reqs/status", methods=["GET"])
+def closed_req_scan_status():
+    """Return the current closed-req scan state."""
+    with _req_closed_lock:
+        return jsonify({
+            "running": _req_closed_state.running,
+            "progress": _req_closed_state.progress,
+            "total": _req_closed_state.total,
+            "message": _req_closed_state.message,
+            "marked": _req_closed_state.marked,
+            "errors": _req_closed_state.errors,
+            "checked": _req_closed_state.checked,
+            "kept_count": _req_closed_state.kept_count,
+            "closed_count": _req_closed_state.closed_count,
+            "bad_url_count": _req_closed_state.bad_url_count,
+            "unreachable_count": _req_closed_state.unreachable_count,
+            "current_platform": _req_closed_state.current_platform,
+            "current_company": _req_closed_state.current_company,
+            "current_job_title": _req_closed_state.current_job_title,
+            "last_run_at": _req_closed_state.last_run_at,
+            "error": _req_closed_state.error,
+        })
 
 
 @sheet_bp.route("/sheet/stage-statuses")

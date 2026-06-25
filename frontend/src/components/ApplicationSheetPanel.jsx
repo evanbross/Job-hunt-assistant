@@ -36,6 +36,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
 import Modal from "./common/Modal.jsx";
+import ReqClosedDialog from "./common/ReqClosedDialog.jsx";
 
 const APPLICATION_SHEET_SEARCH_STORAGE_KEY = "jha.applicationSheet.search";
 
@@ -364,6 +365,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   const [showAddApplication, setShowAddApplication] = useState(false);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [ghostDialog, setGhostDialog] = useState(null);
+  const [reqClosedDialog, setReqClosedDialog] = useState(null);
   const [showStatusSummary, setShowStatusSummary] = useState(false);
   const [editingRows, setEditingRows] = useState({});
   const [stageRows, setStageRows] = useState({});
@@ -373,6 +375,12 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   // ai: claude-sonnet-4-6 | 2026-06-17
   const [statusFilters, setStatusFilters] = useState(new Set());
   const resizeCleanupRef = useRef(null);
+  const reqClosedPollRef = useRef(null);
+  const reqClosedDismissedRef = useRef(false);
+
+  useEffect(() => {
+    return () => clearInterval(reqClosedPollRef.current);
+  }, []);
 
   const loadSheet = async () => {
     setLoading(true);
@@ -633,6 +641,46 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     }
   };
 
+  // ai: claude-sonnet-4-6 | 2026-06-24
+  // The scan checks every LinkedIn job's URL over the network, which can take
+  // minutes for large sheets, so it runs as a background thread on the server
+  // and this polls for progress rather than waiting on one long request.
+  const pollReqClosedStatus = async () => {
+    const res = await fetch("/api/sheet/applications/scan-closed-reqs/status");
+    const data = await res.json().catch(() => null);
+    if (!data) return;
+    if (!reqClosedDismissedRef.current) {
+      setReqClosedDialog(data);
+    }
+    if (!data.running) {
+      clearInterval(reqClosedPollRef.current);
+      setSavingKey("");
+      await loadSheet();
+    }
+  };
+
+  const scanClosedReqs = async () => {
+    setActionMenuOpen(false);
+    setSavingKey("req-closed");
+    reqClosedDismissedRef.current = false;
+    try {
+      const res = await fetch("/api/sheet/applications/scan-closed-reqs", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        window.alert(data.error || `Scan failed (${res.status})`);
+        setSavingKey("");
+        return;
+      }
+      setReqClosedDialog({ running: true, progress: 0, total: 0, marked: [], errors: [] });
+      clearInterval(reqClosedPollRef.current);
+      reqClosedPollRef.current = setInterval(pollReqClosedStatus, 2000);
+      await pollReqClosedStatus();
+    } catch (err) {
+      window.alert(err.message || "Scan failed to start");
+      setSavingKey("");
+    }
+  };
+
   const startEditing = (row) => {
     setEditingRows((previousRows) => ({
       ...previousRows,
@@ -841,6 +889,14 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                 </button>
                 <button
                   type="button"
+                  onClick={scanClosedReqs}
+                  disabled={savingKey === "req-closed"}
+                  style={actionMenuItemStyle}
+                >
+                  {savingKey === "req-closed" ? "Scanning..." : "Scan for Closed Reqs (LinkedIn + WTTJ)"}
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     setShowStatusSummary(true);
                     setActionMenuOpen(false);
@@ -878,6 +934,16 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
           result={ghostDialog}
           onClose={() => setGhostDialog(null)}
           labelMap={statusLabelMap}
+        />
+      )}
+
+      {reqClosedDialog && (
+        <ReqClosedDialog
+          result={reqClosedDialog}
+          onClose={() => {
+            reqClosedDismissedRef.current = true;
+            setReqClosedDialog(null);
+          }}
         />
       )}
 

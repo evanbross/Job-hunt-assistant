@@ -38,6 +38,7 @@ import { TriageCard, DuplicateCard, ReEvaluatePopup as TriageReEvaluatePopup, Ba
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 import Modal from "./common/Modal.jsx";
+import ReqClosedDialog from "./common/ReqClosedDialog.jsx";
 import MetricGrid, { MetricItem } from "./common/MetricGrid.jsx";
 import { fitReasoningBullets, reasoningWithoutPenaltySummary, scoreLabel } from "../utils/fitScoringUtils.js";
 import { dispositionLabel, formatJobTitles, formatScanAction, formatScanDisposition, scoreDeltaLabel } from "../utils/jobQueueUtils.js";
@@ -332,6 +333,9 @@ export default function JobQueue({
   const [rescanAllRunning, setRescanAllRunning] = useState(false);
   const [boardSearching, setBoardSearching] = useState(false);
   const [boardState, setBoardState] = useState(null);
+  // ai: claude-sonnet-4-6 | 2026-06-25
+  const [reqClosedScanning, setReqClosedScanning] = useState(false);
+  const [reqClosedDialog, setReqClosedDialog] = useState(null);
   const [reEvaluating, setReEvaluating] = useState(false);
   const [reEvaluateProgress, setReEvaluateProgress] = useState(0);
   const [reEvaluateMessage, setReEvaluateMessage] = useState("");
@@ -358,6 +362,8 @@ export default function JobQueue({
   const [showBackToTop, setShowBackToTop] = useState(false);
   const pollRef = useRef(null);
   const boardPollRef = useRef(null);
+  const reqClosedPollRef = useRef(null);
+  const reqClosedDismissedRef = useRef(false);
   const importPollRef = useRef(null);
   const reEvalPollRef = useRef(null);
   const reEvaluateResetTimeoutRef = useRef(null);
@@ -444,6 +450,7 @@ export default function JobQueue({
       clearInterval(boardPollRef.current);
       clearInterval(importPollRef.current);
       clearInterval(reEvalPollRef.current);
+      clearInterval(reqClosedPollRef.current);
       clearTimeout(reEvaluateResetTimeoutRef.current);
     };
   }, [fetchJobs]);
@@ -751,6 +758,11 @@ export default function JobQueue({
     }
   };
 
+  // ai: claude-sonnet-4-6 | 2026-06-25
+  // A triage job that gets re-scored (via JD update, fit chat, re-fetch, or
+  // re-evaluate) can cross the pending_review threshold. It must move into
+  // the queue list, not just be dropped from triageJobs — otherwise it
+  // vanishes from the page until a full reload re-fetches both lists.
   const handleTriageReprocessed = (job, updated) => {
     const triageStatuses = new Set(["triage", "possible_duplicate"]);
     if (triageStatuses.has(updated.status)) {
@@ -762,6 +774,13 @@ export default function JobQueue({
       onTriageCountChange(next.length);
       return next;
     });
+    if (updated.status === "pending_review") {
+      setJobs((prev) => (
+        prev.some((j) => j.id === updated.id)
+          ? prev.map((j) => (j.id === updated.id ? updated : j))
+          : [...prev, updated]
+      ));
+    }
   };
 
   const handleTriageDescriptionUpdated = (job, updated, previous) => {
@@ -990,6 +1009,44 @@ export default function JobQueue({
     }
   };
 
+  // ai: claude-sonnet-4-6 | 2026-06-25
+  // Mirrors startBoardSearch/pollBoardStatus below — the scan runs as a
+  // background thread on the server since checking every LinkedIn job's URL
+  // over the network can take minutes, so this polls for progress instead of
+  // waiting on one long request.
+  const startReqClosedScan = async () => {
+    setMoreToolsOpen(false);
+    reqClosedDismissedRef.current = false;
+    const res = await fetch("/api/sheet/applications/scan-closed-reqs", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      window.alert(data.error || `Scan failed (${res.status})`);
+      return;
+    }
+    setReqClosedScanning(true);
+    setReqClosedDialog({ running: true, progress: 0, total: 0, marked: [], errors: [] });
+    clearInterval(reqClosedPollRef.current);
+    reqClosedPollRef.current = setInterval(pollReqClosedStatus, 2000);
+  };
+
+  const pollReqClosedStatus = async () => {
+    try {
+      const res = await fetch("/api/sheet/applications/scan-closed-reqs/status");
+      const data = await res.json();
+      if (!reqClosedDismissedRef.current) {
+        setReqClosedDialog(data);
+      }
+      if (!data.running) {
+        clearInterval(reqClosedPollRef.current);
+        setReqClosedScanning(false);
+        await fetchJobs();
+      }
+    } catch {
+      clearInterval(reqClosedPollRef.current);
+      setReqClosedScanning(false);
+    }
+  };
+
   const startBoardSearch = async () => {
     const res = await fetch("/api/board-search", { method: "POST" });
     if (!res.ok) {
@@ -1041,7 +1098,7 @@ export default function JobQueue({
   };
 
   const anyScanRunning = scanning || rescanAllRunning;
-  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies;
+  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning;
 
   const filteredJobs = jobs.filter((job) => {
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
@@ -1540,6 +1597,25 @@ export default function JobQueue({
               </button>
               <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
               <button
+                onClick={startReqClosedScan}
+                disabled={anyQueueActionRunning}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 14px",
+                  fontSize: "13px",
+                  background: "none",
+                  border: "none",
+                  color: "var(--text)",
+                  cursor: anyQueueActionRunning ? "not-allowed" : "pointer",
+                  opacity: anyQueueActionRunning ? 0.5 : 1,
+                }}
+              >
+                {reqClosedScanning ? "Scanning…" : "Scan for Closed Reqs (LinkedIn + WTTJ)"}
+              </button>
+              <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
+              <button
                 onClick={() => { setMoreToolsOpen(false); handleRescanAll(); }}
                 disabled={anyQueueActionRunning}
                 style={{
@@ -1566,6 +1642,16 @@ export default function JobQueue({
         <FixCompaniesDialog
           progress={fixProgress}
           onClose={() => setFixProgress(null)}
+        />
+      )}
+
+      {reqClosedDialog && (
+        <ReqClosedDialog
+          result={reqClosedDialog}
+          onClose={() => {
+            reqClosedDismissedRef.current = true;
+            setReqClosedDialog(null);
+          }}
         />
       )}
 
