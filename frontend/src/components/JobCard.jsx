@@ -38,7 +38,7 @@ import Modal from "./common/Modal.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
 import UndoEditNotice from "./common/UndoEditNotice.jsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
-import { applicationRowFromSheet, rowMatchesCompany } from "../utils/sheetUtils.js";
+import { applicationRowFromSheet, jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.js";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
 import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
@@ -647,12 +647,14 @@ function JobCard({
       if (!res.ok) {
         throw new Error(data.error || `Application lookup failed (${res.status})`);
       }
-      const rows = Array.isArray(data.rows) ? data.rows : [];
-      setCompanyLookupRows(
-        rows
-          .map(applicationRowFromSheet)
-          .filter((row) => rowMatchesCompany(row.company, company))
-      );
+      const mapped = (Array.isArray(data.rows) ? data.rows : []).map(applicationRowFromSheet);
+      // ai: claude-sonnet-4-6 | 2026-06-26
+      // get_sheet_entries() only returns applied jobs, so queue jobs are absent.
+      // Inject the current job so it always appears as "this card".
+      const withCurrent = mapped.some((r) => r.id === job.id)
+        ? mapped
+        : [jobToHistoryRow(job), ...mapped];
+      setCompanyLookupRows(withCurrent.filter((row) => rowMatchesCompany(row.company, company)));
     } catch (error) {
       setCompanyLookupError(error.message || "Application lookup failed");
     } finally {

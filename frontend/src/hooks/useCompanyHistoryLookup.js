@@ -33,7 +33,7 @@
  */
 
 import { useState } from "react";
-import { applicationRowFromSheet, rowMatchesCompany } from "../utils/sheetUtils.js";
+import { applicationRowFromSheet, jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.js";
 
 // ai: claude-sonnet-4-6 | 2026-06-11
 export function useCompanyHistoryLookup(job) {
@@ -59,12 +59,14 @@ export function useCompanyHistoryLookup(job) {
       if (!res.ok) {
         throw new Error(data.error || `Application lookup failed (${res.status})`);
       }
-      const sheetRows = Array.isArray(data.rows) ? data.rows : [];
-      setRows(
-        sheetRows
-          .map(applicationRowFromSheet)
-          .filter((row) => rowMatchesCompany(row.company, company))
-      );
+      const mapped = (Array.isArray(data.rows) ? data.rows : []).map(applicationRowFromSheet);
+      // ai: claude-sonnet-4-6 | 2026-06-26
+      // get_sheet_entries() only returns applied jobs, so queue/triage jobs are
+      // absent. Inject the current job so it always appears as "this card".
+      const withCurrent = mapped.some((r) => r.id === job.id)
+        ? mapped
+        : [jobToHistoryRow(job), ...mapped];
+      setRows(withCurrent.filter((row) => rowMatchesCompany(row.company, company)));
     } catch (lookupError) {
       setError(lookupError.message || "Application lookup failed");
     } finally {

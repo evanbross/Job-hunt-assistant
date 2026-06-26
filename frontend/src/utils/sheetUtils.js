@@ -83,6 +83,26 @@ export function isAppliedStatus(status) {
   return normalized.includes("applied") || normalized.includes("added");
 }
 
+// ai: claude-sonnet-4-6 | 2026-06-26
+// Converts a jobs-DB row to the same shape that applicationRowFromSheet produces.
+// Used to inject the current job into company-history results so it always appears
+// as "this card" even when the job has not yet been added to the application sheet.
+export function jobToHistoryRow(job) {
+  return {
+    id: job.id,
+    company: String(job.company || "").trim(),
+    status: String(job.status || "").trim(),
+    source: String(job.source || "").trim(),
+    date: String(job.date_found || "").trim(),
+    title: String(job.job_title || "").trim(),
+    url: String(job.url || "").trim(),
+    notes: String(job.notes || "").trim(),
+    stages: [],
+    duplicate_of_id: job.duplicate_of_id ?? null,
+    skip_reason: job.skip_reason ?? null,
+  };
+}
+
 export function titleLooksSimilar(title, currentTitle) {
   const normalizedTitle = String(title || "").toLowerCase();
   const normalizedCurrentTitle = String(currentTitle || "").toLowerCase();
