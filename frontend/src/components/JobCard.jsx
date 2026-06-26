@@ -1098,6 +1098,7 @@ function JobCard({
                   </button>
                 </>
               ) : (
+                // ai: claude-sonnet-4-6 | 2026-06-26
                 <>
                   <a
                     href={job.url}
@@ -1117,6 +1118,25 @@ function JobCard({
                       job.url
                     )}
                   </a>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={jobUrlSmallButtonStyle}
+                    onClick={startUrlEdit}
+                    disabled={busy}
+                  >
+                    Edit URL
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={jobUrlSmallButtonStyle}
+                    onClick={handleRefreshFromUrl}
+                    disabled={busy}
+                    title="Re-fetch the job description from its URL and re-score"
+                  >
+                    {loading === "refresh" ? "Fetching…" : "Re-fetch from URL"}
+                  </button>
                 </>
               )}
             </div>
@@ -1179,21 +1199,13 @@ function JobCard({
 
       {/* Description unavailable banner */}
       {/* ai: claude-sonnet-4-6 | 2026-06-16 */}
+      {/* ai: claude-sonnet-4-6 | 2026-06-26 — Re-fetch button moved to URL row above */}
       {descriptionUnavailable && job.url && (
         <div style={amberBannerStyle}>
           <span style={{ fontSize: "12px", color: "var(--text)", flex: 1, minWidth: "180px" }}>
             <strong style={{ color: "#c87000" }}>No description loaded.</strong>{" "}
-            This job&rsquo;s page may require a browser to render.
+            Use &ldquo;Re-fetch from URL&rdquo; above, or paste the description manually.
           </span>
-          <button
-            type="button"
-            className="btn-secondary btn-sm"
-            onClick={handleRefreshFromUrl}
-            disabled={busy}
-            style={{ borderColor: "rgba(220,140,0,0.45)", whiteSpace: "nowrap" }}
-          >
-            {loading === "refresh" ? "Fetching…" : "Re-fetch from URL"}
-          </button>
         </div>
       )}
       {/* ai: claude-sonnet-4-6 | 2026-06-16 */}
@@ -1334,17 +1346,6 @@ function JobCard({
         >
           {loading === "reevaluate" ? "Re-evaluating..." : "Re-evaluate Fit"}
         </button>
-
-        {job.url && (
-          <button
-            className="btn-secondary btn-sm"
-            onClick={handleRefreshFromUrl}
-            disabled={busy}
-            title="Re-fetch the job description from its URL and re-score"
-          >
-            {loading === "refresh" ? "Refreshing..." : "Re-fetch from URL"}
-          </button>
-        )}
 
         {/* ai: claude-sonnet-4-6 | 2026-06-20 */}
         <button

@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
 import { TriageCard, DuplicateCard, ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "./TriagePanel.jsx";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
@@ -380,9 +380,14 @@ export default function JobQueue({
   }, [searchText]);
 
   // ai: claude-sonnet-4-6 | 2026-06-23
-  // Debounce the value used for filtering so re-rendering the (potentially large)
-  // job list only happens after the user pauses typing, not on every keystroke.
+  // ai: claude-sonnet-4-6 | 2026-06-26
+  // Debounce filtering so the heavy re-render only happens after the user pauses
+  // typing. Clear (empty string) bypasses the delay for instant X-button response.
   useEffect(() => {
+    if (searchText === "") {
+      setDebouncedSearchText("");
+      return;
+    }
     const timeoutId = window.setTimeout(() => {
       setDebouncedSearchText(searchText);
     }, 200);
@@ -1138,39 +1143,60 @@ export default function JobQueue({
   const anyScanRunning = scanning || rescanAllRunning;
   const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning || wttjRepairRunning;
 
-  const filteredJobs = jobs.filter((job) => {
+  // ai: claude-sonnet-4-6 | 2026-06-26
+  // All derived arrays are memoized so unrelated state changes (dialogs, hover,
+  // etc.) don't re-run the filter+sort chain on every render.
+  const filteredJobs = useMemo(() => jobs.filter((job) => {
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     return true;
-  });
+  }), [jobs, debouncedSearchText, searchAllFields, showOnlyUnscored]);
 
-  const filteredTriageJobs = triageJobs.filter((job) => {
+  const filteredTriageJobs = useMemo(() => triageJobs.filter((job) => {
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     return true;
-  });
+  }), [triageJobs, debouncedSearchText, searchAllFields, showOnlyUnscored]);
 
-  const unscoredCount = jobs.filter((j) => j.fit_score == null).length
-    + (viewMode !== "queue" ? triageJobs.filter((j) => j.fit_score == null).length : 0);
+  const unscoredCount = useMemo(
+    () => jobs.filter((j) => j.fit_score == null).length
+      + (viewMode !== "queue" ? triageJobs.filter((j) => j.fit_score == null).length : 0),
+    [jobs, triageJobs, viewMode],
+  );
 
   const showsQueue = viewMode === "queue" || viewMode === "both" || viewMode === "company";
   const showsTriage = viewMode === "triage" || viewMode === "both" || viewMode === "company";
 
-  const sortedQueueJobs = showsQueue ? sortJobList(filteredJobs, sortBy) : [];
-  const sortedTriageJobs = showsTriage ? sortJobList(filteredTriageJobs, sortBy) : [];
-  const combinedJobs = (viewMode === "both" || viewMode === "company")
-    ? sortJobList([...filteredJobs, ...filteredTriageJobs], sortBy)
-    : [];
+  const sortedQueueJobs = useMemo(
+    () => showsQueue ? sortJobList(filteredJobs, sortBy) : [],
+    [showsQueue, filteredJobs, sortBy],
+  );
+  const sortedTriageJobs = useMemo(
+    () => showsTriage ? sortJobList(filteredTriageJobs, sortBy) : [],
+    [showsTriage, filteredTriageJobs, sortBy],
+  );
+  const combinedJobs = useMemo(
+    () => (viewMode === "both" || viewMode === "company")
+      ? sortJobList([...filteredJobs, ...filteredTriageJobs], sortBy)
+      : [],
+    [viewMode, filteredJobs, filteredTriageJobs, sortBy],
+  );
 
-  const companiesMap = viewMode === "company"
-    ? combinedJobs.reduce((acc, job) => {
-        const key = String(job.company || "").trim() || "Unknown Company";
-        if (!acc[key]) acc[key] = [];
-        acc[key].push(job);
-        return acc;
-      }, {})
-    : {};
-  const companiesList = Object.entries(companiesMap).sort(([a], [b]) => a.localeCompare(b));
+  const companiesMap = useMemo(
+    () => viewMode === "company"
+      ? combinedJobs.reduce((acc, job) => {
+          const key = String(job.company || "").trim() || "Unknown Company";
+          if (!acc[key]) acc[key] = [];
+          acc[key].push(job);
+          return acc;
+        }, {})
+      : {},
+    [viewMode, combinedJobs],
+  );
+  const companiesList = useMemo(
+    () => Object.entries(companiesMap).sort(([a], [b]) => a.localeCompare(b)),
+    [companiesMap],
+  );
 
   useEffect(() => {
     if (!focusJobId) return;

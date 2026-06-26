@@ -615,11 +615,19 @@ def refresh_job_from_url(job_id: int):
         job_id, fit_score, current_status, time.monotonic() - t0,
     )
     with get_repos() as repos:
+        # ai: claude-sonnet-4-6 | 2026-06-26
+        # Clear parser-confidence fields: they describe email-parse quality and are
+        # stale once the JD has been directly fetched. Keeping them would cause the
+        # triage panel to show "Parser certainty score: 45% / company name missing"
+        # even after a successful re-fetch with a complete description.
         repos["jobs"].update(job_id, {
             "raw_email_snippet": new_text[:6000],
             "fit_score": fit_score,
             "fit_reasoning": score_result["reasoning"],
             "status": current_status,
+            "parser_confidence": None,
+            "confidence_score": None,
+            "confidence_reason": None,
         })
         updated_job = repos["jobs"].get_by_id(job_id)
         repos["conn"].commit()
@@ -667,6 +675,9 @@ def update_job_description(job_id: int):
         current_status = "pending_review" if fit_score >= 70 else "triage"
 
     with get_repos() as repos:
+        # ai: claude-sonnet-4-6 | 2026-06-26
+        # Clear parser-confidence fields: they describe email-parse quality and are
+        # stale once the user supplies a complete description directly.
         repos["jobs"].update(
             job_id,
             {
@@ -674,6 +685,9 @@ def update_job_description(job_id: int):
                 "fit_score": fit_score,
                 "fit_reasoning": score_result["reasoning"],
                 "status": current_status,
+                "parser_confidence": None,
+                "confidence_score": None,
+                "confidence_reason": None,
             },
         )
         updated_job = repos["jobs"].get_by_id(job_id)

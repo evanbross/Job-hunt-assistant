@@ -109,6 +109,8 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState("date_desc");
   const [searchText, setSearchText] = useState(() => readStoredSearch(TRIAGE_SEARCH_STORAGE_KEY));
+  // ai: claude-sonnet-4-6 | 2026-06-26
+  const [debouncedSearchText, setDebouncedSearchText] = useState(searchText);
   const [searchAllFields, setSearchAllFields] = useState(
     () => readStoredSearch(TRIAGE_SEARCH_ALL_FIELDS_KEY) === "true"
   );
@@ -143,6 +145,17 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
 
   useEffect(() => {
     writeStoredSearch(TRIAGE_SEARCH_STORAGE_KEY, searchText);
+  }, [searchText]);
+
+  // ai: claude-sonnet-4-6 | 2026-06-26
+  // Empty string bypasses the delay so the X button clears the list instantly.
+  useEffect(() => {
+    if (searchText === "") {
+      setDebouncedSearchText("");
+      return;
+    }
+    const id = window.setTimeout(() => setDebouncedSearchText(searchText), 200);
+    return () => window.clearTimeout(id);
   }, [searchText]);
 
   useEffect(() => {
@@ -449,20 +462,21 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     );
   }
 
-  const filteredJobs = jobs.filter((job) => {
-    if (!jobMatchesSearch(job, searchText, searchAllFields)) return false;
+  // ai: claude-sonnet-4-6 | 2026-06-26
+  const filteredJobs = useMemo(() => jobs.filter((job) => {
+    if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     if (showOnlyImportReview && parseImportWarnings(job.import_warnings).length === 0) return false;
     return true;
-  });
-  const unscoredCount = jobs.filter((j) => j.fit_score == null).length;
-  const importReviewCount = jobs.filter((j) => parseImportWarnings(j.import_warnings).length > 0).length;
-  const visibleDupeCount = filteredJobs.filter((j) => j.status === "possible_duplicate").length;
+  }), [jobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyImportReview]);
+  const unscoredCount = useMemo(() => jobs.filter((j) => j.fit_score == null).length, [jobs]);
+  const importReviewCount = useMemo(() => jobs.filter((j) => parseImportWarnings(j.import_warnings).length > 0).length, [jobs]);
+  const visibleDupeCount = useMemo(() => filteredJobs.filter((j) => j.status === "possible_duplicate").length, [filteredJobs]);
   const visibleTriageCount = filteredJobs.length - visibleDupeCount;
-  const refreshableCount = jobs.filter((job) => job.status !== "possible_duplicate" && job.url).length;
+  const refreshableCount = useMemo(() => jobs.filter((job) => job.status !== "possible_duplicate" && job.url).length, [jobs]);
   const isBatchRefreshing = batchRefreshPopup?.phase === "running";
 
-  const sortedJobs = [...filteredJobs].sort((a, b) => {
+  const sortedJobs = useMemo(() => [...filteredJobs].sort((a, b) => {
     if (sortBy === "date_desc" || sortBy === "date_asc") {
       const da = new Date(a.date_found || 0);
       const db = new Date(b.date_found || 0);
@@ -475,7 +489,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     const ca = a.confidence_score ?? (a.status === "possible_duplicate" ? -1 : 50);
     const cb = b.confidence_score ?? (b.status === "possible_duplicate" ? -1 : 50);
     return sortBy === "confidence_desc" ? cb - ca : ca - cb;
-  });
+  }), [filteredJobs, sortBy]);
 
   return (
     <div>
