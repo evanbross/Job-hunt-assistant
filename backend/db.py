@@ -277,8 +277,14 @@ class _SQLiteConnection:
 
 
 def _sqlite_sql(sql: str) -> str:
-    # Add a new entry here whenever you introduce a Postgres-specific expression
-    # (date function, cast, type name) in schema DDL or migration SQL above.
+    # Translates Postgres-dialect SQL to SQLite-compatible SQL.
+    # UTC contract: SQLite's datetime('now') and date('now') return UTC values
+    # by specification — SQLite's internal time source is always UTC. The
+    # translations below are semantically equivalent to the original Postgres
+    # UTC expressions. Add a new entry here whenever you introduce a
+    # Postgres-specific expression (date function, cast, type name) in schema
+    # DDL or migration SQL above.
+    # ai: claude-sonnet-4-6 | 2026-06-25
     translated = sql.replace("%s", "?")
     translated = translated.replace("(NOW() AT TIME ZONE 'UTC')::date::text", "date('now')")
     translated = translated.replace("NOW()::text", "datetime('now')")
@@ -2332,7 +2338,7 @@ def _create_tables_sqlite(conn: Any) -> None:
             status                TEXT,
             parser_confidence     TEXT,
             confidence_reason     TEXT,
-            date_found            TEXT DEFAULT (date('now')),
+            date_found            TEXT DEFAULT (date('now')),  -- UTC; SQLite 'now' is always UTC
             date_added_to_sheet   TEXT,
             duplicate_hint        TEXT,
             duplicate_of_id       INTEGER,
@@ -2411,7 +2417,7 @@ def _create_tables_sqlite(conn: Any) -> None:
             status     TEXT NOT NULL,
             date       TEXT NOT NULL,
             notes      TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))  -- UTC; SQLite 'now' is always UTC
         )
         """,
         """
@@ -2434,7 +2440,7 @@ def _create_tables_sqlite(conn: Any) -> None:
             detected_platform       TEXT,
             last_captured_at        TEXT,
             recapture_interval_days INTEGER DEFAULT 4,
-            created_at              TEXT DEFAULT (datetime('now'))
+            created_at              TEXT DEFAULT (datetime('now'))  -- UTC; SQLite 'now' is always UTC
         )
         """,
         """

@@ -153,8 +153,10 @@ export default function SetupWizardPanel({ onSetupComplete }) {
     setCurrentStep(STEP_FINISH);
   };
 
+  // ai: claude-sonnet-4-6 | 2026-06-25
   const startAuthPolling = () => {
     setAuthPolling(true);
+    clearInterval(authPollRef.current);
     authPollRef.current = setInterval(async () => {
       try {
         const res = await fetch("/api/auth/status");

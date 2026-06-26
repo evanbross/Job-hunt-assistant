@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import secrets
+import time
 
 from flask import Blueprint, jsonify, redirect, request
 from google_auth_oauthlib.flow import Flow
@@ -45,11 +46,25 @@ import config
 
 auth_bp = Blueprint("auth", __name__)
 
-# Maps a random state token → code_verifier. Using a server-side dict avoids
-# session-cookie issues when the Vite dev proxy is in the path: the cookie set
-# by Flask on :5004 isn't visible when the browser calls :5173, so the callback
-# (which hits :5004 directly from Google's redirect) would find an empty session.
-_pending_auths: dict[str, str] = {}
+# Maps a random state token → {"verifier": str, "created_at": float}.
+# Using a server-side dict avoids session-cookie issues when the Vite dev proxy
+# is in the path: the cookie set by Flask on :5004 isn't visible when the browser
+# calls :5173, so the callback (which hits :5004 directly from Google's redirect)
+# would find an empty session.
+_pending_auths: dict[str, dict[str, object]] = {}
+_PENDING_AUTH_TTL_SECONDS = 600  # 10 minutes
+_PENDING_AUTH_MAX_SIZE = 50
+
+
+# ai: claude-sonnet-4-6 | 2026-06-25
+def _prune_pending_auths() -> None:
+    cutoff = time.monotonic() - _PENDING_AUTH_TTL_SECONDS
+    expired = [s for s, e in _pending_auths.items() if float(e["created_at"]) < cutoff]
+    for s in expired:
+        _pending_auths.pop(s, None)
+    while len(_pending_auths) > _PENDING_AUTH_MAX_SIZE:
+        oldest = min(_pending_auths, key=lambda s: float(_pending_auths[s]["created_at"]))
+        _pending_auths.pop(oldest, None)
 
 
 @auth_bp.route("/auth/status")
@@ -82,6 +97,8 @@ def auth_google_start():
     # This avoids relying on Flask session cookies, which don't survive the Vite
     # dev-proxy hop (browser stores the cookie for :5173, but the OAuth callback
     # hits :5004 directly, so the cookie is absent).
+    # ai: claude-sonnet-4-6 | 2026-06-25
+    _prune_pending_auths()
     state = secrets.token_urlsafe(32)
     auth_url, _ = flow.authorization_url(
         access_type="offline",
@@ -90,7 +107,7 @@ def auth_google_start():
         code_challenge_method="S256",
         state=state,
     )
-    _pending_auths[state] = flow.code_verifier
+    _pending_auths[state] = {"verifier": flow.code_verifier, "created_at": time.monotonic()}
     return jsonify({"auth_url": auth_url})
 
 
@@ -102,9 +119,12 @@ def auth_google_callback():
         return jsonify({"error": "Missing code parameter"}), 400
 
     state = request.args.get("state", "")
-    code_verifier = _pending_auths.pop(state, None)
-    if not code_verifier:
+    # ai: claude-sonnet-4-6 | 2026-06-25
+    _prune_pending_auths()
+    entry = _pending_auths.pop(state, None)
+    if not entry:
         return jsonify({"error": "OAuth state mismatch — please try connecting again."}), 400
+    code_verifier = str(entry["verifier"])
 
     flow = Flow.from_client_secrets_file(
         str(config.GOOGLE_CREDENTIALS_FILE),

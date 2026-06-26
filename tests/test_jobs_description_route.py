@@ -110,6 +110,15 @@ class FakeStagesRepo:
         self.rows = [row for row in self.rows if row["id"] != stage_id]
 
 
+# ai: claude-sonnet-4-6 | 2026-06-25
+class FakeJobStatusHistoryRepo:
+    def __init__(self) -> None:
+        self.rows: list[dict[str, Any]] = []
+
+    def insert(self, row: dict[str, Any]) -> None:
+        self.rows.append(row)
+
+
 class FakeFitScorer:
     def score(
         self,
@@ -270,13 +279,17 @@ def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(monke
         {
             "date_added_to_sheet": "2026-05-14",
             "status": "applied",
+            "fit_score": 86,
         }
     )
     stages_repo = FakeStagesRepo()
+    # ai: claude-sonnet-4-6 | 2026-06-25
+    history_repo = FakeJobStatusHistoryRepo()
     repos = {
         "conn": FakeConnection(),
         "jobs": jobs_repo,
         "stages": stages_repo,
+        "job_status_history": history_repo,
     }
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
@@ -291,3 +304,7 @@ def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(monke
     assert jobs_repo.row["status"] == "pending_review"
     assert jobs_repo.row["date_added_to_sheet"] is None
     assert [stage["id"] for stage in stages_repo.rows] == [12]
+    assert len(history_repo.rows) == 1
+    assert history_repo.rows[0]["from_status"] == "applied"
+    assert history_repo.rows[0]["to_status"] == "pending_review"
+    assert history_repo.rows[0]["trigger"] == "return_to_queue"

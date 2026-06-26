@@ -377,6 +377,8 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   const resizeCleanupRef = useRef(null);
   const reqClosedPollRef = useRef(null);
   const reqClosedDismissedRef = useRef(false);
+  // ai: claude-sonnet-4-6 | 2026-06-25
+  const repairFiredRef = useRef(false);
 
   useEffect(() => {
     return () => clearInterval(reqClosedPollRef.current);
@@ -404,9 +406,14 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     }
   };
 
+  // ai: claude-sonnet-4-6 | 2026-06-25
   useEffect(() => {
     loadSheet();
-    fetch("/api/sheet/repair/normalize-stage-statuses", { method: "POST" }).catch(() => {});
+    if (!repairFiredRef.current) {
+      repairFiredRef.current = true;
+      fetch("/api/sheet/repair/normalize-stage-statuses", { method: "POST" })
+        .catch((err) => console.error("Stage status repair failed:", err));
+    }
     fetch("/api/sheet/stage-statuses")
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => { if (Array.isArray(data)) setStageStatuses(data); })

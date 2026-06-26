@@ -62,6 +62,10 @@ class FakeGmailClient:
 
 
 class FakeEmailParser:
+    # ai: claude-sonnet-4-6 | 2026-06-25
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
     def parse(self, subject: str, sender: str, body: str) -> list[dict[str, object]]:
         return [
             {

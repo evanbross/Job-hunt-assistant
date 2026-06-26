@@ -323,8 +323,9 @@ class SheetsClient:
                     )
             return jobs
         except HttpError as exc:
+            # ai: claude-sonnet-4-6 | 2026-06-25
             logger.warning("Could not read jobs from sheet: %s", exc)
-            return []
+            raise
 
     def read_application_grid(self) -> dict[str, Any]:
         """

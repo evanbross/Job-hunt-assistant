@@ -60,7 +60,8 @@ system_bp = Blueprint("system", __name__)
 def health_check():
     try:
         with get_repos() as repos:
-            repos["conn"].execute("SELECT 1")
+            # ai: claude-sonnet-4-6 | 2026-06-25
+            repos["conn"].cursor().execute("SELECT 1")
     except Exception as exc:
         logger.error("Health check DB probe failed: %s", exc)
         return jsonify({"status": "error", "db": "unreachable"}), 503
