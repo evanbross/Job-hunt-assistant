@@ -27,18 +27,23 @@ export default function Modal({
   onClose,
   maxWidth,
   showCloseButton = true,
+  // ai: claude-sonnet-4-6 | 2026-06-26
+  // Suppress ESC and backdrop click — use during "running" phases so a
+  // dismissed-but-still-running operation can't re-open the popup on completion.
+  blockClose = false,
 }) {
   const panelRef = useRef(null);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !blockClose) onClose();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  }, [onClose, blockClose]);
 
   const handleBackdropClick = (e) => {
+    if (blockClose) return;
     if (panelRef.current && !panelRef.current.contains(e.target)) {
       onClose();
     }

@@ -237,15 +237,21 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     }
   };
 
+  // ai: claude-sonnet-4-6 | 2026-06-26
   const handleMarkUnique = async (job) => {
     const res = await fetch(`/api/jobs/${job.id}/dismiss-duplicate`, { method: "POST" });
-
     if (res.ok) {
-      const updated = jobs.filter((j) => j.id !== job.id);
-      setJobs(updated);
-      onCountChange(updated.length);
+      const updated = await res.json();
+      const triageStatuses = new Set(["triage", "possible_duplicate"]);
+      if (triageStatuses.has(updated.status)) {
+        setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
+      } else {
+        const next = jobs.filter((j) => j.id !== job.id);
+        setJobs(next);
+        onCountChange(next.length);
+      }
     } else {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to mark job as unique");
     }
   };
@@ -628,7 +634,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
             key={job.id}
             job={job}
             onSameJob={() => handleSkipAsDuplicate(job)}
-            onDifferentJob={() => handleApprove(job)}
+            onDifferentJob={() => handleMarkUnique(job)}
             onMarkUnique={() => handleMarkUnique(job)}
             onMarkApplied={() => handleMarkApplied(job)}
             onSkip={(reason, feedback, mismatchReasons) => handleSkip(job, reason, feedback, mismatchReasons)}
@@ -2422,6 +2428,7 @@ export function ReEvaluatePopup({ popup, onClose }) {
       subtitle={`${title}${companyText}`}
       onClose={onClose}
       showCloseButton={!isRunning}
+      blockClose={isRunning}
       footer={footer}
       maxWidth="460px"
     >
@@ -2478,6 +2485,7 @@ export function BatchRefreshPopup({ popup, onClose }) {
         : `${successCount} refreshed, ${movedCount} moved to queue${queuedCount ? `, ${queuedCount} queued for extension` : ""}, ${errorCount} failed`}
       onClose={onClose}
       showCloseButton={!isRunning}
+      blockClose={isRunning}
       footer={footer}
       maxWidth="680px"
     >

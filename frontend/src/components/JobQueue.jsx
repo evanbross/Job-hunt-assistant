@@ -740,14 +740,14 @@ export default function JobQueue({
     }
   };
 
+  // ai: claude-sonnet-4-6 | 2026-06-26
+  // Keep the card on screen: transition it from possible_duplicate to a normal
+  // triage or queue card rather than removing it entirely.
   const handleTriageMarkUnique = async (job) => {
     const res = await fetch(`/api/jobs/${job.id}/dismiss-duplicate`, { method: "POST" });
     if (res.ok) {
-      setTriageJobs((prev) => {
-        const updated = prev.filter((j) => j.id !== job.id);
-        onTriageCountChange(updated.length);
-        return updated;
-      });
+      const updated = await res.json();
+      handleTriageReprocessed(job, updated);
     } else {
       const err = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to mark job as unique");
@@ -839,9 +839,11 @@ export default function JobQueue({
         });
         return;
       }
+      // ai: claude-sonnet-4-6 | 2026-06-26
       setTriageReEvaluatePopup({
         action: "Re-fetch",
         company: data.company || job.company || "",
+        jobId: job.id,
         jobTitle: data.job_title || job.job_title || "",
         newScore: data.fit_score,
         phase: "done",
@@ -1214,6 +1216,18 @@ export default function JobQueue({
     }, 100);
     return () => window.clearTimeout(timeoutId);
   }, [focusJobId, loading, viewMode]);
+
+  // ai: claude-sonnet-4-6 | 2026-06-26
+  // After a re-evaluate popup closes, scroll to the updated card. Re-sorting
+  // can move it out of the visible area, so the user needs a nudge to find it.
+  const scrollToUpdatedCard = useCallback((jobId) => {
+    if (!jobId) return;
+    window.setTimeout(() => {
+      const el = document.getElementById(`job-card-${jobId}`)
+               || document.getElementById(`triage-card-${jobId}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
+  }, []);
 
   // Re-sorting after a re-evaluation can move a job card to a new position;
   // record its viewport offset beforehand so we can scroll back to it.
@@ -2061,7 +2075,11 @@ export default function JobQueue({
       {jobReEvaluatePopup && (
         <JobReEvaluatePopup
           popup={jobReEvaluatePopup}
-          onClose={() => setJobReEvaluatePopup(null)}
+          onClose={() => {
+            const jobId = jobReEvaluatePopup.jobId;
+            setJobReEvaluatePopup(null);
+            scrollToUpdatedCard(jobId);
+          }}
         />
       )}
 
@@ -2075,7 +2093,14 @@ export default function JobQueue({
 
       {/* Triage popups (rendered regardless of viewMode) */}
       {triageReEvaluatePopup && (
-        <TriageReEvaluatePopup popup={triageReEvaluatePopup} onClose={() => setTriageReEvaluatePopup(null)} />
+        <TriageReEvaluatePopup
+          popup={triageReEvaluatePopup}
+          onClose={() => {
+            const jobId = triageReEvaluatePopup.jobId;
+            setTriageReEvaluatePopup(null);
+            scrollToUpdatedCard(jobId);
+          }}
+        />
       )}
       {triageBatchRefreshPopup && (
         <TriageBatchRefreshPopup popup={triageBatchRefreshPopup} onClose={() => setTriageBatchRefreshPopup(null)} />
@@ -2128,6 +2153,7 @@ export default function JobQueue({
                     company: updatedJob.company || originalJob.company || "",
                     fitReasoning: updatedJob.fit_reasoning,
                     heading: "Description re-evaluated",
+                    jobId,
                     jobTitle: updatedJob.job_title || originalJob.job_title || "",
                     newScore: updatedJob.fit_score,
                     phase: "done",
@@ -2161,6 +2187,7 @@ export default function JobQueue({
                   company: updatedJob.company || originalJob.company || "",
                   fitReasoning: updatedJob.fit_reasoning,
                   heading: "Description re-evaluated",
+                  jobId,
                   jobTitle: updatedJob.job_title || originalJob.job_title || "",
                   newScore: updatedJob.fit_score,
                   phase: "done",
@@ -2198,6 +2225,7 @@ export default function JobQueue({
                     company: updatedJob.company || job.company || "",
                     fitReasoning: updatedJob.fit_reasoning,
                     heading: "Description re-evaluated",
+                    jobId,
                     jobTitle: updatedJob.job_title || job.job_title || "",
                     newScore: updatedJob.fit_score,
                     phase: "done",
@@ -2253,7 +2281,7 @@ function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows,
         key={job.id}
         job={job}
         onSameJob={() => triageHandlers.skip(job, "duplicate", "", [])}
-        onDifferentJob={() => triageHandlers.approve(job)}
+        onDifferentJob={() => triageHandlers.markUnique(job)}
         onMarkUnique={() => triageHandlers.markUnique(job)}
         onMarkApplied={() => triageHandlers.markApplied(job)}
         onSkip={(reason, feedback, mismatchReasons) => triageHandlers.skip(job, reason, feedback, mismatchReasons)}

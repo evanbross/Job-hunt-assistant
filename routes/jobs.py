@@ -430,6 +430,7 @@ def return_job_to_queue(job_id: int):
 
 @jobs_bp.route("/jobs/<int:job_id>/dismiss-duplicate", methods=["POST"])
 def dismiss_duplicate(job_id: int):
+    # ai: claude-sonnet-4-6 | 2026-06-26
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         if not job:
@@ -444,8 +445,9 @@ def dismiss_duplicate(job_id: int):
                 "duplicate_hint": None,
             },
         )
+        updated_job = repos["jobs"].get_by_id(job_id)
         repos["conn"].commit()
-    return jsonify({"status": "ok"})
+    return jsonify(updated_job)
 
 
 @jobs_bp.route("/jobs/<int:job_id>/snooze", methods=["POST"])
