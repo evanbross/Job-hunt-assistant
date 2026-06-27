@@ -379,6 +379,7 @@
     return JSON.stringify({ jobs });
   }
 
+  // ai: claude-sonnet-4-6 | 2026-06-27
   async function fetchWellfoundDescription(slug) {
     // Same-origin fetch: content script is on wellfound.com when this runs.
     try {
@@ -393,20 +394,40 @@
       if (nextDataEl) {
         try {
           const nd = JSON.parse(nextDataEl.textContent || '{}');
-          const jl = nd?.props?.pageProps?.jobListing || nd?.props?.pageProps?.job || {};
+          // Try direct pageProps paths (Wellfound changes these occasionally)
+          const jl = nd?.props?.pageProps?.jobListing
+                  || nd?.props?.pageProps?.job
+                  || nd?.props?.pageProps?.jobListingResult?.jobListing
+                  || {};
           const raw = jl.description || jl.descriptionSnippet || jl.jobDescription || '';
           if (raw && raw.length > 100) return raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+          // Also try React Query / SWR dehydrated state entries
+          for (const q of nd?.props?.pageProps?.dehydratedState?.queries || []) {
+            const d = q?.state?.data;
+            if (!d || typeof d !== 'object') continue;
+            const desc = d.description || d.jobDescription || d.descriptionPlainText
+                      || d.jobListing?.description || d.listing?.description || '';
+            if (desc && desc.length > 100) return desc.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+          }
         } catch { /* fall through to DOM selectors */ }
       }
 
-      return longestTextFromDoc(doc, [
+      const fromDom = longestTextFromDoc(doc, [
         '[class*="job-description"]',
         '[class*="description"] .prose',
         '[class*="jobDescription"]',
         '[data-test="JobDescription"]',
-        'section article',
         'main article',
+        'main',
       ]);
+      if (fromDom.length > 100) return fromDom;
+
+      // Last resort: the fetched page may render client-side, so DOM selectors find nothing.
+      // Take the full body text — noisy but gives the importer enough to work with.
+      const bodyText = (doc.body?.textContent || '').replace(/\s+/g, ' ').trim();
+      if (bodyText.length > 200) return bodyText.slice(0, 8000);
+
+      return '';
     } catch {
       return '';
     }
@@ -443,6 +464,18 @@
     const slugs = collectWellfoundSlugs();
     const total = slugs.length;
 
+    // ai: claude-sonnet-4-6 | 2026-06-27
+    // The selected job's full description is already rendered in the right panel of
+    // the current DOM — read it directly instead of fetching, since Wellfound's
+    // individual job pages render descriptions client-side so a plain HTML fetch
+    // returns no usable content.
+    const selectedSlug = new URLSearchParams(location.search).get('job_listing_slug') || '';
+    const selectedDesc = selectedSlug ? longestText([
+      '[class*="job-description"]', '[class*="description"] .prose',
+      '[class*="jobDescription"]', '[data-test="JobDescription"]',
+      'section article', 'main article',
+    ]) : '';
+
     const items = slugs.map(slug => {
       const url = 'https://wellfound.com/jobs?job_listing_slug=' + slug;
       let title = '', company = '';
@@ -460,10 +493,12 @@
           if (atMatch) company = atMatch[1].trim();
         }
       }
-      return { slug, url, title, company, description: '' };
+      const description = (slug === selectedSlug && selectedDesc) ? selectedDesc : '';
+      return { slug, url, title, company, description };
     });
 
     for (let i = 0; i < total; i++) {
+      if (items[i].description) continue; // already read from current DOM
       sendProgress(`Fetching job details... (${i + 1}/${total})`, (i + 1) / total);
       items[i].description = await fetchWellfoundDescription(items[i].slug);
       if (i < total - 1) await sleep(400);
