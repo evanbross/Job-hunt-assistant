@@ -2291,29 +2291,125 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
 
 export const TriageCard = memo(TriageCardImpl, arePropsEqualIgnoringFunctions);
 
-// ai: claude-sonnet-4-6 | 2026-06-20
+// ai: claude-sonnet-4-6 | 2026-06-27
 function CoverLetterModal({ job, coverLetter, onClose }) {
   const [copied, setCopied] = useState(false);
+  const [saveStatus, setSaveStatus] = useState(null);
+  const [showSaveAsMenu, setShowSaveAsMenu] = useState(false);
+  const [folderEditOpen, setFolderEditOpen] = useState(false);
+  const [folderInput, setFolderInput] = useState("");
+
   const handleCopy = () => {
     navigator.clipboard.writeText(coverLetter);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const handleSave = async (format = "docx", folderOverride = null) => {
+    setSaveStatus("saving");
+    setShowSaveAsMenu(false);
+    setFolderEditOpen(false);
+    try {
+      const body = {
+        text: coverLetter,
+        label: "Cover Letter",
+        format,
+        job_title: job.job_title || "",
+        company: job.company || "",
+      };
+      if (folderOverride) body.folder = folderOverride;
+      const res = await fetch("/api/cover-letter/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Save failed");
+      setSaveStatus({ path: data.path, folder: data.folder, format });
+    } catch (e) {
+      setSaveStatus(null);
+      window.alert("Save failed: " + e.message);
+    }
+  };
+
+  const handleBrowseFolder = async () => {
+    try {
+      const res = await fetch("/api/system/select-folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ initial_path: folderInput || saveStatus?.folder || "" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Folder picker failed");
+      if (data.selected_path) setFolderInput(data.selected_path);
+    } catch (e) {
+      window.alert("Browse failed: " + e.message);
+    }
+  };
+
   return (
     <Modal
       title="Cover Letter"
       subtitle={`${job.job_title || "Job"} at ${job.company || "Unknown"}`}
       onClose={onClose}
       maxWidth="660px"
-      footer={
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button className="btn-secondary" onClick={handleCopy} style={{ fontSize: "13px" }}>
-            {copied ? "Copied!" : "Copy to Clipboard"}
-          </button>
-          <button className="btn-secondary" onClick={onClose} style={{ fontSize: "13px" }}>Close</button>
-        </div>
-      }
     >
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px", marginBottom: "10px" }}>
+        <button className="btn-secondary" onClick={handleCopy} style={{ fontSize: "11px", padding: "3px 10px" }}>
+          {copied ? "Copied!" : "Copy"}
+        </button>
+        <div style={{ position: "relative" }}>
+          <button
+            className="btn-secondary"
+            onClick={() => setShowSaveAsMenu((o) => !o)}
+            disabled={saveStatus === "saving"}
+            style={{ fontSize: "11px", padding: "3px 10px", display: "flex", alignItems: "center", gap: "3px" }}
+          >
+            {saveStatus === "saving" ? "Saving…" : "Save As"}
+            <span style={{ fontSize: "8px", opacity: 0.7 }}>▾</span>
+          </button>
+          {showSaveAsMenu && (
+            <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", boxShadow: "0 4px 12px rgba(0,0,0,0.15)", zIndex: 200, minWidth: "130px" }}>
+              <button onClick={() => handleSave("text")} style={{ display: "block", width: "100%", padding: "7px 14px", textAlign: "left", background: "none", border: "none", cursor: "pointer", fontSize: "12px", color: "var(--text)" }}>Text (.txt)</button>
+              <button onClick={() => handleSave("docx")} style={{ display: "block", width: "100%", padding: "7px 14px", textAlign: "left", background: "none", border: "none", cursor: "pointer", fontSize: "12px", color: "var(--text)" }}>Word (.docx)</button>
+              <button onClick={() => handleSave("pdf")}  style={{ display: "block", width: "100%", padding: "7px 14px", textAlign: "left", background: "none", border: "none", cursor: "pointer", fontSize: "12px", color: "var(--text)" }}>PDF (.pdf)</button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {saveStatus && saveStatus !== "saving" && (
+        <div style={{ marginBottom: "10px", padding: "8px 12px", background: "rgba(76,175,129,0.08)", border: "1px solid rgba(76,175,129,0.25)", borderRadius: "var(--radius)" }}>
+          <div style={{ fontSize: "12px", color: "var(--green)", fontWeight: "600", marginBottom: "4px" }}>
+            Saved as {saveStatus.format === "pdf" ? "PDF" : saveStatus.format === "text" ? "Text" : "Word"}
+          </div>
+          <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px", wordBreak: "break-all" }}>
+            {saveStatus.path}
+          </div>
+          <button
+            onClick={() => { setFolderEditOpen((o) => !o); setFolderInput(saveStatus.folder); }}
+            style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: "12px", padding: 0, textDecoration: "underline" }}
+          >
+            {folderEditOpen ? "Cancel" : "Change save folder"}
+          </button>
+        </div>
+      )}
+
+      {folderEditOpen && (
+        <div style={{ marginBottom: "10px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            type="text"
+            value={folderInput}
+            onChange={(e) => setFolderInput(e.target.value)}
+            placeholder="Folder path"
+            style={{ flex: 1, minWidth: "240px", fontSize: "12px", padding: "7px 10px", borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontFamily: "monospace" }}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSave(saveStatus?.format || "docx", folderInput); }}
+          />
+          <button className="btn-secondary" onClick={handleBrowseFolder} style={{ fontSize: "12px", padding: "7px 12px", whiteSpace: "nowrap" }}>Browse…</button>
+          <button className="btn-secondary" onClick={() => handleSave(saveStatus?.format || "docx", folderInput)} style={{ fontSize: "12px", padding: "7px 12px", whiteSpace: "nowrap" }}>Save here</button>
+        </div>
+      )}
+
       <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: "13px", lineHeight: 1.6, margin: 0 }}>
         {coverLetter}
       </pre>
