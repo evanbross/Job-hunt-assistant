@@ -1063,11 +1063,24 @@
     return JSON.stringify({ jobs, source: { url: location.href } });
   }
 
-  // ai: claude-sonnet-4-6 | 2026-06-16
-  function buildWttjJobPayload() {
-    let title = '', company = '', description = '';
+  // ai: claude-sonnet-4-6 | 2026-06-27
+  // WTTJ is a Next.js SPA. Email-link URLs (/jobs/<id>) trigger a client-side
+  // redirect and async API fetch; the DOM is often not ready when content.js first
+  // runs. Poll until an h1 appears (up to 10s), then extract.
+  // descContent is kept separate from metadata so the body-text fallback can fire
+  // when the DOM is empty — unlike the old approach where description was always
+  // set to at least the URL, making the fallback unreachable.
+  async function buildWttjJobPayload() {
+    const pollDeadline = Date.now() + 10000;
+    while (Date.now() < pollDeadline) {
+      const h1 = document.querySelector('h1');
+      if (h1 && h1.innerText.trim().length > 3) break;
+      await sleep(500);
+    }
 
-    // WTTJ uses Next.js; __NEXT_DATA__ is the most reliable source.
+    let title = '', company = '', contractType = '', jobLocation = '', descContent = '';
+
+    // __NEXT_DATA__ is the most reliable source when the page is server-side rendered.
     const nextData = document.getElementById('__NEXT_DATA__');
     if (nextData) {
       try {
@@ -1079,22 +1092,12 @@
 
         title = job.name || job.title || '';
         company = org.name || org.title || job.organization?.name || '';
-        const contractType = job.contract_type?.label || job.contractType?.label || '';
-        const jobLocation = (job.offices || []).map(o => o.city || o.name).filter(Boolean).join(', ')
+        contractType = job.contract_type?.label || job.contractType?.label || '';
+        jobLocation = (job.offices || []).map(o => o.city || o.name).filter(Boolean).join(', ')
           || (job.remote ? 'Remote' : '');
         const tasks = (job.tasks_attributes || []).map(t => t.description).join('\n');
         const profile = (job.profile_attributes || []).map(t => t.description).join('\n');
-        const partsSections = [tasks, profile].filter(Boolean).join('\n\n');
-
-        const descParts = [
-          title && `Title: ${title}`,
-          company && `Company: ${company}`,
-          contractType && `Type: ${contractType}`,
-          jobLocation && `Location: ${jobLocation}`,
-          `URL: ${location.href}`,
-          partsSections,
-        ].filter(Boolean);
-        description = descParts.join('\n');
+        descContent = [tasks, profile].filter(Boolean).join('\n\n');
       } catch { /* fall through to DOM extraction */ }
     }
 
@@ -1109,8 +1112,8 @@
         'a[href*="/companies/"]',
       ]);
     }
-    if (!description) {
-      description = longestText([
+    if (!descContent) {
+      descContent = longestText([
         '[data-testid="job-description"]',
         '[class*="job-description"]',
         'section[class*="description"]',
@@ -1118,12 +1121,19 @@
         'main',
       ]);
     }
+    // Fall back to full page text so the importer always gets enough content,
+    // even when DOM selectors find nothing after the poll timeout.
+    if (!descContent) {
+      descContent = document.body.innerText.trim().slice(0, 12000);
+    }
 
     const lines = [];
     if (title) lines.push(title);
     if (company) lines.push(`Company: ${company}`);
+    const meta = [contractType, jobLocation].filter(Boolean);
+    if (meta.length) lines.push(meta.join(' | '));
     lines.push(`URL: ${location.href}`);
-    if (description) lines.push('', description);
+    if (descContent) lines.push('', descContent);
 
     return JSON.stringify({
       jobs: [{
