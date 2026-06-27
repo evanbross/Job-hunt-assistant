@@ -35,6 +35,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import StatusBadge from "./common/StatusBadge.jsx";
 import Modal from "./common/Modal.jsx";
+import CoverLetterModal from "./common/CoverLetterModal.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
 import UndoEditNotice from "./common/UndoEditNotice.jsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
@@ -108,7 +109,6 @@ function JobCard({
   const [undoSaving, setUndoSaving] = useState(false);
   const [coverLetter, setCoverLetter] = useState(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [companyLookupOpen, setCompanyLookupOpen] = useState(false);
   const [companyLookupLoading, setCompanyLookupLoading] = useState(false);
   const [companyLookupError, setCompanyLookupError] = useState("");
@@ -120,13 +120,6 @@ function JobCard({
   const [folderEditOpen, setFolderEditOpen] = useState(false);
   const [folderInput, setFolderInput] = useState("");
 
-  // Chat state
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatMessages, setChatMessages] = useState([]); // [{role, content}]
-  const [chatInput, setChatInput] = useState("");
-  const [chatSending, setChatSending] = useState(false);
-  const [pendingUpdate, setPendingUpdate] = useState(null); // updated cover letter from AI
-  const chatMessagesRef = useRef(null);
   const descriptionTextareaRef = useRef(null);
 
   // Pitch chat state
@@ -155,12 +148,6 @@ function JobCard({
   const [resumeTailorChatSending, setResumeTailorChatSending] = useState(false);
   const [resumeTailorPendingUpdate, setResumeTailorPendingUpdate] = useState(null);
   const resumeTailorChatMessagesRef = useRef(null);
-
-  useEffect(() => {
-    if (chatOpen && chatMessagesRef.current) {
-      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
-    }
-  }, [chatMessages, chatOpen]);
 
   useEffect(() => {
     if (pitchChatOpen && pitchChatMessagesRef.current) {
@@ -301,7 +288,6 @@ function JobCard({
   const handleCoverLetter = async () => {
     if (coverLetter) {
       setCoverLetterOpen(true);
-      setChatOpen(true);
       return;
     }
     setLoading("cover");
@@ -313,18 +299,11 @@ function JobCard({
       if (!res.ok) throw new Error(data.error || "Generation failed");
       setCoverLetter(data.cover_letter);
       setCoverLetterOpen(true);
-      setChatOpen(true);
     } catch (e) {
       alert("Cover letter generation failed: " + e.message);
     } finally {
       setLoading(null);
     }
-  };
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(coverLetter || "");
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
   };
 
   const handlePitch = async (type) => {
@@ -447,38 +426,6 @@ function JobCard({
       }
     } catch (e) {
       alert("Browse failed: " + e.message);
-    }
-  };
-
-  const handleChatSend = async () => {
-    const text = chatInput.trim();
-    if (!text || chatSending) return;
-
-    const newMessages = [...chatMessages, { role: "user", content: text }];
-    setChatMessages(newMessages);
-    setChatInput("");
-    setChatSending(true);
-
-    try {
-      const res = await fetch(`/api/jobs/${job.id}/cover-letter/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages, cover_letter: coverLetter }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Chat failed");
-
-      setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
-      if (data.updated_cover_letter) {
-        setPendingUpdate(data.updated_cover_letter);
-      }
-    } catch (e) {
-      setChatMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: `Error: ${e.message}` },
-      ]);
-    } finally {
-      setChatSending(false);
     }
   };
 
@@ -660,13 +607,6 @@ function JobCard({
     } finally {
       setCompanyLookupLoading(false);
     }
-  };
-
-  const applyPendingUpdate = () => {
-    setCoverLetter(pendingUpdate);
-    setPendingUpdate(null);
-    // Reset save status since the letter changed
-    setSaveStatus(null);
   };
 
   const handleResumeTailor = async () => {
@@ -2039,185 +1979,11 @@ function JobCard({
 
       {/* Cover letter panel */}
       {coverLetterOpen && coverLetter && (
-        <Modal
-          title="Cover Letter"
-          subtitle={`${job.job_title || "Untitled role"}${job.company ? ` at ${job.company}` : ""}`}
+        <CoverLetterModal
+          job={job}
+          coverLetter={coverLetter}
           onClose={() => setCoverLetterOpen(false)}
-          maxWidth="900px"
-        >
-        <div style={writingDialogBodyStyle}>
-          {/* Panel header */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-            <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Draft
-            </span>
-            <div style={{ display: "flex", gap: "6px" }}>
-              <button
-                className="btn-secondary"
-                onClick={handleCopy}
-                style={{ fontSize: "11px", padding: "3px 10px" }}
-              >
-                {copied ? "Copied!" : "Copy"}
-              </button>
-              <div style={{ position: "relative" }}>
-                <button
-                  className="btn-secondary"
-                  onClick={() => setShowSaveAsMenu(showSaveAsMenu === "cover" ? false : "cover")}
-                  disabled={saveStatus === "saving"}
-                  style={{ fontSize: "11px", padding: "3px 10px", display: "flex", alignItems: "center", gap: "3px" }}
-                >
-                  {saveStatus === "saving" ? "Saving…" : "Save As"}
-                  <span style={{ fontSize: "8px", opacity: 0.7 }}>▾</span>
-                </button>
-                {showSaveAsMenu === "cover" && (
-                  <div style={{ ...skipMenuStyle, bottom: "auto", top: "calc(100% + 4px)", left: "auto", right: 0 }}>
-                    <button onClick={() => handleSave(coverLetter, "Cover Letter", "text")} style={skipMenuItemStyle}>Text (.txt)</button>
-                    <button onClick={() => handleSave(coverLetter, "Cover Letter", "docx")} style={skipMenuItemStyle}>Word (.docx)</button>
-                    <button onClick={() => handleSave(coverLetter, "Cover Letter", "pdf")} style={skipMenuItemStyle}>PDF (.pdf)</button>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Pending AI update banner */}
-          {pendingUpdate && (
-            <div style={{ marginBottom: "10px", padding: "8px 12px", background: "rgba(76,175,129,0.1)", border: "1px solid rgba(76,175,129,0.3)", borderRadius: "var(--radius)", display: "flex", alignItems: "center", gap: "10px" }}>
-              <span style={{ fontSize: "12px", color: "var(--green)", flex: 1 }}>
-                AI suggested an updated version of your cover letter.
-              </span>
-              <button className="btn-success" onClick={applyPendingUpdate} style={{ fontSize: "11px", padding: "3px 10px", whiteSpace: "nowrap" }}>
-                Use updated version
-              </button>
-              <button className="btn-secondary" onClick={() => setPendingUpdate(null)} style={{ fontSize: "11px", padding: "3px 10px" }}>
-                Dismiss
-              </button>
-            </div>
-          )}
-
-          {/* Save confirmation */}
-          {saveStatus && saveStatus !== "saving" && saveStatus !== "error" && saveStatus.label === "Cover Letter" && (
-            <div style={saveStatusBoxStyle}>
-              <div style={{ fontSize: "12px", color: "var(--green)", fontWeight: "600", marginBottom: "4px" }}>
-                Saved as {saveStatus.format === "pdf" ? "PDF" : saveStatus.format === "text" ? "Text" : "Word"}
-              </div>
-              <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px", wordBreak: "break-all" }}>
-                {saveStatus.path}
-              </div>
-              <button
-                onClick={() => {
-                  setFolderEditOpen((o) => !o);
-                  setFolderInput(saveStatus.folder);
-                }}
-                style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: "12px", padding: 0, textDecoration: "underline", fontWeight: "500" }}
-              >
-                {folderEditOpen ? "Cancel folder edit" : "Change save folder"}
-              </button>
-            </div>
-          )}
-
-          {/* Folder edit input */}
-          {folderEditOpen && saveStatus?.label === "Cover Letter" && (
-            <div style={{ marginBottom: "10px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
-              <input
-                type="text"
-                value={folderInput}
-                onChange={(e) => setFolderInput(e.target.value)}
-                placeholder="Choose a folder for saved cover letters"
-                style={{ flex: 1, minWidth: "280px", fontSize: "12px", padding: "8px 10px", borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontFamily: "monospace" }}
-                onKeyDown={(e) => { if (e.key === "Enter") handleSave(coverLetter, "Cover Letter", saveStatus?.format || "docx", folderInput); }}
-              />
-              <button className="btn-secondary" onClick={handleBrowseFolder} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
-                Browse…
-              </button>
-              <button className="btn-secondary" onClick={() => handleSave(coverLetter, "Cover Letter", saveStatus?.format || "docx", folderInput)} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>
-                Save here
-              </button>
-            </div>
-          )}
-
-          {/* Cover letter body */}
-          <p style={{ fontSize: "13px", lineHeight: "1.7", color: "var(--text)", whiteSpace: "pre-wrap", margin: 0 }}>
-            {coverLetter}
-          </p>
-
-          {/* Chat panel  */}
-          <div style={{ marginTop: "16px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
-              <p style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "10px" }}>
-                Chat with AI — ask for edits, adjustments, or feedback
-              </p>
-
-              {/* Message history */}
-              {chatMessages.length > 0 && (
-                <div ref={chatMessagesRef} style={{ maxHeight: "300px", overflowY: "auto", marginBottom: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {chatMessages.map((msg, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
-                        maxWidth: "85%",
-                        background: msg.role === "user" ? "var(--accent)" : "var(--surface)",
-                        color: msg.role === "user" ? "#fff" : "var(--text)",
-                        border: msg.role === "user" ? "none" : "1px solid var(--border)",
-                        borderRadius: "var(--radius)",
-                        padding: "8px 12px",
-                        fontSize: "13px",
-                        lineHeight: "1.5",
-                        whiteSpace: "pre-wrap",
-                      }}
-                    >
-                      {msg.content}
-                    </div>
-                  ))}
-                  {chatSending && (
-                    <div style={{ alignSelf: "flex-start", color: "var(--text-muted)", fontSize: "12px", padding: "4px 8px" }}>
-                      Thinking…
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Input row */}
-              <div style={{ display: "flex", gap: "6px" }}>
-                <textarea
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      handleChatSend();
-                    }
-                  }}
-                  placeholder='e.g. "Make it more concise" or "The AI overstated my ML experience"'
-                  rows={2}
-                  disabled={chatSending}
-                  style={{
-                    flex: 1,
-                    fontSize: "13px",
-                    padding: "7px 10px",
-                    borderRadius: "var(--radius)",
-                    border: "1px solid var(--border)",
-                    background: "var(--surface)",
-                    color: "var(--text)",
-                    resize: "vertical",
-                    fontFamily: "inherit",
-                  }}
-                />
-                <button
-                  className="btn-primary"
-                  onClick={handleChatSend}
-                  disabled={chatSending || !chatInput.trim()}
-                  style={{ fontSize: "13px", padding: "7px 14px", alignSelf: "flex-end" }}
-                >
-                  Send
-                </button>
-              </div>
-              <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "5px" }}>
-                Enter to send · Shift+Enter for new line
-              </p>
-            </div>
-        </div>
-        </Modal>
+        />
       )}
     </div>
   );
