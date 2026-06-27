@@ -482,7 +482,12 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         _current_task_id = task.id
         _current_trigger = trigger
         _current_started_at = started_at
-    logger.info("Import task dispatched: %s (%d URLs) trigger=%s", task.id, len(extracted), trigger)
+    # ai: claude-sonnet-4-6 | 2026-06-26
+    _source_label = (capture_source or {}).get("name") or (capture_source or {}).get("url") or "(unknown source)"
+    logger.info(
+        "IMPORT QUEUED  trigger=%s  source=%s  urls=%d  task=%s",
+        trigger, _source_label, len(extracted), task.id,
+    )
 
     # ai: claude-sonnet-4-6 | 2026-06-21
     # Mark any browser capture queue items done so the extension doesn't re-capture them.

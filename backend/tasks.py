@@ -247,11 +247,18 @@ def run_import_task(
     Returns a summary dict: {queued, skipped, repaired, failed, capture_source}.
     """
     total = len(extracted)
-    # ai: claude-sonnet-4-6 | 2026-06-21
     t_task_start = time.monotonic()
+    # ai: claude-sonnet-4-6 | 2026-06-26
+    _source_name = str((capture_source or {}).get("name") or "")
+    _source_url  = str((capture_source or {}).get("url")  or "")
+    _source_disp = _source_name or _source_url or "(unknown source)"
+    _page_ref    = str(body.get("queue_url") or body.get("url") or "")[:120]
     logger.info(
-        "run_import_task: started task=%s total=%d queue_url=%s",
-        self.request.id, total, str(body.get("queue_url") or "")[:120],
+        "IMPORT START   trigger=%-10s  source=%s  urls=%d%s",
+        str(body.get("import_trigger") or "ui"),
+        _source_disp,
+        total,
+        f"  page={_page_ref}" if _page_ref else "",
     )
     self.update_state(
         state="PROGRESS",
@@ -510,10 +517,12 @@ def run_import_task(
 
         _record_capture_source(capture_source, repos, body)
 
-        # ai: claude-sonnet-4-6 | 2026-06-21
+        # ai: claude-sonnet-4-6 | 2026-06-26
         logger.info(
-            "run_import_task: completed in %.1fs — queued=%d skipped=%d enriched=%d repaired=%d filtered=%d failed=%d",
-            time.monotonic() - t_task_start, queued, skipped, enriched, repaired, filtered, failed,
+            "IMPORT DONE    %.1fs  |  %d URL(s): new=%-3d  unchanged=%-3d  enriched=%-3d"
+            "  repaired=%-3d  filtered=%-3d  failed=%d",
+            time.monotonic() - t_task_start,
+            total, queued, skipped, enriched, repaired, filtered, failed,
         )
         return {
             "queued": queued,
