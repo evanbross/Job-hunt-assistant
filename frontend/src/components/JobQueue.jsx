@@ -369,6 +369,11 @@ export default function JobQueue({
   const wttjRepairPollRef = useRef(null);
   const wttjRepairDismissedRef = useRef(false);
   const importPollRef = useRef(null);
+  // ai: claude-sonnet-4-6 | 2026-06-27
+  // Tracks whether we are watching for a browser-capture-queue import to finish.
+  // seenRunning: import was observed in the running state at least once.
+  // timeoutId: fallback timeout that cancels the watch after 5 minutes.
+  const captureWatchRef = useRef({ active: false, seenRunning: false, timeoutId: null });
   const reEvalPollRef = useRef(null);
   const reEvaluateResetTimeoutRef = useRef(null);
   const scrollAnchorRef = useRef(null);
@@ -462,6 +467,7 @@ export default function JobQueue({
       clearInterval(reqClosedPollRef.current);
       clearInterval(wttjRepairPollRef.current);
       clearTimeout(reEvaluateResetTimeoutRef.current);
+      clearTimeout(captureWatchRef.current.timeoutId);
     };
   }, [fetchJobs]);
 
@@ -837,6 +843,16 @@ export default function JobQueue({
           phase: "queued",
           previousScore: job.fit_score,
         });
+        // ai: claude-sonnet-4-6 | 2026-06-27
+        // Start watching for the browser extension to capture and import the page.
+        // Poll every 5 s; when we see an import go running → done, refresh triage cards.
+        stopBrowserCaptureWatch();
+        captureWatchRef.current = {
+          active: true,
+          seenRunning: false,
+          timeoutId: window.setTimeout(stopBrowserCaptureWatch, 300_000),
+        };
+        importPollRef.current = setInterval(pollBrowserCaptureStatus, 5000);
         return;
       }
       // ai: claude-sonnet-4-6 | 2026-06-26
@@ -1134,11 +1150,49 @@ export default function JobQueue({
         setImportSubmitting(false);
         if (state.result) setImportSummary(state.result);
         await fetchJobs();
+        // ai: claude-sonnet-4-6 | 2026-06-27
+        // Also refresh triage cards: imports can enrich existing triage jobs
+        // (better description → re-score), but those cards were never updated.
+        await fetchTriageJobs();
         await updateTriageCount();
       }
     } catch {
       clearInterval(importPollRef.current);
       setImportSubmitting(false);
+    }
+  };
+
+  // ai: claude-sonnet-4-6 | 2026-06-27
+  // Polls import status after a triage job is queued for browser-extension capture.
+  // The extension captures asynchronously (~1 min), so we cannot just check once.
+  // We keep polling until we see an import run AND finish, then refresh triage jobs.
+  // Stops automatically after 5 minutes via the captureWatchRef.timeoutId fallback.
+  const stopBrowserCaptureWatch = () => {
+    clearInterval(importPollRef.current);
+    clearTimeout(captureWatchRef.current.timeoutId);
+    captureWatchRef.current = { active: false, seenRunning: false, timeoutId: null };
+  };
+
+  const pollBrowserCaptureStatus = async () => {
+    if (!captureWatchRef.current.active) {
+      stopBrowserCaptureWatch();
+      return;
+    }
+    try {
+      const res = await fetch("/api/import/status");
+      const state = await res.json();
+      setImportState(state);
+      if (state.running) {
+        captureWatchRef.current.seenRunning = true;
+      } else if (captureWatchRef.current.seenRunning) {
+        // Import finished after being observed as running — refresh triage cards.
+        stopBrowserCaptureWatch();
+        if (state.result) setImportSummary(state.result);
+        await fetchTriageJobs();
+      }
+      // If not running and never seenRunning: extension hasn't captured yet — keep polling.
+    } catch {
+      stopBrowserCaptureWatch();
     }
   };
 
