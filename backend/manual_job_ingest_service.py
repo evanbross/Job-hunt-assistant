@@ -46,6 +46,7 @@ from backend.job_validator import normalize_and_validate, import_warnings_to_jso
 from backend.career_site_scanner import CareerSiteScanner
 from backend.email_parser import EmailParser, ParsedJob
 from backend.fit_scorer import FitScorer
+from backend.utils import company_from_ats_url
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,13 @@ class ManualJobIngestService:
                             "JD enrichment returned too little content for %s (%d chars)",
                             job_url, len(fetched_text),
                         )
+                    # ai: claude-sonnet-4-6 | 2026-06-27
+                    # Propagate company/title from the fetched job if the parser
+                    # couldn't extract them from the sparse captured text.
+                    if not (parsed.get("company") or "").strip() and fetched_job.get("company"):
+                        parsed["company"] = fetched_job["company"]
+                    if not (parsed.get("job_title") or "").strip() and fetched_job.get("job_title"):
+                        parsed["job_title"] = fetched_job["job_title"]
                 except (ValueError, OSError) as exc:
                     logger.debug("JD enrichment failed for %s: %s", job_url, exc)
         elif normalized_source_url:
@@ -187,6 +195,11 @@ class ManualJobIngestService:
         company = normalized_company_override or (parsed.get("company") or "").strip()
         job_title = normalized_job_title_override or (parsed.get("job_title") or "").strip()
         url = normalized_source_url or (parsed.get("url") or "").strip()
+        # ai: claude-sonnet-4-6 | 2026-06-27
+        # Last-resort fallback: extract company from the ATS URL slug when all
+        # other extraction paths (parser, LLM, JD re-fetch) produced nothing.
+        if not company and url:
+            company = company_from_ats_url(url) or ""
         parsed_source = (parsed.get("source") or "").strip()
 
         source = source_name.strip() or parsed_source or source_prefix
