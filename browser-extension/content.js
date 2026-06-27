@@ -316,8 +316,15 @@
     if (title) lines.push(title);
     if (company) lines.push('Company: ' + company);
     lines.push('URL: ' + location.href);
-    if (description) lines.push('', description);
-    if (!title && !company && !description) lines.push('', document.body.innerText.trim().slice(0, 12000));
+    // ai: claude-sonnet-4-6 | 2026-06-26
+    // Fall back to full page body text whenever a structured description isn't found,
+    // even if title/company were extracted. This ensures queue-captured pages always
+    // have enough content for the importer (old guard required ALL THREE to be missing).
+    if (description) {
+      lines.push('', description);
+    } else {
+      lines.push('', document.body.innerText.trim().slice(0, 12000));
+    }
 
     return JSON.stringify({ jobs: [{ url: location.href, job_title: title, company, listing_text: lines.join('\n') }] });
   }
@@ -422,8 +429,12 @@
     if (title) lines.push(title);
     if (company) lines.push('Company: ' + company);
     lines.push('URL: ' + location.href);
-    if (description) lines.push('', description);
-    if (!title && !company && !description) lines.push(document.body.innerText.trim().slice(0, 12000));
+    // ai: claude-sonnet-4-6 | 2026-06-26
+    if (description) {
+      lines.push('', description);
+    } else {
+      lines.push('', document.body.innerText.trim().slice(0, 12000));
+    }
 
     return JSON.stringify({ jobs: [{ url: location.href, job_title: title, company, listing_text: lines.join('\n') }] });
   }
@@ -1110,8 +1121,30 @@
       case 'phenomSearch':     return await buildPhenomSearchPayload();
       case 'jobanni':          return await buildJobanniPayload();
       case 'smartGeneric':     return buildSmartGenericPayload();
-      default:                 return buildHtmlPayload();
+      // ai: claude-sonnet-4-6 | 2026-06-26
+      // For pages that don't match a known platform, extract body text rather
+      // than sending raw HTML. The HTML import path scans for job links, which
+      // yields nothing for individual job pages. Body text gives the importer
+      // enough content to extract the description.
+      default:                 return buildGenericJobPagePayload();
     }
+  }
+
+  function buildGenericJobPagePayload() {
+    const title = pick([
+      'h1[class*="job"]', 'h1[class*="title"]',
+      '[data-testid*="title"]', '[data-testid*="job-title"]',
+      'h1',
+    ]);
+    const bodyText = document.body.innerText.trim().slice(0, 12000);
+    const lines = [];
+    if (title) lines.push(title);
+    lines.push('URL: ' + location.href);
+    if (bodyText) lines.push('', bodyText);
+    return JSON.stringify({
+      jobs: [{ url: location.href, job_title: title, company: '', listing_text: lines.join('\n') }],
+      source: { url: location.href },
+    });
   }
 
   // ─── Message Listener ──────────────────────────────────────────────────────
