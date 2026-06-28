@@ -44,7 +44,10 @@ from datetime import UTC, datetime
 from flask import Blueprint, jsonify, request
 
 import config
-from backend.greenhouse_searcher import GreenhouseLoginError, GreenhouseSearcher
+from backend.job_scanners.greenhouse_searcher import (
+    GreenhouseLoginError,
+    GreenhouseSearcher,
+)
 from backend.tasks import run_import_task
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,7 @@ greenhouse_bp = Blueprint("greenhouse", __name__)
 
 
 # ── Scan state (in-memory, protected by a lock) ───────────────────────────────
+
 
 @dataclass
 class GreenhouseScanState:
@@ -78,6 +82,7 @@ def _update(**kwargs) -> None:
 
 
 # ── Background scan thread ────────────────────────────────────────────────────
+
 
 def _run_scan(search_url: str, max_jobs: int) -> None:
     _update(
@@ -134,7 +139,11 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
 
     except GreenhouseLoginError as exc:
         logger.error("Greenhouse login error: %s", exc)
-        _update(running=False, error=str(exc), message="Login required — use 'Login with browser'")
+        _update(
+            running=False,
+            error=str(exc),
+            message="Login required — use 'Login with browser'",
+        )
     except (TimeoutError, ConnectionError, OSError) as exc:
         logger.error("Greenhouse scan network error: %s", exc)
         _update(running=False, error=str(exc), message="Network error during scan")
@@ -144,6 +153,7 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
 
 
 # ── Background manual-login thread ────────────────────────────────────────────
+
 
 def _run_manual_login() -> None:
     _update(
@@ -176,6 +186,7 @@ def _run_manual_login() -> None:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+
 @greenhouse_bp.route("/greenhouse/scan", methods=["POST"])
 def start_scan():
     """Trigger a Greenhouse scrape and enqueue results for import."""
@@ -185,7 +196,8 @@ def start_scan():
 
     body = request.get_json(silent=True) or {}
     search_url = str(
-        body.get("search_url") or config.GREENHOUSE_SEARCH_URL
+        body.get("search_url")
+        or config.GREENHOUSE_SEARCH_URL
         or "https://my.greenhouse.io/jobs"
     )
     max_jobs = min(max(int(body.get("max_jobs") or 50), 1), 200)
@@ -204,17 +216,19 @@ def start_scan():
 def scan_status():
     """Return the current Greenhouse scan state."""
     with _lock:
-        return jsonify({
-            "running": _state.running,
-            "progress": _state.progress,
-            "total": _state.total,
-            "message": _state.message,
-            "found": _state.found,
-            "task_id": _state.task_id,
-            "last_run_at": _state.last_run_at,
-            "last_found": _state.last_found,
-            "error": _state.error,
-        })
+        return jsonify(
+            {
+                "running": _state.running,
+                "progress": _state.progress,
+                "total": _state.total,
+                "message": _state.message,
+                "found": _state.found,
+                "task_id": _state.task_id,
+                "last_run_at": _state.last_run_at,
+                "last_found": _state.last_found,
+                "error": _state.error,
+            }
+        )
 
 
 @greenhouse_bp.route("/greenhouse/browser-login", methods=["POST"])

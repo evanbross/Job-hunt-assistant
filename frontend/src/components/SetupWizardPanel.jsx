@@ -657,7 +657,7 @@ function StepCredentials({
     <div>
       <h3 style={styles.stepTitle}>Google Cloud Setup</h3>
       <p style={styles.stepDesc}>
-        Required to scan Gmail and export to Google Sheets. You can skip this if you only want to import jobs manually.
+        Required to scan Gmail for job application emails. You can skip this if you only want to import jobs manually.
       </p>
 
       {alreadyDone && (
@@ -668,7 +668,7 @@ function StepCredentials({
 
       <ol style={styles.instructionList}>
         <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" style={styles.link}>console.cloud.google.com</a> and create a project</li>
-        <li>Enable the <strong>Gmail API</strong> and <strong>Google Sheets API</strong></li>
+        <li>Enable the <strong>Gmail API</strong></li>
         <li>Go to <strong>APIs & Services → Credentials → Create Credentials → OAuth client ID</strong></li>
         <li>Choose <strong>Desktop application</strong> as the application type</li>
         <li>Click <strong>Download JSON</strong> and upload the file below</li>
@@ -715,7 +715,7 @@ function StepAuth({ done, polling, onConnect, credsMissing }) {
     <div>
       <h3 style={styles.stepTitle}>Connect Google Account</h3>
       <p style={styles.stepDesc}>
-        Authorize access to Gmail and Google Sheets. This opens a browser window where you sign in with your Google account.
+        Authorize access to Gmail. This opens a browser window where you sign in with your Google account.
       </p>
 
       {credsMissing && (

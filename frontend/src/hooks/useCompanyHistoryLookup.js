@@ -61,7 +61,7 @@ export function useCompanyHistoryLookup(job) {
       // Merge by id: sheet rows take precedence (they carry stage data). DB-only
       // rows fill in queue/triage/skipped entries that never made it to the sheet.
       const [sheetRes, dbRes] = await Promise.all([
-        fetch("/api/sheet/applications"),
+        fetch("/api/applications"),
         fetch(`/api/jobs/by-company?company=${encodeURIComponent(company)}`),
       ]);
       if (!sheetRes.ok) {

@@ -61,7 +61,6 @@ _ENV_PATH: Path = config.BASE_DIR / ".env"
 _ALLOWED_ENV_KEYS: frozenset[str] = frozenset({
     "ANTHROPIC_API_KEY",
     "FLASK_SECRET_KEY",
-    "GOOGLE_SHEETS_ID",
     "OLLAMA_BASE_URL",
     "OLLAMA_MODEL",
     "OPENAI_API_KEY",
@@ -86,9 +85,6 @@ def setup_status() -> Any:
     profile_path = config.get_candidate_profile_path()
     profile_char_count, profile_done = _check_profile(profile_path)
 
-    sheets_id = env_vals.get("GOOGLE_SHEETS_ID") or config.GOOGLE_SHEETS_ID
-    sheets_done = bool(sheets_id and sheets_id.strip())
-
     current_secret = env_vals.get("FLASK_SECRET_KEY", "") or config.FLASK_SECRET_KEY
     flask_secret_ok = bool(current_secret and current_secret != "change-this-in-production")
 
@@ -112,10 +108,6 @@ def setup_status() -> Any:
                 "done": profile_done,
                 "char_count": profile_char_count,
                 "required": True,
-            },
-            "sheets": {
-                "done": sheets_done,
-                "required": False,
             },
         },
         "redis_reachable": _check_redis_reachable(),

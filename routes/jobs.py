@@ -374,8 +374,9 @@ def get_history_jobs():
     return jsonify(jobs)
 
 
-@jobs_bp.route("/jobs/<int:job_id>/add-to-sheet", methods=["POST"])
-def approve_job(job_id: int):
+# ai: claude-sonnet-4-6 | 2026-06-28
+@jobs_bp.route("/jobs/<int:job_id>/apply", methods=["POST"])
+def apply_job(job_id: int):
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         if not job:
@@ -439,23 +440,49 @@ def return_job_to_queue(job_id: int):
     return jsonify({"status": "ok"})
 
 
+# ai: claude-sonnet-4-6 | 2026-06-28
 @jobs_bp.route("/jobs/<int:job_id>/dismiss-duplicate", methods=["POST"])
 def dismiss_duplicate(job_id: int):
-    # ai: claude-sonnet-4-6 | 2026-06-26
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
+        dismissed_id = job.get("duplicate_of_id")
         fit_score = int(job.get("fit_score") or 0)
-        new_status = "pending_review" if fit_score >= 70 else "triage"
-        repos["jobs"].update(
-            job_id,
-            {
-                "status": new_status,
-                "duplicate_hint": None,
-            },
+        base_status = "pending_review" if fit_score >= 70 else "triage"
+
+        # Re-check against all other jobs, excluding the one the user just dismissed
+        # so three-or-more-way duplicates get caught on successive dismissals.
+        excluded = {job_id}
+        if dismissed_id is not None:
+            excluded.add(int(dismissed_id))
+        all_jobs = repos["jobs"].get_all_ordered()
+        check_pool = [j for j in all_jobs if j.get("id") not in excluded]
+
+        _tracked_status, _tracking_source, duplicate_hint, duplicate_of_id, _match_scores = db_match_for_job(
+            job_title=str(job.get("job_title") or ""),
+            company=str(job.get("company") or ""),
+            job_url=str(job.get("url") or ""),
+            known_jobs=check_pool,
+            dedup_checker=DuplicateChecker(),
+            exclude_id=None,
         )
+
+        if duplicate_hint:
+            updates: dict = {
+                "status": "possible_duplicate",
+                "duplicate_hint": duplicate_hint,
+                "duplicate_of_id": duplicate_of_id,
+            }
+        else:
+            updates = {
+                "status": base_status,
+                "duplicate_hint": None,
+                "duplicate_of_id": None,
+            }
+
+        repos["jobs"].update(job_id, updates)
         updated_job = repos["jobs"].get_by_id(job_id)
         repos["conn"].commit()
     return jsonify(updated_job)

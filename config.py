@@ -52,8 +52,6 @@ load_dotenv()
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY", "change-this-in-production")
-GOOGLE_SHEETS_ID: str = os.getenv("GOOGLE_SHEETS_ID", "")
-
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR: Path = Path(__file__).parent
 CREDENTIALS_DIR: Path = BASE_DIR / "credentials"
@@ -130,20 +128,14 @@ GREENHOUSE_SESSION_FILE: Path = CREDENTIALS_DIR / "greenhouse_session.json"
 GOOGLE_CREDENTIALS_FILE: Path = CREDENTIALS_DIR / "google_credentials.json"
 GOOGLE_TOKEN_FILE: Path = CREDENTIALS_DIR / "token.json"
 
-# Set to False when ready to enable Gmail mark-as-read and Sheets writes.
+# Set to False when ready to enable Gmail mark-as-read.
 # While True, OAuth scopes are read-only and all write methods are no-ops.
 READ_ONLY_MODE: bool = False
 
 GMAIL_SCOPES: list[str] = (
-    [
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
-    ]
+    ["https://www.googleapis.com/auth/gmail.readonly"]
     if READ_ONLY_MODE
-    else [
-        "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/spreadsheets",
-    ]
+    else ["https://www.googleapis.com/auth/gmail.modify"]
 )
 GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:5004/api/auth/google/callback"
 

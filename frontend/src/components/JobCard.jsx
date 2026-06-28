@@ -589,7 +589,7 @@ function JobCard({
 
     setCompanyLookupLoading(true);
     try {
-      const res = await fetch("/api/sheet/applications");
+      const res = await fetch("/api/applications");
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || `Application lookup failed (${res.status})`);

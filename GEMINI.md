@@ -32,11 +32,10 @@ repository classes in `backend/db.py`. Do not add raw queries to route handlers.
 
 Key files:
 - `app.py` — Flask app factory; registers blueprints from `routes/`
-- `routes/` — one blueprint per feature area (jobs, scan, fit, emails, sheet, career_sites, import_, cover_letter, settings, system, board_search, auth)
+- `routes/` — one blueprint per feature area (jobs, scan, fit, emails, applications, career_sites, import_, cover_letter, settings, system, board_search, auth)
 - `backend/db.py` — repository implementations (SQLite today, Postgres next)
 - `backend/fit_scorer.py` — Anthropic API job-fit scoring
 - `backend/career_site_scanner.py` — scrapes company career pages
-- `backend/sheets_client.py` — Google Sheets read/write
 - `backend/gmail_client.py` — Gmail integration
 - `backend/utils.py` — shared helpers used across blueprints
 - `config.py` — constants and runtime config helpers

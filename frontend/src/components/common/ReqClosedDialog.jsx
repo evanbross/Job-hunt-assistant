@@ -27,7 +27,7 @@ const badgeStyle = {
  * sheet and the Job Queue.
  *
  * @param {Object} props
- * @param {Object} props.result - Status payload from /api/sheet/applications/scan-closed-reqs/status.
+ * @param {Object} props.result - Status payload from /api/applications/scan-closed-reqs/status.
  * @param {() => void} props.onClose
  */
 // ai: claude-sonnet-4-6 | 2026-06-25

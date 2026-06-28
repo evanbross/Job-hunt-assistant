@@ -34,8 +34,7 @@
 
 """
 Fuzzy duplicate checker — compares a newly parsed job against entries already
-in the Google Sheets tracker so the user can confirm whether it's the same
-listing seen before.
+in the database so the user can confirm whether it's the same listing seen before.
 
 Matching strategy:
   1. Normalize both sides:

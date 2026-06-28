@@ -50,11 +50,89 @@ function isDeclaredDuplicate(row) {
   return row.status === "skipped" && row.skip_reason === "duplicate";
 }
 
-// ai: claude-sonnet-4-6 | 2026-06-11
+// ai: claude-sonnet-4-6 | 2026-06-28
+function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, onSkipDuplicate, onNavigateToJobCard, onClose, handleSkipDuplicate }) {
+  return (
+    <div
+      style={{
+        alignItems: "flex-start",
+        background: "var(--surface2)",
+        border: "1px solid var(--border)",
+        borderRadius: "var(--radius)",
+        cursor: navigable ? "pointer" : undefined,
+        display: "flex",
+        gap: "12px",
+        justifyContent: "space-between",
+        padding: "10px 12px",
+      }}
+      title={navigable ? "Click to go to this job card" : undefined}
+      onClick={navigable ? () => { onNavigateToJobCard(row.id, row.status); onClose(); } : undefined}
+    >
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ alignItems: "center", color: "var(--text)", display: "flex", flexWrap: "wrap", fontSize: "13px", fontWeight: 700, gap: "7px", overflowWrap: "anywhere" }}>
+          {row.title || "Untitled role"}
+          {row.id === currentJobId && (
+            <span style={{ background: "var(--accent-light)", borderRadius: "999px", color: "var(--accent)", fontSize: "11px", fontWeight: 700, padding: "3px 8px" }}>
+              Current card
+            </span>
+          )}
+          <span
+            style={{ background: "var(--surface)", borderRadius: "4px", color: "var(--text-muted)", cursor: "pointer", fontFamily: "monospace", fontSize: "11px", fontWeight: 400, padding: "1px 5px" }}
+            title={`Job ID: ${row.id} — click to copy`}
+            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(String(row.id)); }}
+          >
+            #{row.id}
+          </span>
+        </div>
+        <div style={{ color: "var(--text-muted)", display: "flex", flexWrap: "wrap", fontSize: "12px", gap: "5px 12px", marginTop: "4px" }}>
+          <span>{rowStatusLabel(effectiveRow)}</span>
+          {row.date && <span>{row.date}</span>}
+          {row.source && <span>{row.source}</span>}
+        </div>
+        {row.notes && <div style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.5, marginTop: "6px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.notes}</div>}
+        {row.url && (
+          <a href={row.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", display: "block", fontSize: "12px", marginTop: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {row.url}
+          </a>
+        )}
+        {row.stages.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
+            {row.stages.map((stage) => (
+              <span key={stage.id || `${stage.status}-${stage.date}`} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "999px", color: "var(--text-muted)", fontSize: "11px", padding: "3px 8px" }}>
+                {stage.status || "stage"}{stage.date ? ` · ${stage.date}` : ""}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      <div style={{ alignItems: "flex-end", display: "flex", flexDirection: "column", flexShrink: 0, gap: "6px" }}>
+        <StatusBadge
+          status={effectiveRow.status}
+          label={effectiveRow.status === "possible_duplicate" || effectiveRow.status === "skipped" ? rowStatusLabel(effectiveRow) : undefined}
+        />
+        {effectiveRow.status === "possible_duplicate" && onSkipDuplicate && (
+          <button
+            type="button"
+            className="btn-danger btn-sm"
+            onClick={(e) => { e.stopPropagation(); handleSkipDuplicate(row); }}
+            disabled={skippingId !== null}
+          >
+            {skippingId === row.id ? "Skipping…" : "Yes, Same Job - Skip It"}
+          </button>
+        )}
+        {navigable && (
+          <span style={{ color: "var(--accent)", fontSize: "11px", whiteSpace: "nowrap" }}>Go to card →</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose, onNavigateToJobCard, onSkipDuplicate }) {
   const [skippedIds, setSkippedIds] = useState(new Set());
   const [skippingId, setSkippingId] = useState(null);
-  const [showDuplicates, setShowDuplicates] = useState(false); // ai: claude-sonnet-4-6 | 2026-06-12
+  const [showDuplicates, setShowDuplicates] = useState(false);
+  const [sortBy, setSortBy] = useState("id");
 
   const handleSkipDuplicate = async (row) => {
     setSkippingId(row.id);
@@ -66,8 +144,12 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
     }
   };
 
-  // ai: claude-sonnet-4-6 | 2026-06-11
-  const previousRows = rows.filter((row) => row.id !== currentJobId).sort((a, b) => (b.id || 0) - (a.id || 0));
+  const unsortedPreviousRows = rows.filter((row) => row.id !== currentJobId);
+  const previousRows = [...unsortedPreviousRows].sort(
+    sortBy === "alpha"
+      ? (a, b) => (a.title || "").localeCompare(b.title || "")
+      : (a, b) => (b.id || 0) - (a.id || 0)
+  );
   const currentRows = rows.filter((row) => row.id === currentJobId);
   const appliedCount = previousRows.filter((row) => isAppliedStatus(row.status)).length;
   const duplicateHints = previousRows.filter((row) => titleLooksSimilar(row.title, currentJobTitle)).length;
@@ -108,8 +190,30 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 18px", color: "var(--text-muted)", fontSize: "12px", marginBottom: "10px" }}>
             <span>{previousRows.length > 0 ? "Previous activity found" : "Only this card matched"}</span>
             {duplicateHints > 0 && <span>{duplicateHints} similar title{duplicateHints === 1 ? "" : "s"}</span>}
+            {previousRows.length > 1 && (
+              <div style={{ display: "flex", gap: "4px", marginLeft: "auto" }}>
+                {[{ key: "id", label: "Newest first" }, { key: "alpha", label: "A–Z" }].map(({ key, label }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setSortBy(key)}
+                    style={{
+                      background: sortBy === key ? "var(--accent)" : "var(--surface)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "var(--radius)",
+                      color: sortBy === key ? "#fff" : "var(--text-muted)",
+                      cursor: "pointer",
+                      fontSize: "11px",
+                      padding: "2px 8px",
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             {declaredDuplicateCount > 0 && (
-              <label style={{ alignItems: "center", display: "flex", gap: "6px", marginLeft: "auto", cursor: "pointer" }}>
+              <label style={{ alignItems: "center", display: "flex", gap: "6px", marginLeft: previousRows.length > 1 ? "0" : "auto", cursor: "pointer" }}>
                 <input
                   type="checkbox"
                   checked={showDuplicates}
@@ -119,85 +223,51 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
               </label>
             )}
           </div>
+          {/* ai: claude-sonnet-4-6 | 2026-06-28 */}
+          {currentRows.map((row) => {
+            const effectiveRow = skippedIds.has(row.id) ? { ...row, status: "skipped" } : row;
+            return (
+              <div
+                key={row.id}
+                style={{
+                  position: "sticky",
+                  top: 0,
+                  zIndex: 1,
+                  background: "var(--surface)",
+                  paddingBottom: "8px",
+                }}
+              >
+                <HistoryRow
+                  row={row}
+                  effectiveRow={effectiveRow}
+                  currentJobId={currentJobId}
+                  navigable={false}
+                  skippingId={skippingId}
+                  onSkipDuplicate={onSkipDuplicate}
+                  onNavigateToJobCard={onNavigateToJobCard}
+                  onClose={onClose}
+                  handleSkipDuplicate={handleSkipDuplicate}
+                />
+              </div>
+            );
+          })}
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {[...currentRows, ...visiblePreviousRows].map((row) => {
+            {visiblePreviousRows.map((row) => {
               const navigable = Boolean(onNavigateToJobCard && row.id && jobCardTabForStatus(row.status));
               const effectiveRow = skippedIds.has(row.id) ? { ...row, status: "skipped" } : row;
               return (
-              <div
-                key={row.id || `${row.company}-${row.title}-${row.date}`}
-                style={{
-                  alignItems: "flex-start",
-                  background: "var(--surface2)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)",
-                  cursor: navigable ? "pointer" : undefined,
-                  display: "flex",
-                  gap: "12px",
-                  justifyContent: "space-between",
-                  padding: "10px 12px",
-                }}
-                title={navigable ? "Click to go to this job card" : undefined}
-                onClick={navigable ? () => { onNavigateToJobCard(row.id, row.status); onClose(); } : undefined}
-              >
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ alignItems: "center", color: "var(--text)", display: "flex", flexWrap: "wrap", fontSize: "13px", fontWeight: 700, gap: "7px", overflowWrap: "anywhere" }}>
-                    {row.title || "Untitled role"}
-                    {row.id === currentJobId && (
-                      <span style={{ background: "var(--accent-light)", borderRadius: "999px", color: "var(--accent)", fontSize: "11px", fontWeight: 700, padding: "3px 8px" }}>
-                        Current card
-                      </span>
-                    )}
-                    <span
-                      style={{ background: "var(--surface)", borderRadius: "4px", color: "var(--text-muted)", cursor: "pointer", fontFamily: "monospace", fontSize: "11px", fontWeight: 400, padding: "1px 5px" }}
-                      title={`Job ID: ${row.id} — click to copy`}
-                      onClick={() => navigator.clipboard.writeText(String(row.id))}
-                    >
-                      #{row.id}
-                    </span>
-                  </div>
-                  {/* ai: claude-sonnet-4-6 | 2026-06-10 */}
-                  <div style={{ color: "var(--text-muted)", display: "flex", flexWrap: "wrap", fontSize: "12px", gap: "5px 12px", marginTop: "4px" }}>
-                    <span>{rowStatusLabel(effectiveRow)}</span>
-                    {row.date && <span>{row.date}</span>}
-                    {row.source && <span>{row.source}</span>}
-                  </div>
-                  {row.notes && <div style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.5, marginTop: "6px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.notes}</div>}
-                  {row.url && (
-                    <a href={row.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", display: "block", fontSize: "12px", marginTop: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {row.url}
-                    </a>
-                  )}
-                  {row.stages.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
-                      {row.stages.map((stage) => (
-                        <span key={stage.id || `${stage.status}-${stage.date}`} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "999px", color: "var(--text-muted)", fontSize: "11px", padding: "3px 8px" }}>
-                          {stage.status || "stage"}{stage.date ? ` · ${stage.date}` : ""}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div style={{ alignItems: "flex-end", display: "flex", flexDirection: "column", flexShrink: 0, gap: "6px" }}>
-                  <StatusBadge
-                    status={effectiveRow.status}
-                    label={effectiveRow.status === "possible_duplicate" || effectiveRow.status === "skipped" ? rowStatusLabel(effectiveRow) : undefined}
-                  />
-                  {effectiveRow.status === "possible_duplicate" && onSkipDuplicate && (
-                    <button
-                      type="button"
-                      className="btn-danger btn-sm"
-                      onClick={(e) => { e.stopPropagation(); handleSkipDuplicate(row); }}
-                      disabled={skippingId !== null}
-                    >
-                      {skippingId === row.id ? "Skipping…" : "Yes, Same Job - Skip It"}
-                    </button>
-                  )}
-                  {navigable && (
-                    <span style={{ color: "var(--accent)", fontSize: "11px", whiteSpace: "nowrap" }}>Go to card →</span>
-                  )}
-                </div>
-              </div>
+                <HistoryRow
+                  key={row.id || `${row.company}-${row.title}-${row.date}`}
+                  row={row}
+                  effectiveRow={effectiveRow}
+                  currentJobId={currentJobId}
+                  navigable={navigable}
+                  skippingId={skippingId}
+                  onSkipDuplicate={onSkipDuplicate}
+                  onNavigateToJobCard={onNavigateToJobCard}
+                  onClose={onClose}
+                  handleSkipDuplicate={handleSkipDuplicate}
+                />
               );
             })}
           </div>

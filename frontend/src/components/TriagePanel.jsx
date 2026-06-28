@@ -192,7 +192,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   }, [focusJobId, jobs.length, loading]);
 
   useEffect(() => {
-    fetch("/api/sheet/applications")
+    fetch("/api/applications")
       .then((res) => res.json())
       .then((data) => setAllSheetRows(Array.isArray(data.rows) ? data.rows.map(applicationRowFromSheet) : []))
       .catch(() => setAllSheetRows([]));
@@ -258,7 +258,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   };
 
   const handleMarkApplied = async (job) => {
-    const res = await fetch(`/api/jobs/${job.id}/add-to-sheet`, { method: "POST" });
+    const res = await fetch(`/api/jobs/${job.id}/apply`, { method: "POST" });
     if (res.ok) {
       const updated = jobs.filter((j) => j.id !== job.id);
       setJobs(updated);

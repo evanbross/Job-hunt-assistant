@@ -388,7 +388,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/sheet/applications");
+      const res = await fetch("/api/applications");
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || `Sheet load failed (${res.status})`);
@@ -411,10 +411,10 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     loadSheet();
     if (!repairFiredRef.current) {
       repairFiredRef.current = true;
-      fetch("/api/sheet/repair/normalize-stage-statuses", { method: "POST" })
+      fetch("/api/applications/repair/normalize-stage-statuses", { method: "POST" })
         .catch((err) => console.error("Stage status repair failed:", err));
     }
-    fetch("/api/sheet/stage-statuses")
+    fetch("/api/applications/stage-statuses")
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => { if (Array.isArray(data)) setStageStatuses(data); })
       .catch(() => {});
@@ -613,7 +613,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   const addRow = async () => {
     setSavingKey("new");
     try {
-      const res = await fetch("/api/sheet/applications", {
+      const res = await fetch("/api/applications", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newRow),
@@ -635,7 +635,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     setActionMenuOpen(false);
     setSavingKey("ghosts");
     try {
-      const res = await fetch("/api/sheet/applications/mark-ghosts", { method: "POST" });
+      const res = await fetch("/api/applications/mark-ghosts", { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         window.alert(data.error || `Mark ghosts failed (${res.status})`);
@@ -653,7 +653,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   // minutes for large sheets, so it runs as a background thread on the server
   // and this polls for progress rather than waiting on one long request.
   const pollReqClosedStatus = async () => {
-    const res = await fetch("/api/sheet/applications/scan-closed-reqs/status");
+    const res = await fetch("/api/applications/scan-closed-reqs/status");
     const data = await res.json().catch(() => null);
     if (!data) return;
     if (!reqClosedDismissedRef.current) {
@@ -671,7 +671,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     setSavingKey("req-closed");
     reqClosedDismissedRef.current = false;
     try {
-      const res = await fetch("/api/sheet/applications/scan-closed-reqs", { method: "POST" });
+      const res = await fetch("/api/applications/scan-closed-reqs", { method: "POST" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         window.alert(data.error || `Scan failed (${res.status})`);
@@ -698,7 +698,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   const saveRow = async (rowNumber) => {
     setSavingKey(`edit:${rowNumber}`);
     try {
-      const res = await fetch(`/api/sheet/applications/${rowNumber}`, {
+      const res = await fetch(`/api/applications/${rowNumber}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editingRows[rowNumber]),
@@ -723,7 +723,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     const stage = { ...defaultStageForm(), ...(stageRows[rowNumber] || {}) };
     setSavingKey(`stage:${rowNumber}`);
     try {
-      const res = await fetch(`/api/sheet/applications/${rowNumber}/stages`, {
+      const res = await fetch(`/api/applications/${rowNumber}/stages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(stage),
@@ -784,7 +784,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
         status: "Skipped",
         notes: existingNotes ? `${existingNotes}; Confirmed duplicate` : "Confirmed duplicate",
       };
-      const res = await fetch(`/api/sheet/applications/${row.row_number}`, {
+      const res = await fetch(`/api/applications/${row.row_number}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(rowData),
@@ -980,7 +980,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
             <JobCard
               job={jobDialog.job}
               onApprove={async (jobId) => {
-                const res = await fetch(`/api/jobs/${jobId}/add-to-sheet`, { method: "POST" });
+                const res = await fetch(`/api/jobs/${jobId}/apply`, { method: "POST" });
                 if (!res.ok) {
                   const data = await res.json().catch(() => ({}));
                   window.alert(data.error || "Failed to approve job");

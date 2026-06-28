@@ -439,7 +439,7 @@ export default function JobQueue({
 
   useEffect(() => {
     if (viewMode === "queue") return;
-    fetch("/api/sheet/applications")
+    fetch("/api/applications")
       .then((res) => res.json())
       .then((data) => setAllSheetRows(Array.isArray(data.rows) ? data.rows.map(applicationRowFromSheet) : []))
       .catch(() => setAllSheetRows([]));
@@ -600,7 +600,7 @@ export default function JobQueue({
   };
 
   const handleApprove = async (jobId) => {
-    const res = await fetch(`/api/jobs/${jobId}/add-to-sheet`, { method: "POST" });
+    const res = await fetch(`/api/jobs/${jobId}/apply`, { method: "POST" });
     if (!res.ok) {
       const err = await res.json();
       alert(err.error || "Failed to approve job");
@@ -761,7 +761,7 @@ export default function JobQueue({
   };
 
   const handleTriageMarkApplied = async (job) => {
-    const res = await fetch(`/api/jobs/${job.id}/add-to-sheet`, { method: "POST" });
+    const res = await fetch(`/api/jobs/${job.id}/apply`, { method: "POST" });
     if (res.ok) {
       setTriageJobs((prev) => {
         const updated = prev.filter((j) => j.id !== job.id);
@@ -1045,7 +1045,7 @@ export default function JobQueue({
   const startReqClosedScan = async () => {
     setMoreToolsOpen(false);
     reqClosedDismissedRef.current = false;
-    const res = await fetch("/api/sheet/applications/scan-closed-reqs", { method: "POST" });
+    const res = await fetch("/api/applications/scan-closed-reqs", { method: "POST" });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       window.alert(data.error || `Scan failed (${res.status})`);
@@ -1059,7 +1059,7 @@ export default function JobQueue({
 
   const pollReqClosedStatus = async () => {
     try {
-      const res = await fetch("/api/sheet/applications/scan-closed-reqs/status");
+      const res = await fetch("/api/applications/scan-closed-reqs/status");
       const data = await res.json();
       if (!reqClosedDismissedRef.current) {
         setReqClosedDialog(data);

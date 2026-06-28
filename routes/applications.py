@@ -55,7 +55,8 @@ from backend.utils import (
 
 logger = logging.getLogger(__name__)
 
-sheet_bp = Blueprint("sheet", __name__)
+# ai: claude-sonnet-4-6 | 2026-06-28
+applications_bp = Blueprint("applications", __name__)
 
 _CLOSED_REQ_FETCH_TIMEOUT_SECONDS = 15
 _CLOSED_REQ_FETCH_MAX_BYTES = 2_000_000
@@ -88,7 +89,7 @@ _TRACKING_COLUMNS: list[dict] = [
 ]
 
 
-@sheet_bp.route("/sheet/applications")
+@applications_bp.route("/applications")
 def get_application_sheet():
     """Return all tracked job applications as a grid for the Sheet panel."""
     # ai: claude-sonnet-4-6 | 2026-06-25
@@ -133,7 +134,7 @@ def get_application_sheet():
     })
 
 
-@sheet_bp.route("/sheet/applications", methods=["POST"])
+@applications_bp.route("/applications", methods=["POST"])
 def add_application_sheet_row():
     """Insert a new job application row into the database."""
     row = _tracking_payload()
@@ -166,7 +167,7 @@ def add_application_sheet_row():
     return jsonify({"status": "ok"}), 201
 
 
-@sheet_bp.route("/sheet/applications/<int:job_id>", methods=["PUT"])
+@applications_bp.route("/applications/<int:job_id>", methods=["PUT"])
 def update_application_sheet_row(job_id: int):
     """Update an existing job application row in the database."""
     row = _tracking_payload()
@@ -195,7 +196,7 @@ def update_application_sheet_row(job_id: int):
     return jsonify({"status": "ok"})
 
 
-@sheet_bp.route("/sheet/applications/<int:job_id>/stages", methods=["POST"])
+@applications_bp.route("/applications/<int:job_id>/stages", methods=["POST"])
 def add_application_sheet_stage(job_id: int):
     """Add a stage entry to an application."""
     data = request.get_json(silent=True) or {}
@@ -219,7 +220,7 @@ def add_application_sheet_stage(job_id: int):
     return jsonify({"status": "ok"}), 201
 
 
-@sheet_bp.route("/sheet/applications/mark-ghosts", methods=["POST"])
+@applications_bp.route("/applications/mark-ghosts", methods=["POST"])
 def mark_ghost_applications():
     """Mark applications whose latest state has been Applied for 30+ days as ghosted."""
     utc_today = datetime.now(UTC).date()
@@ -485,7 +486,7 @@ def _run_req_closed_scan() -> None:
         _update_req_closed_state(running=False, error=str(exc), message="Scan failed — see server logs")
 
 
-@sheet_bp.route("/sheet/applications/scan-closed-reqs", methods=["POST"])
+@applications_bp.route("/applications/scan-closed-reqs", methods=["POST"])
 def start_closed_req_scan():
     """Kick off a background scan of LinkedIn and Welcome to the Jungle job URLs for closed-req banners."""
     with _req_closed_lock:
@@ -500,7 +501,7 @@ def start_closed_req_scan():
     return jsonify({"status": "started"})
 
 
-@sheet_bp.route("/sheet/applications/scan-closed-reqs/status", methods=["GET"])
+@applications_bp.route("/applications/scan-closed-reqs/status", methods=["GET"])
 def closed_req_scan_status():
     """Return the current closed-req scan state."""
     with _req_closed_lock:
@@ -524,14 +525,14 @@ def closed_req_scan_status():
         })
 
 
-@sheet_bp.route("/sheet/stage-statuses")
+@applications_bp.route("/applications/stage-statuses")
 def get_stage_statuses():
     """Return all rows from the stage_statuses table, ordered by sort_order."""
     with get_repos() as repos:
         return jsonify(repos["stage_statuses"].get_all())
 
 
-@sheet_bp.route("/sheet/repair/normalize-stage-statuses", methods=["POST"])
+@applications_bp.route("/applications/repair/normalize-stage-statuses", methods=["POST"])
 def normalize_stage_statuses():
     """One-time migration: normalise all stage status values to snake_case lowercase."""
     try:
