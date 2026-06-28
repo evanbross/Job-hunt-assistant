@@ -75,6 +75,7 @@ _VALID_SKIP_REASONS = frozenset({
     "salary_too_low",
     "not_interested",
     "wrong_role",
+    "garbage",
     "other",
 })
 _VALID_MISMATCH_REASONS = frozenset({

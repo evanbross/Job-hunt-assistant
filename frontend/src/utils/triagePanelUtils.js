@@ -51,6 +51,7 @@ export const SKIP_REASONS = [
   { key: "not_interested", label: "Not Interested" },
   { key: "wrong_role", label: "Wrong Role", color: "var(--red-medium)" },
   { key: "wrong_tech", label: "Wrong Tech", color: "var(--red-medium)" },
+  { key: "garbage", label: "Garbage Card" },
   { key: "other", label: "Other" },
 ];
 
