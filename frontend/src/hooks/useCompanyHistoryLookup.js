@@ -54,18 +54,35 @@ export function useCompanyHistoryLookup(job) {
 
     setLoading(true);
     try {
-      const res = await fetch("/api/sheet/applications");
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || `Application lookup failed (${res.status})`);
+      // ai: claude-sonnet-4-6 | 2026-06-28
+      // Fetch both sources in parallel:
+      //   - sheet/applications: applied jobs (date_added_to_sheet set), with stage history
+      //   - jobs/by-company: ALL jobs in the DB for this company, any status
+      // Merge by id: sheet rows take precedence (they carry stage data). DB-only
+      // rows fill in queue/triage/skipped entries that never made it to the sheet.
+      const [sheetRes, dbRes] = await Promise.all([
+        fetch("/api/sheet/applications"),
+        fetch(`/api/jobs/by-company?company=${encodeURIComponent(company)}`),
+      ]);
+      if (!sheetRes.ok) {
+        const sheetData = await sheetRes.json().catch(() => ({}));
+        throw new Error(sheetData.error || `Application lookup failed (${sheetRes.status})`);
       }
-      const mapped = (Array.isArray(data.rows) ? data.rows : []).map(applicationRowFromSheet);
-      // ai: claude-sonnet-4-6 | 2026-06-26
-      // get_sheet_entries() only returns applied jobs, so queue/triage jobs are
-      // absent. Inject the current job so it always appears as "this card".
-      const withCurrent = mapped.some((r) => r.id === job.id)
-        ? mapped
-        : [jobToHistoryRow(job), ...mapped];
+      const sheetData = await sheetRes.json();
+      const dbData = dbRes.ok ? await dbRes.json() : [];
+
+      const sheetRows = (Array.isArray(sheetData.rows) ? sheetData.rows : []).map(applicationRowFromSheet);
+      const sheetIds = new Set(sheetRows.map((r) => r.id));
+
+      // Convert DB jobs to history-row shape; skip any already present from the sheet
+      const dbRows = (Array.isArray(dbData) ? dbData : [])
+        .filter((j) => !sheetIds.has(j.id))
+        .map(jobToHistoryRow);
+
+      const merged = [...sheetRows, ...dbRows];
+      const withCurrent = merged.some((r) => r.id === job.id)
+        ? merged
+        : [jobToHistoryRow(job), ...merged];
       setRows(withCurrent.filter((row) => rowMatchesCompany(row.company, company)));
     } catch (lookupError) {
       setError(lookupError.message || "Application lookup failed");

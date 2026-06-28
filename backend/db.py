@@ -71,6 +71,7 @@ class IJobRepository(Protocol):
     def count_with_missing_company(self) -> int: ...
     def get_stats(self) -> dict[str, int]: ...
     def get_sheet_entries(self) -> list[dict[str, Any]]: ...
+    def get_by_company(self, company: str) -> list[dict[str, Any]]: ...
     def insert(self, job: dict[str, Any]) -> int: ...
     def update(self, job_id: int, fields: dict[str, Any]) -> None: ...
     def delete(self, job_id: int) -> None: ...
@@ -515,6 +516,15 @@ class PostgresJobRepository(_BaseRepo):
             "SELECT * FROM jobs"
             " WHERE date_added_to_sheet IS NOT NULL"
             " ORDER BY date_added_to_sheet DESC NULLS LAST, id DESC"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    # ai: claude-sonnet-4-6 | 2026-06-28
+    def get_by_company(self, company: str) -> list[dict[str, Any]]:
+        """Return all jobs whose company matches case-insensitively, newest first."""
+        cur = self._execute(
+            "SELECT * FROM jobs WHERE LOWER(TRIM(company)) = LOWER(TRIM(%s)) ORDER BY id DESC",
+            (company,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 

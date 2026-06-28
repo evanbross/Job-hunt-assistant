@@ -140,6 +140,17 @@ def get_jobs():
     return jsonify(jobs)
 
 
+# ai: claude-sonnet-4-6 | 2026-06-28
+@jobs_bp.route("/jobs/by-company")
+def get_jobs_by_company():
+    company = request.args.get("company", "").strip()
+    if not company:
+        return jsonify({"error": "company parameter is required"}), 400
+    with get_repos() as repos:
+        jobs = repos["jobs"].get_by_company(company)
+    return jsonify(jobs)
+
+
 # ai: claude-sonnet-4-6 | 2026-06-08
 @jobs_bp.route("/jobs/<int:job_id>", methods=["GET"])
 def get_job(job_id: int):
