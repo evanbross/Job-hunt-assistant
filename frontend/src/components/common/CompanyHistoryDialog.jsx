@@ -123,7 +123,7 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, di
         {effectiveRow.status === "possible_duplicate" && !dismissedIds?.has(row.id) && onDismissDuplicate && (
           <button
             type="button"
-            className="btn-sm"
+            className="btn-success btn-sm"
             onClick={(e) => { e.stopPropagation(); handleDismissDuplicate(row); }}
             disabled={skippingId !== null || dismissingId !== null}
           >
