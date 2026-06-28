@@ -51,7 +51,7 @@ function isDeclaredDuplicate(row) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-28
-function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, onSkipDuplicate, onNavigateToJobCard, onClose, handleSkipDuplicate }) {
+function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, dismissingId, dismissedIds, onSkipDuplicate, onDismissDuplicate, onNavigateToJobCard, onClose, handleSkipDuplicate, handleDismissDuplicate }) {
   return (
     <div
       style={{
@@ -110,14 +110,24 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, on
           status={effectiveRow.status}
           label={effectiveRow.status === "possible_duplicate" || effectiveRow.status === "skipped" ? rowStatusLabel(effectiveRow) : undefined}
         />
-        {effectiveRow.status === "possible_duplicate" && onSkipDuplicate && (
+        {effectiveRow.status === "possible_duplicate" && !dismissedIds?.has(row.id) && onSkipDuplicate && (
           <button
             type="button"
             className="btn-danger btn-sm"
             onClick={(e) => { e.stopPropagation(); handleSkipDuplicate(row); }}
-            disabled={skippingId !== null}
+            disabled={skippingId !== null || dismissingId !== null}
           >
             {skippingId === row.id ? "Skipping…" : "Yes, Same Job - Skip It"}
+          </button>
+        )}
+        {effectiveRow.status === "possible_duplicate" && !dismissedIds?.has(row.id) && onDismissDuplicate && (
+          <button
+            type="button"
+            className="btn-sm"
+            onClick={(e) => { e.stopPropagation(); handleDismissDuplicate(row); }}
+            disabled={skippingId !== null || dismissingId !== null}
+          >
+            {dismissingId === row.id ? "Saving…" : "No, New Job"}
           </button>
         )}
         {navigable && (
@@ -128,9 +138,12 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, on
   );
 }
 
-export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose, onNavigateToJobCard, onSkipDuplicate }) {
+// ai: claude-sonnet-4-6 | 2026-06-28
+export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose, onNavigateToJobCard, onSkipDuplicate, onDismissDuplicate }) {
   const [skippedIds, setSkippedIds] = useState(new Set());
   const [skippingId, setSkippingId] = useState(null);
+  const [dismissedIds, setDismissedIds] = useState(new Set());
+  const [dismissingId, setDismissingId] = useState(null);
   const [showDuplicates, setShowDuplicates] = useState(false);
   const [sortBy, setSortBy] = useState("id");
 
@@ -141,6 +154,16 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
       setSkippedIds((prev) => new Set(prev).add(row.id));
     } finally {
       setSkippingId(null);
+    }
+  };
+
+  const handleDismissDuplicate = async (row) => {
+    setDismissingId(row.id);
+    try {
+      await onDismissDuplicate(row.id);
+      setDismissedIds((prev) => new Set(prev).add(row.id));
+    } finally {
+      setDismissingId(null);
     }
   };
 
@@ -243,10 +266,14 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                   currentJobId={currentJobId}
                   navigable={false}
                   skippingId={skippingId}
+                  dismissingId={dismissingId}
+                  dismissedIds={dismissedIds}
                   onSkipDuplicate={onSkipDuplicate}
+                  onDismissDuplicate={onDismissDuplicate}
                   onNavigateToJobCard={onNavigateToJobCard}
                   onClose={onClose}
                   handleSkipDuplicate={handleSkipDuplicate}
+                  handleDismissDuplicate={handleDismissDuplicate}
                 />
               </div>
             );
@@ -263,10 +290,14 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                   currentJobId={currentJobId}
                   navigable={navigable}
                   skippingId={skippingId}
+                  dismissingId={dismissingId}
+                  dismissedIds={dismissedIds}
                   onSkipDuplicate={onSkipDuplicate}
+                  onDismissDuplicate={onDismissDuplicate}
                   onNavigateToJobCard={onNavigateToJobCard}
                   onClose={onClose}
                   handleSkipDuplicate={handleSkipDuplicate}
+                  handleDismissDuplicate={handleDismissDuplicate}
                 />
               );
             })}

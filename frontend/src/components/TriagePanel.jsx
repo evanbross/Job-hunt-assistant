@@ -787,7 +787,7 @@ function CompanyNameEditor({ jobId, company, onSave, onError }) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, allSheetRows = null, onNavigateToJobCard }) {
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard }) {
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
@@ -1364,6 +1364,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMar
           onClose={companyHistory.close}
           onNavigateToJobCard={onNavigateToJobCard}
           onSkipDuplicate={onSkipDuplicate}
+          onDismissDuplicate={onDismissDuplicate}
         />
       )}
     </div>
@@ -1373,7 +1374,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMar
 export const DuplicateCard = memo(DuplicateCardImpl, arePropsEqualIgnoringFunctions);
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, allSheetRows = null, onNavigateToJobCard }) {
+function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard }) {
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
@@ -2283,6 +2284,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           onClose={companyHistory.close}
           onNavigateToJobCard={onNavigateToJobCard}
           onSkipDuplicate={onSkipDuplicate}
+          onDismissDuplicate={onDismissDuplicate}
         />
       )}
 

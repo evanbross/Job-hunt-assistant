@@ -2340,6 +2340,7 @@ function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows,
         onMarkApplied={() => triageHandlers.markApplied(job)}
         onSkip={(reason, feedback, mismatchReasons) => triageHandlers.skip(job, reason, feedback, mismatchReasons)}
         onSkipDuplicate={(jobId) => triageHandlers.skip({ id: jobId }, "duplicate", "", [])}
+        onDismissDuplicate={(jobId) => triageHandlers.markUnique({ id: jobId })}
         onReEvaluate={() => triageHandlers.reEvaluateFit(job)}
         onRefreshFromUrl={() => triageHandlers.refreshFromUrl(job)}
         onReprocessed={(updated) => triageHandlers.reprocessed(job, updated)}
@@ -2358,6 +2359,7 @@ function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows,
       onReEvaluate={() => triageHandlers.reEvaluateFit(job)}
       onRefreshFromUrl={() => triageHandlers.refreshFromUrl(job)}
       onSkipDuplicate={(jobId) => triageHandlers.skip({ id: jobId }, "duplicate", "", [])}
+      onDismissDuplicate={(jobId) => triageHandlers.markUnique({ id: jobId })}
       allSheetRows={allSheetRows}
       onReprocessed={(updated) => triageHandlers.reprocessed(job, updated)}
       onDescriptionUpdated={(updated, previous) => triageHandlers.descriptionUpdated(job, updated, previous)}
