@@ -634,12 +634,21 @@
     return JSON.stringify({ jobs, source: { url: 'https://discord.com/careers' } });
   }
 
-  function buildAshbyJobPayload() {
+  // ai: claude-sonnet-4-6 | 2026-06-28
+  // Ashby is a React SPA — window.__appData.posting is populated asynchronously.
+  // Poll before reading so we get real job data instead of falling back on raw HTML
+  // (which causes the backend to pick up footer/nav links as job postings).
+  async function buildAshbyJobPayload() {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      if (window.__appData?.posting?.title) break;
+      await sleep(300);
+    }
+
     const appData = window.__appData;
     const posting = appData?.posting;
-    if (!posting?.title) return buildHtmlPayload();
+    if (!posting?.title) return buildGenericJobPagePayload();
 
-    // ai: claude-sonnet-4-6 | 2026-06-08
     let company = appData.organization?.name || '';
     if (!company) {
       const slug = window.location.pathname.split('/').filter(Boolean)[0] || '';
@@ -1161,7 +1170,7 @@
       case 'hnHiring':         return buildHnHiringPayload();
       case 'workAtAStartup':   return buildWorkAtAStartupPayload();
       case 'discordCareers':   return buildDiscordCareersPayload();
-      case 'ashbyJob':         return buildAshbyJobPayload();
+      case 'ashbyJob':         return await buildAshbyJobPayload();
       case 'wttjJob':          return buildWttjJobPayload();
       case 'phenomSearch':     return await buildPhenomSearchPayload();
       case 'jobanni':          return await buildJobanniPayload();
