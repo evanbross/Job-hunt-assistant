@@ -288,6 +288,7 @@ def rescan_email(email_id: str):
         try:
             full_msg = gmail.get_message(base_id)
             subject, sender, email_body = gmail.extract_text(full_msg)
+            email_raw_html = gmail.extract_raw_html(full_msg)
         except Exception as exc:
             return jsonify({"error": f"Failed to fetch email from Gmail: {exc}"}), 500
 
@@ -301,7 +302,7 @@ def rescan_email(email_id: str):
             return jsonify({"jobs": [], "message": "Acknowledged application email — no job extracted."})
 
         try:
-            parsed_jobs = EmailParser().parse(subject, sender, email_body)
+            parsed_jobs = EmailParser().parse(subject, sender, email_body, raw_html=email_raw_html)
         except Exception as exc:
             scanned_repo.mark_scanned(email_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=email_body, parser_error_msg=str(exc))
             repos["conn"].commit()

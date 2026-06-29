@@ -291,6 +291,26 @@ class GmailClient:
         body = _extract_body(message.get("payload", {}))
         return subject, sender, body
 
+    # ai: claude-sonnet-4-6 | 2026-06-29
+    @staticmethod
+    def extract_raw_html(message: dict[str, Any]) -> str:
+        """Return the raw HTML body of a Gmail message, or empty string if none."""
+        return _extract_raw_html_body(message.get("payload", {}))
+
+
+# ai: claude-sonnet-4-6 | 2026-06-29
+def _extract_raw_html_body(payload: dict[str, Any]) -> str:
+    """Recursively walk a Gmail payload to find and return the raw HTML body."""
+    mime_type: str = payload.get("mimeType", "")
+    if mime_type == "text/html":
+        data = payload.get("body", {}).get("data", "")
+        return _b64decode(data)
+    for part in payload.get("parts", []):
+        html = _extract_raw_html_body(part)
+        if html.strip():
+            return html
+    return ""
+
 
 def _extract_body(payload: dict[str, Any]) -> str:
     """Recursively walk a Gmail payload to extract the plain-text body."""

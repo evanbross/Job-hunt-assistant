@@ -762,12 +762,13 @@ def reprocess_job(job_id: int):
     try:
         full_msg = gmail.get_message(base_email_id)
         subject, sender, email_body = gmail.extract_text(full_msg)
+        email_raw_html = gmail.extract_raw_html(full_msg)
     except Exception as exc:
         logger.error("Reprocess: failed to fetch message %s: %s", base_email_id, exc)
         return jsonify({"error": f"Failed to fetch email from Gmail: {exc}"}), 500
 
     try:
-        parsed_jobs = EmailParser().parse(subject, sender, email_body)
+        parsed_jobs = EmailParser().parse(subject, sender, email_body, raw_html=email_raw_html)
     except Exception as exc:
         logger.error("Reprocess: parser error for job %d: %s", job_id, exc)
         return jsonify({"error": f"Parser error: {exc}"}), 500

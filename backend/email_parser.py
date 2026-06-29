@@ -39,6 +39,7 @@ whether to auto-queue or hold for manual review.
 """
 from __future__ import annotations
 
+import html as _html_mod
 import json
 import logging
 import re
@@ -155,11 +156,14 @@ class EmailParser:
     def __init__(self, client: EmailParserClient | None = None) -> None:
         self._client = client or AIProviderClient()
 
-    def parse(self, subject: str, sender: str, body_snippet: str) -> list[ParsedJob]:
+    # ai: claude-sonnet-4-6 | 2026-06-29
+    def parse(self, subject: str, sender: str, body_snippet: str, raw_html: str = "") -> list[ParsedJob]:
         """
         Extract all job postings from an email. Returns a list of ParsedJob dicts
         (empty list if the email contains no job postings).
         Raises ValueError if the API returns malformed JSON.
+        raw_html, when provided, enables HTML-based company extraction for sources
+        like WTTJ that embed company names in image alt attributes.
         """
         linkedin_jobs = _parse_linkedin_alert_jobs(subject, sender, body_snippet)
         if linkedin_jobs:
@@ -167,7 +171,7 @@ class EmailParser:
         jymbii_jobs = _parse_linkedin_jymbii_jobs(subject, sender, body_snippet)
         if jymbii_jobs:
             return jymbii_jobs
-        wttj_jobs = _parse_welcome_to_the_jungle_jobs(sender, body_snippet)
+        wttj_jobs = _parse_welcome_to_the_jungle_jobs(sender, body_snippet, raw_html=raw_html)
         if wttj_jobs:
             return wttj_jobs
         # ai: claude-sonnet-4-6 | 2026-06-22
@@ -339,6 +343,10 @@ _LINKEDIN_COMM_JOB_URL_RE = re.compile(
 _WTTJ_SENDER_RE = re.compile(r"welcometothejungle\.com|welcome to the jungle", re.IGNORECASE)
 _WTTJ_JOB_URL_RE = re.compile(r"https?://[^\s<>()\"']*welcometothejungle\.com/[^\s<>()\"']+", re.IGNORECASE)
 _ANY_HTTP_URL_RE = re.compile(r"https?://[^\s<>()\"']+", re.IGNORECASE)
+# HTML-based company extraction: match <a href="URL"> ... alt="Name logo" ... </a>
+# ai: claude-sonnet-4-6 | 2026-06-29
+_WTTJ_HTML_HREF_RE = re.compile(r'<a\b[^>]*\bhref="(https://[^"]+)"', re.IGNORECASE)
+_WTTJ_HTML_LOGO_ALT_RE = re.compile(r'\balt="([^"]+?)\s+logo"', re.IGNORECASE)
 _WTTJ_SKIP_TITLE_LINES = {
     "view job",
     "view offer",
@@ -549,7 +557,41 @@ def _resolve_tracking_url(url: str, timeout: float = 3.0) -> str:
     return url
 
 
-def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str) -> list[ParsedJob]:
+# ai: claude-sonnet-4-6 | 2026-06-29
+def _wttj_company_map_from_html(raw_html: str) -> dict[str, str]:
+    """Return {tracking_url: company_name} by parsing WTTJ job-card HTML.
+
+    Each job card is a single <a href="tracking-url">…</a> block that contains
+    an <img alt="Company Name logo"> element.  The alt attribute is the most
+    reliable source for the company name because it is structurally co-located
+    with the link in the HTML, regardless of the distance in extracted plain text.
+    HTML entities in the href are unescaped so the key matches the raw URL that
+    appears in the plain-text body.
+    """
+    company_map: dict[str, str] = {}
+    pos = 0
+    while pos < len(raw_html):
+        href_m = _WTTJ_HTML_HREF_RE.search(raw_html, pos)
+        if not href_m:
+            break
+        href = _html_mod.unescape(href_m.group(1))
+        a_end = raw_html.find("</a>", href_m.end())
+        if a_end < 0:
+            pos = href_m.end()
+            continue
+        block = raw_html[href_m.end():a_end]
+        logo_m = _WTTJ_HTML_LOGO_ALT_RE.search(block)
+        if logo_m:
+            company = logo_m.group(1).strip()
+            # Skip the WTTJ site logo itself ("Welcome to the Jungle logo")
+            if not _WTTJ_SENDER_RE.search(company):
+                company_map[href] = company
+        pos = a_end + 4
+    return company_map
+
+
+# ai: claude-sonnet-4-6 | 2026-06-29
+def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str, raw_html: str = "") -> list[ParsedJob]:
     if not _looks_like_welcome_to_the_jungle(sender, body_snippet):
         return []
 
@@ -559,16 +601,26 @@ def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str) -> list[Pa
     # "See all top matches" CTA link — which resolves to the same job page as
     # position=1 but with a different query string — is not double-imported.
     seen_job_ids: set[str] = set()
+    # Primary company source: HTML card structure (company logo alt text co-located
+    # with the tracking URL in a single <a> block — unambiguous regardless of text layout).
+    html_company_map: dict[str, str] = _wttj_company_map_from_html(raw_html) if raw_html else {}
+    logger.debug("WTTJ HTML company map: %d entries", len(html_company_map))
 
-    def _append_wttj_job(job_url: str, line_idx: int) -> None:
+    def _append_wttj_job(job_url: str, line_idx: int, raw_tracking_url: str = "") -> None:
         job_id = _wttj_job_id_from_url(job_url)
         if not job_id:
             return  # not a job page (e.g. settings or unsubscribe URL)
         if job_id in seen_job_ids:
             return
         company, slug_title = _wttj_company_title_from_url(job_url)
+        # Primary: HTML-derived company map (exact match on the tracking URL).
+        if not company and raw_tracking_url:
+            company = html_company_map.get(raw_tracking_url, "")
         nearby_title = _wttj_title_from_nearby_lines(lines, line_idx, company)
         job_title = nearby_title or slug_title
+        # Fallback: scan nearby text lines when HTML map had no entry.
+        if not company and job_title:
+            company = _wttj_company_from_nearby_lines(lines, line_idx, job_title)
         if not job_title:
             return
         jobs.append(
@@ -603,7 +655,7 @@ def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str) -> list[Pa
                 resolved = _resolve_tracking_url(raw_url)
                 if "welcometothejungle.com" not in resolved.lower():
                     continue
-                _append_wttj_job(resolved.rstrip(".,;)"), line_idx)
+                _append_wttj_job(resolved.rstrip(".,;)"), line_idx, raw_tracking_url=raw_url)
 
     return jobs
 
@@ -785,6 +837,57 @@ def _wttj_title_from_nearby_lines(lines: list[str], url_line_idx: int, company: 
 
         return result
     return ""
+
+
+# ai: claude-sonnet-4-6 | 2026-06-29
+def _wttj_company_from_nearby_lines(lines: list[str], url_line_idx: int, job_title: str) -> str:
+    """Return the company name from nearby lines in a WTTJ email body.
+
+    WTTJ emails render each job card twice (once for visual clients, once for
+    plain-text). The company name and its one-line tagline always appear as an
+    adjacent pair (within ~5 blank lines of each other) roughly 30-35 lines
+    before the job URL. Other content (location, the first-copy title) is
+    isolated — many blank lines away from the company/tagline block.
+
+    Strategy: collect all valid non-blank candidate lines in a 50-line window,
+    then scan from the URL end toward the start looking for two consecutively-
+    indexed candidates with a small gap between them. The farther of that pair
+    (lower line index) is the company name.
+    """
+    normalized_title = _normalized_line(job_title)
+    start_idx = max(0, url_line_idx - 50)
+    window_lines = lines[start_idx:url_line_idx]
+
+    # Collect (line_index, text) for lines that pass all WTTJ title filters plus
+    # an extra guard against qualifiers starting with "(" (never a company name).
+    candidates: list[tuple[int, str]] = []
+    for offset, candidate in enumerate(window_lines):
+        normalized = _normalized_line(candidate)
+        if not normalized:
+            continue
+        if normalized in _WTTJ_SKIP_TITLE_LINES:
+            continue
+        if normalized.startswith(("http://", "https://")):
+            continue
+        if len(candidate) > 80:
+            continue
+        if _WTTJ_METADATA_LINE_RE.search(candidate):
+            continue
+        if normalized == normalized_title:
+            continue
+        if candidate.strip().startswith("("):
+            continue
+        candidates.append((start_idx + offset, candidate.strip(" -–—\t\r\n")))
+
+    # Find the adjacent pair (company + tagline) nearest to the URL.  The pair
+    # members are within 5 blank lines of each other; isolated lines are not.
+    for j in range(len(candidates) - 1, 0, -1):
+        idx_curr, _ = candidates[j]
+        idx_prev, text_prev = candidates[j - 1]
+        if idx_curr - idx_prev <= 5:
+            return text_prev  # farther of the pair = company name
+    # Fallback: no adjacent pair found; return the nearest valid candidate.
+    return candidates[-1][1] if candidates else ""
 
 
 def _title_case_slug(slug: str) -> str:

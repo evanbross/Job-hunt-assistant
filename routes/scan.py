@@ -320,6 +320,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                 try:
                     full_msg = gmail.get_message(msg_id)
                     subject, sender, email_body = gmail.extract_text(full_msg)
+                    email_raw_html = gmail.extract_raw_html(full_msg)
                 except Exception as exc:
                     fetch_error_emails += 1
                     email_report.append(
@@ -442,7 +443,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                 # Parse the email — returns a list (empty if not a job email)
                 _update_scan(message=f"AI evaluation underway for {email_label}...")
                 try:
-                    parsed_jobs = parser.parse(subject, sender, email_body)
+                    parsed_jobs = parser.parse(subject, sender, email_body, raw_html=email_raw_html)
                     _update_scan(connection_warning="")
                 except Exception as exc:
                     parser_error_emails += 1
