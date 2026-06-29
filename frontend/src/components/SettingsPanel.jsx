@@ -34,6 +34,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { collectionModeLabel } from "../utils/careerSiteUtils.js";
+import Modal from "./common/Modal.jsx";
 import ResumeUpload from "./ResumeUpload.jsx";
 
 export default function SettingsPanel() {
@@ -781,6 +782,8 @@ function CareerSitesSection() {
     fetchSites();
   };
 
+  const closeForm = () => { setShowForm(false); setEditId(null); };
+
   return (
     <div>
       <SectionHeader title="Career Site URLs" action={{ label: "Add Site", onClick: () => { setEditId(null); setForm({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" }); setShowForm(true); } }} />
@@ -788,11 +791,22 @@ function CareerSitesSection() {
         Add each company job/careers page URL here. The background scanner checks these while the app is running.
       </p>
 
+      {/* ai: claude-sonnet-4-6 | 2026-06-28 */}
       {showForm && (
-        <div style={formBox}>
+        <Modal
+          title={editId ? "Edit Career Site" : "Add Career Site"}
+          onClose={closeForm}
+          maxWidth="520px"
+          footer={
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button className="btn-primary" onClick={submitForm}>{editId ? "Save" : "Add"}</button>
+              <button className="btn-secondary" onClick={closeForm}>Cancel</button>
+            </div>
+          }
+        >
           <div style={formGrid}>
             <label style={labelStyle}>Name
-              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Acme Careers" />
+              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Acme Careers" autoFocus />
             </label>
             <label style={labelStyle}>URL
               <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="https://company.com/careers" />
@@ -807,11 +821,7 @@ function CareerSitesSection() {
               </select>
             </label>
           </div>
-          <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-            <button className="btn-primary" onClick={submitForm}>{editId ? "Save" : "Add"}</button>
-            <button className="btn-secondary" onClick={() => { setShowForm(false); setEditId(null); }}>Cancel</button>
-          </div>
-        </div>
+        </Modal>
       )}
 
       <table style={tableStyle}>
