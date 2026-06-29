@@ -83,7 +83,22 @@ export function useCompanyHistoryLookup(job) {
       const withCurrent = merged.some((r) => r.id === job.id)
         ? merged
         : [jobToHistoryRow(job), ...merged];
-      setRows(withCurrent.filter((row) => rowMatchesCompany(row.company, company)));
+
+      // ai: claude-sonnet-4-6 | 2026-06-29
+      // If this job was flagged as a possible duplicate of another job, always
+      // include that referenced job in the list — even when its stored company
+      // name doesn't match the fuzzy threshold used by rowMatchesCompany.
+      const duplicateOfId = job.duplicate_of_id ?? null;
+      let withDuplicateRef = withCurrent;
+      if (duplicateOfId && !withCurrent.some((r) => r.id === duplicateOfId)) {
+        const refRes = await fetch(`/api/jobs/${duplicateOfId}`);
+        if (refRes.ok) {
+          const refJob = await refRes.json();
+          withDuplicateRef = [...withCurrent, jobToHistoryRow(refJob)];
+        }
+      }
+
+      setRows(withDuplicateRef.filter((row) => rowMatchesCompany(row.company, company) || row.id === duplicateOfId));
     } catch (lookupError) {
       setError(lookupError.message || "Application lookup failed");
     } finally {

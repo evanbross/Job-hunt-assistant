@@ -231,31 +231,37 @@ def patch_job(job_id: int):
                     "extra_data": None,
                 })
 
-            known_jobs: list[dict] = repos["jobs"].get_all_ordered()
-            # ai: claude-sonnet-4-6 | 2026-06-09
-            _tracked_status, _tracking_source, duplicate_hint, duplicate_of_id, _match_scores = db_match_for_job(
-                job_title=str(updated_job.get("job_title") or ""),
-                company=str(updated_job.get("company") or ""),
-                job_url=str(updated_job.get("url") or ""),
-                known_jobs=known_jobs,
-                dedup_checker=DuplicateChecker(),
-                exclude_id=job_id,
-            )
+            # ai: claude-sonnet-4-6 | 2026-06-29
+            # Only re-run the duplicate check when a field that affects matching
+            # actually changed. If title/company/url are unchanged, the result is
+            # identical to the last run — re-checking would re-flag jobs the user
+            # already dismissed via dismiss_duplicate.
+            dedup_fields = {"job_title", "company", "url"}
+            if dedup_fields & fields.keys():
+                known_jobs: list[dict] = repos["jobs"].get_all_ordered()
+                _tracked_status, _tracking_source, duplicate_hint, duplicate_of_id, _match_scores = db_match_for_job(
+                    job_title=str(updated_job.get("job_title") or ""),
+                    company=str(updated_job.get("company") or ""),
+                    job_url=str(updated_job.get("url") or ""),
+                    known_jobs=known_jobs,
+                    dedup_checker=DuplicateChecker(),
+                    exclude_id=job_id,
+                )
 
-            duplicate_updates: dict[str, object] = {}
-            if duplicate_hint:
-                duplicate_updates["duplicate_hint"] = duplicate_hint
-                duplicate_updates["duplicate_of_id"] = duplicate_of_id
-                duplicate_updates["status"] = "possible_duplicate"
-            elif updated_job.get("duplicate_hint") or updated_job.get("status") == "possible_duplicate":
-                fit_score = int(updated_job.get("fit_score") or 0)
-                duplicate_updates["duplicate_hint"] = None
-                duplicate_updates["duplicate_of_id"] = None
-                duplicate_updates["status"] = "pending_review" if fit_score >= 70 else "triage"
+                duplicate_updates: dict[str, object] = {}
+                if duplicate_hint:
+                    duplicate_updates["duplicate_hint"] = duplicate_hint
+                    duplicate_updates["duplicate_of_id"] = duplicate_of_id
+                    duplicate_updates["status"] = "possible_duplicate"
+                elif updated_job.get("duplicate_hint") or updated_job.get("status") == "possible_duplicate":
+                    fit_score = int(updated_job.get("fit_score") or 0)
+                    duplicate_updates["duplicate_hint"] = None
+                    duplicate_updates["duplicate_of_id"] = None
+                    duplicate_updates["status"] = "pending_review" if fit_score >= 70 else "triage"
 
-            if duplicate_updates:
-                repos["jobs"].update(job_id, duplicate_updates)
-                updated_job = repos["jobs"].get_by_id(job_id)
+                if duplicate_updates:
+                    repos["jobs"].update(job_id, duplicate_updates)
+                    updated_job = repos["jobs"].get_by_id(job_id)
 
             repos["conn"].commit()
     except Exception as exc:
