@@ -380,7 +380,7 @@ export default function App() {
         <StatsBar />
       </div>
 
-      {authStatus === false && (
+      {authStatus === false && activeTab !== "setup" && (
         <div style={{ maxWidth: "1200px", margin: "0 auto", width: "100%", padding: "16px 28px 0 28px" }}>
           <div style={styles.authBanner}>
             <span style={{ color: "var(--accent)", fontSize: "13px" }}>
@@ -410,7 +410,8 @@ export default function App() {
         </div>
       )}
 
-      <CareerSiteScanBanner />
+      {/* ai: claude-opus-4-8 | 2026-07-01 — hide scan banner during first-run setup so it doesn't push the wizard off-screen */}
+      {activeTab !== "setup" && <CareerSiteScanBanner />}
 
       <main style={styles.content}>
         {activeTab === "queue" && (
