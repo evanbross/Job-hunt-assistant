@@ -248,8 +248,8 @@ class EmailParser:
             # Resolve tracking/redirect URLs that the LLM may have extracted
             # verbatim from the email body (e.g. SendGrid click-tracking links).
             raw_url = str(item.get("url") or "")
-            if raw_url and _is_email_tracking_url(raw_url):
-                resolved = _resolve_tracking_url(raw_url)
+            if raw_url and is_email_tracking_url(raw_url):
+                resolved = resolve_tracking_url(raw_url)
                 if resolved != raw_url:
                     item["url"] = resolved
                     logger.debug("Resolved tracking URL %s → %s", raw_url, resolved)
@@ -520,7 +520,7 @@ _JOBBOARD_URL_FALLBACK_RES: list[re.Pattern[str]] = [
 ]
 
 
-def _is_email_tracking_url(url: str) -> bool:
+def is_email_tracking_url(url: str) -> bool:
     host = urlparse(url).netloc.lower()
     return any(frag in host for frag in _TRACKING_DOMAIN_FRAGMENTS)
 
@@ -537,7 +537,7 @@ def _fallback_job_url(body_snippet: str) -> str:
     return ""
 
 
-def _resolve_tracking_url(url: str, timeout: float = 3.0) -> str:
+def resolve_tracking_url(url: str, timeout: float = 3.0) -> str:
     """Follow a tracking/redirect URL and return the final destination URL.
 
     Uses HEAD first; falls back to GET if the server doesn't redirect on HEAD.
@@ -650,9 +650,9 @@ def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str, raw_html: 
         for line_idx, line in enumerate(lines):
             for url_match in _ANY_HTTP_URL_RE.finditer(line):
                 raw_url = url_match.group(0).rstrip(".,;)")
-                if not _is_email_tracking_url(raw_url):
+                if not is_email_tracking_url(raw_url):
                     continue
-                resolved = _resolve_tracking_url(raw_url)
+                resolved = resolve_tracking_url(raw_url)
                 if "welcometothejungle.com" not in resolved.lower():
                     continue
                 _append_wttj_job(resolved.rstrip(".,;)"), line_idx, raw_tracking_url=raw_url)

@@ -815,7 +815,7 @@ function JobCard({
           onClick={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.preventDefault()}
         >
-          {jobDescription && (
+          {jobDescription && !descriptionUnavailable && (
             <button
               type="button"
               style={contextMenuItemStyle}
@@ -1388,7 +1388,7 @@ function JobCard({
         </div>
       </div>
 
-      {descriptionOpen && jobDescription && (
+      {descriptionOpen && jobDescription && !descriptionUnavailable && (
         <div style={descriptionBoxStyle}>
           {jobDescription}
         </div>

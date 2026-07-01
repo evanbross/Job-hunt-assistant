@@ -55,6 +55,7 @@ import {
   fitPercentageLabel,
   fitScoreClass,
   formatJobDescription,
+  isDescriptionUnavailable,
   isManualPastedJob,
   jobDisplayName,
   negativeReasoningBulletStyleFor,
@@ -1413,6 +1414,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
   const salaryRange = salaryRangeForJob(job);
   const rawJobDescription = String(job.job_description || job.raw_email_snippet || "").trim();
   const jobDescription = formatJobDescription(rawJobDescription);
+  const descriptionUnavailable = isDescriptionUnavailable(rawJobDescription);
 
   useEffect(() => {
     if (chatOpen && chatMessagesRef.current) {
@@ -2073,13 +2075,15 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
       {jobDescription && (
         <div>
           <div style={descriptionActionRowStyle}>
-            <button
-              className="btn-secondary"
-              style={{ fontSize: "12px", padding: "4px 10px" }}
-              onClick={() => setDescriptionOpen((open) => !open)}
-            >
-              {descriptionOpen ? "Hide Description" : "Job Description"}
-            </button>
+            {!descriptionUnavailable && (
+              <button
+                className="btn-secondary"
+                style={{ fontSize: "12px", padding: "4px 10px" }}
+                onClick={() => setDescriptionOpen((open) => !open)}
+              >
+                {descriptionOpen ? "Hide Description" : "Job Description"}
+              </button>
+            )}
             <button
               className="btn-secondary"
               style={{ fontSize: "12px", padding: "4px 10px" }}
@@ -2093,8 +2097,13 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
             >
               {job.job_description ? "Update detailed description" : "Add detailed description"}
             </button>
+            {descriptionUnavailable && (
+              <span style={{ fontSize: "12px", color: "var(--orange)" }}>
+                No description loaded — only a tracking link was captured.
+              </span>
+            )}
           </div>
-          {descriptionOpen && (
+          {descriptionOpen && !descriptionUnavailable && (
             <div style={descriptionBoxStyle}>
               {jobDescription}
             </div>

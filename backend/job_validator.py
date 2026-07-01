@@ -32,6 +32,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from backend.email_parser import is_email_tracking_url
 from backend.utils import company_from_ats_url
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,15 @@ def normalize_and_validate(job_data: dict[str, Any]) -> tuple[dict[str, Any], li
                 warnings.append("homepage_url")
         except Exception:
             pass
+
+    # Flag: JD enrichment failed and the stored snippet is just a bare
+    # tracking/redirect link (e.g. a SendGrid click-tracking URL) rather than
+    # real description text — showing that raw link as the job body is
+    # confusing, so route it to triage for a manual look.
+    if not str(job.get("job_description") or "").strip():
+        snippet = str(job.get("raw_email_snippet") or "").strip()
+        if snippet and is_email_tracking_url(snippet):
+            warnings.append("jd_body_is_tracking_link")
 
     return job, warnings
 

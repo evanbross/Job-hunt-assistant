@@ -212,7 +212,7 @@ def test_parser_resolves_sendgrid_tracking_urls_for_wttj_emails(monkeypatch) -> 
 
     monkeypatch.setattr(
         email_parser_module,
-        "_resolve_tracking_url",
+        "resolve_tracking_url",
         lambda url, timeout=3.0: real_wttj_url if "sendgrid" in url else url,
     )
 

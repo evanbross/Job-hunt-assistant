@@ -49,7 +49,7 @@ from flask import Blueprint, jsonify, request
 import config
 from backend.career_site_scanner import CareerSiteScanner
 from backend.duplicate_checker import DuplicateChecker
-from backend.email_parser import EmailParser, _resolve_tracking_url
+from backend.email_parser import EmailParser, resolve_tracking_url
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.manual_job_ingest_service import ManualJobIngestService
@@ -969,7 +969,7 @@ def _run_wttj_repair() -> None:
                 continue
 
             # Follow the sendgrid redirect with a generous timeout.
-            resolved = _resolve_tracking_url(url, timeout=10.0)
+            resolved = resolve_tracking_url(url, timeout=10.0)
             if "welcometothejungle.com" not in resolved.lower():
                 failed.append({**summary, "reason": "redirect did not reach WTTJ"})
                 with _wttj_repair_lock:
