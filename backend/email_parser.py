@@ -238,7 +238,7 @@ class EmailParser:
                 item["confidence_score"] = max(0, min(100, int(item.get("confidence_score", 50))))
             except (TypeError, ValueError):
                 item["confidence_score"] = 50
-            _normalize_title_company(item, subject, body_snippet)
+            normalize_title_company(item, subject, body_snippet)
             if item.get("company"):
                 item["company"] = _trim_company_tail(item["company"])
             # Restore any [URL_N] token the LLM returned to the original URL.
@@ -256,7 +256,7 @@ class EmailParser:
             # If the LLM left the URL empty, try to salvage one directly from
             # the email body using known job-board URL patterns.
             if not item.get("url"):
-                fallback = _fallback_job_url(body_snippet)
+                fallback = fallback_job_url(body_snippet)
                 if fallback:
                     item["url"] = fallback
                     logger.debug("URL fallback: extracted %s from email body", fallback)
@@ -265,7 +265,7 @@ class EmailParser:
         return jobs
 
 
-def _normalize_title_company(item: dict, subject: str, body_snippet: str = "") -> None:
+def normalize_title_company(item: dict, subject: str, body_snippet: str = "") -> None:
     company = str(item.get("company") or "").strip()
     if company.lower() not in _UNKNOWN_COMPANY_VALUES:
         return
@@ -525,7 +525,7 @@ def is_email_tracking_url(url: str) -> bool:
     return any(frag in host for frag in _TRACKING_DOMAIN_FRAGMENTS)
 
 
-def _fallback_job_url(body_snippet: str) -> str:
+def fallback_job_url(body_snippet: str) -> str:
     """Return the first recognizable job-board URL found in the email body.
 
     Used when the LLM extraction left the URL field empty.

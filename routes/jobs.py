@@ -49,9 +49,10 @@ from flask import Blueprint, jsonify, request
 import config
 from backend.career_site_scanner import CareerSiteScanner
 from backend.duplicate_checker import DuplicateChecker
-from backend.email_parser import EmailParser, resolve_tracking_url
+from backend.email_parser import EmailParser, fallback_job_url, normalize_title_company, resolve_tracking_url
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
+from backend.job_validator import import_warnings_to_json, normalize_and_validate
 from backend.manual_job_ingest_service import ManualJobIngestService
 from backend.utils import (
     ACTIVE_JOB_STATUSES,
@@ -890,8 +891,8 @@ _wttj_repair_state = WttjRepairState()
 _wttj_repair_lock = threading.Lock()
 
 
-def _wttj_repair_candidates(repos: dict) -> list[dict]:
-    """Non-terminal WTTJ jobs whose URL is a sendgrid/tracking link or empty."""
+def _non_terminal_jobs(repos: dict) -> list[dict]:
+    """All jobs whose current stage/status is not a terminal one (rejected, ghosted, etc.)."""
     jobs = repos["jobs"].get_all_ordered()
     terminal_keys = {s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")}
     all_stages = repos["stages"].get_all()
@@ -899,19 +900,27 @@ def _wttj_repair_candidates(repos: dict) -> list[dict]:
     for stage in all_stages:
         stages_by_job.setdefault(stage["job_id"], []).append(stage)
 
-    candidates: list[dict] = []
+    non_terminal: list[dict] = []
     for job in jobs:
-        source = (job.get("source") or "").lower()
-        if "welcome to the jungle" not in source and "wttj" not in source:
-            continue
-        url = (job.get("url") or "").strip()
-        if "welcometothejungle.com/jobs/" in url or "app.welcometothejungle.com/jobs/" in url:
-            continue
         stages = stages_by_job.get(job["id"], [])
         latest_status = normalize_stage_status(
             (stages[-1] if stages else {}).get("status") or job.get("status")
         )
         if latest_status in terminal_keys:
+            continue
+        non_terminal.append(job)
+    return non_terminal
+
+
+def _wttj_repair_candidates(repos: dict) -> list[dict]:
+    """Non-terminal WTTJ jobs whose URL is a sendgrid/tracking link or empty."""
+    candidates: list[dict] = []
+    for job in _non_terminal_jobs(repos):
+        source = (job.get("source") or "").lower()
+        if "welcome to the jungle" not in source and "wttj" not in source:
+            continue
+        url = (job.get("url") or "").strip()
+        if "welcometothejungle.com/jobs/" in url or "app.welcometothejungle.com/jobs/" in url:
             continue
         candidates.append(job)
     return candidates
@@ -1047,4 +1056,281 @@ def wttj_repair_status():
             "failed": _wttj_repair_state.failed,
             "skipped": _wttj_repair_state.skipped,
             "error": _wttj_repair_state.error,
+        })
+
+
+# ── General import-issue repair sweep ─────────────────────────────────────────
+# ai: claude-opus-4-8 | 2026-07-01
+
+@dataclass
+class ImportRepairState:
+    running: bool = False
+    progress: int = 0
+    total: int = 0
+    message: str = "Idle"
+    current_company: str = ""
+    current_title: str = ""
+    title_or_company_fixed: list[dict] = field(default_factory=list)
+    url_fixed: list[dict] = field(default_factory=list)
+    jd_queued: list[dict] = field(default_factory=list)
+    unresolved: list[dict] = field(default_factory=list)
+    patterns: list[dict] = field(default_factory=list)
+    error: str | None = None
+
+
+_import_repair_state = ImportRepairState()
+_import_repair_lock = threading.Lock()
+
+# Mirrors the labels shown in frontend/src/utils/jobQueueUtils.js — kept as a
+# separate copy since this crosses the Python/JS boundary and is only used to
+# render the findings doc, not for behavior.
+_IMPORT_WARNING_LABELS = {
+    "homepage_url": "URL is a homepage, not a job listing",
+    "jd_body_is_tracking_link": "Job description couldn't be fetched — only a tracking link was captured",
+    "missing_company": "Company name is missing",
+    "missing_job_title": "Job title is missing",
+    "page_title": "Title looks like a browser page title",
+}
+
+_PATTERN_MIN_COUNT = 3
+_PATTERN_MIN_PERCENT = 15.0
+
+
+def _attempt_import_repair(repos: dict, job: dict, warnings: list[str]) -> tuple[dict, list[str]]:
+    """Try to auto-fix a job's missing title/company or unusable URL in place.
+
+    Returns (updates, remaining_warning_codes). `updates` is the DB patch to
+    apply (may be empty if nothing could be fixed synchronously).
+    """
+    working = dict(job)
+    updates: dict = {}
+
+    if "missing_job_title" in warnings or "missing_company" in warnings:
+        before_title, before_company = working.get("job_title"), working.get("company")
+        normalize_title_company(working, working.get("email_subject") or "", working.get("raw_email_snippet") or "")
+        if working.get("job_title") != before_title:
+            updates["job_title"] = working["job_title"]
+        if working.get("company") != before_company:
+            updates["company"] = working["company"]
+
+    if "homepage_url" in warnings:
+        candidate_url = fallback_job_url(working.get("raw_email_snippet") or "")
+        if candidate_url and candidate_url != working.get("url"):
+            working["url"] = candidate_url
+            updates["url"] = candidate_url
+
+    if "jd_body_is_tracking_link" in warnings:
+        # Can't be fixed synchronously — the description only renders after JS
+        # executes on the target page. Queue it for the browser extension to
+        # capture a fully-rendered copy; the capture pipeline already knows how
+        # to match it back to this job by URL and patch job_description in place.
+        capture_url = str(working.get("url") or "").strip()
+        if capture_url:
+            site_name = str(working.get("source") or "").strip() or urlparse(capture_url).netloc
+            try:
+                repos["browser_capture_queue"].enqueue(capture_url, site_name)
+            except Exception as exc:
+                logger.warning(
+                    "Import repair: failed to enqueue browser capture for job %s: %s",
+                    job.get("id"), exc,
+                )
+
+    _, remaining = normalize_and_validate(working)
+    if updates or remaining != warnings:
+        updates["import_warnings"] = import_warnings_to_json(remaining)
+
+    return updates, remaining
+
+
+def _compute_repair_patterns(
+    totals_by_source: dict[str, int],
+    warning_counts: dict[tuple[str, str], int],
+) -> list[dict]:
+    """Flag (source, warning_code) combinations that recur often enough to be a
+    systemic parser/scraper gap rather than a one-off bad email."""
+    findings: list[dict] = []
+    for (source, code), count in warning_counts.items():
+        total = totals_by_source.get(source, 0)
+        if total == 0:
+            continue
+        percent = round((count / total) * 100, 1)
+        if count >= _PATTERN_MIN_COUNT and percent >= _PATTERN_MIN_PERCENT:
+            findings.append({
+                "source": source,
+                "warning_code": code,
+                "count": count,
+                "total": total,
+                "percent": percent,
+            })
+    findings.sort(key=lambda f: -f["percent"])
+    return findings
+
+
+def _write_repair_findings_doc(findings: list[dict]) -> None:
+    """Persist detected patterns to docs/ so a coding agent can pick them up as a
+    signal that a specific source's parser/scraper needs a permanent fix."""
+    lines = [
+        "# Import Repair Findings",
+        "",
+        f"_Auto-generated by the import repair sweep — last run "
+        f"{datetime.now(UTC).isoformat(timespec='seconds')}._",
+        "",
+        "Recurring import defects detected across non-terminal jobs, after best-effort "
+        "automatic repair. A pattern here means the same defect keeps recurring for a "
+        "specific source — likely a systemic gap in that source's email parser or career-site "
+        "scraper, not a one-off bad email. Worth a permanent code fix rather than repeated repair runs.",
+        "",
+    ]
+    if not findings:
+        lines.append("No systemic patterns detected in the last run.")
+    else:
+        lines.append("| Source | Issue | Occurrences | Share of source's jobs |")
+        lines.append("|---|---|---|---|")
+        for f in findings:
+            label = _IMPORT_WARNING_LABELS.get(f["warning_code"], f["warning_code"])
+            lines.append(f"| {f['source']} | {label} | {f['count']} of {f['total']} | {f['percent']}% |")
+    (config.BASE_DIR / "docs" / "import_repair_findings.md").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+
+
+def _run_import_repair() -> None:
+    """Background thread: sweep non-terminal jobs for fixable import defects
+    (missing title/company, homepage-only URL, JD body that's just a tracking
+    link) and repair what can be fixed automatically. Also tallies recurring
+    per-source defects into docs/import_repair_findings.md."""
+    with _import_repair_lock:
+        _import_repair_state.running = True
+        _import_repair_state.progress = 0
+        _import_repair_state.total = 0
+        _import_repair_state.message = "Finding jobs with import issues…"
+        _import_repair_state.current_company = ""
+        _import_repair_state.current_title = ""
+        _import_repair_state.title_or_company_fixed = []
+        _import_repair_state.url_fixed = []
+        _import_repair_state.jd_queued = []
+        _import_repair_state.unresolved = []
+        _import_repair_state.patterns = []
+        _import_repair_state.error = None
+
+    try:
+        with get_repos() as repos:
+            candidates = _non_terminal_jobs(repos)
+
+        total = len(candidates)
+        with _import_repair_lock:
+            _import_repair_state.total = total
+            _import_repair_state.message = f"Scanning {total} job{'s' if total != 1 else ''} for import issues…"
+
+        title_or_company_fixed: list[dict] = []
+        url_fixed: list[dict] = []
+        jd_queued: list[dict] = []
+        unresolved: list[dict] = []
+        totals_by_source: dict[str, int] = {}
+        warning_counts: dict[tuple[str, str], int] = {}
+
+        for i, job in enumerate(candidates):
+            company = job.get("company") or ""
+            title = job.get("job_title") or "Untitled"
+            summary = {"id": job["id"], "company": company, "job_title": title}
+            source = (job.get("source") or "Unknown").strip() or "Unknown"
+            totals_by_source[source] = totals_by_source.get(source, 0) + 1
+
+            with _import_repair_lock:
+                _import_repair_state.progress = i
+                _import_repair_state.current_company = company
+                _import_repair_state.current_title = title
+                _import_repair_state.message = f"Checking {i + 1}/{total}: {company} — {title}…"
+
+            _, warnings = normalize_and_validate(job)
+            if not warnings:
+                continue
+
+            with get_repos() as repos:
+                updates, remaining = _attempt_import_repair(repos, job, warnings)
+                if updates:
+                    repos["jobs"].update(job["id"], updates)
+                    repos["conn"].commit()
+
+            if "job_title" in updates or "company" in updates:
+                title_or_company_fixed.append({
+                    **summary,
+                    **{k: updates[k] for k in ("job_title", "company") if k in updates},
+                })
+                with _import_repair_lock:
+                    _import_repair_state.title_or_company_fixed = list(title_or_company_fixed)
+
+            if "url" in updates:
+                url_fixed.append({**summary, "url": updates["url"]})
+                with _import_repair_lock:
+                    _import_repair_state.url_fixed = list(url_fixed)
+
+            if "jd_body_is_tracking_link" in warnings:
+                jd_queued.append(summary)
+                with _import_repair_lock:
+                    _import_repair_state.jd_queued = list(jd_queued)
+
+            # jd_body_is_tracking_link is "handled" (queued for async capture) even
+            # though it's still technically unresolved — don't show it as stuck.
+            stuck = [w for w in remaining if w != "jd_body_is_tracking_link"]
+            if stuck:
+                unresolved.append({**summary, "warnings": stuck})
+                with _import_repair_lock:
+                    _import_repair_state.unresolved = list(unresolved)
+
+            for code in remaining:
+                key = (source, code)
+                warning_counts[key] = warning_counts.get(key, 0) + 1
+
+        findings = _compute_repair_patterns(totals_by_source, warning_counts)
+        _write_repair_findings_doc(findings)
+
+        with _import_repair_lock:
+            _import_repair_state.running = False
+            _import_repair_state.progress = total
+            _import_repair_state.current_company = ""
+            _import_repair_state.current_title = ""
+            _import_repair_state.patterns = findings
+            _import_repair_state.message = (
+                f"Done — {len(title_or_company_fixed)} title/company fixed, "
+                f"{len(url_fixed)} URL fixed, {len(jd_queued)} queued for browser capture, "
+                f"{len(unresolved)} still unresolved."
+            )
+
+    except Exception as exc:
+        logger.warning("Import repair sweep failed: %s", exc, exc_info=True)
+        with _import_repair_lock:
+            _import_repair_state.running = False
+            _import_repair_state.error = str(exc)
+            _import_repair_state.message = "Repair failed — see server logs"
+
+
+@jobs_bp.route("/jobs/repair-import-issues", methods=["POST"])
+def start_import_repair():
+    """Kick off a background sweep to auto-fix jobs with missing title/company,
+    homepage-only URLs, or a JD body that's only a tracking link."""
+    with _import_repair_lock:
+        if _import_repair_state.running:
+            return jsonify({"error": "Repair already running"}), 409
+    threading.Thread(target=_run_import_repair, daemon=True, name="import-issue-repair").start()
+    return jsonify({"status": "started"})
+
+
+@jobs_bp.route("/jobs/repair-import-issues/status", methods=["GET"])
+def import_repair_status():
+    """Return the current import-issue repair sweep state."""
+    with _import_repair_lock:
+        return jsonify({
+            "running": _import_repair_state.running,
+            "progress": _import_repair_state.progress,
+            "total": _import_repair_state.total,
+            "message": _import_repair_state.message,
+            "current_company": _import_repair_state.current_company,
+            "current_title": _import_repair_state.current_title,
+            "title_or_company_fixed": _import_repair_state.title_or_company_fixed,
+            "url_fixed": _import_repair_state.url_fixed,
+            "jd_queued": _import_repair_state.jd_queued,
+            "unresolved": _import_repair_state.unresolved,
+            "patterns": _import_repair_state.patterns,
+            "error": _import_repair_state.error,
         })

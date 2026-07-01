@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import backend.email_parser as email_parser_module
 from backend.ai_provider import AIMessage
-from backend.email_parser import EmailParser, _normalize_title_company, _trim_company_tail
+from backend.email_parser import EmailParser, _trim_company_tail, normalize_title_company
 
 
 class FakeParserClient:
@@ -62,7 +62,7 @@ def test_extracts_company_from_job_application_title() -> None:
         "source": "",
     }
 
-    _normalize_title_company(item, "")
+    normalize_title_company(item, "")
 
     assert item["company"] == "Transcend Inc."
     assert item["job_title"] == "Senior Software Engineer - Workflows"
@@ -75,7 +75,7 @@ def test_extracts_company_from_subject_when_title_is_clean() -> None:
         "source": "",
     }
 
-    _normalize_title_company(
+    normalize_title_company(
         item,
         "Job Application for Senior Software Engineer - Workflows at Transcend Inc.",
     )
@@ -91,7 +91,7 @@ def test_extracts_company_from_body_when_title_is_clean() -> None:
         "source": "",
     }
 
-    _normalize_title_company(
+    normalize_title_company(
         item,
         "Manual pasted job listing",
         "Senior Software Engineer - Workflows at Transcend Inc.\nRemote",
@@ -108,7 +108,7 @@ def test_extracts_title_and_company_from_body_when_title_is_unknown() -> None:
         "source": "",
     }
 
-    _normalize_title_company(
+    normalize_title_company(
         item,
         "Manual pasted job listing",
         "Senior Software Engineer - Workflows at Transcend Inc.\nRemote",
@@ -144,7 +144,7 @@ def test_keeps_existing_known_company() -> None:
         "source": "",
     }
 
-    _normalize_title_company(item, "")
+    normalize_title_company(item, "")
 
     assert item["company"] == "Acme"
     assert item["job_title"] == "Job Application for Senior Engineer at Transcend Inc."
