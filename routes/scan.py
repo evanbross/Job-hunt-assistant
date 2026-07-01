@@ -642,6 +642,24 @@ def _run_scan(rescan_all: bool = False) -> None:
                         if outcome not in ("low fit score", "possible duplicate"):
                             outcome = "import review needed"
 
+                    # The email digest gave us only a tracking link, not real JD text
+                    # (typical of WTTJ's client-rendered job pages). Queue the resolved
+                    # URL for the browser extension to capture a fully-rendered copy —
+                    # the import pipeline already knows how to match the capture back to
+                    # this job by URL and patch job_description in place.
+                    if "jd_body_is_tracking_link" in import_warnings:
+                        capture_url = str(job_data.get("url") or "").strip()
+                        if capture_url:
+                            try:
+                                repos["browser_capture_queue"].enqueue(
+                                    capture_url, job_data.get("source") or "Welcome to the Jungle"
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to enqueue browser capture for JD-less job %s: %s",
+                                    capture_url, exc,
+                                )
+
                     job_repo.insert(job_data)
                     new_jobs += 1
                     job_title = str(parsed.get("job_title") or "").strip()
