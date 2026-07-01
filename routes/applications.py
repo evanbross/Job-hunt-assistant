@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import threading
 from dataclasses import dataclass, field
@@ -77,6 +78,12 @@ _PLATFORM_LABELS: dict[str, str] = {
     "linkedin": "LinkedIn",
     "wttj": "Welcome to the Jungle",
 }
+
+# ai: claude-sonnet-4-6 | 2026-07-01
+_LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
+# LinkedIn redirects an expired posting's canonical URL to a generic jobs
+# search results page carrying this marker, rather than returning 404/410.
+_LINKEDIN_EXPIRED_REDIRECT_MARKER = "expired_jd_redirect"
 
 _TRACKING_COLUMNS: list[dict] = [
     {"index": 0, "label": "Company",   "hidden": False},
@@ -299,16 +306,36 @@ def _detect_closed_req_platform(job: dict, url: str) -> str | None:
     return None
 
 
+def _canonicalize_linkedin_url(url: str) -> str:
+    """Rewrite any LinkedIn job URL to its canonical /jobs/view/<id>/ form.
+
+    Job links from email notifications (e.g. /comm/jobs/view/<id>?midToken=...)
+    carry a one-time login token that LinkedIn redirects to a passwordless
+    sign-in page when fetched anonymously — the real job page is never reached,
+    so a closed-req banner can never be seen. The canonical URL, with the
+    tracking/otp params stripped, loads the job page (or its expiry redirect)
+    directly without requiring auth.
+    """
+    match = _LINKEDIN_JOB_ID_RE.search(url)
+    if not match:
+        return url
+    return f"https://www.linkedin.com/jobs/view/{match.group(1)}/"
+
+
 def _check_closed_req(url: str, platform: str) -> str:
     """Fetch a job URL and classify it as 'closed', 'open', 'bad_url', or 'unreachable'.
 
-    'closed' covers both a closed-req banner on a page that loaded fine and an
-    HTTP 404/410 (the listing was removed entirely). 'bad_url' is an unrelated
-    HTTP error (e.g. 400/403/500) suggesting the URL itself is broken rather
-    than the job being closed. 'unreachable' is a network-level failure
-    (timeout, DNS, etc.) unrelated to the job's status, so the caller can skip
-    it rather than risk a false positive from a transient error.
+    'closed' covers a closed-req banner on a page that loaded fine, an HTTP
+    404/410 (the listing was removed entirely), and — for LinkedIn — a redirect
+    to its generic jobs-search page carrying an expired-posting marker.
+    'bad_url' is an unrelated HTTP error (e.g. 400/403/500) suggesting the URL
+    itself is broken rather than the job being closed. 'unreachable' is a
+    network-level failure (timeout, DNS, etc.) unrelated to the job's status,
+    so the caller can skip it rather than risk a false positive from a
+    transient error.
     """
+    if platform == "linkedin":
+        url = _canonicalize_linkedin_url(url)
     req = Request(
         url,
         headers={
@@ -324,6 +351,7 @@ def _check_closed_req(url: str, platform: str) -> str:
         with urlopen(req, timeout=_CLOSED_REQ_FETCH_TIMEOUT_SECONDS) as resp:
             raw = resp.read(_CLOSED_REQ_FETCH_MAX_BYTES)
             charset = resp.headers.get_content_charset() or "utf-8"
+            final_url = resp.geturl()
         page_text = raw.decode(charset, errors="replace").lower()
     except HTTPError as exc:
         if exc.code in (404, 410):
@@ -333,6 +361,8 @@ def _check_closed_req(url: str, platform: str) -> str:
     except (URLError, TimeoutError, socket.error) as exc:
         logger.warning("Closed-req check failed for %s: %s", url, exc)
         return "unreachable"
+    if platform == "linkedin" and _LINKEDIN_EXPIRED_REDIRECT_MARKER in final_url.lower():
+        return "closed"
     phrases = _CLOSED_PHRASES_BY_PLATFORM.get(platform, ())
     return "closed" if any(phrase in page_text for phrase in phrases) else "open"
 
