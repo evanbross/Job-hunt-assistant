@@ -220,6 +220,14 @@ class IBrowserCaptureQueueRepository(Protocol):
     def delete_all(self) -> None: ...
 
 
+@runtime_checkable
+class IImportRepairHistoryRepository(Protocol):
+    def insert(self, row: dict[str, Any]) -> int: ...
+    def get_recent(self, limit: int = 500) -> list[dict[str, Any]]: ...
+    def get_for_source(self, source: str, warning_code: str, limit: int = 100) -> list[dict[str, Any]]: ...
+    def delete_all(self) -> None: ...
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
@@ -1580,6 +1588,47 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         self._execute("DELETE FROM browser_capture_queue")
 
 
+# ai: claude-opus-4-8 | 2026-07-01
+class PostgresImportRepairHistoryRepository(_BaseRepo):
+    """Append-only log of import-repair sweep findings, one row per
+    (source, warning_code) observed on a given run — lets trend over time be
+    queried instead of only ever seeing the latest snapshot."""
+
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
+        "run_at", "source", "warning_code", "count", "total", "percent",
+    })
+
+    def insert(self, row: dict[str, Any]) -> int:
+        unknown = set(row.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
+        columns = ", ".join(row.keys())
+        placeholders = ", ".join(["%s"] * len(row))
+        cur = self._execute(
+            f"INSERT INTO import_repair_history ({columns}) VALUES ({placeholders}) RETURNING id",
+            list(row.values()),
+        )
+        return cur.fetchone()["id"]
+
+    def get_recent(self, limit: int = 500) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM import_repair_history ORDER BY run_at DESC, id DESC LIMIT %s",
+            (limit,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_for_source(self, source: str, warning_code: str, limit: int = 100) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM import_repair_history WHERE source = %s AND warning_code = %s"
+            " ORDER BY run_at DESC, id DESC LIMIT %s",
+            (source, warning_code, limit),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def delete_all(self) -> None:
+        self._execute("DELETE FROM import_repair_history")
+
+
 # ─── Backward-compat aliases (app.py imports these names) ────────────────────
 
 SQLiteJobRepository = PostgresJobRepository
@@ -2326,6 +2375,21 @@ def _create_tables(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_browser_capture_queue_status
             ON browser_capture_queue (status, created_at)
         """,
+        """
+        CREATE TABLE IF NOT EXISTS import_repair_history (
+            id            SERIAL PRIMARY KEY,
+            run_at        TEXT NOT NULL,
+            source        TEXT NOT NULL,
+            warning_code  TEXT NOT NULL,
+            count         INTEGER NOT NULL,
+            total         INTEGER NOT NULL,
+            percent       REAL NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_import_repair_history_source_code
+            ON import_repair_history (source, warning_code, run_at DESC)
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()
@@ -2553,6 +2617,21 @@ def _create_tables_sqlite(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_browser_capture_queue_status
             ON browser_capture_queue (status, created_at)
         """,
+        """
+        CREATE TABLE IF NOT EXISTS import_repair_history (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at        TEXT NOT NULL,
+            source        TEXT NOT NULL,
+            warning_code  TEXT NOT NULL,
+            count         INTEGER NOT NULL,
+            total         INTEGER NOT NULL,
+            percent       REAL NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_import_repair_history_source_code
+            ON import_repair_history (source, warning_code, run_at DESC)
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()
@@ -2632,4 +2711,5 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "stage_statuses": PostgresStageStatusRepository(conn),
         "job_status_history": PostgresJobStatusHistoryRepository(conn),
         "browser_capture_queue": PostgresBrowserCaptureQueueRepository(conn),
+        "import_repair_history": PostgresImportRepairHistoryRepository(conn),
     }

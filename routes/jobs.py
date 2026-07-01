@@ -1166,7 +1166,47 @@ def _compute_repair_patterns(
     return findings
 
 
-def _write_repair_findings_doc(findings: list[dict]) -> None:
+def _record_repair_history(
+    repos: dict,
+    run_at: str,
+    totals_by_source: dict[str, int],
+    warning_counts: dict[tuple[str, str], int],
+) -> dict[tuple[str, str], dict]:
+    """Insert one append-only row per (source, warning_code) observed this run —
+    for every combination seen, not just ones that cross the pattern threshold —
+    so a source dropping below the threshold doesn't erase its history. Returns
+    each pair's most recent prior row (before this run) for trend comparison."""
+    previous: dict[tuple[str, str], dict] = {}
+    for source, code in warning_counts:
+        prior_rows = repos["import_repair_history"].get_for_source(source, code, limit=1)
+        if prior_rows:
+            previous[(source, code)] = prior_rows[0]
+
+    for (source, code), count in warning_counts.items():
+        total = totals_by_source.get(source, 0)
+        percent = round((count / total) * 100, 1) if total else 0.0
+        repos["import_repair_history"].insert({
+            "run_at": run_at,
+            "source": source,
+            "warning_code": code,
+            "count": count,
+            "total": total,
+            "percent": percent,
+        })
+    return previous
+
+
+def _repair_trend_label(current_percent: float, previous_row: dict | None) -> str:
+    if previous_row is None:
+        return "new"
+    delta = current_percent - float(previous_row["percent"])
+    if abs(delta) < 0.5:
+        return "flat"
+    arrow = "↓" if delta < 0 else "↑"
+    return f"{arrow} {abs(round(delta, 1))}pt vs last run"
+
+
+def _write_repair_findings_doc(findings: list[dict], previous: dict[tuple[str, str], dict]) -> None:
     """Persist detected patterns to docs/ so a coding agent can pick them up as a
     signal that a specific source's parser/scraper needs a permanent fix."""
     lines = [
@@ -1180,15 +1220,19 @@ def _write_repair_findings_doc(findings: list[dict]) -> None:
         "specific source — likely a systemic gap in that source's email parser or career-site "
         "scraper, not a one-off bad email. Worth a permanent code fix rather than repeated repair runs.",
         "",
+        "Trend is vs. this (source, issue) pair's most recent prior sweep run — full history is in "
+        "the import_repair_history table.",
+        "",
     ]
     if not findings:
         lines.append("No systemic patterns detected in the last run.")
     else:
-        lines.append("| Source | Issue | Occurrences | Share of source's jobs |")
-        lines.append("|---|---|---|---|")
+        lines.append("| Source | Issue | Occurrences | Share of source's jobs | Trend |")
+        lines.append("|---|---|---|---|---|")
         for f in findings:
             label = _IMPORT_WARNING_LABELS.get(f["warning_code"], f["warning_code"])
-            lines.append(f"| {f['source']} | {label} | {f['count']} of {f['total']} | {f['percent']}% |")
+            trend = _repair_trend_label(f["percent"], previous.get((f["source"], f["warning_code"])))
+            lines.append(f"| {f['source']} | {label} | {f['count']} of {f['total']} | {f['percent']}% | {trend} |")
     (config.BASE_DIR / "docs" / "import_repair_findings.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
@@ -1282,8 +1326,13 @@ def _run_import_repair() -> None:
                 key = (source, code)
                 warning_counts[key] = warning_counts.get(key, 0) + 1
 
+        run_at = datetime.now(UTC).isoformat(timespec="seconds")
+        with get_repos() as repos:
+            previous = _record_repair_history(repos, run_at, totals_by_source, warning_counts)
+            repos["conn"].commit()
+
         findings = _compute_repair_patterns(totals_by_source, warning_counts)
-        _write_repair_findings_doc(findings)
+        _write_repair_findings_doc(findings, previous)
 
         with _import_repair_lock:
             _import_repair_state.running = False
