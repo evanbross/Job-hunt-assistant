@@ -40,7 +40,14 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
-from routes.applications import _canonicalize_linkedin_url, _check_closed_req
+import config
+from backend.db import init_db, open_repositories
+from routes.applications import (
+    _canonicalize_linkedin_url,
+    _check_closed_req,
+    _closed_req_candidates,
+    _record_closed_req,
+)
 
 
 def test_canonicalize_linkedin_url_strips_email_tracking_params() -> None:
@@ -112,3 +119,98 @@ def test_check_closed_req_returns_closed_on_404() -> None:
     ):
         result = _check_closed_req(url, "linkedin")
     assert result == "closed"
+
+
+def _fresh_repos(tmp_path, monkeypatch) -> dict:
+    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
+    init_db(dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", dsn)
+    return open_repositories(dsn)
+
+
+def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(tmp_path, monkeypatch) -> None:
+    """A job already on the Applications Sheet gets a req_closed stage, jobs.status untouched."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        job_id = repos["jobs"].insert({
+            "company": "Acme",
+            "job_title": "Engineer",
+            "url": "https://www.linkedin.com/jobs/view/1/",
+            "source": "LinkedIn",
+            "status": "pending_review",
+            "date_added_to_sheet": "2026-06-01",
+        })
+        repos["conn"].commit()
+    finally:
+        repos["conn"].close()
+
+    _record_closed_req({"id": job_id, "date_added_to_sheet": "2026-06-01"}, "LinkedIn", "2026-07-02")
+
+    repos = open_repositories(config.DATABASE_URL)
+    try:
+        stages = [s for s in repos["stages"].get_all() if s["job_id"] == job_id]
+        updated_job = repos["jobs"].get_by_id(job_id)
+    finally:
+        repos["conn"].close()
+
+    assert [s["status"] for s in stages] == ["req_closed"]
+    assert updated_job["status"] == "pending_review"
+
+
+def test_record_closed_req_skips_queue_job_out_of_job_queue(tmp_path, monkeypatch) -> None:
+    """A job still in the pre-triage queue must actually leave GET /jobs, not just get a stage."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        job_id = repos["jobs"].insert({
+            "company": "Acme",
+            "job_title": "Engineer",
+            "url": "https://www.linkedin.com/jobs/view/2/",
+            "source": "LinkedIn",
+            "status": "pending_review",
+        })
+        repos["conn"].commit()
+        job = repos["jobs"].get_by_id(job_id)
+    finally:
+        repos["conn"].close()
+
+    _record_closed_req(job, "LinkedIn", "2026-07-02")
+
+    repos = open_repositories(config.DATABASE_URL)
+    try:
+        updated_job = repos["jobs"].get_by_id(job_id)
+        history = [h for h in repos["job_status_history"].get_recent(50) if h["job_id"] == job_id]
+    finally:
+        repos["conn"].close()
+
+    # GET /jobs (the Job Queue) filters strictly on status == "pending_review",
+    # so leaving that status is what actually removes the job from the queue.
+    assert updated_job["status"] == "skipped"
+    assert updated_job["skip_reason"] == "req_closed"
+    assert [h["trigger"] for h in history] == ["req_closed_scan"]
+
+
+def test_closed_req_candidates_excludes_already_skipped_queue_jobs(tmp_path, monkeypatch) -> None:
+    """A queue job already skipped for another reason must not be re-flagged as req_closed."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        repos["jobs"].insert({
+            "company": "Acme",
+            "job_title": "Not A Fit",
+            "url": "https://www.linkedin.com/jobs/view/3/",
+            "source": "LinkedIn",
+            "status": "skipped",
+            "skip_reason": "not_a_fit",
+        })
+        active_job_id = repos["jobs"].insert({
+            "company": "Acme",
+            "job_title": "Still Active",
+            "url": "https://www.linkedin.com/jobs/view/4/",
+            "source": "LinkedIn",
+            "status": "pending_review",
+        })
+        repos["conn"].commit()
+        candidates = _closed_req_candidates(repos)
+    finally:
+        repos["conn"].close()
+
+    assert [job["id"] for job, _url, _platform in candidates] == [active_job_id]

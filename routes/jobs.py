@@ -60,6 +60,7 @@ from backend.utils import (
     _safe_error_message,
     db_match_for_job,
     get_repos,
+    maybe_mark_source_email_read,
     normalize_stage_status,
 )
 
@@ -91,29 +92,6 @@ _VALID_MISMATCH_REASONS = frozenset({
     "Contract / Temp",
     "Other Mismatch",
 })
-
-
-def _maybe_mark_source_email_read(job: dict[str, object], job_repo) -> None:
-    """Mark the source Gmail message read once no active queue jobs remain for it."""
-    email_id = str(job.get("email_id") or "").strip()
-    sender_email = str(job.get("sender_email") or "").strip()
-    if not email_id or not sender_email:
-        return
-
-    base_email_id = email_id.split(":")[0]
-    remaining_active = job_repo.count_by_base_email_id_and_statuses(
-        base_email_id,
-        list(ACTIVE_JOB_STATUSES),
-    )
-    if remaining_active > 0:
-        return
-
-    try:
-        GmailClient().mark_as_read(base_email_id)
-    except NotAuthenticatedError:
-        logger.warning("Could not mark email %s as read: Gmail is not authenticated", base_email_id)
-    except Exception as exc:
-        logger.warning("Could not mark email %s as read: %s", base_email_id, exc)
 
 
 def _validated_job_patch_fields(body: dict[str, object]) -> tuple[dict[str, str], str | None]:
@@ -297,7 +275,7 @@ def skip_job(job_id: int):
         if reason == "not_a_fit" and mismatch_reasons:
             updates["skip_mismatch_reasons"] = "|".join(mismatch_reasons)
         repos["jobs"].update(job_id, updates)
-        _maybe_mark_source_email_read(job, repos["jobs"])
+        maybe_mark_source_email_read(job, repos["jobs"])
         repos["job_status_history"].insert({
             "job_id": job_id,
             "from_status": from_status,
@@ -396,7 +374,7 @@ def apply_job(job_id: int):
             job_id, {"status": "applied", "date_added_to_sheet": today}
         )
         repos["stages"].insert({"job_id": job_id, "status": "applied", "date": today, "notes": None})
-        _maybe_mark_source_email_read(job, repos["jobs"])
+        maybe_mark_source_email_read(job, repos["jobs"])
         repos["job_status_history"].insert({
             "job_id": job_id,
             "from_status": from_status,
@@ -833,7 +811,7 @@ def reject_triage_job(job_id: int):
             )
 
         repos["jobs"].delete(job_id)
-        _maybe_mark_source_email_read(job, repos["jobs"])
+        maybe_mark_source_email_read(job, repos["jobs"])
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 

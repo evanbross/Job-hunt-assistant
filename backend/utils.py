@@ -61,6 +61,7 @@ from backend.db import (
 from backend.duplicate_checker import DuplicateChecker
 from backend.email_parser import ParsedJob
 from backend.fit_scorer import FitScorer
+from backend.gmail_client import GmailClient, NotAuthenticatedError
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,35 @@ def get_repos() -> Generator[dict, None, None]:
         yield repos
     finally:
         repos["conn"].close()
+
+
+# ai: claude-sonnet-4-6 | 2026-07-02
+def maybe_mark_source_email_read(job: dict[str, object], job_repo: IJobRepository) -> None:
+    """Mark the source Gmail message read once no active queue jobs remain for it.
+
+    Shared by routes/jobs.py (manual skip) and routes/applications.py (closed-req
+    scan) per FLASK_STANDARDS.md — any helper used by two or more blueprints
+    belongs in this shared module, not in one of the blueprints.
+    """
+    email_id = str(job.get("email_id") or "").strip()
+    sender_email = str(job.get("sender_email") or "").strip()
+    if not email_id or not sender_email:
+        return
+
+    base_email_id = email_id.split(":")[0]
+    remaining_active = job_repo.count_by_base_email_id_and_statuses(
+        base_email_id,
+        list(ACTIVE_JOB_STATUSES),
+    )
+    if remaining_active > 0:
+        return
+
+    try:
+        GmailClient().mark_as_read(base_email_id)
+    except NotAuthenticatedError:
+        logger.warning("Could not mark email %s as read: Gmail is not authenticated", base_email_id)
+    except Exception as exc:
+        logger.warning("Could not mark email %s as read: %s", base_email_id, exc)
 
 
 def _parse_bool(value: object, *, default: bool) -> bool:

@@ -36,6 +36,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import socket
@@ -50,6 +51,7 @@ from flask import Blueprint, jsonify, request
 
 from backend.utils import (
     get_repos,
+    maybe_mark_source_email_read,
     _tracking_payload,
     normalize_stage_status,
 )
@@ -424,8 +426,55 @@ def _closed_req_candidates(repos: dict) -> list[tuple[dict, str, str]]:
         )
         if latest_status in terminal_keys:
             continue
+        # A queue job already skipped for another reason (not_a_fit, duplicate,
+        # etc.) is no longer active — checking it would risk overwriting its
+        # real skip_reason with "req_closed" if the posting later expires.
+        if not latest_stage and job.get("status") == "skipped":
+            continue
         candidates.append((job, url, platform))
     return candidates
+
+
+def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
+    """Record a detected closed req in whichever place the UI actually reads from.
+
+    Jobs already on the Applications Sheet (date_added_to_sheet set) are
+    tracked via application_stages, so add a 'req_closed' stage there — the
+    Applications Sheet renders status from the latest stage.
+
+    Jobs still sitting in the pre-triage Job Queue have no stage history yet;
+    the Job Queue instead filters strictly on jobs.status == 'pending_review'
+    (see GET /jobs), which application_stages rows never touch. For these,
+    skip the job the same way the manual triage skip button does, so it
+    actually leaves the queue.
+    """
+    with get_repos() as repos:
+        if job.get("date_added_to_sheet"):
+            repos["stages"].insert(
+                {
+                    "job_id": job["id"],
+                    "status": "req_closed",
+                    "date": today,
+                    "notes": f"Req closed on {platform_label} (auto-detected).",
+                }
+            )
+        else:
+            from_status = str(job.get("status") or "")
+            repos["jobs"].update(job["id"], {"status": "skipped", "skip_reason": "req_closed"})
+            maybe_mark_source_email_read(job, repos["jobs"])
+            repos["job_status_history"].insert({
+                "job_id": job["id"],
+                "from_status": from_status,
+                "to_status": "skipped",
+                "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "trigger": "req_closed_scan",
+                "extra_data": json.dumps({
+                    "prev_skip_reason": job.get("skip_reason"),
+                    "prev_skip_feedback": job.get("skip_feedback"),
+                    "prev_skip_mismatch_reasons": job.get("skip_mismatch_reasons"),
+                }),
+            })
+        repos["conn"].commit()
 
 
 def _run_req_closed_scan() -> None:
@@ -469,16 +518,7 @@ def _run_req_closed_scan() -> None:
                 "platform": platform_label,
             }
             if result == "closed":
-                with get_repos() as repos:
-                    repos["stages"].insert(
-                        {
-                            "job_id": job["id"],
-                            "status": "req_closed",
-                            "date": today,
-                            "notes": f"Req closed on {platform_label} (auto-detected).",
-                        }
-                    )
-                    repos["conn"].commit()
+                _record_closed_req(job, platform_label, today)
                 marked.append(job_summary)
                 closed_count += 1
             elif result == "open":
