@@ -60,13 +60,18 @@ class FakeGmailClient:
             "Staff Software Engineer at Acme\nPrincipal Platform Engineer at Globex",
         )
 
+    # ai: claude-sonnet-4-6 | 2026-07-02
+    def extract_raw_html(self, full_msg: dict[str, str]) -> str:
+        return ""
+
 
 class FakeEmailParser:
     # ai: claude-sonnet-4-6 | 2026-06-25
     def __init__(self, *args: object, **kwargs: object) -> None:
         pass
 
-    def parse(self, subject: str, sender: str, body: str) -> list[dict[str, object]]:
+    # ai: claude-sonnet-4-6 | 2026-07-02
+    def parse(self, subject: str, sender: str, body: str, raw_html: str = "") -> list[dict[str, object]]:
         return [
             {
                 "company": "Acme",
