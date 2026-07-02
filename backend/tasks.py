@@ -494,6 +494,12 @@ def run_import_task(
                             )
                         )
                         continue
+                # ai: claude-sonnet-4-6 | 2026-07-02
+                # known_jobs is a snapshot fetched once before this loop started, so
+                # a newly queued job must be appended here — otherwise a later job in
+                # the same batch that duplicates this one won't see it in the
+                # duplicate check and will queue as a second, unflagged copy.
+                known_jobs.append(new_job)
                 queued += 1
                 queued_details.append(
                     _import_outcome_detail(
