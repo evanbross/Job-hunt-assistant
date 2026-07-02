@@ -450,9 +450,10 @@ function EmailSourcesSection() {
             </label>
             <div style={{ ...settingRowStyle, marginTop: "14px" }}>
               <div>
-                <div style={settingTitleStyle}>Move Successful Emails</div>
+                <div style={settingTitleStyle}>Move Scanned Emails</div>
                 <div style={settingDescriptionStyle}>
-                  When on, emails that produced job records move to the processed label; when off, they stay in place.
+                  When on, every email the scanner finishes processing (job listings, duplicates, filtered, and
+                  non-job emails alike) moves to the processed label; when off, they stay in place.
                 </div>
               </div>
               <Toggle

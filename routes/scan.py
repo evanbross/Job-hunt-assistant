@@ -175,6 +175,23 @@ def _attempt_move_to_label(gmail: GmailClient, msg_id: str, label: str) -> tuple
         return f"move to {label} failed", 0
 
 
+def _finalize_scanned_email(
+    gmail: GmailClient,
+    msg_id: str,
+    label: str,
+    move_enabled: bool,
+    default_action: str,
+) -> tuple[str, int]:
+    """
+    Every disposition that reaches scanned_repo.mark_scanned() is done being
+    processed, so (when the move setting is on) it should leave the inbox
+    regardless of whether it produced a job. Returns (action_description, moved_count).
+    """
+    if not move_enabled:
+        return default_action, 0
+    return _attempt_move_to_label(gmail, msg_id, label)
+
+
 # ─── Background scan thread ───────────────────────────────────────────────────
 
 def _run_scan(rescan_all: bool = False) -> None:
@@ -294,10 +311,10 @@ def _run_scan(rescan_all: bool = False) -> None:
                 if scanned_repo.has_been_scanned(msg_id):
                     already_scanned_emails += 1
                     stored = scanned_repo.get_scanned_metadata(msg_id)
-                    gmail_action = "already processed"
-                    if move_successfully_processed_emails:
-                        gmail_action, n = _attempt_move_to_label(gmail, msg_id, scanned_email_label)
-                        moved_successful_emails += n
+                    gmail_action, n = _finalize_scanned_email(
+                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "already processed"
+                    )
+                    moved_successful_emails += n
                     email_report.append(
                         _email_report_row(
                             email_id=msg_id,
@@ -355,6 +372,10 @@ def _run_scan(rescan_all: bool = False) -> None:
                     source_filtered_emails += 1
                     scanned_repo.mark_scanned(msg_id, sender, subject, disposition="source_filtered", email_date=email_date)
                     conn.commit()
+                    gmail_action, n = _finalize_scanned_email(
+                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "left in inbox"
+                    )
+                    moved_successful_emails += n
                     email_report.append(
                         _email_report_row(
                             email_id=msg_id,
@@ -362,7 +383,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                             email_subject=subject,
                             email_date=email_date,
                             disposition="source_filtered",
-                            gmail_action="left in inbox",
+                            gmail_action=gmail_action,
                             reason="Skipped because the sender matched a source query but the source subject filter did not match.",
                         )
                     )
@@ -385,6 +406,10 @@ def _run_scan(rescan_all: bool = False) -> None:
                     gmail.mark_as_read(msg_id)
                     scanned_repo.mark_scanned(msg_id, sender, subject, disposition="ack", email_date=email_date)
                     conn.commit()
+                    gmail_action, n = _finalize_scanned_email(
+                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "marked read"
+                    )
+                    moved_successful_emails += n
                     email_report.append(
                         _email_report_row(
                             email_id=msg_id,
@@ -392,7 +417,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                             email_subject=subject,
                             email_date=email_date,
                             disposition="ack",
-                            gmail_action="marked read",
+                            gmail_action=gmail_action,
                             reason="Skipped by an enabled subject-rule blacklist pattern.",
                         )
                     )
@@ -413,6 +438,10 @@ def _run_scan(rescan_all: bool = False) -> None:
                     duplicate_emails += 1
                     scanned_repo.mark_scanned(msg_id, sender, subject, disposition="duplicate", email_date=email_date)
                     conn.commit()
+                    gmail_action, n = _finalize_scanned_email(
+                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "left in inbox"
+                    )
+                    moved_successful_emails += n
                     email_report.append(
                         _email_report_row(
                             email_id=msg_id,
@@ -420,7 +449,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                             email_subject=subject,
                             email_date=email_date,
                             disposition="duplicate",
-                            gmail_action="left in inbox",
+                            gmail_action=gmail_action,
                             reason="Skipped because the same sender and subject were already scanned within the lookback window.",
                         )
                     )
@@ -449,6 +478,10 @@ def _run_scan(rescan_all: bool = False) -> None:
                     parser_error_emails += 1
                     scanned_repo.mark_scanned(msg_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=email_body, parser_error_msg=str(exc))
                     conn.commit()
+                    gmail_action, n = _finalize_scanned_email(
+                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "left in inbox"
+                    )
+                    moved_successful_emails += n
                     email_report.append(
                         _email_report_row(
                             email_id=msg_id,
@@ -456,7 +489,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                             email_subject=subject,
                             email_date=email_date,
                             disposition="parser_error",
-                            gmail_action="left in inbox",
+                            gmail_action=gmail_action,
                             reason=f"Parser failed before jobs could be extracted: {exc}",
                         )
                     )
@@ -478,6 +511,10 @@ def _run_scan(rescan_all: bool = False) -> None:
                     non_job_emails += 1
                     scanned_repo.mark_scanned(msg_id, sender, subject, disposition="noise", email_date=email_date)
                     conn.commit()
+                    gmail_action, n = _finalize_scanned_email(
+                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "left in inbox"
+                    )
+                    moved_successful_emails += n
                     email_report.append(
                         _email_report_row(
                             email_id=msg_id,
@@ -485,7 +522,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                             email_subject=subject,
                             email_date=email_date,
                             disposition="noise",
-                            gmail_action="left in inbox",
+                            gmail_action=gmail_action,
                             reason="Parser returned no job postings for this email.",
                         )
                     )
@@ -696,10 +733,10 @@ def _run_scan(rescan_all: bool = False) -> None:
                 emails_with_jobs += 1
                 scanned_repo.mark_scanned(msg_id, sender, subject, disposition="job_created", email_date=email_date)
                 conn.commit()
-                gmail_action = "eligible to move"
-                if move_successfully_processed_emails:
-                    gmail_action, n = _attempt_move_to_label(gmail, msg_id, scanned_email_label)
-                    moved_successful_emails += n
+                gmail_action, n = _finalize_scanned_email(
+                    gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "eligible to move"
+                )
+                moved_successful_emails += n
                 email_report.append(
                     _email_report_row(
                         email_id=msg_id,
