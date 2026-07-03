@@ -39,7 +39,7 @@ import CoverLetterModal from "./common/CoverLetterModal.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
 import UndoEditNotice from "./common/UndoEditNotice.jsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
-import { applicationRowFromSheet, jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.js";
+import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
 import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
@@ -109,10 +109,7 @@ function JobCard({
   const [undoSaving, setUndoSaving] = useState(false);
   const [coverLetter, setCoverLetter] = useState(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
-  const [companyLookupOpen, setCompanyLookupOpen] = useState(false);
-  const [companyLookupLoading, setCompanyLookupLoading] = useState(false);
-  const [companyLookupError, setCompanyLookupError] = useState("");
-  const [companyLookupRows, setCompanyLookupRows] = useState([]);
+  const companyHistory = useCompanyHistoryLookup(job);
   const { contextMenu, setContextMenu, runContextAction } = useCardContextMenu();
 
   // Save-to-disk state
@@ -577,38 +574,6 @@ function JobCard({
     }
   };
 
-  const handleCompanyLookup = async () => {
-    const company = String(job.company || "").trim();
-    setCompanyLookupOpen(true);
-    setCompanyLookupError("");
-    setCompanyLookupRows([]);
-    if (!company) {
-      setCompanyLookupError("This card does not have a company name to search.");
-      return;
-    }
-
-    setCompanyLookupLoading(true);
-    try {
-      const res = await fetch("/api/applications");
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || `Application lookup failed (${res.status})`);
-      }
-      const mapped = (Array.isArray(data.rows) ? data.rows : []).map(applicationRowFromSheet);
-      // ai: claude-sonnet-4-6 | 2026-06-26
-      // get_sheet_entries() only returns applied jobs, so queue jobs are absent.
-      // Inject the current job so it always appears as "this card".
-      const withCurrent = mapped.some((r) => r.id === job.id)
-        ? mapped
-        : [jobToHistoryRow(job), ...mapped];
-      setCompanyLookupRows(withCurrent.filter((row) => rowMatchesCompany(row.company, company)));
-    } catch (error) {
-      setCompanyLookupError(error.message || "Application lookup failed");
-    } finally {
-      setCompanyLookupLoading(false);
-    }
-  };
-
   const handleResumeTailor = async () => {
     if (resumeTailor) {
       setResumeTailorOpen(true);
@@ -878,7 +843,7 @@ function JobCard({
           <button
             type="button"
             style={contextMenuItemStyle}
-            onClick={() => runContextAction(handleCompanyLookup)}
+            onClick={() => runContextAction(companyHistory.open)}
             disabled={!String(job.company || "").trim()}
           >
             Show Company History
@@ -1098,7 +1063,7 @@ function JobCard({
           <button
             type="button"
             className="btn-secondary"
-            onClick={handleCompanyLookup}
+            onClick={companyHistory.open}
             style={{ fontSize: "12px", padding: "3px 9px" }}
             title="Show application tracking rows for this company"
           >
@@ -1125,15 +1090,15 @@ function JobCard({
         </div>
       )}
 
-      {companyLookupOpen && (
+      {companyHistory.opened && (
         <CompanyHistoryDialog
           company={job.company || "Unknown Company"}
           currentJobId={job.id}
           currentJobTitle={job.job_title || ""}
-          error={companyLookupError}
-          loading={companyLookupLoading}
-          rows={companyLookupRows}
-          onClose={() => setCompanyLookupOpen(false)}
+          error={companyHistory.error}
+          loading={companyHistory.loading}
+          rows={companyHistory.rows}
+          onClose={companyHistory.close}
           onNavigateToJobCard={onNavigateToJobCard}
           onSkipDuplicate={(rowId) => onSkip(rowId, "duplicate", "", [])}
         />
