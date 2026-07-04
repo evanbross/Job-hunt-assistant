@@ -144,7 +144,7 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
   const [skippingId, setSkippingId] = useState(null);
   const [dismissedIds, setDismissedIds] = useState(new Set());
   const [dismissingId, setDismissingId] = useState(null);
-  const [showDuplicates, setShowDuplicates] = useState(false);
+  const [showDuplicates, setShowDuplicates] = useState(true);
   const [sortBy, setSortBy] = useState("id");
 
   const handleSkipDuplicate = async (row) => {
