@@ -44,6 +44,7 @@ import { fitReasoningBullets, reasoningWithoutPenaltySummary, scoreLabel } from 
 import { dispositionLabel, formatJobTitles, formatScanAction, formatScanDisposition, scoreDeltaLabel } from "../utils/jobQueueUtils.js";
 import { compareNullableScores, extractSender, extractSubjectWords } from "../utils/triagePanelUtils.js";
 import { applicationRowFromSheet } from "../utils/sheetUtils.js";
+import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../utils/reqClosedScanStorage.js";
 
 const JOB_QUEUE_SEARCH_STORAGE_KEY = "jha.jobQueue.search";
 
@@ -368,6 +369,7 @@ export default function JobQueue({
   const boardPollRef = useRef(null);
   const reqClosedPollRef = useRef(null);
   const reqClosedDismissedRef = useRef(false);
+  const reqClosedBrowserDoneRef = useRef(0);
   const wttjRepairPollRef = useRef(null);
   const wttjRepairDismissedRef = useRef(false);
   const importRepairPollRef = useRef(null);
@@ -1049,6 +1051,7 @@ export default function JobQueue({
   const startReqClosedScan = async () => {
     setMoreToolsOpen(false);
     reqClosedDismissedRef.current = false;
+    reqClosedBrowserDoneRef.current = 0;
     const res = await fetch("/api/applications/scan-closed-reqs", { method: "POST" });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -1057,6 +1060,7 @@ export default function JobQueue({
     }
     setReqClosedScanning(true);
     setReqClosedDialog({ running: true, progress: 0, total: 0, marked: [], errors: [] });
+    setReqClosedDialogVisible(true);
     clearInterval(reqClosedPollRef.current);
     reqClosedPollRef.current = setInterval(pollReqClosedStatus, 2000);
   };
@@ -1068,9 +1072,20 @@ export default function JobQueue({
       if (!reqClosedDismissedRef.current) {
         setReqClosedDialog(data);
       }
-      if (!data.running) {
+      // Keep polling while the browser extension is still draining its authenticated
+      // recheck backlog — that continues well after the foreground scan reports done.
+      // Refetch jobs each time another browser recheck completes so newly-closed jobs
+      // drop out of the queue without waiting for the whole backlog to drain.
+      const browserDone = data.browser_queue?.done ?? 0;
+      const browserDraining = (data.browser_queue?.remaining ?? 0) > 0;
+      if (browserDone !== reqClosedBrowserDoneRef.current) {
+        reqClosedBrowserDoneRef.current = browserDone;
+        await fetchJobs();
+      }
+      if (!data.running && !browserDraining) {
         clearInterval(reqClosedPollRef.current);
         setReqClosedScanning(false);
+        setReqClosedDialogVisible(false);
         await fetchJobs();
       }
     } catch {
@@ -1078,6 +1093,38 @@ export default function JobQueue({
       setReqClosedScanning(false);
     }
   };
+
+  // ai: claude-sonnet-4-6 | 2026-07-04
+  // Restores the dialog (and resumes polling) if the tab was reloaded or discarded
+  // while a scan/backlog was still active — otherwise the in-progress state is silently
+  // lost and the dialog never comes back even though the server-side scan is still going.
+  useEffect(() => {
+    if (!getReqClosedDialogVisible()) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/applications/scan-closed-reqs/status");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        const browserDraining = (data.browser_queue?.remaining ?? 0) > 0;
+        if (!data.running && !browserDraining) {
+          setReqClosedDialogVisible(false);
+          return;
+        }
+        reqClosedDismissedRef.current = false;
+        reqClosedBrowserDoneRef.current = data.browser_queue?.done ?? 0;
+        setReqClosedScanning(!!data.running);
+        setReqClosedDialog(data);
+        clearInterval(reqClosedPollRef.current);
+        reqClosedPollRef.current = setInterval(pollReqClosedStatus, 2000);
+      } catch {
+        /* leave the persisted flag as-is; try again on the next mount */
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ai: claude-sonnet-4-6 | 2026-06-25
   const startWttjRepair = async () => {
@@ -1858,6 +1905,7 @@ export default function JobQueue({
           result={reqClosedDialog}
           onClose={() => {
             reqClosedDismissedRef.current = true;
+            setReqClosedDialogVisible(false);
             setReqClosedDialog(null);
           }}
         />

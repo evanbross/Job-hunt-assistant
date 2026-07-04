@@ -43,10 +43,16 @@ from urllib.error import HTTPError
 import config
 from backend.db import init_db, open_repositories
 from routes.applications import (
+    _BROWSER_QUEUE_POLL_INTERVAL_SECONDS,
+    _CLOSED_REQ_BROWSER_CHECK_CAP,
     _canonicalize_linkedin_url,
     _check_closed_req,
+    _classify_closed_req_page,
+    _closed_req_browser_queue_snapshot,
     _closed_req_candidates,
     _record_closed_req,
+    _run_req_closed_scan,
+    submit_closed_req_capture,
 )
 
 
@@ -214,3 +220,258 @@ def test_closed_req_candidates_excludes_already_skipped_queue_jobs(tmp_path, mon
         repos["conn"].close()
 
     assert [job["id"] for job, _url, _platform in candidates] == [active_job_id]
+
+
+# ─── _run_req_closed_scan browser-check prioritization ──────────────────────────
+
+
+def test_run_req_closed_scan_prioritizes_never_checked_job_over_cap(tmp_path, monkeypatch) -> None:
+    """_closed_req_candidates always orders Applications Sheet jobs before pre-triage
+    Job Queue jobs. Without prioritizing jobs that haven't been rechecked yet, a large
+    pool of already-checked sheet jobs would permanently consume every cap slot on
+    every run, starving queue jobs of ever reaching an authenticated recheck."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        queue_repo = repos["browser_capture_queue"]
+        # Fill the cap with sheet-tracked jobs that already went through one
+        # authenticated recheck (they'll re-classify as 'open' again this run).
+        for i in range(_CLOSED_REQ_BROWSER_CHECK_CAP):
+            job_id = repos["jobs"].insert({
+                "company": "Acme",
+                "job_title": f"Sheet Job {i}",
+                "url": f"https://www.linkedin.com/jobs/view/{100 + i}/",
+                "source": "LinkedIn",
+                "status": "applied",
+                "date_added_to_sheet": "2026-06-01",
+            })
+            queue_repo.enqueue_once_for_purpose(
+                f"https://www.linkedin.com/jobs/view/{100 + i}/",
+                "LinkedIn (closed-req check)", "closed_req", job_id,
+            )
+        queue_repo.claim_pending(limit=100)
+        queue_repo.mark_done_by_urls(
+            [f"https://www.linkedin.com/jobs/view/{100 + i}/" for i in range(_CLOSED_REQ_BROWSER_CHECK_CAP)]
+        )
+        # A pre-triage Job Queue job that has never been rechecked — sorts last in
+        # _closed_req_candidates but must still win a slot over the cap.
+        queue_job_id = repos["jobs"].insert({
+            "company": "CivicPlus",
+            "job_title": "Principal Software Engineer",
+            "url": "https://www.linkedin.com/jobs/view/1279/",
+            "source": "LinkedIn",
+            "status": "pending_review",
+        })
+        repos["conn"].commit()
+
+        with patch("routes.applications._check_closed_req", return_value="open"):
+            _run_req_closed_scan()
+
+        rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
+        assert any(r["job_id"] == queue_job_id for r in rows), (
+            "pre-triage queue job never got a browser-check slot"
+        )
+    finally:
+        repos["conn"].close()
+
+
+# ─── _classify_closed_req_page ─────────────────────────────────────────────────
+# LinkedIn only renders its closure banner to logged-in sessions, so an authenticated
+# browser-extension capture (submit_closed_req_capture, below) needs the same
+# classification logic as the unauthenticated fetch (_check_closed_req).
+
+
+def test_classify_closed_req_page_detects_banner_phrase() -> None:
+    page_text = "<html>no longer accepting applications</html>"
+    assert _classify_closed_req_page(page_text, "https://www.linkedin.com/jobs/view/1/", "linkedin") == "closed"
+
+
+def test_classify_closed_req_page_detects_expired_redirect_marker() -> None:
+    page_text = "<html>generic search results</html>"
+    final_url = "https://www.linkedin.com/jobs/some-search?trk=expired_jd_redirect"
+    assert _classify_closed_req_page(page_text, final_url, "linkedin") == "closed"
+
+
+def test_classify_closed_req_page_returns_open_when_no_signal() -> None:
+    page_text = "<html>principal software engineer, apply now</html>"
+    assert _classify_closed_req_page(page_text, "https://www.linkedin.com/jobs/view/1/", "linkedin") == "open"
+
+
+# ─── enqueue_once_for_purpose ───────────────────────────────────────────────────
+
+
+def test_enqueue_once_for_purpose_skips_duplicate_while_in_flight(tmp_path, monkeypatch) -> None:
+    """A URL+purpose already pending/processing is not re-enqueued."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        queue_repo = repos["browser_capture_queue"]
+        first_id = queue_repo.enqueue_once_for_purpose(
+            "https://www.linkedin.com/jobs/view/5/", "LinkedIn (closed-req check)", "closed_req", 5
+        )
+        assert first_id is not None
+        repos["conn"].commit()
+
+        second_id = queue_repo.enqueue_once_for_purpose(
+            "https://www.linkedin.com/jobs/view/5/", "LinkedIn (closed-req check)", "closed_req", 5
+        )
+        assert second_id is None
+
+        rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
+        assert len(rows) == 1
+    finally:
+        repos["conn"].close()
+
+
+def test_enqueue_once_for_purpose_reenqueues_after_done(tmp_path, monkeypatch) -> None:
+    """A job classified 'open' on a prior scan run must be re-escalated on a later run,
+    otherwise a posting that closes after the first check is never rechecked."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        queue_repo = repos["browser_capture_queue"]
+        first_id = queue_repo.enqueue_once_for_purpose(
+            "https://www.linkedin.com/jobs/view/5/", "LinkedIn (closed-req check)", "closed_req", 5
+        )
+        assert first_id is not None
+        queue_repo.claim_pending(limit=10)  # pending -> processing
+        queue_repo.mark_done_by_urls(["https://www.linkedin.com/jobs/view/5/"])  # processing -> done
+        repos["conn"].commit()
+
+        rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
+        assert rows[0]["status"] == "done"
+
+        second_id = queue_repo.enqueue_once_for_purpose(
+            "https://www.linkedin.com/jobs/view/5/", "LinkedIn (closed-req check)", "closed_req", 5
+        )
+        assert second_id is not None
+
+        rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
+        assert len(rows) == 2
+    finally:
+        repos["conn"].close()
+
+
+# ─── _closed_req_browser_queue_snapshot ─────────────────────────────────────────
+
+
+def test_closed_req_browser_queue_snapshot_counts_by_status(tmp_path, monkeypatch) -> None:
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        queue_repo = repos["browser_capture_queue"]
+        queue_repo.enqueue_once_for_purpose(
+            "https://www.linkedin.com/jobs/view/1/", "LinkedIn (closed-req check)", "closed_req", 1
+        )
+        queue_repo.enqueue_once_for_purpose(
+            "https://www.linkedin.com/jobs/view/2/", "LinkedIn (closed-req check)", "closed_req", 2
+        )
+        queue_repo.enqueue_once_for_purpose(
+            "https://www.linkedin.com/jobs/view/3/", "LinkedIn (closed-req check)", "closed_req", 3
+        )
+        queue_repo.claim_pending(limit=10)  # all three: pending -> processing
+        queue_repo.mark_done_by_urls(["https://www.linkedin.com/jobs/view/1/"])  # 1: processing -> done
+        # An unrelated import-purpose row must not be counted.
+        queue_repo.enqueue("https://boards.greenhouse.io/foo/jobs/1", "Greenhouse")
+        repos["conn"].commit()
+
+        snapshot = _closed_req_browser_queue_snapshot(repos)
+        assert snapshot["done"] == 1
+        assert snapshot["processing"] == 2
+        assert snapshot["pending"] == 0
+        assert snapshot["remaining"] == 2
+        assert snapshot["eta_seconds"] == _BROWSER_QUEUE_POLL_INTERVAL_SECONDS
+    finally:
+        repos["conn"].close()
+
+
+def test_closed_req_browser_queue_snapshot_empty_queue(tmp_path, monkeypatch) -> None:
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        snapshot = _closed_req_browser_queue_snapshot(repos)
+        assert snapshot == {"pending": 0, "processing": 0, "done": 0, "failed": 0, "remaining": 0, "eta_seconds": 0}
+    finally:
+        repos["conn"].close()
+
+
+# ─── submit_closed_req_capture ──────────────────────────────────────────────────
+
+
+def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(tmp_path, monkeypatch) -> None:
+    """An authenticated capture showing the closure banner records the job as closed,
+    even though the earlier unauthenticated fetch reported it as open."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        job_id = repos["jobs"].insert({
+            "company": "CivicPlus",
+            "job_title": "Principal Software Engineer",
+            "url": "https://www.linkedin.com/jobs/view/6/",
+            "source": "LinkedIn",
+            "status": "pending_review",
+        })
+        repos["conn"].commit()
+        repos["browser_capture_queue"].enqueue_once_for_purpose(
+            "https://www.linkedin.com/jobs/view/6/", "LinkedIn (closed-req check)", "closed_req", job_id
+        )
+        repos["browser_capture_queue"].claim_pending(limit=10)  # pending -> processing, as the listener would
+        repos["conn"].commit()
+    finally:
+        repos["conn"].close()
+
+    payload, status_code = submit_closed_req_capture({
+        "content": "<html>No longer accepting applications</html>",
+        "url": "https://www.linkedin.com/jobs/view/6/",
+        "job_id": job_id,
+        "purpose": "closed_req",
+    })
+
+    assert status_code == 200
+    assert payload == {"ok": True}
+
+    repos = open_repositories(config.DATABASE_URL)
+    try:
+        updated_job = repos["jobs"].get_by_id(job_id)
+        queue_rows = [r for r in repos["browser_capture_queue"].get_all() if r["job_id"] == job_id]
+    finally:
+        repos["conn"].close()
+
+    assert updated_job["status"] == "skipped"
+    assert updated_job["skip_reason"] == "req_closed"
+    assert queue_rows[0]["status"] == "done"
+
+
+def test_submit_closed_req_capture_leaves_open_job_untouched(tmp_path, monkeypatch) -> None:
+    """A capture with no closure signal marks the queue item done but doesn't touch the job."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        job_id = repos["jobs"].insert({
+            "company": "Acme",
+            "job_title": "Engineer",
+            "url": "https://www.linkedin.com/jobs/view/7/",
+            "source": "LinkedIn",
+            "status": "pending_review",
+        })
+        repos["conn"].commit()
+        repos["browser_capture_queue"].enqueue_once_for_purpose(
+            "https://www.linkedin.com/jobs/view/7/", "LinkedIn (closed-req check)", "closed_req", job_id
+        )
+        repos["browser_capture_queue"].claim_pending(limit=10)  # pending -> processing, as the listener would
+        repos["conn"].commit()
+    finally:
+        repos["conn"].close()
+
+    payload, status_code = submit_closed_req_capture({
+        "content": "<html>Apply now for this great role</html>",
+        "url": "https://www.linkedin.com/jobs/view/7/",
+        "job_id": job_id,
+        "purpose": "closed_req",
+    })
+
+    assert status_code == 200
+    assert payload == {"ok": True}
+
+    repos = open_repositories(config.DATABASE_URL)
+    try:
+        updated_job = repos["jobs"].get_by_id(job_id)
+        queue_rows = [r for r in repos["browser_capture_queue"].get_all() if r["job_id"] == job_id]
+    finally:
+        repos["conn"].close()
+
+    assert updated_job["status"] == "pending_review"
+    assert queue_rows[0]["status"] == "done"

@@ -37,13 +37,26 @@ export default function ReqClosedDialog({ result, onClose }) {
   const badUrlErrors = errors.filter((job) => job.reason === "bad_url");
   const unreachableErrors = errors.filter((job) => job.reason !== "bad_url");
   const running = !!result.running;
+  const browserQueue = result.browser_queue || {};
+  const browserRemaining = browserQueue.remaining ?? 0;
+  const browserDone = browserQueue.done ?? 0;
+  const browserFailed = browserQueue.failed ?? 0;
+  const browserTotal = browserRemaining + browserDone + browserFailed;
+  const browserDraining = !running && browserRemaining > 0;
+  const browserEtaMinutes = browserQueue.eta_seconds ? Math.ceil(browserQueue.eta_seconds / 60) : 0;
   const progress = Math.max(0, Math.min(100, result.total ? Math.round(((result.progress ?? 0) / result.total) * 100) : 0));
-  const title = running ? "Scanning for Closed Reqs…" : "Scan for Closed Reqs Complete";
+  const title = running
+    ? "Scanning for Closed Reqs…"
+    : browserDraining
+      ? "Waiting on Authenticated LinkedIn Rechecks…"
+      : "Scan for Closed Reqs Complete";
   const subtitle = result.error
     ? `Scan failed: ${result.error}`
     : running
       ? (result.message || "Scanning…")
-      : (result.message || `Checked ${result.checked ?? 0} job${result.checked === 1 ? "" : "s"}.`);
+      : browserDraining
+        ? `${browserRemaining} job${browserRemaining === 1 ? "" : "s"} still awaiting an authenticated recheck via the browser extension.`
+        : (result.message || `Checked ${result.checked ?? 0} job${result.checked === 1 ? "" : "s"}.`);
   const currentJobLine = [result.current_platform, result.current_job_title, result.current_company && `at ${result.current_company}`]
     .filter(Boolean)
     .join(" — ");
@@ -52,7 +65,7 @@ export default function ReqClosedDialog({ result, onClose }) {
       title={title}
       subtitle={subtitle}
       onClose={onClose}
-      footer={<button className="btn-secondary" onClick={onClose}>{running ? "Run in background" : "Close"}</button>}
+      footer={<button className="btn-secondary" onClick={onClose}>{running || browserDraining ? "Run in background" : "Close"}</button>}
       maxWidth="640px"
     >
       {running && (
@@ -80,6 +93,25 @@ export default function ReqClosedDialog({ result, onClose }) {
           <MetricItem label="unreachable" value={result.unreachable_count ?? unreachableErrors.length} tone={(result.unreachable_count ?? unreachableErrors.length) > 0 ? "red" : "muted"} />
         </MetricGrid>
       </div>
+
+      {browserTotal > 0 && (
+        <div style={{ marginTop: "14px", padding: "10px 12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
+            <span>Authenticated LinkedIn recheck (browser extension)</span>
+            <span>{browserDone} of {browserTotal} done</span>
+          </div>
+          <div className="loading-bar">
+            <div className="loading-bar-fill" style={{ width: `${Math.round((browserDone / browserTotal) * 100)}%` }} />
+          </div>
+          <p style={{ margin: "8px 0 0", fontSize: "12px", color: "var(--text-muted)" }}>
+            {browserRemaining > 0
+              ? `${browserRemaining} still queued — about ${browserEtaMinutes} min remaining (requires the browser extension to be running).`
+              : browserFailed > 0
+                ? `Finished — ${browserFailed} failed after repeated retries.`
+                : "Finished."}
+          </p>
+        </div>
+      )}
 
       {marked.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "420px", overflowY: "auto", marginTop: "14px" }}>

@@ -37,6 +37,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import JobCard from "./JobCard.jsx";
 import Modal from "./common/Modal.jsx";
 import ReqClosedDialog from "./common/ReqClosedDialog.jsx";
+import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../utils/reqClosedScanStorage.js";
 
 const APPLICATION_SHEET_SEARCH_STORAGE_KEY = "jha.applicationSheet.search";
 
@@ -377,6 +378,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   const resizeCleanupRef = useRef(null);
   const reqClosedPollRef = useRef(null);
   const reqClosedDismissedRef = useRef(false);
+  const reqClosedBrowserDoneRef = useRef(0);
   // ai: claude-sonnet-4-6 | 2026-06-25
   const repairFiredRef = useRef(false);
 
@@ -659,9 +661,20 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     if (!reqClosedDismissedRef.current) {
       setReqClosedDialog(data);
     }
-    if (!data.running) {
+    // Keep polling while the browser extension is still draining its authenticated
+    // recheck backlog — that continues well after the foreground scan reports done.
+    // Refetch the sheet each time another recheck completes so newly-closed jobs
+    // update without waiting for the whole backlog to drain.
+    const browserDone = data.browser_queue?.done ?? 0;
+    const browserDraining = (data.browser_queue?.remaining ?? 0) > 0;
+    if (browserDone !== reqClosedBrowserDoneRef.current) {
+      reqClosedBrowserDoneRef.current = browserDone;
+      await loadSheet();
+    }
+    if (!data.running && !browserDraining) {
       clearInterval(reqClosedPollRef.current);
       setSavingKey("");
+      setReqClosedDialogVisible(false);
       await loadSheet();
     }
   };
@@ -670,6 +683,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     setActionMenuOpen(false);
     setSavingKey("req-closed");
     reqClosedDismissedRef.current = false;
+    reqClosedBrowserDoneRef.current = 0;
     try {
       const res = await fetch("/api/applications/scan-closed-reqs", { method: "POST" });
       const data = await res.json().catch(() => ({}));
@@ -679,6 +693,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
         return;
       }
       setReqClosedDialog({ running: true, progress: 0, total: 0, marked: [], errors: [] });
+      setReqClosedDialogVisible(true);
       clearInterval(reqClosedPollRef.current);
       reqClosedPollRef.current = setInterval(pollReqClosedStatus, 2000);
       await pollReqClosedStatus();
@@ -687,6 +702,38 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
       setSavingKey("");
     }
   };
+
+  // ai: claude-sonnet-4-6 | 2026-07-04
+  // Restores the dialog (and resumes polling) if the tab was reloaded or discarded
+  // while a scan/backlog was still active — otherwise the in-progress state is silently
+  // lost and the dialog never comes back even though the server-side scan is still going.
+  useEffect(() => {
+    if (!getReqClosedDialogVisible()) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/applications/scan-closed-reqs/status");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        const browserDraining = (data.browser_queue?.remaining ?? 0) > 0;
+        if (!data.running && !browserDraining) {
+          setReqClosedDialogVisible(false);
+          return;
+        }
+        reqClosedDismissedRef.current = false;
+        reqClosedBrowserDoneRef.current = data.browser_queue?.done ?? 0;
+        if (data.running) setSavingKey("req-closed");
+        setReqClosedDialog(data);
+        clearInterval(reqClosedPollRef.current);
+        reqClosedPollRef.current = setInterval(pollReqClosedStatus, 2000);
+      } catch {
+        /* leave the persisted flag as-is; try again on the next mount */
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const startEditing = (row) => {
     setEditingRows((previousRows) => ({
@@ -949,6 +996,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
           result={reqClosedDialog}
           onClose={() => {
             reqClosedDismissedRef.current = true;
+            setReqClosedDialogVisible(false);
             setReqClosedDialog(null);
           }}
         />

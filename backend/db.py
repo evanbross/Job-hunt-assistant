@@ -211,6 +211,9 @@ class IJobStatusHistoryRepository(Protocol):
 @runtime_checkable
 class IBrowserCaptureQueueRepository(Protocol):
     def enqueue(self, url: str, site_name: str) -> int: ...
+    def enqueue_once_for_purpose(
+        self, url: str, site_name: str, purpose: str, job_id: int
+    ) -> int | None: ...
     def claim_pending(self, limit: int = 10) -> list[dict[str, Any]]: ...
     def mark_done_by_urls(self, urls: list[str]) -> None: ...
     def mark_failed(self, item_id: int, error_msg: str) -> None: ...
@@ -263,12 +266,31 @@ class _SQLiteCursor:
         return [_row_to_dict(row) for row in self._cursor.fetchall()]
 
 
+def _split_part(value: str | None, delimiter: str, index: int) -> str | None:
+    """SQLite equivalent of PostgreSQL's split_part(string, delimiter, index).
+
+    1-indexed, like Postgres; returns '' (not an error) when index is out of range.
+    """
+    if value is None:
+        return None
+    parts = value.split(delimiter)
+    if index < 1 or index > len(parts):
+        return ""
+    return parts[index - 1]
+
+
 class _SQLiteConnection:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        # ai: claude-sonnet-4-6 | 2026-07-02
+        # Repo queries use Postgres's split_part(...) to strip URL query strings for
+        # dedup matching; register the equivalent function so those queries also work
+        # against SQLite (dev/test DBs) instead of only ever having been exercised
+        # against production Postgres.
+        self._conn.create_function("split_part", 3, _split_part)
         self.autocommit = False
         self.backend = "sqlite"
 
@@ -1488,6 +1510,11 @@ class PostgresEmailSubjectRuleRepository(_BaseRepo):
 
 # ai: claude-sonnet-4-6 | 2026-06-16
 BROWSER_QUEUE_MAX_RETRIES = 5
+# ai: claude-sonnet-4-6 | 2026-07-04
+# Matches the `limit` passed to claim_pending() by app.py's listener queue handler —
+# the max number of queue rows the browser extension picks up per poll cycle. Shared
+# here so ETA estimates (see routes/applications.py) stay in sync with the real batch size.
+BROWSER_QUEUE_CLAIM_BATCH_SIZE = 10
 
 
 class PostgresBrowserCaptureQueueRepository(_BaseRepo):
@@ -1512,6 +1539,36 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         )
         return cur.fetchone()["id"]
 
+    # ai: claude-sonnet-4-6 | 2026-07-04
+    def enqueue_once_for_purpose(
+        self, url: str, site_name: str, purpose: str, job_id: int
+    ) -> int | None:
+        """Insert a queue row for `purpose` unless one is already in flight for this URL+purpose.
+
+        Dedupes against pending/processing rows only, so a job already awaiting or
+        undergoing an authenticated browser check isn't queued twice. A prior row that
+        finished 'done' (e.g. classified 'open' on an earlier scan run) does not block
+        re-escalation on a later scan — the whole point of rescanning non-terminal jobs
+        is to catch postings that closed since the last check. Returns None if a matching
+        in-flight row already exists.
+        """
+        existing = self._execute(
+            "SELECT id FROM browser_capture_queue"
+            " WHERE split_part(url, '?', 1) = split_part(%s, '?', 1) AND purpose = %s"
+            " AND status IN ('pending', 'processing')",
+            (url, purpose),
+        ).fetchone()
+        if existing:
+            return None
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        cur = self._execute(
+            "INSERT INTO browser_capture_queue"
+            " (url, site_name, status, purpose, job_id, created_at, updated_at)"
+            " VALUES (%s, %s, 'pending', %s, %s, %s, %s) RETURNING id",
+            (url, site_name, purpose, job_id, now, now),
+        )
+        return cur.fetchone()["id"]
+
     # ai: claude-sonnet-4-6 | 2026-06-21
     def claim_pending(self, limit: int = 10) -> list[dict[str, Any]]:
         now = datetime.now(UTC).isoformat(timespec="seconds")
@@ -1528,7 +1585,7 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
             (BROWSER_QUEUE_MAX_RETRIES, BROWSER_QUEUE_MAX_RETRIES, now, stale_cutoff),
         )
         cur = self._execute(
-            "SELECT id, url, site_name FROM browser_capture_queue"
+            "SELECT id, url, site_name, purpose, job_id FROM browser_capture_queue"
             " WHERE status = 'pending' ORDER BY created_at LIMIT %s",
             (limit,),
         )
@@ -1892,7 +1949,9 @@ def _migrate(conn: Any) -> None:
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL,
             error_msg   TEXT NOT NULL DEFAULT '',
-            retry_count INTEGER NOT NULL DEFAULT 0
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            purpose     TEXT NOT NULL DEFAULT 'import',
+            job_id      INTEGER
         )
     """)
     cur.execute(
@@ -1903,6 +1962,15 @@ def _migrate(conn: Any) -> None:
     cur.execute(
         "ALTER TABLE browser_capture_queue"
         " ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0"
+    )
+    # ai: claude-sonnet-4-6 | 2026-07-02
+    cur.execute(
+        "ALTER TABLE browser_capture_queue"
+        " ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'import'"
+    )
+    cur.execute(
+        "ALTER TABLE browser_capture_queue"
+        " ADD COLUMN IF NOT EXISTS job_id INTEGER"
     )
 
     conn.commit()
@@ -2133,7 +2201,9 @@ def _migrate_sqlite(conn: Any) -> None:
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL,
             error_msg   TEXT NOT NULL DEFAULT '',
-            retry_count INTEGER NOT NULL DEFAULT 0
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            purpose     TEXT NOT NULL DEFAULT 'import',
+            job_id      INTEGER
         )
     """)
     cur.execute(
@@ -2145,6 +2215,20 @@ def _migrate_sqlite(conn: Any) -> None:
         cur.execute(
             "ALTER TABLE browser_capture_queue ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"
         )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # ai: claude-sonnet-4-6 | 2026-07-02
+    try:
+        cur.execute(
+            "ALTER TABLE browser_capture_queue ADD COLUMN purpose TEXT NOT NULL DEFAULT 'import'"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    try:
+        cur.execute("ALTER TABLE browser_capture_queue ADD COLUMN job_id INTEGER")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # column already exists
@@ -2368,7 +2452,9 @@ def _create_tables(conn: Any) -> None:
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL,
             error_msg   TEXT NOT NULL DEFAULT '',
-            retry_count INTEGER NOT NULL DEFAULT 0
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            purpose     TEXT NOT NULL DEFAULT 'import',
+            job_id      INTEGER
         )
         """,
         """
@@ -2610,7 +2696,9 @@ def _create_tables_sqlite(conn: Any) -> None:
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL,
             error_msg   TEXT NOT NULL DEFAULT '',
-            retry_count INTEGER NOT NULL DEFAULT 0
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            purpose     TEXT NOT NULL DEFAULT 'import',
+            job_id      INTEGER
         )
         """,
         """

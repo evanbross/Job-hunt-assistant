@@ -49,6 +49,7 @@ from urllib.request import Request, urlopen
 
 from flask import Blueprint, jsonify, request
 
+from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
 from backend.utils import (
     get_repos,
     maybe_mark_source_email_read,
@@ -80,6 +81,20 @@ _PLATFORM_LABELS: dict[str, str] = {
     "linkedin": "LinkedIn",
     "wttj": "Welcome to the Jungle",
 }
+
+# ai: claude-sonnet-4-6 | 2026-07-02
+# LinkedIn only renders its closure banner to logged-in sessions, so a job the
+# unauthenticated fetch reports as "open" may still be closed. Cap how many such
+# jobs get escalated to an authenticated browser-extension capture per scan run,
+# so a large backlog drains gradually across several runs instead of flooding the
+# extension's capture queue at once.
+_CLOSED_REQ_BROWSER_CHECK_CAP = 20
+
+# ai: claude-sonnet-4-6 | 2026-07-04
+# Matches browser-extension/background.js's 'jha-queue-poll' chrome.alarms period —
+# used only to estimate time-to-completion for the browser-extension recheck backlog,
+# not to control the actual polling (that lives entirely in the extension).
+_BROWSER_QUEUE_POLL_INTERVAL_SECONDS = 60
 
 # ai: claude-sonnet-4-6 | 2026-07-01
 _LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
@@ -324,6 +339,19 @@ def _canonicalize_linkedin_url(url: str) -> str:
     return f"https://www.linkedin.com/jobs/view/{match.group(1)}/"
 
 
+def _classify_closed_req_page(page_text_lower: str, final_url: str, platform: str) -> str:
+    """Classify already-fetched/captured page text as 'closed' or 'open'.
+
+    Shared by the unauthenticated fetch path (_check_closed_req) and the
+    authenticated browser-extension capture path (submit_closed_req_capture),
+    so both interpret the same banner/redirect signals identically.
+    """
+    if platform == "linkedin" and _LINKEDIN_EXPIRED_REDIRECT_MARKER in final_url.lower():
+        return "closed"
+    phrases = _CLOSED_PHRASES_BY_PLATFORM.get(platform, ())
+    return "closed" if any(phrase in page_text_lower for phrase in phrases) else "open"
+
+
 def _check_closed_req(url: str, platform: str) -> str:
     """Fetch a job URL and classify it as 'closed', 'open', 'bad_url', or 'unreachable'.
 
@@ -335,6 +363,11 @@ def _check_closed_req(url: str, platform: str) -> str:
     network-level failure (timeout, DNS, etc.) unrelated to the job's status,
     so the caller can skip it rather than risk a false positive from a
     transient error.
+
+    Note: LinkedIn only renders its closure banner to authenticated sessions,
+    so this unauthenticated fetch can return 'open' for a job that is actually
+    closed. _run_req_closed_scan escalates those cases to an authenticated
+    browser-extension capture (see submit_closed_req_capture).
     """
     if platform == "linkedin":
         url = _canonicalize_linkedin_url(url)
@@ -363,10 +396,7 @@ def _check_closed_req(url: str, platform: str) -> str:
     except (URLError, TimeoutError, socket.error) as exc:
         logger.warning("Closed-req check failed for %s: %s", url, exc)
         return "unreachable"
-    if platform == "linkedin" and _LINKEDIN_EXPIRED_REDIRECT_MARKER in final_url.lower():
-        return "closed"
-    phrases = _CLOSED_PHRASES_BY_PLATFORM.get(platform, ())
-    return "closed" if any(phrase in page_text for phrase in phrases) else "open"
+    return _classify_closed_req_page(page_text, final_url, platform)
 
 
 # ── Req-closed scan state (in-memory, protected by a lock) ────────────────────
@@ -385,6 +415,7 @@ class ReqClosedScanState:
     closed_count: int = 0
     bad_url_count: int = 0
     unreachable_count: int = 0
+    browser_checks_queued: int = 0
     current_platform: str = ""
     current_company: str = ""
     current_job_title: str = ""
@@ -435,6 +466,31 @@ def _closed_req_candidates(repos: dict) -> list[tuple[dict, str, str]]:
     return candidates
 
 
+def _closed_req_browser_queue_snapshot(repos: dict) -> dict[str, int]:
+    """Live counts of authenticated LinkedIn/WTTJ rechecks still moving through the
+    browser-extension capture queue, plus a rough ETA.
+
+    Queried fresh from the DB rather than tracked in _req_closed_state, so the UI can
+    keep showing progress on the browser-extension backlog even after the foreground
+    scan itself has already finished — the two drain on independent timelines (the
+    extension only picks up BROWSER_QUEUE_CLAIM_BATCH_SIZE items per poll, see
+    app.py's _claim_browser_capture_queue).
+    """
+    rows = [r for r in repos["browser_capture_queue"].get_all() if r.get("purpose") == "closed_req"]
+    counts = {"pending": 0, "processing": 0, "done": 0, "failed": 0}
+    for row in rows:
+        status = row.get("status")
+        if status in counts:
+            counts[status] += 1
+    remaining = counts["pending"] + counts["processing"]
+    poll_cycles_remaining = -(-remaining // BROWSER_QUEUE_CLAIM_BATCH_SIZE)  # ceil division
+    return {
+        **counts,
+        "remaining": remaining,
+        "eta_seconds": poll_cycles_remaining * _BROWSER_QUEUE_POLL_INTERVAL_SECONDS,
+    }
+
+
 def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
     """Record a detected closed req in whichever place the UI actually reads from.
 
@@ -477,6 +533,50 @@ def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
         repos["conn"].commit()
 
 
+# ai: claude-sonnet-4-6 | 2026-07-02
+def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
+    """Handle an authenticated page capture from the browser extension's closed-req
+    check queue (see _run_req_closed_scan). The extension opens the job URL in a tab
+    using the user's real, logged-in session — which is the only way to see LinkedIn's
+    "no longer accepting applications" banner — and posts back the rendered HTML.
+    """
+    content = str(body.get("content") or "")
+    captured_url = str(body.get("url") or "").strip()
+    queue_url = str(body.get("queue_url") or "").strip() or captured_url
+    raw_job_id = body.get("job_id")
+    try:
+        job_id = int(raw_job_id) if raw_job_id is not None else None
+    except (TypeError, ValueError):
+        job_id = None
+
+    try:
+        # Job lookup uses its own short-lived connection; _record_closed_req below
+        # manages its own connection too (see its docstring), so this block must not
+        # hold one open across that call.
+        with get_repos() as repos:
+            job = repos["jobs"].get_by_id(job_id) if job_id else None
+
+        if job:
+            platform = _detect_closed_req_platform(job, str(job.get("url") or captured_url)) or "linkedin"
+            page_text = content.lower()
+            if _classify_closed_req_page(page_text, captured_url, platform) == "closed":
+                _record_closed_req(
+                    job,
+                    _PLATFORM_LABELS.get(platform, platform),
+                    datetime.now(UTC).date().isoformat(),
+                )
+        else:
+            logger.warning("Closed-req capture had no matching job for job_id=%s", raw_job_id)
+
+        with get_repos() as repos:
+            repos["browser_capture_queue"].mark_done_by_urls([queue_url, captured_url])
+            repos["conn"].commit()
+    except Exception as exc:
+        logger.warning("Closed-req capture handling failed for job_id=%s: %s", raw_job_id, exc, exc_info=True)
+        return {"error": "Failed to process closed-req capture"}, 500
+    return {"ok": True}, 200
+
+
 def _run_req_closed_scan() -> None:
     today = datetime.now(UTC).date().isoformat()
     _update_req_closed_state(
@@ -484,6 +584,7 @@ def _run_req_closed_scan() -> None:
         message="Finding LinkedIn and Welcome to the Jungle jobs to check…",
         marked=[], errors=[], checked=0,
         kept_count=0, closed_count=0, bad_url_count=0, unreachable_count=0,
+        browser_checks_queued=0,
         current_platform="", current_company="", current_job_title="", error=None,
     )
     try:
@@ -500,6 +601,11 @@ def _run_req_closed_scan() -> None:
         closed_count = 0
         bad_url_count = 0
         unreachable_count = 0
+        # LinkedIn jobs the unauthenticated fetch reports "open" may still be closed
+        # (the closure banner only renders to logged-in sessions) — collected here and
+        # escalated to the browser-extension capture queue after the fetch loop, so this
+        # loop keeps its "no DB connection held during external fetches" behavior.
+        to_browser_check: list[tuple[dict, str]] = []
         for i, (job, url, platform) in enumerate(candidates):
             platform_label = _PLATFORM_LABELS.get(platform, platform)
             job_title = job.get("job_title") or "Untitled"
@@ -523,6 +629,8 @@ def _run_req_closed_scan() -> None:
                 closed_count += 1
             elif result == "open":
                 kept_count += 1
+                if platform == "linkedin":
+                    to_browser_check.append((job, url))
             elif result == "bad_url":
                 errors.append({**job_summary, "reason": "bad_url"})
                 bad_url_count += 1
@@ -542,11 +650,39 @@ def _run_req_closed_scan() -> None:
                 message=f"Checked {i + 1} of {total} — {closed_count} closed, {kept_count} kept so far…",
             )
 
+        browser_checks_queued = 0
+        if to_browser_check:
+            with get_repos() as repos:
+                # Prioritize jobs that have never been through an authenticated recheck
+                # (or were checked longest ago) over jobs that already got a slot in an
+                # earlier run. Without this, _closed_req_candidates' ordering (Applications
+                # Sheet jobs before pre-triage Job Queue jobs) means a large pool of sheet
+                # jobs permanently consumes every cap slot, starving queue jobs of ever
+                # reaching an authenticated check.
+                last_checked: dict[int, str] = {}
+                for row in repos["browser_capture_queue"].get_all():
+                    if row.get("purpose") != "closed_req" or row.get("job_id") is None:
+                        continue
+                    created = row.get("created_at") or ""
+                    if created > last_checked.get(row["job_id"], ""):
+                        last_checked[row["job_id"]] = created
+                to_browser_check.sort(key=lambda pair: last_checked.get(pair[0]["id"], ""))
+
+                for job, url in to_browser_check[:_CLOSED_REQ_BROWSER_CHECK_CAP]:
+                    new_id = repos["browser_capture_queue"].enqueue_once_for_purpose(
+                        url, "LinkedIn (closed-req check)", "closed_req", job["id"]
+                    )
+                    if new_id is not None:
+                        browser_checks_queued += 1
+                repos["conn"].commit()
+
         _update_req_closed_state(
             running=False,
+            browser_checks_queued=browser_checks_queued,
             message=(
                 f"Done — {closed_count} marked Req Closed, {kept_count} still open, "
-                f"{bad_url_count} bad URLs, {unreachable_count} unreachable."
+                f"{bad_url_count} bad URLs, {unreachable_count} unreachable. "
+                f"Queued {browser_checks_queued} for authenticated LinkedIn re-check."
             ),
             current_platform="", current_company="", current_job_title="",
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
@@ -573,7 +709,11 @@ def start_closed_req_scan():
 
 @applications_bp.route("/applications/scan-closed-reqs/status", methods=["GET"])
 def closed_req_scan_status():
-    """Return the current closed-req scan state."""
+    """Return the current closed-req scan state, plus a live snapshot of the
+    browser-extension recheck backlog (which keeps draining after the foreground
+    scan itself reports done)."""
+    with get_repos() as repos:
+        browser_queue = _closed_req_browser_queue_snapshot(repos)
     with _req_closed_lock:
         return jsonify({
             "running": _req_closed_state.running,
@@ -587,6 +727,8 @@ def closed_req_scan_status():
             "closed_count": _req_closed_state.closed_count,
             "bad_url_count": _req_closed_state.bad_url_count,
             "unreachable_count": _req_closed_state.unreachable_count,
+            "browser_checks_queued": _req_closed_state.browser_checks_queued,
+            "browser_queue": browser_queue,
             "current_platform": _req_closed_state.current_platform,
             "current_company": _req_closed_state.current_company,
             "current_job_title": _req_closed_state.current_job_title,

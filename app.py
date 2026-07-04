@@ -68,7 +68,7 @@ from flask import Flask
 from flask_cors import CORS
 
 import config
-from backend.db import init_db
+from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db
 from backend.import_listener import start_job_import_listener
 from backend.utils import start_career_site_scheduler
 
@@ -258,7 +258,7 @@ from routes.jobs import jobs_bp
 from routes.scan import scan_bp
 from routes.settings import settings_bp
 from routes.setup import setup_bp
-from routes.applications import applications_bp
+from routes.applications import applications_bp, submit_closed_req_capture
 from routes.system import system_bp
 from routes.jobanni import jobanni_bp
 from routes.wellfound import wellfound_bp
@@ -286,16 +286,29 @@ def _claim_browser_capture_queue() -> list[dict]:
     """Called from the import listener thread — opens a short-lived DB connection."""
     from backend.utils import get_repos
     with get_repos() as repos:
-        items = repos["browser_capture_queue"].claim_pending(limit=10)
+        items = repos["browser_capture_queue"].claim_pending(limit=BROWSER_QUEUE_CLAIM_BATCH_SIZE)
         repos["conn"].commit()
     return items
 
 
 # Auto-scheduler disabled — use the manual scan banner in the UI instead
 # start_career_site_scheduler()
+# ai: claude-sonnet-4-6 | 2026-07-02
+def _handle_listener_capture(body: dict) -> tuple[dict, int]:
+    """Routes captures from the browser extension by purpose.
+
+    Closed-req checks (see routes.applications._run_req_closed_scan) post the raw
+    captured HTML for classification rather than going through the job-import
+    pipeline, which expects structured job listings.
+    """
+    if body.get("purpose") == "closed_req":
+        return submit_closed_req_capture(body)
+    return queue_import_capture(body, trigger="listener")
+
+
 # ai: claude-sonnet-4-6 | 2026-06-16
 start_job_import_listener(
-    lambda body: queue_import_capture(body, trigger="listener"),
+    _handle_listener_capture,
     claim_queue=_claim_browser_capture_queue,
 )
 
