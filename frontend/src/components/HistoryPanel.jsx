@@ -37,26 +37,9 @@ import StatusBadge from "./common/StatusBadge.jsx";
 import { scoreTone } from "../utils/fitScoringUtils.js";
 import { statusTone } from "../utils/jobQueueUtils.js";
 import { formatJobDescription } from "../utils/triagePanelUtils.js";
+import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
 
 const HISTORY_SEARCH_STORAGE_KEY = "jha.history.search";
-
-function readStoredSearch(storageKey) {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem(storageKey) || "";
-  } catch {
-    return "";
-  }
-}
-
-function writeStoredSearch(storageKey, value) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(storageKey, value);
-  } catch {
-    /* ignore unavailable storage */
-  }
-}
 
 // ── Status definitions ────────────────────────────────────────────────────────
 
@@ -169,7 +152,7 @@ export default function HistoryPanel() {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(new Set());
   const [descriptionOpen, setDescriptionOpen] = useState(new Set());
-  const [search, setSearch] = useState(() => readStoredSearch(HISTORY_SEARCH_STORAGE_KEY));
+  const [search, setSearch] = useState(() => readStoredPref(HISTORY_SEARCH_STORAGE_KEY));
 
   useEffect(() => {
     fetch("/api/jobs/history")
@@ -182,7 +165,7 @@ export default function HistoryPanel() {
   }, []);
 
   useEffect(() => {
-    writeStoredSearch(HISTORY_SEARCH_STORAGE_KEY, search);
+    writeStoredPref(HISTORY_SEARCH_STORAGE_KEY, search);
   }, [search]);
 
   const toggleExpand = (id) => {

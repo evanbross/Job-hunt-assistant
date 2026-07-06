@@ -38,26 +38,9 @@ import JobCard from "./JobCard.jsx";
 import Modal from "./common/Modal.jsx";
 import ReqClosedDialog from "./common/ReqClosedDialog.jsx";
 import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../utils/reqClosedScanStorage.js";
+import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
 
 const APPLICATION_SHEET_SEARCH_STORAGE_KEY = "jha.applicationSheet.search";
-
-function readStoredSearch(storageKey) {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem(storageKey) || "";
-  } catch {
-    return "";
-  }
-}
-
-function writeStoredSearch(storageKey, value) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(storageKey, value);
-  } catch {
-    /* ignore unavailable storage */
-  }
-}
 
 const STATUS_FALLBACKS = {
   applied:            { background: "var(--green-light)", color: "var(--green)" },
@@ -360,7 +343,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [expandedRows, setExpandedRows] = useState(new Set());
-  const [search, setSearch] = useState(() => readStoredSearch(APPLICATION_SHEET_SEARCH_STORAGE_KEY));
+  const [search, setSearch] = useState(() => readStoredPref(APPLICATION_SHEET_SEARCH_STORAGE_KEY));
   const [sortConfig, setSortConfig] = useState({ key: "company", direction: "asc" });
   const [newRow, setNewRow] = useState(defaultEmptyForm());
   const [showAddApplication, setShowAddApplication] = useState(false);
@@ -427,7 +410,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   }, []);
 
   useEffect(() => {
-    writeStoredSearch(APPLICATION_SHEET_SEARCH_STORAGE_KEY, search);
+    writeStoredPref(APPLICATION_SHEET_SEARCH_STORAGE_KEY, search);
   }, [search]);
 
   const trackingColumns = useMemo(() => {

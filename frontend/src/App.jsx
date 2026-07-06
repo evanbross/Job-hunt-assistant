@@ -33,7 +33,7 @@
  */
 
 import { useEffect, useState } from "react";
-import JobQueue from "./components/JobQueue.jsx";
+import JobQueue from "./components/JobQueue/index.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import SetupWizardPanel from "./components/SetupWizardPanel.jsx";
 import EmailsPanel from "./components/EmailsPanel.jsx";

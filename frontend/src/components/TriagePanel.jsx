@@ -68,27 +68,10 @@ import {
   triageReasoningForJob,
 } from "../utils/triagePanelUtils.js";
 import { parseImportWarnings, importWarningTooltip, possibleDuplicateLabel } from "../utils/jobQueueUtils.js";
+import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
 
 const TRIAGE_SEARCH_STORAGE_KEY = "jha.triage.search";
 const TRIAGE_SEARCH_ALL_FIELDS_KEY = "jha.triage.searchAllFields";
-
-function readStoredSearch(storageKey) {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem(storageKey) || "";
-  } catch {
-    return "";
-  }
-}
-
-function writeStoredSearch(storageKey, value) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(storageKey, value);
-  } catch {
-    /* ignore unavailable storage */
-  }
-}
 
 
 function companyRowSummary(rows) {
@@ -110,11 +93,11 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState("date_desc");
-  const [searchText, setSearchText] = useState(() => readStoredSearch(TRIAGE_SEARCH_STORAGE_KEY));
+  const [searchText, setSearchText] = useState(() => readStoredPref(TRIAGE_SEARCH_STORAGE_KEY));
   // ai: claude-sonnet-4-6 | 2026-06-26
   const [debouncedSearchText, setDebouncedSearchText] = useState(searchText);
   const [searchAllFields, setSearchAllFields] = useState(
-    () => readStoredSearch(TRIAGE_SEARCH_ALL_FIELDS_KEY) === "true"
+    () => readStoredPref(TRIAGE_SEARCH_ALL_FIELDS_KEY) === "true"
   );
   const [reEvaluatePopup, setReEvaluatePopup] = useState(null);
   const [batchRefreshPopup, setBatchRefreshPopup] = useState(null);
@@ -146,7 +129,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   }, []);
 
   useEffect(() => {
-    writeStoredSearch(TRIAGE_SEARCH_STORAGE_KEY, searchText);
+    writeStoredPref(TRIAGE_SEARCH_STORAGE_KEY, searchText);
   }, [searchText]);
 
   // ai: claude-sonnet-4-6 | 2026-06-26
@@ -161,7 +144,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   }, [searchText]);
 
   useEffect(() => {
-    writeStoredSearch(TRIAGE_SEARCH_ALL_FIELDS_KEY, String(searchAllFields));
+    writeStoredPref(TRIAGE_SEARCH_ALL_FIELDS_KEY, String(searchAllFields));
   }, [searchAllFields]);
 
   useEffect(() => {
