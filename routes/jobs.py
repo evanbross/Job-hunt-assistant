@@ -57,7 +57,7 @@ from backend.manual_job_ingest_service import ManualJobIngestService
 from backend.utils import (
     ACTIVE_JOB_STATUSES,
     _ai_error_http_status,
-    _safe_error_message,
+    safe_error_message,
     db_match_for_job,
     get_repos,
     maybe_mark_source_email_read,
@@ -174,7 +174,7 @@ def create_manual_job():
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         logger.error("Manual job ingest failed: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": safe_error_message(exc, "Manual job ingest failed")}), 500
 
     return jsonify({"job": result.job, "parsed_job_count": result.parsed_job_count}), 201
 
@@ -628,7 +628,7 @@ def refresh_job_from_url(job_id: int):
         logger.info("refresh-from-url: FitScorer returned in %.1fs for job %d", time.monotonic() - t_score, job_id)
     except Exception as exc:
         logger.warning("refresh-from-url: scoring failed for job %d after %.1fs: %s", job_id, time.monotonic() - t_score, exc)
-        return jsonify({"error": _safe_error_message(exc, "Scoring failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Scoring failed")}), _ai_error_http_status(exc)
 
     fit_score = score_result["score"]
     current_status = job.get("status", "triage")
@@ -693,7 +693,7 @@ def update_job_description(job_id: int):
         )
     except Exception as exc:
         logger.warning("description update: scoring failed for job %d: %s", job_id, exc)
-        return jsonify({"error": _safe_error_message(exc, "Scoring failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Scoring failed")}), _ai_error_http_status(exc)
 
     fit_score = score_result["score"]
     current_status = job.get("status", "triage")
@@ -750,13 +750,13 @@ def reprocess_job(job_id: int):
         email_raw_html = gmail.extract_raw_html(full_msg)
     except Exception as exc:
         logger.error("Reprocess: failed to fetch message %s: %s", base_email_id, exc)
-        return jsonify({"error": f"Failed to fetch email from Gmail: {exc}"}), 500
+        return jsonify({"error": safe_error_message(exc, "Failed to fetch email from Gmail")}), 500
 
     try:
         parsed_jobs = EmailParser().parse(subject, sender, email_body, raw_html=email_raw_html)
     except Exception as exc:
         logger.error("Reprocess: parser error for job %d: %s", job_id, exc)
-        return jsonify({"error": f"Parser error: {exc}"}), 500
+        return jsonify({"error": safe_error_message(exc, "Parser error")}), 500
 
     if not parsed_jobs:
         return jsonify({"error": "Parser found no job postings in this email"}), 422

@@ -649,7 +649,7 @@ class CareerSiteScanner:
                 )
             except Exception as exc:
                 self._record_failure(platform="greenhouse", stage="adapter", exc=exc)
-                logger.warning("Greenhouse single-job adapter failed for %s: %s", site_url, exc)
+                logger.warning("Greenhouse single-job adapter failed for %s: %s", site_url, exc, exc_info=True)
         elif "greenhouse.io" in host and _has_greenhouse_board_token(site_url):
             try:
                 return ScanOutcome(
@@ -658,7 +658,7 @@ class CareerSiteScanner:
                 )
             except Exception as exc:
                 self._record_failure(platform="greenhouse", stage="adapter", exc=exc)
-                logger.warning("Greenhouse adapter failed for %s: %s", site_url, exc)
+                logger.warning("Greenhouse adapter failed for %s: %s", site_url, exc, exc_info=True)
         elif "greenhouse.io" in host and _is_unsupported_greenhouse_search_url(parsed):
             raise ValueError(
                 "This MyGreenhouse search URL redirects to sign-in and is not a public job board. "
@@ -673,7 +673,7 @@ class CareerSiteScanner:
                 )
             except Exception as exc:
                 self._record_failure(platform="lever", stage="adapter", exc=exc)
-                logger.warning("Lever adapter failed for %s: %s", site_url, exc)
+                logger.warning("Lever adapter failed for %s: %s", site_url, exc, exc_info=True)
         elif "myworkdayjobs.com" in host and _is_workday_single_job_url(parsed):
             try:
                 return ScanOutcome(
@@ -682,7 +682,7 @@ class CareerSiteScanner:
                 )
             except Exception as exc:
                 self._record_failure(platform="workday", stage="adapter", exc=exc)
-                logger.warning("Workday single-job adapter failed for %s: %s", site_url, exc)
+                logger.warning("Workday single-job adapter failed for %s: %s", site_url, exc, exc_info=True)
         elif "myworkdayjobs.com" in host:
             try:
                 return ScanOutcome(
@@ -691,7 +691,7 @@ class CareerSiteScanner:
                 )
             except Exception as exc:
                 self._record_failure(platform="workday", stage="adapter", exc=exc)
-                logger.warning("Workday adapter failed for %s: %s", site_url, exc)
+                logger.warning("Workday adapter failed for %s: %s", site_url, exc, exc_info=True)
         elif "jobs.ashbyhq.com" in host:
             try:
                 return ScanOutcome(
@@ -700,7 +700,7 @@ class CareerSiteScanner:
                 )
             except Exception as exc:
                 self._record_failure(platform="ashby", stage="adapter", exc=exc)
-                logger.warning("Ashby adapter failed for %s: %s", site_url, exc)
+                logger.warning("Ashby adapter failed for %s: %s", site_url, exc, exc_info=True)
 
         # Companies that serve a React SPA on their own domain but use Greenhouse
         # as the ATS backend — fetch via the public Greenhouse API instead.
@@ -714,7 +714,7 @@ class CareerSiteScanner:
                 )
             except Exception as exc:
                 self._record_failure(platform="greenhouse", stage="embedded", exc=exc)
-                logger.warning("Embedded Greenhouse adapter failed for %s: %s", site_url, exc)
+                logger.warning("Embedded Greenhouse adapter failed for %s: %s", site_url, exc, exc_info=True)
 
         # Platform-specific adapter failed (or the URL is not a known platform);
         # fall back to the generic HTML scanner.

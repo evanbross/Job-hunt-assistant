@@ -52,7 +52,31 @@ def test_source_query_combines_sender_and_subject_filter() -> None:
         ]
     )
 
-    assert query == '(from:welcometothejungle.com subject:"new match")'
+    assert query == '(from:"welcometothejungle.com" subject:"new match")'
+
+
+# ai: claude-sonnet-4-6 | 2026-07-06
+def test_source_query_quotes_sender_values_against_operator_injection() -> None:
+    for match_type in ("sender_domain", "sender_email"):
+        for malicious_value in (
+            "example.com) OR (from:boss@example.com",
+            "{malicious}",
+            "attacker.com in:anywhere",
+        ):
+            query = build_gmail_source_query(
+                [{"match_type": match_type, "match_value": malicious_value}]
+            )
+            # The whole value must stay inside a single quoted phrase — that's what
+            # keeps Gmail from parsing OR/parens/in:anywhere as query syntax.
+            assert query == f'from:"{malicious_value}"'
+            assert query.count('"') == 2
+
+
+def test_gmail_query_value_escapes_embedded_quotes_and_backslashes() -> None:
+    from backend.email_source_filters import _gmail_query_value
+
+    assert _gmail_query_value('say "hi"') == '"say \\"hi\\""'
+    assert _gmail_query_value("back\\slash") == '"back\\\\slash"'
 
 
 def test_email_matches_source_filter_enforces_subject_prefix() -> None:

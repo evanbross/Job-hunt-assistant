@@ -52,7 +52,7 @@ from backend.utils import (
     ACTIVE_JOB_STATUSES,
     FIT_PANEL_STATUSES,
     _ai_error_http_status,
-    _safe_error_message,
+    safe_error_message,
     db_match_for_job,
     get_repos,
 )
@@ -296,7 +296,7 @@ def fit_chat(job_id: int):
         )
     except Exception as exc:
         logger.warning("Fit chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": _safe_error_message(exc, "Fit chat failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Fit chat failed")}), _ai_error_http_status(exc)
     reclassification = None
     tag_match = re.search(
         r"<FIT_RECLASSIFICATION>(.*?)</FIT_RECLASSIFICATION>",
@@ -394,7 +394,7 @@ def re_evaluate_job_fit(job_id: int):
         )
     except Exception as exc:
         logger.warning("Fit re-evaluation failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": _safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
 
     score = int(result["score"])
     current_status = str(job.get("status") or "")
@@ -449,7 +449,7 @@ def save_job_description(job_id: int):
         )
     except Exception as exc:
         logger.warning("Fit scoring after description save failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": _safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
 
     score = int(result["score"])
     new_status = "pending_review" if score >= 70 else "triage"

@@ -56,6 +56,7 @@ from backend.utils import (
     get_subject_rule_match,
     is_application_acknowledgement,
     is_near_certain_duplicate,
+    safe_error_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -237,7 +238,7 @@ def clean_displayed_emails():
                 repos["conn"].commit()
             except Exception as exc:
                 logger.exception("Email cleanup failed")
-                return jsonify({"error": f"Failed to clean emails: {exc}"}), 500
+                return jsonify({"error": safe_error_message(exc, "Failed to clean emails")}), 500
     except Exception:
         logger.exception("Email cleanup DB access failed")
         return jsonify({"error": "Failed to clean emails"}), 500
@@ -290,7 +291,7 @@ def rescan_email(email_id: str):
             subject, sender, email_body = gmail.extract_text(full_msg)
             email_raw_html = gmail.extract_raw_html(full_msg)
         except Exception as exc:
-            return jsonify({"error": f"Failed to fetch email from Gmail: {exc}"}), 500
+            return jsonify({"error": safe_error_message(exc, "Failed to fetch email from Gmail")}), 500
 
         email_date = email_date_from_message(full_msg)
 

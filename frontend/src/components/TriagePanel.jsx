@@ -433,27 +433,9 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     });
   };
 
-  if (loading) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
-
-  if (jobs.length === 0) {
-    return (
-      <div>
-        {descriptionUpdatePopup && (
-          <DescriptionUpdatePopup
-            popup={descriptionUpdatePopup}
-            onClose={() => setDescriptionUpdatePopup(null)}
-          />
-        )}
-        <div className="empty-state">
-          <p style={{ fontSize: "32px" }}>✅</p>
-          <p>No emails waiting for review.</p>
-          <p>Low-confidence emails from your next scan will appear here.</p>
-        </div>
-      </div>
-    );
-  }
-
   // ai: claude-sonnet-4-6 | 2026-06-26
+  // Hooks must run unconditionally on every render, so these are computed before the
+  // loading/empty early returns below (empty-safe: they just operate on an empty array).
   const filteredJobs = useMemo(() => jobs.filter((job) => {
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
@@ -481,6 +463,26 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     const cb = b.confidence_score ?? (b.status === "possible_duplicate" ? -1 : 50);
     return sortBy === "confidence_desc" ? cb - ca : ca - cb;
   }), [filteredJobs, sortBy]);
+
+  if (loading) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+
+  if (jobs.length === 0) {
+    return (
+      <div>
+        {descriptionUpdatePopup && (
+          <DescriptionUpdatePopup
+            popup={descriptionUpdatePopup}
+            onClose={() => setDescriptionUpdatePopup(null)}
+          />
+        )}
+        <div className="empty-state">
+          <p style={{ fontSize: "32px" }}>✅</p>
+          <p>No emails waiting for review.</p>
+          <p>Low-confidence emails from your next scan will appear here.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>

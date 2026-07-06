@@ -58,6 +58,7 @@ from backend.utils import (
     _parse_positive_int,
     platform_for_site_url,
     platform_label,
+    safe_error_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -584,7 +585,7 @@ def extract_imported_job_urls():
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         logger.error("Captured page import failed: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": safe_error_message(exc, "Captured page import failed")}), 500
 
     return jsonify(analysis)
 

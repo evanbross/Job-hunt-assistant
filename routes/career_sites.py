@@ -61,7 +61,7 @@ from backend.job_validator import import_warnings_to_json, normalize_and_validat
 from backend.utils import (
     _parse_bool,
     _parse_positive_int,
-    _safe_error_message,
+    safe_error_message,
     configure_career_site_scheduler,
     db_match_for_job,
     enrich_job_description,
@@ -271,7 +271,7 @@ def _re_evaluate_career_scan_results(
             except Exception as exc:
                 logger.warning("Career result re-evaluation failed for row %s: %s", row.get("id"), exc, exc_info=True)
                 updates["match_score"] = None
-                updates["match_reasoning"] = f"Scoring failed: {_safe_error_message(exc, 'Anthropic scoring failed')}"
+                updates["match_reasoning"] = f"Scoring failed: {safe_error_message(exc, 'Anthropic scoring failed')}"
                 failed += 1
 
         results_repo.update(row["id"], updates)
@@ -985,7 +985,7 @@ def re_evaluate_career_scan_results():
             repos["conn"].commit()
     except Exception as exc:
         logger.warning("Career-site re-evaluation failed: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": safe_error_message(exc, "Career-site re-evaluation failed")}), 500
     return jsonify(summary)
 
 

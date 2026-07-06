@@ -50,7 +50,7 @@ from backend.cover_letter_generator import CoverLetterGenerator
 from backend.resume_tailor import ResumeTailoringGenerator
 from backend.utils import (
     _ai_error_http_status,
-    _safe_error_message,
+    safe_error_message,
     get_repos,
 )
 
@@ -74,7 +74,7 @@ def generate_cover_letter(job_id: int):
         cover_letter = generator.generate(job, resume_text=resume_text)
     except Exception as exc:
         logger.error("Cover letter generation failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": _safe_error_message(exc, "Cover letter generation failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Cover letter generation failed")}), _ai_error_http_status(exc)
 
     return jsonify({"cover_letter": cover_letter})
 
@@ -218,7 +218,7 @@ def generate_pitch(job_id: int):
         )
     except Exception as exc:
         logger.error("Pitch generation failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": _safe_error_message(exc, "Generation failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Generation failed")}), _ai_error_http_status(exc)
 
     return jsonify({"text": text.strip()})
 
@@ -286,7 +286,7 @@ def pitch_chat(job_id: int):
         )
     except Exception as exc:
         logger.error("Pitch chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": _safe_error_message(exc, "Pitch chat failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Pitch chat failed")}), _ai_error_http_status(exc)
 
     updated_pitch: str | None = None
     tag_match = re.search(r"<UPDATED_PITCH>(.*?)</UPDATED_PITCH>", reply_text, re.DOTALL)
@@ -355,7 +355,7 @@ def cover_letter_chat(job_id: int):
         )
     except Exception as exc:
         logger.error("Cover letter chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": _safe_error_message(exc, "Cover letter chat failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Cover letter chat failed")}), _ai_error_http_status(exc)
 
     updated_cover_letter: str | None = None
     tag_match = re.search(
@@ -388,7 +388,7 @@ def generate_resume_tailor(job_id: int):
         analysis = generator.generate(job, resume_text=resume_text)
     except Exception as exc:
         logger.error("Resume tailoring failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": _safe_error_message(exc, "Resume tailoring failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Resume tailoring failed")}), _ai_error_http_status(exc)
 
     return jsonify({"analysis": analysis})
 
@@ -447,7 +447,7 @@ def resume_tailor_chat(job_id: int):
         )
     except Exception as exc:
         logger.error("Resume tailor chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": _safe_error_message(exc, "Resume tailor chat failed")}), _ai_error_http_status(exc)
+        return jsonify({"error": safe_error_message(exc, "Resume tailor chat failed")}), _ai_error_http_status(exc)
 
     updated_analysis: str | None = None
     tag_match = re.search(

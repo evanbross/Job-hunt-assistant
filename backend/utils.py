@@ -169,7 +169,7 @@ def _tracking_payload() -> dict[str, str]:
     }
 
 
-def _safe_error_message(exc: BaseException, fallback: str) -> str:
+def safe_error_message(exc: BaseException, fallback: str) -> str:
     if isinstance(exc, AIProviderError):
         return str(exc) or fallback
     return fallback

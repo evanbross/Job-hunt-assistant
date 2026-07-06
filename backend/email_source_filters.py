@@ -76,9 +76,9 @@ def _gmail_source_query(source_filter: dict[str, Any]) -> str:
         return ""
 
     if match_type == "sender_domain":
-        base_query = f"from:{match_value}"
+        base_query = f"from:{_gmail_query_value(match_value)}"
     elif match_type == "sender_email":
-        base_query = f"from:{match_value}"
+        base_query = f"from:{_gmail_query_value(match_value)}"
     elif match_type == "subject_contains":
         base_query = f"subject:{_gmail_query_value(match_value)}"
     else:
@@ -158,5 +158,11 @@ def _subject_filter_matches(
 
 
 def _gmail_query_value(value: str) -> str:
-    escaped_value = value.replace('"', '\\"')
-    return f'"{escaped_value}"' if any(char.isspace() for char in escaped_value) else escaped_value
+    """Quote and escape *value* so it is always treated as a literal Gmail search phrase.
+
+    Always quoting (not just when whitespace is present) neutralizes Gmail search
+    operators/grouping characters (e.g. `)`, `OR`, `in:anywhere`) that would otherwise
+    be parsed as query syntax if they appeared in a configured sender/subject value.
+    """
+    escaped_value = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped_value}"'
