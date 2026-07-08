@@ -43,6 +43,8 @@ from html.parser import HTMLParser
 from typing import NotRequired, TypedDict
 from urllib.parse import ParseResult, parse_qs, urlencode, urljoin, urlparse
 
+from backend.career_site_scanner import workday_title_with_req_id
+
 
 class ExtractedJobUrl(TypedDict):
     url: str
@@ -325,6 +327,9 @@ class CapturedPageImportService:
                 company = self._company_from_wellfound_text(job_title, listing_text)
             if company:
                 result["company"] = company
+            # ai: claude-sonnet-4-6 | 2026-07-08
+            if platform == "Workday" and job_title:
+                job_title = workday_title_with_req_id(job_title, public_url)
             if job_title:
                 result["job_title"] = job_title
             if listing_text:

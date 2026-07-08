@@ -601,6 +601,35 @@ def _workday_single_job_parts(parsed: ParseResult) -> tuple[str, str, str] | Non
     return tenant, before_job[-1], after_job[-1]
 
 
+# ai: claude-sonnet-4-6 | 2026-07-08
+def workday_req_id_from_url(url: str) -> str | None:
+    """Extract the Workday job requisition ID from the URL's last path segment.
+
+    Workday job URLs end with a slug like /Job_Title_R12345 where the req ID is
+    the last underscore-separated token. Matches 1–5 letters, optional hyphen,
+    and 3+ digits (e.g. R12345, JR12345, REQ-1234). Returns None for non-Workday
+    URLs or when the last token doesn't look like a req ID.
+    """
+    if not url or "myworkdayjobs.com" not in url.lower():
+        return None
+    try:
+        last_segment = urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
+        candidate = last_segment.split("_")[-1] if "_" in last_segment else ""
+        if re.match(r"^[A-Za-z]{1,5}-?\d{3,}$", candidate):
+            return candidate
+    except Exception:
+        return None
+    return None
+
+
+def workday_title_with_req_id(title: str, url: str) -> str:
+    """Return title with the Workday req ID appended if not already present."""
+    req_id = workday_req_id_from_url(url)
+    if not req_id or req_id.upper() in title.upper():
+        return title
+    return f"{title} ({req_id})"
+
+
 def _confidence_for(job_title: str, job_text: str) -> tuple[str, int]:
     score = 55
     if len(job_title) >= 8:
@@ -921,7 +950,9 @@ class CareerSiteScanner:
         api_url = f"{base}/wday/cxs/{tenant}/{site_slug}/job/{job_posting_id}"
         data = _fetch_json(api_url)
         info = data.get("jobPostingInfo", {})
-        title = _clean_text(str(info.get("title", ""))) or "Untitled Job"
+        title = workday_title_with_req_id(
+            _clean_text(str(info.get("title", ""))) or "Untitled Job", job_url
+        )
         location = _clean_text(str(info.get("location", "")))
         description = _html_to_text(str(info.get("jobDescription", "")))
         text = f"Location: {location}. {description}" if location else description
@@ -1087,9 +1118,11 @@ class CareerSiteScanner:
 
         jobs: list[CareerSiteJob] = []
         for row in postings[:_MAX_JOBS_PER_SITE]:
-            title = _clean_text(row.get("title", ""))
             external_path = str(row.get("externalPath", "")).strip()
             job_url = _workday_job_url(site_url, external_path)
+            title = workday_title_with_req_id(
+                _clean_text(row.get("title", "")) or "Untitled Job", job_url
+            )
             bullet_fields = row.get("bulletFields", [])
             metadata = " ".join(_clean_text(str(item)) for item in bullet_fields if item)
             text = _clean_text(f"{title}. {metadata}")
@@ -1098,7 +1131,7 @@ class CareerSiteScanner:
                 CareerSiteJob(
                     site_name=site_name,
                     site_url=site_url,
-                    job_title=title[:300] or "Untitled Job",
+                    job_title=title[:300],
                     job_url=job_url,
                     job_text=text[:8000],
                     posted_at=_normalize_date(row.get("postedOn") or row.get("startDate")),
