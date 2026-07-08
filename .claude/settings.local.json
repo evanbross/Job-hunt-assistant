@@ -115,7 +115,15 @@
       "Bash(npx eslint *)",
       "Bash(echo \"EXIT:$?\")",
       "Bash(find . -iname \"*tampermonkey*\" -not -path \"./node_modules/*\" -not -path \"./frontend/node_modules/*\")",
-      "Bash(grep -rn \"trigger.*listener\\\\|'listener'\\\\|\\\\\"listener\\\\\"\" backend/ routes/ browser-extension/)"
+      "Bash(grep -rn \"trigger.*listener\\\\|'listener'\\\\|\\\\\"listener\\\\\"\" backend/ routes/ browser-extension/)",
+      "Bash(npm --version)",
+      "Bash(npm install *)",
+      "Skill(run)",
+      "Bash(npx --no-install playwright --version)",
+      "Bash(FLASK_PORT=5044 nohup ./.venv/Scripts/python.exe app.py)",
+      "Bash(echo \"started pid $!\")",
+      "Bash(curl *)",
+      "Bash(grep -o '\"jobPostings\":\\\\[.\\\\{0,2000\\\\}' /c/Users/evan/AppData/Local/Temp/claude/ashby.html)"
     ]
   }
 }
