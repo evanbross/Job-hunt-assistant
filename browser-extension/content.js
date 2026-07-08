@@ -123,8 +123,15 @@
       return { site: 'Discord Careers', type: 'discordCareers', jobCount: count, description: `${count} jobs` };
     }
 
-    if (host === 'jobs.ashbyhq.com' && path.split('/').filter(Boolean).length >= 2) {
-      return { site: 'Ashby', type: 'ashbyJob', jobCount: 1, description: 'Single job listing' };
+    if (host === 'jobs.ashbyhq.com') {
+      const segments = path.split('/').filter(Boolean);
+      if (segments.length >= 2) {
+        return { site: 'Ashby', type: 'ashbyJob', jobCount: 1, description: 'Single job listing' };
+      }
+      if (segments.length === 1) {
+        const count = getAshbyBoardJobs().length;
+        return { site: 'Ashby', type: 'ashbySearch', jobCount: count, description: `${count} jobs` };
+      }
     }
 
     // ai: claude-sonnet-4-6 | 2026-06-20
@@ -211,6 +218,29 @@
     return [...seen];
   }
 
+  // ai: claude-sonnet-4-6 | 2026-07-06
+  // window.__appData.jobBoard.jobPostings is SSR'd into the initial HTML on the
+  // Ashby company job-board page (unlike window.__appData.posting on a single job
+  // page, which fills in later), so it's available synchronously here. The board
+  // itself is just that full org-wide array client-filtered by URL query params —
+  // mirror those filters so the count matches what's actually on screen.
+  function getAshbyBoardJobs() {
+    const postings = window.__appData?.jobBoard?.jobPostings || [];
+    const params = new URLSearchParams(location.search);
+    const departmentId = params.get('departmentId');
+    const locationId = params.get('locationId');
+    const teamId = params.get('teamId');
+    const workplaceType = params.get('workplaceType');
+    return postings.filter(p => {
+      if (!p.isListed) return false;
+      if (departmentId && p.departmentId !== departmentId) return false;
+      if (locationId && p.locationId !== locationId) return false;
+      if (teamId && p.teamId !== teamId) return false;
+      if (workplaceType && p.workplaceType !== workplaceType) return false;
+      return true;
+    });
+  }
+
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -259,6 +289,17 @@
 
   function buildHtmlPayload() {
     return JSON.stringify({ content: document.documentElement.outerHTML, url: location.href });
+  }
+
+  // ai: claude-sonnet-4-6 | 2026-07-02
+  // Closed-req checks need the raw rendered page (banner text and all), not the
+  // structured job-listing extraction the site-specific builders produce.
+  function buildClosedReqCheckPayload() {
+    return JSON.stringify({
+      content: document.documentElement.outerHTML,
+      url: location.href,
+      format: 'html',
+    });
   }
 
   async function buildLinkedInJobPayload() {
@@ -673,6 +714,26 @@
     if (desc) lines.push('', desc);
 
     return JSON.stringify({ jobs: [{ url: location.href, job_title: title, company, listing_text: lines.join('\n') }] });
+  }
+
+  // ai: claude-sonnet-4-6 | 2026-07-06
+  // Company job-board page — turn the filtered jobPostings array (see
+  // getAshbyBoardJobs) into one entry per listed posting, linking to that
+  // posting's own single-job page via its id.
+  function buildAshbySearchPayload() {
+    const slug = location.pathname.split('/').filter(Boolean)[0] || '';
+    const company = window.__appData?.organization?.name
+      || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+    const jobs = getAshbyBoardJobs().map(p => {
+      const url = `https://jobs.ashbyhq.com/${slug}/${p.id}`;
+      const meta = [p.departmentExternalName || p.departmentName, p.locationExternalName || p.locationName, p.workplaceType, p.employmentType].filter(Boolean);
+      const lines = [p.title, 'Company: ' + company, 'URL: ' + url];
+      if (meta.length) lines.push(meta.join(' | '));
+      return { url, job_title: p.title, company, listing_text: lines.join('\n') };
+    });
+
+    return JSON.stringify({ jobs, source: { url: location.href } });
   }
 
   function buildMongoDBCareerPayload() {
@@ -1171,6 +1232,7 @@
       case 'workAtAStartup':   return buildWorkAtAStartupPayload();
       case 'discordCareers':   return buildDiscordCareersPayload();
       case 'ashbyJob':         return await buildAshbyJobPayload();
+      case 'ashbySearch':      return buildAshbySearchPayload();
       case 'wttjJob':          return buildWttjJobPayload();
       case 'phenomSearch':     return await buildPhenomSearchPayload();
       case 'jobanni':          return await buildJobanniPayload();
@@ -1222,6 +1284,19 @@
       buildPayload()
         .then(payload => chrome.runtime.sendMessage({ action: 'payloadReady', payload }))
         .catch(() => chrome.runtime.sendMessage({ action: 'payloadReady', payload: null }));
+      return false;
+    }
+
+    // ai: claude-sonnet-4-6 | 2026-07-02
+    // Closed-req check flow: capture the raw authenticated page instead of running
+    // the site-specific job-listing extraction used by buildForBackground.
+    if (message.action === 'buildClosedReqCheck') {
+      try {
+        const payload = buildClosedReqCheckPayload();
+        chrome.runtime.sendMessage({ action: 'payloadReady', payload });
+      } catch {
+        chrome.runtime.sendMessage({ action: 'payloadReady', payload: null });
+      }
       return false;
     }
   });

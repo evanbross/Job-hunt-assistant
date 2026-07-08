@@ -57,6 +57,12 @@ const _pendingQueueUrls = new Map();
 // tab was opened. Restored after the capture tab is removed so the user lands back
 // on the JHA tab rather than whatever the browser picks arbitrarily.
 const _previousTabs = new Map();
+// ai: claude-sonnet-4-6 | 2026-07-02
+// _pendingPurpose / _pendingJobId: tabId → queue item purpose/job_id, preserved
+// across the _queueTabs delete (same reason as _pendingQueueUrls) so triggerQueueCapture
+// and postToApp can route closed-req checks differently from job imports.
+const _pendingPurpose = new Map();
+const _pendingJobId = new Map();
 let _queuePolling = false;
 
 // ─── Alarm setup ──────────────────────────────────────────────────────────
@@ -114,16 +120,28 @@ async function pollQueue() {
 
     for (const item of items) {
       if (!item.url || alreadyOpenUrls.has(item.url)) continue;
+      // ai: claude-sonnet-4-6 | 2026-07-02
+      // Closed-req checks are a passive re-verification against the user's already
+      // logged-in session — they don't need foreground interaction, so load them in a
+      // background tab rather than stealing focus like the import/JD-capture queue does.
+      const purpose = item.purpose || 'import';
+      const isBackground = purpose === 'closed_req';
       // ai: claude-sonnet-4-6 | 2026-06-22
       // Capture the active tab before opening the queue tab so we can restore focus
       // to it (i.e. the JHA tab) after the capture is done.
       // Open as active so the user can authenticate if the site requires it.
       try {
-        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        const previousTabId = activeTab?.id;
-        const tab = await chrome.tabs.create({ url: item.url, active: true });
+        const previousTabId = isBackground
+          ? null
+          : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+        const tab = await chrome.tabs.create({ url: item.url, active: !isBackground });
         if (tab?.id) {
-          _queueTabs.set(tab.id, { url: item.url, siteName: item.site_name || '' });
+          _queueTabs.set(tab.id, {
+            url: item.url,
+            siteName: item.site_name || '',
+            purpose,
+            jobId: item.job_id ?? null,
+          });
           if (previousTabId) _previousTabs.set(tab.id, previousTabId);
         }
       } catch (e) {
@@ -172,6 +190,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // redirect to a canonical URL, so postToApp injects this into the payload so the
   // backend can mark the correct queue item done even after the redirect.
   _pendingQueueUrls.set(tabId, info.url);
+  // ai: claude-sonnet-4-6 | 2026-07-02
+  // Preserve purpose/jobId across the _queueTabs delete below so triggerQueueCapture
+  // and postToApp know this is a closed-req check rather than a job import.
+  _pendingPurpose.set(tabId, info.purpose || 'import');
+  if (info.jobId != null) _pendingJobId.set(tabId, info.jobId);
   _queueTabs.delete(tabId);
   _pendingCaptureTabs.add(tabId);
   // ai: claude-sonnet-4-6 | 2026-06-21
@@ -179,8 +202,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // but must then make an API call to fetch the job data and render it in the DOM.
   // 5s gives the WTTJ API call and React render time to complete before content.js runs.
   const isWttj = (tab.url || '').includes('welcometothejungle.com');
+  // ai: claude-sonnet-4-6 | 2026-07-02
+  // LinkedIn's closure banner can finish rendering just after status: complete —
+  // a short settle delay avoids capturing before it mounts.
+  const isClosedReqCheck = info.purpose === 'closed_req';
   if (isWttj) {
     setTimeout(() => triggerQueueCapture(tabId), 5000);
+  } else if (isClosedReqCheck) {
+    setTimeout(() => triggerQueueCapture(tabId), 1500);
   } else {
     triggerQueueCapture(tabId);
   }
@@ -189,12 +218,16 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 async function triggerQueueCapture(tabId) {
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-    chrome.tabs.sendMessage(tabId, { action: 'buildForBackground' });
+    const purpose = _pendingPurpose.get(tabId) || 'import';
+    const action = purpose === 'closed_req' ? 'buildClosedReqCheck' : 'buildForBackground';
+    chrome.tabs.sendMessage(tabId, { action });
   } catch (err) {
     // ai: claude-sonnet-4-6 | 2026-06-22
     console.error('[JHA] triggerQueueCapture failed for tab', tabId, ':', err?.message || err);
     _pendingCaptureTabs.delete(tabId);
     _pendingQueueUrls.delete(tabId);
+    _pendingPurpose.delete(tabId);
+    _pendingJobId.delete(tabId);
     const previousTabId = _previousTabs.get(tabId);
     _previousTabs.delete(tabId);
     chrome.tabs.remove(tabId).catch(() => {});
@@ -237,6 +270,11 @@ async function postToApp(payload, tabId, isQueueCapture = false) {
   // ai: claude-sonnet-4-6 | 2026-06-22
   const previousTabId = isQueueCapture && tabId != null ? _previousTabs.get(tabId) : null;
   if (isQueueCapture && tabId != null) _previousTabs.delete(tabId);
+  // ai: claude-sonnet-4-6 | 2026-07-02
+  const purpose = isQueueCapture && tabId != null ? _pendingPurpose.get(tabId) : null;
+  if (isQueueCapture && tabId != null) _pendingPurpose.delete(tabId);
+  const jobId = isQueueCapture && tabId != null ? _pendingJobId.get(tabId) : null;
+  if (isQueueCapture && tabId != null) _pendingJobId.delete(tabId);
 
   const settings = await loadSettings();
   const headers = { 'Content-Type': 'application/json' };
@@ -249,6 +287,17 @@ async function postToApp(payload, tabId, isQueueCapture = false) {
     try {
       const parsed = JSON.parse(payload);
       parsed.queue_url = originalQueueUrl;
+      body = JSON.stringify(parsed);
+    } catch { /* leave body unchanged */ }
+  }
+  // ai: claude-sonnet-4-6 | 2026-07-02
+  // Tag the payload with its purpose/job_id so the backend listener routes closed-req
+  // captures to the classifier instead of the job-import pipeline.
+  if (purpose && purpose !== 'import' && payload) {
+    try {
+      const parsed = JSON.parse(body);
+      parsed.purpose = purpose;
+      if (jobId != null) parsed.job_id = jobId;
       body = JSON.stringify(parsed);
     } catch { /* leave body unchanged */ }
   }
