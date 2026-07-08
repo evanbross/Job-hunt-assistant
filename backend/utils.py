@@ -256,6 +256,23 @@ def normalize_stage_status(raw_status: object) -> str:
     return aliases.get(normalized, normalized)
 
 
+def is_trusted_api_write_origin(
+    source: str | None, self_origin: str, cors_origins: list[str]
+) -> bool:
+    """True if *source* (an Origin or Referer header value) is safe to accept a write from.
+
+    *source* is same-origin (matches *self_origin*) or explicitly CORS-allowlisted.
+    A missing *source* is always trusted: non-browser clients (tests, curl, internal
+    tooling) never send a forgeable Origin/Referer, so there is nothing to check, and
+    a malicious cross-origin browser request always sets one of the two.
+    """
+    if not source:
+        return True
+    parsed = urlparse(source)
+    source_origin = f"{parsed.scheme}://{parsed.netloc}"
+    return source_origin == self_origin or source_origin in cors_origins
+
+
 def platform_for_site_url(site_url: str) -> str:
     host = site_url.lower()
     if "greenhouse.io" in host:

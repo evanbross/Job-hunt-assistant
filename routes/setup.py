@@ -51,6 +51,7 @@ from dotenv import dotenv_values, set_key
 from flask import Blueprint, jsonify, request
 
 import config
+from backend.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -232,8 +233,10 @@ def _test_ollama(base_url: str, model: str) -> Any:
     tags_url = f"{base_url}/api/tags"
     req = urllib.request.Request(tags_url, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with safe_urlopen(req, timeout=5, allow_loopback=True) as resp:
             body = json.loads(resp.read().decode("utf-8"))
+    except UnsafeUrlError as exc:
+        return jsonify({"ok": False, "message": f"Refusing to connect: {exc}"})
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return jsonify({"ok": False, "message": f"Could not connect to Ollama: {exc}"})
     except json.JSONDecodeError:

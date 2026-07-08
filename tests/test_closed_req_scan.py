@@ -92,7 +92,7 @@ def test_check_closed_req_follows_tracking_link_to_canonical_url() -> None:
     """An email tracking link must be fetched via its canonicalized job-view URL."""
     tracking_url = "https://www.linkedin.com/comm/jobs/view/4410030973/?midToken=abc&otpToken=def"
     fake_resp = _fake_response(b"<html>some job content</html>", tracking_url)
-    with patch("routes.applications.urlopen", return_value=fake_resp) as mock_urlopen:
+    with patch("routes.applications.safe_urlopen", return_value=fake_resp) as mock_urlopen:
         result = _check_closed_req(tracking_url, "linkedin")
     fetched_request = mock_urlopen.call_args[0][0]
     assert fetched_request.full_url == "https://www.linkedin.com/jobs/view/4410030973/"
@@ -104,7 +104,7 @@ def test_check_closed_req_detects_linkedin_expired_redirect() -> None:
     url = "https://www.linkedin.com/jobs/view/4410030973/"
     redirected_url = "https://www.linkedin.com/jobs/some-search?trk=expired_jd_redirect"
     fake_resp = _fake_response(b"<html>generic search results</html>", redirected_url)
-    with patch("routes.applications.urlopen", return_value=fake_resp):
+    with patch("routes.applications.safe_urlopen", return_value=fake_resp):
         result = _check_closed_req(url, "linkedin")
     assert result == "closed"
 
@@ -112,7 +112,7 @@ def test_check_closed_req_detects_linkedin_expired_redirect() -> None:
 def test_check_closed_req_detects_closed_banner_phrase() -> None:
     url = "https://www.linkedin.com/jobs/view/4401289330/"
     fake_resp = _fake_response(b"<html>No longer accepting applications</html>", url)
-    with patch("routes.applications.urlopen", return_value=fake_resp):
+    with patch("routes.applications.safe_urlopen", return_value=fake_resp):
         result = _check_closed_req(url, "linkedin")
     assert result == "closed"
 
@@ -120,7 +120,7 @@ def test_check_closed_req_detects_closed_banner_phrase() -> None:
 def test_check_closed_req_returns_closed_on_404() -> None:
     url = "https://www.linkedin.com/jobs/view/4401289330/"
     with patch(
-        "routes.applications.urlopen",
+        "routes.applications.safe_urlopen",
         side_effect=HTTPError(url, 404, "Not Found", hdrs=None, fp=None),
     ):
         result = _check_closed_req(url, "linkedin")

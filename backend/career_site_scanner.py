@@ -49,7 +49,9 @@ from html import unescape
 from html.parser import HTMLParser
 from typing import NotRequired, TypedDict
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from backend.url_safety import safe_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +228,7 @@ def _fetch_html(url: str) -> str:
             "Accept": "text/html,application/xhtml+xml",
         },
     )
-    with urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+    with safe_urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
         raw = resp.read(_MAX_PAGE_BYTES)
         charset = resp.headers.get_content_charset() or "utf-8"
     return raw.decode(charset, errors="replace")
@@ -252,7 +254,7 @@ def _fetch_json(url: str, payload: dict | None = None) -> dict:
             "Content-Type": "application/json",
         },
     )
-    with urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+    with safe_urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
         raw = resp.read(_MAX_PAGE_BYTES)
         charset = resp.headers.get_content_charset() or "utf-8"
     return json.loads(raw.decode(charset, errors="replace"))
@@ -788,7 +790,7 @@ class CareerSiteScanner:
                 "Accept": "text/html,application/xhtml+xml",
             },
         )
-        with urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+        with safe_urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
             raw = resp.read(_MAX_PAGE_BYTES)
             charset = resp.headers.get_content_charset() or "utf-8"
             try:

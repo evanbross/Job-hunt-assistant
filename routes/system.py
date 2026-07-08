@@ -86,8 +86,9 @@ def select_folder():
             mustexist=False,
         )
         root.destroy()
-    except Exception as exc:
-        return jsonify({"error": f"Could not open folder picker: {exc}"}), 500
+    except Exception:
+        logger.exception("Could not open folder picker")
+        return jsonify({"error": "Could not open folder picker"}), 500
 
     if not selected:
         return jsonify({"selected_path": None})
@@ -116,8 +117,9 @@ def select_file():
             ],
         )
         root.destroy()
-    except Exception as exc:
-        return jsonify({"error": f"Could not open file picker: {exc}"}), 500
+    except Exception:
+        logger.exception("Could not open file picker")
+        return jsonify({"error": "Could not open file picker"}), 500
 
     if not selected:
         return jsonify({"selected_path": None})

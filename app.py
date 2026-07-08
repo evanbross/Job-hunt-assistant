@@ -64,13 +64,13 @@ if not hasattr(flask_json, "JSONEncoder"):
     flask_json.JSONEncoder = json.JSONEncoder
 
 from flasgger import Swagger
-from flask import Flask
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 import config
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db
 from backend.import_listener import start_job_import_listener
-from backend.utils import start_career_site_scheduler
+from backend.utils import is_trusted_api_write_origin, start_career_site_scheduler
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
 try:
@@ -127,6 +127,31 @@ _cors_origins = (
     ]
 )
 CORS(app, resources={r"/api/*": {"origins": _cors_origins}})
+
+_API_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+@app.before_request
+def _reject_cross_origin_api_writes() -> tuple[flask.Response, int] | None:
+    """Reject state-changing /api/* requests whose Origin/Referer isn't trusted.
+
+    CORS only restricts which origins can *read* the response — it does not stop
+    a cross-origin page from *sending* a state-changing request. Browsers always
+    set Origin (or, failing that, Referer) on cross-origin fetch/form submissions,
+    so a present-but-untrusted value is rejected; a request with neither header
+    (non-browser clients: tests, curl, internal tooling) is let through since
+    there is nothing forgeable to check.
+    """
+    if not request.path.startswith("/api/") or request.method not in _API_UNSAFE_METHODS:
+        return None
+
+    source = request.headers.get("Origin") or request.headers.get("Referer")
+    self_origin = f"{request.scheme}://{request.host}"
+    if not is_trusted_api_write_origin(source, self_origin, _cors_origins):
+        logger.warning("Rejected cross-origin API write from %s to %s", source, request.path)
+        return jsonify({"error": "Cross-origin request rejected"}), 403
+    return None
+
 
 # Ensure directories exist
 config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
@@ -262,6 +287,7 @@ from routes.applications import applications_bp, submit_closed_req_capture
 from routes.system import system_bp
 from routes.jobanni import jobanni_bp
 from routes.wellfound import wellfound_bp
+from routes.toptal import toptal_bp
 
 app.register_blueprint(auth_bp, url_prefix="/api")
 app.register_blueprint(board_search_bp, url_prefix="/api")
@@ -279,6 +305,7 @@ app.register_blueprint(setup_bp, url_prefix="/api")
 app.register_blueprint(applications_bp, url_prefix="/api")
 app.register_blueprint(jobanni_bp, url_prefix="/api")
 app.register_blueprint(wellfound_bp, url_prefix="/api")
+app.register_blueprint(toptal_bp, url_prefix="/api")
 app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /api/system/*
 
 
@@ -339,6 +366,23 @@ def _check_redis() -> None:
 
 
 _check_redis()
+
+
+def _check_import_listener_token() -> None:
+    if not config.DEFAULT_JOB_IMPORT_LISTENER_ENABLED:
+        return
+    if config.DEFAULT_JOB_IMPORT_LISTENER_TOKEN:
+        return
+    logger.warning(
+        "Import listener is enabled on %s:%s with no JOB_IMPORT_LISTENER_TOKEN set — "
+        "any local process can post import payloads. Set JOB_IMPORT_LISTENER_TOKEN to "
+        "require authentication.",
+        config.DEFAULT_JOB_IMPORT_LISTENER_HOST,
+        config.DEFAULT_JOB_IMPORT_LISTENER_PORT,
+    )
+
+
+_check_import_listener_token()
 
 
 # ─── Dev-server launcher ──────────────────────────────────────────────────────

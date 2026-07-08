@@ -50,6 +50,7 @@ from typing import Protocol, TypedDict
 from urllib.parse import unquote, urlparse
 
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -550,9 +551,9 @@ def resolve_tracking_url(url: str, timeout: float = 3.0) -> str:
                 method=method,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; JobHuntBot/1.0)"},
             )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with safe_urlopen(req, timeout=timeout) as resp:
                 return resp.url
-        except (urllib.error.URLError, socket.timeout, OSError):
+        except (UnsafeUrlError, urllib.error.URLError, socket.timeout, OSError):
             continue
     return url
 

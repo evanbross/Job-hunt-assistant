@@ -45,11 +45,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, UTC
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from flask import Blueprint, jsonify, request
 
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
+from backend.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils import (
     get_repos,
     maybe_mark_source_email_read,
@@ -383,11 +384,14 @@ def _check_closed_req(url: str, platform: str) -> str:
         },
     )
     try:
-        with urlopen(req, timeout=_CLOSED_REQ_FETCH_TIMEOUT_SECONDS) as resp:
+        with safe_urlopen(req, timeout=_CLOSED_REQ_FETCH_TIMEOUT_SECONDS) as resp:
             raw = resp.read(_CLOSED_REQ_FETCH_MAX_BYTES)
             charset = resp.headers.get_content_charset() or "utf-8"
             final_url = resp.geturl()
         page_text = raw.decode(charset, errors="replace").lower()
+    except UnsafeUrlError as exc:
+        logger.warning("Closed-req check rejected unsafe URL %s: %s", url, exc)
+        return "bad_url"
     except HTTPError as exc:
         if exc.code in (404, 410):
             return "closed"
