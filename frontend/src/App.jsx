@@ -47,6 +47,7 @@ import JobanniScanPanel from "./components/JobanniScanPanel.jsx";
 import WellfoundScanPanel from "./components/WellfoundScanPanel.jsx";
 import Modal from "./components/common/Modal.jsx";
 import RecentChangesModal from "./components/RecentChangesModal.jsx";
+import ToptalPitchModal from "./components/common/ToptalPitchModal.jsx";
 import MetricGrid, { MetricItem } from "./components/common/MetricGrid.jsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 
@@ -184,6 +185,7 @@ export default function App() {
   const [listenerImportDismissedAt, setListenerImportDismissedAt] = useState("");
   const [setupComplete, setSetupComplete] = useState(true); // optimistic; corrected on mount
   const [showRecentChanges, setShowRecentChanges] = useState(false);
+  const [showToptalPitch, setShowToptalPitch] = useState(false);
 
   const navigateToEmails = (emailId) => {
     setEmailFocusId(emailId);
@@ -349,6 +351,13 @@ export default function App() {
 
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
             <button
+              onClick={() => setShowToptalPitch(true)}
+              style={{ fontSize: "12px", padding: "5px 12px", background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "var(--radius)", cursor: "pointer" }}
+              title="Generate a short third-person client bio for a Toptal application"
+            >
+              ✍ Toptal Pitch
+            </button>
+            <button
               onClick={() => setShowRecentChanges(true)}
               style={{ fontSize: "12px", padding: "5px 12px", background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "var(--radius)", cursor: "pointer" }}
               title="View recent status changes and undo them"
@@ -459,6 +468,10 @@ export default function App() {
 
       {showRecentChanges && (
         <RecentChangesModal onClose={() => setShowRecentChanges(false)} />
+      )}
+
+      {showToptalPitch && (
+        <ToptalPitchModal onClose={() => setShowToptalPitch(false)} />
       )}
     </div>
   );
