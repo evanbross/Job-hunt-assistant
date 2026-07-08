@@ -73,6 +73,15 @@ function statusSortKey(email) {
   return statusBadge(email).label;
 }
 
+// ai: claude-sonnet-4-6 | 2026-07-02
+function parsingReasonText(email) {
+  const dispositionLabel = (DISPOSITION_INFO[email.disposition] || { label: email.disposition || "Unknown" }).label;
+  if (email.disposition === "parser_error" && email.parser_error_msg) {
+    return `${dispositionLabel} — ${email.parser_error_msg}`;
+  }
+  return dispositionLabel;
+}
+
 function jobStatusBadge(job) {
   return JOB_STATUS_INFO[job.status] || { label: job.status || "Unknown", cls: `badge-${statusTone(job.status || "")}` };
 }
@@ -788,6 +797,12 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
                         <tr style={{ background: "var(--surface2)" }}>
                           <td style={{ ...tdStyle, borderBottom: "1px solid var(--border)" }} />
                           <td colSpan={6} style={{ padding: "12px 14px 14px", borderBottom: "1px solid var(--border)" }}>
+                            <div style={expandedHeaderStyle}>
+                              <span><strong style={{ color: "var(--text)" }}>Date:</strong> {formatLocalDateTime(email.email_date || email.scanned_at)}</span>
+                              <span><strong style={{ color: "var(--text)" }}>Email ID:</strong> {email.email_id}</span>
+                              <span><strong style={{ color: "var(--text)" }}>Parsing:</strong> {parsingReasonText(email)}</span>
+                              <span><strong style={{ color: "var(--text)" }}>Jobs parsed:</strong> {childJobs.length}</span>
+                            </div>
                             {childJobs.length > 0 ? (
                               <div style={{ display: "grid", gap: "8px" }}>
                                 {childJobs.map((job) => {
@@ -990,6 +1005,17 @@ const progressBox = {
   padding: "16px 18px",
   marginBottom: "16px",
   boxShadow: "var(--shadow-sm)",
+};
+
+const expandedHeaderStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "6px 20px",
+  fontSize: "12px",
+  color: "var(--text-muted)",
+  marginBottom: "10px",
+  paddingBottom: "10px",
+  borderBottom: "1px solid var(--border)",
 };
 
 const treeJobRowStyle = {
