@@ -195,6 +195,10 @@
 
   function isJobLink(u) {
     if (!_JOB_PATH_RE.test(u.pathname) || _JOB_EXCLUDE_RE.test(u.pathname)) return false;
+    // In-page anchors (e.g. "Skip to main content", "Back to top") resolve to
+    // the current page's own URL plus a hash — same pathname, just a scroll
+    // target, not a distinct job posting.
+    if (u.hash && u.pathname === location.pathname && u.search === location.search) return false;
     return u.hostname === location.hostname || _KNOWN_ATS_RE.test(u.hostname);
   }
 
@@ -206,6 +210,12 @@
         if (isJobLink(u)) seen.add(u.origin + u.pathname);
       } catch { /* skip */ }
     });
+    // The current page counts as a job too when it is one — see the matching
+    // self-inclusion in buildSmartGenericPayload().
+    try {
+      const selfUrl = new URL(location.href);
+      if (isJobLink(selfUrl)) seen.add(selfUrl.origin + selfUrl.pathname);
+    } catch { /* skip */ }
     return seen.size;
   }
 
@@ -1123,6 +1133,26 @@
       jobs.push({ url: link.href, job_title: title, company: '', listing_text: lines.join('\n') });
     });
 
+    // ai: claude-sonnet-4-6 | 2026-07-09
+    // The currently-open page can itself be a job posting (e.g. a job detail
+    // page that also lists "related jobs" elsewhere on the page). Job detail
+    // pages rarely link to themselves, so anchor harvesting above won't find
+    // it — add it explicitly using the page's own title, not anchor text.
+    let selfUrl;
+    try { selfUrl = new URL(location.href); } catch { selfUrl = null; }
+    if (selfUrl && isJobLink(selfUrl)) {
+      const selfKey = selfUrl.origin + selfUrl.pathname;
+      if (!seen.has(selfKey)) {
+        seen.add(selfKey);
+        const title = pick(['[data-ph-at-id*="title"]', 'h1[class*="job"]', 'h1[class*="title"]', 'h1']) || '';
+        const bodyText = document.body.innerText.trim().slice(0, 12000);
+        const lines = [title || selfKey.split('/').filter(Boolean).pop()];
+        lines.push('URL: ' + location.href);
+        if (bodyText) lines.push('', bodyText);
+        jobs.push({ url: location.href, job_title: title, company: '', listing_text: lines.join('\n') });
+      }
+    }
+
     if (jobs.length === 0) return buildHtmlPayload();
 
     // ai: claude-sonnet-4-6 | 2026-06-08
@@ -1218,32 +1248,47 @@
 
   // ─── Build Dispatcher ──────────────────────────────────────────────────────
 
+  // ai: claude-sonnet-4-6 | 2026-07-09
+  // Stamp every outgoing payload with the extension's own version so captures
+  // can be traced back to the content-script build that produced them.
+  function withExtensionVersion(payloadJson) {
+    try {
+      const parsed = JSON.parse(payloadJson);
+      parsed.extension_version = chrome.runtime.getManifest().version;
+      return JSON.stringify(parsed);
+    } catch {
+      return payloadJson;
+    }
+  }
+
   async function buildPayload() {
     const page = detectPage();
+    let payload;
     switch (page.type) {
-      case 'linkedInJob':      return await buildLinkedInJobPayload();
-      case 'linkedInSearch':   return buildLinkedInSearchPayload();
-      case 'wellfoundJob':     return buildWellfoundJobPayload();
-      case 'wellfoundSearch':  return await buildWellfoundSearchPayload();
-      case 'greenhouseJob':    return buildGreenhouseJobPayload();
-      case 'greenhouseSearch': return await buildGreenhouseSearchPayload();
-      case 'mongoDBCareer':    return buildMongoDBCareerPayload();
-      case 'hnHiring':         return buildHnHiringPayload();
-      case 'workAtAStartup':   return buildWorkAtAStartupPayload();
-      case 'discordCareers':   return buildDiscordCareersPayload();
-      case 'ashbyJob':         return await buildAshbyJobPayload();
-      case 'ashbySearch':      return buildAshbySearchPayload();
-      case 'wttjJob':          return buildWttjJobPayload();
-      case 'phenomSearch':     return await buildPhenomSearchPayload();
-      case 'jobanni':          return await buildJobanniPayload();
-      case 'smartGeneric':     return buildSmartGenericPayload();
+      case 'linkedInJob':      payload = await buildLinkedInJobPayload(); break;
+      case 'linkedInSearch':   payload = buildLinkedInSearchPayload(); break;
+      case 'wellfoundJob':     payload = buildWellfoundJobPayload(); break;
+      case 'wellfoundSearch':  payload = await buildWellfoundSearchPayload(); break;
+      case 'greenhouseJob':    payload = buildGreenhouseJobPayload(); break;
+      case 'greenhouseSearch': payload = await buildGreenhouseSearchPayload(); break;
+      case 'mongoDBCareer':    payload = buildMongoDBCareerPayload(); break;
+      case 'hnHiring':         payload = buildHnHiringPayload(); break;
+      case 'workAtAStartup':   payload = buildWorkAtAStartupPayload(); break;
+      case 'discordCareers':   payload = buildDiscordCareersPayload(); break;
+      case 'ashbyJob':         payload = await buildAshbyJobPayload(); break;
+      case 'ashbySearch':      payload = buildAshbySearchPayload(); break;
+      case 'wttjJob':          payload = buildWttjJobPayload(); break;
+      case 'phenomSearch':     payload = await buildPhenomSearchPayload(); break;
+      case 'jobanni':          payload = await buildJobanniPayload(); break;
+      case 'smartGeneric':     payload = buildSmartGenericPayload(); break;
       // ai: claude-sonnet-4-6 | 2026-06-26
       // For pages that don't match a known platform, extract body text rather
       // than sending raw HTML. The HTML import path scans for job links, which
       // yields nothing for individual job pages. Body text gives the importer
       // enough content to extract the description.
-      default:                 return buildGenericJobPagePayload();
+      default:                 payload = buildGenericJobPagePayload(); break;
     }
+    return withExtensionVersion(payload);
   }
 
   function buildGenericJobPagePayload() {

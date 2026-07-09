@@ -44,6 +44,7 @@ from typing import NotRequired, TypedDict
 from urllib.parse import ParseResult, parse_qs, urlencode, urljoin, urlparse
 
 from backend.career_site_scanner import workday_title_with_req_id
+from backend.utils import company_from_career_domain
 
 
 class ExtractedJobUrl(TypedDict):
@@ -642,7 +643,11 @@ class CapturedPageImportService:
                         fragment="",
                     ).geturl()
             return parsed._replace(path="/en/jobs", query="", fragment="").geturl()
-        return None
+        # ai: claude-sonnet-4-6 | 2026-07-09
+        # Generic fallback for company-branded career domains not covered by a
+        # known ATS/aggregator (e.g. careers.labcorp.com). The site origin is
+        # the board root; _source_name_for_url derives a name from the domain.
+        return parsed._replace(path="", query="", fragment="").geturl()
 
     def _source_name_for_url(self, source_url: str, platform: str) -> str:
         parsed = urlparse(source_url)
@@ -655,4 +660,8 @@ class CapturedPageImportService:
             return "WelcomeToTheJungle"
         if path_parts:
             return f"{path_parts[0]} {platform}".strip()
+        if not platform:
+            domain_company = company_from_career_domain(source_url)
+            if domain_company:
+                return domain_company
         return platform or parsed.netloc.lower()

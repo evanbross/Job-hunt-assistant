@@ -58,11 +58,13 @@ def dump_import_capture(body: dict) -> None:
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         token = secrets.token_hex(4)
         path = _DUMP_DIR / f"import_capture_{ts}_{token}.json"
+        # ai: claude-sonnet-4-6 | 2026-07-09
+        # Dump the full body rather than a hand-picked subset of fields, so any
+        # field the extension adds (e.g. extension_version, queue_url, purpose)
+        # is always visible in post-mortem inspection without updating this list.
         payload = {
             "captured_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "url": body.get("url"),
-            "format": body.get("format"),
-            "content": body.get("content"),
+            **body,
         }
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         logger.info(

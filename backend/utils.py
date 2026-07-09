@@ -415,6 +415,77 @@ def company_from_ats_url(url: str) -> str | None:
         return None
 
 
+# Third-party job boards/ATS hosts where the domain itself is not the
+# employer's name. Excluded so a career-domain guess never misidentifies the
+# board as the company.
+_KNOWN_JOB_BOARD_HOSTS: frozenset[str] = frozenset({
+    "ashbyhq.com", "lever.co", "greenhouse.io", "myworkdayjobs.com",
+    "linkedin.com", "wellfound.com", "indeed.com", "glassdoor.com",
+    "ziprecruiter.com", "monster.com", "simplyhired.com", "careerbuilder.com",
+    "dice.com", "smartrecruiters.com", "icims.com", "jobvite.com",
+    "taleo.net", "successfactors.com", "oraclecloud.com", "bamboohr.com",
+    "breezy.hr", "workable.com", "recruitee.com", "applytojob.com",
+    "personio.com",
+})
+
+# Subdomain labels that indicate a career-site landing page rather than the
+# company name itself, e.g. "careers.labcorp.com" -> strip "careers" -> "labcorp".
+_CAREER_SUBDOMAIN_PREFIXES: frozenset[str] = frozenset({
+    "careers", "career", "jobs", "job", "talent", "recruiting", "recruitment",
+    "apply", "hiring", "www", "join",
+})
+
+# Second-to-last labels that signal a multi-part country-code TLD (e.g.
+# "co.uk", "com.au") so the registrable label sits one position further left.
+_MULTI_PART_TLD_SECOND_LABELS: frozenset[str] = frozenset({"co", "com", "org", "net", "gov", "ac"})
+
+
+def _registrable_domain_label(labels: list[str]) -> str | None:
+    if len(labels) < 2:
+        return None
+    if (
+        len(labels) >= 3
+        and labels[-2] in _MULTI_PART_TLD_SECOND_LABELS
+        and len(labels[-1]) == 2
+    ):
+        return labels[-3]
+    return labels[-2]
+
+
+# ai: claude-sonnet-4-6 | 2026-07-09
+def company_from_career_domain(url: str) -> str | None:
+    """Last-resort fallback: infer a company name from a branded careers domain.
+
+    Handles company-hosted career sites where the employer name is the domain
+    itself rather than a URL path slug, e.g.:
+    - https://careers.labcorp.com/global/en/job/2619317/... -> "Labcorp"
+    - https://jobs.somecompany.com/posting/123 -> "Somecompany"
+
+    Returns None for known third-party job boards/ATS domains (where the
+    domain is not the employer), or when no usable label remains.
+    """
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower().split(":")[0]
+        if not host:
+            return None
+        if any(host == board or host.endswith(f".{board}") for board in _KNOWN_JOB_BOARD_HOSTS):
+            return None
+
+        labels = host.split(".")
+        while len(labels) > 2 and labels[0] in _CAREER_SUBDOMAIN_PREFIXES:
+            labels = labels[1:]
+
+        label = _registrable_domain_label(labels)
+        if not label or _UUID_RE.match(label):
+            return None
+        return slug_to_title_case(label)
+    except Exception:
+        return None
+
+
 def extract_ashby_job_id(url: str) -> str | None:
     """Return the Ashby job ID from an ashbyhq.com URL, or None for any other URL."""
     if not url:

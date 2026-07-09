@@ -46,7 +46,7 @@ from backend.job_validator import normalize_and_validate, import_warnings_to_jso
 from backend.career_site_scanner import CareerSiteScanner
 from backend.email_parser import EmailParser, ParsedJob
 from backend.fit_scorer import FitScorer
-from backend.utils import company_from_ats_url
+from backend.utils import company_from_ats_url, company_from_career_domain
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +200,11 @@ class ManualJobIngestService:
         # other extraction paths (parser, LLM, JD re-fetch) produced nothing.
         if not company and url:
             company = company_from_ats_url(url) or ""
+        # ai: claude-sonnet-4-6 | 2026-07-09
+        # Further fallback: infer the company from a branded careers domain
+        # (e.g. careers.labcorp.com) when the URL isn't a known ATS slug URL.
+        if not company and url:
+            company = company_from_career_domain(url) or ""
         parsed_source = (parsed.get("source") or "").strip()
 
         source = source_name.strip() or parsed_source or source_prefix
