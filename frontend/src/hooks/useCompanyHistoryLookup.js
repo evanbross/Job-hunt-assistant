@@ -33,6 +33,7 @@
  */
 
 import { useState } from "react";
+import { describeFetchError } from "../utils/fetchErrorUtils.js";
 import { applicationRowFromSheet, jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.js";
 
 // ai: claude-sonnet-4-6 | 2026-06-11
@@ -100,7 +101,8 @@ export function useCompanyHistoryLookup(job) {
 
       setRows(withDuplicateRef.filter((row) => rowMatchesCompany(row.company, company) || row.id === duplicateOfId));
     } catch (lookupError) {
-      setError(lookupError.message || "Application lookup failed");
+      // ai: claude-sonnet-5 | 2026-07-09
+      setError(describeFetchError(lookupError) || "Application lookup failed");
     } finally {
       setLoading(false);
     }

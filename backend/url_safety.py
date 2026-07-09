@@ -43,8 +43,9 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import ssl
 from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 from urllib.response import addinfourl
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
@@ -134,23 +135,35 @@ class _ValidatingRedirectHandler(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+# ai: claude-sonnet-4-6 | 2026-07-08
 def safe_urlopen(
     request: Request,
     *,
     timeout: float,
     allow_loopback: bool = False,
     allowed_ports: frozenset[int] | None = None,
+    verify_ssl: bool = True,
 ) -> addinfourl:
     """Validate *request*'s URL (and every redirect hop) before fetching it.
 
     Raises UnsafeUrlError before issuing any network request if the URL fails
     validation. Callers should catch UnsafeUrlError alongside the usual
     (URLError, HTTPError, TimeoutError, socket.error) network exceptions.
+
+    Pass verify_ssl=False to skip SSL certificate verification (e.g. when a
+    site's cert has expired). SSRF protection via IP-range validation is applied
+    regardless — verify_ssl only controls TLS cert checking.
     """
     validate_outbound_url(
         request.full_url, allow_loopback=allow_loopback, allowed_ports=allowed_ports
     )
-    opener = build_opener(
-        _ValidatingRedirectHandler(allow_loopback=allow_loopback, allowed_ports=allowed_ports)
-    )
+    handlers: list = [
+        _ValidatingRedirectHandler(allow_loopback=allow_loopback, allowed_ports=allowed_ports),
+    ]
+    if not verify_ssl:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        handlers.append(HTTPSHandler(context=ctx))
+    opener = build_opener(*handlers)
     return opener.open(request, timeout=timeout)

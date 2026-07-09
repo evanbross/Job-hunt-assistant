@@ -7,6 +7,7 @@
 
 // ai: claude-sonnet-4-6 | 2026-07-03
 import { useEffect, useRef, useState } from "react";
+import { describeFetchError } from "../../utils/fetchErrorUtils.js";
 import Modal from "./Modal.jsx";
 
 /**
@@ -15,13 +16,6 @@ import Modal from "./Modal.jsx";
  * to fetch), and this generates a short third-person bio for Toptal to pass
  * along to the client, with an AI chat to refine it.
  */
-const BACKEND_UNREACHABLE_MESSAGE = "Could not contact the backend — is it running?";
-
-// ai: claude-sonnet-4-6 | 2026-07-06
-function describeFetchError(e) {
-  if (e instanceof TypeError) return BACKEND_UNREACHABLE_MESSAGE;
-  return e.message;
-}
 
 export default function ToptalPitchModal({ onClose }) {
   const [jobDescription, setJobDescription] = useState("");

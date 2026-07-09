@@ -43,11 +43,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+import ssl
 import time
 from datetime import UTC, datetime
 from html import unescape
 from html.parser import HTMLParser
 from typing import NotRequired, TypedDict
+from urllib.error import URLError
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
 from urllib.request import Request
 
@@ -234,7 +236,7 @@ def _fetch_html(url: str) -> str:
     return raw.decode(charset, errors="replace")
 
 
-def _fetch_json(url: str, payload: dict | None = None) -> dict:
+def _fetch_json(url: str, payload: dict | None = None, *, verify_ssl: bool = True) -> dict:
     body = None
     method = "GET"
     if payload is not None:
@@ -254,10 +256,16 @@ def _fetch_json(url: str, payload: dict | None = None) -> dict:
             "Content-Type": "application/json",
         },
     )
-    with safe_urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+    with safe_urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS, verify_ssl=verify_ssl) as resp:
         raw = resp.read(_MAX_PAGE_BYTES)
         charset = resp.headers.get_content_charset() or "utf-8"
     return json.loads(raw.decode(charset, errors="replace"))
+
+
+# ai: claude-sonnet-4-6 | 2026-07-08
+def _is_ssl_cert_error(exc: Exception) -> bool:
+    """Return True if *exc* is a URLError caused by an SSL certificate failure."""
+    return isinstance(getattr(exc, "reason", None), ssl.SSLCertVerificationError)
 
 
 def _normalize_job_url(base_url: str, href: str) -> str | None:
@@ -777,6 +785,7 @@ class CareerSiteScanner:
                 )
 
         # ai: claude-sonnet-4-6 | 2026-06-14
+        # ai: claude-sonnet-4-6 | 2026-07-08
         if "myworkdayjobs.com" in parsed.netloc.lower() and _is_workday_single_job_url(parsed):
             logger.info("scan_single_job_url: trying Workday API for %s", job_url)
             try:
@@ -784,10 +793,30 @@ class CareerSiteScanner:
                 logger.info("scan_single_job_url: Workday API succeeded in %.1fs", time.monotonic() - t0)
                 return result
             except Exception as exc:
-                logger.info(
-                    "scan_single_job_url: Workday API failed in %.1fs, falling back to HTML: %s",
-                    time.monotonic() - t0, exc,
-                )
+                if _is_ssl_cert_error(exc):
+                    logger.warning(
+                        "scan_single_job_url: Workday API SSL cert error, retrying without verification"
+                    )
+                    try:
+                        result = self._workday_single_job_from_api(
+                            site_name, job_url, parsed, verify_ssl=False
+                        )
+                        logger.info(
+                            "scan_single_job_url: Workday API (no-SSL-verify) succeeded in %.1fs",
+                            time.monotonic() - t0,
+                        )
+                        return result
+                    except Exception as exc2:
+                        logger.info(
+                            "scan_single_job_url: Workday API (no-SSL-verify) also failed in %.1fs, "
+                            "falling back to HTML: %s",
+                            time.monotonic() - t0, exc2,
+                        )
+                else:
+                    logger.info(
+                        "scan_single_job_url: Workday API failed in %.1fs, falling back to HTML: %s",
+                        time.monotonic() - t0, exc,
+                    )
 
         job_id = _linkedin_job_id(parsed)
         if job_id:
@@ -819,13 +848,27 @@ class CareerSiteScanner:
                 "Accept": "text/html,application/xhtml+xml",
             },
         )
-        with safe_urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
-            raw = resp.read(_MAX_PAGE_BYTES)
-            charset = resp.headers.get_content_charset() or "utf-8"
-            try:
-                final_url = resp.geturl()
-            except Exception:
-                final_url = job_url
+        try:
+            with safe_urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+                raw = resp.read(_MAX_PAGE_BYTES)
+                charset = resp.headers.get_content_charset() or "utf-8"
+                try:
+                    final_url = resp.geturl()
+                except Exception:
+                    final_url = job_url
+        except URLError as _html_exc:
+            if not _is_ssl_cert_error(_html_exc):
+                raise
+            logger.warning(
+                "scan_single_job_url: SSL cert error on HTML fetch, retrying without verification"
+            )
+            with safe_urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS, verify_ssl=False) as resp:
+                raw = resp.read(_MAX_PAGE_BYTES)
+                charset = resp.headers.get_content_charset() or "utf-8"
+                try:
+                    final_url = resp.geturl()
+                except Exception:
+                    final_url = job_url
         page_html = raw.decode(charset, errors="replace")
         logger.info(
             "scan_single_job_url: HTML fetch done in %.1fs — %d bytes, final_url=%s",
@@ -932,9 +975,9 @@ class CareerSiteScanner:
             confidence_score=confidence_score,
         )
 
-    # ai: claude-sonnet-4-6 | 2026-06-14
+    # ai: claude-sonnet-4-6 | 2026-07-08
     def _workday_single_job_from_api(
-        self, site_name: str, job_url: str, parsed: ParseResult
+        self, site_name: str, job_url: str, parsed: ParseResult, *, verify_ssl: bool = True
     ) -> CareerSiteJob:
         """Fetch a single Workday job posting via its CXS detail API.
 
@@ -948,7 +991,7 @@ class CareerSiteScanner:
         tenant, site_slug, job_posting_id = parts
         base = f"{parsed.scheme}://{parsed.netloc}"
         api_url = f"{base}/wday/cxs/{tenant}/{site_slug}/job/{job_posting_id}"
-        data = _fetch_json(api_url)
+        data = _fetch_json(api_url, verify_ssl=verify_ssl)
         info = data.get("jobPostingInfo", {})
         title = workday_title_with_req_id(
             _clean_text(str(info.get("title", ""))) or "Untitled Job", job_url
