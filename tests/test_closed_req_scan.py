@@ -37,8 +37,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
+
+import pytest
 
 import config
 from backend.db import init_db, open_repositories
@@ -127,14 +130,14 @@ def test_check_closed_req_returns_closed_on_404() -> None:
     assert result == "closed"
 
 
-def _fresh_repos(tmp_path, monkeypatch) -> dict:
+def _fresh_repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
     init_db(dsn)
     monkeypatch.setattr(config, "DATABASE_URL", dsn)
     return open_repositories(dsn)
 
 
-def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(tmp_path, monkeypatch) -> None:
+def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A job already on the Applications Sheet gets a req_closed stage, jobs.status untouched."""
     repos = _fresh_repos(tmp_path, monkeypatch)
     try:
@@ -163,7 +166,7 @@ def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(tmp_path, monkeyp
     assert updated_job["status"] == "pending_review"
 
 
-def test_record_closed_req_skips_queue_job_out_of_job_queue(tmp_path, monkeypatch) -> None:
+def test_record_closed_req_skips_queue_job_out_of_job_queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A job still in the pre-triage queue must actually leave GET /jobs, not just get a stage."""
     repos = _fresh_repos(tmp_path, monkeypatch)
     try:
@@ -195,7 +198,7 @@ def test_record_closed_req_skips_queue_job_out_of_job_queue(tmp_path, monkeypatc
     assert [h["trigger"] for h in history] == ["req_closed_scan"]
 
 
-def test_closed_req_candidates_excludes_already_skipped_queue_jobs(tmp_path, monkeypatch) -> None:
+def test_closed_req_candidates_excludes_already_skipped_queue_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A queue job already skipped for another reason must not be re-flagged as req_closed."""
     repos = _fresh_repos(tmp_path, monkeypatch)
     try:
@@ -225,7 +228,7 @@ def test_closed_req_candidates_excludes_already_skipped_queue_jobs(tmp_path, mon
 # ─── _run_req_closed_scan browser-check prioritization ──────────────────────────
 
 
-def test_run_req_closed_scan_prioritizes_never_checked_job_over_cap(tmp_path, monkeypatch) -> None:
+def test_run_req_closed_scan_prioritizes_never_checked_job_over_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """_closed_req_candidates always orders Applications Sheet jobs before pre-triage
     Job Queue jobs. Without prioritizing jobs that haven't been rechecked yet, a large
     pool of already-checked sheet jobs would permanently consume every cap slot on
@@ -299,7 +302,7 @@ def test_classify_closed_req_page_returns_open_when_no_signal() -> None:
 # ─── enqueue_once_for_purpose ───────────────────────────────────────────────────
 
 
-def test_enqueue_once_for_purpose_skips_duplicate_while_in_flight(tmp_path, monkeypatch) -> None:
+def test_enqueue_once_for_purpose_skips_duplicate_while_in_flight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A URL+purpose already pending/processing is not re-enqueued."""
     repos = _fresh_repos(tmp_path, monkeypatch)
     try:
@@ -321,7 +324,7 @@ def test_enqueue_once_for_purpose_skips_duplicate_while_in_flight(tmp_path, monk
         repos["conn"].close()
 
 
-def test_enqueue_once_for_purpose_reenqueues_after_done(tmp_path, monkeypatch) -> None:
+def test_enqueue_once_for_purpose_reenqueues_after_done(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A job classified 'open' on a prior scan run must be re-escalated on a later run,
     otherwise a posting that closes after the first check is never rechecked."""
     repos = _fresh_repos(tmp_path, monkeypatch)
@@ -352,7 +355,7 @@ def test_enqueue_once_for_purpose_reenqueues_after_done(tmp_path, monkeypatch) -
 # ─── _closed_req_browser_queue_snapshot ─────────────────────────────────────────
 
 
-def test_closed_req_browser_queue_snapshot_counts_by_status(tmp_path, monkeypatch) -> None:
+def test_closed_req_browser_queue_snapshot_counts_by_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repos = _fresh_repos(tmp_path, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
@@ -381,7 +384,7 @@ def test_closed_req_browser_queue_snapshot_counts_by_status(tmp_path, monkeypatc
         repos["conn"].close()
 
 
-def test_closed_req_browser_queue_snapshot_empty_queue(tmp_path, monkeypatch) -> None:
+def test_closed_req_browser_queue_snapshot_empty_queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repos = _fresh_repos(tmp_path, monkeypatch)
     try:
         snapshot = _closed_req_browser_queue_snapshot(repos)
@@ -393,7 +396,7 @@ def test_closed_req_browser_queue_snapshot_empty_queue(tmp_path, monkeypatch) ->
 # ─── submit_closed_req_capture ──────────────────────────────────────────────────
 
 
-def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(tmp_path, monkeypatch) -> None:
+def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An authenticated capture showing the closure banner records the job as closed,
     even though the earlier unauthenticated fetch reported it as open."""
     repos = _fresh_repos(tmp_path, monkeypatch)
@@ -436,7 +439,7 @@ def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(tmp_
     assert queue_rows[0]["status"] == "done"
 
 
-def test_submit_closed_req_capture_leaves_open_job_untouched(tmp_path, monkeypatch) -> None:
+def test_submit_closed_req_capture_leaves_open_job_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A capture with no closure signal marks the queue item done but doesn't touch the job."""
     repos = _fresh_repos(tmp_path, monkeypatch)
     try:

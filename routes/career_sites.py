@@ -41,10 +41,11 @@ import re
 import secrets
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.career_site_scanner import CareerSiteScanner
@@ -61,7 +62,6 @@ from backend.job_validator import import_warnings_to_json, normalize_and_validat
 from backend.utils import (
     _parse_bool,
     _parse_positive_int,
-    safe_error_message,
     configure_career_site_scheduler,
     db_match_for_job,
     enrich_job_description,
@@ -70,6 +70,7 @@ from backend.utils import (
     is_richer_description,
     jd_blocklist_match,
     platform_for_site_url,
+    safe_error_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -785,14 +786,14 @@ configure_career_site_scheduler(
 # ─── Career-site scanner routes ───────────────────────────────────────────────
 
 @career_sites_bp.route("/career-sites")
-def get_career_sites():
+def get_career_sites() -> ResponseReturnValue:
     with get_repos() as repos:
         rows = repos["career_sites"].get_all()
     return jsonify(rows)
 
 
 @career_sites_bp.route("/career-sites", methods=["POST"])
-def create_career_site():
+def create_career_site() -> ResponseReturnValue:
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
     url = (data.get("url") or "").strip()
@@ -830,7 +831,7 @@ def create_career_site():
 
 
 @career_sites_bp.route("/career-sites/<int:source_id>", methods=["PUT"])
-def update_career_site(source_id: int):
+def update_career_site(source_id: int) -> ResponseReturnValue:
     data = request.get_json(silent=True) or {}
     fields: dict[str, object] = {}
 
@@ -877,14 +878,14 @@ def update_career_site(source_id: int):
 
 
 @career_sites_bp.route("/career-sites/recapture-due")
-def get_recapture_due_sites():
+def get_recapture_due_sites() -> ResponseReturnValue:
     with get_repos() as repos:
         rows = repos["career_sites"].get_due_recapture()
     return jsonify(rows)
 
 
 @career_sites_bp.route("/career-sites/<int:source_id>", methods=["DELETE"])
-def delete_career_site(source_id: int):
+def delete_career_site(source_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         existing = repos["career_sites"].get_by_id(source_id)
         if not existing:
@@ -895,7 +896,7 @@ def delete_career_site(source_id: int):
 
 
 @career_sites_bp.route("/career-sites/<int:source_id>/dismiss-recapture", methods=["POST"])
-def dismiss_recapture_reminder(source_id: int):
+def dismiss_recapture_reminder(source_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         existing = repos["career_sites"].get_by_id(source_id)
         if not existing:
@@ -906,7 +907,7 @@ def dismiss_recapture_reminder(source_id: int):
 
 
 @career_sites_bp.route("/career-sites/<int:source_id>/scan", methods=["POST"])
-def run_career_scan_for_site(source_id: int):
+def run_career_scan_for_site(source_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         existing = repos["career_sites"].get_by_id(source_id)
     if not existing:
@@ -928,7 +929,7 @@ def run_career_scan_for_site(source_id: int):
 
 
 @career_sites_bp.route("/career-scan/run", methods=["POST"])
-def run_career_scan_now():
+def run_career_scan_now() -> ResponseReturnValue:
     with _career_lock:
         if _career_state.running:
             return jsonify({"error": "Career-site scan is already running"}), 409
@@ -939,7 +940,7 @@ def run_career_scan_now():
 
 
 @career_sites_bp.route("/career-scan/status")
-def career_scan_status():
+def career_scan_status() -> ResponseReturnValue:
     with _career_lock:
         return jsonify(
             {
@@ -963,14 +964,14 @@ def career_scan_status():
 
 
 @career_sites_bp.route("/career-scan/results")
-def get_career_scan_results():
+def get_career_scan_results() -> ResponseReturnValue:
     with get_repos() as repos:
         rows = repos["career_scan_results"].get_all()
     return jsonify(rows)
 
 
 @career_sites_bp.route("/career-scan/results", methods=["DELETE"])
-def clear_career_scan_results():
+def clear_career_scan_results() -> ResponseReturnValue:
     with get_repos() as repos:
         repos["career_scan_results"].delete_all()
         repos["conn"].commit()
@@ -978,7 +979,7 @@ def clear_career_scan_results():
 
 
 @career_sites_bp.route("/career-scan/results/re-evaluate", methods=["POST"])
-def re_evaluate_career_scan_results():
+def re_evaluate_career_scan_results() -> ResponseReturnValue:
     try:
         with get_repos() as repos:
             summary = _re_evaluate_career_scan_results(repos)
@@ -990,7 +991,7 @@ def re_evaluate_career_scan_results():
 
 
 @career_sites_bp.route("/career-scan/failures")
-def get_career_scan_failures():
+def get_career_scan_failures() -> ResponseReturnValue:
     limit = request.args.get("limit", default=200, type=int)
     limit = max(1, min(limit, 1000))
     with get_repos() as repos:
@@ -999,14 +1000,14 @@ def get_career_scan_failures():
 
 
 @career_sites_bp.route("/career-rejection-rules")
-def get_career_rejection_rules():
+def get_career_rejection_rules() -> ResponseReturnValue:
     with get_repos() as repos:
         rows = repos["career_rejection_rules"].get_all()
     return jsonify(rows)
 
 
 @career_sites_bp.route("/career-rejection-rules", methods=["POST"])
-def create_career_rejection_rule():
+def create_career_rejection_rule() -> ResponseReturnValue:
     data = request.get_json(silent=True) or {}
     rule_text = (data.get("rule_text") or "").strip()
     if not rule_text:
@@ -1031,7 +1032,7 @@ def create_career_rejection_rule():
 
 
 @career_sites_bp.route("/career-rejection-rules/<int:rule_id>", methods=["PUT"])
-def update_career_rejection_rule(rule_id: int):
+def update_career_rejection_rule(rule_id: int) -> ResponseReturnValue:
     data = request.get_json(silent=True) or {}
     fields: dict[str, object] = {}
 
@@ -1058,7 +1059,7 @@ def update_career_rejection_rule(rule_id: int):
 
 
 @career_sites_bp.route("/career-rejection-rules/<int:rule_id>", methods=["DELETE"])
-def delete_career_rejection_rule(rule_id: int):
+def delete_career_rejection_rule(rule_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         existing = repos["career_rejection_rules"].get_by_id(rule_id)
         if not existing:
@@ -1069,7 +1070,7 @@ def delete_career_rejection_rule(rule_id: int):
 
 
 @career_sites_bp.route("/career-scan/results/<int:row_id>/reject", methods=["POST"])
-def reject_career_scan_result(row_id: int):
+def reject_career_scan_result(row_id: int) -> ResponseReturnValue:
     data = request.get_json(silent=True) or {}
     reason = (data.get("reason") or "").strip()
     add_as_rule = bool(data.get("add_as_rule"))
@@ -1110,7 +1111,7 @@ def reject_career_scan_result(row_id: int):
 
 
 @career_sites_bp.route("/career-scan/results/<int:row_id>/tracking-status", methods=["POST"])
-def set_career_scan_result_tracking_status(row_id: int):
+def set_career_scan_result_tracking_status(row_id: int) -> ResponseReturnValue:
     data = request.get_json(silent=True) or {}
     status = (data.get("status") or "").strip()
     _VALID_STATUSES = {"Applied", "Employer Rejected"}

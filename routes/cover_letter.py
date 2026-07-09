@@ -43,6 +43,7 @@ from pathlib import Path
 import docx
 import fitz
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
@@ -50,8 +51,8 @@ from backend.cover_letter_generator import CoverLetterGenerator
 from backend.resume_tailor import ResumeTailoringGenerator
 from backend.utils import (
     _ai_error_http_status,
-    safe_error_message,
     get_repos,
+    safe_error_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ cover_letter_bp = Blueprint("cover_letter", __name__)
 
 
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter", methods=["POST"])
-def generate_cover_letter(job_id: int):
+def generate_cover_letter(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         if not job:
@@ -80,7 +81,7 @@ def generate_cover_letter(job_id: int):
 
 
 @cover_letter_bp.route("/cover-letter/save", methods=["POST"])
-def save_cover_letter():
+def save_cover_letter() -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     text = (body.get("text") or "").strip()
     job_title = (body.get("job_title") or "Cover Letter").strip()
@@ -159,7 +160,7 @@ def save_cover_letter():
 
 
 @cover_letter_bp.route("/jobs/<int:job_id>/pitch", methods=["POST"])
-def generate_pitch(job_id: int):
+def generate_pitch(job_id: int) -> ResponseReturnValue:
     """Generate a short 2-paragraph pitch: why-company or why-fit."""
     body = request.get_json(silent=True) or {}
     pitch_type = str(body.get("type") or "").strip()
@@ -224,7 +225,7 @@ def generate_pitch(job_id: int):
 
 
 @cover_letter_bp.route("/jobs/<int:job_id>/pitch/chat", methods=["POST"])
-def pitch_chat(job_id: int):
+def pitch_chat(job_id: int) -> ResponseReturnValue:
     """AI chat for refining a why-company or why-fit pitch."""
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
@@ -303,7 +304,7 @@ def pitch_chat(job_id: int):
 
 
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter/chat", methods=["POST"])
-def cover_letter_chat(job_id: int):
+def cover_letter_chat(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
     # Connection released before AI call
@@ -374,7 +375,7 @@ def cover_letter_chat(job_id: int):
 
 
 @cover_letter_bp.route("/jobs/<int:job_id>/resume-tailor", methods=["POST"])
-def generate_resume_tailor(job_id: int):
+def generate_resume_tailor(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         if not job:
@@ -394,7 +395,7 @@ def generate_resume_tailor(job_id: int):
 
 
 @cover_letter_bp.route("/jobs/<int:job_id>/resume-tailor/chat", methods=["POST"])
-def resume_tailor_chat(job_id: int):
+def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
     # Connection released before AI call

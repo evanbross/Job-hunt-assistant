@@ -34,6 +34,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 import config
 from backend.db import init_db, open_repositories
 from routes import scan
@@ -94,7 +98,7 @@ class FakeEmailParser:
         ]
 
 
-def test_noise_feedback_does_not_skip_entire_email(monkeypatch, tmp_path) -> None:
+def test_noise_feedback_does_not_skip_entire_email(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
     init_db(dsn)
     repos = open_repositories(dsn)

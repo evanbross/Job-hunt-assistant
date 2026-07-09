@@ -174,7 +174,7 @@ class PostgresJobRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    _MISSING_COMPANY_SQL = (
+    _MISSING_COMPANY_SQL: str = (
         "COALESCE(TRIM(LOWER(company)), '') IN ('', 'unknown', 'unknown company', 'null', 'none')"
     )
 

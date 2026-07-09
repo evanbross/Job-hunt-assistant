@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.job_scanners.greenhouse_searcher import (
@@ -75,7 +76,7 @@ _state = GreenhouseScanState()
 _lock = threading.Lock()
 
 
-def _update(**kwargs) -> None:
+def _update(**kwargs: object) -> None:
     with _lock:
         for key, value in kwargs.items():
             setattr(_state, key, value)
@@ -188,7 +189,7 @@ def _run_manual_login() -> None:
 
 
 @greenhouse_bp.route("/greenhouse/scan", methods=["POST"])
-def start_scan():
+def start_scan() -> ResponseReturnValue:
     """Trigger a Greenhouse scrape and enqueue results for import."""
     with _lock:
         if _state.running:
@@ -213,7 +214,7 @@ def start_scan():
 
 
 @greenhouse_bp.route("/greenhouse/status", methods=["GET"])
-def scan_status():
+def scan_status() -> ResponseReturnValue:
     """Return the current Greenhouse scan state."""
     with _lock:
         return jsonify(
@@ -232,7 +233,7 @@ def scan_status():
 
 
 @greenhouse_bp.route("/greenhouse/browser-login", methods=["POST"])
-def browser_login():
+def browser_login() -> ResponseReturnValue:
     """Open a visible browser for OTP-based manual login and save the session."""
     with _lock:
         if _state.running:
@@ -248,7 +249,7 @@ def browser_login():
 
 
 @greenhouse_bp.route("/greenhouse/clear-session", methods=["POST"])
-def clear_session():
+def clear_session() -> ResponseReturnValue:
     """Delete the persisted Greenhouse session so the next scan re-authenticates."""
     session_file = config.GREENHOUSE_SESSION_FILE
     if session_file.exists():

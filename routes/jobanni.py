@@ -40,9 +40,10 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.jobanni_scanner import scan as jobanni_scan
@@ -72,7 +73,7 @@ _state = JobanniScanState()
 _lock = threading.Lock()
 
 
-def _update(**kwargs) -> None:
+def _update(**kwargs: object) -> None:
     with _lock:
         for key, value in kwargs.items():
             setattr(_state, key, value)
@@ -135,7 +136,7 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @jobanni_bp.route("/jobanni/scan", methods=["POST"])
-def start_scan():
+def start_scan() -> ResponseReturnValue:
     """Trigger a Jobanni scrape and enqueue results for import."""
     with _lock:
         if _state.running:
@@ -159,7 +160,7 @@ def start_scan():
 
 
 @jobanni_bp.route("/jobanni/status", methods=["GET"])
-def scan_status():
+def scan_status() -> ResponseReturnValue:
     """Return the current Jobanni scan state."""
     with _lock:
         return jsonify({

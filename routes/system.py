@@ -40,6 +40,7 @@ import logging
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_from_directory
+from flask.typing import ResponseReturnValue
 
 try:
     import tkinter as _tk
@@ -57,7 +58,7 @@ system_bp = Blueprint("system", __name__)
 
 
 @system_bp.route("/api/system/health")
-def health_check():
+def health_check() -> ResponseReturnValue:
     try:
         with get_repos() as repos:
             # ai: claude-sonnet-4-6 | 2026-06-25
@@ -69,7 +70,7 @@ def health_check():
 
 
 @system_bp.route("/api/system/select-folder", methods=["POST"])
-def select_folder():
+def select_folder() -> ResponseReturnValue:
     if not _TKINTER_AVAILABLE:
         return jsonify({"error": "tkinter is not available on this platform"}), 500
 
@@ -97,7 +98,7 @@ def select_folder():
 
 
 @system_bp.route("/api/system/select-file", methods=["POST"])
-def select_file():
+def select_file() -> ResponseReturnValue:
     if not _TKINTER_AVAILABLE:
         return jsonify({"error": "tkinter is not available on this platform"}), 500
 
@@ -129,7 +130,7 @@ def select_file():
 
 @system_bp.route("/")
 @system_bp.route("/<path:path>")
-def serve_frontend(path: str = ""):
+def serve_frontend(path: str = "") -> ResponseReturnValue:
     dist = config.FRONTEND_DIST
     if dist.exists():
         file_path = dist / path

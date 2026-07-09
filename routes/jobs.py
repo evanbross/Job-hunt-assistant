@@ -41,27 +41,32 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.career_site_scanner import CareerSiteScanner
 from backend.duplicate_checker import DuplicateChecker
-from backend.email_parser import EmailParser, fallback_job_url, normalize_title_company, resolve_tracking_url
+from backend.email_parser import (
+    EmailParser,
+    fallback_job_url,
+    normalize_title_company,
+    resolve_tracking_url,
+)
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.job_validator import import_warnings_to_json, normalize_and_validate
 from backend.manual_job_ingest_service import ManualJobIngestService
 from backend.utils import (
-    ACTIVE_JOB_STATUSES,
     _ai_error_http_status,
-    safe_error_message,
     db_match_for_job,
     get_repos,
     maybe_mark_source_email_read,
     normalize_stage_status,
+    safe_error_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,14 +112,14 @@ def _validated_job_patch_fields(body: dict[str, object]) -> tuple[dict[str, str]
 # ─── Job routes ───────────────────────────────────────────────────────────────
 
 @jobs_bp.route("/jobs/stats")
-def get_job_stats():
+def get_job_stats() -> ResponseReturnValue:
     with get_repos() as repos:
         stats = repos["jobs"].get_stats()
     return jsonify(stats)
 
 
 @jobs_bp.route("/jobs")
-def get_jobs():
+def get_jobs() -> ResponseReturnValue:
     with get_repos() as repos:
         jobs = repos["jobs"].get_all_by_status("pending_review")
     return jsonify(jobs)
@@ -122,7 +127,7 @@ def get_jobs():
 
 # ai: claude-sonnet-4-6 | 2026-06-28
 @jobs_bp.route("/jobs/by-company")
-def get_jobs_by_company():
+def get_jobs_by_company() -> ResponseReturnValue:
     company = request.args.get("company", "").strip()
     if not company:
         return jsonify({"error": "company parameter is required"}), 400
@@ -133,7 +138,7 @@ def get_jobs_by_company():
 
 # ai: claude-sonnet-4-6 | 2026-06-08
 @jobs_bp.route("/jobs/<int:job_id>", methods=["GET"])
-def get_job(job_id: int):
+def get_job(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
     if job is None:
@@ -142,7 +147,7 @@ def get_job(job_id: int):
 
 
 @jobs_bp.route("/jobs/manual", methods=["POST"])
-def create_manual_job():
+def create_manual_job() -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     listing_text = str(body.get("listing_text") or "").strip()
     source_url = str(body.get("source_url") or "").strip()
@@ -180,7 +185,7 @@ def create_manual_job():
 
 
 @jobs_bp.route("/jobs/<int:job_id>", methods=["PATCH"])
-def patch_job(job_id: int):
+def patch_job(job_id: int) -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     fields, validation_error = _validated_job_patch_fields(body)
     if validation_error:
@@ -250,7 +255,7 @@ def patch_job(job_id: int):
 
 
 @jobs_bp.route("/jobs/<int:job_id>/skip", methods=["POST"])
-def skip_job(job_id: int):
+def skip_job(job_id: int) -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     reason = body.get("reason", "other")
     if reason not in _VALID_SKIP_REASONS:
@@ -293,7 +298,7 @@ def skip_job(job_id: int):
 
 
 @jobs_bp.route("/jobs/status-history")
-def get_job_status_history():
+def get_job_status_history() -> ResponseReturnValue:
     limit = min(int(request.args.get("limit", 30)), 100)
     with get_repos() as repos:
         history = repos["job_status_history"].get_recent(limit)
@@ -301,7 +306,7 @@ def get_job_status_history():
 
 
 @jobs_bp.route("/jobs/status-history/<int:history_id>/undo", methods=["POST"])
-def undo_status_change(history_id: int):
+def undo_status_change(history_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         history_row = repos["job_status_history"].get_by_id(history_id)
         if not history_row:
@@ -352,7 +357,7 @@ def undo_status_change(history_id: int):
 
 
 @jobs_bp.route("/jobs/history")
-def get_history_jobs():
+def get_history_jobs() -> ResponseReturnValue:
     with get_repos() as repos:
         jobs = repos["jobs"].get_by_statuses(["applied", "skipped"])
         for job in jobs:
@@ -362,7 +367,7 @@ def get_history_jobs():
 
 # ai: claude-sonnet-4-6 | 2026-06-28
 @jobs_bp.route("/jobs/<int:job_id>/apply", methods=["POST"])
-def apply_job(job_id: int):
+def apply_job(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         if not job:
@@ -390,7 +395,7 @@ def apply_job(job_id: int):
 
 
 @jobs_bp.route("/jobs/<int:job_id>/return-to-queue", methods=["POST"])
-def return_job_to_queue(job_id: int):
+def return_job_to_queue(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         if not job:
@@ -428,7 +433,7 @@ def return_job_to_queue(job_id: int):
 
 # ai: claude-sonnet-4-6 | 2026-06-28
 @jobs_bp.route("/jobs/<int:job_id>/dismiss-duplicate", methods=["POST"])
-def dismiss_duplicate(job_id: int):
+def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         if not job:
@@ -475,7 +480,7 @@ def dismiss_duplicate(job_id: int):
 
 
 @jobs_bp.route("/jobs/<int:job_id>/snooze", methods=["POST"])
-def snooze_job(job_id: int):
+def snooze_job(job_id: int) -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     try:
         days = int(body.get("days", 4))
@@ -500,7 +505,7 @@ def snooze_job(job_id: int):
 
 
 @jobs_bp.route("/jobs/<int:job_id>/approve", methods=["POST"])
-def approve_triage_job(job_id: int):
+def approve_triage_job(job_id: int) -> ResponseReturnValue:
     """Move a triage job to pending_review; score it if not already scored."""
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
@@ -563,7 +568,7 @@ def approve_triage_job(job_id: int):
 
 
 @jobs_bp.route("/jobs/<int:job_id>/refresh-from-url", methods=["POST"])
-def refresh_job_from_url(job_id: int):
+def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
     """Re-fetch a job's description from its stored URL and re-score it.
 
     Useful when the originally captured text was incomplete (e.g. location metadata
@@ -662,7 +667,7 @@ def refresh_job_from_url(job_id: int):
 
 
 @jobs_bp.route("/jobs/<int:job_id>/description", methods=["POST"])
-def update_job_description(job_id: int):
+def update_job_description(job_id: int) -> ResponseReturnValue:
     """Replace a job's description with pasted text and re-score the job."""
     body = request.get_json(silent=True) or {}
     description = str(body.get("description") or "").strip()
@@ -722,7 +727,7 @@ def update_job_description(job_id: int):
 
 
 @jobs_bp.route("/jobs/<int:job_id>/reprocess", methods=["POST"])
-def reprocess_job(job_id: int):
+def reprocess_job(job_id: int) -> ResponseReturnValue:
     """Re-fetch the original email from Gmail and re-run the parser.
 
     Used when a triage entry is missing a confidence score (e.g. older rows
@@ -789,7 +794,7 @@ def reprocess_job(job_id: int):
 
 
 @jobs_bp.route("/jobs/<int:job_id>/reject", methods=["POST"])
-def reject_triage_job(job_id: int):
+def reject_triage_job(job_id: int) -> ResponseReturnValue:
     """Mark as irrelevant, save feedback pattern, and delete the job record."""
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
@@ -817,7 +822,7 @@ def reject_triage_job(job_id: int):
 
 
 @jobs_bp.route("/jobs/<int:job_id>/stages", methods=["POST"])
-def add_application_stage(job_id: int):
+def add_application_stage(job_id: int) -> ResponseReturnValue:
     data = request.get_json(silent=True) or {}
     status = normalize_stage_status(data.get("status"))
     stage_date = data.get("date") or datetime.now(UTC).date().isoformat()
@@ -837,7 +842,7 @@ def add_application_stage(job_id: int):
 
 
 @jobs_bp.route("/jobs/<int:job_id>/stages/<int:stage_id>", methods=["DELETE"])
-def delete_application_stage(job_id: int, stage_id: int):
+def delete_application_stage(job_id: int, stage_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         stage = repos["stages"].get_by_id(stage_id)
         if not stage or stage["job_id"] != job_id:
@@ -1009,7 +1014,7 @@ def _run_wttj_repair() -> None:
 
 
 @jobs_bp.route("/jobs/repair-wttj-urls", methods=["POST"])
-def start_wttj_repair():
+def start_wttj_repair() -> ResponseReturnValue:
     """Kick off a background repair of WTTJ jobs with sendgrid/broken URLs."""
     with _wttj_repair_lock:
         if _wttj_repair_state.running:
@@ -1019,7 +1024,7 @@ def start_wttj_repair():
 
 
 @jobs_bp.route("/jobs/repair-wttj-urls/status", methods=["GET"])
-def wttj_repair_status():
+def wttj_repair_status() -> ResponseReturnValue:
     """Return the current WTTJ URL repair state."""
     with _wttj_repair_lock:
         return jsonify({
@@ -1333,7 +1338,7 @@ def _run_import_repair() -> None:
 
 
 @jobs_bp.route("/jobs/repair-import-issues", methods=["POST"])
-def start_import_repair():
+def start_import_repair() -> ResponseReturnValue:
     """Kick off a background sweep to auto-fix jobs with missing title/company,
     homepage-only URLs, or a JD body that's only a tracking link."""
     with _import_repair_lock:
@@ -1344,7 +1349,7 @@ def start_import_repair():
 
 
 @jobs_bp.route("/jobs/repair-import-issues/status", methods=["GET"])
-def import_repair_status():
+def import_repair_status() -> ResponseReturnValue:
     """Return the current import-issue repair sweep state."""
     with _import_repair_lock:
         return jsonify({

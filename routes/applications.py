@@ -42,19 +42,20 @@ import re
 import socket
 import threading
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, UTC
+from datetime import UTC, date, datetime, timedelta
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request
 
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
 from backend.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils import (
+    _tracking_payload,
     get_repos,
     maybe_mark_source_email_read,
-    _tracking_payload,
     normalize_stage_status,
 )
 
@@ -115,7 +116,7 @@ _TRACKING_COLUMNS: list[dict] = [
 
 
 @applications_bp.route("/applications")
-def get_application_sheet():
+def get_application_sheet() -> ResponseReturnValue:
     """Return all tracked job applications as a grid for the Sheet panel."""
     # ai: claude-sonnet-4-6 | 2026-06-25
     with get_repos() as repos:
@@ -160,7 +161,7 @@ def get_application_sheet():
 
 
 @applications_bp.route("/applications", methods=["POST"])
-def add_application_sheet_row():
+def add_application_sheet_row() -> ResponseReturnValue:
     """Insert a new job application row into the database."""
     row = _tracking_payload()
     if not row["company"] and not row["job_title"]:
@@ -193,7 +194,7 @@ def add_application_sheet_row():
 
 
 @applications_bp.route("/applications/<int:job_id>", methods=["PUT"])
-def update_application_sheet_row(job_id: int):
+def update_application_sheet_row(job_id: int) -> ResponseReturnValue:
     """Update an existing job application row in the database."""
     row = _tracking_payload()
     if not row["company"] and not row["job_title"]:
@@ -222,7 +223,7 @@ def update_application_sheet_row(job_id: int):
 
 
 @applications_bp.route("/applications/<int:job_id>/stages", methods=["POST"])
-def add_application_sheet_stage(job_id: int):
+def add_application_sheet_stage(job_id: int) -> ResponseReturnValue:
     """Add a stage entry to an application."""
     data = request.get_json(silent=True) or {}
     status = normalize_stage_status(data.get("status"))
@@ -246,7 +247,7 @@ def add_application_sheet_stage(job_id: int):
 
 
 @applications_bp.route("/applications/mark-ghosts", methods=["POST"])
-def mark_ghost_applications():
+def mark_ghost_applications() -> ResponseReturnValue:
     """Mark applications whose latest state has been Applied for 30+ days as ghosted."""
     utc_today = datetime.now(UTC).date()
     cutoff_date = utc_today - timedelta(days=30)
@@ -431,7 +432,7 @@ _req_closed_state = ReqClosedScanState()
 _req_closed_lock = threading.Lock()
 
 
-def _update_req_closed_state(**kwargs) -> None:
+def _update_req_closed_state(**kwargs: object) -> None:
     with _req_closed_lock:
         for key, value in kwargs.items():
             setattr(_req_closed_state, key, value)
@@ -697,7 +698,7 @@ def _run_req_closed_scan() -> None:
 
 
 @applications_bp.route("/applications/scan-closed-reqs", methods=["POST"])
-def start_closed_req_scan():
+def start_closed_req_scan() -> ResponseReturnValue:
     """Kick off a background scan of LinkedIn and Welcome to the Jungle job URLs for closed-req banners."""
     with _req_closed_lock:
         if _req_closed_state.running:
@@ -712,7 +713,7 @@ def start_closed_req_scan():
 
 
 @applications_bp.route("/applications/scan-closed-reqs/status", methods=["GET"])
-def closed_req_scan_status():
+def closed_req_scan_status() -> ResponseReturnValue:
     """Return the current closed-req scan state, plus a live snapshot of the
     browser-extension recheck backlog (which keeps draining after the foreground
     scan itself reports done)."""
@@ -742,14 +743,14 @@ def closed_req_scan_status():
 
 
 @applications_bp.route("/applications/stage-statuses")
-def get_stage_statuses():
+def get_stage_statuses() -> ResponseReturnValue:
     """Return all rows from the stage_statuses table, ordered by sort_order."""
     with get_repos() as repos:
         return jsonify(repos["stage_statuses"].get_all())
 
 
 @applications_bp.route("/applications/repair/normalize-stage-statuses", methods=["POST"])
-def normalize_stage_statuses():
+def normalize_stage_statuses() -> ResponseReturnValue:
     """One-time migration: normalise all stage status values to snake_case lowercase."""
     try:
         with get_repos() as repos:

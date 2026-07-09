@@ -352,8 +352,10 @@ def _extract_body(payload: dict[str, Any]) -> str:
 class _HTMLTextExtractor(HTMLParser):
     """Converts HTML to readable plain text, skipping scripts/styles."""
 
-    _BLOCK_TAGS = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "article", "section"}
-    _SKIP_TAGS  = {"script", "style", "head"}
+    _BLOCK_TAGS: frozenset[str] = frozenset(
+        {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "article", "section"}
+    )
+    _SKIP_TAGS: frozenset[str] = frozenset({"script", "style", "head"})
 
     def __init__(self) -> None:
         super().__init__()

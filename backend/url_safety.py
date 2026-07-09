@@ -128,7 +128,15 @@ class _ValidatingRedirectHandler(HTTPRedirectHandler):
         self._allow_loopback = allow_loopback
         self._allowed_ports = allowed_ports
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, D102
+    def redirect_request(
+        self,
+        req: Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> Request | None:  # noqa: D102
         validate_outbound_url(
             newurl, allow_loopback=self._allow_loopback, allowed_ports=self._allowed_ports
         )

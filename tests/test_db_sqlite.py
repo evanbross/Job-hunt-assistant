@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from backend.db import (
     SQLiteAppSettingsRepository,
@@ -47,7 +48,7 @@ from backend.db import (
 )
 
 
-def test_sqlite_backend_initializes_and_supports_repositories(tmp_path) -> None:
+def test_sqlite_backend_initializes_and_supports_repositories(tmp_path: Path) -> None:
     dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
 
     init_db(dsn)
@@ -96,7 +97,7 @@ def test_sqlite_backend_initializes_and_supports_repositories(tmp_path) -> None:
         conn.close()
 
 
-def test_open_repositories_selects_sqlite_implementations(tmp_path) -> None:
+def test_open_repositories_selects_sqlite_implementations(tmp_path: Path) -> None:
     dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
 
     init_db(dsn)
@@ -155,7 +156,7 @@ def test_open_repositories_selects_sqlite_implementations(tmp_path) -> None:
         repos["conn"].close()
 
 
-def test_scanned_email_history_includes_all_child_jobs(tmp_path) -> None:
+def test_scanned_email_history_includes_all_child_jobs(tmp_path: Path) -> None:
     dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
 
     init_db(dsn)
@@ -206,7 +207,7 @@ def test_scanned_email_history_includes_all_child_jobs(tmp_path) -> None:
         repos["conn"].close()
 
 
-def test_scanned_email_get_by_id_returns_disposition(tmp_path) -> None:
+def test_scanned_email_get_by_id_returns_disposition(tmp_path: Path) -> None:
     dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
 
     init_db(dsn)
@@ -233,7 +234,7 @@ def test_scanned_email_get_by_id_returns_disposition(tmp_path) -> None:
         repos["conn"].close()
 
 
-def test_relevance_feedback_requires_subject_overlap_for_exact_sender(tmp_path) -> None:
+def test_relevance_feedback_requires_subject_overlap_for_exact_sender(tmp_path: Path) -> None:
     dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
     init_db(dsn)
     conn = get_connection(dsn)

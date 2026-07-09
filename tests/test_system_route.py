@@ -35,9 +35,11 @@
 # ai: claude-sonnet-4-6 | 2026-06-25
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
 from flask import Flask
 
 from routes.system import system_bp
@@ -45,7 +47,7 @@ from routes.system import system_bp
 
 def make_fake_get_repos(repos: dict) -> Any:
     @contextmanager
-    def fake():
+    def fake() -> Iterator[dict[str, Any]]:
         try:
             yield repos
         finally:
@@ -74,7 +76,7 @@ class FakeBrokenConnection:
         pass
 
 
-def test_health_check_returns_ok(monkeypatch) -> None:
+def test_health_check_returns_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "routes.system.get_repos",
         make_fake_get_repos({"conn": FakeWorkingConnection()}),
@@ -89,7 +91,7 @@ def test_health_check_returns_ok(monkeypatch) -> None:
     assert response.get_json() == {"status": "ok", "db": "connected"}
 
 
-def test_health_check_returns_503_on_db_failure(monkeypatch) -> None:
+def test_health_check_returns_503_on_db_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "routes.system.get_repos",
         make_fake_get_repos({"conn": FakeBrokenConnection()}),

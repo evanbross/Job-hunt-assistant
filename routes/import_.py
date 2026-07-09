@@ -40,22 +40,25 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any
-
-_STUCK_TASK_TIMEOUT_SECONDS = 900  # 15 minutes — tasks stuck PENDING/STARTED longer than this are auto-cleared
 
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 from backend.captured_page_import_service import CapturedPageImportService
 from backend.celery_app import celery_app
 from backend.import_dump import dump_import_capture
-from backend.import_repair import post_repair_duplicate_check, repair_ats_url_company, repair_linkedin_company
+from backend.import_repair import (
+    post_repair_duplicate_check,
+    repair_ats_url_company,
+    repair_linkedin_company,
+)
 from backend.tasks import run_import_task
 from backend.utils import (
-    get_repos,
     _parse_positive_int,
+    get_repos,
     platform_for_site_url,
     platform_label,
     safe_error_message,
@@ -64,6 +67,7 @@ from backend.utils import (
 logger = logging.getLogger(__name__)
 
 import_bp = Blueprint("import_", __name__)
+_STUCK_TASK_TIMEOUT_SECONDS = 900  # 15 minutes — tasks stuck PENDING/STARTED longer than this are auto-cleared
 
 
 # ─── Active task tracking ─────────────────────────────────────────────────────
@@ -517,7 +521,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
 
 # ai: claude-sonnet-4-6 | 2026-06-20
 @import_bp.route("/import/reset", methods=["POST"])
-def reset_import():
+def reset_import() -> ResponseReturnValue:
     """Force-clear a stuck import task so a new import can be started."""
     global _current_task_id, _current_listener_status
     with _task_id_lock:
@@ -528,7 +532,7 @@ def reset_import():
 
 
 @import_bp.route("/repair/fix-unknown-companies", methods=["POST"])
-def fix_unknown_companies():
+def fix_unknown_companies() -> ResponseReturnValue:
     with get_repos() as repos:
         try:
             all_jobs = repos["jobs"].get_all_ordered()
@@ -555,7 +559,7 @@ def fix_unknown_companies():
 
 
 @import_bp.route("/repair/delete-unknown-companies", methods=["POST"])
-def delete_unknown_companies():
+def delete_unknown_companies() -> ResponseReturnValue:
     with get_repos() as repos:
         try:
             batch = repos["jobs"].get_with_missing_company(limit=10_000)
@@ -572,7 +576,7 @@ def delete_unknown_companies():
 
 
 @import_bp.route("/import/job-urls", methods=["POST"])
-def extract_imported_job_urls():
+def extract_imported_job_urls() -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     dump_import_capture(body)
     raw_content = str(body.get("content") or "")
@@ -591,14 +595,14 @@ def extract_imported_job_urls():
 
 
 @import_bp.route("/import/queue-all", methods=["POST"])
-def import_and_queue_all_jobs():
+def import_and_queue_all_jobs() -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     payload, status_code = queue_import_capture(body)
     return jsonify(payload), status_code
 
 
 @import_bp.route("/import/status")
-def import_status():
+def import_status() -> ResponseReturnValue:
     global _current_task_id
     with _task_id_lock:
         task_id = _current_task_id

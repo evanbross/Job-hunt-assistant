@@ -34,9 +34,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 import backend.email_parser as email_parser_module
 from backend.ai_provider import AIMessage
-from backend.email_parser import EmailParser, _trim_company_tail, normalize_title_company
+from backend.email_parser import (
+    EmailParser,
+    _trim_company_tail,
+    normalize_title_company,
+)
 
 
 class FakeParserClient:
@@ -202,7 +208,7 @@ View job: https://www.linkedin.com/comm/jobs/view/4410403022/
     assert all(job["source"] == "LinkedIn" for job in jobs)
 
 
-def test_parser_resolves_sendgrid_tracking_urls_for_wttj_emails(monkeypatch) -> None:
+def test_parser_resolves_sendgrid_tracking_urls_for_wttj_emails(monkeypatch: pytest.MonkeyPatch) -> None:
     """WTTJ emails routed through SendGrid wrap every link in a tracking URL.
     The parser should follow the redirect and store the resolved WTTJ URL."""
     real_wttj_url = (

@@ -32,9 +32,10 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-import pytest
 from unittest.mock import patch
 from urllib.parse import urlparse
+
+import pytest
 
 from backend.career_site_scanner import (
     CareerSiteScanner,
@@ -53,76 +54,76 @@ from backend.career_site_scanner import (
 )
 
 
-def test_greenhouse_token_from_query_param():
+def test_greenhouse_token_from_query_param() -> None:
     parsed = urlparse("https://boards.greenhouse.io/embed/job_board?for=acme")
     assert _greenhouse_board_token(parsed) == "acme"
 
 
-def test_greenhouse_token_from_path():
+def test_greenhouse_token_from_path() -> None:
     parsed = urlparse("https://boards.greenhouse.io/acme")
     assert _greenhouse_board_token(parsed) == "acme"
 
 
-def test_greenhouse_token_from_company_jobs_path():
+def test_greenhouse_token_from_company_jobs_path() -> None:
     parsed = urlparse("https://job-boards.greenhouse.io/acme/jobs")
     assert _greenhouse_board_token(parsed) == "acme"
 
 
-def test_greenhouse_token_from_jobs_prefix_path():
+def test_greenhouse_token_from_jobs_prefix_path() -> None:
     parsed = urlparse("https://job-boards.greenhouse.io/jobs/acme")
     assert _greenhouse_board_token(parsed) == "acme"
 
 
-def test_greenhouse_token_from_embed_jobs_path():
+def test_greenhouse_token_from_embed_jobs_path() -> None:
     parsed = urlparse("https://boards.greenhouse.io/embed/jobs/acme")
     assert _greenhouse_board_token(parsed) == "acme"
 
 
-def test_greenhouse_token_absent_on_generic_embed_path():
+def test_greenhouse_token_absent_on_generic_embed_path() -> None:
     parsed = urlparse("https://boards.greenhouse.io/embed/job_board")
     assert _greenhouse_board_token(parsed) is None
 
 
-def test_greenhouse_token_absent_on_cross_company_search():
+def test_greenhouse_token_absent_on_cross_company_search() -> None:
     parsed = urlparse("https://my.greenhouse.io/jobs?query=software&salary=more_than_200k")
     assert _greenhouse_board_token(parsed) is None
 
 
-def test_greenhouse_search_url_marked_unsupported():
+def test_greenhouse_search_url_marked_unsupported() -> None:
     parsed = urlparse("https://my.greenhouse.io/jobs?query=software&salary=more_than_200k")
     assert _is_unsupported_greenhouse_search_url(parsed)
 
 
-def test_greenhouse_single_job_url_is_detected():
+def test_greenhouse_single_job_url_is_detected() -> None:
     parsed = urlparse("https://job-boards.greenhouse.io/acme/jobs/12345")
     assert _is_greenhouse_single_job_url(parsed)
 
 
-def test_greenhouse_board_url_is_not_single_job():
+def test_greenhouse_board_url_is_not_single_job() -> None:
     parsed = urlparse("https://job-boards.greenhouse.io/acme/jobs")
     assert not _is_greenhouse_single_job_url(parsed)
 
 
-def test_workday_parts_extract_tenant_and_slug():
+def test_workday_parts_extract_tenant_and_slug() -> None:
     parts = _workday_parts("https://acme.wd5.myworkdayjobs.com/en-US/External")
     assert parts == ("acme", "External")
 
 
-def test_workday_job_url_uses_host_root_not_listing_path():
+def test_workday_job_url_uses_host_root_not_listing_path() -> None:
     site_url = "https://acme.wd5.myworkdayjobs.com/en-US/External"
     external_path = "/en-US/External/job/NYC/Role_JOB-123"
     expected = "https://acme.wd5.myworkdayjobs.com/en-US/External/job/NYC/Role_JOB-123"
     assert _workday_job_url(site_url, external_path) == expected
 
 
-def test_normalize_date():
+def test_normalize_date() -> None:
     assert _normalize_date("2026-04-21T10:20:00Z") == "2026-04-21"
     assert _normalize_date("posted 2026-04-01") == "2026-04-01"
     assert _normalize_date("April 2, 2026") == "2026-04-02"
     assert _normalize_date("Apr 2, 2026") == "2026-04-02"
 
 
-def test_unique_jobs_deduplicates_by_url():
+def test_unique_jobs_deduplicates_by_url() -> None:
     jobs = [
         {
             "site_name": "Site",
@@ -150,7 +151,7 @@ def test_unique_jobs_deduplicates_by_url():
     assert unique[0]["job_title"] == "A"
 
 
-def test_adapter_failure_is_captured_and_falls_back():
+def test_adapter_failure_is_captured_and_falls_back() -> None:
     scanner = CareerSiteScanner()
     with patch.object(scanner, "_scan_greenhouse", side_effect=TypeError("bad parser")):
         with patch.object(scanner, "_scan_generic", return_value=([], "generic")):
@@ -166,7 +167,7 @@ def test_adapter_failure_is_captured_and_falls_back():
     assert "bad parser" in failures[0]["error_message"]
 
 
-def test_greenhouse_search_url_skips_board_adapter_failure():
+def test_greenhouse_search_url_skips_board_adapter_failure() -> None:
     scanner = CareerSiteScanner()
     site_url = (
         "https://my.greenhouse.io/jobs?query=software&salary=more_than_200k"
@@ -180,7 +181,7 @@ def test_greenhouse_search_url_skips_board_adapter_failure():
     assert scanner.pop_failures() == []
 
 
-def test_pop_failures_clears_internal_buffer():
+def test_pop_failures_clears_internal_buffer() -> None:
     scanner = CareerSiteScanner()
     with patch.object(scanner, "_scan_greenhouse", side_effect=RuntimeError("boom")):
         with patch.object(scanner, "_scan_generic", return_value=([], "generic")):
@@ -190,26 +191,26 @@ def test_pop_failures_clears_internal_buffer():
     assert scanner.pop_failures() == []
 
 
-def test_extract_json_array_by_key():
+def test_extract_json_array_by_key() -> None:
     text = '{"teams":[{"id":1}],"jobPostings":[{"title":"A"},{"title":"B"}],"x":1}'
     rows = _extract_json_array_by_key(text, "jobPostings")
     assert len(rows) == 2
     assert rows[0]["title"] == "A"
 
 
-def test_detect_embedded_ashby_base_url():
+def test_detect_embedded_ashby_base_url() -> None:
     html = '<script src="https://jobs.ashbyhq.com/change/embed?version=2"></script>'
     assert _detect_embedded_ashby_base_url(html) == "https://jobs.ashbyhq.com/change"
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
-def test_html_to_text_strips_tags_and_collapses_whitespace():
+def test_html_to_text_strips_tags_and_collapses_whitespace() -> None:
     html = '<div class="content-intro"><h4>Breezeway’s   platform</h4>\n<p>helps  teams</p></div>'
     assert _html_to_text(html) == "Breezeway’s platform helps teams"
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
-def test_greenhouse_single_job_from_api_strips_html_content():
+def test_greenhouse_single_job_from_api_strips_html_content() -> None:
     scanner = CareerSiteScanner()
     api_response = {
         "title": "Senior Software Engineer",
@@ -229,31 +230,31 @@ def test_greenhouse_single_job_from_api_strips_html_content():
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
-def test_workday_single_job_url_is_detected():
+def test_workday_single_job_url_is_detected() -> None:
     parsed = urlparse("https://acme.wd1.myworkdayjobs.com/en-US/External/job/Loc/Title_JR123")
     assert _is_workday_single_job_url(parsed)
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
-def test_workday_board_url_is_not_single_job():
+def test_workday_board_url_is_not_single_job() -> None:
     parsed = urlparse("https://acme.wd1.myworkdayjobs.com/en-US/External")
     assert not _is_workday_single_job_url(parsed)
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
-def test_workday_single_job_parts_with_location_segment():
+def test_workday_single_job_parts_with_location_segment() -> None:
     parsed = urlparse("https://acme.wd1.myworkdayjobs.com/en-US/External/job/Loc/Title_JR123")
     assert _workday_single_job_parts(parsed) == ("acme", "External", "Title_JR123")
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
-def test_workday_single_job_parts_without_location_segment():
+def test_workday_single_job_parts_without_location_segment() -> None:
     parsed = urlparse("https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site/job/Title_JR253369")
     assert _workday_single_job_parts(parsed) == ("salesforce", "External_Career_Site", "Title_JR253369")
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
-def test_workday_single_job_from_api_strips_html_content():
+def test_workday_single_job_from_api_strips_html_content() -> None:
     scanner = CareerSiteScanner()
     api_response = {
         "jobPostingInfo": {
@@ -276,7 +277,7 @@ def test_workday_single_job_from_api_strips_html_content():
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
-def test_scan_single_job_url_uses_workday_api_for_single_job_url():
+def test_scan_single_job_url_uses_workday_api_for_single_job_url() -> None:
     scanner = CareerSiteScanner()
     job_url = "https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site/job/Title_JR253369"
     expected_job = {
@@ -296,7 +297,7 @@ def test_scan_single_job_url_uses_workday_api_for_single_job_url():
     assert result == expected_job
 
 
-def test_scan_site_uses_single_greenhouse_job_adapter():
+def test_scan_site_uses_single_greenhouse_job_adapter() -> None:
     scanner = CareerSiteScanner()
     expected_job = {
         "site_name": "Acme",

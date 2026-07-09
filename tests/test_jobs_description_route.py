@@ -34,9 +34,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
 from flask import Flask
 
 from routes.jobs import jobs_bp
@@ -44,7 +46,7 @@ from routes.jobs import jobs_bp
 
 def make_fake_get_repos(repos: dict) -> Any:
     @contextmanager
-    def fake():
+    def fake() -> Iterator[dict[str, Any]]:
         try:
             yield repos
         finally:
@@ -133,7 +135,7 @@ class FakeFitScorer:
         return {"score": 86, "reasoning": f"{job_title} at {company} is relevant."}
 
 
-def test_update_job_description_replaces_text_and_rescores(monkeypatch) -> None:
+def test_update_job_description_replaces_text_and_rescores(monkeypatch: pytest.MonkeyPatch) -> None:
     jobs_repo = FakeJobsRepo()
     repos = {
         "conn": FakeConnection(),
@@ -167,7 +169,7 @@ def test_update_job_description_replaces_text_and_rescores(monkeypatch) -> None:
     assert "full job description" in data["raw_email_snippet"]
 
 
-def test_patch_job_rechecks_duplicate_after_company_edit(monkeypatch) -> None:
+def test_patch_job_rechecks_duplicate_after_company_edit(monkeypatch: pytest.MonkeyPatch) -> None:
     jobs_repo = FakeJobsRepo()
     repos = {
         "conn": FakeConnection(),
@@ -195,7 +197,7 @@ def test_patch_job_rechecks_duplicate_after_company_edit(monkeypatch) -> None:
     assert data["duplicate_hint"].startswith("Possible duplicate")
 
 
-def test_patch_job_accepts_manual_url(monkeypatch) -> None:
+def test_patch_job_accepts_manual_url(monkeypatch: pytest.MonkeyPatch) -> None:
     jobs_repo = FakeJobsRepo()
     repos = {
         "conn": FakeConnection(),
@@ -218,7 +220,7 @@ def test_patch_job_accepts_manual_url(monkeypatch) -> None:
     assert data["url"] == "https://example.com/jobs/7"
 
 
-def test_patch_job_rejects_invalid_manual_url(monkeypatch) -> None:
+def test_patch_job_rejects_invalid_manual_url(monkeypatch: pytest.MonkeyPatch) -> None:
     repos = {
         "conn": FakeConnection(),
         "jobs": FakeJobsRepo(),
@@ -238,7 +240,7 @@ def test_patch_job_rejects_invalid_manual_url(monkeypatch) -> None:
     assert response.get_json()["error"] == "url must start with http:// or https://"
 
 
-def test_patch_job_clears_stale_duplicate_when_no_match(monkeypatch) -> None:
+def test_patch_job_clears_stale_duplicate_when_no_match(monkeypatch: pytest.MonkeyPatch) -> None:
     jobs_repo = FakeJobsRepo()
     jobs_repo.row.update(
         {
@@ -273,7 +275,7 @@ def test_patch_job_clears_stale_duplicate_when_no_match(monkeypatch) -> None:
     assert data["duplicate_hint"] is None
 
 
-def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(monkeypatch) -> None:
+def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(monkeypatch: pytest.MonkeyPatch) -> None:
     jobs_repo = FakeJobsRepo()
     jobs_repo.row.update(
         {

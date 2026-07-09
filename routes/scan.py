@@ -42,17 +42,18 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from flask import Blueprint, jsonify
+from flask.typing import ResponseReturnValue
 from googleapiclient.errors import HttpError
 
 import config
-from backend.career_site_scanner import CareerSiteScanner
-from backend.job_validator import normalize_and_validate, import_warnings_to_json
-from backend.duplicate_checker import DuplicateChecker
 from backend.ai_provider import AIProviderClient
+from backend.career_site_scanner import CareerSiteScanner
+from backend.duplicate_checker import DuplicateChecker
 from backend.email_parser import EmailParser
 from backend.email_source_filters import email_matches_source_filters
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
+from backend.job_validator import import_warnings_to_json, normalize_and_validate
 from backend.utils import (
     ACTIVE_JOB_STATUSES,
     db_match_for_job,
@@ -828,7 +829,7 @@ def _run_scan(rescan_all: bool = False) -> None:
 # ─── Scan routes ──────────────────────────────────────────────────────────────
 
 @scan_bp.route("/scan", methods=["POST"])
-def scan_emails():
+def scan_emails() -> ResponseReturnValue:
     with _scan_lock:
         if _scan_state.running:
             return jsonify({"error": "A scan is already running"}), 409
@@ -839,7 +840,7 @@ def scan_emails():
 
 
 @scan_bp.route("/scan/status")
-def scan_status():
+def scan_status() -> ResponseReturnValue:
     with _scan_lock:
         return jsonify(
             {
@@ -861,7 +862,7 @@ def scan_status():
 
 
 @scan_bp.route("/emails/rescan-all", methods=["POST"])
-def rescan_all_emails():
+def rescan_all_emails() -> ResponseReturnValue:
     """
     Clear scanned-email records and active email-sourced queue jobs, then kick
     off a fresh scan so every email is re-evaluated from scratch.

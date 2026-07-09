@@ -40,15 +40,16 @@ import json
 import logging
 import urllib.error
 import urllib.request
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import fitz
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.url_safety import UnsafeUrlError, safe_urlopen
-from backend.utils import get_repos, _rescore_active_queue_jobs
+from backend.utils import _rescore_active_queue_jobs, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +61,13 @@ _VALID_PENALTY_SCOPES: frozenset[str] = frozenset({"title", "company", "body", "
 # ─── Config routes ────────────────────────────────────────────────────────────
 
 @settings_bp.route("/config")
-def get_config():
+def get_config() -> ResponseReturnValue:
     cfg = config.load_runtime_config()
     return jsonify(cfg)
 
 
 @settings_bp.route("/config", methods=["PUT"])
-def update_config():
+def update_config() -> ResponseReturnValue:
     data: dict[str, object] | None = request.get_json()
     if not data:
         return jsonify({"error": "No data provided"}), 400
@@ -188,7 +189,7 @@ def _parse_bool_setting(value: object) -> bool:
 
 
 @settings_bp.route("/config/test-ollama", methods=["POST"])
-def test_ollama_connection():
+def test_ollama_connection() -> ResponseReturnValue:
     data: dict[str, object] | None = request.get_json()
     base_url = str((data or {}).get("ollama_base_url") or config.OLLAMA_BASE_URL).strip().rstrip("/")
     model = str((data or {}).get("ollama_model") or config.OLLAMA_MODEL).strip()
@@ -216,14 +217,14 @@ def test_ollama_connection():
 # ─── Penalty rule routes ──────────────────────────────────────────────────────
 
 @settings_bp.route("/penalties")
-def get_penalties():
+def get_penalties() -> ResponseReturnValue:
     with get_repos() as repos:
         rules = repos["penalties"].get_all()
     return jsonify(rules)
 
 
 @settings_bp.route("/penalties", methods=["POST"])
-def create_penalty():
+def create_penalty() -> ResponseReturnValue:
     data = request.get_json()
     if not data or not all(k in data for k in ("rule_text", "penalty_points")):
         return jsonify({"error": "rule_text and penalty_points are required"}), 400
@@ -247,7 +248,7 @@ def create_penalty():
 
 
 @settings_bp.route("/penalties/<int:rule_id>", methods=["PUT"])
-def update_penalty(rule_id: int):
+def update_penalty(rule_id: int) -> ResponseReturnValue:
     data = request.get_json()
     if not data:
         return jsonify({"error": "No data provided"}), 400
@@ -272,7 +273,7 @@ def update_penalty(rule_id: int):
 
 
 @settings_bp.route("/penalties/<int:rule_id>", methods=["DELETE"])
-def delete_penalty(rule_id: int):
+def delete_penalty(rule_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         if not repos["penalties"].get_by_id(rule_id):
             return jsonify({"error": "Rule not found"}), 404
@@ -285,14 +286,14 @@ def delete_penalty(rule_id: int):
 # ─── Relevance feedback routes ────────────────────────────────────────────────
 
 @settings_bp.route("/feedback")
-def get_feedback():
+def get_feedback() -> ResponseReturnValue:
     with get_repos() as repos:
         feedback = repos["feedback"].get_all()
     return jsonify(feedback)
 
 
 @settings_bp.route("/feedback/<int:feedback_id>", methods=["DELETE"])
-def delete_feedback(feedback_id: int):
+def delete_feedback(feedback_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         repos["feedback"].delete(feedback_id)
         repos["conn"].commit()
@@ -302,14 +303,14 @@ def delete_feedback(feedback_id: int):
 # ─── Email subject rule routes ────────────────────────────────────────────────
 
 @settings_bp.route("/email-subject-rules")
-def get_email_subject_rules():
+def get_email_subject_rules() -> ResponseReturnValue:
     with get_repos() as repos:
         rules = repos["email_subject_rules"].get_all()
     return jsonify(rules)
 
 
 @settings_bp.route("/email-subject-rules", methods=["POST"])
-def create_email_subject_rule():
+def create_email_subject_rule() -> ResponseReturnValue:
     data = request.get_json()
     pattern = str((data or {}).get("pattern") or "").strip().lower()
     if not pattern:
@@ -329,7 +330,7 @@ def create_email_subject_rule():
 
 
 @settings_bp.route("/email-subject-rules/<int:rule_id>", methods=["PUT"])
-def update_email_subject_rule(rule_id: int):
+def update_email_subject_rule(rule_id: int) -> ResponseReturnValue:
     data = request.get_json()
     if not data:
         return jsonify({"error": "No data provided"}), 400
@@ -356,7 +357,7 @@ def update_email_subject_rule(rule_id: int):
 
 
 @settings_bp.route("/email-subject-rules/<int:rule_id>", methods=["DELETE"])
-def delete_email_subject_rule(rule_id: int):
+def delete_email_subject_rule(rule_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         if not repos["email_subject_rules"].get_by_id(rule_id):
             return jsonify({"error": "Rule not found"}), 404
@@ -369,7 +370,7 @@ def delete_email_subject_rule(rule_id: int):
 # ─── Resume routes ────────────────────────────────────────────────────────────
 
 @settings_bp.route("/resume", methods=["POST"])
-def upload_resume():
+def upload_resume() -> ResponseReturnValue:
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -390,7 +391,7 @@ def upload_resume():
 
     with get_repos() as repos:
         repos["resume"].delete_all()
-        resume_id = repos["resume"].insert(
+        repos["resume"].insert(
             {
                 "filename": file.filename,
                 "content": text,
@@ -414,7 +415,7 @@ def upload_resume():
 
 
 @settings_bp.route("/resume")
-def get_resume():
+def get_resume() -> ResponseReturnValue:
     with get_repos() as repos:
         resume = repos["resume"].get_latest()
     if not resume:

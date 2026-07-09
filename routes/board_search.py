@@ -42,14 +42,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from flask import Blueprint, jsonify
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.utils import get_repos, jd_blocklist_match
 from backend.duplicate_checker import DuplicateChecker
-from backend.job_validator import normalize_and_validate, import_warnings_to_json
 from backend.fit_scorer import FitScorer
 from backend.job_board_searcher import JobBoardSearcher, url_to_email_id
+from backend.job_validator import import_warnings_to_json, normalize_and_validate
+from backend.utils import get_repos, jd_blocklist_match
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +352,7 @@ def _run_board_search() -> None:
 # ─── Board search routes ──────────────────────────────────────────────────────
 
 @board_search_bp.route("/board-search", methods=["POST"])
-def start_board_search():
+def start_board_search() -> ResponseReturnValue:
     with _board_lock:
         if _board_state.running:
             return jsonify({"error": "A board search is already running"}), 409
@@ -362,7 +363,7 @@ def start_board_search():
 
 
 @board_search_bp.route("/board-search/status")
-def board_search_status():
+def board_search_status() -> ResponseReturnValue:
     with _board_lock:
         return jsonify(
             {

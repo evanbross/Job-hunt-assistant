@@ -38,10 +38,11 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass, field
-from datetime import datetime, UTC, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.tasks import run_import_task
@@ -72,7 +73,7 @@ _state = WellfoundScanState()
 _lock = threading.Lock()
 
 
-def _update(**kwargs) -> None:
+def _update(**kwargs: object) -> None:
     with _lock:
         for key, value in kwargs.items():
             setattr(_state, key, value)
@@ -183,7 +184,7 @@ def _run_manual_login() -> None:
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @wellfound_bp.route("/wellfound/scan", methods=["POST"])
-def start_scan():
+def start_scan() -> ResponseReturnValue:
     """Trigger a Wellfound scrape and enqueue results for import."""
     with _lock:
         if _state.running:
@@ -212,7 +213,7 @@ def start_scan():
 
 
 @wellfound_bp.route("/wellfound/status", methods=["GET"])
-def scan_status():
+def scan_status() -> ResponseReturnValue:
     """Return the current Wellfound scan state."""
     with _lock:
         return jsonify({
@@ -230,7 +231,7 @@ def scan_status():
 
 
 @wellfound_bp.route("/wellfound/browser-login", methods=["POST"])
-def browser_login():
+def browser_login() -> ResponseReturnValue:
     """Open a visible browser window for manual login and save the session."""
     with _lock:
         if _state.running:
@@ -246,7 +247,7 @@ def browser_login():
 
 
 @wellfound_bp.route("/wellfound/clear-session", methods=["POST"])
-def clear_session():
+def clear_session() -> ResponseReturnValue:
     """Delete the persisted Wellfound session so the next scan re-authenticates."""
     session_file = config.WELLFOUND_SESSION_FILE
     if session_file.exists():

@@ -43,6 +43,7 @@ import threading
 from dataclasses import dataclass
 
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
@@ -52,9 +53,9 @@ from backend.utils import (
     ACTIVE_JOB_STATUSES,
     FIT_PANEL_STATUSES,
     _ai_error_http_status,
-    safe_error_message,
     db_match_for_job,
     get_repos,
+    safe_error_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,7 +209,7 @@ def _run_re_evaluate() -> None:
 # ─── Fit routes ───────────────────────────────────────────────────────────────
 
 @fit_bp.route("/jobs/re-evaluate", methods=["POST"])
-def re_evaluate_queue_jobs():
+def re_evaluate_queue_jobs() -> ResponseReturnValue:
     with _re_eval_lock:
         if _re_eval_state.running:
             return jsonify({"error": "Re-evaluation already running"}), 409
@@ -218,7 +219,7 @@ def re_evaluate_queue_jobs():
 
 
 @fit_bp.route("/jobs/re-evaluate/status")
-def re_evaluate_status():
+def re_evaluate_status() -> ResponseReturnValue:
     with _re_eval_lock:
         return jsonify({
             "running": _re_eval_state.running,
@@ -229,14 +230,14 @@ def re_evaluate_status():
 
 
 @fit_bp.route("/jobs/triage")
-def get_triage_jobs():
+def get_triage_jobs() -> ResponseReturnValue:
     with get_repos() as repos:
         jobs = repos["jobs"].get_by_statuses(["triage", "possible_duplicate"])
     return jsonify(jobs)
 
 
 @fit_bp.route("/jobs/<int:job_id>/fit-chat", methods=["POST"])
-def fit_chat(job_id: int):
+def fit_chat(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         resume = repos["resume"].get_latest()
@@ -328,7 +329,7 @@ def fit_chat(job_id: int):
 
 
 @fit_bp.route("/jobs/<int:job_id>/fit-classification", methods=["POST"])
-def update_fit_classification(job_id: int):
+def update_fit_classification(job_id: int) -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     try:
         fit_score = int(body.get("fit_score"))
@@ -363,7 +364,7 @@ def update_fit_classification(job_id: int):
 
 
 @fit_bp.route("/jobs/<int:job_id>/re-evaluate-fit", methods=["POST"])
-def re_evaluate_job_fit(job_id: int):
+def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         if not job:
@@ -418,7 +419,7 @@ def re_evaluate_job_fit(job_id: int):
 
 
 @fit_bp.route("/jobs/<int:job_id>/description", methods=["POST"])
-def save_job_description(job_id: int):
+def save_job_description(job_id: int) -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     description = str(body.get("description") or "").strip()
     if len(description) < 80:

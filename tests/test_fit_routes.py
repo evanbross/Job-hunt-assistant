@@ -34,9 +34,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
 from flask import Flask
 
 from routes.fit import fit_bp
@@ -44,7 +46,7 @@ from routes.fit import fit_bp
 
 def make_fake_get_repos(repos: dict) -> Any:
     @contextmanager
-    def fake():
+    def fake() -> Iterator[dict[str, Any]]:
         try:
             yield repos
         finally:
@@ -115,7 +117,7 @@ class FakeFitScorer:
         return {"score": 92, "reasoning": "Strong platform engineering match."}
 
 
-def test_re_evaluate_fit_preserves_possible_duplicate_status(monkeypatch) -> None:
+def test_re_evaluate_fit_preserves_possible_duplicate_status(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = FakeConnection()
     jobs_repo = FakeJobsRepo()
     repos = {

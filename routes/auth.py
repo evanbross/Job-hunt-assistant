@@ -40,6 +40,7 @@ import secrets
 import time
 
 from flask import Blueprint, jsonify, redirect, request
+from flask.typing import ResponseReturnValue
 from google_auth_oauthlib.flow import Flow
 
 import config
@@ -68,13 +69,13 @@ def _prune_pending_auths() -> None:
 
 
 @auth_bp.route("/auth/status")
-def auth_status():
+def auth_status() -> ResponseReturnValue:
     authenticated = config.GOOGLE_TOKEN_FILE.exists()
     return jsonify({"authenticated": authenticated})
 
 
 @auth_bp.route("/auth/google")
-def auth_google_start():
+def auth_google_start() -> ResponseReturnValue:
     """Return the Google OAuth URL. The frontend opens it in a new tab."""
     if not config.GOOGLE_CREDENTIALS_FILE.exists():
         return (
@@ -112,7 +113,7 @@ def auth_google_start():
 
 
 @auth_bp.route("/auth/google/callback")
-def auth_google_callback():
+def auth_google_callback() -> ResponseReturnValue:
     """Exchange the OAuth code for a token and save it."""
     code = request.args.get("code")
     if not code:
@@ -143,7 +144,7 @@ def auth_google_callback():
 
 
 @auth_bp.route("/auth/disconnect", methods=["POST"])
-def auth_disconnect():
+def auth_disconnect() -> ResponseReturnValue:
     """Delete the stored Google token so the user can re-authenticate."""
     config.GOOGLE_TOKEN_FILE.unlink(missing_ok=True)
     return jsonify({"status": "disconnected"})

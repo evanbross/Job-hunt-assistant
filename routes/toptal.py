@@ -46,6 +46,7 @@ import logging
 import re
 
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
@@ -56,7 +57,7 @@ toptal_bp = Blueprint("toptal", __name__)
 
 
 @toptal_bp.route("/toptal/bio", methods=["POST"])
-def generate_toptal_bio():
+def generate_toptal_bio() -> ResponseReturnValue:
     """Generate a short third-person bio for a pasted Toptal job description."""
     body = request.get_json(silent=True) or {}
     job_description = (body.get("job_description") or "").strip()
@@ -89,7 +90,7 @@ def generate_toptal_bio():
 
 
 @toptal_bp.route("/toptal/bio/chat", methods=["POST"])
-def toptal_bio_chat():
+def toptal_bio_chat() -> ResponseReturnValue:
     """AI chat for refining a Toptal client pitch."""
     body = request.get_json(silent=True) or {}
     messages: list[dict] = body.get("messages", [])

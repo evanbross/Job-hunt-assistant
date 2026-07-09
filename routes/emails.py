@@ -40,21 +40,21 @@ import logging
 from datetime import UTC, datetime
 
 from flask import Blueprint, jsonify, request
+from flask.typing import ResponseReturnValue
 
 import config
 from backend.duplicate_checker import DuplicateChecker
-from backend.job_validator import normalize_and_validate, import_warnings_to_json
 from backend.email_cleanup_service import EmailCleanupService
 from backend.email_parser import EmailParser
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
+from backend.job_validator import import_warnings_to_json, normalize_and_validate
 from backend.utils import (
     db_match_for_job,
     email_date_from_message,
     expand_board_url_parsed_jobs,
     get_repos,
     get_subject_rule_match,
-    is_application_acknowledgement,
     is_near_certain_duplicate,
     safe_error_message,
 )
@@ -86,7 +86,7 @@ _ACTIVE_RESCAN_STATUSES: tuple[str, ...] = (
 # ─── Scanned email routes ────────────────────────────────────────────────────
 
 @emails_bp.route("/emails")
-def get_scanned_emails():
+def get_scanned_emails() -> ResponseReturnValue:
     """
     Return all scanned emails enriched with their associated job status.
 
@@ -122,7 +122,7 @@ def get_scanned_emails():
 
 
 @emails_bp.route("/emails/<email_id>/hide", methods=["POST"])
-def set_email_hidden(email_id: str):
+def set_email_hidden(email_id: str) -> ResponseReturnValue:
     """Set or clear the hidden flag on a scanned email."""
     data = request.get_json(silent=True) or {}
     hidden = bool(data.get("hidden", True))
@@ -133,7 +133,7 @@ def set_email_hidden(email_id: str):
 
 
 @emails_bp.route("/emails/<email_id>/mark-read", methods=["POST"])
-def mark_email_read(email_id: str):
+def mark_email_read(email_id: str) -> ResponseReturnValue:
     """Mark a scanned Gmail message as read."""
     base_email_id = email_id.split(":")[0].strip()
     if not base_email_id:
@@ -151,7 +151,7 @@ def mark_email_read(email_id: str):
 
 
 @emails_bp.route("/emails/move-scanned", methods=["POST"])
-def move_scanned_emails():
+def move_scanned_emails() -> ResponseReturnValue:
     """Move selected Gmail messages out of the inbox and into the scanned label."""
     data = request.get_json(silent=True) or {}
     raw_email_ids = data.get("email_ids")
@@ -203,7 +203,7 @@ def move_scanned_emails():
 
 
 @emails_bp.route("/emails/clean", methods=["POST"])
-def clean_displayed_emails():
+def clean_displayed_emails() -> ResponseReturnValue:
     """Hide displayed emails that no longer exist in Gmail inbox or are already read."""
     data = request.get_json(silent=True) or {}
     raw_email_ids = data.get("email_ids")
@@ -253,7 +253,7 @@ def clean_displayed_emails():
 
 
 @emails_bp.route("/emails/<email_id>/rescan", methods=["POST"])
-def rescan_email(email_id: str):
+def rescan_email(email_id: str) -> ResponseReturnValue:
     """
     Re-fetch a single email from Gmail and re-run the parser on it.
 
@@ -426,14 +426,14 @@ def _rescan_job_email_id(job_repo: object, base_email_id: str, job_idx: int) -> 
 # ─── Email source routes ──────────────────────────────────────────────────────
 
 @emails_bp.route("/sources")
-def get_sources():
+def get_sources() -> ResponseReturnValue:
     with get_repos() as repos:
         sources = repos["sources"].get_all()
     return jsonify(sources)
 
 
 @emails_bp.route("/sources", methods=["POST"])
-def create_source():
+def create_source() -> ResponseReturnValue:
     data = request.get_json()
     if not data or not all(k in data for k in ("name", "match_type", "match_value")):
         return jsonify({"error": "name, match_type, and match_value are required"}), 400
@@ -449,7 +449,7 @@ def create_source():
 
 
 @emails_bp.route("/sources/<int:source_id>", methods=["PUT"])
-def update_source(source_id: int):
+def update_source(source_id: int) -> ResponseReturnValue:
     data = request.get_json()
     if not data:
         return jsonify({"error": "No data provided"}), 400
@@ -469,7 +469,7 @@ def update_source(source_id: int):
 
 
 @emails_bp.route("/sources/<int:source_id>", methods=["DELETE"])
-def delete_source(source_id: int):
+def delete_source(source_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         if not repos["sources"].get_by_id(source_id):
             return jsonify({"error": "Source not found"}), 404
