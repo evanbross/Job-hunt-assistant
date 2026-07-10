@@ -52,6 +52,7 @@ import ScanSummaryPopup from "./ScanSummaryPopup.jsx";
 import ManualEvalDialog from "./ManualEvalDialog.jsx";
 import WttjRepairDialog from "./WttjRepairDialog.jsx";
 import ImportRepairDialog from "./ImportRepairDialog.jsx";
+import RescanImportDialog from "./RescanImportDialog.jsx";
 import CompanyGroup from "./CompanyGroup.jsx";
 import renderJobOrTriageCard from "./renderJobOrTriageCard.jsx";
 
@@ -268,6 +269,9 @@ export default function JobQueue({
   const [wttjRepairDialog, setWttjRepairDialog] = useState(null);
   const [importRepairRunning, setImportRepairRunning] = useState(false);
   const [importRepairDialog, setImportRepairDialog] = useState(null);
+  // ai: claude-sonnet-5 | 2026-07-10
+  const [rescanImportRunning, setRescanImportRunning] = useState(false);
+  const [rescanImportDialog, setRescanImportDialog] = useState(null);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const pollRef = useRef(null);
   const boardPollRef = useRef(null);
@@ -278,6 +282,8 @@ export default function JobQueue({
   const wttjRepairDismissedRef = useRef(false);
   const importRepairPollRef = useRef(null);
   const importRepairDismissedRef = useRef(false);
+  const rescanImportPollRef = useRef(null);
+  const rescanImportDismissedRef = useRef(false);
   const importPollRef = useRef(null);
   // ai: claude-sonnet-4-6 | 2026-06-27
   // Tracks whether we are watching for a browser-capture-queue import to finish.
@@ -1099,6 +1105,43 @@ export default function JobQueue({
     }
   };
 
+  // ai: claude-sonnet-5 | 2026-07-10
+  const startRescanImport = async () => {
+    setMoreToolsOpen(false);
+    rescanImportDismissedRef.current = false;
+    const res = await fetch("/api/jobs/rescan-broken-imports", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      window.alert(data.error || `Rescan failed to start (${res.status})`);
+      return;
+    }
+    setRescanImportRunning(true);
+    setRescanImportDialog({
+      running: true, progress: 0, total: 0,
+      unskipped: [], still_duplicate: [], rescored: [], applied_fixed: [], url_only: [], unresolved: [],
+    });
+    clearInterval(rescanImportPollRef.current);
+    rescanImportPollRef.current = setInterval(pollRescanImportStatus, 2500);
+  };
+
+  // ai: claude-sonnet-5 | 2026-07-10
+  const pollRescanImportStatus = async () => {
+    try {
+      const res = await fetch("/api/jobs/rescan-broken-imports/status");
+      const data = await res.json();
+      if (!rescanImportDismissedRef.current) setRescanImportDialog(data);
+      if (!data.running) {
+        clearInterval(rescanImportPollRef.current);
+        setRescanImportRunning(false);
+        await fetchJobs();
+        await updateTriageCount();
+      }
+    } catch {
+      clearInterval(rescanImportPollRef.current);
+      setRescanImportRunning(false);
+    }
+  };
+
   const startBoardSearch = async () => {
     const res = await fetch("/api/board-search", { method: "POST" });
     if (!res.ok) {
@@ -1188,7 +1231,7 @@ export default function JobQueue({
   };
 
   const anyScanRunning = scanning || rescanAllRunning;
-  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning || wttjRepairRunning || importRepairRunning;
+  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning || wttjRepairRunning || importRepairRunning || rescanImportRunning;
 
   // ai: claude-sonnet-4-6 | 2026-06-26
   // All derived arrays are memoized so unrelated state changes (dialogs, hover,
@@ -1754,6 +1797,25 @@ export default function JobQueue({
               >
                 {importRepairRunning ? "Repairing…" : "Repair Import Issues (title/company/URL/JD)"}
               </button>
+              <button
+                onClick={startRescanImport}
+                disabled={anyQueueActionRunning}
+                title="Re-fetch and re-parse the source email for any job whose URL isn't a real link"
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 14px",
+                  fontSize: "13px",
+                  background: "none",
+                  border: "none",
+                  color: "var(--text)",
+                  cursor: anyQueueActionRunning ? "not-allowed" : "pointer",
+                  opacity: anyQueueActionRunning ? 0.5 : 1,
+                }}
+              >
+                {rescanImportRunning ? "Rescanning…" : "Rescan Broken Imports (bad URL)"}
+              </button>
               <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
               <button
                 onClick={startReqClosedScan}
@@ -1831,6 +1893,16 @@ export default function JobQueue({
           onClose={() => {
             importRepairDismissedRef.current = true;
             setImportRepairDialog(null);
+          }}
+        />
+      )}
+
+      {rescanImportDialog && (
+        <RescanImportDialog
+          result={rescanImportDialog}
+          onClose={() => {
+            rescanImportDismissedRef.current = true;
+            setRescanImportDialog(null);
           }}
         />
       )}

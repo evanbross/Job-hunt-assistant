@@ -57,7 +57,11 @@ logger = logging.getLogger(__name__)
 MAX_EMAIL_BODY_CHARS = 20000
 
 _URL_TOKEN_RE = re.compile(r"https?://[^\s<>\"'()]+")
-_URL_TOKEN_PLACEHOLDER_RE = re.compile(r"\[URL_\d+\]")
+# ai: claude-sonnet-5 | 2026-07-10
+# The LLM is asked to echo tokens back as "[URL_N]" but sometimes drops the
+# brackets in its JSON output, so both forms must be recognized here and
+# resolved in _detokenize_url below.
+_URL_TOKEN_PLACEHOLDER_RE = re.compile(r"\[?URL_\d+\]?")
 
 
 class ParsedJob(TypedDict):
@@ -135,18 +139,24 @@ def _tokenize_urls(text: str) -> tuple[str, dict[str, str]]:
     token_map: dict[str, str] = {}
     counter = 0
 
+    # ai: claude-sonnet-5 | 2026-07-10
     def _replace(match: re.Match) -> str:  # type: ignore[type-arg]
         nonlocal counter
+        original = match.group(0).rstrip(".,;)")
+        # Map both "[URL_N]" and the bracket-less "URL_N" to the same URL, since
+        # the LLM sometimes returns the token without its brackets.
+        token_map[f"[URL_{counter}]"] = original
+        token_map[f"URL_{counter}"] = original
         token = f"[URL_{counter}]"
-        token_map[token] = match.group(0).rstrip(".,;)")
         counter += 1
         return token
 
     return _URL_TOKEN_RE.sub(_replace, text), token_map
 
 
+# ai: claude-sonnet-5 | 2026-07-10
 def _detokenize_url(value: str, token_map: dict[str, str]) -> str:
-    """Restore a [URL_N] token to its original URL, or return the value unchanged."""
+    """Restore a URL_N token (bracketed or not) to its original URL, or return the value unchanged."""
     stripped = value.strip()
     return token_map.get(stripped, stripped)
 

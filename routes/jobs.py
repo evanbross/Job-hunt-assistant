@@ -46,6 +46,7 @@ from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from googleapiclient.errors import HttpError
 
 import config
 from backend.career_site_scanner import CareerSiteScanner
@@ -63,7 +64,9 @@ from backend.manual_job_ingest_service import ManualJobIngestService
 from backend.utils import (
     _ai_error_http_status,
     db_match_for_job,
+    expand_board_url_parsed_jobs,
     get_repos,
+    is_near_certain_duplicate,
     maybe_mark_source_email_read,
     normalize_stage_status,
     safe_error_message,
@@ -1039,6 +1042,345 @@ def wttj_repair_status() -> ResponseReturnValue:
             "failed": _wttj_repair_state.failed,
             "skipped": _wttj_repair_state.skipped,
             "error": _wttj_repair_state.error,
+        })
+
+
+# ── Broken-import rescan: jobs whose url is not a real http(s) URL ───────────
+# Recurring failure mode, not a one-time bug: whenever a new job-board format
+# or email layout trips up EmailParser, the symptom is consistently a job
+# whose "url" field isn't a usable link (e.g. a literal token placeholder that
+# failed to resolve). Re-fetching the source email and re-parsing it with the
+# current parser recovers the real URL and lets duplicate detection and
+# scoring run correctly instead of leaving the job stuck or falsely skipped.
+# ai: claude-sonnet-5 | 2026-07-10
+
+@dataclass
+class RescanImportState:
+    running: bool = False
+    progress: int = 0
+    total: int = 0
+    message: str = "Idle"
+    current_company: str = ""
+    current_title: str = ""
+    unskipped: list[dict] = field(default_factory=list)
+    still_duplicate: list[dict] = field(default_factory=list)
+    rescored: list[dict] = field(default_factory=list)
+    applied_fixed: list[dict] = field(default_factory=list)
+    url_only: list[dict] = field(default_factory=list)
+    unresolved: list[dict] = field(default_factory=list)
+    error: str | None = None
+
+
+_rescan_import_state = RescanImportState()
+_rescan_import_lock = threading.Lock()
+
+
+# ai: claude-sonnet-5 | 2026-07-10
+# "skipped" is deliberately NOT excluded here even though stage_statuses marks it
+# terminal: a job auto-skipped as a "near-certain duplicate" via an exact URL match
+# against another job's URL_N placeholder is exactly the false positive this rescan
+# exists to correct, so it must stay eligible for re-evaluation. Only outcomes that
+# reflect a genuine, decisive judgment unrelated to this bug are excluded.
+_RESCAN_DECISIVE_TERMINAL_STATUSES = frozenset({"rejected", "ghosted", "req_closed", "job_filled"})
+
+
+# ai: claude-sonnet-5 | 2026-07-10
+def _rescan_import_candidates(repos: dict) -> list[dict]:
+    """Jobs whose url isn't a real http(s) link and whose source email is known,
+    excluding only jobs with a decisive terminal outcome unrelated to url recovery."""
+    candidates: list[dict] = []
+    for job in repos["jobs"].get_all_ordered():
+        if str(job.get("status") or "").lower() in _RESCAN_DECISIVE_TERMINAL_STATUSES:
+            continue
+        email_id = str(job.get("email_id") or "").strip()
+        if not email_id:
+            continue
+        url = str(job.get("url") or "").strip()
+        if url.lower().startswith(("http://", "https://")):
+            continue
+        candidates.append(job)
+    return candidates
+
+
+# ai: claude-sonnet-5 | 2026-07-10
+def _group_candidates_by_email(candidates: list[dict]) -> dict[str, list[dict]]:
+    """Group broken jobs by their base Gmail message id, in original job_idx order
+    (email_id is "<msg_id>" for the first job extracted from a message, "<msg_id>:N"
+    for subsequent ones)."""
+    groups: dict[str, list[dict]] = {}
+
+    def _suffix_index(email_id: str) -> int:
+        # Non-Gmail sources (manual paste, browser-extension capture) can store
+        # a non-numeric suffix (e.g. a date) in this field; such jobs group under
+        # their own "base id" anyway and fail the Gmail fetch cleanly downstream,
+        # so any stable fallback ordering is fine here.
+        parts = email_id.split(":")
+        if len(parts) <= 1:
+            return 0
+        try:
+            return int(parts[1])
+        except ValueError:
+            return 0
+
+    for job in candidates:
+        base_id = str(job["email_id"]).split(":")[0]
+        groups.setdefault(base_id, []).append(job)
+    for group_rows in groups.values():
+        group_rows.sort(key=lambda r: _suffix_index(str(r["email_id"])))
+    return groups
+
+
+# ai: claude-sonnet-5 | 2026-07-10
+def _run_rescan_broken_imports() -> None:
+    """Background thread: re-fetch each broken job's source email, re-parse it
+    with the current EmailParser, and recover the real URL + duplicate status."""
+    with _rescan_import_lock:
+        _rescan_import_state.running = True
+        _rescan_import_state.progress = 0
+        _rescan_import_state.total = 0
+        _rescan_import_state.message = "Finding jobs with unresolved URLs…"
+        _rescan_import_state.current_company = ""
+        _rescan_import_state.current_title = ""
+        _rescan_import_state.unskipped = []
+        _rescan_import_state.still_duplicate = []
+        _rescan_import_state.rescored = []
+        _rescan_import_state.applied_fixed = []
+        _rescan_import_state.url_only = []
+        _rescan_import_state.unresolved = []
+        _rescan_import_state.error = None
+
+    try:
+        with get_repos() as repos:
+            candidates = _rescan_import_candidates(repos)
+            known_jobs = repos["jobs"].get_all_ordered()
+            resume_row = repos["resume"].get_latest()
+            resume_text = str(resume_row.get("content") or "") if resume_row else ""
+            penalty_rules = repos["penalties"].get_enabled()
+            fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+
+        groups = _group_candidates_by_email(candidates)
+        total = len(candidates)
+        with _rescan_import_lock:
+            _rescan_import_state.total = total
+            _rescan_import_state.message = f"Rescanning {total} job{'s' if total != 1 else ''} across {len(groups)} email(s)…"
+
+        gmail = GmailClient()
+        parser = EmailParser()
+        dup_checker = DuplicateChecker()
+
+        unskipped: list[dict] = []
+        still_duplicate: list[dict] = []
+        rescored: list[dict] = []
+        applied_fixed: list[dict] = []
+        url_only: list[dict] = []
+        unresolved: list[dict] = []
+        processed = 0
+
+        for base_id, group_rows in groups.items():
+            summaries = [{"id": r["id"], "company": r.get("company") or "", "job_title": r.get("job_title") or "Untitled"} for r in group_rows]
+            try:
+                full_msg = gmail.get_message(base_id)
+                subject, sender, email_body = gmail.extract_text(full_msg)
+                raw_html = gmail.extract_raw_html(full_msg)
+                parsed_jobs = parser.parse(subject, sender, email_body, raw_html=raw_html)
+                parsed_jobs = expand_board_url_parsed_jobs(parsed_jobs)
+            except (HttpError, ValueError, RuntimeError) as exc:
+                logger.warning("Rescan: could not re-fetch/parse email %s: %s", base_id, exc)
+                unresolved.extend({**s, "reason": f"fetch/parse failed: {exc}"} for s in summaries)
+                with _rescan_import_lock:
+                    _rescan_import_state.unresolved = list(unresolved)
+                processed += len(group_rows)
+                with _rescan_import_lock:
+                    _rescan_import_state.progress = processed
+                continue
+
+            if len(parsed_jobs) != len(group_rows):
+                logger.warning(
+                    "Rescan: job count mismatch for email %s (%d broken rows, %d re-parsed) — leaving for manual review",
+                    base_id, len(group_rows), len(parsed_jobs),
+                )
+                unresolved.extend({**s, "reason": "job count changed on re-parse"} for s in summaries)
+                with _rescan_import_lock:
+                    _rescan_import_state.unresolved = list(unresolved)
+                processed += len(group_rows)
+                with _rescan_import_lock:
+                    _rescan_import_state.progress = processed
+                continue
+
+            for row, parsed in zip(group_rows, parsed_jobs):
+                job_id = int(row["id"])
+                company = row.get("company") or ""
+                title = row.get("job_title") or "Untitled"
+                with _rescan_import_lock:
+                    _rescan_import_state.current_company = company
+                    _rescan_import_state.current_title = title
+                    _rescan_import_state.message = f"Rescanning {processed + 1}/{total}: {company} — {title}…"
+
+                corrected_url = str(parsed.get("url") or "").strip()
+                if not corrected_url:
+                    unresolved.append({"id": job_id, "company": company, "job_title": title, "reason": "re-parse returned no URL"})
+                    with _rescan_import_lock:
+                        _rescan_import_state.unresolved = list(unresolved)
+                    processed += 1
+                    with _rescan_import_lock:
+                        _rescan_import_state.progress = processed
+                    continue
+
+                updates: dict = {"url": corrected_url}
+                if not company.strip() and parsed.get("company"):
+                    updates["company"] = str(parsed["company"])
+                effective_company = str(updates.get("company", company))
+
+                if row.get("status") == "applied":
+                    with get_repos() as write_repos:
+                        write_repos["jobs"].update(job_id, updates)
+                        write_repos["conn"].commit()
+                    applied_fixed.append({"id": job_id, "company": effective_company, "job_title": title, "url": corrected_url})
+                    with _rescan_import_lock:
+                        _rescan_import_state.applied_fixed = list(applied_fixed)
+                    processed += 1
+                    with _rescan_import_lock:
+                        _rescan_import_state.progress = processed
+                    continue
+
+                confidence = str(row.get("parser_confidence") or "low")
+                tracked_status, tracking_source, duplicate_hint, duplicate_of_id, match_scores = db_match_for_job(
+                    job_title=title,
+                    company=effective_company,
+                    job_url=corrected_url,
+                    known_jobs=known_jobs,
+                    dedup_checker=dup_checker,
+                    exclude_id=job_id,
+                )
+                if duplicate_hint and confidence == "high" and is_near_certain_duplicate(tracking_source, match_scores):
+                    new_status = "skipped"
+                elif duplicate_hint:
+                    new_status = "possible_duplicate"
+                elif confidence == "high":
+                    new_status = "pending_review"
+                else:
+                    new_status = "triage"
+                updates["status"] = new_status
+                updates["duplicate_hint"] = duplicate_hint
+                updates["duplicate_of_id"] = duplicate_of_id
+                if new_status != "skipped":
+                    updates["skip_reason"] = None
+                    updates["skip_feedback"] = None
+
+                was_hidden = row.get("status") in ("skipped", "possible_duplicate")
+                summary = {"id": job_id, "company": effective_company, "job_title": title, "url": corrected_url}
+
+                if new_status in ("pending_review", "triage") and confidence == "high":
+                    jd_text = ""
+                    if corrected_url.startswith("https://"):
+                        try:
+                            fetched = CareerSiteScanner().scan_single_job_url(str(row.get("source") or ""), corrected_url)
+                            fetched_text = fetched.get("job_text", "")
+                            if len(fetched_text) >= 400:
+                                jd_text = fetched_text
+                        except (RuntimeError, ValueError, OSError) as exc:
+                            logger.warning("Rescan: JD fetch failed for job %d (%s): %s", job_id, corrected_url, exc)
+                    try:
+                        score_result = FitScorer().score(
+                            job_title=title,
+                            company=effective_company,
+                            email_body=jd_text if jd_text else email_body,
+                            resume_text=resume_text,
+                            penalty_rules=penalty_rules,
+                            fit_feedback=fit_feedback,
+                        )
+                        updates["fit_score"] = score_result["score"]
+                        updates["fit_reasoning"] = score_result["reasoning"]
+                        updates["raw_email_snippet"] = (jd_text if jd_text else email_body)[:6000]
+                        if score_result["score"] < 70:
+                            updates["status"] = "triage"
+                            new_status = "triage"
+                        rescored.append({**summary, "fit_score": score_result["score"]})
+                        with _rescan_import_lock:
+                            _rescan_import_state.rescored = list(rescored)
+                    except Exception as exc:  # noqa: BLE001 - a scoring failure must not abort the rescan
+                        logger.warning("Rescan: scoring failed for job %d: %s", job_id, exc)
+
+                with get_repos() as write_repos:
+                    write_repos["jobs"].update(job_id, updates)
+                    write_repos["conn"].commit()
+                    updated = write_repos["jobs"].get_by_id(job_id)
+                if updated:
+                    known_jobs = [j for j in known_jobs if j.get("id") != job_id] + [updated]
+
+                if new_status in ("skipped", "possible_duplicate"):
+                    still_duplicate.append({**summary, "status": new_status})
+                    with _rescan_import_lock:
+                        _rescan_import_state.still_duplicate = list(still_duplicate)
+                elif was_hidden:
+                    unskipped.append({**summary, "status": new_status})
+                    with _rescan_import_lock:
+                        _rescan_import_state.unskipped = list(unskipped)
+                else:
+                    # Job was already visible (triage/pending_review) and stayed that
+                    # way — url was still recovered, just not a status change worth
+                    # its own headline bucket.
+                    url_only.append({**summary, "status": new_status})
+                    with _rescan_import_lock:
+                        _rescan_import_state.url_only = list(url_only)
+
+                processed += 1
+                with _rescan_import_lock:
+                    _rescan_import_state.progress = processed
+
+        with _rescan_import_lock:
+            _rescan_import_state.running = False
+            _rescan_import_state.progress = total
+            _rescan_import_state.current_company = ""
+            _rescan_import_state.current_title = ""
+            _rescan_import_state.message = (
+                f"Done — {len(unskipped)} unskipped, {len(still_duplicate)} still duplicate, "
+                f"{len(rescored)} re-scored, {len(applied_fixed)} applied-job URLs fixed, "
+                f"{len(url_only)} url only, {len(unresolved)} need manual review."
+            )
+
+    except NotAuthenticatedError as exc:
+        logger.warning("Broken-import rescan failed — Gmail not authenticated: %s", exc)
+        with _rescan_import_lock:
+            _rescan_import_state.running = False
+            _rescan_import_state.error = str(exc)
+            _rescan_import_state.message = "Not authenticated with Gmail — see server logs"
+    except Exception as exc:
+        logger.warning("Broken-import rescan failed: %s", exc, exc_info=True)
+        with _rescan_import_lock:
+            _rescan_import_state.running = False
+            _rescan_import_state.error = str(exc)
+            _rescan_import_state.message = "Rescan failed — see server logs"
+
+
+@jobs_bp.route("/jobs/rescan-broken-imports", methods=["POST"])
+def start_rescan_broken_imports() -> ResponseReturnValue:
+    """Kick off a background rescan of jobs whose url isn't a real http(s) link."""
+    with _rescan_import_lock:
+        if _rescan_import_state.running:
+            return jsonify({"error": "Rescan already running"}), 409
+    threading.Thread(target=_run_rescan_broken_imports, daemon=True, name="broken-import-rescan").start()
+    return jsonify({"status": "started"})
+
+
+@jobs_bp.route("/jobs/rescan-broken-imports/status", methods=["GET"])
+def rescan_broken_imports_status() -> ResponseReturnValue:
+    """Return the current broken-import rescan state."""
+    with _rescan_import_lock:
+        return jsonify({
+            "running": _rescan_import_state.running,
+            "progress": _rescan_import_state.progress,
+            "total": _rescan_import_state.total,
+            "message": _rescan_import_state.message,
+            "current_company": _rescan_import_state.current_company,
+            "current_title": _rescan_import_state.current_title,
+            "unskipped": _rescan_import_state.unskipped,
+            "still_duplicate": _rescan_import_state.still_duplicate,
+            "rescored": _rescan_import_state.rescored,
+            "applied_fixed": _rescan_import_state.applied_fixed,
+            "url_only": _rescan_import_state.url_only,
+            "unresolved": _rescan_import_state.unresolved,
+            "error": _rescan_import_state.error,
         })
 
 

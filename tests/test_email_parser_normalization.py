@@ -34,6 +34,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import backend.email_parser as email_parser_module
@@ -206,6 +208,49 @@ View job: https://www.linkedin.com/comm/jobs/view/4410403022/
         "Principal Software Engineer",
     ]
     assert all(job["source"] == "LinkedIn" for job in jobs)
+
+
+# ai: claude-sonnet-5 | 2026-07-10
+class TokenEchoingClient:
+    """Simulates an LLM response that echoes a URL token without its brackets,
+    e.g. "URL_0" instead of "[URL_0]"."""
+
+    def complete(
+        self,
+        *,
+        messages: list[AIMessage],
+        system: str,
+        max_tokens: int,
+        json_response: bool,
+    ) -> str:
+        return json.dumps(
+            [
+                {
+                    "company": "Acme",
+                    "job_title": "Software Engineer",
+                    "url": "URL_0",
+                    "source": "Dice",
+                    "confidence": "high",
+                    "confidence_score": 90,
+                    "confidence_reason": "test",
+                }
+            ]
+        )
+
+
+# ai: claude-sonnet-5 | 2026-07-10
+def test_parser_detokenizes_url_when_llm_drops_brackets() -> None:
+    """Regression test: the LLM sometimes returns the bare "URL_N" token instead of
+    "[URL_N]". The parser must still resolve it to the real URL rather than storing
+    the literal placeholder string (which previously caused unrelated jobs sharing
+    the same placeholder to collide as false duplicates)."""
+    client = TokenEchoingClient()
+    parser = EmailParser(client=client)
+    body = "Apply here: https://jobs.example.com/postings/123"
+
+    jobs = parser.parse("Job alert", "jobs@example.com", body)
+
+    assert jobs[0]["url"] == "https://jobs.example.com/postings/123"
 
 
 def test_parser_resolves_sendgrid_tracking_urls_for_wttj_emails(monkeypatch: pytest.MonkeyPatch) -> None:
