@@ -189,7 +189,7 @@ DEFAULT_COVER_LETTER_PROMPT_TEMPLATE: str = (
     "{{FIT_SECTION}}"
     "{{JOB_DESCRIPTION_SECTION}}\n\n"
     "Instructions:\n"
-    "- 2 short paragraphs, no salutation or sign-off (the caller will add those), after all, this is an elevator pitch.\n"
+    "- 2 to 3 short paragraphs, no salutation or sign-off (the caller will add those), after all, this is an elevator pitch.\n"  # ai: claude-sonnet-5 | 2026-07-09
     "- Opening: lead with a specific candidate experience, skill, or achievement that "
     "connects directly to this role. Do NOT open by describing what the company does, "
     "its mission, or its business — they know their own business. Vary the sentence "
