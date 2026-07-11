@@ -62,12 +62,16 @@ export function possibleDuplicateLabel(job) {
   return "Possible Duplicate";
 }
 
-// ai: claude-sonnet-4-6 | 2026-06-10
+// ai: claude-sonnet-5 | 2026-07-11
 export function skippedLabel(job) {
   const reason = job && job.skip_reason;
   if (!reason) return "Skipped";
   const match = SKIP_REASONS.find((r) => r.key === reason);
-  return `Skipped - ${match ? match.label : String(reason).replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}`;
+  const label = match ? match.label : String(reason).replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
+  if (reason === "duplicate" && job.duplicate_of_id != null) {
+    return `Skipped - ${label} of #${job.duplicate_of_id}`;
+  }
+  return `Skipped - ${label}`;
 }
 
 export function jobCardTabForStatus(status) {
