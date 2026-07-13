@@ -280,7 +280,6 @@ def _run_scan(rescan_all: bool = False) -> None:
 
             new_jobs: int = 0
             emails_with_jobs: int = 0
-            duplicate_emails: int = 0
             already_scanned_emails: int = 0
             acknowledgement_emails: int = 0
             feedback_filtered_emails: int = 0
@@ -433,37 +432,14 @@ def _run_scan(rescan_all: bool = False) -> None:
                     )
                     continue
 
-                # Secondary dedup: same sender + subject seen within the lookback window.
-                # Catches edge cases like a message re-delivered with a different ID.
-                if scanned_repo.is_duplicate_by_content(sender, subject, lookback_days):
-                    duplicate_emails += 1
-                    scanned_repo.mark_scanned(msg_id, sender, subject, disposition="duplicate", email_date=email_date)
-                    conn.commit()
-                    gmail_action, n = _finalize_scanned_email(
-                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "left in inbox"
-                    )
-                    moved_successful_emails += n
-                    email_report.append(
-                        _email_report_row(
-                            email_id=msg_id,
-                            sender_email=sender,
-                            email_subject=subject,
-                            email_date=email_date,
-                            disposition="duplicate",
-                            gmail_action=gmail_action,
-                            reason="Skipped because the same sender and subject were already scanned within the lookback window.",
-                        )
-                    )
-                    _update_scan(
-                        progress=done_progress,
-                        message=f"Skipping {email_label} — duplicate content.",
-                        jobs_processed=idx + 1,
-                        current_email_sender="",
-                        current_email_subject="",
-                        current_email_id="",
-                        current_job_title="",
-                    )
-                    continue
+                # Note: we intentionally do NOT skip emails just because a prior email
+                # had the same sender + subject. Digest emails (LinkedIn, Indeed, etc.)
+                # routinely reuse the same subject line every day while containing an
+                # entirely different set of job listings. The Gmail message ID (msg_id)
+                # is the only reliable identity check — already enforced above via
+                # has_been_scanned — so every email with a distinct ID gets parsed, and
+                # duplicate *job listings* within/across emails are caught later by
+                # DuplicateChecker on (company, title) after parsing.
 
                 # Relevance feedback can boost known-good sources after parsing.
                 # It must not discard an entire message because digest emails can
@@ -784,8 +760,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                     "emails_scanned": total,
                     "new_jobs": new_jobs,
                     "emails_with_jobs": emails_with_jobs,
-                    "duplicates": duplicate_emails + already_scanned_emails,
-                    "duplicate_emails": duplicate_emails,
+                    "duplicates": already_scanned_emails,
                     "already_scanned_emails": already_scanned_emails,
                     "acknowledgement_emails": acknowledgement_emails,
                     "feedback_filtered_emails": feedback_filtered_emails,

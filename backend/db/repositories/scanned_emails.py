@@ -68,21 +68,6 @@ class PostgresScannedEmailRepository(_BaseRepo):
             "email_date": row["email_date"],
         }
 
-    def is_duplicate_by_content(
-        self, sender_email: str, subject: str, since_days: int
-    ) -> bool:
-        cur = self._execute(
-            """
-            SELECT 1 FROM scanned_emails
-            WHERE sender_email = %s
-              AND email_subject = %s
-              AND scanned_at::timestamptz >= NOW() - (%s * INTERVAL '1 day')
-            LIMIT 1
-            """,
-            (sender_email, subject, since_days),
-        )
-        return cur.fetchone() is not None
-
     def mark_scanned(
         self,
         email_id: str,
