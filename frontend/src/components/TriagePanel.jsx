@@ -622,7 +622,6 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
             job={job}
             onSameJob={() => handleSkipAsDuplicate(job)}
             onDifferentJob={() => handleMarkUnique(job)}
-            onMarkUnique={() => handleMarkUnique(job)}
             onMarkApplied={() => handleMarkApplied(job)}
             onSkip={(reason, feedback, mismatchReasons) => handleSkip(job, reason, feedback, mismatchReasons)}
             onSkipDuplicate={(jobId) => handleSkip({ id: jobId }, "duplicate", "", [])}
@@ -773,7 +772,7 @@ function CompanyNameEditor({ jobId, company, onSave, onError }) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard }) {
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard }) {
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
@@ -1194,13 +1193,6 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMar
           disabled={loadingAction !== null}
         >
           {loadingAction === "same" ? "Removing…" : "Yes, same job — skip it"}
-        </button>
-        <button
-          className="btn-secondary btn-sm"
-          onClick={() => act(onMarkUnique, "unique")}
-          disabled={loadingAction !== null}
-        >
-          {loadingAction === "unique" ? "Moving…" : "Mark as Unique"}
         </button>
         <button
           className="btn-success btn-sm"

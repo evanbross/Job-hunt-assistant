@@ -57,7 +57,6 @@ export default function renderJobOrTriageCard(job, queueHandlers, triageHandlers
         job={job}
         onSameJob={() => triageHandlers.skip(job, "duplicate", "", [])}
         onDifferentJob={() => triageHandlers.markUnique(job)}
-        onMarkUnique={() => triageHandlers.markUnique(job)}
         onMarkApplied={() => triageHandlers.markApplied(job)}
         onSkip={(reason, feedback, mismatchReasons) => triageHandlers.skip(job, reason, feedback, mismatchReasons)}
         onSkipDuplicate={(jobId) => triageHandlers.skip({ id: jobId }, "duplicate", "", [])}
