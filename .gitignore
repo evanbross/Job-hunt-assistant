@@ -55,3 +55,4 @@ Thumbs.db
 /.claude/worktrees/agent-abcc2d9abaeedc569
 /dump.json
 /tmp
+.claude/settings.local.json
