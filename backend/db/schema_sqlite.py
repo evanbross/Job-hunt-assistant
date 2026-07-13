@@ -70,6 +70,7 @@ def _migrate_sqlite(conn: Any) -> None:
         ("job_description", "TEXT"),
         ("import_warnings", "TEXT"),
         ("snoozed_until", "TEXT"),
+        ("dismissed_duplicate_ids", "TEXT"),
     ]:
         _sqlite_add_column_if_missing(cur, "jobs", col, defn)
 

@@ -434,7 +434,7 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
     return jsonify({"status": "ok"})
 
 
-# ai: claude-sonnet-4-6 | 2026-06-28
+# ai: claude-sonnet-5 | 2026-07-13
 @jobs_bp.route("/jobs/<int:job_id>/dismiss-duplicate", methods=["POST"])
 def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
@@ -446,11 +446,19 @@ def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
         fit_score = int(job.get("fit_score") or 0)
         base_status = "pending_review" if fit_score >= 70 else "triage"
 
-        # Re-check against all other jobs, excluding the one the user just dismissed
-        # so three-or-more-way duplicates get caught on successive dismissals.
-        excluded = {job_id}
+        # Accumulate every match the user has ever dismissed for this job, not just
+        # the most recent one — otherwise two mutually-fuzzy-matching jobs (e.g. a
+        # posting and its own already-flagged duplicate) can ping-pong forever:
+        # dismissing the match against A surfaces B, dismissing B re-surfaces A.
+        try:
+            dismissed_ids: list[int] = json.loads(job.get("dismissed_duplicate_ids") or "[]")
+        except (TypeError, ValueError):
+            dismissed_ids = []
         if dismissed_id is not None:
-            excluded.add(int(dismissed_id))
+            dismissed_ids.append(int(dismissed_id))
+        dismissed_ids = sorted(set(dismissed_ids))
+
+        excluded = {job_id, *dismissed_ids}
         all_jobs = repos["jobs"].get_all_ordered()
         check_pool = [j for j in all_jobs if j.get("id") not in excluded]
 
@@ -468,12 +476,14 @@ def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
                 "status": "possible_duplicate",
                 "duplicate_hint": duplicate_hint,
                 "duplicate_of_id": duplicate_of_id,
+                "dismissed_duplicate_ids": json.dumps(dismissed_ids),
             }
         else:
             updates = {
                 "status": base_status,
                 "duplicate_hint": None,
                 "duplicate_of_id": None,
+                "dismissed_duplicate_ids": json.dumps(dismissed_ids),
             }
 
         repos["jobs"].update(job_id, updates)

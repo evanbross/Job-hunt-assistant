@@ -69,6 +69,7 @@ class PostgresJobRepository(_BaseRepo):
         "job_description",
         "import_warnings",
         "snoozed_until",
+        "dismissed_duplicate_ids",
     })
 
     def get_all_by_status(self, status: str) -> list[dict[str, Any]]:

@@ -137,6 +137,7 @@ def _migrate(conn: Any) -> None:
         ("job_description", "TEXT"),
         ("import_warnings", "TEXT"),
         ("snoozed_until", "TEXT"),
+        ("dismissed_duplicate_ids", "TEXT"),
     ]:
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {defn}")
 
