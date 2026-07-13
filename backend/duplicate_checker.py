@@ -95,6 +95,24 @@ _QUALIFIER_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r",\s*(.+)$"),
 ]
 
+# Seniority levels matched against a *normalized* title (abbreviations already
+# expanded, punctuation stripped). Checked in order — "senior staff" must be
+# tested before "senior" and "staff" so it isn't misread as either alone.
+# "Senior/Staff" also normalizes to "senior staff" and is treated as that
+# combined level.
+_SENIORITY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bsenior staff\b"),   "senior staff"),
+    (re.compile(r"\bdistinguished\b"),  "distinguished"),
+    (re.compile(r"\bprincipal\b"),      "principal"),
+    (re.compile(r"\bstaff\b"),          "staff"),
+    (re.compile(r"\bsenior\b"),         "senior"),
+    (re.compile(r"\bjunior\b"),         "junior"),
+]
+
+# Marriott prefixes temporary/flexible positions with "FLEX" — a FLEX role and
+# its non-FLEX namesake are different jobs. Matched against the raw title.
+_FLEX_PREFIX_RE: re.Pattern[str] = re.compile(r"^\s*flex\b", re.IGNORECASE)
+
 
 class DuplicateMatch(TypedDict):
     sheet_company: str
@@ -145,6 +163,19 @@ def _extract_qualifier(title: str) -> str | None:
     return None
 
 
+# ai: claude-fable-5 | 2026-07-13
+def _extract_seniority(normalized_title: str) -> str | None:
+    """Return the seniority level named in a normalized title, or None.
+
+    Expects _normalize() output so abbreviations ("Prin SE", "Sr SWE") are
+    already expanded into the words the patterns look for.
+    """
+    for pattern, level in _SENIORITY_PATTERNS:
+        if pattern.search(normalized_title):
+            return level
+    return None
+
+
 def _slugify(text: str) -> str:
     """Remove all non-alphanumeric chars and lowercase — produces a URL-slug form.
 
@@ -176,6 +207,8 @@ class DuplicateChecker:
         """
         norm_title = _normalize(job_title)
         norm_company = _normalize(company)
+        own_seniority = _extract_seniority(norm_title)
+        own_is_flex = bool(_FLEX_PREFIX_RE.match(job_title))
 
         best: DuplicateMatch | None = None
         best_combined: float = 0.0
@@ -195,9 +228,27 @@ class DuplicateChecker:
                 sheet_slug = _slugify(sheet_company_raw)
                 if own_slug and sheet_slug and own_slug == sheet_slug:
                     c_score = 100
-            t_score: int = fuzz.token_set_ratio(norm_title, _normalize(sheet_title_raw))
+            norm_sheet_title = _normalize(sheet_title_raw)
+            t_score: int = fuzz.token_set_ratio(norm_title, norm_sheet_title)
 
             if c_score >= _COMPANY_THRESHOLD and t_score >= _TITLE_THRESHOLD:
+                # A FLEX-prefixed title and its unprefixed namesake are
+                # different jobs; token_set_ratio scores the one-token subset
+                # difference at 100, so check the prefix explicitly.
+                if own_is_flex != bool(_FLEX_PREFIX_RE.match(sheet_title_raw)):
+                    continue
+                # Both titles name an explicit seniority level and they differ
+                # (e.g. "Principal Software Engineer" vs "Staff Software
+                # Engineer") — different rungs at the same company are
+                # different roles, even though token_set_ratio scores the
+                # shared remainder of the title above the threshold.
+                sheet_seniority = _extract_seniority(norm_sheet_title)
+                if (
+                    own_seniority is not None
+                    and sheet_seniority is not None
+                    and own_seniority != sheet_seniority
+                ):
+                    continue
                 # Both titles name a specific department/team (e.g. "Staff Software
                 # Engineer, Backend" vs "Staff Software Engineer, Configuration
                 # Platform") — token_set_ratio largely ignores this differing

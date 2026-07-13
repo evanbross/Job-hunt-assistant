@@ -77,7 +77,9 @@ def test_dismiss_duplicate_resolves_when_two_jobs_fuzzy_match(monkeypatch: pytes
             {
                 "id": 1,
                 "company": "Workiva",
-                "job_title": "Senior Staff Software Engineer",
+                # Abbreviated form of "Principal Software Engineer" so it fuzzy-matches
+                # jobs 2 and 3 — same seniority level, or the seniority gate would reject.
+                "job_title": "Principal SWE",
                 "url": "https://www.linkedin.com/jobs/view/1111111111/",
                 "status": "possible_duplicate",
                 "duplicate_of_id": 3,
