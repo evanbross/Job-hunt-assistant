@@ -23,7 +23,7 @@ const badgeStyle = {
 
 /**
  * Shared result/progress dialog for the "Scan for Closed Reqs" action
- * (LinkedIn + Welcome to the Jungle), used by both the Application Tracking
+ * (LinkedIn + Welcome to the Jungle + Wellfound), used by both the Application Tracking
  * sheet and the Job Queue.
  *
  * @param {Object} props

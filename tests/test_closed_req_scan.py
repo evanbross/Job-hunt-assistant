@@ -54,6 +54,8 @@ from routes.applications import (
     _closed_req_browser_queue_snapshot,
     _closed_req_candidates,
     _record_closed_req,
+    _req_closed_lock,
+    _req_closed_state,
     _run_req_closed_scan,
     submit_closed_req_capture,
 )
@@ -117,6 +119,17 @@ def test_check_closed_req_detects_closed_banner_phrase() -> None:
     fake_resp = _fake_response(b"<html>No longer accepting applications</html>", url)
     with patch("routes.applications.safe_urlopen", return_value=fake_resp):
         result = _check_closed_req(url, "linkedin")
+    assert result == "closed"
+
+
+def test_check_closed_req_detects_wellfound_closed_banner_phrase() -> None:
+    url = "https://wellfound.com/jobs?job_listing_slug=4430594-staff-software-engineer"
+    fake_resp = _fake_response(
+        b"<html>The job listing was recently taken down and is no longer available for applications</html>",
+        url,
+    )
+    with patch("routes.applications.safe_urlopen", return_value=fake_resp):
+        result = _check_closed_req(url, "wellfound")
     assert result == "closed"
 
 
@@ -277,6 +290,41 @@ def test_run_req_closed_scan_prioritizes_never_checked_job_over_cap(tmp_path: Pa
         repos["conn"].close()
 
 
+def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wellfound bot-blocks unauthenticated fetches with a 403 on every job, so
+    _check_closed_req always reports 'bad_url' there regardless of the job's real
+    status. That must be escalated to an authenticated browser-extension capture
+    rather than reported as a broken-URL error."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        job_id = repos["jobs"].insert({
+            "company": "Astra",
+            "job_title": "Staff Backend Engineer",
+            "url": "https://wellfound.com/jobs?job_listing_slug=4296010-staff-backend-engineer",
+            "source": "Tampermonkey - Wellfound",
+            "status": "applied",
+            "date_added_to_sheet": "2026-06-01",
+        })
+        repos["conn"].commit()
+
+        with patch("routes.applications._check_closed_req", return_value="bad_url"):
+            _run_req_closed_scan()
+
+        rows = [r for r in repos["browser_capture_queue"].get_all() if r["purpose"] == "closed_req"]
+        assert any(r["job_id"] == job_id for r in rows), (
+            "wellfound job reported 'bad_url' never got a browser-check slot"
+        )
+        matching = next(r for r in rows if r["job_id"] == job_id)
+        assert matching["site_name"] == "Wellfound (closed-req check)"
+
+        with _req_closed_lock:
+            assert _req_closed_state.bad_url_count == 0
+    finally:
+        repos["conn"].close()
+
+
 # ─── _classify_closed_req_page ─────────────────────────────────────────────────
 # LinkedIn only renders its closure banner to logged-in sessions, so an authenticated
 # browser-extension capture (submit_closed_req_capture, below) needs the same
@@ -292,6 +340,11 @@ def test_classify_closed_req_page_detects_expired_redirect_marker() -> None:
     page_text = "<html>generic search results</html>"
     final_url = "https://www.linkedin.com/jobs/some-search?trk=expired_jd_redirect"
     assert _classify_closed_req_page(page_text, final_url, "linkedin") == "closed"
+
+
+def test_classify_closed_req_page_detects_wellfound_banner_phrase() -> None:
+    page_text = "<html>the job listing was recently taken down and is no longer available for applications</html>"
+    assert _classify_closed_req_page(page_text, "https://wellfound.com/jobs?job_listing_slug=1", "wellfound") == "closed"
 
 
 def test_classify_closed_req_page_returns_open_when_no_signal() -> None:

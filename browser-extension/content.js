@@ -301,10 +301,37 @@
     return JSON.stringify({ content: document.documentElement.outerHTML, url: location.href });
   }
 
+  // ai: claude-sonnet-5 | 2026-07-12
+  // Wellfound's job-detail panel (and its "taken down" closed banner) is fetched
+  // by a second client-side call after the initial listings-grid shell renders —
+  // confirmed via captured __NEXT_DATA__ showing the router already recognized
+  // job_listing_slug while the DOM still only had the generic grid. A fixed delay
+  // can't reliably cover this (worse in a throttled background tab), so poll
+  // until the page stops growing instead of guessing a wait time.
+  async function waitForStableRender(maxWaitMs, checkIntervalMs = 500, stableChecks = 2) {
+    const deadline = Date.now() + maxWaitMs;
+    let lastLen = -1;
+    let stableCount = 0;
+    while (Date.now() < deadline) {
+      await sleep(checkIntervalMs);
+      const len = document.body.innerText.length;
+      if (len === lastLen) {
+        stableCount++;
+        if (stableCount >= stableChecks) break;
+      } else {
+        stableCount = 0;
+      }
+      lastLen = len;
+    }
+  }
+
   // ai: claude-sonnet-4-6 | 2026-07-02
   // Closed-req checks need the raw rendered page (banner text and all), not the
   // structured job-listing extraction the site-specific builders produce.
-  function buildClosedReqCheckPayload() {
+  async function buildClosedReqCheckPayload() {
+    if (location.hostname.includes('wellfound.com')) {
+      await waitForStableRender(10000);
+    }
     return JSON.stringify({
       content: document.documentElement.outerHTML,
       url: location.href,
@@ -1336,12 +1363,9 @@
     // Closed-req check flow: capture the raw authenticated page instead of running
     // the site-specific job-listing extraction used by buildForBackground.
     if (message.action === 'buildClosedReqCheck') {
-      try {
-        const payload = buildClosedReqCheckPayload();
-        chrome.runtime.sendMessage({ action: 'payloadReady', payload });
-      } catch {
-        chrome.runtime.sendMessage({ action: 'payloadReady', payload: null });
-      }
+      buildClosedReqCheckPayload()
+        .then(payload => chrome.runtime.sendMessage({ action: 'payloadReady', payload }))
+        .catch(() => chrome.runtime.sendMessage({ action: 'payloadReady', payload: null }));
       return false;
     }
   });

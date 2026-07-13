@@ -125,7 +125,13 @@ async function pollQueue() {
       // logged-in session — they don't need foreground interaction, so load them in a
       // background tab rather than stealing focus like the import/JD-capture queue does.
       const purpose = item.purpose || 'import';
-      const isBackground = purpose === 'closed_req';
+      // ai: claude-sonnet-5 | 2026-07-12
+      // Wellfound is the exception: confirmed via captured HTML that its job-detail
+      // panel never renders in a background tab at all (not just slowly) — Chrome
+      // pauses requestAnimationFrame and defers lazy-loaded chunks for hidden tabs,
+      // and the panel's fetch-then-render depends on that pipeline. LinkedIn/WTTJ's
+      // banners don't hit this, so only Wellfound needs the brief focus-steal.
+      const isBackground = purpose === 'closed_req' && !item.url.includes('wellfound.com');
       // ai: claude-sonnet-4-6 | 2026-06-22
       // Capture the active tab before opening the queue tab so we can restore focus
       // to it (i.e. the JHA tab) after the capture is done.
@@ -202,11 +208,18 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // but must then make an API call to fetch the job data and render it in the DOM.
   // 5s gives the WTTJ API call and React render time to complete before content.js runs.
   const isWttj = (tab.url || '').includes('welcometothejungle.com');
+  // ai: claude-sonnet-5 | 2026-07-12
+  // Wellfound is the same kind of client-rendered SPA as WTTJ — its "taken down"
+  // closed-req banner is fetched/mounted after status: complete, not present in the
+  // initial shell. The 1.5s LinkedIn-tuned delay below fired before it ever rendered,
+  // so every Wellfound closed-req check silently came back "open" (verified: zero
+  // Wellfound jobs were ever marked req_closed despite confirmed-closed listings).
+  const isWellfound = (tab.url || '').includes('wellfound.com');
   // ai: claude-sonnet-4-6 | 2026-07-02
   // LinkedIn's closure banner can finish rendering just after status: complete —
   // a short settle delay avoids capturing before it mounts.
   const isClosedReqCheck = info.purpose === 'closed_req';
-  if (isWttj) {
+  if (isWttj || isWellfound) {
     setTimeout(() => triggerQueueCapture(tabId), 5000);
   } else if (isClosedReqCheck) {
     setTimeout(() => triggerQueueCapture(tabId), 1500);

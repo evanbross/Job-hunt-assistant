@@ -77,11 +77,16 @@ _CLOSED_PHRASES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
         "job no longer available",
         "ce poste n'est plus disponible",
     ),
+    # ai: claude-sonnet-5 | 2026-07-12
+    "wellfound": (
+        "recently taken down and is no longer available",
+    ),
 }
 
 _PLATFORM_LABELS: dict[str, str] = {
     "linkedin": "LinkedIn",
     "wttj": "Welcome to the Jungle",
+    "wellfound": "Wellfound",
 }
 
 # ai: claude-sonnet-4-6 | 2026-07-02
@@ -315,13 +320,16 @@ def mark_ghost_applications() -> ResponseReturnValue:
 
 
 def _detect_closed_req_platform(job: dict, url: str) -> str | None:
-    """Return 'linkedin' or 'wttj' if job/url belongs to a supported platform, else None."""
+    """Return 'linkedin', 'wttj', or 'wellfound' if job/url belongs to a supported
+    platform, else None."""
     source = str(job.get("source") or "").lower()
     netloc = urlparse(url).netloc.lower()
     if "linkedin" in source or "linkedin.com" in netloc or "lnkd.in" in netloc:
         return "linkedin"
     if "welcome to the jungle" in source or "wttj" in source or "welcometothejungle.com" in netloc:
         return "wttj"
+    if "wellfound" in source or "wellfound.com" in netloc:
+        return "wellfound"
     return None
 
 
@@ -368,8 +376,12 @@ def _check_closed_req(url: str, platform: str) -> str:
 
     Note: LinkedIn only renders its closure banner to authenticated sessions,
     so this unauthenticated fetch can return 'open' for a job that is actually
-    closed. _run_req_closed_scan escalates those cases to an authenticated
-    browser-extension capture (see submit_closed_req_capture).
+    closed. Wellfound goes further and fronts every job page with a bot-detection
+    challenge (DataDome), so an unauthenticated fetch there always comes back
+    'bad_url' (HTTP 403) regardless of whether the URL or job is actually fine —
+    it never reflects the job's real status. _run_req_closed_scan escalates both
+    cases to an authenticated browser-extension capture (see
+    submit_closed_req_capture), which runs in a real browser and isn't blocked.
     """
     if platform == "linkedin":
         url = _canonicalize_linkedin_url(url)
@@ -439,7 +451,7 @@ def _update_req_closed_state(**kwargs: object) -> None:
 
 
 def _closed_req_candidates(repos: dict) -> list[tuple[dict, str, str]]:
-    """Non-terminal jobs sourced from LinkedIn or Welcome to the Jungle, with their platform."""
+    """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, or Wellfound, with their platform."""
     jobs = repos["jobs"].get_all_ordered()
     all_stages = repos["stages"].get_all()
     terminal_keys = {s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")}
@@ -541,9 +553,10 @@ def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
 # ai: claude-sonnet-4-6 | 2026-07-02
 def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
     """Handle an authenticated page capture from the browser extension's closed-req
-    check queue (see _run_req_closed_scan). The extension opens the job URL in a tab
-    using the user's real, logged-in session — which is the only way to see LinkedIn's
-    "no longer accepting applications" banner — and posts back the rendered HTML.
+    check queue (see _run_req_closed_scan). The extension opens the job URL in a real
+    browser tab — using the user's logged-in session for LinkedIn's "no longer
+    accepting applications" banner, and just a real browser (to pass Wellfound's
+    bot-detection challenge) for Wellfound — and posts back the rendered HTML.
     """
     content = str(body.get("content") or "")
     captured_url = str(body.get("url") or "").strip()
@@ -586,7 +599,7 @@ def _run_req_closed_scan() -> None:
     today = datetime.now(UTC).date().isoformat()
     _update_req_closed_state(
         running=True, progress=0, total=0,
-        message="Finding LinkedIn and Welcome to the Jungle jobs to check…",
+        message="Finding LinkedIn, Welcome to the Jungle, and Wellfound jobs to check…",
         marked=[], errors=[], checked=0,
         kept_count=0, closed_count=0, bad_url_count=0, unreachable_count=0,
         browser_checks_queued=0,
@@ -607,10 +620,13 @@ def _run_req_closed_scan() -> None:
         bad_url_count = 0
         unreachable_count = 0
         # LinkedIn jobs the unauthenticated fetch reports "open" may still be closed
-        # (the closure banner only renders to logged-in sessions) — collected here and
-        # escalated to the browser-extension capture queue after the fetch loop, so this
-        # loop keeps its "no DB connection held during external fetches" behavior.
-        to_browser_check: list[tuple[dict, str]] = []
+        # (the closure banner only renders to logged-in sessions), and Wellfound jobs
+        # come back "bad_url" every time because Wellfound bot-blocks unauthenticated
+        # fetches outright (see _check_closed_req) — neither result reflects the job's
+        # real status, so both are collected here and escalated to the browser-extension
+        # capture queue after the fetch loop, which keeps its "no DB connection held
+        # during external fetches" behavior.
+        to_browser_check: list[tuple[dict, str, str]] = []
         for i, (job, url, platform) in enumerate(candidates):
             platform_label = _PLATFORM_LABELS.get(platform, platform)
             job_title = job.get("job_title") or "Untitled"
@@ -635,10 +651,13 @@ def _run_req_closed_scan() -> None:
             elif result == "open":
                 kept_count += 1
                 if platform == "linkedin":
-                    to_browser_check.append((job, url))
+                    to_browser_check.append((job, url, platform_label))
             elif result == "bad_url":
-                errors.append({**job_summary, "reason": "bad_url"})
-                bad_url_count += 1
+                if platform == "wellfound":
+                    to_browser_check.append((job, url, platform_label))
+                else:
+                    errors.append({**job_summary, "reason": "bad_url"})
+                    bad_url_count += 1
             else:  # unreachable
                 errors.append({**job_summary, "reason": "unreachable"})
                 unreachable_count += 1
@@ -671,11 +690,11 @@ def _run_req_closed_scan() -> None:
                     created = row.get("created_at") or ""
                     if created > last_checked.get(row["job_id"], ""):
                         last_checked[row["job_id"]] = created
-                to_browser_check.sort(key=lambda pair: last_checked.get(pair[0]["id"], ""))
+                to_browser_check.sort(key=lambda item: last_checked.get(item[0]["id"], ""))
 
-                for job, url in to_browser_check[:_CLOSED_REQ_BROWSER_CHECK_CAP]:
+                for job, url, platform_label in to_browser_check[:_CLOSED_REQ_BROWSER_CHECK_CAP]:
                     new_id = repos["browser_capture_queue"].enqueue_once_for_purpose(
-                        url, "LinkedIn (closed-req check)", "closed_req", job["id"]
+                        url, f"{platform_label} (closed-req check)", "closed_req", job["id"]
                     )
                     if new_id is not None:
                         browser_checks_queued += 1
@@ -687,7 +706,7 @@ def _run_req_closed_scan() -> None:
             message=(
                 f"Done — {closed_count} marked Req Closed, {kept_count} still open, "
                 f"{bad_url_count} bad URLs, {unreachable_count} unreachable. "
-                f"Queued {browser_checks_queued} for authenticated LinkedIn re-check."
+                f"Queued {browser_checks_queued} for authenticated browser re-check."
             ),
             current_platform="", current_company="", current_job_title="",
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
@@ -699,7 +718,7 @@ def _run_req_closed_scan() -> None:
 
 @applications_bp.route("/applications/scan-closed-reqs", methods=["POST"])
 def start_closed_req_scan() -> ResponseReturnValue:
-    """Kick off a background scan of LinkedIn and Welcome to the Jungle job URLs for closed-req banners."""
+    """Kick off a background scan of LinkedIn, Welcome to the Jungle, and Wellfound job URLs for closed-req banners."""
     with _req_closed_lock:
         if _req_closed_state.running:
             return jsonify({"error": "Scan already running"}), 409

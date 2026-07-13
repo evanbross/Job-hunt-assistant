@@ -930,7 +930,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                   disabled={savingKey === "req-closed"}
                   style={actionMenuItemStyle}
                 >
-                  {savingKey === "req-closed" ? "Scanning..." : "Scan for Closed Reqs (LinkedIn + WTTJ)"}
+                  {savingKey === "req-closed" ? "Scanning..." : "Scan for Closed Reqs (LinkedIn + WTTJ + Wellfound)"}
                 </button>
                 <button
                   type="button"
