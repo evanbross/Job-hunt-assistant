@@ -49,8 +49,11 @@ import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
+
+from backend.email_parser import resolve_tracking_url
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,196 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+
+# ai: claude-fable-5 | 2026-07-14
+_WELLFOUND_HOSTS = frozenset({
+    "wellfound.com",
+    "www.wellfound.com",
+    "links.wellfound.com",
+})
+
+# Detail-page selectors shared by the search scraper and the single-job fetcher.
+# Multiple variants handle Wellfound layout changes over time.
+# ai: claude-fable-5 | 2026-07-14
+_TITLE_SELECTORS = [
+    'h1[class*="title"]',
+    'h1[class*="role"]',
+    '[data-test="JobTitle"]',
+    "h1",
+]
+_COMPANY_SELECTORS = [
+    'a[class*="startup-link"]',
+    'a[class*="company"]',
+    '[data-test="StartupLink"]',
+    '[class*="startup"] h2 a',
+    "header a[href*='/company/']",
+]
+_DESCRIPTION_SELECTORS = [
+    "#job-description",  # current layout (2026-07)
+    '[class*="styles_description"]',
+    '[class*="job-description"]',
+    '[class*="description"] .prose',
+    '[class*="jobDescription"]',
+    '[data-test="JobDescription"]',
+    "section article",
+    "main article",
+]
+
+
+# ai: claude-fable-5 | 2026-07-14
+def is_wellfound_job_url(url: str) -> bool:
+    """Return True when the URL points at Wellfound (including its email tracking host)."""
+    return urlparse(url).netloc.lower() in _WELLFOUND_HOSTS
+
+
+# ai: claude-fable-5 | 2026-07-14
+def canonical_wellfound_job_url(url: str) -> str:
+    """Normalize a Wellfound listing URL to https://wellfound.com/jobs/{slug}.
+
+    Handles both URL shapes Wellfound uses:
+      - https://wellfound.com/jobs?job_listing_slug=4446105-senior-engineer
+      - https://wellfound.com/jobs/4446105-senior-engineer
+    Returns "" when no listing slug can be extracted (e.g. an unresolved
+    links.wellfound.com tracking URL, or a non-listing Wellfound page).
+    """
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host not in ("wellfound.com", "www.wellfound.com"):
+        return ""
+    slug = (parse_qs(parsed.query).get("job_listing_slug") or [""])[0]
+    if not slug:
+        path = parsed.path.rstrip("/")
+        if path.startswith("/jobs/"):
+            slug = path[len("/jobs/"):]
+    slug = slug.strip("/")
+    # Real listing slugs start with the numeric listing ID.
+    if not slug or not slug[0].isdigit() or "/" in slug:
+        return ""
+    return f"{_BASE}/jobs/{slug}"
+
+
+# ai: claude-fable-5 | 2026-07-14
+def _first_matching_text(page: Page, selectors: list[str], *, long: bool = False) -> str:
+    """Return inner_text() of the first selector that has usable content."""
+    for sel in selectors:
+        try:
+            el = page.query_selector(sel)
+            if el:
+                text = el.inner_text().strip()
+                # For short fields cap at 400 chars so we don't grab page bodies
+                if text and (long or len(text) < 400):
+                    return text
+        except Exception:
+            continue
+    return ""
+
+
+# ai: claude-fable-5 | 2026-07-14
+class WellfoundJobFetcher:
+    """Fetch individual Wellfound job descriptions with one shared browser.
+
+    Wellfound sits behind DataDome bot protection: plain HTTP fetches get a 403
+    and every headless browser variant (including new-headless) gets a CAPTCHA
+    interstitial. Only a headful browser passes, so the default is a visible
+    Chromium window parked offscreen (--window-position) for the duration of
+    the scan. The browser launches lazily on the first fetch and is reused for
+    subsequent fetches; call close() when done (safe if never started).
+
+    Reuses the saved session file when present (login is not required — listing
+    pages are public) and saves it back on close so the DataDome clearance
+    cookie carries over to the next scan.
+    """
+
+    def __init__(self, session_file: Path, headless: bool = False) -> None:
+        self._session_file = session_file
+        self._headless = headless
+        self._pw: Playwright | None = None
+        self._browser: Browser | None = None
+        self._context: BrowserContext | None = None
+        self._page: Page | None = None
+
+    def fetch_description(self, url: str) -> str:
+        """Return the job description text for any Wellfound listing URL form.
+
+        Accepts tracking links (resolved first), slug-query URLs, and canonical
+        /jobs/{slug} URLs. Returns "" on any failure so callers can fall back.
+        """
+        target = canonical_wellfound_job_url(url)
+        if not target:
+            target = canonical_wellfound_job_url(resolve_tracking_url(url))
+        if not target and not is_wellfound_job_url(url):
+            logger.debug("Wellfound fetcher: no listing slug in %s", url)
+            return ""
+        try:
+            page = self._ensure_page()
+            if not target:
+                # Tracking link that HTTP resolution couldn't unwrap — let the
+                # browser follow the redirect, then normalize where it landed.
+                page.goto(url, wait_until="domcontentloaded", timeout=25_000)
+                target = canonical_wellfound_job_url(page.url)
+                if not target:
+                    logger.debug(
+                        "Wellfound fetcher: no listing slug after redirect from %s (landed on %s)",
+                        url, page.url,
+                    )
+                    return ""
+            page.goto(target, wait_until="domcontentloaded", timeout=25_000)
+            # The listing is client-rendered (and may sit behind a DataDome
+            # interstitial for a moment) — wait for any description container.
+            try:
+                page.wait_for_selector(", ".join(_DESCRIPTION_SELECTORS), timeout=15_000)
+            except Exception:
+                logger.debug("Wellfound fetcher: description selector never appeared for %s", target)
+            return _first_matching_text(page, _DESCRIPTION_SELECTORS, long=True)
+        except Exception as exc:
+            logger.warning("Wellfound fetcher: failed to fetch %s: %s", target or url, exc)
+            return ""
+
+    def _ensure_page(self) -> Page:
+        if self._page is not None:
+            return self._page
+        launch_args = ["--disable-blink-features=AutomationControlled"]
+        if not self._headless:
+            # Keep the (required) headful window out of the user's way.
+            launch_args.append("--window-position=-2400,-2400")
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(headless=self._headless, args=launch_args)
+        kwargs: dict = {
+            "user_agent": _USER_AGENT,
+            "viewport": {"width": 1280, "height": 900},
+        }
+        if self._session_file.exists():
+            try:
+                self._context = self._browser.new_context(
+                    storage_state=str(self._session_file), **kwargs
+                )
+            except Exception as exc:
+                logger.warning("Could not load Wellfound session file: %s", exc)
+        if self._context is None:
+            self._context = self._browser.new_context(**kwargs)
+        self._page = self._context.new_page()
+        return self._page
+
+    def close(self) -> None:
+        """Shut down the browser if it was started. Safe to call repeatedly."""
+        if self._context is not None:
+            try:
+                self._session_file.parent.mkdir(parents=True, exist_ok=True)
+                self._context.storage_state(path=str(self._session_file))
+            except Exception as exc:
+                logger.debug("Wellfound fetcher: could not persist session: %s", exc)
+        for label, shutdown in (
+            ("context", self._context.close if self._context else None),
+            ("browser", self._browser.close if self._browser else None),
+            ("playwright", self._pw.stop if self._pw else None),
+        ):
+            if shutdown is None:
+                continue
+            try:
+                shutdown()
+            except Exception as exc:
+                logger.debug("Wellfound fetcher: error closing %s: %s", label, exc)
+        self._pw = self._browser = self._context = self._page = None
 
 
 class WellfoundLoginError(Exception):
@@ -241,27 +434,10 @@ class WellfoundScraper:
         try:
             page.goto(job_url, wait_until="domcontentloaded", timeout=25_000)
 
-            title = self._first_text(page, [
-                'h1[class*="title"]',
-                'h1[class*="role"]',
-                '[data-test="JobTitle"]',
-                "h1",
-            ])
-            company = self._first_text(page, [
-                'a[class*="startup-link"]',
-                'a[class*="company"]',
-                '[data-test="StartupLink"]',
-                '[class*="startup"] h2 a',
-                "header a[href*='/company/']",
-            ])
-            description = self._first_text(page, [
-                '[class*="job-description"]',
-                '[class*="description"] .prose',
-                '[class*="jobDescription"]',
-                '[data-test="JobDescription"]',
-                "section article",
-                "main article",
-            ], long=True)
+            # ai: claude-fable-5 | 2026-07-14
+            title = _first_matching_text(page, _TITLE_SELECTORS)
+            company = _first_matching_text(page, _COMPANY_SELECTORS)
+            description = _first_matching_text(page, _DESCRIPTION_SELECTORS, long=True)
 
             if not title:
                 logger.debug("Wellfound: no title found at %s — skipping", job_url)
@@ -310,24 +486,3 @@ class WellfoundScraper:
                 context.close()
                 browser.close()
 
-    # ── selector helpers ───────────────────────────────────────────────────────
-
-    def _first_text(
-        self,
-        page: Page,
-        selectors: list[str],
-        *,
-        long: bool = False,
-    ) -> str:
-        """Return inner_text() of the first selector that has usable content."""
-        for sel in selectors:
-            try:
-                el = page.query_selector(sel)
-                if el:
-                    text = el.inner_text().strip()
-                    # For short fields cap at 400 chars so we don't grab page bodies
-                    if text and (long or len(text) < 400):
-                        return text
-            except Exception:
-                continue
-        return ""

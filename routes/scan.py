@@ -63,6 +63,11 @@ from backend.utils import (
     get_subject_rule_match,
     is_near_certain_duplicate,
 )
+from backend.wellfound_scraper import (  # ai: claude-fable-5 | 2026-07-14
+    WellfoundJobFetcher,
+    canonical_wellfound_job_url,
+    is_wellfound_job_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +221,10 @@ def _run_scan(rescan_all: bool = False) -> None:
         _scan_state.current_email_subject = ""
         _scan_state.current_email_id = ""
         _scan_state.current_job_title = ""
+
+    # ai: claude-fable-5 | 2026-07-14
+    # Lazy: no browser is launched unless a Wellfound job URL is encountered.
+    wellfound_fetcher = WellfoundJobFetcher(session_file=config.WELLFOUND_SESSION_FILE)
 
     try:
         _update_scan(progress=5, message="Connecting to Gmail...")
@@ -544,6 +553,14 @@ def _run_scan(rescan_all: bool = False) -> None:
                     if subject_rule == "whitelist":
                         confidence = "high"
 
+                    # ai: claude-fable-5 | 2026-07-14
+                    # Canonicalize Wellfound listing URLs (tracking links are already
+                    # resolved at parse time) so the same listing arriving in different
+                    # digests dedupes by URL instead of by opaque per-email links.
+                    wf_canonical = canonical_wellfound_job_url(str(parsed.get("url") or ""))
+                    if wf_canonical:
+                        parsed["url"] = wf_canonical
+
                     # Check for exact URL and fuzzy title/company duplicates.
                     # ai: claude-sonnet-4-6 | 2026-06-10
                     _tracked_status, tracking_source, duplicate_hint, duplicate_of_id, match_scores = db_match_for_job(
@@ -573,8 +590,14 @@ def _run_scan(rescan_all: bool = False) -> None:
                     jd_text = ""
                     if job_url_str and job_url_str.startswith("https://"):
                         try:
-                            fetched = CareerSiteScanner().scan_single_job_url("", job_url_str)
-                            fetched_text = fetched.get("job_text", "")
+                            # ai: claude-fable-5 | 2026-07-14
+                            # Wellfound is Cloudflare-protected — plain HTTP gets a 403 —
+                            # so those URLs go through the shared Playwright fetcher.
+                            if is_wellfound_job_url(job_url_str):
+                                fetched_text = wellfound_fetcher.fetch_description(job_url_str)
+                            else:
+                                fetched = CareerSiteScanner().scan_single_job_url("", job_url_str)
+                                fetched_text = fetched.get("job_text", "")
                             if len(fetched_text) >= 400:
                                 jd_text = fetched_text
                                 logger.debug("JD enrichment succeeded for %s (%d chars)", job_url_str, len(fetched_text))
@@ -592,6 +615,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                         "url": parsed.get("url", ""),
                         "source": parsed.get("source", ""),
                         "raw_email_snippet": raw_snippet,
+                        "job_description": jd_text or None,  # ai: claude-fable-5 | 2026-07-14
                         "fit_score": None,
                         "fit_reasoning": "",
                         "status": status,
@@ -797,6 +821,7 @@ def _run_scan(rescan_all: bool = False) -> None:
             message=f"Scan stopped unexpectedly: {exc}",
         )
     finally:
+        wellfound_fetcher.close()  # ai: claude-fable-5 | 2026-07-14
         with _scan_lock:
             _scan_state.running = False
 

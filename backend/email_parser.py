@@ -508,6 +508,7 @@ _TRACKING_DOMAIN_FRAGMENTS = frozenset({
     "track.customer.io",
     "mandrillapp.com",
     "link.matcha.fm",
+    "links.wellfound.com",  # ai: claude-fable-5 | 2026-07-14
 })
 
 _MATCHA_SENDER_RE = re.compile(r"matcha\.fm", re.IGNORECASE)
@@ -563,6 +564,14 @@ def resolve_tracking_url(url: str, timeout: float = 3.0) -> str:
             )
             with safe_urlopen(req, timeout=timeout) as resp:
                 return resp.url
+        # ai: claude-fable-5 | 2026-07-14
+        except urllib.error.HTTPError as exc:
+            # The destination itself may refuse a bot fetch (e.g. Cloudflare 403
+            # on wellfound.com). The redirect was still followed to get there,
+            # so exc.url names the final destination — which is all we need.
+            if exc.url and exc.url != url:
+                return exc.url
+            continue
         except (UnsafeUrlError, urllib.error.URLError, socket.timeout, OSError):
             continue
     return url

@@ -4,6 +4,9 @@
 # Google OAuth credentials and tokens
 credentials/google_credentials.json
 credentials/token.json
+
+# Wellfound browser session (cookies)
+credentials/wellfound_session.json
 googleusercontent.com.json
 *.apps.googleusercontent.com.json
 
