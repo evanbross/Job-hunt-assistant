@@ -45,9 +45,13 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from anthropic import APIConnectionError, APIStatusError, Anthropic
+from anthropic import Anthropic, APIConnectionError, APIStatusError
 
 import config
+from backend.url_safety import (  # ai: claude-fable-5 | 2026-07-15
+    UnsafeUrlError,
+    safe_urlopen,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,18 +187,30 @@ class AIProviderClient:
         }
         if json_response:
             payload["format"] = "json"
-        response = self._post_json(f"{self._ollama_base_url}/api/chat", payload, headers={}, on_retry=on_retry)
+        # ai: claude-fable-5 | 2026-07-15 — allow_loopback: Ollama legitimately
+        # runs on localhost (typically :11434); other private/internal ranges
+        # are still rejected by the URL safety layer.
+        response = self._post_json(
+            f"{self._ollama_base_url}/api/chat",
+            payload,
+            headers={},
+            on_retry=on_retry,
+            allow_loopback=True,
+        )
         content = response.get("message", {}).get("content")
         if isinstance(content, str) and content.strip():
             return content.strip()
         raise AIProviderError("Ollama returned an empty response")
 
+    # ai: claude-fable-5 | 2026-07-15 — fetch via safe_urlopen so a stored
+    # provider base URL can't turn AI calls into SSRF probes.
     @staticmethod
     def _post_json(
         url: str,
         payload: dict[str, Any],
         headers: dict[str, str],
         on_retry: Callable[[str], None] | None = None,
+        allow_loopback: bool = False,
     ) -> dict[str, Any]:
         request = urllib.request.Request(
             url,
@@ -212,7 +228,7 @@ class AIProviderClient:
                     on_retry(msg)
                 time.sleep(delay)
             try:
-                with urllib.request.urlopen(request, timeout=600) as response:
+                with safe_urlopen(request, timeout=600, allow_loopback=allow_loopback) as response:
                     raw = response.read().decode("utf-8")
                     try:
                         return json.loads(raw)
@@ -221,6 +237,10 @@ class AIProviderClient:
                         raise AIProviderError(
                             f"AI provider returned a non-JSON response: {preview!r}"
                         ) from exc
+            except UnsafeUrlError as exc:
+                # ai: claude-fable-5 | 2026-07-15 — bad destination, not a
+                # transient failure: fail immediately instead of retrying.
+                raise AIProviderError(f"AI provider URL rejected: {exc}") from exc
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")
                 raise AIProviderError(_http_error_message(body, exc.reason), status_code=exc.code) from exc

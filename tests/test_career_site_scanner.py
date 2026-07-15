@@ -272,7 +272,9 @@ def test_workday_single_job_from_api_strips_html_content() -> None:
     assert "<p>" not in job["job_text"]
     assert job["job_text"].startswith("Location: California - San Francisco.")
     assert "Build things & ship." in job["job_text"]
-    assert job["job_title"] == "Full-Stack Software Engineer"
+    # ai: claude-fable-5 | 2026-07-15 — the req ID from the job URL is appended
+    # to the title for easier duplicate identification (commit 3f15483)
+    assert job["job_title"] == "Full-Stack Software Engineer (JR253369)"
     assert job["posted_at"] == "2026-05-15"
 
 

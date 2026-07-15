@@ -1407,9 +1407,18 @@ export default function JobQueue({
   // ai: claude-sonnet-4-6 | 2026-06-20
   const handleForceResetImport = async () => {
     if (!window.confirm("Force-clear the stuck import? This does not cancel any running Celery worker — it just unblocks the queue so a new import can start.")) return;
+    // ai: claude-fable-5 | 2026-07-15 — only clear local import UI state once
+    // the server actually accepted the reset
     try {
-      await fetch("/api/import/reset", { method: "POST" });
-    } catch { /* no-op */ }
+      const res = await fetch("/api/import/reset", { method: "POST" });
+      if (!res.ok) {
+        window.alert(`Force reset failed: HTTP ${res.status}`);
+        return;
+      }
+    } catch (e) {
+      window.alert("Force reset failed: " + (e?.message || e));
+      return;
+    }
     clearInterval(importPollRef.current);
     setImportSubmitting(false);
     setImportState(null);

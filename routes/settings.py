@@ -48,7 +48,7 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 import config
-from backend.url_safety import UnsafeUrlError, safe_urlopen
+from backend.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
 from backend.utils import _rescore_active_queue_jobs, get_repos
 
 logger = logging.getLogger(__name__)
@@ -116,6 +116,16 @@ def update_config() -> ResponseReturnValue:
             value = str(data.get(key) or "").strip()
             if not value:
                 return jsonify({"error": f"{key} cannot be empty"}), 400
+            # ai: claude-fable-5 | 2026-07-15 — reject unsafe Ollama URLs at
+            # save time; the AI client later fetches this URL server-side.
+            # allow_loopback matches the local-Ollama policy used by the
+            # connection-test endpoint below.
+            if key == "ollama_base_url":
+                try:
+                    validate_outbound_url(value, allow_loopback=True)
+                except UnsafeUrlError as exc:
+                    return jsonify({"error": f"ollama_base_url rejected: {exc}"}), 400
+                value = value.rstrip("/")
             cfg[key] = value
 
     if "job_import_listener_enabled" in data:

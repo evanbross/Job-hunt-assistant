@@ -396,7 +396,11 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     loadSheet();
     if (!repairFiredRef.current) {
       repairFiredRef.current = true;
+      // ai: claude-fable-5 | 2026-07-15 — also surface HTTP-error responses, not just network errors
       fetch("/api/applications/repair/normalize-stage-statuses", { method: "POST" })
+        .then((res) => {
+          if (!res.ok) console.error(`Stage status repair failed: HTTP ${res.status}`);
+        })
         .catch((err) => console.error("Stage status repair failed:", err));
     }
     fetch("/api/applications/stage-statuses")

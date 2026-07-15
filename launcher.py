@@ -224,10 +224,14 @@ class LauncherWindow:
             else:
                 self._set_status("Server did not start. Check server.log for details.")
         except Exception as exc:
+            # ai: claude-fable-5 | 2026-07-15 — capture the message now: Python
+            # unbinds `exc` when the except block exits, so a deferred lambda
+            # closing over it would raise NameError instead of showing the error.
+            error_message = str(exc)
             self._set_status("Startup failed.")
             self._root.after(
                 0,
-                lambda: messagebox.showerror("Startup Failed", str(exc), parent=self._root),
+                lambda: messagebox.showerror("Startup Failed", error_message, parent=self._root),
             )
 
     def _start_celery_worker(self, env: dict, log_path: Path) -> None:

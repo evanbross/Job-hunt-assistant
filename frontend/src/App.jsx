@@ -360,7 +360,12 @@ export default function App() {
   const handleReconnect = async () => {
     if (!window.confirm("This will disconnect your Google account and re-run the auth flow to refresh permissions. Continue?")) return;
     try {
-      await fetch("/api/auth/disconnect", { method: "POST" });
+      // ai: claude-fable-5 | 2026-07-15 — don't start a new auth flow if disconnect failed
+      const res = await fetch("/api/auth/disconnect", { method: "POST" });
+      if (!res.ok) {
+        window.alert(`Disconnect failed (HTTP ${res.status}) — not restarting auth.`);
+        return;
+      }
       await startGoogleAuth();
     } catch (e) {
       alert("Failed to reconnect: " + e.message);

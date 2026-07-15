@@ -58,6 +58,11 @@ import urllib.parse
 import urllib.request
 from typing import Callable
 
+from backend.url_safety import (  # ai: claude-fable-5 | 2026-07-15
+    UnsafeUrlError,
+    safe_urlopen,
+)
+
 logger = logging.getLogger(__name__)
 
 _CHROME_UA = (
@@ -80,8 +85,12 @@ def _fetch(url: str, extra_headers: dict[str, str] | None = None) -> str:
     }
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        # ai: claude-fable-5 | 2026-07-15 — SSRF-safe fetch: validates the
+        # resolved destination (and every redirect hop) before connecting.
+        with safe_urlopen(req, timeout=30) as resp:
             return resp.read().decode("utf-8", errors="replace")
+    except UnsafeUrlError as exc:
+        raise RuntimeError(f"Refusing to fetch unsafe URL {url}: {exc}") from exc
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"HTTP {exc.code} fetching {url}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
