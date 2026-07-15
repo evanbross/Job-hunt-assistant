@@ -181,6 +181,7 @@ class _ReconnectingPgConn:
         conn = psycopg2.connect(
             self._dsn,
             cursor_factory=psycopg2.extras.RealDictCursor,
+            connect_timeout=10,  # ai: claude-fable-5 | 2026-07-14 — bound per-host TCP wait so a dead endpoint fails in seconds, not minutes
             keepalives=1,
             keepalives_idle=60,
             keepalives_interval=10,

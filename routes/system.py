@@ -50,6 +50,7 @@ except ImportError:
     _TKINTER_AVAILABLE = False
 
 import config
+from backend.db import db_startup_error
 from backend.utils import get_repos
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,20 @@ system_bp = Blueprint("system", __name__)
 
 @system_bp.route("/api/system/health")
 def health_check() -> ResponseReturnValue:
+    # ai: claude-fable-5 | 2026-07-14 — answer from the degraded-startup flag first
+    # so polling stays fast while the DB is down (a live probe would hang on TCP
+    # timeouts); the background retry in backend.db clears the flag on recovery.
+    if db_startup_error() is not None:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "db": "unreachable",
+                    "detail": "Database initialization failed at startup; retrying in the background. See server logs.",
+                }
+            ),
+            503,
+        )
     try:
         with get_repos() as repos:
             # ai: claude-sonnet-4-6 | 2026-06-25

@@ -1201,8 +1201,9 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
         >
           {loadingAction === "different" ? "Moving…" : "No, it's a different role"}
         </button>
+        {/* ai: claude-fable-5 | 2026-07-14 */}
         <button
-          className="btn-secondary btn-sm"
+          className="btn-primary btn-sm"
           onClick={() => act(onMarkApplied, "applied")}
           disabled={loadingAction !== null}
         >
@@ -2128,8 +2129,9 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         >
           {loadingAction === "approve" ? "Moving…" : "It's a Job Posting"}
         </button>
+        {/* ai: claude-fable-5 | 2026-07-14 */}
         <button
-          className="btn-secondary"
+          className="btn-primary"
           onClick={() => act(onMarkApplied, "applied")}
           disabled={loadingAction !== null}
           style={{ flexShrink: 0 }}
@@ -2387,7 +2389,6 @@ export function ReEvaluatePopup({ popup, onClose }) {
       subtitle={`${title}${companyText}`}
       onClose={onClose}
       showCloseButton={!isRunning}
-      blockClose={isRunning}
       footer={footer}
       maxWidth="460px"
     >
@@ -2444,7 +2445,6 @@ export function BatchRefreshPopup({ popup, onClose }) {
         : `${successCount} refreshed, ${movedCount} moved to queue${queuedCount ? `, ${queuedCount} queued for extension` : ""}, ${errorCount} failed`}
       onClose={onClose}
       showCloseButton={!isRunning}
-      blockClose={isRunning}
       footer={footer}
       maxWidth="680px"
     >

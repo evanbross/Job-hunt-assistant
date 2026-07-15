@@ -1908,11 +1908,9 @@ export default function JobQueue({
       )}
 
       {importPanelOpen && (
-        <div style={popupBackdropStyle} onClick={() => !importSubmitting && !manualSubmitting && setImportPanelOpen(false)}>
-          <div
-            style={importDialogPanelStyle}
-            onClick={(e) => e.stopPropagation()}
-          >
+        <div style={popupBackdropStyle}>
+          {/* ai: claude-fable-5 | 2026-07-14 — dismissed only via the Close button, not backdrop clicks */}
+          <div style={importDialogPanelStyle}>
             <div style={popupHeaderStyle}>
               <div>
                 <div style={popupTitleStyle}>Import Jobs</div>

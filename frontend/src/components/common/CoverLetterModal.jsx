@@ -8,6 +8,7 @@
 // ai: claude-sonnet-4-6 | 2026-06-27
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal.jsx";
+import { pickSaveFolder, promptForSaveFolder } from "../../utils/saveFolderUtils.js"; // ai: claude-fable-5 | 2026-07-13
 
 const saveMenuStyle = {
   position: "absolute",
@@ -93,7 +94,19 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Save failed");
+      if (!res.ok) {
+        // ai: claude-fable-5 | 2026-07-13
+        if (data.folder_error) {
+          const replacement = await promptForSaveFolder(data.folder);
+          if (replacement) {
+            await handleSave(format, replacement);
+          } else {
+            setSaveStatus(null);
+          }
+          return;
+        }
+        throw new Error(data.error || "Save failed");
+      }
       setSaveStatus({ path: data.path, folder: data.folder, format });
     } catch (e) {
       setSaveStatus(null);
@@ -101,16 +114,11 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
     }
   };
 
+  // ai: claude-fable-5 | 2026-07-13
   const handleBrowseFolder = async () => {
     try {
-      const res = await fetch("/api/system/select-folder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ initial_path: folderInput || saveStatus?.folder || "" }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Folder picker failed");
-      if (data.selected_path) setFolderInput(data.selected_path);
+      const picked = await pickSaveFolder(folderInput || saveStatus?.folder || "");
+      if (picked) setFolderInput(picked);
     } catch (e) {
       window.alert("Browse failed: " + e.message);
     }

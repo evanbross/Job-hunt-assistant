@@ -106,3 +106,26 @@ def test_health_check_returns_503_on_db_failure(monkeypatch: pytest.MonkeyPatch)
     data = response.get_json()
     assert data["status"] == "error"
     assert data["db"] == "unreachable"
+
+
+# ai: claude-fable-5 | 2026-07-14
+def test_health_check_returns_503_without_probe_when_startup_init_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("routes.system.db_startup_error", lambda: "connection timed out")
+
+    def fail_if_probed() -> None:
+        raise AssertionError("health check must not open a DB connection in degraded mode")
+
+    monkeypatch.setattr("routes.system.get_repos", fail_if_probed)
+    app = Flask(__name__)
+    app.register_blueprint(system_bp)
+    client = app.test_client()
+
+    response = client.get("/api/system/health")
+
+    assert response.status_code == 503
+    data = response.get_json()
+    assert data["status"] == "error"
+    assert data["db"] == "unreachable"
+    assert "startup" in data["detail"]

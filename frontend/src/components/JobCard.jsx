@@ -43,6 +43,7 @@ import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
 import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
+import { pickSaveFolder, promptForSaveFolder } from "../utils/saveFolderUtils.js"; // ai: claude-fable-5 | 2026-07-13
 import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.js";
 import {
   MISMATCH_REASONS,
@@ -399,7 +400,19 @@ function JobCard({
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Save failed");
+      if (!res.ok) {
+        // ai: claude-fable-5 | 2026-07-13
+        if (data.folder_error) {
+          const replacement = await promptForSaveFolder(data.folder);
+          if (replacement) {
+            await handleSave(text, label, format, replacement);
+          } else {
+            setSaveStatus(null);
+          }
+          return;
+        }
+        throw new Error(data.error || "Save failed");
+      }
       setSaveStatus({ path: data.path, folder: data.folder, label: label, format: format });
     } catch (e) {
       setSaveStatus("error");
@@ -407,19 +420,12 @@ function JobCard({
     }
   };
 
+  // ai: claude-fable-5 | 2026-07-13
   const handleBrowseFolder = async () => {
     try {
-      const res = await fetch("/api/system/select-folder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          initial_path: folderInput || saveStatus?.folder || "",
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Folder picker failed");
-      if (data.selected_path) {
-        setFolderInput(data.selected_path);
+      const picked = await pickSaveFolder(folderInput || saveStatus?.folder || "");
+      if (picked) {
+        setFolderInput(picked);
       }
     } catch (e) {
       alert("Browse failed: " + e.message);
@@ -1265,8 +1271,9 @@ function JobCard({
 
         <div style={{ flex: 1 }} />
 
+        {/* ai: claude-fable-5 | 2026-07-14 */}
         <button
-          className="btn-success"
+          className="btn-primary"
           onClick={handleApprove}
           disabled={busy}
         >

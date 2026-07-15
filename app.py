@@ -68,7 +68,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 import config
-from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db
+from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
 from backend.import_listener import start_job_import_listener
 from backend.utils import is_trusted_api_write_origin, start_career_site_scheduler
 
@@ -98,6 +98,7 @@ _SILENT_PATHS = {
     "/api/browser-capture-queue",
     "/api/career-sites/recapture-due",
     "/api/jobs/stats",
+    "/api/system/health",  # ai: claude-fable-5 | 2026-07-14
 }
 
 class _PollFilter(logging.Filter):
@@ -157,8 +158,11 @@ def _reject_cross_origin_api_writes() -> tuple[flask.Response, int] | None:
 config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
 config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Initialize DB on startup
-init_db(config.DATABASE_URL)
+# Initialize DB on startup. Retries with backoff; if the database is still
+# unreachable the app starts in degraded mode (so /api/system/health can report
+# the outage to the frontend) and keeps retrying in the background.
+# ai: claude-fable-5 | 2026-07-14
+init_db_with_retry(config.DATABASE_URL)
 
 
 # ─── Swagger / OpenAPI docs ──────────────────────────────────────────────────

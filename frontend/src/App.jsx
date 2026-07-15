@@ -39,23 +39,19 @@ import SetupWizardPanel from "./components/SetupWizardPanel.jsx";
 import EmailsPanel from "./components/EmailsPanel.jsx";
 import HistoryPanel from "./components/HistoryPanel.jsx";
 import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
-import CareerSiteResultsPanel from "./components/CareerSiteResultsPanel.jsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
 import StatsBar from "./components/StatsBar.jsx";
-import GreenhouseScanPanel from "./components/GreenhouseScanPanel.jsx";
-import JobanniScanPanel from "./components/JobanniScanPanel.jsx";
-import WellfoundScanPanel from "./components/WellfoundScanPanel.jsx";
 import Modal from "./components/common/Modal.jsx";
 import RecentChangesModal from "./components/RecentChangesModal.jsx";
 import ToptalPitchModal from "./components/common/ToptalPitchModal.jsx";
 import MetricGrid, { MetricItem } from "./components/common/MetricGrid.jsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 
+// ai: claude-fable-5 | 2026-07-14 — Career Sites tab removed; sites are managed in Settings
 const TABS = [
   { key: "queue", label: "Job Queue" },
   { key: "applications", label: "Applications" },
   { key: "emails", label: "Email History" },
-  { key: "career", label: "Career Sites" },
   { key: "settings", label: "Settings" },
   { key: "setup", label: "Setup" },
 ];
@@ -143,6 +139,19 @@ const styles = {
     fontWeight: "700",
     boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
   },
+  // ai: claude-fable-5 | 2026-07-14
+  healthBanner: {
+    background: "var(--red-light)",
+    border: "1px solid var(--red)",
+    borderRadius: "var(--radius)",
+    padding: "11px 18px",
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    color: "var(--red)",
+    fontSize: "13px",
+    fontWeight: "500",
+  },
   authBanner: {
     background: "var(--accent-light)",
     border: "1px solid rgba(74,92,247,0.25)",
@@ -166,14 +175,17 @@ const EMAILS_TAB_KEY = "emails";
 const HISTORY_TAB_KEY = "history";
 
 export default function App() {
+  // ai: claude-fable-5 | 2026-07-14 — validate legacy-resolved keys too, so a
+  // stored tab that no longer exists (e.g. "career") falls back to the queue
   const [activeTab, setActiveTab] = useState(() => {
     const saved = localStorage.getItem("activeTab");
     const legacyIndex = parseInt(saved, 10);
-    if (Number.isFinite(legacyIndex) && LEGACY_TAB_KEYS[legacyIndex]) {
-      return LEGACY_TAB_KEYS[legacyIndex];
-    }
-    if (saved === HISTORY_TAB_KEY || TABS.some((tab) => tab.key === saved)) {
-      return saved;
+    const resolved =
+      Number.isFinite(legacyIndex) && LEGACY_TAB_KEYS[legacyIndex]
+        ? LEGACY_TAB_KEYS[legacyIndex]
+        : saved;
+    if (resolved === HISTORY_TAB_KEY || TABS.some((tab) => tab.key === resolved)) {
+      return resolved;
     }
     return "queue";
   });
@@ -186,6 +198,7 @@ export default function App() {
   const [setupComplete, setSetupComplete] = useState(true); // optimistic; corrected on mount
   const [showRecentChanges, setShowRecentChanges] = useState(false);
   const [showToptalPitch, setShowToptalPitch] = useState(false);
+  const [backendHealth, setBackendHealth] = useState("ok"); // "ok" | "db_down" | "unreachable"
 
   const navigateToEmails = (emailId) => {
     setEmailFocusId(emailId);
@@ -251,6 +264,38 @@ export default function App() {
     return () => {
       cancelled = true;
       clearInterval(intervalId);
+    };
+  }, []);
+
+  // ai: claude-fable-5 | 2026-07-14 — backend/database health poll. Uses a
+  // setTimeout chain (not setInterval) so a slow probe while the DB is timing
+  // out never overlaps the next poll; polls faster while unhealthy.
+  useEffect(() => {
+    let cancelled = false;
+    let timerId = null;
+    const pollBackendHealth = async () => {
+      let next = "unreachable";
+      try {
+        const res = await fetch("/api/system/health");
+        if (res.ok) {
+          next = "ok";
+        } else {
+          // A JSON 503 from the health route means the server is up but the
+          // DB is down; anything else (e.g. dev-proxy 502) means no backend.
+          const data = await res.json().catch(() => null);
+          next = data && data.db ? "db_down" : "unreachable";
+        }
+      } catch {
+        next = "unreachable";
+      }
+      if (cancelled) return;
+      setBackendHealth(next);
+      timerId = setTimeout(pollBackendHealth, next === "ok" ? 30000 : 10000);
+    };
+    pollBackendHealth();
+    return () => {
+      cancelled = true;
+      clearTimeout(timerId);
     };
   }, []);
 
@@ -389,6 +434,20 @@ export default function App() {
         <StatsBar />
       </div>
 
+      {/* ai: claude-fable-5 | 2026-07-14 */}
+      {backendHealth !== "ok" && (
+        <div style={{ maxWidth: "1200px", margin: "0 auto", width: "100%", padding: "16px 28px 0 28px" }}>
+          <div style={styles.healthBanner}>
+            <span aria-hidden="true">⚠️</span>
+            <span>
+              {backendHealth === "unreachable"
+                ? "The backend server is not responding — nothing can load or save. Check that the Flask app is running (it exits if startup fails; see its console output)."
+                : "The backend is running but cannot reach the database — data won't load or save. It reconnects automatically once the database is reachable again."}
+            </span>
+          </div>
+        </div>
+      )}
+
       {authStatus === false && activeTab !== "setup" && (
         <div style={{ maxWidth: "1200px", margin: "0 auto", width: "100%", padding: "16px 28px 0 28px" }}>
           <div style={styles.authBanner}>
@@ -442,14 +501,6 @@ export default function App() {
             onTriageCountChange={setTriageCount}
             focusEmailId={emailFocusId}
           />
-        )}
-        {activeTab === "career" && (
-          <>
-            <GreenhouseScanPanel />
-            <WellfoundScanPanel />
-            <JobanniScanPanel />
-            <CareerSiteResultsPanel />
-          </>
         )}
         {activeTab === "settings" && <SettingsPanel />}
         {activeTab === "setup" && (

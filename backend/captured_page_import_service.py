@@ -192,7 +192,7 @@ class CapturedPageImportService:
 
         normalized_format = self._resolve_content_format(normalized, content_format)
         if normalized_format == "json":
-            return self._analyze_json_capture(normalized)
+            return self._analyze_json_capture(normalized, base_url=base_url)  # ai: claude-fable-5 | 2026-07-14
 
         html_documents = self._extract_html_documents(normalized, normalized_format)
         seen: set[str] = set()
@@ -266,7 +266,10 @@ class CapturedPageImportService:
             return "mhtml"
         return "html"
 
-    def _analyze_json_capture(self, raw_content: str) -> CaptureAnalysis:
+    # ai: claude-fable-5 | 2026-07-14 — base_url fallback for aggregator captures
+    def _analyze_json_capture(
+        self, raw_content: str, *, base_url: str | None = None
+    ) -> CaptureAnalysis:
         try:
             payload = json.loads(raw_content)
         except json.JSONDecodeError as exc:
@@ -340,6 +343,13 @@ class CapturedPageImportService:
         source = self._source_from_json(raw_source)
         if source is None:
             source = self._guess_capture_source([], results)
+        # ai: claude-fable-5 | 2026-07-14
+        # Last resort: use the capture page URL itself. Aggregators like
+        # hnhiring.com link out to many employer domains, so the job-link
+        # roots above never converge, but the page being captured is the
+        # board root (its origin, via the generic _board_root_url fallback).
+        if source is None and base_url:
+            source = self._guess_capture_source([base_url], [])
         return CaptureAnalysis(urls=results, source=source)
 
     def _source_from_json(self, raw_source: object) -> CapturedSourceGuess | None:
