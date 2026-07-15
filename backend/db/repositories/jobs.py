@@ -56,7 +56,7 @@ class PostgresJobRepository(_BaseRepo):
         "parser_confidence",
         "confidence_reason",
         "date_found",
-        "date_added_to_sheet",
+        "on_sheet",
         "duplicate_hint",
         "duplicate_of_id",
         "sender_email",
@@ -147,22 +147,25 @@ class PostgresJobRepository(_BaseRepo):
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def get_all_ordered(self) -> list[dict[str, Any]]:
+        # ai: claude-fable-5 | 2026-07-14
+        # on_sheet DESC keeps Applications Sheet jobs ahead of queue jobs —
+        # _closed_req_candidates depends on that ordering.
         cur = self._execute(
-            "SELECT * FROM jobs ORDER BY date_added_to_sheet DESC NULLS LAST, id DESC"
+            "SELECT * FROM jobs ORDER BY on_sheet DESC, date_found DESC NULLS LAST, id DESC"
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    # ai: claude-sonnet-4-6 | 2026-06-25
+    # ai: claude-fable-5 | 2026-07-14
     def get_sheet_entries(self) -> list[dict[str, Any]]:
-        """Return only jobs that have been confirmed as applications (date_added_to_sheet set).
+        """Return only jobs that have been confirmed as applications (on_sheet flag set).
 
         Excludes triage, queue, skipped, and possible-duplicate jobs that share the
         same jobs table but have never been approved onto the application sheet.
         """
         cur = self._execute(
             "SELECT * FROM jobs"
-            " WHERE date_added_to_sheet IS NOT NULL"
-            " ORDER BY date_added_to_sheet DESC NULLS LAST, id DESC"
+            " WHERE on_sheet = 1"
+            " ORDER BY date_found DESC NULLS LAST, id DESC"
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 

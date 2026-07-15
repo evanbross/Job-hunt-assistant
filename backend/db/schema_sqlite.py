@@ -56,6 +56,21 @@ def _migrate_sqlite(conn: Any) -> None:
     """Apply incremental schema changes for SQLite databases."""
     cur = conn.cursor()
 
+    # ai: claude-fable-5 | 2026-07-14
+    # date_added_to_sheet is retired: its date value now lives in date_found and
+    # its "job is tracked on the Applications sheet" role in the on_sheet flag.
+    # Mirrors the Postgres migration in schema.py; must run before the 'applied'
+    # stage backfill below so date_found already carries the old sheet date.
+    _sqlite_add_column_if_missing(cur, "jobs", "on_sheet", "INTEGER NOT NULL DEFAULT 0")
+    if _sqlite_has_column(cur, "jobs", "date_added_to_sheet"):
+        cur.execute(
+            "UPDATE jobs SET date_found = date_added_to_sheet"
+            " WHERE date_added_to_sheet IS NOT NULL"
+        )
+        cur.execute("UPDATE jobs SET on_sheet = 1 WHERE date_added_to_sheet IS NOT NULL")
+        cur.execute("ALTER TABLE jobs DROP COLUMN date_added_to_sheet")
+    conn.commit()
+
     for col, defn in [
         ("duplicate_hint", "TEXT"),
         ("duplicate_of_id", "INTEGER"),
@@ -159,7 +174,7 @@ def _migrate_sqlite(conn: Any) -> None:
 
     cur.execute("""
         INSERT INTO application_stages (job_id, status, date)
-        SELECT id, 'applied', COALESCE(date_added_to_sheet, date_found, date('now'))
+        SELECT id, 'applied', COALESCE(date_found, date('now'))
         FROM jobs
         WHERE status IN ('added_to_sheet', 'applied')
           AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
@@ -247,7 +262,7 @@ def _create_tables_sqlite(conn: Any) -> None:
             parser_confidence     TEXT,
             confidence_reason     TEXT,
             date_found            TEXT DEFAULT (date('now')),  -- UTC; SQLite 'now' is always UTC
-            date_added_to_sheet   TEXT,
+            on_sheet              INTEGER NOT NULL DEFAULT 0,
             duplicate_hint        TEXT,
             duplicate_of_id       INTEGER,
             sender_email          TEXT,

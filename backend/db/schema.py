@@ -108,9 +108,35 @@ def _has_unique(cur: Any, table: str, constraint_name: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _has_column(cur: Any, table: str, column: str) -> bool:
+    cur.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = %s AND column_name = %s AND table_schema = 'public'",
+        (table, column),
+    )
+    return cur.fetchone() is not None
+
+
 def _migrate(conn: Any) -> None:
     """Apply incremental schema changes (ADD COLUMN IF NOT EXISTS is idempotent)."""
     cur = conn.cursor()
+
+    # ai: claude-fable-5 | 2026-07-14
+    # date_added_to_sheet is retired: its date value now lives in date_found and
+    # its "job is tracked on the Applications sheet" role in the on_sheet flag.
+    # (Status values can't stand in for membership — legacy display-label
+    # statuses appear on both sides.) Copy-then-drop must run before the
+    # 'applied' stage backfill below so date_found already carries the old
+    # sheet date when that backfill reads it.
+    cur.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS on_sheet INTEGER NOT NULL DEFAULT 0")
+    if _has_column(cur, "jobs", "date_added_to_sheet"):
+        cur.execute(
+            "UPDATE jobs SET date_found = date_added_to_sheet"
+            " WHERE date_added_to_sheet IS NOT NULL"
+        )
+        cur.execute("UPDATE jobs SET on_sheet = 1 WHERE date_added_to_sheet IS NOT NULL")
+        cur.execute("ALTER TABLE jobs DROP COLUMN date_added_to_sheet")
+    conn.commit()
 
     # Repair missing constraints (tables may have been pre-created without them)
     if not _has_pk(cur, "scanned_emails"):
@@ -231,7 +257,7 @@ def _migrate(conn: Any) -> None:
     # Backfill application_stages for existing applied jobs
     cur.execute("""
         INSERT INTO application_stages (job_id, status, date)
-        SELECT id, 'applied', COALESCE(date_added_to_sheet, date_found, (NOW() AT TIME ZONE 'UTC')::date::text)
+        SELECT id, 'applied', COALESCE(date_found, (NOW() AT TIME ZONE 'UTC')::date::text)
         FROM jobs
         WHERE status IN ('added_to_sheet', 'applied')
           AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
@@ -393,7 +419,7 @@ def _create_tables(conn: Any) -> None:
             parser_confidence     TEXT,
             confidence_reason     TEXT,
             date_found            TEXT DEFAULT ((NOW() AT TIME ZONE 'UTC')::date::text),
-            date_added_to_sheet   TEXT,
+            on_sheet              INTEGER NOT NULL DEFAULT 0,
             duplicate_hint        TEXT,
             duplicate_of_id       INTEGER,
             sender_email          TEXT,

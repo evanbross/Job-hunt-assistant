@@ -687,7 +687,6 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                             "parser_confidence": str(job.get("confidence_level") or "low"),
                             "confidence_reason": "",
                             "date_found": datetime.now(UTC).date().isoformat(),
-                            "date_added_to_sheet": None,
                             "duplicate_hint": None,
                             "sender_email": None,
                             "email_subject": f"Career site: {source_name}",

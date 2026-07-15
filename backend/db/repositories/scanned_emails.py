@@ -115,8 +115,7 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 j.parser_confidence AS child_parser_confidence,
                 j.confidence_score AS child_confidence_score,
                 j.duplicate_hint AS child_duplicate_hint,
-                j.date_found AS child_date_found,
-                j.date_added_to_sheet AS child_date_added_to_sheet
+                j.date_found AS child_date_found
             FROM scanned_emails se
             LEFT JOIN jobs j
               ON j.email_id = se.email_id
@@ -168,7 +167,6 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 "confidence_score": email_job_row["child_confidence_score"],
                 "duplicate_hint": email_job_row["child_duplicate_hint"],
                 "date_found": email_job_row["child_date_found"],
-                "date_added_to_sheet": email_job_row["child_date_added_to_sheet"],
             }
             email_record = emails_by_id[email_id]
             email_record["jobs"].append(child_job)

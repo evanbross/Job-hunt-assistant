@@ -279,7 +279,7 @@ def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(monke
     jobs_repo = FakeJobsRepo()
     jobs_repo.row.update(
         {
-            "date_added_to_sheet": "2026-05-14",
+            "on_sheet": 1,  # ai: claude-fable-5 | 2026-07-14
             "status": "applied",
             "fit_score": 86,
         }
@@ -304,7 +304,7 @@ def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(monke
 
     assert response.status_code == 200
     assert jobs_repo.row["status"] == "pending_review"
-    assert jobs_repo.row["date_added_to_sheet"] is None
+    assert jobs_repo.row["on_sheet"] == 0
     assert [stage["id"] for stage in stages_repo.rows] == [12]
     assert len(history_repo.rows) == 1
     assert history_repo.rows[0]["from_status"] == "applied"

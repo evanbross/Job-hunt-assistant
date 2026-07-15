@@ -299,7 +299,6 @@ def _run_board_search() -> None:
                     "parser_confidence": "high",
                     "confidence_reason": "Loaded from a job board search result.",
                     "date_found": datetime.now(UTC).date().isoformat(),
-                    "date_added_to_sheet": None,
                     "duplicate_hint": None,
                     "sender_email": None,
                     "email_subject": None,

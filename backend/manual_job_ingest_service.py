@@ -250,7 +250,6 @@ class ManualJobIngestService:
             "parser_confidence": parsed.get("confidence", "low"),
             "confidence_reason": parsed.get("confidence_reason", ""),
             "date_found": datetime.now(UTC).date().isoformat(),
-            "date_added_to_sheet": None,
             "duplicate_hint": duplicate_hint,
             "duplicate_of_id": duplicate_of_id,
             "sender_email": None,

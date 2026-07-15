@@ -57,7 +57,7 @@ export function useCompanyHistoryLookup(job) {
     try {
       // ai: claude-sonnet-4-6 | 2026-06-28
       // Fetch both sources in parallel:
-      //   - sheet/applications: applied jobs (date_added_to_sheet set), with stage history
+      //   - sheet/applications: applied jobs (on_sheet flag set), with stage history
       //   - jobs/by-company: ALL jobs in the DB for this company, any status
       // Merge by id: sheet rows take precedence (they carry stage data). DB-only
       // rows fill in queue/triage/skipped entries that never made it to the sheet.

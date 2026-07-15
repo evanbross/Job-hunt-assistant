@@ -622,7 +622,6 @@ def _run_scan(rescan_all: bool = False) -> None:
                         "parser_confidence": confidence,
                         "confidence_reason": parsed.get("confidence_reason", ""),
                         "date_found": datetime.now(UTC).date().isoformat(),
-                        "date_added_to_sheet": None,
                         "duplicate_hint": duplicate_hint,
                         "duplicate_of_id": duplicate_of_id,
                         "sender_email": sender,

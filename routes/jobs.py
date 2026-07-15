@@ -327,7 +327,14 @@ def undo_status_change(history_id: int) -> ResponseReturnValue:
         restore: dict = {"status": from_status}
 
         if trigger == "apply":
-            restore["date_added_to_sheet"] = extra.get("prev_date_added_to_sheet")
+            # ai: claude-fable-5 | 2026-07-14
+            # History rows written before the on_sheet migration recorded
+            # prev_date_added_to_sheet instead; a non-null value there means the
+            # job was already on the sheet before this apply.
+            if "prev_on_sheet" in extra:
+                restore["on_sheet"] = int(extra.get("prev_on_sheet") or 0)
+            else:
+                restore["on_sheet"] = 1 if extra.get("prev_date_added_to_sheet") else 0
             for stage in repos["stages"].get_by_job_id(job_id):
                 if stage.get("status") == "applied" and not stage.get("notes"):
                     repos["stages"].delete(stage["id"])
@@ -343,8 +350,10 @@ def undo_status_change(history_id: int) -> ResponseReturnValue:
             restore["fit_reasoning"] = extra.get("prev_fit_reasoning")
 
         elif trigger == "return_to_queue":
-            prev_date = extra.get("prev_date_added_to_sheet")
-            restore["date_added_to_sheet"] = prev_date
+            # ai: claude-fable-5 | 2026-07-14
+            # prev_date_added_to_sheet is the pre-migration key for the same value.
+            prev_date = extra.get("prev_applied_date") or extra.get("prev_date_added_to_sheet")
+            restore["on_sheet"] = 1
             repos["stages"].insert({
                 "job_id": job_id,
                 "status": "applied",
@@ -378,8 +387,10 @@ def apply_job(job_id: int) -> ResponseReturnValue:
 
         from_status = str(job.get("status") or "")
         today = datetime.now(UTC).date().isoformat()
+        # ai: claude-fable-5 | 2026-07-14
+        # The applied date lives on the stage row; date_found keeps the discovery date.
         repos["jobs"].update(
-            job_id, {"status": "applied", "date_added_to_sheet": today}
+            job_id, {"status": "applied", "on_sheet": 1}
         )
         repos["stages"].insert({"job_id": job_id, "status": "applied", "date": today, "notes": None})
         maybe_mark_source_email_read(job, repos["jobs"])
@@ -390,7 +401,7 @@ def apply_job(job_id: int) -> ResponseReturnValue:
             "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "trigger": "apply",
             "extra_data": json.dumps({
-                "prev_date_added_to_sheet": job.get("date_added_to_sheet"),
+                "prev_on_sheet": int(job.get("on_sheet") or 0),
             }),
         })
         repos["conn"].commit()
@@ -407,17 +418,22 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
         if job.get("status") != "applied":
             return jsonify({"error": "Only applied jobs can be returned to the queue"}), 409
 
+        # ai: claude-fable-5 | 2026-07-14
+        deleted_applied_date: str | None = None
         for stage in repos["stages"].get_by_job_id(job_id):
             if stage.get("status") == "applied" and not stage.get("notes"):
+                if deleted_applied_date is None:
+                    deleted_applied_date = stage.get("date")
                 repos["stages"].delete(stage["id"])
 
         fit_score = int(job.get("fit_score") or 0)
         new_status = "pending_review" if fit_score >= 70 else "triage"
+        # ai: claude-fable-5 | 2026-07-14
         repos["jobs"].update(
             job_id,
             {
                 "status": new_status,
-                "date_added_to_sheet": None,
+                "on_sheet": 0,
             },
         )
         repos["job_status_history"].insert({
@@ -427,7 +443,8 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
             "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "trigger": "return_to_queue",
             "extra_data": json.dumps({
-                "prev_date_added_to_sheet": job.get("date_added_to_sheet"),
+                # The undo path re-inserts the deleted 'applied' stage with this date.
+                "prev_applied_date": deleted_applied_date or job.get("date_found"),
             }),
         })
         repos["conn"].commit()

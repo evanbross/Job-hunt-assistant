@@ -160,13 +160,13 @@ def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(tmp_path: Path, m
             "url": "https://www.linkedin.com/jobs/view/1/",
             "source": "LinkedIn",
             "status": "pending_review",
-            "date_added_to_sheet": "2026-06-01",
+            "on_sheet": 1,  # ai: claude-fable-5 | 2026-07-14
         })
         repos["conn"].commit()
     finally:
         repos["conn"].close()
 
-    _record_closed_req({"id": job_id, "date_added_to_sheet": "2026-06-01"}, "LinkedIn", "2026-07-02")
+    _record_closed_req({"id": job_id, "on_sheet": 1}, "LinkedIn", "2026-07-02")
 
     repos = open_repositories(config.DATABASE_URL)
     try:
@@ -258,7 +258,7 @@ def test_run_req_closed_scan_prioritizes_never_checked_job_over_cap(tmp_path: Pa
                 "url": f"https://www.linkedin.com/jobs/view/{100 + i}/",
                 "source": "LinkedIn",
                 "status": "applied",
-                "date_added_to_sheet": "2026-06-01",
+                "on_sheet": 1,  # ai: claude-fable-5 | 2026-07-14
             })
             queue_repo.enqueue_once_for_purpose(
                 f"https://www.linkedin.com/jobs/view/{100 + i}/",
@@ -305,7 +305,7 @@ def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
             "url": "https://wellfound.com/jobs?job_listing_slug=4296010-staff-backend-engineer",
             "source": "Tampermonkey - Wellfound",
             "status": "applied",
-            "date_added_to_sheet": "2026-06-01",
+            "on_sheet": 1,  # ai: claude-fable-5 | 2026-07-14
         })
         repos["conn"].commit()
 

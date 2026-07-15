@@ -134,10 +134,9 @@ def get_application_sheet() -> ResponseReturnValue:
     def _make_row(job: dict) -> dict:
         stages = stages_by_job_id.get(job["id"], [])
         latest_stage = stages[-1] if stages else None
-        # ai: claude-sonnet-4-6 | 2026-06-17
+        # ai: claude-fable-5 | 2026-07-14
         status_date = (
             (latest_stage or {}).get("date")
-            or job.get("date_added_to_sheet")
             or job.get("date_found")
             or ""
         )
@@ -171,12 +170,14 @@ def add_application_sheet_row() -> ResponseReturnValue:
     row = _tracking_payload()
     if not row["company"] and not row["job_title"]:
         return jsonify({"error": "company or job_title is required"}), 400
+    # ai: claude-fable-5 | 2026-07-14
     job_data: dict = {
         k: v for k, v in {
             "company":             row["company"] or None,
             "status":              row["status"] or None,
             "source":              row["source"] or None,
-            "date_added_to_sheet": row["date"] or datetime.now(UTC).date().isoformat(),
+            "date_found":          row["date"] or datetime.now(UTC).date().isoformat(),
+            "on_sheet":            1,
             "job_title":           row["job_title"] or None,
             "url":                 row["url"] or None,
             "notes":               row["notes"] or None,
@@ -188,7 +189,7 @@ def add_application_sheet_row() -> ResponseReturnValue:
             repos["stages"].insert({
                 "job_id": new_job_id,
                 "status": "applied",
-                "date": job_data["date_added_to_sheet"],
+                "date": job_data["date_found"],
                 "notes": None,
             })
             repos["conn"].commit()
@@ -209,7 +210,7 @@ def update_application_sheet_row(job_id: int) -> ResponseReturnValue:
             "company":             row["company"] or None,
             "status":              row["status"] or None,
             "source":              row["source"] or None,
-            "date_added_to_sheet": row["date"] or None,
+            "date_found":          row["date"] or None,  # ai: claude-fable-5 | 2026-07-14
             "job_title":           row["job_title"] or None,
             "url":                 row["url"] or None,
             "notes":               row["notes"] or None,
@@ -274,7 +275,6 @@ def mark_ghost_applications() -> ResponseReturnValue:
                 )
                 latest_date = str(
                     (latest_stage or {}).get("date")
-                    or job.get("date_added_to_sheet")
                     or job.get("date_found")
                     or ""
                 ).strip()
@@ -511,7 +511,7 @@ def _closed_req_browser_queue_snapshot(repos: dict) -> dict[str, int]:
 def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
     """Record a detected closed req in whichever place the UI actually reads from.
 
-    Jobs already on the Applications Sheet (date_added_to_sheet set) are
+    Jobs already on the Applications Sheet (on_sheet flag set) are
     tracked via application_stages, so add a 'req_closed' stage there — the
     Applications Sheet renders status from the latest stage.
 
@@ -522,7 +522,7 @@ def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
     actually leaves the queue.
     """
     with get_repos() as repos:
-        if job.get("date_added_to_sheet"):
+        if job.get("on_sheet"):  # ai: claude-fable-5 | 2026-07-14
             repos["stages"].insert(
                 {
                     "job_id": job["id"],
