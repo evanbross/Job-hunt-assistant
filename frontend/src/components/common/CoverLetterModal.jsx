@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal.jsx";
 import { pickSaveFolder, promptForSaveFolder } from "../../utils/saveFolderUtils.js"; // ai: claude-fable-5 | 2026-07-13
+import { describeFetchError } from "../../utils/fetchErrorUtils.js"; // ai: claude-fable-5 | 2026-07-15
 
 const saveMenuStyle = {
   position: "absolute",
@@ -93,7 +94,7 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({})); // ai: claude-fable-5 | 2026-07-15
       if (!res.ok) {
         // ai: claude-fable-5 | 2026-07-13
         if (data.folder_error) {
@@ -105,12 +106,12 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
           }
           return;
         }
-        throw new Error(data.error || "Save failed");
+        throw new Error(data.error || `Save failed (${res.status})`);
       }
       setSaveStatus({ path: data.path, folder: data.folder, format });
     } catch (e) {
       setSaveStatus(null);
-      window.alert("Save failed: " + e.message);
+      window.alert("Save failed: " + describeFetchError(e)); // ai: claude-fable-5 | 2026-07-15
     }
   };
 
@@ -137,12 +138,16 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages, cover_letter: currentLetter }),
       });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Chat failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Chat failed");
       setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       if (data.updated_cover_letter) setPendingUpdate(data.updated_cover_letter);
     } catch (e) {
-      setChatMessages((prev) => [...prev, { role: "assistant", content: `Error: ${e.message}` }]);
+      setChatMessages((prev) => [...prev, { role: "assistant", content: `Error: ${describeFetchError(e)}` }]); // ai: claude-fable-5 | 2026-07-15
     } finally {
       setChatSending(false);
     }

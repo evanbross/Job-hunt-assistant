@@ -273,7 +273,10 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let timerId = null;
+    let inFlight = false; // ai: claude-fable-5 | 2026-07-15
     const pollBackendHealth = async () => {
+      if (inFlight) return; // ai: claude-fable-5 | 2026-07-15
+      inFlight = true;
       let next = "unreachable";
       try {
         const res = await fetch("/api/system/health");
@@ -288,14 +291,26 @@ export default function App() {
       } catch {
         next = "unreachable";
       }
+      inFlight = false;
       if (cancelled) return;
       setBackendHealth(next);
+      clearTimeout(timerId); // ai: claude-fable-5 | 2026-07-15 — a focus-triggered poll replaces the pending timer
       timerId = setTimeout(pollBackendHealth, next === "ok" ? 30000 : 10000);
     };
     pollBackendHealth();
+    // ai: claude-fable-5 | 2026-07-15 — browsers throttle timers in background
+    // tabs, so a stale tab could sit for minutes without noticing a dead
+    // backend. Re-check the moment the tab regains focus or becomes visible.
+    const recheckNow = () => {
+      if (!document.hidden) pollBackendHealth();
+    };
+    window.addEventListener("focus", recheckNow);
+    document.addEventListener("visibilitychange", recheckNow);
     return () => {
       cancelled = true;
       clearTimeout(timerId);
+      window.removeEventListener("focus", recheckNow);
+      document.removeEventListener("visibilitychange", recheckNow);
     };
   }, []);
 

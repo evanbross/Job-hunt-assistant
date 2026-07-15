@@ -45,6 +45,7 @@ import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 import { fitReasoningBullets } from "../utils/fitScoringUtils.js";
+import { describeFetchError } from "../utils/fetchErrorUtils.js"; // ai: claude-fable-5 | 2026-07-15
 import {
   MISMATCH_REASONS,
   SKIP_REASONS,
@@ -924,12 +925,16 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     setReEvaluateError(null);
     try {
       const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
       setCoverLetter(data.cover_letter);
       setCoverLetterOpen(true);
     } catch (err) {
-      setReEvaluateError(err.message || "Cover letter generation failed");
+      setReEvaluateError(describeFetchError(err) || "Cover letter generation failed"); // ai: claude-fable-5 | 2026-07-15
     } finally {
       setLoadingAction(null);
     }
@@ -1496,12 +1501,16 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     setReEvaluateError(null);
     try {
       const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
       setCoverLetter(data.cover_letter);
       setCoverLetterOpen(true);
     } catch (err) {
-      setReEvaluateError(err.message || "Cover letter generation failed");
+      setReEvaluateError(describeFetchError(err) || "Cover letter generation failed"); // ai: claude-fable-5 | 2026-07-15
     } finally {
       setLoadingAction(null);
     }

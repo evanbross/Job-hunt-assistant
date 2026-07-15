@@ -44,6 +44,7 @@ import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
 import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
 import { pickSaveFolder, promptForSaveFolder } from "../utils/saveFolderUtils.js"; // ai: claude-fable-5 | 2026-07-13
+import { describeFetchError } from "../utils/fetchErrorUtils.js"; // ai: claude-fable-5 | 2026-07-15
 import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.js";
 import {
   MISMATCH_REASONS,
@@ -293,12 +294,16 @@ function JobCard({
     setShowSaveAsMenu(false);
     try {
       const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
       setCoverLetter(data.cover_letter);
       setCoverLetterOpen(true);
     } catch (e) {
-      alert("Cover letter generation failed: " + e.message);
+      window.alert("Cover letter generation failed: " + describeFetchError(e)); // ai: claude-fable-5 | 2026-07-15
     } finally {
       setLoading(null);
     }
@@ -325,13 +330,17 @@ function JobCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type }),
       });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
       setPitchText(data.text);
       setPitchOpen(true);
       setPitchChatOpen(true);
     } catch (e) {
-      alert("Pitch generation failed: " + e.message);
+      window.alert("Pitch generation failed: " + describeFetchError(e)); // ai: claude-fable-5 | 2026-07-15
     } finally {
       setLoading(null);
     }
@@ -358,8 +367,12 @@ function JobCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages, current_text: pitchText, type: pitchType }),
       });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Chat failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Chat failed");
 
       setPitchChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       if (data.updated_pitch) {
@@ -368,7 +381,7 @@ function JobCard({
     } catch (e) {
       setPitchChatMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `Error: ${e.message}` },
+        { role: "assistant", content: `Error: ${describeFetchError(e)}` }, // ai: claude-fable-5 | 2026-07-15
       ]);
     } finally {
       setPitchChatSending(false);
@@ -399,7 +412,7 @@ function JobCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({})); // ai: claude-fable-5 | 2026-07-15
       if (!res.ok) {
         // ai: claude-fable-5 | 2026-07-13
         if (data.folder_error) {
@@ -411,12 +424,12 @@ function JobCard({
           }
           return;
         }
-        throw new Error(data.error || "Save failed");
+        throw new Error(data.error || `Save failed (${res.status})`);
       }
       setSaveStatus({ path: data.path, folder: data.folder, label: label, format: format });
     } catch (e) {
       setSaveStatus("error");
-      alert("Save failed: " + e.message);
+      window.alert("Save failed: " + describeFetchError(e)); // ai: claude-fable-5 | 2026-07-15
     }
   };
 
@@ -428,7 +441,7 @@ function JobCard({
         setFolderInput(picked);
       }
     } catch (e) {
-      alert("Browse failed: " + e.message);
+      window.alert("Browse failed: " + describeFetchError(e)); // ai: claude-fable-5 | 2026-07-15
     }
   };
 
@@ -563,8 +576,12 @@ function JobCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages }),
       });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ? `${data.error} (${res.status})` : `Fit chat failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ? `${data.error} (${res.status})` : `Fit chat failed (${res.status})`);
 
       setFitChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       if (data.reclassification) {
@@ -573,7 +590,7 @@ function JobCard({
     } catch (e) {
       setFitChatMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `Error: ${e.message}` },
+        { role: "assistant", content: `Error: ${describeFetchError(e)}` }, // ai: claude-fable-5 | 2026-07-15
       ]);
     } finally {
       setFitChatSending(false);
@@ -598,12 +615,16 @@ function JobCard({
 
     try {
       const res = await fetch(`/api/jobs/${job.id}/resume-tailor`, { method: "POST" });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
       setResumeTailor(data.analysis);
       setResumeTailorOpen(true);
     } catch (e) {
-      alert("Resume tailoring failed: " + e.message);
+      window.alert("Resume tailoring failed: " + describeFetchError(e)); // ai: claude-fable-5 | 2026-07-15
     } finally {
       clearTimeout(t1);
       clearTimeout(t2);
@@ -633,8 +654,12 @@ function JobCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages, analysis: resumeTailor }),
       });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Chat failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Chat failed");
 
       setResumeTailorChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       if (data.updated_analysis) {
@@ -643,7 +668,7 @@ function JobCard({
     } catch (e) {
       setResumeTailorChatMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `Error: ${e.message}` },
+        { role: "assistant", content: `Error: ${describeFetchError(e)}` }, // ai: claude-fable-5 | 2026-07-15
       ]);
     } finally {
       setResumeTailorChatSending(false);
