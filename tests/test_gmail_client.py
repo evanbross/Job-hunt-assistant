@@ -36,7 +36,10 @@ from __future__ import annotations
 
 import base64
 
-from backend.email_source_filters import build_gmail_source_query, email_matches_source_filters
+from backend.email_source_filters import (
+    build_gmail_source_query,
+    email_matches_source_filters,
+)
 from backend.gmail_client import GmailClient
 
 

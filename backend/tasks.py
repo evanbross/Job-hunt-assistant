@@ -54,7 +54,7 @@ import re
 import socket
 import time
 import urllib.error
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any
 
 from backend.ai_provider import AIMessage, AIProviderClient
@@ -67,7 +67,13 @@ from backend.import_repair import (
     repair_linkedin_company,
 )
 from backend.manual_job_ingest_service import ManualJobIngestService
-from backend.utils import enrich_job_description, get_repos, is_richer_description, jd_blocklist_match, _parse_positive_int
+from backend.utils import (
+    _parse_positive_int,
+    enrich_job_description,
+    get_repos,
+    is_richer_description,
+    jd_blocklist_match,
+)
 
 logger = logging.getLogger(__name__)
 

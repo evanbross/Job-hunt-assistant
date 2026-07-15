@@ -52,3 +52,9 @@ select = [
 ignore = [
     "E501",  # line too long — handled by formatter separately
 ]
+
+# ai: claude-fable-5 | 2026-07-15
+[tool.ruff.lint.per-file-ignores]
+# Entry point: blueprints are imported after app creation, logging setup, and
+# DB init on purpose — moving them to the top would reorder startup side effects.
+"app.py" = ["E402"]

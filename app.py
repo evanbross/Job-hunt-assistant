@@ -70,7 +70,7 @@ from flask_cors import CORS
 import config
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
 from backend.import_listener import start_job_import_listener
-from backend.utils import is_trusted_api_write_origin, start_career_site_scheduler
+from backend.utils import is_trusted_api_write_origin
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
 try:
@@ -274,6 +274,7 @@ def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
 
 # ─── Blueprint registration ───────────────────────────────────────────────────
 
+from routes.applications import applications_bp, submit_closed_req_capture
 from routes.auth import auth_bp
 from routes.board_search import board_search_bp
 from routes.browser_capture import browser_capture_bp
@@ -283,15 +284,14 @@ from routes.emails import emails_bp
 from routes.fit import fit_bp
 from routes.greenhouse import greenhouse_bp
 from routes.import_ import import_bp, queue_import_capture
+from routes.jobanni import jobanni_bp
 from routes.jobs import jobs_bp
 from routes.scan import scan_bp
 from routes.settings import settings_bp
 from routes.setup import setup_bp
-from routes.applications import applications_bp, submit_closed_req_capture
 from routes.system import system_bp
-from routes.jobanni import jobanni_bp
-from routes.wellfound import wellfound_bp
 from routes.toptal import toptal_bp
+from routes.wellfound import wellfound_bp
 
 app.register_blueprint(auth_bp, url_prefix="/api")
 app.register_blueprint(board_search_bp, url_prefix="/api")
@@ -322,8 +322,8 @@ def _claim_browser_capture_queue() -> list[dict]:
     return items
 
 
-# Auto-scheduler disabled — use the manual scan banner in the UI instead
-# start_career_site_scheduler()
+# Career-site auto-scheduler intentionally not started — scans are triggered
+# manually from the UI banner (see backend.utils.start_career_site_scheduler).
 # ai: claude-sonnet-4-6 | 2026-07-02
 def _handle_listener_capture(body: dict) -> tuple[dict, int]:
     """Routes captures from the browser extension by purpose.

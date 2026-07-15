@@ -43,7 +43,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any, Generator
 from urllib.parse import parse_qs, urlparse
 

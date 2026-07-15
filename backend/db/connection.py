@@ -41,7 +41,7 @@ import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, unquote
+from urllib.parse import unquote, urlparse
 
 import psycopg2
 import psycopg2.extras

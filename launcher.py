@@ -43,8 +43,8 @@ import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import font as tkfont, messagebox, ttk
-
+from tkinter import font as tkfont
+from tkinter import messagebox, ttk
 
 _HERE = Path(__file__).resolve().parent
 _PREFERRED_PORT = 5004
