@@ -100,7 +100,9 @@ def post_repair_duplicate_check(
     if not job_title or not company:
         return False
     candidates = [j for j in all_jobs if int(j.get("id", -1)) != job_id]
-    match = DuplicateChecker().check(job_title=job_title, company=company, sheet_jobs=candidates)
+    match = DuplicateChecker().check(
+        job_title=job_title, company=company, sheet_jobs=candidates
+    )
     if not match:
         return False
     hint = (
@@ -111,13 +113,27 @@ def post_repair_duplicate_check(
     )
     # ai: claude-sonnet-4-6 | 2026-06-09
     matched_job = next(
-        (j for j in candidates
-         if (j.get("company") or "") == match["sheet_company"]
-         and (j.get("job_title") or "") == match["sheet_title"]),
+        (
+            j
+            for j in candidates
+            if (j.get("company") or "") == match["sheet_company"]
+            and (j.get("job_title") or "") == match["sheet_title"]
+        ),
         None,
     )
-    duplicate_of_id = int(matched_job["id"]) if matched_job and matched_job.get("id") is not None else None
-    jobs_repo.update(job_id, {"duplicate_hint": hint, "duplicate_of_id": duplicate_of_id, "status": "possible_duplicate"})
+    duplicate_of_id = (
+        int(matched_job["id"])
+        if matched_job and matched_job.get("id") is not None
+        else None
+    )
+    jobs_repo.update(
+        job_id,
+        {
+            "duplicate_hint": hint,
+            "duplicate_of_id": duplicate_of_id,
+            "status": "possible_duplicate",
+        },
+    )
     return True
 
 

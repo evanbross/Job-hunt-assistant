@@ -59,6 +59,7 @@ board_search_bp = Blueprint("board_search", __name__)
 
 # ─── Board-search state (in-memory, protected by its own lock) ─────────────────
 
+
 @dataclass
 class BoardSearchState:
     running: bool = False
@@ -144,11 +145,7 @@ def _generate_board_search_queries() -> list[str]:
             )
         ],
     )
-    lines = [
-        ln.strip()
-        for ln in response_text.splitlines()
-        if ln.strip()
-    ]
+    lines = [ln.strip() for ln in response_text.splitlines() if ln.strip()]
     return lines[:6] if lines else _FALLBACK_QUERIES
 
 
@@ -211,7 +208,9 @@ def _run_board_search() -> None:
                 candidates = searcher.search_all(search_queries)
             except Exception as exc:
                 logger.error("Board search fetch failed: %s", exc)
-                _update_board(error=f"Board search failed: {exc}", message="Board search failed.")
+                _update_board(
+                    error=f"Board search failed: {exc}", message="Board search failed."
+                )
                 return
 
             total = len(candidates)
@@ -240,24 +239,43 @@ def _run_board_search() -> None:
                 # URL-exact dedup: skip if already tracked in this DB
                 if url and job_repo.get_by_url(url):
                     duplicates_skipped += 1
-                    _update_board(candidates_processed=idx + 1, duplicates_skipped=duplicates_skipped)
+                    _update_board(
+                        candidates_processed=idx + 1,
+                        duplicates_skipped=duplicates_skipped,
+                    )
                     continue
 
                 # Fuzzy company+title dedup against sheet and existing DB rows
                 if all_known_jobs and company and title:
-                    if dup_checker.check(job_title=title, company=company, sheet_jobs=all_known_jobs):
+                    if dup_checker.check(
+                        job_title=title, company=company, sheet_jobs=all_known_jobs
+                    ):
                         fuzzy_duplicates_skipped += 1
-                        _update_board(candidates_processed=idx + 1, fuzzy_duplicates_skipped=fuzzy_duplicates_skipped)
+                        _update_board(
+                            candidates_processed=idx + 1,
+                            fuzzy_duplicates_skipped=fuzzy_duplicates_skipped,
+                        )
                         continue
 
                 # Blocklist check — skip before spending tokens on scoring
                 if blocklist_rules:
-                    _haystack = " ".join(str(candidate.get(f) or "") for f in ("title", "company", "description", "url"))
+                    _haystack = " ".join(
+                        str(candidate.get(f) or "")
+                        for f in ("title", "company", "description", "url")
+                    )
                     matched_rule = jd_blocklist_match(_haystack, blocklist_rules)
                     if matched_rule is not None:
                         blocklist_filtered += 1
-                        _update_board(candidates_processed=idx + 1, blocklist_filtered=blocklist_filtered)
-                        logger.debug("JD blocklist filtered %s @ %s (rule: %s)", title, company, matched_rule.get("rule_text"))
+                        _update_board(
+                            candidates_processed=idx + 1,
+                            blocklist_filtered=blocklist_filtered,
+                        )
+                        logger.debug(
+                            "JD blocklist filtered %s @ %s (rule: %s)",
+                            title,
+                            company,
+                            matched_rule.get("rule_text"),
+                        )
                         continue
 
                 # Score against candidate profile
@@ -273,14 +291,20 @@ def _run_board_search() -> None:
                     fit_score: int = score_result["score"]
                     fit_reasoning: str = score_result["reasoning"]
                 except Exception as exc:
-                    logger.warning("Scoring failed for %s @ %s: %s", title, company, exc)
+                    logger.warning(
+                        "Scoring failed for %s @ %s: %s", title, company, exc
+                    )
                     scoring_failed += 1
-                    _update_board(candidates_processed=idx + 1, scoring_failed=scoring_failed)
+                    _update_board(
+                        candidates_processed=idx + 1, scoring_failed=scoring_failed
+                    )
                     continue
 
                 if fit_score < config.BOARD_SEARCH_MIN_SCORE:
                     below_min_score += 1
-                    _update_board(candidates_processed=idx + 1, below_min_score=below_min_score)
+                    _update_board(
+                        candidates_processed=idx + 1, below_min_score=below_min_score
+                    )
                     continue
 
                 status = "pending_review" if fit_score >= 70 else "triage"
@@ -307,8 +331,13 @@ def _run_board_search() -> None:
 
                 try:
                     job_data, import_warnings = normalize_and_validate(job_data)
-                    job_data["import_warnings"] = import_warnings_to_json(import_warnings)
-                    if import_warnings and job_data.get("status") != "possible_duplicate":
+                    job_data["import_warnings"] = import_warnings_to_json(
+                        import_warnings
+                    )
+                    if (
+                        import_warnings
+                        and job_data.get("status") != "possible_duplicate"
+                    ):
                         job_data["status"] = "triage"
                     job_repo.insert(job_data)
                     conn.commit()
@@ -349,6 +378,7 @@ def _run_board_search() -> None:
 
 
 # ─── Board search routes ──────────────────────────────────────────────────────
+
 
 @board_search_bp.route("/board-search", methods=["POST"])
 def start_board_search() -> ResponseReturnValue:

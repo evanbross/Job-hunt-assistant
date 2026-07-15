@@ -34,6 +34,7 @@
 
 """Connection layer — dialect-translation helpers and connection wrappers
 shared by every repository, plus get_connection() to open either backend."""
+
 from __future__ import annotations
 
 import re
@@ -131,7 +132,9 @@ def _sqlite_sql(sql: str) -> str:
     # DDL or migration SQL above.
     # ai: claude-sonnet-4-6 | 2026-06-25
     translated = sql.replace("%s", "?")
-    translated = translated.replace("(NOW() AT TIME ZONE 'UTC')::date::text", "date('now')")
+    translated = translated.replace(
+        "(NOW() AT TIME ZONE 'UTC')::date::text", "date('now')"
+    )
     translated = translated.replace("NOW()::text", "datetime('now')")
     translated = translated.replace("NOW()", "datetime('now')")
     translated = translated.replace("CURRENT_DATE::text", "date('now')")
@@ -141,7 +144,9 @@ def _sqlite_sql(sql: str) -> str:
         translated,
     )
     translated = translated.replace("TIMESTAMPTZ", "TEXT")
-    translated = re.sub(r"\bSERIAL\s+PRIMARY\s+KEY\b", "INTEGER PRIMARY KEY AUTOINCREMENT", translated)
+    translated = re.sub(
+        r"\bSERIAL\s+PRIMARY\s+KEY\b", "INTEGER PRIMARY KEY AUTOINCREMENT", translated
+    )
     return translated
 
 
@@ -213,6 +218,10 @@ class _ReconnectingPgConn:
 
 def get_connection(dsn: str) -> Any:
     """Open a database connection for the configured backend."""
-    if dsn.startswith("sqlite://") or dsn.endswith(".sqlite") or dsn.endswith(".sqlite3"):
+    if (
+        dsn.startswith("sqlite://")
+        or dsn.endswith(".sqlite")
+        or dsn.endswith(".sqlite3")
+    ):
         return _SQLiteConnection(_sqlite_path_from_dsn(dsn))
     return _ReconnectingPgConn(dsn)

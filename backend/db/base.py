@@ -34,6 +34,7 @@
 
 """Shared base class every repository subclasses for connection access and
 reconnect-on-drop query execution."""
+
 from __future__ import annotations
 
 import logging
@@ -59,7 +60,9 @@ class _BaseRepo:
         except psycopg2.OperationalError:
             if not hasattr(self._conn, "reconnect"):
                 raise
-            logger.warning("DB connection lost; reconnecting and retrying (base.py:_BaseRepo._execute)")
+            logger.warning(
+                "DB connection lost; reconnecting and retrying (base.py:_BaseRepo._execute)"
+            )
             self._conn.reconnect()
             cur = self._conn.cursor()
             if params:

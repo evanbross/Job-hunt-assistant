@@ -55,6 +55,7 @@ wellfound_bp = Blueprint("wellfound", __name__)
 
 # ── Scan state (in-memory, protected by a lock) ───────────────────────────────
 
+
 @dataclass
 class WellfoundScanState:
     running: bool = False
@@ -80,6 +81,7 @@ def _update(**kwargs: object) -> None:
 
 
 # ── Background scan thread ────────────────────────────────────────────────────
+
 
 def _run_scan(search_url: str, max_jobs: int) -> None:
     _update(
@@ -140,7 +142,11 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
 
     except WellfoundLoginError as exc:
         logger.error("Wellfound login failed: %s", exc)
-        _update(running=False, error=str(exc), message="Login failed — check credentials in .env")
+        _update(
+            running=False,
+            error=str(exc),
+            message="Login failed — check credentials in .env",
+        )
     except (TimeoutError, ConnectionError, OSError) as exc:
         logger.error("Wellfound scan network error: %s", exc)
         _update(running=False, error=str(exc), message="Network error during scan")
@@ -150,6 +156,7 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
 
 
 # ── Background helpers ────────────────────────────────────────────────────────
+
 
 def _run_manual_login() -> None:
     _update(
@@ -183,6 +190,7 @@ def _run_manual_login() -> None:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+
 @wellfound_bp.route("/wellfound/scan", methods=["POST"])
 def start_scan() -> ResponseReturnValue:
     """Trigger a Wellfound scrape and enqueue results for import."""
@@ -191,13 +199,17 @@ def start_scan() -> ResponseReturnValue:
             return jsonify({"error": "Scan already running"}), 409
 
     if not config.WELLFOUND_EMAIL or not config.WELLFOUND_PASSWORD:
-        return jsonify({
-            "error": "WELLFOUND_EMAIL and WELLFOUND_PASSWORD must be set in .env"
-        }), 400
+        return (
+            jsonify(
+                {"error": "WELLFOUND_EMAIL and WELLFOUND_PASSWORD must be set in .env"}
+            ),
+            400,
+        )
 
     body = request.get_json(silent=True) or {}
     search_url = str(
-        body.get("search_url") or config.WELLFOUND_SEARCH_URL
+        body.get("search_url")
+        or config.WELLFOUND_SEARCH_URL
         or "https://wellfound.com/jobs"
     )
     max_jobs = min(max(int(body.get("max_jobs") or 30), 1), 200)
@@ -216,18 +228,20 @@ def start_scan() -> ResponseReturnValue:
 def scan_status() -> ResponseReturnValue:
     """Return the current Wellfound scan state."""
     with _lock:
-        return jsonify({
-            "running": _state.running,
-            "progress": _state.progress,
-            "total": _state.total,
-            "message": _state.message,
-            "found": _state.found,
-            "task_id": _state.task_id,
-            "last_run_at": _state.last_run_at,
-            "last_found": _state.last_found,
-            "error": _state.error,
-            "phase_deadline": _state.phase_deadline,
-        })
+        return jsonify(
+            {
+                "running": _state.running,
+                "progress": _state.progress,
+                "total": _state.total,
+                "message": _state.message,
+                "found": _state.found,
+                "task_id": _state.task_id,
+                "last_run_at": _state.last_run_at,
+                "last_found": _state.last_found,
+                "error": _state.error,
+                "phase_deadline": _state.phase_deadline,
+            }
+        )
 
 
 @wellfound_bp.route("/wellfound/browser-login", methods=["POST"])

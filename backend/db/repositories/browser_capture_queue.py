@@ -104,7 +104,9 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
     # ai: claude-sonnet-4-6 | 2026-06-21
     def claim_pending(self, limit: int = 10) -> list[dict[str, Any]]:
         now = datetime.now(UTC).isoformat(timespec="seconds")
-        stale_cutoff = (datetime.now(UTC) - timedelta(minutes=10)).isoformat(timespec="seconds")
+        stale_cutoff = (datetime.now(UTC) - timedelta(minutes=10)).isoformat(
+            timespec="seconds"
+        )
         # Stale processing items are re-queued with an incremented retry_count.
         # Once retry_count reaches the max they are marked failed instead.
         self._execute(

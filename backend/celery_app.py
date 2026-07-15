@@ -39,6 +39,7 @@ Broker and result backend: Redis (dev_redis container from ../infra).
 Run the worker with:
     celery -A backend.celery_app worker --pool=threads --concurrency=4 --loglevel=info
 """
+
 from __future__ import annotations
 
 from celery import Celery

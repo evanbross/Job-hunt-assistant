@@ -100,7 +100,7 @@ def _fetch(url: str, extra_headers: dict[str, str] | None = None) -> str:
 def _extract_rsc_hash(html: str) -> str:
     """Extract the Next.js build ID / RSC hash from a Jobanni page."""
     # Primary: static asset path /_next/static/{buildId}/_buildManifest.js
-    m = re.search(r'/_next/static/([A-Za-z0-9_-]+)/_buildManifest\.js', html)
+    m = re.search(r"/_next/static/([A-Za-z0-9_-]+)/_buildManifest\.js", html)
     if m:
         return m.group(1)
     # Fallback: Pages Router __NEXT_DATA__ JSON
@@ -164,7 +164,8 @@ def _parse_rsc_jobs(rsc_text: str) -> list[dict]:
     desc_refs = {
         job["description"][1:]
         for job in raw_jobs
-        if isinstance(job.get("description"), str) and job["description"].startswith("$")
+        if isinstance(job.get("description"), str)
+        and job["description"].startswith("$")
     }
 
     # Description T-blocks appear in the RSC stream after the jobs object.
@@ -198,13 +199,15 @@ def _parse_rsc_jobs(rsc_text: str) -> list[dict]:
         desc_text = re.sub(r"&(?:[a-z]+|#\d+);", " ", desc_text)
         desc_text = re.sub(r"\s+", " ", desc_text).strip()
 
-        results.append({
-            "url": url,
-            "job_title": (job.get("title") or "").strip(),
-            "company": (job.get("companyName") or "").strip(),
-            "listing_text": desc_text,
-            "platform": "jobanni",
-        })
+        results.append(
+            {
+                "url": url,
+                "job_title": (job.get("title") or "").strip(),
+                "company": (job.get("companyName") or "").strip(),
+                "listing_text": desc_text,
+                "platform": "jobanni",
+            }
+        )
 
     return results
 
@@ -270,7 +273,9 @@ def scan(
             break
 
         all_jobs.extend(page_jobs)
-        logger.info("Page %d: %d jobs (running total %d)", page, len(page_jobs), len(all_jobs))
+        logger.info(
+            "Page %d: %d jobs (running total %d)", page, len(page_jobs), len(all_jobs)
+        )
 
         if progress_cb:
             progress_cb(

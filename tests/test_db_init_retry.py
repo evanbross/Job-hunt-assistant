@@ -89,7 +89,9 @@ def test_init_db_with_retry_enters_degraded_mode_after_exhausting_attempts(
 
     monkeypatch.setattr("backend.db.init_db", broken_init_db)
     monkeypatch.setattr("backend.db.time", SimpleNamespace(sleep=lambda _s: None))
-    monkeypatch.setattr("backend.db._start_background_init_retry", record_background_retry)
+    monkeypatch.setattr(
+        "backend.db._start_background_init_retry", record_background_retry
+    )
 
     succeeded = init_db_with_retry(
         "postgresql://example/db", attempts=2, background_interval_seconds=5.0
@@ -107,6 +109,8 @@ def test_background_retry_clears_degraded_flag_on_success(
     monkeypatch.setattr("backend.db.init_db", lambda _dsn: None)
     monkeypatch.setattr("backend.db.time", SimpleNamespace(sleep=lambda _s: None))
 
-    backend_db._run_background_init_retry("postgresql://example/db", interval_seconds=0.01)
+    backend_db._run_background_init_retry(
+        "postgresql://example/db", interval_seconds=0.01
+    )
 
     assert db_startup_error() is None

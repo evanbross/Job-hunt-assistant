@@ -48,15 +48,26 @@ def _match(title_a: str, title_b: str) -> bool:
         ("Senior Staff Software Engineer, Data", "Staff SE Data"),
         # Same base title, different department/team qualifier.
         ("Staff Software Engineer, Backend", "Staff Software Engineer, Websites"),
-        ("Staff Software Engineer, Backend", "Staff Software Engineer (Configuration Platform)"),
-        ("Staff Software Engineer - Application Infrastructure", "Staff Software Engineer, Backend"),
+        (
+            "Staff Software Engineer, Backend",
+            "Staff Software Engineer (Configuration Platform)",
+        ),
+        (
+            "Staff Software Engineer - Application Infrastructure",
+            "Staff Software Engineer, Backend",
+        ),
         # Marriott's FLEX prefix marks a temporary/flexible position — a
         # different job than the unprefixed title.
         ("FLEX Senior Software Engineer", "Senior Software Engineer"),
-        ("Senior Software Engineer- GraphQL Engineering", "FLEX Senior Software Engineer- GraphQL Engineering"),
+        (
+            "Senior Software Engineer- GraphQL Engineering",
+            "FLEX Senior Software Engineer- GraphQL Engineering",
+        ),
     ],
 )
-def test_different_roles_at_same_company_are_not_duplicates(title_a: str, title_b: str) -> None:
+def test_different_roles_at_same_company_are_not_duplicates(
+    title_a: str, title_b: str
+) -> None:
     assert not _match(title_a, title_b)
 
 
@@ -68,7 +79,10 @@ def test_different_roles_at_same_company_are_not_duplicates(title_a: str, title_
         ("Principal Software Engineer, GRC", "Prin SE"),
         ("PrinSE CoreAI", "Principal Software Engineer - CoreAI"),
         # Same qualifier, different punctuation style.
-        ("Staff Software Engineer, Care & Onboarding", "Staff Software Engineer (Care & Onboarding)"),
+        (
+            "Staff Software Engineer, Care & Onboarding",
+            "Staff Software Engineer (Care & Onboarding)",
+        ),
         # Qualifier on only one side still matches.
         ("Staff Software Engineer, Payments", "Staff Software Engineer"),
         # Seniority named on only one side still matches.

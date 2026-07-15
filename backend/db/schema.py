@@ -35,6 +35,7 @@
 """PostgreSQL schema creation, migrations, and seed data. Migrations touch
 multiple tables in a fixed order, so they stay in one file rather than being
 split per-table like the repositories."""
+
 from __future__ import annotations
 
 import re
@@ -44,16 +45,16 @@ from typing import Any
 
 # (key, label, sort_order, ghost_eligible, is_terminal)
 _SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
-    ("applied",        "Applied",          1, True,  False),
-    ("waiting_call",   "Waiting for Call", 2, True,  False),
-    ("waiting_second", "Waiting for 2nd",  3, True,  False),
-    ("eval_1",         "Eval 1",           4, False, False),
-    ("eval_2",         "Eval 2",           5, False, False),
-    ("eval_3",         "Eval 3",           6, False, False),
-    ("rejected",       "Rejected",         7, False, True),
-    ("job_filled",     "Job Filled",       8, False, True),
-    ("req_closed",     "Req Closed",       9, False, True),
-    ("ghosted",        "Ghosted",         10, False, True),
+    ("applied", "Applied", 1, True, False),
+    ("waiting_call", "Waiting for Call", 2, True, False),
+    ("waiting_second", "Waiting for 2nd", 3, True, False),
+    ("eval_1", "Eval 1", 4, False, False),
+    ("eval_2", "Eval 2", 5, False, False),
+    ("eval_3", "Eval 3", 6, False, False),
+    ("rejected", "Rejected", 7, False, True),
+    ("job_filled", "Job Filled", 8, False, True),
+    ("req_closed", "Req Closed", 9, False, True),
+    ("ghosted", "Ghosted", 10, False, True),
 ]
 
 _SEED_SOURCES: list[tuple[str, str, str]] = [
@@ -128,13 +129,17 @@ def _migrate(conn: Any) -> None:
     # statuses appear on both sides.) Copy-then-drop must run before the
     # 'applied' stage backfill below so date_found already carries the old
     # sheet date when that backfill reads it.
-    cur.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS on_sheet INTEGER NOT NULL DEFAULT 0")
+    cur.execute(
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS on_sheet INTEGER NOT NULL DEFAULT 0"
+    )
     if _has_column(cur, "jobs", "date_added_to_sheet"):
         cur.execute(
             "UPDATE jobs SET date_found = date_added_to_sheet"
             " WHERE date_added_to_sheet IS NOT NULL"
         )
-        cur.execute("UPDATE jobs SET on_sheet = 1 WHERE date_added_to_sheet IS NOT NULL")
+        cur.execute(
+            "UPDATE jobs SET on_sheet = 1 WHERE date_added_to_sheet IS NOT NULL"
+        )
         cur.execute("ALTER TABLE jobs DROP COLUMN date_added_to_sheet")
     conn.commit()
 
@@ -144,9 +149,13 @@ def _migrate(conn: Any) -> None:
     if not _has_pk(cur, "app_settings"):
         cur.execute("ALTER TABLE app_settings ADD PRIMARY KEY (key)")
     if not _has_unique(cur, "jobs", "jobs_email_id_key"):
-        cur.execute("ALTER TABLE jobs ADD CONSTRAINT jobs_email_id_key UNIQUE (email_id)")
+        cur.execute(
+            "ALTER TABLE jobs ADD CONSTRAINT jobs_email_id_key UNIQUE (email_id)"
+        )
     if not _has_unique(cur, "career_scan_results", "career_scan_results_job_url_key"):
-        cur.execute("ALTER TABLE career_scan_results ADD CONSTRAINT career_scan_results_job_url_key UNIQUE (job_url)")
+        cur.execute(
+            "ALTER TABLE career_scan_results ADD CONSTRAINT career_scan_results_job_url_key UNIQUE (job_url)"
+        )
     conn.commit()
 
     for col, defn in [
@@ -173,16 +182,14 @@ def _migrate(conn: Any) -> None:
         ("subject_filter_match_mode", "TEXT DEFAULT 'text'"),
     ]:
         cur.execute(f"ALTER TABLE email_sources ADD COLUMN IF NOT EXISTS {col} {defn}")
-    cur.execute(
-        """
+    cur.execute("""
         UPDATE email_sources
         SET subject_filter_mode = 'starts_with',
             subject_filter_value = 'new match'
         WHERE LOWER(COALESCE(match_value, '')) LIKE '%welcometothejungle.com%'
           AND COALESCE(subject_filter_mode, '') = ''
           AND COALESCE(subject_filter_value, '') = ''
-        """
-    )
+        """)
 
     for col, defn in [
         ("email_date", "TEXT"),
@@ -214,7 +221,9 @@ def _migrate(conn: Any) -> None:
         ("rejection_reason", "TEXT"),
         ("rejection_source", "TEXT"),
     ]:
-        cur.execute(f"ALTER TABLE career_scan_results ADD COLUMN IF NOT EXISTS {col} {defn}")
+        cur.execute(
+            f"ALTER TABLE career_scan_results ADD COLUMN IF NOT EXISTS {col} {defn}"
+        )
 
     for col, defn in [
         ("collection_mode", "TEXT DEFAULT 'automatic'"),
@@ -222,9 +231,13 @@ def _migrate(conn: Any) -> None:
         ("last_captured_at", "TEXT"),
         ("recapture_interval_days", "INTEGER DEFAULT 4"),
     ]:
-        cur.execute(f"ALTER TABLE career_site_sources ADD COLUMN IF NOT EXISTS {col} {defn}")
+        cur.execute(
+            f"ALTER TABLE career_site_sources ADD COLUMN IF NOT EXISTS {col} {defn}"
+        )
 
-    cur.execute("ALTER TABLE career_rejection_rules ADD COLUMN IF NOT EXISTS updated_at TEXT")
+    cur.execute(
+        "ALTER TABLE career_rejection_rules ADD COLUMN IF NOT EXISTS updated_at TEXT"
+    )
     cur.execute(
         "UPDATE career_rejection_rules SET updated_at = COALESCE(updated_at, created_at, NOW()::text)"
         " WHERE updated_at IS NULL"
@@ -264,7 +277,9 @@ def _migrate(conn: Any) -> None:
     """)
     cur.execute("UPDATE jobs SET status = 'applied' WHERE status = 'added_to_sheet'")
 
-    cur.execute("UPDATE jobs SET date_found = (NOW() AT TIME ZONE 'UTC')::date::text WHERE date_found IS NULL")
+    cur.execute(
+        "UPDATE jobs SET date_found = (NOW() AT TIME ZONE 'UTC')::date::text WHERE date_found IS NULL"
+    )
 
     cur.execute(
         "ALTER TABLE penalty_rules ADD COLUMN IF NOT EXISTS scope TEXT DEFAULT 'any'"
@@ -315,8 +330,7 @@ def _migrate(conn: Any) -> None:
         " ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'import'"
     )
     cur.execute(
-        "ALTER TABLE browser_capture_queue"
-        " ADD COLUMN IF NOT EXISTS job_id INTEGER"
+        "ALTER TABLE browser_capture_queue" " ADD COLUMN IF NOT EXISTS job_id INTEGER"
     )
 
     conn.commit()
@@ -385,10 +399,9 @@ def _backfill_duplicate_of_id(conn: Any, is_postgres: bool) -> None:
                 for candidate in all_jobs:
                     if candidate["id"] == job_id:
                         continue
-                    if (
-                        (candidate["job_title"] or "").strip() == hint_title
-                        and (candidate["company"] or "").strip() == hint_company
-                    ):
+                    if (candidate["job_title"] or "").strip() == hint_title and (
+                        candidate["company"] or ""
+                    ).strip() == hint_company:
                         matched_id = candidate["id"]
                         break
 

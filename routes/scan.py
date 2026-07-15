@@ -77,6 +77,7 @@ scan_bp = Blueprint("scan", __name__)
 
 # ─── Scan state (in-memory, protected by a lock) ──────────────────────────────
 
+
 @dataclass
 class ScanState:
     running: bool = False
@@ -170,7 +171,10 @@ def _update_scan(
 
 # ─── Gmail helpers ────────────────────────────────────────────────────────────
 
-def _attempt_move_to_label(gmail: GmailClient, msg_id: str, label: str) -> tuple[str, int]:
+
+def _attempt_move_to_label(
+    gmail: GmailClient, msg_id: str, label: str
+) -> tuple[str, int]:
     """Try to move a message to label. Returns (action_description, moved_count)."""
     try:
         moved_count = gmail.move_messages_to_label([msg_id], label)
@@ -199,6 +203,7 @@ def _finalize_scanned_email(
 
 
 # ─── Background scan thread ───────────────────────────────────────────────────
+
 
 def _run_scan(rescan_all: bool = False) -> None:
     """
@@ -240,7 +245,9 @@ def _run_scan(rescan_all: bool = False) -> None:
         lookback_days: int = runtime_cfg.get(
             "email_lookback_days", config.DEFAULT_EMAIL_LOOKBACK_DAYS
         )
-        move_successfully_processed_emails = config.should_move_successfully_processed_emails()
+        move_successfully_processed_emails = (
+            config.should_move_successfully_processed_emails()
+        )
         scanned_email_label = config.get_scanned_email_label()
 
         with get_repos() as repos:
@@ -254,12 +261,18 @@ def _run_scan(rescan_all: bool = False) -> None:
 
             enabled_sources = source_repo.get_enabled()
             if not enabled_sources:
-                _update_scan(progress=100, message="No email sources enabled — nothing to scan.")
+                _update_scan(
+                    progress=100, message="No email sources enabled — nothing to scan."
+                )
                 return
 
-            _update_scan(progress=10, message=f"Fetching emails (last {lookback_days} days)...")
+            _update_scan(
+                progress=10, message=f"Fetching emails (last {lookback_days} days)..."
+            )
 
-            messages = gmail.list_unread_messages(lookback_days, enabled_sources, unread_only=not rescan_all)
+            messages = gmail.list_unread_messages(
+                lookback_days, enabled_sources, unread_only=not rescan_all
+            )
             total = len(messages)
             _update_scan(
                 progress=20,
@@ -321,7 +334,11 @@ def _run_scan(rescan_all: bool = False) -> None:
                     already_scanned_emails += 1
                     stored = scanned_repo.get_scanned_metadata(msg_id)
                     gmail_action, n = _finalize_scanned_email(
-                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "already processed"
+                        gmail,
+                        msg_id,
+                        scanned_email_label,
+                        move_successfully_processed_emails,
+                        "already processed",
                     )
                     moved_successful_emails += n
                     email_report.append(
@@ -379,10 +396,20 @@ def _run_scan(rescan_all: bool = False) -> None:
                     source_filters=enabled_sources,
                 ):
                     source_filtered_emails += 1
-                    scanned_repo.mark_scanned(msg_id, sender, subject, disposition="source_filtered", email_date=email_date)
+                    scanned_repo.mark_scanned(
+                        msg_id,
+                        sender,
+                        subject,
+                        disposition="source_filtered",
+                        email_date=email_date,
+                    )
                     conn.commit()
                     gmail_action, n = _finalize_scanned_email(
-                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "left in inbox"
+                        gmail,
+                        msg_id,
+                        scanned_email_label,
+                        move_successfully_processed_emails,
+                        "left in inbox",
                     )
                     moved_successful_emails += n
                     email_report.append(
@@ -413,10 +440,20 @@ def _run_scan(rescan_all: bool = False) -> None:
                 if subject_rule == "blacklist":
                     acknowledgement_emails += 1
                     gmail.mark_as_read(msg_id)
-                    scanned_repo.mark_scanned(msg_id, sender, subject, disposition="ack", email_date=email_date)
+                    scanned_repo.mark_scanned(
+                        msg_id,
+                        sender,
+                        subject,
+                        disposition="ack",
+                        email_date=email_date,
+                    )
                     conn.commit()
                     gmail_action, n = _finalize_scanned_email(
-                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "marked read"
+                        gmail,
+                        msg_id,
+                        scanned_email_label,
+                        move_successfully_processed_emails,
+                        "marked read",
                     )
                     moved_successful_emails += n
                     email_report.append(
@@ -458,14 +495,28 @@ def _run_scan(rescan_all: bool = False) -> None:
                 # Parse the email — returns a list (empty if not a job email)
                 _update_scan(message=f"AI evaluation underway for {email_label}...")
                 try:
-                    parsed_jobs = parser.parse(subject, sender, email_body, raw_html=email_raw_html)
+                    parsed_jobs = parser.parse(
+                        subject, sender, email_body, raw_html=email_raw_html
+                    )
                     _update_scan(connection_warning="")
                 except Exception as exc:
                     parser_error_emails += 1
-                    scanned_repo.mark_scanned(msg_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=email_body, parser_error_msg=str(exc))
+                    scanned_repo.mark_scanned(
+                        msg_id,
+                        sender,
+                        subject,
+                        disposition="parser_error",
+                        email_date=email_date,
+                        raw_body=email_body,
+                        parser_error_msg=str(exc),
+                    )
                     conn.commit()
                     gmail_action, n = _finalize_scanned_email(
-                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "left in inbox"
+                        gmail,
+                        msg_id,
+                        scanned_email_label,
+                        move_successfully_processed_emails,
+                        "left in inbox",
                     )
                     moved_successful_emails += n
                     email_report.append(
@@ -495,10 +546,20 @@ def _run_scan(rescan_all: bool = False) -> None:
                 if not parsed_jobs:
                     # Not a job email — mark scanned and move on
                     non_job_emails += 1
-                    scanned_repo.mark_scanned(msg_id, sender, subject, disposition="noise", email_date=email_date)
+                    scanned_repo.mark_scanned(
+                        msg_id,
+                        sender,
+                        subject,
+                        disposition="noise",
+                        email_date=email_date,
+                    )
                     conn.commit()
                     gmail_action, n = _finalize_scanned_email(
-                        gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "left in inbox"
+                        gmail,
+                        msg_id,
+                        scanned_email_label,
+                        move_successfully_processed_emails,
+                        "left in inbox",
                     )
                     moved_successful_emails += n
                     email_report.append(
@@ -557,13 +618,21 @@ def _run_scan(rescan_all: bool = False) -> None:
                     # Canonicalize Wellfound listing URLs (tracking links are already
                     # resolved at parse time) so the same listing arriving in different
                     # digests dedupes by URL instead of by opaque per-email links.
-                    wf_canonical = canonical_wellfound_job_url(str(parsed.get("url") or ""))
+                    wf_canonical = canonical_wellfound_job_url(
+                        str(parsed.get("url") or "")
+                    )
                     if wf_canonical:
                         parsed["url"] = wf_canonical
 
                     # Check for exact URL and fuzzy title/company duplicates.
                     # ai: claude-sonnet-4-6 | 2026-06-10
-                    _tracked_status, tracking_source, duplicate_hint, duplicate_of_id, match_scores = db_match_for_job(
+                    (
+                        _tracked_status,
+                        tracking_source,
+                        duplicate_hint,
+                        duplicate_of_id,
+                        match_scores,
+                    ) = db_match_for_job(
                         job_title=str(parsed.get("job_title") or ""),
                         company=str(parsed.get("company") or ""),
                         job_url=str(parsed.get("url") or ""),
@@ -572,7 +641,11 @@ def _run_scan(rescan_all: bool = False) -> None:
                     )
 
                     # ai: claude-sonnet-4-6 | 2026-06-10
-                    if duplicate_hint and confidence == "high" and is_near_certain_duplicate(tracking_source, match_scores):
+                    if (
+                        duplicate_hint
+                        and confidence == "high"
+                        and is_near_certain_duplicate(tracking_source, match_scores)
+                    ):
                         status = "skipped"
                     elif duplicate_hint:
                         status = "possible_duplicate"
@@ -594,17 +667,31 @@ def _run_scan(rescan_all: bool = False) -> None:
                             # Wellfound is Cloudflare-protected — plain HTTP gets a 403 —
                             # so those URLs go through the shared Playwright fetcher.
                             if is_wellfound_job_url(job_url_str):
-                                fetched_text = wellfound_fetcher.fetch_description(job_url_str)
+                                fetched_text = wellfound_fetcher.fetch_description(
+                                    job_url_str
+                                )
                             else:
-                                fetched = CareerSiteScanner().scan_single_job_url("", job_url_str)
+                                fetched = CareerSiteScanner().scan_single_job_url(
+                                    "", job_url_str
+                                )
                                 fetched_text = fetched.get("job_text", "")
                             if len(fetched_text) >= 400:
                                 jd_text = fetched_text
-                                logger.debug("JD enrichment succeeded for %s (%d chars)", job_url_str, len(fetched_text))
+                                logger.debug(
+                                    "JD enrichment succeeded for %s (%d chars)",
+                                    job_url_str,
+                                    len(fetched_text),
+                                )
                             else:
-                                logger.debug("JD enrichment returned too little content for %s (%d chars)", job_url_str, len(fetched_text))
+                                logger.debug(
+                                    "JD enrichment returned too little content for %s (%d chars)",
+                                    job_url_str,
+                                    len(fetched_text),
+                                )
                         except Exception as exc:
-                            logger.debug("JD enrichment failed for %s: %s", job_url_str, exc)
+                            logger.debug(
+                                "JD enrichment failed for %s: %s", job_url_str, exc
+                            )
 
                     raw_snippet = jd_text[:6000] if jd_text else email_body[:300]
 
@@ -615,7 +702,8 @@ def _run_scan(rescan_all: bool = False) -> None:
                         "url": parsed.get("url", ""),
                         "source": parsed.get("source", ""),
                         "raw_email_snippet": raw_snippet,
-                        "job_description": jd_text or None,  # ai: claude-fable-5 | 2026-07-14
+                        "job_description": jd_text
+                        or None,  # ai: claude-fable-5 | 2026-07-14
                         "fit_score": None,
                         "fit_reasoning": "",
                         "status": status,
@@ -665,15 +753,22 @@ def _run_scan(rescan_all: bool = False) -> None:
                             scoring_failed_jobs += 1
                             scoring_error = str(exc)
                             outcome = "scoring failed"
-                            logger.warning("Scoring failed for %s job %d: %s", msg_id, job_idx, exc)
+                            logger.warning(
+                                "Scoring failed for %s job %d: %s", msg_id, job_idx, exc
+                            )
                     elif status == "triage":
                         outcome = "parser confidence low"
                     if duplicate_hint and status != "skipped":
                         outcome = "possible duplicate"
 
                     job_data, import_warnings = normalize_and_validate(job_data)
-                    job_data["import_warnings"] = import_warnings_to_json(import_warnings)
-                    if import_warnings and job_data["status"] not in ("possible_duplicate", "skipped"):
+                    job_data["import_warnings"] = import_warnings_to_json(
+                        import_warnings
+                    )
+                    if import_warnings and job_data["status"] not in (
+                        "possible_duplicate",
+                        "skipped",
+                    ):
                         job_data["status"] = "triage"
                         status = "triage"
                         if outcome not in ("low fit score", "possible duplicate"):
@@ -689,12 +784,14 @@ def _run_scan(rescan_all: bool = False) -> None:
                         if capture_url:
                             try:
                                 repos["browser_capture_queue"].enqueue(
-                                    capture_url, job_data.get("source") or "Welcome to the Jungle"
+                                    capture_url,
+                                    job_data.get("source") or "Welcome to the Jungle",
                                 )
                             except Exception as exc:
                                 logger.warning(
                                     "Failed to enqueue browser capture for JD-less job %s: %s",
-                                    capture_url, exc,
+                                    capture_url,
+                                    exc,
                                 )
 
                     job_repo.insert(job_data)
@@ -710,7 +807,9 @@ def _run_scan(rescan_all: bool = False) -> None:
                         triage_jobs += 1
                     else:
                         pending_review_jobs += 1
-                    source_key = (parsed.get("source") or "Unknown").strip() or "Unknown"
+                    source_key = (
+                        parsed.get("source") or "Unknown"
+                    ).strip() or "Unknown"
                     jobs_by_source[source_key] = jobs_by_source.get(source_key, 0) + 1
                     job_details.append(
                         {
@@ -731,10 +830,20 @@ def _run_scan(rescan_all: bool = False) -> None:
                     )
 
                 emails_with_jobs += 1
-                scanned_repo.mark_scanned(msg_id, sender, subject, disposition="job_created", email_date=email_date)
+                scanned_repo.mark_scanned(
+                    msg_id,
+                    sender,
+                    subject,
+                    disposition="job_created",
+                    email_date=email_date,
+                )
                 conn.commit()
                 gmail_action, n = _finalize_scanned_email(
-                    gmail, msg_id, scanned_email_label, move_successfully_processed_emails, "eligible to move"
+                    gmail,
+                    msg_id,
+                    scanned_email_label,
+                    move_successfully_processed_emails,
+                    "eligible to move",
                 )
                 moved_successful_emails += n
                 email_report.append(
@@ -827,6 +936,7 @@ def _run_scan(rescan_all: bool = False) -> None:
 
 # ─── Scan routes ──────────────────────────────────────────────────────────────
 
+
 @scan_bp.route("/scan", methods=["POST"])
 def scan_emails() -> ResponseReturnValue:
     with _scan_lock:
@@ -887,6 +997,8 @@ def rescan_all_emails() -> ResponseReturnValue:
         repos["conn"].commit()
 
     # Kick off a fresh scan with unread_only=False so already-read emails are re-fetched
-    thread = threading.Thread(target=_run_scan, kwargs={"rescan_all": True}, daemon=True)
+    thread = threading.Thread(
+        target=_run_scan, kwargs={"rescan_all": True}, daemon=True
+    )
     thread.start()
     return jsonify({"status": "started"}), 202

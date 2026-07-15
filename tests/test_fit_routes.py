@@ -51,6 +51,7 @@ def make_fake_get_repos(repos: dict) -> Any:
             yield repos
         finally:
             repos["conn"].close()
+
     return fake
 
 
@@ -117,7 +118,9 @@ class FakeFitScorer:
         return {"score": 92, "reasoning": "Strong platform engineering match."}
 
 
-def test_re_evaluate_fit_preserves_possible_duplicate_status(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_re_evaluate_fit_preserves_possible_duplicate_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     conn = FakeConnection()
     jobs_repo = FakeJobsRepo()
     repos = {

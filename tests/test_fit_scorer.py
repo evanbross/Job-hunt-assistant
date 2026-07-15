@@ -38,7 +38,9 @@ from backend.fit_scorer import FitScorer
 
 
 def test_penalty_rule_matches_complete_word_only() -> None:
-    assert FitScorer._penalty_rule_matches("intern", "Seeking an intern for summer work")
+    assert FitScorer._penalty_rule_matches(
+        "intern", "Seeking an intern for summer work"
+    )
 
 
 def test_penalty_rule_does_not_match_inside_longer_word() -> None:

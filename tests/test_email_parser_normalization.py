@@ -128,7 +128,12 @@ def test_extracts_title_and_company_from_body_when_title_is_unknown() -> None:
 
 def test_trim_company_tail_strips_bullet_separator() -> None:
     # WorkAtAStartup/YC listings use "•" to separate company name from description
-    assert _trim_company_tail("Revamp (S23)•AI-Powered Customer Segmentation for eCommerce") == "Revamp (S23)"
+    assert (
+        _trim_company_tail(
+            "Revamp (S23)•AI-Powered Customer Segmentation for eCommerce"
+        )
+        == "Revamp (S23)"
+    )
     assert _trim_company_tail("Acme Corp · Series B startup") == "Acme Corp"
 
 
@@ -141,7 +146,9 @@ def test_parser_strips_bullet_from_ai_returned_company() -> None:
         ' "confidence_reason": "test"}]'
     )
     parser = EmailParser(client=client)
-    results = parser.parse("Manual pasted job listing", "manual@local", "some listing text")
+    results = parser.parse(
+        "Manual pasted job listing", "manual@local", "some listing text"
+    )
     assert results[0]["company"] == "Revamp (S23)"
 
 
@@ -201,7 +208,11 @@ View job: https://www.linkedin.com/comm/jobs/view/4410403022/
     jobs = parser.parse("LinkedIn job alert", "jobalerts-noreply@linkedin.com", body)
 
     assert client.messages == []
-    assert [job["company"] for job in jobs] == ["Gifthealth", "OpenMined", "Devoted Health"]
+    assert [job["company"] for job in jobs] == [
+        "Gifthealth",
+        "OpenMined",
+        "Devoted Health",
+    ]
     assert [job["job_title"] for job in jobs] == [
         "Staff Software Engineer",
         "Staff Software Engineer",
@@ -253,12 +264,12 @@ def test_parser_detokenizes_url_when_llm_drops_brackets() -> None:
     assert jobs[0]["url"] == "https://jobs.example.com/postings/123"
 
 
-def test_parser_resolves_sendgrid_tracking_urls_for_wttj_emails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parser_resolves_sendgrid_tracking_urls_for_wttj_emails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """WTTJ emails routed through SendGrid wrap every link in a tracking URL.
     The parser should follow the redirect and store the resolved WTTJ URL."""
-    real_wttj_url = (
-        "https://www.welcometothejungle.com/en/companies/acme-health/jobs/senior-backend-engineer_remote"
-    )
+    real_wttj_url = "https://www.welcometothejungle.com/en/companies/acme-health/jobs/senior-backend-engineer_remote"
     sendgrid_url = "https://u9999.ct.sendgrid.net/ls/click?upn=FAKETOKEN"
 
     monkeypatch.setattr(

@@ -76,35 +76,45 @@ logger = logging.getLogger(__name__)
 
 jobs_bp = Blueprint("jobs", __name__)
 
-_VALID_SKIP_REASONS = frozenset({
-    "rejected",
-    "duplicate",
-    "req_closed",
-    "not_remote",
-    "not_a_fit",
-    "salary_too_low",
-    "not_interested",
-    "wrong_role",
-    "garbage",
-    "other",
-})
-_VALID_MISMATCH_REASONS = frozenset({
-    "Not Remote",
-    "Hybrid / On-Site",
-    "Wrong Level",
-    "Wrong Tech Stack",
-    "Too Management-Focused",
-    "Wrong Domain",
-    "Compensation Mismatch",
-    "Location Constraint",
-    "Contract / Temp",
-    "Other Mismatch",
-})
+_VALID_SKIP_REASONS = frozenset(
+    {
+        "rejected",
+        "duplicate",
+        "req_closed",
+        "not_remote",
+        "not_a_fit",
+        "salary_too_low",
+        "not_interested",
+        "wrong_role",
+        "garbage",
+        "other",
+    }
+)
+_VALID_MISMATCH_REASONS = frozenset(
+    {
+        "Not Remote",
+        "Hybrid / On-Site",
+        "Wrong Level",
+        "Wrong Tech Stack",
+        "Too Management-Focused",
+        "Wrong Domain",
+        "Compensation Mismatch",
+        "Location Constraint",
+        "Contract / Temp",
+        "Other Mismatch",
+    }
+)
 
 
-def _validated_job_patch_fields(body: dict[str, object]) -> tuple[dict[str, str], str | None]:
+def _validated_job_patch_fields(
+    body: dict[str, object],
+) -> tuple[dict[str, str], str | None]:
     allowed = {"company", "job_title", "url"}
-    fields = {k: str(v).strip() for k, v in body.items() if k in allowed and isinstance(v, str)}
+    fields = {
+        k: str(v).strip()
+        for k, v in body.items()
+        if k in allowed and isinstance(v, str)
+    }
     if "url" in fields and fields["url"]:
         parsed = urlparse(fields["url"])
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -113,6 +123,7 @@ def _validated_job_patch_fields(body: dict[str, object]) -> tuple[dict[str, str]
 
 
 # ─── Job routes ───────────────────────────────────────────────────────────────
+
 
 @jobs_bp.route("/jobs/stats")
 def get_job_stats() -> ResponseReturnValue:
@@ -159,7 +170,10 @@ def create_manual_job() -> ResponseReturnValue:
     job_title_override = str(body.get("job_title_override") or "").strip()
 
     if not listing_text and not source_url:
-        return jsonify({"error": "Job listing text or a public job URL is required."}), 400
+        return (
+            jsonify({"error": "Job listing text or a public job URL is required."}),
+            400,
+        )
 
     try:
         with get_repos() as repos:
@@ -182,9 +196,15 @@ def create_manual_job() -> ResponseReturnValue:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         logger.error("Manual job ingest failed: %s", exc)
-        return jsonify({"error": safe_error_message(exc, "Manual job ingest failed")}), 500
+        return (
+            jsonify({"error": safe_error_message(exc, "Manual job ingest failed")}),
+            500,
+        )
 
-    return jsonify({"job": result.job, "parsed_job_count": result.parsed_job_count}), 201
+    return (
+        jsonify({"job": result.job, "parsed_job_count": result.parsed_job_count}),
+        201,
+    )
 
 
 @jobs_bp.route("/jobs/<int:job_id>", methods=["PATCH"])
@@ -208,15 +228,22 @@ def patch_job(job_id: int) -> ResponseReturnValue:
                 return jsonify({"error": "Job not found"}), 404
 
             new_status = str(updated_job.get("status") or "")
-            if "status" in fields and old_status and new_status and new_status != old_status:
-                repos["job_status_history"].insert({
-                    "job_id": job_id,
-                    "from_status": old_status,
-                    "to_status": new_status,
-                    "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
-                    "trigger": "patch",
-                    "extra_data": None,
-                })
+            if (
+                "status" in fields
+                and old_status
+                and new_status
+                and new_status != old_status
+            ):
+                repos["job_status_history"].insert(
+                    {
+                        "job_id": job_id,
+                        "from_status": old_status,
+                        "to_status": new_status,
+                        "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                        "trigger": "patch",
+                        "extra_data": None,
+                    }
+                )
 
             # ai: claude-sonnet-4-6 | 2026-06-29
             # Only re-run the duplicate check when a field that affects matching
@@ -226,7 +253,13 @@ def patch_job(job_id: int) -> ResponseReturnValue:
             dedup_fields = {"job_title", "company", "url"}
             if dedup_fields & fields.keys():
                 known_jobs: list[dict] = repos["jobs"].get_all_ordered()
-                _tracked_status, _tracking_source, duplicate_hint, duplicate_of_id, _match_scores = db_match_for_job(
+                (
+                    _tracked_status,
+                    _tracking_source,
+                    duplicate_hint,
+                    duplicate_of_id,
+                    _match_scores,
+                ) = db_match_for_job(
                     job_title=str(updated_job.get("job_title") or ""),
                     company=str(updated_job.get("company") or ""),
                     job_url=str(updated_job.get("url") or ""),
@@ -240,11 +273,16 @@ def patch_job(job_id: int) -> ResponseReturnValue:
                     duplicate_updates["duplicate_hint"] = duplicate_hint
                     duplicate_updates["duplicate_of_id"] = duplicate_of_id
                     duplicate_updates["status"] = "possible_duplicate"
-                elif updated_job.get("duplicate_hint") or updated_job.get("status") == "possible_duplicate":
+                elif (
+                    updated_job.get("duplicate_hint")
+                    or updated_job.get("status") == "possible_duplicate"
+                ):
                     fit_score = int(updated_job.get("fit_score") or 0)
                     duplicate_updates["duplicate_hint"] = None
                     duplicate_updates["duplicate_of_id"] = None
-                    duplicate_updates["status"] = "pending_review" if fit_score >= 70 else "triage"
+                    duplicate_updates["status"] = (
+                        "pending_review" if fit_score >= 70 else "triage"
+                    )
 
                 if duplicate_updates:
                     repos["jobs"].update(job_id, duplicate_updates)
@@ -284,18 +322,22 @@ def skip_job(job_id: int) -> ResponseReturnValue:
             updates["skip_mismatch_reasons"] = "|".join(mismatch_reasons)
         repos["jobs"].update(job_id, updates)
         maybe_mark_source_email_read(job, repos["jobs"])
-        repos["job_status_history"].insert({
-            "job_id": job_id,
-            "from_status": from_status,
-            "to_status": "skipped",
-            "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "trigger": "skip",
-            "extra_data": json.dumps({
-                "prev_skip_reason": job.get("skip_reason"),
-                "prev_skip_feedback": job.get("skip_feedback"),
-                "prev_skip_mismatch_reasons": job.get("skip_mismatch_reasons"),
-            }),
-        })
+        repos["job_status_history"].insert(
+            {
+                "job_id": job_id,
+                "from_status": from_status,
+                "to_status": "skipped",
+                "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "trigger": "skip",
+                "extra_data": json.dumps(
+                    {
+                        "prev_skip_reason": job.get("skip_reason"),
+                        "prev_skip_feedback": job.get("skip_feedback"),
+                        "prev_skip_mismatch_reasons": job.get("skip_mismatch_reasons"),
+                    }
+                ),
+            }
+        )
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -352,14 +394,18 @@ def undo_status_change(history_id: int) -> ResponseReturnValue:
         elif trigger == "return_to_queue":
             # ai: claude-fable-5 | 2026-07-14
             # prev_date_added_to_sheet is the pre-migration key for the same value.
-            prev_date = extra.get("prev_applied_date") or extra.get("prev_date_added_to_sheet")
+            prev_date = extra.get("prev_applied_date") or extra.get(
+                "prev_date_added_to_sheet"
+            )
             restore["on_sheet"] = 1
-            repos["stages"].insert({
-                "job_id": job_id,
-                "status": "applied",
-                "date": prev_date or datetime.now(UTC).date().isoformat(),
-                "notes": None,
-            })
+            repos["stages"].insert(
+                {
+                    "job_id": job_id,
+                    "status": "applied",
+                    "date": prev_date or datetime.now(UTC).date().isoformat(),
+                    "notes": None,
+                }
+            )
 
         repos["jobs"].update(job_id, restore)
         repos["job_status_history"].delete(history_id)
@@ -389,21 +435,25 @@ def apply_job(job_id: int) -> ResponseReturnValue:
         today = datetime.now(UTC).date().isoformat()
         # ai: claude-fable-5 | 2026-07-14
         # The applied date lives on the stage row; date_found keeps the discovery date.
-        repos["jobs"].update(
-            job_id, {"status": "applied", "on_sheet": 1}
+        repos["jobs"].update(job_id, {"status": "applied", "on_sheet": 1})
+        repos["stages"].insert(
+            {"job_id": job_id, "status": "applied", "date": today, "notes": None}
         )
-        repos["stages"].insert({"job_id": job_id, "status": "applied", "date": today, "notes": None})
         maybe_mark_source_email_read(job, repos["jobs"])
-        repos["job_status_history"].insert({
-            "job_id": job_id,
-            "from_status": from_status,
-            "to_status": "applied",
-            "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "trigger": "apply",
-            "extra_data": json.dumps({
-                "prev_on_sheet": int(job.get("on_sheet") or 0),
-            }),
-        })
+        repos["job_status_history"].insert(
+            {
+                "job_id": job_id,
+                "from_status": from_status,
+                "to_status": "applied",
+                "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "trigger": "apply",
+                "extra_data": json.dumps(
+                    {
+                        "prev_on_sheet": int(job.get("on_sheet") or 0),
+                    }
+                ),
+            }
+        )
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -416,7 +466,10 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
             return jsonify({"error": "Job not found"}), 404
 
         if job.get("status") != "applied":
-            return jsonify({"error": "Only applied jobs can be returned to the queue"}), 409
+            return (
+                jsonify({"error": "Only applied jobs can be returned to the queue"}),
+                409,
+            )
 
         # ai: claude-fable-5 | 2026-07-14
         deleted_applied_date: str | None = None
@@ -436,17 +489,22 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
                 "on_sheet": 0,
             },
         )
-        repos["job_status_history"].insert({
-            "job_id": job_id,
-            "from_status": "applied",
-            "to_status": new_status,
-            "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "trigger": "return_to_queue",
-            "extra_data": json.dumps({
-                # The undo path re-inserts the deleted 'applied' stage with this date.
-                "prev_applied_date": deleted_applied_date or job.get("date_found"),
-            }),
-        })
+        repos["job_status_history"].insert(
+            {
+                "job_id": job_id,
+                "from_status": "applied",
+                "to_status": new_status,
+                "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "trigger": "return_to_queue",
+                "extra_data": json.dumps(
+                    {
+                        # The undo path re-inserts the deleted 'applied' stage with this date.
+                        "prev_applied_date": deleted_applied_date
+                        or job.get("date_found"),
+                    }
+                ),
+            }
+        )
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -468,7 +526,9 @@ def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
         # posting and its own already-flagged duplicate) can ping-pong forever:
         # dismissing the match against A surfaces B, dismissing B re-surfaces A.
         try:
-            dismissed_ids: list[int] = json.loads(job.get("dismissed_duplicate_ids") or "[]")
+            dismissed_ids: list[int] = json.loads(
+                job.get("dismissed_duplicate_ids") or "[]"
+            )
         except (TypeError, ValueError):
             dismissed_ids = []
         if dismissed_id is not None:
@@ -479,7 +539,13 @@ def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
         all_jobs = repos["jobs"].get_all_ordered()
         check_pool = [j for j in all_jobs if j.get("id") not in excluded]
 
-        _tracked_status, _tracking_source, duplicate_hint, duplicate_of_id, _match_scores = db_match_for_job(
+        (
+            _tracked_status,
+            _tracking_source,
+            duplicate_hint,
+            duplicate_of_id,
+            _match_scores,
+        ) = db_match_for_job(
             job_title=str(job.get("job_title") or ""),
             company=str(job.get("company") or ""),
             job_url=str(job.get("url") or ""),
@@ -582,17 +648,21 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
                 logger.warning("Scoring failed during approval: %s", exc)
 
         repos["jobs"].update(job_id, updates)
-        repos["job_status_history"].insert({
-            "job_id": job_id,
-            "from_status": from_status,
-            "to_status": "pending_review",
-            "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "trigger": "approve",
-            "extra_data": json.dumps({
-                "prev_fit_score": prev_fit_score,
-                "prev_fit_reasoning": prev_fit_reasoning,
-            }),
-        })
+        repos["job_status_history"].insert(
+            {
+                "job_id": job_id,
+                "from_status": from_status,
+                "to_status": "pending_review",
+                "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "trigger": "approve",
+                "extra_data": json.dumps(
+                    {
+                        "prev_fit_score": prev_fit_score,
+                        "prev_fit_reasoning": prev_fit_reasoning,
+                    }
+                ),
+            }
+        )
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -624,12 +694,26 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
     t0 = time.monotonic()
     try:
         scanner = CareerSiteScanner()
-        logger.info("refresh-from-url: calling scan_single_job_url for job %d url=%s", job_id, url)
+        logger.info(
+            "refresh-from-url: calling scan_single_job_url for job %d url=%s",
+            job_id,
+            url,
+        )
         fetched = scanner.scan_single_job_url(job.get("source") or "", url)
         new_text = fetched["job_text"]
-        logger.info("refresh-from-url: scan_single_job_url returned in %.1fs, text length=%d", time.monotonic() - t0, len(new_text))
+        logger.info(
+            "refresh-from-url: scan_single_job_url returned in %.1fs, text length=%d",
+            time.monotonic() - t0,
+            len(new_text),
+        )
     except Exception as exc:
-        logger.warning("refresh-from-url: fetch failed for job %d (%s) after %.1fs: %s", job_id, url, time.monotonic() - t0, exc)
+        logger.warning(
+            "refresh-from-url: fetch failed for job %d (%s) after %.1fs: %s",
+            job_id,
+            url,
+            time.monotonic() - t0,
+            exc,
+        )
         new_text = ""
 
     # ai: claude-sonnet-4-6 | 2026-06-16
@@ -640,13 +724,26 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
             with get_repos() as repos:
                 repos["browser_capture_queue"].enqueue(url, site_name)
                 repos["conn"].commit()
-            logger.info("refresh-from-url: queued job %d (%s) for browser extension capture", job_id, url)
+            logger.info(
+                "refresh-from-url: queued job %d (%s) for browser extension capture",
+                job_id,
+                url,
+            )
         except Exception as q_exc:
-            logger.warning("refresh-from-url: failed to enqueue job %d for browser capture: %s", job_id, q_exc)
-        return jsonify({
-            "queued_for_browser_capture": True,
-            "message": "Direct fetch returned no content — the page likely requires sign-in. URL queued for browser extension; it will auto-capture on the next poll (~1 min) and update this card in place.",
-        }), 200
+            logger.warning(
+                "refresh-from-url: failed to enqueue job %d for browser capture: %s",
+                job_id,
+                q_exc,
+            )
+        return (
+            jsonify(
+                {
+                    "queued_for_browser_capture": True,
+                    "message": "Direct fetch returned no content — the page likely requires sign-in. URL queued for browser extension; it will auto-capture on the next poll (~1 min) and update this card in place.",
+                }
+            ),
+            200,
+        )
 
     # ai: claude-sonnet-4-6 | 2026-06-21
     t_score = time.monotonic()
@@ -660,10 +757,21 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
             penalty_rules=penalty_rules,
             fit_feedback=fit_feedback,
         )
-        logger.info("refresh-from-url: FitScorer returned in %.1fs for job %d", time.monotonic() - t_score, job_id)
+        logger.info(
+            "refresh-from-url: FitScorer returned in %.1fs for job %d",
+            time.monotonic() - t_score,
+            job_id,
+        )
     except Exception as exc:
-        logger.warning("refresh-from-url: scoring failed for job %d after %.1fs: %s", job_id, time.monotonic() - t_score, exc)
-        return jsonify({"error": safe_error_message(exc, "Scoring failed")}), _ai_error_http_status(exc)
+        logger.warning(
+            "refresh-from-url: scoring failed for job %d after %.1fs: %s",
+            job_id,
+            time.monotonic() - t_score,
+            exc,
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Scoring failed")}
+        ), _ai_error_http_status(exc)
 
     fit_score = score_result["score"]
     current_status = job.get("status", "triage")
@@ -673,7 +781,10 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
     # ai: claude-sonnet-4-6 | 2026-06-21
     logger.info(
         "refresh-from-url: saving results for job %d — fit_score=%s status=%s total=%.1fs",
-        job_id, fit_score, current_status, time.monotonic() - t0,
+        job_id,
+        fit_score,
+        current_status,
+        time.monotonic() - t0,
     )
     with get_repos() as repos:
         # ai: claude-sonnet-4-6 | 2026-06-26
@@ -681,18 +792,25 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
         # stale once the JD has been directly fetched. Keeping them would cause the
         # triage panel to show "Parser certainty score: 45% / company name missing"
         # even after a successful re-fetch with a complete description.
-        repos["jobs"].update(job_id, {
-            "raw_email_snippet": new_text[:6000],
-            "fit_score": fit_score,
-            "fit_reasoning": score_result["reasoning"],
-            "status": current_status,
-            "parser_confidence": None,
-            "confidence_score": None,
-            "confidence_reason": None,
-        })
+        repos["jobs"].update(
+            job_id,
+            {
+                "raw_email_snippet": new_text[:6000],
+                "fit_score": fit_score,
+                "fit_reasoning": score_result["reasoning"],
+                "status": current_status,
+                "parser_confidence": None,
+                "confidence_score": None,
+                "confidence_reason": None,
+            },
+        )
         updated_job = repos["jobs"].get_by_id(job_id)
         repos["conn"].commit()
-    logger.info("refresh-from-url: completed for job %d in %.1fs total", job_id, time.monotonic() - t0)
+    logger.info(
+        "refresh-from-url: completed for job %d in %.1fs total",
+        job_id,
+        time.monotonic() - t0,
+    )
     return jsonify(updated_job)
 
 
@@ -704,7 +822,12 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
     if not description:
         return jsonify({"error": "Description text is required"}), 400
     if len(description) < 80:
-        return jsonify({"error": "Paste a more complete job description before re-evaluating."}), 400
+        return (
+            jsonify(
+                {"error": "Paste a more complete job description before re-evaluating."}
+            ),
+            400,
+        )
 
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
@@ -728,7 +851,9 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
         )
     except Exception as exc:
         logger.warning("description update: scoring failed for job %d: %s", job_id, exc)
-        return jsonify({"error": safe_error_message(exc, "Scoring failed")}), _ai_error_http_status(exc)
+        return jsonify(
+            {"error": safe_error_message(exc, "Scoring failed")}
+        ), _ai_error_http_status(exc)
 
     fit_score = score_result["score"]
     current_status = job.get("status", "triage")
@@ -785,10 +910,17 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
         email_raw_html = gmail.extract_raw_html(full_msg)
     except Exception as exc:
         logger.error("Reprocess: failed to fetch message %s: %s", base_email_id, exc)
-        return jsonify({"error": safe_error_message(exc, "Failed to fetch email from Gmail")}), 500
+        return (
+            jsonify(
+                {"error": safe_error_message(exc, "Failed to fetch email from Gmail")}
+            ),
+            500,
+        )
 
     try:
-        parsed_jobs = EmailParser().parse(subject, sender, email_body, raw_html=email_raw_html)
+        parsed_jobs = EmailParser().parse(
+            subject, sender, email_body, raw_html=email_raw_html
+        )
     except Exception as exc:
         logger.error("Reprocess: parser error for job %d: %s", job_id, exc)
         return jsonify({"error": safe_error_message(exc, "Parser error")}), 500
@@ -861,11 +993,20 @@ def add_application_stage(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         valid_keys = {s["key"] for s in repos["stage_statuses"].get_all()}
         if status not in valid_keys:
-            return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(valid_keys))}"}), 400
+            return (
+                jsonify(
+                    {
+                        "error": f"Invalid status. Must be one of: {', '.join(sorted(valid_keys))}"
+                    }
+                ),
+                400,
+            )
         if not repos["jobs"].get_by_id(job_id):
             return jsonify({"error": "Job not found"}), 404
 
-        stage_id = repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
+        stage_id = repos["stages"].insert(
+            {"job_id": job_id, "status": status, "date": stage_date, "notes": notes}
+        )
         stage = repos["stages"].get_by_id(stage_id)
         repos["conn"].commit()
     return jsonify(stage), 201
@@ -884,6 +1025,7 @@ def delete_application_stage(job_id: int, stage_id: int) -> ResponseReturnValue:
 
 
 # ── WTTJ sendgrid URL repair ───────────────────────────────────────────────────
+
 
 @dataclass
 class WttjRepairState:
@@ -907,7 +1049,9 @@ _wttj_repair_lock = threading.Lock()
 def _non_terminal_jobs(repos: dict) -> list[dict]:
     """All jobs whose current stage/status is not a terminal one (rejected, ghosted, etc.)."""
     jobs = repos["jobs"].get_all_ordered()
-    terminal_keys = {s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")}
+    terminal_keys = {
+        s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")
+    }
     all_stages = repos["stages"].get_all()
     stages_by_job: dict[int, list] = {}
     for stage in all_stages:
@@ -933,7 +1077,10 @@ def _wttj_repair_candidates(repos: dict) -> list[dict]:
         if "welcome to the jungle" not in source and "wttj" not in source:
             continue
         url = (job.get("url") or "").strip()
-        if "welcometothejungle.com/jobs/" in url or "app.welcometothejungle.com/jobs/" in url:
+        if (
+            "welcometothejungle.com/jobs/" in url
+            or "app.welcometothejungle.com/jobs/" in url
+        ):
             continue
         candidates.append(job)
     return candidates
@@ -962,7 +1109,9 @@ def _run_wttj_repair() -> None:
         total = len(candidates)
         with _wttj_repair_lock:
             _wttj_repair_state.total = total
-            _wttj_repair_state.message = f"Repairing {total} job{'s' if total != 1 else ''}…"
+            _wttj_repair_state.message = (
+                f"Repairing {total} job{'s' if total != 1 else ''}…"
+            )
 
         repaired: list[dict] = []
         url_only: list[dict] = []
@@ -981,7 +1130,9 @@ def _run_wttj_repair() -> None:
                 _wttj_repair_state.progress = i
                 _wttj_repair_state.current_company = company
                 _wttj_repair_state.current_title = title
-                _wttj_repair_state.message = f"Repairing {i + 1}/{total}: {company} — {title}…"
+                _wttj_repair_state.message = (
+                    f"Repairing {i + 1}/{total}: {company} — {title}…"
+                )
 
             # Jobs with no URL at all can't be auto-resolved.
             if not url:
@@ -1005,7 +1156,12 @@ def _run_wttj_repair() -> None:
                 if len(fetched.get("job_text") or "") >= 200:
                     jd_text = fetched["job_text"]
             except Exception as exc:
-                logger.warning("WTTJ repair: JD fetch failed for job %d (%s): %s", job["id"], resolved, exc)
+                logger.warning(
+                    "WTTJ repair: JD fetch failed for job %d (%s): %s",
+                    job["id"],
+                    resolved,
+                    exc,
+                )
 
             updates: dict = {"url": resolved}
             if jd_text:
@@ -1049,7 +1205,9 @@ def start_wttj_repair() -> ResponseReturnValue:
     with _wttj_repair_lock:
         if _wttj_repair_state.running:
             return jsonify({"error": "Repair already running"}), 409
-    threading.Thread(target=_run_wttj_repair, daemon=True, name="wttj-url-repair").start()
+    threading.Thread(
+        target=_run_wttj_repair, daemon=True, name="wttj-url-repair"
+    ).start()
     return jsonify({"status": "started"})
 
 
@@ -1057,19 +1215,21 @@ def start_wttj_repair() -> ResponseReturnValue:
 def wttj_repair_status() -> ResponseReturnValue:
     """Return the current WTTJ URL repair state."""
     with _wttj_repair_lock:
-        return jsonify({
-            "running": _wttj_repair_state.running,
-            "progress": _wttj_repair_state.progress,
-            "total": _wttj_repair_state.total,
-            "message": _wttj_repair_state.message,
-            "current_company": _wttj_repair_state.current_company,
-            "current_title": _wttj_repair_state.current_title,
-            "repaired": _wttj_repair_state.repaired,
-            "url_only": _wttj_repair_state.url_only,
-            "failed": _wttj_repair_state.failed,
-            "skipped": _wttj_repair_state.skipped,
-            "error": _wttj_repair_state.error,
-        })
+        return jsonify(
+            {
+                "running": _wttj_repair_state.running,
+                "progress": _wttj_repair_state.progress,
+                "total": _wttj_repair_state.total,
+                "message": _wttj_repair_state.message,
+                "current_company": _wttj_repair_state.current_company,
+                "current_title": _wttj_repair_state.current_title,
+                "repaired": _wttj_repair_state.repaired,
+                "url_only": _wttj_repair_state.url_only,
+                "failed": _wttj_repair_state.failed,
+                "skipped": _wttj_repair_state.skipped,
+                "error": _wttj_repair_state.error,
+            }
+        )
 
 
 # ── Broken-import rescan: jobs whose url is not a real http(s) URL ───────────
@@ -1080,6 +1240,7 @@ def wttj_repair_status() -> ResponseReturnValue:
 # current parser recovers the real URL and lets duplicate detection and
 # scoring run correctly instead of leaving the job stuck or falsely skipped.
 # ai: claude-sonnet-5 | 2026-07-10
+
 
 @dataclass
 class RescanImportState:
@@ -1108,7 +1269,9 @@ _rescan_import_lock = threading.Lock()
 # against another job's URL_N placeholder is exactly the false positive this rescan
 # exists to correct, so it must stay eligible for re-evaluation. Only outcomes that
 # reflect a genuine, decisive judgment unrelated to this bug are excluded.
-_RESCAN_DECISIVE_TERMINAL_STATUSES = frozenset({"rejected", "ghosted", "req_closed", "job_filled"})
+_RESCAN_DECISIVE_TERMINAL_STATUSES = frozenset(
+    {"rejected", "ghosted", "req_closed", "job_filled"}
+)
 
 
 # ai: claude-sonnet-5 | 2026-07-10
@@ -1204,16 +1367,29 @@ def _run_rescan_broken_imports() -> None:
         processed = 0
 
         for base_id, group_rows in groups.items():
-            summaries = [{"id": r["id"], "company": r.get("company") or "", "job_title": r.get("job_title") or "Untitled"} for r in group_rows]
+            summaries = [
+                {
+                    "id": r["id"],
+                    "company": r.get("company") or "",
+                    "job_title": r.get("job_title") or "Untitled",
+                }
+                for r in group_rows
+            ]
             try:
                 full_msg = gmail.get_message(base_id)
                 subject, sender, email_body = gmail.extract_text(full_msg)
                 raw_html = gmail.extract_raw_html(full_msg)
-                parsed_jobs = parser.parse(subject, sender, email_body, raw_html=raw_html)
+                parsed_jobs = parser.parse(
+                    subject, sender, email_body, raw_html=raw_html
+                )
                 parsed_jobs = expand_board_url_parsed_jobs(parsed_jobs)
             except (HttpError, ValueError, RuntimeError) as exc:
-                logger.warning("Rescan: could not re-fetch/parse email %s: %s", base_id, exc)
-                unresolved.extend({**s, "reason": f"fetch/parse failed: {exc}"} for s in summaries)
+                logger.warning(
+                    "Rescan: could not re-fetch/parse email %s: %s", base_id, exc
+                )
+                unresolved.extend(
+                    {**s, "reason": f"fetch/parse failed: {exc}"} for s in summaries
+                )
                 with _rescan_import_lock:
                     _rescan_import_state.unresolved = list(unresolved)
                 processed += len(group_rows)
@@ -1224,9 +1400,13 @@ def _run_rescan_broken_imports() -> None:
             if len(parsed_jobs) != len(group_rows):
                 logger.warning(
                     "Rescan: job count mismatch for email %s (%d broken rows, %d re-parsed) — leaving for manual review",
-                    base_id, len(group_rows), len(parsed_jobs),
+                    base_id,
+                    len(group_rows),
+                    len(parsed_jobs),
                 )
-                unresolved.extend({**s, "reason": "job count changed on re-parse"} for s in summaries)
+                unresolved.extend(
+                    {**s, "reason": "job count changed on re-parse"} for s in summaries
+                )
                 with _rescan_import_lock:
                     _rescan_import_state.unresolved = list(unresolved)
                 processed += len(group_rows)
@@ -1241,11 +1421,20 @@ def _run_rescan_broken_imports() -> None:
                 with _rescan_import_lock:
                     _rescan_import_state.current_company = company
                     _rescan_import_state.current_title = title
-                    _rescan_import_state.message = f"Rescanning {processed + 1}/{total}: {company} — {title}…"
+                    _rescan_import_state.message = (
+                        f"Rescanning {processed + 1}/{total}: {company} — {title}…"
+                    )
 
                 corrected_url = str(parsed.get("url") or "").strip()
                 if not corrected_url:
-                    unresolved.append({"id": job_id, "company": company, "job_title": title, "reason": "re-parse returned no URL"})
+                    unresolved.append(
+                        {
+                            "id": job_id,
+                            "company": company,
+                            "job_title": title,
+                            "reason": "re-parse returned no URL",
+                        }
+                    )
                     with _rescan_import_lock:
                         _rescan_import_state.unresolved = list(unresolved)
                     processed += 1
@@ -1262,7 +1451,14 @@ def _run_rescan_broken_imports() -> None:
                     with get_repos() as write_repos:
                         write_repos["jobs"].update(job_id, updates)
                         write_repos["conn"].commit()
-                    applied_fixed.append({"id": job_id, "company": effective_company, "job_title": title, "url": corrected_url})
+                    applied_fixed.append(
+                        {
+                            "id": job_id,
+                            "company": effective_company,
+                            "job_title": title,
+                            "url": corrected_url,
+                        }
+                    )
                     with _rescan_import_lock:
                         _rescan_import_state.applied_fixed = list(applied_fixed)
                     processed += 1
@@ -1271,7 +1467,13 @@ def _run_rescan_broken_imports() -> None:
                     continue
 
                 confidence = str(row.get("parser_confidence") or "low")
-                tracked_status, tracking_source, duplicate_hint, duplicate_of_id, match_scores = db_match_for_job(
+                (
+                    tracked_status,
+                    tracking_source,
+                    duplicate_hint,
+                    duplicate_of_id,
+                    match_scores,
+                ) = db_match_for_job(
                     job_title=title,
                     company=effective_company,
                     job_url=corrected_url,
@@ -1279,7 +1481,11 @@ def _run_rescan_broken_imports() -> None:
                     dedup_checker=dup_checker,
                     exclude_id=job_id,
                 )
-                if duplicate_hint and confidence == "high" and is_near_certain_duplicate(tracking_source, match_scores):
+                if (
+                    duplicate_hint
+                    and confidence == "high"
+                    and is_near_certain_duplicate(tracking_source, match_scores)
+                ):
                     new_status = "skipped"
                 elif duplicate_hint:
                     new_status = "possible_duplicate"
@@ -1295,18 +1501,30 @@ def _run_rescan_broken_imports() -> None:
                     updates["skip_feedback"] = None
 
                 was_hidden = row.get("status") in ("skipped", "possible_duplicate")
-                summary = {"id": job_id, "company": effective_company, "job_title": title, "url": corrected_url}
+                summary = {
+                    "id": job_id,
+                    "company": effective_company,
+                    "job_title": title,
+                    "url": corrected_url,
+                }
 
                 if new_status in ("pending_review", "triage") and confidence == "high":
                     jd_text = ""
                     if corrected_url.startswith("https://"):
                         try:
-                            fetched = CareerSiteScanner().scan_single_job_url(str(row.get("source") or ""), corrected_url)
+                            fetched = CareerSiteScanner().scan_single_job_url(
+                                str(row.get("source") or ""), corrected_url
+                            )
                             fetched_text = fetched.get("job_text", "")
                             if len(fetched_text) >= 400:
                                 jd_text = fetched_text
                         except (RuntimeError, ValueError, OSError) as exc:
-                            logger.warning("Rescan: JD fetch failed for job %d (%s): %s", job_id, corrected_url, exc)
+                            logger.warning(
+                                "Rescan: JD fetch failed for job %d (%s): %s",
+                                job_id,
+                                corrected_url,
+                                exc,
+                            )
                     try:
                         score_result = FitScorer().score(
                             job_title=title,
@@ -1318,22 +1536,30 @@ def _run_rescan_broken_imports() -> None:
                         )
                         updates["fit_score"] = score_result["score"]
                         updates["fit_reasoning"] = score_result["reasoning"]
-                        updates["raw_email_snippet"] = (jd_text if jd_text else email_body)[:6000]
+                        updates["raw_email_snippet"] = (
+                            jd_text if jd_text else email_body
+                        )[:6000]
                         if score_result["score"] < 70:
                             updates["status"] = "triage"
                             new_status = "triage"
                         rescored.append({**summary, "fit_score": score_result["score"]})
                         with _rescan_import_lock:
                             _rescan_import_state.rescored = list(rescored)
-                    except Exception as exc:  # noqa: BLE001 - a scoring failure must not abort the rescan
-                        logger.warning("Rescan: scoring failed for job %d: %s", job_id, exc)
+                    except (
+                        Exception
+                    ) as exc:  # noqa: BLE001 - a scoring failure must not abort the rescan
+                        logger.warning(
+                            "Rescan: scoring failed for job %d: %s", job_id, exc
+                        )
 
                 with get_repos() as write_repos:
                     write_repos["jobs"].update(job_id, updates)
                     write_repos["conn"].commit()
                     updated = write_repos["jobs"].get_by_id(job_id)
                 if updated:
-                    known_jobs = [j for j in known_jobs if j.get("id") != job_id] + [updated]
+                    known_jobs = [j for j in known_jobs if j.get("id") != job_id] + [
+                        updated
+                    ]
 
                 if new_status in ("skipped", "possible_duplicate"):
                     still_duplicate.append({**summary, "status": new_status})
@@ -1371,7 +1597,9 @@ def _run_rescan_broken_imports() -> None:
         with _rescan_import_lock:
             _rescan_import_state.running = False
             _rescan_import_state.error = str(exc)
-            _rescan_import_state.message = "Not authenticated with Gmail — see server logs"
+            _rescan_import_state.message = (
+                "Not authenticated with Gmail — see server logs"
+            )
     except Exception as exc:
         logger.warning("Broken-import rescan failed: %s", exc, exc_info=True)
         with _rescan_import_lock:
@@ -1386,7 +1614,9 @@ def start_rescan_broken_imports() -> ResponseReturnValue:
     with _rescan_import_lock:
         if _rescan_import_state.running:
             return jsonify({"error": "Rescan already running"}), 409
-    threading.Thread(target=_run_rescan_broken_imports, daemon=True, name="broken-import-rescan").start()
+    threading.Thread(
+        target=_run_rescan_broken_imports, daemon=True, name="broken-import-rescan"
+    ).start()
     return jsonify({"status": "started"})
 
 
@@ -1394,25 +1624,28 @@ def start_rescan_broken_imports() -> ResponseReturnValue:
 def rescan_broken_imports_status() -> ResponseReturnValue:
     """Return the current broken-import rescan state."""
     with _rescan_import_lock:
-        return jsonify({
-            "running": _rescan_import_state.running,
-            "progress": _rescan_import_state.progress,
-            "total": _rescan_import_state.total,
-            "message": _rescan_import_state.message,
-            "current_company": _rescan_import_state.current_company,
-            "current_title": _rescan_import_state.current_title,
-            "unskipped": _rescan_import_state.unskipped,
-            "still_duplicate": _rescan_import_state.still_duplicate,
-            "rescored": _rescan_import_state.rescored,
-            "applied_fixed": _rescan_import_state.applied_fixed,
-            "url_only": _rescan_import_state.url_only,
-            "unresolved": _rescan_import_state.unresolved,
-            "error": _rescan_import_state.error,
-        })
+        return jsonify(
+            {
+                "running": _rescan_import_state.running,
+                "progress": _rescan_import_state.progress,
+                "total": _rescan_import_state.total,
+                "message": _rescan_import_state.message,
+                "current_company": _rescan_import_state.current_company,
+                "current_title": _rescan_import_state.current_title,
+                "unskipped": _rescan_import_state.unskipped,
+                "still_duplicate": _rescan_import_state.still_duplicate,
+                "rescored": _rescan_import_state.rescored,
+                "applied_fixed": _rescan_import_state.applied_fixed,
+                "url_only": _rescan_import_state.url_only,
+                "unresolved": _rescan_import_state.unresolved,
+                "error": _rescan_import_state.error,
+            }
+        )
 
 
 # ── General import-issue repair sweep ─────────────────────────────────────────
 # ai: claude-opus-4-8 | 2026-07-01
+
 
 @dataclass
 class ImportRepairState:
@@ -1448,7 +1681,9 @@ _PATTERN_MIN_COUNT = 3
 _PATTERN_MIN_PERCENT = 15.0
 
 
-def _attempt_import_repair(repos: dict, job: dict, warnings: list[str]) -> tuple[dict, list[str]]:
+def _attempt_import_repair(
+    repos: dict, job: dict, warnings: list[str]
+) -> tuple[dict, list[str]]:
     """Try to auto-fix a job's missing title/company or unusable URL in place.
 
     Returns (updates, remaining_warning_codes). `updates` is the DB patch to
@@ -1459,7 +1694,11 @@ def _attempt_import_repair(repos: dict, job: dict, warnings: list[str]) -> tuple
 
     if "missing_job_title" in warnings or "missing_company" in warnings:
         before_title, before_company = working.get("job_title"), working.get("company")
-        normalize_title_company(working, working.get("email_subject") or "", working.get("raw_email_snippet") or "")
+        normalize_title_company(
+            working,
+            working.get("email_subject") or "",
+            working.get("raw_email_snippet") or "",
+        )
         if working.get("job_title") != before_title:
             updates["job_title"] = working["job_title"]
         if working.get("company") != before_company:
@@ -1478,13 +1717,16 @@ def _attempt_import_repair(repos: dict, job: dict, warnings: list[str]) -> tuple
         # to match it back to this job by URL and patch job_description in place.
         capture_url = str(working.get("url") or "").strip()
         if capture_url:
-            site_name = str(working.get("source") or "").strip() or urlparse(capture_url).netloc
+            site_name = (
+                str(working.get("source") or "").strip() or urlparse(capture_url).netloc
+            )
             try:
                 repos["browser_capture_queue"].enqueue(capture_url, site_name)
             except Exception as exc:
                 logger.warning(
                     "Import repair: failed to enqueue browser capture for job %s: %s",
-                    job.get("id"), exc,
+                    job.get("id"),
+                    exc,
                 )
 
     _, remaining = normalize_and_validate(working)
@@ -1507,13 +1749,15 @@ def _compute_repair_patterns(
             continue
         percent = round((count / total) * 100, 1)
         if count >= _PATTERN_MIN_COUNT and percent >= _PATTERN_MIN_PERCENT:
-            findings.append({
-                "source": source,
-                "warning_code": code,
-                "count": count,
-                "total": total,
-                "percent": percent,
-            })
+            findings.append(
+                {
+                    "source": source,
+                    "warning_code": code,
+                    "count": count,
+                    "total": total,
+                    "percent": percent,
+                }
+            )
     findings.sort(key=lambda f: -f["percent"])
     return findings
 
@@ -1530,21 +1774,25 @@ def _record_repair_history(
     each pair's most recent prior row (before this run) for trend comparison."""
     previous: dict[tuple[str, str], dict] = {}
     for source, code in warning_counts:
-        prior_rows = repos["import_repair_history"].get_for_source(source, code, limit=1)
+        prior_rows = repos["import_repair_history"].get_for_source(
+            source, code, limit=1
+        )
         if prior_rows:
             previous[(source, code)] = prior_rows[0]
 
     for (source, code), count in warning_counts.items():
         total = totals_by_source.get(source, 0)
         percent = round((count / total) * 100, 1) if total else 0.0
-        repos["import_repair_history"].insert({
-            "run_at": run_at,
-            "source": source,
-            "warning_code": code,
-            "count": count,
-            "total": total,
-            "percent": percent,
-        })
+        repos["import_repair_history"].insert(
+            {
+                "run_at": run_at,
+                "source": source,
+                "warning_code": code,
+                "count": count,
+                "total": total,
+                "percent": percent,
+            }
+        )
     return previous
 
 
@@ -1558,7 +1806,9 @@ def _repair_trend_label(current_percent: float, previous_row: dict | None) -> st
     return f"{arrow} {abs(round(delta, 1))}pt vs last run"
 
 
-def _write_repair_findings_doc(findings: list[dict], previous: dict[tuple[str, str], dict]) -> None:
+def _write_repair_findings_doc(
+    findings: list[dict], previous: dict[tuple[str, str], dict]
+) -> None:
     """Persist detected patterns to docs/ so a coding agent can pick them up as a
     signal that a specific source's parser/scraper needs a permanent fix."""
     lines = [
@@ -1579,12 +1829,18 @@ def _write_repair_findings_doc(findings: list[dict], previous: dict[tuple[str, s
     if not findings:
         lines.append("No systemic patterns detected in the last run.")
     else:
-        lines.append("| Source | Issue | Occurrences | Share of source's jobs | Trend |")
+        lines.append(
+            "| Source | Issue | Occurrences | Share of source's jobs | Trend |"
+        )
         lines.append("|---|---|---|---|---|")
         for f in findings:
             label = _IMPORT_WARNING_LABELS.get(f["warning_code"], f["warning_code"])
-            trend = _repair_trend_label(f["percent"], previous.get((f["source"], f["warning_code"])))
-            lines.append(f"| {f['source']} | {label} | {f['count']} of {f['total']} | {f['percent']}% | {trend} |")
+            trend = _repair_trend_label(
+                f["percent"], previous.get((f["source"], f["warning_code"]))
+            )
+            lines.append(
+                f"| {f['source']} | {label} | {f['count']} of {f['total']} | {f['percent']}% | {trend} |"
+            )
     (config.BASE_DIR / "docs" / "import_repair_findings.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
@@ -1616,7 +1872,9 @@ def _run_import_repair() -> None:
         total = len(candidates)
         with _import_repair_lock:
             _import_repair_state.total = total
-            _import_repair_state.message = f"Scanning {total} job{'s' if total != 1 else ''} for import issues…"
+            _import_repair_state.message = (
+                f"Scanning {total} job{'s' if total != 1 else ''} for import issues…"
+            )
 
         title_or_company_fixed: list[dict] = []
         url_fixed: list[dict] = []
@@ -1636,7 +1894,9 @@ def _run_import_repair() -> None:
                 _import_repair_state.progress = i
                 _import_repair_state.current_company = company
                 _import_repair_state.current_title = title
-                _import_repair_state.message = f"Checking {i + 1}/{total}: {company} — {title}…"
+                _import_repair_state.message = (
+                    f"Checking {i + 1}/{total}: {company} — {title}…"
+                )
 
             _, warnings = normalize_and_validate(job)
             if not warnings:
@@ -1649,12 +1909,20 @@ def _run_import_repair() -> None:
                     repos["conn"].commit()
 
             if "job_title" in updates or "company" in updates:
-                title_or_company_fixed.append({
-                    **summary,
-                    **{k: updates[k] for k in ("job_title", "company") if k in updates},
-                })
+                title_or_company_fixed.append(
+                    {
+                        **summary,
+                        **{
+                            k: updates[k]
+                            for k in ("job_title", "company")
+                            if k in updates
+                        },
+                    }
+                )
                 with _import_repair_lock:
-                    _import_repair_state.title_or_company_fixed = list(title_or_company_fixed)
+                    _import_repair_state.title_or_company_fixed = list(
+                        title_or_company_fixed
+                    )
 
             if "url" in updates:
                 url_fixed.append({**summary, "url": updates["url"]})
@@ -1680,7 +1948,9 @@ def _run_import_repair() -> None:
 
         run_at = datetime.now(UTC).isoformat(timespec="seconds")
         with get_repos() as repos:
-            previous = _record_repair_history(repos, run_at, totals_by_source, warning_counts)
+            previous = _record_repair_history(
+                repos, run_at, totals_by_source, warning_counts
+            )
             repos["conn"].commit()
 
         findings = _compute_repair_patterns(totals_by_source, warning_counts)
@@ -1713,7 +1983,9 @@ def start_import_repair() -> ResponseReturnValue:
     with _import_repair_lock:
         if _import_repair_state.running:
             return jsonify({"error": "Repair already running"}), 409
-    threading.Thread(target=_run_import_repair, daemon=True, name="import-issue-repair").start()
+    threading.Thread(
+        target=_run_import_repair, daemon=True, name="import-issue-repair"
+    ).start()
     return jsonify({"status": "started"})
 
 
@@ -1721,17 +1993,19 @@ def start_import_repair() -> ResponseReturnValue:
 def import_repair_status() -> ResponseReturnValue:
     """Return the current import-issue repair sweep state."""
     with _import_repair_lock:
-        return jsonify({
-            "running": _import_repair_state.running,
-            "progress": _import_repair_state.progress,
-            "total": _import_repair_state.total,
-            "message": _import_repair_state.message,
-            "current_company": _import_repair_state.current_company,
-            "current_title": _import_repair_state.current_title,
-            "title_or_company_fixed": _import_repair_state.title_or_company_fixed,
-            "url_fixed": _import_repair_state.url_fixed,
-            "jd_queued": _import_repair_state.jd_queued,
-            "unresolved": _import_repair_state.unresolved,
-            "patterns": _import_repair_state.patterns,
-            "error": _import_repair_state.error,
-        })
+        return jsonify(
+            {
+                "running": _import_repair_state.running,
+                "progress": _import_repair_state.progress,
+                "total": _import_repair_state.total,
+                "message": _import_repair_state.message,
+                "current_company": _import_repair_state.current_company,
+                "current_title": _import_repair_state.current_title,
+                "title_or_company_fixed": _import_repair_state.title_or_company_fixed,
+                "url_fixed": _import_repair_state.url_fixed,
+                "jd_queued": _import_repair_state.jd_queued,
+                "unresolved": _import_repair_state.unresolved,
+                "patterns": _import_repair_state.patterns,
+                "error": _import_repair_state.error,
+            }
+        )

@@ -45,6 +45,7 @@ Task: run_import_task
   intermediate progress via self.update_state so the Flask status endpoint
   can poll Celery's result backend instead of in-process memory.
 """
+
 from __future__ import annotations
 
 import json
@@ -127,7 +128,10 @@ def _llm_enrich_batch(url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         (i, row)
         for i, row in enumerate(url_rows)
         if len(str(row.get("listing_text") or "")) >= _LLM_ENRICH_MIN_TEXT
-        and (not str(row.get("job_title") or "").strip() or not str(row.get("company") or "").strip())
+        and (
+            not str(row.get("job_title") or "").strip()
+            or not str(row.get("company") or "").strip()
+        )
     ]
     if not candidates:
         return url_rows
@@ -147,11 +151,17 @@ def _llm_enrich_batch(url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
     try:
-        log_path = pathlib.Path(__file__).resolve().parent.parent / "tmp" / "jha_llm_prompts.log"
+        log_path = (
+            pathlib.Path(__file__).resolve().parent.parent
+            / "tmp"
+            / "jha_llm_prompts.log"
+        )
         try:
             log_path.parent.mkdir(exist_ok=True)
             with log_path.open("a", encoding="utf-8") as f:
-                f.write(f"\n{'='*60}\n{datetime.now(UTC).isoformat(timespec='seconds')} _llm_enrich_batch ({len(batch)} jobs)\n{'='*60}\n{prompt}\n")
+                f.write(
+                    f"\n{'='*60}\n{datetime.now(UTC).isoformat(timespec='seconds')} _llm_enrich_batch ({len(batch)} jobs)\n{'='*60}\n{prompt}\n"
+                )
         except OSError as log_exc:
             logger.debug("Could not write LLM prompt log: %s", log_exc)
 
@@ -170,7 +180,9 @@ def _llm_enrich_batch(url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             )
             return url_rows
     except Exception as exc:
-        logger.warning("LLM batch enrichment failed; import continues with original data: %s", exc)
+        logger.warning(
+            "LLM batch enrichment failed; import continues with original data: %s", exc
+        )
         return url_rows
 
     enriched = list(url_rows)
@@ -191,17 +203,22 @@ def _llm_enrich_batch(url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 filled += 1
         enriched[orig_idx] = row
 
-    logger.info("LLM enrichment filled %d missing field(s) across %d job(s)", filled, len(batch))
+    logger.info(
+        "LLM enrichment filled %d missing field(s) across %d job(s)", filled, len(batch)
+    )
     return enriched
 
 
-def _enrich_job_description(repos: dict[str, Any], job: dict[str, Any], description: str) -> None:
+def _enrich_job_description(
+    repos: dict[str, Any], job: dict[str, Any], description: str
+) -> None:
     # ai: claude-sonnet-4-6 | 2026-06-21
     job_id = job.get("id")
     t0 = time.monotonic()
     logger.info(
         "_enrich_job_description: starting FitScorer for job=%s text_len=%d",
-        job_id, len(description),
+        job_id,
+        len(description),
     )
     resume_row = repos["resume"].get_latest()
     resume_text = str(resume_row.get("content") or "") if resume_row else ""
@@ -213,7 +230,11 @@ def _enrich_job_description(repos: dict[str, Any], job: dict[str, Any], descript
         penalty_rules=repos["penalties"].get_enabled(),
         fit_feedback=repos["jobs"].get_not_a_fit_with_feedback(),
     )
-    logger.info("_enrich_job_description: FitScorer done in %.1fs for job=%s", time.monotonic() - t0, job_id)
+    logger.info(
+        "_enrich_job_description: FitScorer done in %.1fs for job=%s",
+        time.monotonic() - t0,
+        job_id,
+    )
 
 
 def _find_duplicate_original(
@@ -227,12 +248,16 @@ def _find_duplicate_original(
     if not job_title or not company:
         return None
     candidates = [j for j in known_jobs if int(j.get("id") or 0) != new_id]
-    match = DuplicateChecker().check(job_title=job_title, company=company, sheet_jobs=candidates)
+    match = DuplicateChecker().check(
+        job_title=job_title, company=company, sheet_jobs=candidates
+    )
     if not match:
         return None
     for job in candidates:
-        if (str(job.get("company") or "") == match["sheet_company"] and
-                str(job.get("job_title") or "") == match["sheet_title"]):
+        if (
+            str(job.get("company") or "") == match["sheet_company"]
+            and str(job.get("job_title") or "") == match["sheet_title"]
+        ):
             return job
     return None
 
@@ -256,9 +281,9 @@ def run_import_task(
     t_task_start = time.monotonic()
     # ai: claude-sonnet-4-6 | 2026-06-26
     _source_name = str((capture_source or {}).get("name") or "")
-    _source_url  = str((capture_source or {}).get("url")  or "")
+    _source_url = str((capture_source or {}).get("url") or "")
     _source_disp = _source_name or _source_url or "(unknown source)"
-    _page_ref    = str(body.get("queue_url") or body.get("url") or "")[:120]
+    _page_ref = str(body.get("queue_url") or body.get("url") or "")[:120]
     logger.info(
         "IMPORT START   trigger=%-10s  source=%s  urls=%d%s",
         str(body.get("import_trigger") or "ui"),
@@ -285,14 +310,22 @@ def run_import_task(
     t_llm = time.monotonic()
     needs_llm_enrich = any(
         len(str(r.get("listing_text") or "")) >= _LLM_ENRICH_MIN_TEXT
-        and (not str(r.get("job_title") or "").strip() or not str(r.get("company") or "").strip())
+        and (
+            not str(r.get("job_title") or "").strip()
+            or not str(r.get("company") or "").strip()
+        )
         for r in extracted
     )
     if needs_llm_enrich:
-        logger.info("run_import_task: _llm_enrich_batch starting for %d rows (missing title/company)", total)
+        logger.info(
+            "run_import_task: _llm_enrich_batch starting for %d rows (missing title/company)",
+            total,
+        )
     extracted = _llm_enrich_batch(extracted)
     if needs_llm_enrich:
-        logger.info("run_import_task: _llm_enrich_batch done in %.1fs", time.monotonic() - t_llm)
+        logger.info(
+            "run_import_task: _llm_enrich_batch done in %.1fs", time.monotonic() - t_llm
+        )
 
     # ai: claude-sonnet-4-6 | 2026-06-21
     # queue_url is the original URL stored in the browser capture queue before any SPA
@@ -352,7 +385,9 @@ def run_import_task(
                 if existing_job is not None:
                     logger.info(
                         "queue_url fallback matched job %d (captured url=%s, queue_url=%s)",
-                        existing_job["id"], url, body_queue_url,
+                        existing_job["id"],
+                        url,
+                        body_queue_url,
                     )
             if existing_job is not None:
                 repaired_ok = repair_existing_job_company(
@@ -377,15 +412,17 @@ def run_import_task(
                     repos["conn"].commit()
                     updated = repos["jobs"].get_by_id(int(existing_job["id"]))
                     if updated:
-                        post_repair_duplicate_check(
-                            repos["jobs"], updated, known_jobs
-                        )
+                        post_repair_duplicate_check(repos["jobs"], updated, known_jobs)
                         repos["conn"].commit()
                 # ai: claude-sonnet-4-6 | 2026-06-22
                 incoming_len = len(incoming_text)
-                existing_desc_len = len(str(
-                    existing_job.get("job_description") or existing_job.get("raw_email_snippet") or ""
-                ))
+                existing_desc_len = len(
+                    str(
+                        existing_job.get("job_description")
+                        or existing_job.get("raw_email_snippet")
+                        or ""
+                    )
+                )
                 if is_richer_description(incoming_text, existing_job):
                     _enrich_job_description(repos, existing_job, incoming_text)
                     repos["conn"].commit()
@@ -407,7 +444,9 @@ def run_import_task(
                     )
                     logger.warning(
                         "skip: job %d — captured only %d chars (url=%s)",
-                        existing_job.get("id"), incoming_len, url,
+                        existing_job.get("id"),
+                        incoming_len,
+                        url,
                     )
                 else:
                     skip_reason = (
@@ -427,7 +466,10 @@ def run_import_task(
                 continue
 
             if blocklist_rules:
-                _haystack = " ".join(str(url_row.get(f) or "") for f in ("job_title", "company", "listing_text", "url", "platform"))
+                _haystack = " ".join(
+                    str(url_row.get(f) or "")
+                    for f in ("job_title", "company", "listing_text", "url", "platform")
+                )
                 matched_rule = jd_blocklist_match(_haystack, blocklist_rules)
                 if matched_rule is not None:
                     filtered += 1
@@ -438,7 +480,11 @@ def run_import_task(
                             "filtered",
                         )
                     )
-                    logger.debug("JD blocklist filtered %s (rule: %s)", url, matched_rule.get("rule_text"))
+                    logger.debug(
+                        "JD blocklist filtered %s (rule: %s)",
+                        url,
+                        matched_rule.get("rule_text"),
+                    )
                     continue
 
             try:
@@ -463,7 +509,11 @@ def run_import_task(
                 t_ingest = time.monotonic()
                 logger.info(
                     "run_import_task [%d/%d]: ingest starting url=%s platform=%s text_len=%d",
-                    i + 1, total, url, platform, len(incoming_text),
+                    i + 1,
+                    total,
+                    url,
+                    platform,
+                    len(incoming_text),
                 )
                 ingest_result = service.ingest(
                     incoming_text,
@@ -477,15 +527,21 @@ def run_import_task(
                 new_job = ingest_result.job
                 logger.info(
                     "run_import_task [%d/%d]: ingest done in %.1fs status=%s job_id=%s title=%s",
-                    i + 1, total, time.monotonic() - t_ingest,
-                    new_job.get("status"), new_job.get("id"), str(new_job.get("job_title") or "")[:60],
+                    i + 1,
+                    total,
+                    time.monotonic() - t_ingest,
+                    new_job.get("status"),
+                    new_job.get("id"),
+                    str(new_job.get("job_title") or "")[:60],
                 )
                 if new_job.get("status") == "possible_duplicate":
                     original = _find_duplicate_original(new_job, known_jobs)
                     if original and is_richer_description(incoming_text, original):
                         logger.info(
                             "run_import_task [%d/%d]: enriching original job %s via possible_duplicate path",
-                            i + 1, total, original.get("id"),
+                            i + 1,
+                            total,
+                            original.get("id"),
                         )
                         _enrich_job_description(repos, original, incoming_text)
                         repos["jobs"].delete(int(new_job["id"]))
@@ -516,7 +572,12 @@ def run_import_task(
                     )
                 )
                 repos["conn"].commit()
-            except (ValueError, urllib.error.URLError, TimeoutError, socket.error) as exc:
+            except (
+                ValueError,
+                urllib.error.URLError,
+                TimeoutError,
+                socket.error,
+            ) as exc:
                 repos["conn"].rollback()
                 logger.warning("Bulk import skipped %s: %s", url, exc)
                 failed += 1
@@ -534,7 +595,13 @@ def run_import_task(
             "IMPORT DONE    %.1fs  |  %d URL(s): new=%-3d  unchanged=%-3d  enriched=%-3d"
             "  repaired=%-3d  filtered=%-3d  failed=%d",
             time.monotonic() - t_task_start,
-            total, queued, skipped, enriched, repaired, filtered, failed,
+            total,
+            queued,
+            skipped,
+            enriched,
+            repaired,
+            filtered,
+            failed,
         )
         return {
             "queued": queued,
@@ -553,14 +620,10 @@ def run_import_task(
         }
 
 
-def _record_capture_source(
-    source: dict | None, repos: dict, body: dict
-) -> None:
+def _record_capture_source(source: dict | None, repos: dict, body: dict) -> None:
     if not source:
         return
-    fields: dict = {
-        "last_captured_at": datetime.now(UTC).isoformat(timespec="seconds")
-    }
+    fields: dict = {"last_captured_at": datetime.now(UTC).isoformat(timespec="seconds")}
     interval_value = body.get("recapture_interval_days")
     if interval_value is not None and interval_value != "":
         fields["recapture_interval_days"] = _parse_positive_int(

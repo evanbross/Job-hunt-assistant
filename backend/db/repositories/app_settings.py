@@ -39,9 +39,7 @@ from ..base import _BaseRepo
 
 class PostgresAppSettingsRepository(_BaseRepo):
     def get(self, key: str, default: str | None = None) -> str | None:
-        cur = self._execute(
-            "SELECT value FROM app_settings WHERE key = %s", (key,)
-        )
+        cur = self._execute("SELECT value FROM app_settings WHERE key = %s", (key,))
         row = cur.fetchone()
         return row["value"] if row else default
 

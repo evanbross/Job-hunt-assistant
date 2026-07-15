@@ -75,7 +75,9 @@ class FakeEmailParser:
         pass
 
     # ai: claude-sonnet-4-6 | 2026-07-02
-    def parse(self, subject: str, sender: str, body: str, raw_html: str = "") -> list[dict[str, object]]:
+    def parse(
+        self, subject: str, sender: str, body: str, raw_html: str = ""
+    ) -> list[dict[str, object]]:
         return [
             {
                 "company": "Acme",
@@ -98,7 +100,9 @@ class FakeEmailParser:
         ]
 
 
-def test_noise_feedback_does_not_skip_entire_email(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_noise_feedback_does_not_skip_entire_email(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
     init_db(dsn)
     repos = open_repositories(dsn)
@@ -125,8 +129,12 @@ def test_noise_feedback_does_not_skip_entire_email(monkeypatch: pytest.MonkeyPat
         repos["conn"].close()
 
     monkeypatch.setattr(config, "DATABASE_URL", dsn)
-    monkeypatch.setattr(config, "load_runtime_config", lambda: {"email_lookback_days": 7})
-    monkeypatch.setattr(config, "should_move_successfully_processed_emails", lambda: False)
+    monkeypatch.setattr(
+        config, "load_runtime_config", lambda: {"email_lookback_days": 7}
+    )
+    monkeypatch.setattr(
+        config, "should_move_successfully_processed_emails", lambda: False
+    )
     monkeypatch.setattr(config, "get_scanned_email_label", lambda: "Scanned")
     monkeypatch.setattr(scan, "GmailClient", FakeGmailClient)
     monkeypatch.setattr(scan, "EmailParser", FakeEmailParser)

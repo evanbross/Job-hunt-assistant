@@ -41,13 +41,15 @@ from ..connection import _row_to_dict
 
 
 class PostgresCareerRejectionRuleRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "id",
-        "rule_text",
-        "enabled",
-        "created_at",
-        "updated_at",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "id",
+            "rule_text",
+            "enabled",
+            "created_at",
+            "updated_at",
+        }
+    )
 
     def get_all(self) -> list[dict[str, Any]]:
         cur = self._execute(
@@ -93,9 +95,7 @@ class PostgresCareerRejectionRuleRepository(_BaseRepo):
         )
 
     def delete(self, rule_id: int) -> None:
-        self._execute(
-            "DELETE FROM career_rejection_rules WHERE id = %s", (rule_id,)
-        )
+        self._execute("DELETE FROM career_rejection_rules WHERE id = %s", (rule_id,))
 
 
 SQLiteCareerRejectionRuleRepository = PostgresCareerRejectionRuleRepository

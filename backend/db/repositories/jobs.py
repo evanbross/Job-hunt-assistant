@@ -42,35 +42,37 @@ from ..connection import _row_to_dict
 
 
 class PostgresJobRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "id",
-        "email_id",
-        "company",
-        "job_title",
-        "url",
-        "source",
-        "raw_email_snippet",
-        "fit_score",
-        "fit_reasoning",
-        "status",
-        "parser_confidence",
-        "confidence_reason",
-        "date_found",
-        "on_sheet",
-        "duplicate_hint",
-        "duplicate_of_id",
-        "sender_email",
-        "email_subject",
-        "confidence_score",
-        "skip_reason",
-        "skip_feedback",
-        "skip_mismatch_reasons",
-        "notes",
-        "job_description",
-        "import_warnings",
-        "snoozed_until",
-        "dismissed_duplicate_ids",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "id",
+            "email_id",
+            "company",
+            "job_title",
+            "url",
+            "source",
+            "raw_email_snippet",
+            "fit_score",
+            "fit_reasoning",
+            "status",
+            "parser_confidence",
+            "confidence_reason",
+            "date_found",
+            "on_sheet",
+            "duplicate_hint",
+            "duplicate_of_id",
+            "sender_email",
+            "email_subject",
+            "confidence_score",
+            "skip_reason",
+            "skip_feedback",
+            "skip_mismatch_reasons",
+            "notes",
+            "job_description",
+            "import_warnings",
+            "snoozed_until",
+            "dismissed_duplicate_ids",
+        }
+    )
 
     def get_all_by_status(self, status: str) -> list[dict[str, Any]]:
         cur = self._execute(
@@ -99,7 +101,9 @@ class PostgresJobRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def count_by_base_email_id_and_statuses(self, base_email_id: str, statuses: list[str]) -> int:
+    def count_by_base_email_id_and_statuses(
+        self, base_email_id: str, statuses: list[str]
+    ) -> int:
         placeholders = ", ".join(["%s"] * len(statuses))
         cur = self._execute(
             f"""
@@ -196,8 +200,7 @@ class PostgresJobRepository(_BaseRepo):
         return int(cur.fetchone()["n"])
 
     def get_stats(self) -> dict[str, int]:
-        cur = self._execute(
-            """
+        cur = self._execute("""
             SELECT
               COUNT(*) AS total,
               COUNT(CASE WHEN NOT (
@@ -216,8 +219,7 @@ class PostgresJobRepository(_BaseRepo):
               (SELECT COUNT(DISTINCT job_id) FROM application_stages
                WHERE status = 'ghosted') AS ghosted
             FROM jobs
-            """
-        )
+            """)
         row = _row_to_dict(cur.fetchone())
         return {k: int(v or 0) for k, v in row.items()}
 

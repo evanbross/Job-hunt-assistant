@@ -41,17 +41,19 @@ from ..connection import _is_sqlite_connection, _row_to_dict
 
 
 class PostgresCareerSiteSourceRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "id",
-        "name",
-        "url",
-        "enabled",
-        "collection_mode",
-        "detected_platform",
-        "last_captured_at",
-        "recapture_interval_days",
-        "created_at",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "id",
+            "name",
+            "url",
+            "enabled",
+            "collection_mode",
+            "detected_platform",
+            "last_captured_at",
+            "recapture_interval_days",
+            "created_at",
+        }
+    )
 
     def get_all(self) -> list[dict[str, Any]]:
         cur = self._execute("SELECT * FROM career_site_sources ORDER BY name")
@@ -67,8 +69,7 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def get_due_recapture(self) -> list[dict[str, Any]]:
-        cur = self._execute(
-            """
+        cur = self._execute("""
             SELECT *,
                    (last_captured_at::timestamptz
                        + (recapture_interval_days || ' days')::interval)::text AS next_capture_due_at
@@ -79,8 +80,7 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
               AND last_captured_at::timestamptz
                   + (recapture_interval_days || ' days')::interval <= NOW()
             ORDER BY next_capture_due_at ASC, name ASC
-            """
-        )
+            """)
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def get_by_id(self, source_id: int) -> dict[str, Any] | None:
@@ -120,7 +120,15 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
               name
             LIMIT %s
             """,
-            (like_query, like_query, like_query, normalized, normalized, like_query, limit),
+            (
+                like_query,
+                like_query,
+                like_query,
+                normalized,
+                normalized,
+                like_query,
+                limit,
+            ),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
@@ -149,9 +157,7 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
         )
 
     def delete(self, source_id: int) -> None:
-        self._execute(
-            "DELETE FROM career_site_sources WHERE id = %s", (source_id,)
-        )
+        self._execute("DELETE FROM career_site_sources WHERE id = %s", (source_id,))
 
 
 class SQLiteCareerSiteSourceRepository(PostgresCareerSiteSourceRepository):
@@ -159,8 +165,7 @@ class SQLiteCareerSiteSourceRepository(PostgresCareerSiteSourceRepository):
         if not _is_sqlite_connection(self._conn):
             return super().get_due_recapture()
 
-        cur = self._execute(
-            """
+        cur = self._execute("""
             SELECT *,
                    datetime(last_captured_at, '+' || recapture_interval_days || ' days')
                        AS next_capture_due_at
@@ -171,6 +176,5 @@ class SQLiteCareerSiteSourceRepository(PostgresCareerSiteSourceRepository):
               AND datetime(last_captured_at, '+' || recapture_interval_days || ' days')
                   <= datetime('now')
             ORDER BY next_capture_due_at ASC, name ASC
-            """
-        )
+            """)
         return [_row_to_dict(r) for r in cur.fetchall()]

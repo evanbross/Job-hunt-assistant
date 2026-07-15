@@ -75,10 +75,10 @@ def test_extracts_html_parts_from_mhtml() -> None:
     service = CapturedPageImportService()
     mhtml = (
         "MIME-Version: 1.0\n"
-        "Content-Type: multipart/related; boundary=\"BOUNDARY\"\n\n"
+        'Content-Type: multipart/related; boundary="BOUNDARY"\n\n'
         "--BOUNDARY\n"
-        "Content-Type: text/html; charset=\"utf-8\"\n\n"
-        "<html><body><a href=\"https://job-boards.greenhouse.io/acme/jobs/123\">Job</a></body></html>\n"
+        'Content-Type: text/html; charset="utf-8"\n\n'
+        '<html><body><a href="https://job-boards.greenhouse.io/acme/jobs/123">Job</a></body></html>\n'
         "--BOUNDARY--\n"
     )
 
@@ -93,10 +93,10 @@ def test_auto_detects_mhtml_capture() -> None:
     service = CapturedPageImportService()
     mhtml = (
         "MIME-Version: 1.0\n"
-        "Content-Type: multipart/related; boundary=\"BOUNDARY\"\n\n"
+        'Content-Type: multipart/related; boundary="BOUNDARY"\n\n'
         "--BOUNDARY\n"
-        "Content-Type: text/html; charset=\"utf-8\"\n\n"
-        "<html><body><a href=\"https://jobs.lever.co/acme/456\">Job</a></body></html>\n"
+        'Content-Type: text/html; charset="utf-8"\n\n'
+        '<html><body><a href="https://jobs.lever.co/acme/456">Job</a></body></html>\n'
         "--BOUNDARY--\n"
     )
 
@@ -126,11 +126,11 @@ def test_analyzes_capture_source_from_mhtml_content_location() -> None:
     service = CapturedPageImportService()
     mhtml = (
         "MIME-Version: 1.0\n"
-        "Content-Type: multipart/related; boundary=\"BOUNDARY\"\n\n"
+        'Content-Type: multipart/related; boundary="BOUNDARY"\n\n'
         "--BOUNDARY\n"
-        "Content-Type: text/html; charset=\"utf-8\"\n"
+        'Content-Type: text/html; charset="utf-8"\n'
         "Content-Location: https://jobs.lever.co/acme\n\n"
-        "<html><body><a href=\"https://jobs.lever.co/acme/456\">Job</a></body></html>\n"
+        '<html><body><a href="https://jobs.lever.co/acme/456">Job</a></body></html>\n'
         "--BOUNDARY--\n"
     )
 

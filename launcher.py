@@ -213,7 +213,9 @@ class LauncherWindow:
                     env=env,
                     stdout=log_file,
                     stderr=log_file,
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                    creationflags=(
+                        subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                    ),
                 )
 
             self._set_status(f"Waiting for server on port {port}...")
@@ -231,7 +233,9 @@ class LauncherWindow:
             self._set_status("Startup failed.")
             self._root.after(
                 0,
-                lambda: messagebox.showerror("Startup Failed", error_message, parent=self._root),
+                lambda: messagebox.showerror(
+                    "Startup Failed", error_message, parent=self._root
+                ),
             )
 
     def _start_celery_worker(self, env: dict, log_path: Path) -> None:
@@ -239,8 +243,12 @@ class LauncherWindow:
             with log_path.open("a", encoding="utf-8") as log_file:
                 self._worker_process = subprocess.Popen(
                     [
-                        _python_executable(), "-m", "celery",
-                        "-A", "backend.celery_app", "worker",
+                        _python_executable(),
+                        "-m",
+                        "celery",
+                        "-A",
+                        "backend.celery_app",
+                        "worker",
                         "--loglevel=info",
                         "--concurrency=2",
                         "--pool=threads",
@@ -249,7 +257,9 @@ class LauncherWindow:
                     env=env,
                     stdout=log_file,
                     stderr=log_file,
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                    creationflags=(
+                        subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                    ),
                 )
         except Exception as exc:
             self._set_status(f"Celery worker failed to start: {exc}")

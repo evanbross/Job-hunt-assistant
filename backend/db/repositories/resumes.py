@@ -41,17 +41,17 @@ from ..connection import _row_to_dict
 
 
 class PostgresResumeRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "id",
-        "filename",
-        "content",
-        "uploaded_at",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "id",
+            "filename",
+            "content",
+            "uploaded_at",
+        }
+    )
 
     def get_latest(self) -> dict[str, Any] | None:
-        cur = self._execute(
-            "SELECT * FROM resume ORDER BY uploaded_at DESC LIMIT 1"
-        )
+        cur = self._execute("SELECT * FROM resume ORDER BY uploaded_at DESC LIMIT 1")
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 

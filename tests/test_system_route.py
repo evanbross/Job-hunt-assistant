@@ -52,6 +52,7 @@ def make_fake_get_repos(repos: dict) -> Any:
             yield repos
         finally:
             repos["conn"].close()
+
     return fake
 
 
@@ -91,7 +92,9 @@ def test_health_check_returns_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.get_json() == {"status": "ok", "db": "connected"}
 
 
-def test_health_check_returns_503_on_db_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_health_check_returns_503_on_db_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         "routes.system.get_repos",
         make_fake_get_repos({"conn": FakeBrokenConnection()}),
@@ -112,10 +115,14 @@ def test_health_check_returns_503_on_db_failure(monkeypatch: pytest.MonkeyPatch)
 def test_health_check_returns_503_without_probe_when_startup_init_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("routes.system.db_startup_error", lambda: "connection timed out")
+    monkeypatch.setattr(
+        "routes.system.db_startup_error", lambda: "connection timed out"
+    )
 
     def fail_if_probed() -> None:
-        raise AssertionError("health check must not open a DB connection in degraded mode")
+        raise AssertionError(
+            "health check must not open a DB connection in degraded mode"
+        )
 
     monkeypatch.setattr("routes.system.get_repos", fail_if_probed)
     app = Flask(__name__)

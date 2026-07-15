@@ -43,6 +43,7 @@ fresh and saves the new state.
 Output format per job matches what run_import_task expects:
   { url, platform, listing_text, company, job_title }
 """
+
 from __future__ import annotations
 
 import logging
@@ -74,11 +75,13 @@ _USER_AGENT = (
 )
 
 # ai: claude-fable-5 | 2026-07-14
-_WELLFOUND_HOSTS = frozenset({
-    "wellfound.com",
-    "www.wellfound.com",
-    "links.wellfound.com",
-})
+_WELLFOUND_HOSTS = frozenset(
+    {
+        "wellfound.com",
+        "www.wellfound.com",
+        "links.wellfound.com",
+    }
+)
 
 # Detail-page selectors shared by the search scraper and the single-job fetcher.
 # Multiple variants handle Wellfound layout changes over time.
@@ -132,7 +135,7 @@ def canonical_wellfound_job_url(url: str) -> str:
     if not slug:
         path = parsed.path.rstrip("/")
         if path.startswith("/jobs/"):
-            slug = path[len("/jobs/"):]
+            slug = path[len("/jobs/") :]
     slug = slug.strip("/")
     # Real listing slugs start with the numeric listing ID.
     if not slug or not slug[0].isdigit() or "/" in slug:
@@ -141,7 +144,9 @@ def canonical_wellfound_job_url(url: str) -> str:
 
 
 # ai: claude-fable-5 | 2026-07-14
-def _first_matching_text(page: Page, selectors: list[str], *, long: bool = False) -> str:
+def _first_matching_text(
+    page: Page, selectors: list[str], *, long: bool = False
+) -> str:
     """Return inner_text() of the first selector that has usable content."""
     for sel in selectors:
         try:
@@ -202,19 +207,27 @@ class WellfoundJobFetcher:
                 if not target:
                     logger.debug(
                         "Wellfound fetcher: no listing slug after redirect from %s (landed on %s)",
-                        url, page.url,
+                        url,
+                        page.url,
                     )
                     return ""
             page.goto(target, wait_until="domcontentloaded", timeout=25_000)
             # The listing is client-rendered (and may sit behind a DataDome
             # interstitial for a moment) — wait for any description container.
             try:
-                page.wait_for_selector(", ".join(_DESCRIPTION_SELECTORS), timeout=15_000)
+                page.wait_for_selector(
+                    ", ".join(_DESCRIPTION_SELECTORS), timeout=15_000
+                )
             except Exception:
-                logger.debug("Wellfound fetcher: description selector never appeared for %s", target)
+                logger.debug(
+                    "Wellfound fetcher: description selector never appeared for %s",
+                    target,
+                )
             return _first_matching_text(page, _DESCRIPTION_SELECTORS, long=True)
         except Exception as exc:
-            logger.warning("Wellfound fetcher: failed to fetch %s: %s", target or url, exc)
+            logger.warning(
+                "Wellfound fetcher: failed to fetch %s: %s", target or url, exc
+            )
             return ""
 
     def _ensure_page(self) -> Page:
@@ -225,7 +238,9 @@ class WellfoundJobFetcher:
             # Keep the (required) headful window out of the user's way.
             launch_args.append("--window-position=-2400,-2400")
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=self._headless, args=launch_args)
+        self._browser = self._pw.chromium.launch(
+            headless=self._headless, args=launch_args
+        )
         kwargs: dict = {
             "user_agent": _USER_AGENT,
             "viewport": {"width": 1280, "height": 900},
@@ -399,7 +414,9 @@ class WellfoundScraper:
         results: list[dict] = []
         for i, url in enumerate(job_urls):
             if progress_cb:
-                progress_cb(i + 1, len(job_urls), f"Fetching job {i + 1} of {len(job_urls)}")
+                progress_cb(
+                    i + 1, len(job_urls), f"Fetching job {i + 1} of {len(job_urls)}"
+                )
             job = self._scrape_detail(page, url)
             if job:
                 results.append(job)
@@ -423,7 +440,7 @@ class WellfoundScraper:
             clean = href.split("?")[0].rstrip("/")
             if not clean.startswith("/jobs/"):
                 continue
-            slug = clean[len("/jobs/"):]
+            slug = clean[len("/jobs/") :]
             # Require a numeric ID at the start (e.g. /jobs/2345678-company-title)
             if not slug or not slug[0].isdigit():
                 continue
@@ -475,20 +492,29 @@ class WellfoundScraper:
             page = context.new_page()
             try:
                 page.goto(_LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
-                logger.info("Manual login: browser open at %s — waiting up to %ds", _LOGIN_URL, timeout_seconds)
+                logger.info(
+                    "Manual login: browser open at %s — waiting up to %ds",
+                    _LOGIN_URL,
+                    timeout_seconds,
+                )
                 page.wait_for_url(
                     lambda url: "/login" not in url,
                     timeout=timeout_seconds * 1000,
                 )
                 if "/login" in page.url:
-                    raise WellfoundLoginError("Login did not complete — still on login page")
+                    raise WellfoundLoginError(
+                        "Login did not complete — still on login page"
+                    )
                 self._persist_session(context)
-                logger.info("Manual login complete — session saved to %s", self._session_file)
+                logger.info(
+                    "Manual login complete — session saved to %s", self._session_file
+                )
             except WellfoundLoginError:
                 raise
             except Exception as exc:
-                raise WellfoundLoginError(f"Manual login timed out or failed: {exc}") from exc
+                raise WellfoundLoginError(
+                    f"Manual login timed out or failed: {exc}"
+                ) from exc
             finally:
                 context.close()
                 browser.close()
-

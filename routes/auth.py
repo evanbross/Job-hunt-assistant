@@ -64,7 +64,9 @@ def _prune_pending_auths() -> None:
     for s in expired:
         _pending_auths.pop(s, None)
     while len(_pending_auths) > _PENDING_AUTH_MAX_SIZE:
-        oldest = min(_pending_auths, key=lambda s: float(_pending_auths[s]["created_at"]))
+        oldest = min(
+            _pending_auths, key=lambda s: float(_pending_auths[s]["created_at"])
+        )
         _pending_auths.pop(oldest, None)
 
 
@@ -108,7 +110,10 @@ def auth_google_start() -> ResponseReturnValue:
         code_challenge_method="S256",
         state=state,
     )
-    _pending_auths[state] = {"verifier": flow.code_verifier, "created_at": time.monotonic()}
+    _pending_auths[state] = {
+        "verifier": flow.code_verifier,
+        "created_at": time.monotonic(),
+    }
     return jsonify({"auth_url": auth_url})
 
 
@@ -124,7 +129,10 @@ def auth_google_callback() -> ResponseReturnValue:
     _prune_pending_auths()
     entry = _pending_auths.pop(state, None)
     if not entry:
-        return jsonify({"error": "OAuth state mismatch — please try connecting again."}), 400
+        return (
+            jsonify({"error": "OAuth state mismatch — please try connecting again."}),
+            400,
+        )
     code_verifier = str(entry["verifier"])
 
     flow = Flow.from_client_secrets_file(
@@ -139,7 +147,9 @@ def auth_google_callback() -> ResponseReturnValue:
 
     # In dev mode (no built frontend) Flask's catch-all returns JSON, so redirect
     # to the Vite dev server instead.  In production both are on the same origin.
-    frontend_origin = "http://localhost:5174" if not config.FRONTEND_DIST.exists() else ""
+    frontend_origin = (
+        "http://localhost:5174" if not config.FRONTEND_DIST.exists() else ""
+    )
     return redirect(f"{frontend_origin}/?auth=success")
 
 

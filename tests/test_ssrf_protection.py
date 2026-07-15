@@ -21,6 +21,7 @@ AI provider client (2026-07-15 code review, findings 1, 2, and 5).
 All unsafe destinations use IP literals or localhost, so validation fails
 before any DNS lookup or network connection is attempted.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -41,6 +42,7 @@ def make_client() -> FlaskClient:
 
 
 # ─── Route: unsafe search_url values are rejected with a 400 ─────────────────
+
 
 @pytest.mark.parametrize(
     "search_url",
@@ -104,6 +106,7 @@ def test_scan_request_model_clamps_max_jobs() -> None:
 
 # ─── Scanner: fetches refuse unsafe destinations before connecting ──────────
 
+
 @pytest.mark.parametrize(
     "search_url",
     ["http://127.0.0.1/jobs", "http://10.0.0.5/jobs"],
@@ -114,6 +117,7 @@ def test_jobanni_scan_refuses_unsafe_fetch_target(search_url: str) -> None:
 
 
 # ─── AI provider: _post_json validates its destination ───────────────────────
+
 
 def test_post_json_rejects_private_destination_without_retrying() -> None:
     with pytest.raises(AIProviderError, match="URL rejected"):
@@ -134,6 +138,7 @@ def test_post_json_rejects_non_http_scheme() -> None:
 
 
 # ─── Settings: unsafe ollama_base_url is rejected at save time ───────────────
+
 
 @pytest.mark.parametrize(
     "base_url",

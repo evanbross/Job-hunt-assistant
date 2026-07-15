@@ -78,9 +78,7 @@ _CLOSED_PHRASES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
         "ce poste n'est plus disponible",
     ),
     # ai: claude-sonnet-5 | 2026-07-12
-    "wellfound": (
-        "recently taken down and is no longer available",
-    ),
+    "wellfound": ("recently taken down and is no longer available",),
 }
 
 _PLATFORM_LABELS: dict[str, str] = {
@@ -110,13 +108,17 @@ _LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
 _LINKEDIN_EXPIRED_REDIRECT_MARKER = "expired_jd_redirect"
 
 _TRACKING_COLUMNS: list[dict] = [
-    {"index": 0, "label": "Company",   "hidden": False},
-    {"index": 1, "label": "Status",    "hidden": False},
-    {"index": 2, "label": "Source",    "hidden": False},
-    {"index": 3, "label": "Date",      "hidden": False},
-    {"index": 4, "label": "Job Title", "hidden": False},  # index 4 relied on by frontend
-    {"index": 5, "label": "URL",       "hidden": False},
-    {"index": 6, "label": "Notes",     "hidden": False},
+    {"index": 0, "label": "Company", "hidden": False},
+    {"index": 1, "label": "Status", "hidden": False},
+    {"index": 2, "label": "Source", "hidden": False},
+    {"index": 3, "label": "Date", "hidden": False},
+    {
+        "index": 4,
+        "label": "Job Title",
+        "hidden": False,
+    },  # index 4 relied on by frontend
+    {"index": 5, "label": "URL", "hidden": False},
+    {"index": 6, "label": "Notes", "hidden": False},
 ]
 
 
@@ -135,11 +137,7 @@ def get_application_sheet() -> ResponseReturnValue:
         stages = stages_by_job_id.get(job["id"], [])
         latest_stage = stages[-1] if stages else None
         # ai: claude-fable-5 | 2026-07-14
-        status_date = (
-            (latest_stage or {}).get("date")
-            or job.get("date_found")
-            or ""
-        )
+        status_date = (latest_stage or {}).get("date") or job.get("date_found") or ""
         values = [
             job.get("company") or "",
             (latest_stage or {}).get("status") or job.get("status") or "",
@@ -153,15 +151,19 @@ def get_application_sheet() -> ResponseReturnValue:
             "row_number": job["id"],
             "cells": [{"column_index": i, "value": v} for i, v in enumerate(values)],
             "stages": stages,
-            "duplicate_of_id": job.get("duplicate_of_id"),  # ai: claude-sonnet-4-6 | 2026-06-09
+            "duplicate_of_id": job.get(
+                "duplicate_of_id"
+            ),  # ai: claude-sonnet-4-6 | 2026-06-09
             "skip_reason": job.get("skip_reason"),  # ai: claude-sonnet-4-6 | 2026-06-10
         }
 
-    return jsonify({
-        "sheet_name": "Applications",
-        "columns": _TRACKING_COLUMNS,
-        "rows": [_make_row(j) for j in jobs],
-    })
+    return jsonify(
+        {
+            "sheet_name": "Applications",
+            "columns": _TRACKING_COLUMNS,
+            "rows": [_make_row(j) for j in jobs],
+        }
+    )
 
 
 @applications_bp.route("/applications", methods=["POST"])
@@ -172,26 +174,30 @@ def add_application_sheet_row() -> ResponseReturnValue:
         return jsonify({"error": "company or job_title is required"}), 400
     # ai: claude-fable-5 | 2026-07-14
     job_data: dict = {
-        k: v for k, v in {
-            "company":             row["company"] or None,
-            "status":              row["status"] or None,
-            "source":              row["source"] or None,
-            "date_found":          row["date"] or datetime.now(UTC).date().isoformat(),
-            "on_sheet":            1,
-            "job_title":           row["job_title"] or None,
-            "url":                 row["url"] or None,
-            "notes":               row["notes"] or None,
-        }.items() if v is not None
+        k: v
+        for k, v in {
+            "company": row["company"] or None,
+            "status": row["status"] or None,
+            "source": row["source"] or None,
+            "date_found": row["date"] or datetime.now(UTC).date().isoformat(),
+            "on_sheet": 1,
+            "job_title": row["job_title"] or None,
+            "url": row["url"] or None,
+            "notes": row["notes"] or None,
+        }.items()
+        if v is not None
     }
     try:
         with get_repos() as repos:
             new_job_id = repos["jobs"].insert(job_data)
-            repos["stages"].insert({
-                "job_id": new_job_id,
-                "status": "applied",
-                "date": job_data["date_found"],
-                "notes": None,
-            })
+            repos["stages"].insert(
+                {
+                    "job_id": new_job_id,
+                    "status": "applied",
+                    "date": job_data["date_found"],
+                    "notes": None,
+                }
+            )
             repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error inserting tracking row: %s", exc)
@@ -206,15 +212,17 @@ def update_application_sheet_row(job_id: int) -> ResponseReturnValue:
     if not row["company"] and not row["job_title"]:
         return jsonify({"error": "company or job_title is required"}), 400
     fields: dict = {
-        k: v for k, v in {
-            "company":             row["company"] or None,
-            "status":              row["status"] or None,
-            "source":              row["source"] or None,
-            "date_found":          row["date"] or None,  # ai: claude-fable-5 | 2026-07-14
-            "job_title":           row["job_title"] or None,
-            "url":                 row["url"] or None,
-            "notes":               row["notes"] or None,
-        }.items() if v is not None
+        k: v
+        for k, v in {
+            "company": row["company"] or None,
+            "status": row["status"] or None,
+            "source": row["source"] or None,
+            "date_found": row["date"] or None,  # ai: claude-fable-5 | 2026-07-14
+            "job_title": row["job_title"] or None,
+            "url": row["url"] or None,
+            "notes": row["notes"] or None,
+        }.items()
+        if v is not None
     }
     if not fields:
         return jsonify({"error": "No fields to update"}), 400
@@ -243,8 +251,17 @@ def add_application_sheet_stage(job_id: int) -> ResponseReturnValue:
         with get_repos() as repos:
             valid_keys = {s["key"] for s in repos["stage_statuses"].get_all()}
             if status not in valid_keys:
-                return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(valid_keys))}"}), 400
-            repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
+                return (
+                    jsonify(
+                        {
+                            "error": f"Invalid status. Must be one of: {', '.join(sorted(valid_keys))}"
+                        }
+                    ),
+                    400,
+                )
+            repos["stages"].insert(
+                {"job_id": job_id, "status": status, "date": stage_date, "notes": notes}
+            )
             repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error adding stage for job %s: %s", job_id, exc, exc_info=True)
@@ -274,9 +291,7 @@ def mark_ghost_applications() -> ResponseReturnValue:
                     (latest_stage or {}).get("status") or job.get("status")
                 )
                 latest_date = str(
-                    (latest_stage or {}).get("date")
-                    or job.get("date_found")
-                    or ""
+                    (latest_stage or {}).get("date") or job.get("date_found") or ""
                 ).strip()
 
                 if latest_status != "applied" or not latest_date:
@@ -316,7 +331,9 @@ def mark_ghost_applications() -> ResponseReturnValue:
         logger.warning("Error marking ghost applications: %s", exc, exc_info=True)
         return jsonify({"error": "Failed to mark ghosts"}), 500
 
-    return jsonify({"marked": marked, "count": len(marked), "cutoff_date": cutoff_date.isoformat()})
+    return jsonify(
+        {"marked": marked, "count": len(marked), "cutoff_date": cutoff_date.isoformat()}
+    )
 
 
 def _detect_closed_req_platform(job: dict, url: str) -> str | None:
@@ -326,7 +343,11 @@ def _detect_closed_req_platform(job: dict, url: str) -> str | None:
     netloc = urlparse(url).netloc.lower()
     if "linkedin" in source or "linkedin.com" in netloc or "lnkd.in" in netloc:
         return "linkedin"
-    if "welcome to the jungle" in source or "wttj" in source or "welcometothejungle.com" in netloc:
+    if (
+        "welcome to the jungle" in source
+        or "wttj" in source
+        or "welcometothejungle.com" in netloc
+    ):
         return "wttj"
     if "wellfound" in source or "wellfound.com" in netloc:
         return "wellfound"
@@ -349,14 +370,19 @@ def _canonicalize_linkedin_url(url: str) -> str:
     return f"https://www.linkedin.com/jobs/view/{match.group(1)}/"
 
 
-def _classify_closed_req_page(page_text_lower: str, final_url: str, platform: str) -> str:
+def _classify_closed_req_page(
+    page_text_lower: str, final_url: str, platform: str
+) -> str:
     """Classify already-fetched/captured page text as 'closed' or 'open'.
 
     Shared by the unauthenticated fetch path (_check_closed_req) and the
     authenticated browser-extension capture path (submit_closed_req_capture),
     so both interpret the same banner/redirect signals identically.
     """
-    if platform == "linkedin" and _LINKEDIN_EXPIRED_REDIRECT_MARKER in final_url.lower():
+    if (
+        platform == "linkedin"
+        and _LINKEDIN_EXPIRED_REDIRECT_MARKER in final_url.lower()
+    ):
         return "closed"
     phrases = _CLOSED_PHRASES_BY_PLATFORM.get(platform, ())
     return "closed" if any(phrase in page_text_lower for phrase in phrases) else "open"
@@ -419,6 +445,7 @@ def _check_closed_req(url: str, platform: str) -> str:
 # ── Req-closed scan state (in-memory, protected by a lock) ────────────────────
 # Co-located with the routes that read/control it per FLASK_STANDARDS.md.
 
+
 @dataclass
 class ReqClosedScanState:
     running: bool = False
@@ -454,7 +481,9 @@ def _closed_req_candidates(repos: dict) -> list[tuple[dict, str, str]]:
     """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, or Wellfound, with their platform."""
     jobs = repos["jobs"].get_all_ordered()
     all_stages = repos["stages"].get_all()
-    terminal_keys = {s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")}
+    terminal_keys = {
+        s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")
+    }
     stages_by_job_id: dict[int, list[dict]] = {}
     for stage in all_stages:
         stages_by_job_id.setdefault(stage["job_id"], []).append(stage)
@@ -493,14 +522,20 @@ def _closed_req_browser_queue_snapshot(repos: dict) -> dict[str, int]:
     extension only picks up BROWSER_QUEUE_CLAIM_BATCH_SIZE items per poll, see
     app.py's _claim_browser_capture_queue).
     """
-    rows = [r for r in repos["browser_capture_queue"].get_all() if r.get("purpose") == "closed_req"]
+    rows = [
+        r
+        for r in repos["browser_capture_queue"].get_all()
+        if r.get("purpose") == "closed_req"
+    ]
     counts = {"pending": 0, "processing": 0, "done": 0, "failed": 0}
     for row in rows:
         status = row.get("status")
         if status in counts:
             counts[status] += 1
     remaining = counts["pending"] + counts["processing"]
-    poll_cycles_remaining = -(-remaining // BROWSER_QUEUE_CLAIM_BATCH_SIZE)  # ceil division
+    poll_cycles_remaining = -(
+        -remaining // BROWSER_QUEUE_CLAIM_BATCH_SIZE
+    )  # ceil division
     return {
         **counts,
         "remaining": remaining,
@@ -533,20 +568,28 @@ def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
             )
         else:
             from_status = str(job.get("status") or "")
-            repos["jobs"].update(job["id"], {"status": "skipped", "skip_reason": "req_closed"})
+            repos["jobs"].update(
+                job["id"], {"status": "skipped", "skip_reason": "req_closed"}
+            )
             maybe_mark_source_email_read(job, repos["jobs"])
-            repos["job_status_history"].insert({
-                "job_id": job["id"],
-                "from_status": from_status,
-                "to_status": "skipped",
-                "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
-                "trigger": "req_closed_scan",
-                "extra_data": json.dumps({
-                    "prev_skip_reason": job.get("skip_reason"),
-                    "prev_skip_feedback": job.get("skip_feedback"),
-                    "prev_skip_mismatch_reasons": job.get("skip_mismatch_reasons"),
-                }),
-            })
+            repos["job_status_history"].insert(
+                {
+                    "job_id": job["id"],
+                    "from_status": from_status,
+                    "to_status": "skipped",
+                    "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "trigger": "req_closed_scan",
+                    "extra_data": json.dumps(
+                        {
+                            "prev_skip_reason": job.get("skip_reason"),
+                            "prev_skip_feedback": job.get("skip_feedback"),
+                            "prev_skip_mismatch_reasons": job.get(
+                                "skip_mismatch_reasons"
+                            ),
+                        }
+                    ),
+                }
+            )
         repos["conn"].commit()
 
 
@@ -575,7 +618,10 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
             job = repos["jobs"].get_by_id(job_id) if job_id else None
 
         if job:
-            platform = _detect_closed_req_platform(job, str(job.get("url") or captured_url)) or "linkedin"
+            platform = (
+                _detect_closed_req_platform(job, str(job.get("url") or captured_url))
+                or "linkedin"
+            )
             page_text = content.lower()
             if _classify_closed_req_page(page_text, captured_url, platform) == "closed":
                 _record_closed_req(
@@ -584,13 +630,20 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
                     datetime.now(UTC).date().isoformat(),
                 )
         else:
-            logger.warning("Closed-req capture had no matching job for job_id=%s", raw_job_id)
+            logger.warning(
+                "Closed-req capture had no matching job for job_id=%s", raw_job_id
+            )
 
         with get_repos() as repos:
             repos["browser_capture_queue"].mark_done_by_urls([queue_url, captured_url])
             repos["conn"].commit()
     except Exception as exc:
-        logger.warning("Closed-req capture handling failed for job_id=%s: %s", raw_job_id, exc, exc_info=True)
+        logger.warning(
+            "Closed-req capture handling failed for job_id=%s: %s",
+            raw_job_id,
+            exc,
+            exc_info=True,
+        )
         return {"error": "Failed to process closed-req capture"}, 500
     return {"ok": True}, 200
 
@@ -598,12 +651,22 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
 def _run_req_closed_scan() -> None:
     today = datetime.now(UTC).date().isoformat()
     _update_req_closed_state(
-        running=True, progress=0, total=0,
+        running=True,
+        progress=0,
+        total=0,
         message="Finding LinkedIn, Welcome to the Jungle, and Wellfound jobs to check…",
-        marked=[], errors=[], checked=0,
-        kept_count=0, closed_count=0, bad_url_count=0, unreachable_count=0,
+        marked=[],
+        errors=[],
+        checked=0,
+        kept_count=0,
+        closed_count=0,
+        bad_url_count=0,
+        unreachable_count=0,
         browser_checks_queued=0,
-        current_platform="", current_company="", current_job_title="", error=None,
+        current_platform="",
+        current_company="",
+        current_job_title="",
+        error=None,
     )
     try:
         with get_repos() as repos:
@@ -611,7 +674,9 @@ def _run_req_closed_scan() -> None:
         # Connection released before the external fetches below.
 
         total = len(candidates)
-        _update_req_closed_state(total=total, message=f"Checking {total} job{'s' if total != 1 else ''}…")
+        _update_req_closed_state(
+            total=total, message=f"Checking {total} job{'s' if total != 1 else ''}…"
+        )
 
         marked: list[dict[str, object]] = []
         errors: list[dict[str, object]] = []
@@ -690,11 +755,18 @@ def _run_req_closed_scan() -> None:
                     created = row.get("created_at") or ""
                     if created > last_checked.get(row["job_id"], ""):
                         last_checked[row["job_id"]] = created
-                to_browser_check.sort(key=lambda item: last_checked.get(item[0]["id"], ""))
+                to_browser_check.sort(
+                    key=lambda item: last_checked.get(item[0]["id"], "")
+                )
 
-                for job, url, platform_label in to_browser_check[:_CLOSED_REQ_BROWSER_CHECK_CAP]:
+                for job, url, platform_label in to_browser_check[
+                    :_CLOSED_REQ_BROWSER_CHECK_CAP
+                ]:
                     new_id = repos["browser_capture_queue"].enqueue_once_for_purpose(
-                        url, f"{platform_label} (closed-req check)", "closed_req", job["id"]
+                        url,
+                        f"{platform_label} (closed-req check)",
+                        "closed_req",
+                        job["id"],
                     )
                     if new_id is not None:
                         browser_checks_queued += 1
@@ -708,12 +780,16 @@ def _run_req_closed_scan() -> None:
                 f"{bad_url_count} bad URLs, {unreachable_count} unreachable. "
                 f"Queued {browser_checks_queued} for authenticated browser re-check."
             ),
-            current_platform="", current_company="", current_job_title="",
+            current_platform="",
+            current_company="",
+            current_job_title="",
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
     except Exception as exc:
         logger.warning("Closed-req scan failed: %s", exc, exc_info=True)
-        _update_req_closed_state(running=False, error=str(exc), message="Scan failed — see server logs")
+        _update_req_closed_state(
+            running=False, error=str(exc), message="Scan failed — see server logs"
+        )
 
 
 @applications_bp.route("/applications/scan-closed-reqs", methods=["POST"])
@@ -739,26 +815,28 @@ def closed_req_scan_status() -> ResponseReturnValue:
     with get_repos() as repos:
         browser_queue = _closed_req_browser_queue_snapshot(repos)
     with _req_closed_lock:
-        return jsonify({
-            "running": _req_closed_state.running,
-            "progress": _req_closed_state.progress,
-            "total": _req_closed_state.total,
-            "message": _req_closed_state.message,
-            "marked": _req_closed_state.marked,
-            "errors": _req_closed_state.errors,
-            "checked": _req_closed_state.checked,
-            "kept_count": _req_closed_state.kept_count,
-            "closed_count": _req_closed_state.closed_count,
-            "bad_url_count": _req_closed_state.bad_url_count,
-            "unreachable_count": _req_closed_state.unreachable_count,
-            "browser_checks_queued": _req_closed_state.browser_checks_queued,
-            "browser_queue": browser_queue,
-            "current_platform": _req_closed_state.current_platform,
-            "current_company": _req_closed_state.current_company,
-            "current_job_title": _req_closed_state.current_job_title,
-            "last_run_at": _req_closed_state.last_run_at,
-            "error": _req_closed_state.error,
-        })
+        return jsonify(
+            {
+                "running": _req_closed_state.running,
+                "progress": _req_closed_state.progress,
+                "total": _req_closed_state.total,
+                "message": _req_closed_state.message,
+                "marked": _req_closed_state.marked,
+                "errors": _req_closed_state.errors,
+                "checked": _req_closed_state.checked,
+                "kept_count": _req_closed_state.kept_count,
+                "closed_count": _req_closed_state.closed_count,
+                "bad_url_count": _req_closed_state.bad_url_count,
+                "unreachable_count": _req_closed_state.unreachable_count,
+                "browser_checks_queued": _req_closed_state.browser_checks_queued,
+                "browser_queue": browser_queue,
+                "current_platform": _req_closed_state.current_platform,
+                "current_company": _req_closed_state.current_company,
+                "current_job_title": _req_closed_state.current_job_title,
+                "last_run_at": _req_closed_state.last_run_at,
+                "error": _req_closed_state.error,
+            }
+        )
 
 
 @applications_bp.route("/applications/stage-statuses")
@@ -768,7 +846,9 @@ def get_stage_statuses() -> ResponseReturnValue:
         return jsonify(repos["stage_statuses"].get_all())
 
 
-@applications_bp.route("/applications/repair/normalize-stage-statuses", methods=["POST"])
+@applications_bp.route(
+    "/applications/repair/normalize-stage-statuses", methods=["POST"]
+)
 def normalize_stage_statuses() -> ResponseReturnValue:
     """One-time migration: normalise all stage status values to snake_case lowercase."""
     try:

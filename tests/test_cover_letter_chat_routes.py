@@ -114,11 +114,15 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Any:
     return app.test_client()
 
 
-def test_cover_letter_chat_prompt_includes_job_description_and_resume(client: Any) -> None:
+def test_cover_letter_chat_prompt_includes_job_description_and_resume(
+    client: Any,
+) -> None:
     res = client.post(
         "/api/jobs/7/cover-letter/chat",
-        json={"messages": [{"role": "user", "content": "Mention my platform work."}],
-              "cover_letter": "Current draft."},
+        json={
+            "messages": [{"role": "user", "content": "Mention my platform work."}],
+            "cover_letter": "Current draft.",
+        },
     )
     assert res.status_code == 200
     system = FakeAIClient.captured["system"]
@@ -130,9 +134,11 @@ def test_cover_letter_chat_prompt_includes_job_description_and_resume(client: An
 def test_pitch_chat_prompt_includes_job_description_and_resume(client: Any) -> None:
     res = client.post(
         "/api/jobs/7/pitch/chat",
-        json={"type": "why_fit",
-              "messages": [{"role": "user", "content": "Make it more specific."}],
-              "current_text": "Current pitch."},
+        json={
+            "type": "why_fit",
+            "messages": [{"role": "user", "content": "Make it more specific."}],
+            "current_text": "Current pitch.",
+        },
     )
     assert res.status_code == 200
     system = FakeAIClient.captured["system"]
@@ -140,11 +146,15 @@ def test_pitch_chat_prompt_includes_job_description_and_resume(client: Any) -> N
     assert RESUME_TEXT in system
 
 
-def test_resume_tailor_chat_prompt_includes_job_description_and_resume(client: Any) -> None:
+def test_resume_tailor_chat_prompt_includes_job_description_and_resume(
+    client: Any,
+) -> None:
     res = client.post(
         "/api/jobs/7/resume-tailor/chat",
-        json={"messages": [{"role": "user", "content": "Tighten the bullets."}],
-              "analysis": "Current analysis."},
+        json={
+            "messages": [{"role": "user", "content": "Tighten the bullets."}],
+            "analysis": "Current analysis.",
+        },
     )
     assert res.status_code == 200
     system = FakeAIClient.captured["system"]

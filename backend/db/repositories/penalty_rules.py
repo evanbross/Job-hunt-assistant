@@ -41,13 +41,15 @@ from ..connection import _row_to_dict
 
 
 class PostgresPenaltyRuleRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "id",
-        "rule_text",
-        "penalty_points",
-        "enabled",
-        "scope",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "id",
+            "rule_text",
+            "penalty_points",
+            "enabled",
+            "scope",
+        }
+    )
 
     def get_all(self) -> list[dict[str, Any]]:
         cur = self._execute("SELECT * FROM penalty_rules ORDER BY rule_text")
@@ -60,9 +62,7 @@ class PostgresPenaltyRuleRepository(_BaseRepo):
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def get_by_id(self, rule_id: int) -> dict[str, Any] | None:
-        cur = self._execute(
-            "SELECT * FROM penalty_rules WHERE id = %s", (rule_id,)
-        )
+        cur = self._execute("SELECT * FROM penalty_rules WHERE id = %s", (rule_id,))
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 

@@ -46,9 +46,16 @@ class PostgresImportRepairHistoryRepository(_BaseRepo):
     (source, warning_code) observed on a given run — lets trend over time be
     queried instead of only ever seeing the latest snapshot."""
 
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "run_at", "source", "warning_code", "count", "total", "percent",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "run_at",
+            "source",
+            "warning_code",
+            "count",
+            "total",
+            "percent",
+        }
+    )
 
     def insert(self, row: dict[str, Any]) -> int:
         unknown = set(row.keys()) - self._ALLOWED_COLUMNS
@@ -69,7 +76,9 @@ class PostgresImportRepairHistoryRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_for_source(self, source: str, warning_code: str, limit: int = 100) -> list[dict[str, Any]]:
+    def get_for_source(
+        self, source: str, warning_code: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
         cur = self._execute(
             "SELECT * FROM import_repair_history WHERE source = %s AND warning_code = %s"
             " ORDER BY run_at DESC, id DESC LIMIT %s",

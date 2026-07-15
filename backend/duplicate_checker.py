@@ -33,6 +33,7 @@ Matching strategy:
      A high company match alone (e.g. two different roles at the same firm)
      is not a duplicate.
 """
+
 from __future__ import annotations
 
 import re
@@ -44,37 +45,37 @@ from rapidfuzz import fuzz
 # Order matters — apply more specific / longer patterns first.
 _ABBREV_PATTERNS: list[tuple[str, str]] = [
     # Multi-word fused abbreviations (produced after camelCase splitting)
-    (r"\bprin\s+se\b",          "principal software engineer"),
-    (r"\bprin\s+swe\b",         "principal software engineer"),
-    (r"\bprin\s+eng\b",         "principal engineer"),
-    (r"\bstaff\s+se\b",         "staff software engineer"),
-    (r"\bstaff\s+swe\b",        "staff software engineer"),
-    (r"\bstaff\s+eng\b",        "staff engineer"),
-    (r"\bsr\s+se\b",            "senior software engineer"),
-    (r"\bsr\s+swe\b",           "senior software engineer"),
-    (r"\bsr\s+eng\b",           "senior engineer"),
+    (r"\bprin\s+se\b", "principal software engineer"),
+    (r"\bprin\s+swe\b", "principal software engineer"),
+    (r"\bprin\s+eng\b", "principal engineer"),
+    (r"\bstaff\s+se\b", "staff software engineer"),
+    (r"\bstaff\s+swe\b", "staff software engineer"),
+    (r"\bstaff\s+eng\b", "staff engineer"),
+    (r"\bsr\s+se\b", "senior software engineer"),
+    (r"\bsr\s+swe\b", "senior software engineer"),
+    (r"\bsr\s+eng\b", "senior engineer"),
     # Single-token abbreviations
-    (r"\bsr\.?\s*s\.?e\.?\b",   "senior software engineer"),
-    (r"\bstaff\s+s\.?e\.?\b",   "staff software engineer"),
+    (r"\bsr\.?\s*s\.?e\.?\b", "senior software engineer"),
+    (r"\bstaff\s+s\.?e\.?\b", "staff software engineer"),
     (r"\bprincipal\s+s\.?e\.?\b", "principal software engineer"),
-    (r"\bsr\.?\s*swe\b",        "senior software engineer"),
-    (r"\bprinse\b",             "principal software engineer"),  # fused, no space
-    (r"\bswe\b",                "software engineer"),
-    (r"\bs\.?e\.?\b",           "software engineer"),
-    (r"\bprin\b",               "principal"),
-    (r"\bsr\.?\b",              "senior"),
-    (r"\bjr\.?\b",              "junior"),
-    (r"\bpe\b",                 "principal engineer"),
-    (r"\bic\b",                 "individual contributor"),
-    (r"\bmgr\b",                "manager"),
-    (r"\bmle\b",                "machine learning engineer"),
-    (r"\btpm\b",                "technical program manager"),
-    (r"\bpm\b",                 "product manager"),
-    (r"\bvp\b",                 "vice president"),
-    (r"\beng\b",                "engineer"),
-    (r"\bdev\b",                "developer"),
-    (r"\barch\b",               "architect"),
-    (r"\bfull[\s-]?stack\b",    "fullstack"),
+    (r"\bsr\.?\s*swe\b", "senior software engineer"),
+    (r"\bprinse\b", "principal software engineer"),  # fused, no space
+    (r"\bswe\b", "software engineer"),
+    (r"\bs\.?e\.?\b", "software engineer"),
+    (r"\bprin\b", "principal"),
+    (r"\bsr\.?\b", "senior"),
+    (r"\bjr\.?\b", "junior"),
+    (r"\bpe\b", "principal engineer"),
+    (r"\bic\b", "individual contributor"),
+    (r"\bmgr\b", "manager"),
+    (r"\bmle\b", "machine learning engineer"),
+    (r"\btpm\b", "technical program manager"),
+    (r"\bpm\b", "product manager"),
+    (r"\bvp\b", "vice president"),
+    (r"\beng\b", "engineer"),
+    (r"\bdev\b", "developer"),
+    (r"\barch\b", "architect"),
+    (r"\bfull[\s-]?stack\b", "fullstack"),
 ]
 
 # Minimum rapidfuzz scores (0–100) required on each dimension.
@@ -101,12 +102,12 @@ _QUALIFIER_PATTERNS: list[re.Pattern[str]] = [
 # "Senior/Staff" also normalizes to "senior staff" and is treated as that
 # combined level.
 _SENIORITY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bsenior staff\b"),   "senior staff"),
-    (re.compile(r"\bdistinguished\b"),  "distinguished"),
-    (re.compile(r"\bprincipal\b"),      "principal"),
-    (re.compile(r"\bstaff\b"),          "staff"),
-    (re.compile(r"\bsenior\b"),         "senior"),
-    (re.compile(r"\bjunior\b"),         "junior"),
+    (re.compile(r"\bsenior staff\b"), "senior staff"),
+    (re.compile(r"\bdistinguished\b"), "distinguished"),
+    (re.compile(r"\bprincipal\b"), "principal"),
+    (re.compile(r"\bstaff\b"), "staff"),
+    (re.compile(r"\bsenior\b"), "senior"),
+    (re.compile(r"\bjunior\b"), "junior"),
 ]
 
 # Marriott prefixes temporary/flexible positions with "FLEX" — a FLEX role and
@@ -145,7 +146,7 @@ def _normalize(text: str) -> str:
     t = t.lower().strip()
     for pattern, replacement in _ABBREV_PATTERNS:
         t = re.sub(pattern, replacement, t)
-    t = re.sub(r"[^\w\s]", " ", t)   # strip punctuation
+    t = re.sub(r"[^\w\s]", " ", t)  # strip punctuation
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -220,7 +221,9 @@ class DuplicateChecker:
             if not sheet_company_raw and not sheet_title_raw:
                 continue
 
-            c_score: int = fuzz.token_set_ratio(norm_company, _normalize(sheet_company_raw))
+            c_score: int = fuzz.token_set_ratio(
+                norm_company, _normalize(sheet_company_raw)
+            )
             # Slug fallback: catches Greenhouse board tokens stored as company names
             # (e.g. "paynearmeinc" vs "PayNearMe, Inc.").
             if c_score < _COMPANY_THRESHOLD:

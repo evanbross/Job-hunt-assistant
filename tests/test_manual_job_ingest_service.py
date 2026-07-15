@@ -340,5 +340,7 @@ def test_ingest_rejects_empty_text() -> None:
         scorer=StubScorer(),
     )
 
-    with pytest.raises(ValueError, match="Job listing text or a public job URL is required"):
+    with pytest.raises(
+        ValueError, match="Job listing text or a public job URL is required"
+    ):
         service.ingest("   ")

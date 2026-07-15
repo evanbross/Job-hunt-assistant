@@ -45,6 +45,7 @@ when this was a single db.py file, and it defines open_repositories()/init_db()
 since those are the only two functions that need visibility into every
 repository/schema module at once.
 """
+
 from __future__ import annotations
 
 import logging
@@ -242,7 +243,9 @@ def _run_background_init_retry(dsn: str, interval_seconds: float) -> None:
             logger.warning("Background database init retry failed: %s", exc)
             continue
         _set_db_startup_error(None)
-        logger.info("Database initialization succeeded on background retry — leaving degraded mode.")
+        logger.info(
+            "Database initialization succeeded on background retry — leaving degraded mode."
+        )
         return
 
 
@@ -281,7 +284,9 @@ def init_db_with_retry(
             return True
         except _DB_UNAVAILABLE_ERRORS as exc:
             last_error = exc
-            logger.warning("Database init attempt %d/%d failed: %s", attempt, attempts, exc)
+            logger.warning(
+                "Database init attempt %d/%d failed: %s", attempt, attempts, exc
+            )
             if attempt < attempts:
                 time.sleep(delay_seconds)
                 delay_seconds *= 2

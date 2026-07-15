@@ -45,6 +45,7 @@ from flask.typing import ResponseReturnValue
 try:
     import tkinter as _tk
     from tkinter import filedialog as _filedialog
+
     _TKINTER_AVAILABLE = True
 except ImportError:
     _TKINTER_AVAILABLE = False
@@ -125,7 +126,9 @@ def select_file() -> ResponseReturnValue:
         root.withdraw()
         root.attributes("-topmost", True)
         selected = _filedialog.askopenfilename(
-            initialdir=str(Path(initial_path).parent) if initial_path else str(Path.home()),
+            initialdir=(
+                str(Path(initial_path).parent) if initial_path else str(Path.home())
+            ),
             title="Select candidate profile file",
             filetypes=[
                 ("Markdown and text files", "*.md *.markdown *.txt"),

@@ -112,12 +112,17 @@ def test_extract_text_preserves_html_anchor_urls() -> None:
       <a href="https://www.welcometothejungle.com/en/companies/acme-health/jobs/senior-backend-engineer_remote">View job</a>
     </body></html>
     """
-    encoded_html = base64.urlsafe_b64encode(html.encode("utf-8")).decode("ascii").rstrip("=")
+    encoded_html = (
+        base64.urlsafe_b64encode(html.encode("utf-8")).decode("ascii").rstrip("=")
+    )
     message = {
         "payload": {
             "headers": [
                 {"name": "Subject", "value": "New match: Senior Backend Engineer"},
-                {"name": "From", "value": "Welcome to the Jungle <hello@welcometothejungle.com>"},
+                {
+                    "name": "From",
+                    "value": "Welcome to the Jungle <hello@welcometothejungle.com>",
+                },
             ],
             "mimeType": "text/html",
             "body": {"data": encoded_html},

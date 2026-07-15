@@ -41,6 +41,7 @@ all backend API routes under /api/.
 Authentication note: Google OAuth flows live exclusively in /api/auth/* so
 that background scan calls never trigger browser redirects.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -101,10 +102,12 @@ _SILENT_PATHS = {
     "/api/system/health",  # ai: claude-fable-5 | 2026-07-14
 }
 
+
 class _PollFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
         return not any(path in msg for path in _SILENT_PATHS)
+
 
 logging.getLogger("werkzeug").addFilter(_PollFilter())
 
@@ -143,13 +146,18 @@ def _reject_cross_origin_api_writes() -> tuple[flask.Response, int] | None:
     (non-browser clients: tests, curl, internal tooling) is let through since
     there is nothing forgeable to check.
     """
-    if not request.path.startswith("/api/") or request.method not in _API_UNSAFE_METHODS:
+    if (
+        not request.path.startswith("/api/")
+        or request.method not in _API_UNSAFE_METHODS
+    ):
         return None
 
     source = request.headers.get("Origin") or request.headers.get("Referer")
     self_origin = f"{request.scheme}://{request.host}"
     if not is_trusted_api_write_origin(source, self_origin, _cors_origins):
-        logger.warning("Rejected cross-origin API write from %s to %s", source, request.path)
+        logger.warning(
+            "Rejected cross-origin API write from %s to %s", source, request.path
+        )
         return jsonify({"error": "Cross-origin request rejected"}), 403
     return None
 
@@ -187,7 +195,9 @@ def _swagger_path_for_rule(rule_path: str) -> tuple[str, list[dict[str, object]]
 
     def _replace_path_param(path_match: re.Match[str]) -> str:
         param_name = path_match.group("name")
-        param_type, param_format = _swagger_parameter_type(path_match.group("converter"))
+        param_type, param_format = _swagger_parameter_type(
+            path_match.group("converter")
+        )
         parameter: dict[str, object] = {
             "name": param_name,
             "in": "path",
@@ -243,7 +253,9 @@ def _swagger_operation_for_rule(
 
 def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
     paths: dict[str, dict[str, object]] = {}
-    for url_rule in sorted(flask_app.url_map.iter_rules(), key=lambda route_rule: route_rule.rule):
+    for url_rule in sorted(
+        flask_app.url_map.iter_rules(), key=lambda route_rule: route_rule.rule
+    ):
         if not url_rule.rule.startswith("/api/"):
             continue
 
@@ -316,8 +328,11 @@ app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /ap
 def _claim_browser_capture_queue() -> list[dict]:
     """Called from the import listener thread — opens a short-lived DB connection."""
     from backend.utils import get_repos
+
     with get_repos() as repos:
-        items = repos["browser_capture_queue"].claim_pending(limit=BROWSER_QUEUE_CLAIM_BATCH_SIZE)
+        items = repos["browser_capture_queue"].claim_pending(
+            limit=BROWSER_QUEUE_CLAIM_BATCH_SIZE
+        )
         repos["conn"].commit()
     return items
 
@@ -354,6 +369,7 @@ _swagger = Swagger(app, template=_build_swagger_template(app))
 
 # ─── Startup checks ───────────────────────────────────────────────────────────
 
+
 def _check_redis() -> None:
     parsed = urllib.parse.urlparse(config.REDIS_URL)
     host = parsed.hostname or "localhost"
@@ -365,7 +381,8 @@ def _check_redis() -> None:
         logger.warning(
             "Redis is NOT reachable at %s:%s — Celery task submission will fail. "
             "Start the infra container: cd ../infra && docker-compose up -d",
-            host, port,
+            host,
+            port,
         )
 
 
@@ -437,7 +454,9 @@ def _maybe_rebuild_frontend() -> None:
     if result.returncode == 0:
         logger.info("Frontend rebuild complete.")
     else:
-        logger.warning("Frontend rebuild failed (exit %d) — serving stale dist.", result.returncode)
+        logger.warning(
+            "Frontend rebuild failed (exit %d) — serving stale dist.", result.returncode
+        )
 
 
 def _start_vite() -> None:
@@ -513,8 +532,12 @@ def _start_celery_worker() -> None:
     try:
         _celery_proc = _subprocess.Popen(
             [
-                sys.executable, "-m", "celery",
-                "-A", "backend.celery_app", "worker",
+                sys.executable,
+                "-m",
+                "celery",
+                "-A",
+                "backend.celery_app",
+                "worker",
                 "--loglevel=warning",
                 "--concurrency=2",
                 "--pool=threads",

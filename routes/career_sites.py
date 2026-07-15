@@ -82,6 +82,7 @@ _CAREER_SITE_COLLECTION_MODES = frozenset({"automatic", "manual"})
 
 # ─── Career-site scan state (in-memory, protected by a lock) ──────────────────
 
+
 @dataclass
 class CareerSiteScanState:
     running: bool = False
@@ -106,7 +107,6 @@ _career_lock = threading.Lock()
 # ─── Career-site helpers ──────────────────────────────────────────────────────
 
 
-
 def _tracking_status_for_career_job(
     *,
     job: dict[str, object],
@@ -114,12 +114,14 @@ def _tracking_status_for_career_job(
     jobs_repo: IJobRepository,
     dedup_checker: DuplicateChecker,
 ) -> tuple[str, str | None]:
-    sheet_status, tracking_source, _duplicate_hint, _duplicate_of_id, _match_scores = db_match_for_job(
-        job_title=str(job.get("job_title") or ""),
-        company=str(job.get("site_name") or ""),
-        job_url=str(job.get("job_url") or ""),
-        known_jobs=known_jobs,
-        dedup_checker=dedup_checker,
+    sheet_status, tracking_source, _duplicate_hint, _duplicate_of_id, _match_scores = (
+        db_match_for_job(
+            job_title=str(job.get("job_title") or ""),
+            company=str(job.get("site_name") or ""),
+            job_url=str(job.get("job_url") or ""),
+            known_jobs=known_jobs,
+            dedup_checker=dedup_checker,
+        )
     )
 
     job_url = str(job.get("job_url") or "").strip()
@@ -127,7 +129,9 @@ def _tracking_status_for_career_job(
     local_status = (local_job or {}).get("status")
 
     _DISMISSED = {"rejected", "skipped"}
-    if (sheet_status and sheet_status.lower() in _DISMISSED) or (local_status and local_status.lower() in _DISMISSED):
+    if (sheet_status and sheet_status.lower() in _DISMISSED) or (
+        local_status and local_status.lower() in _DISMISSED
+    ):
         label = f"Tracked: {sheet_status}" if sheet_status else f"Inbox: {local_status}"
         return label, "db_rejected"
 
@@ -233,7 +237,10 @@ def _re_evaluate_career_scan_results(
             if tracking_source in {"db_url", "db_fuzzy"}:
                 db_matches += 1
 
-            _haystack = " ".join(str(row.get(f) or "") for f in ("job_title", "job_text", "site_name", "job_url", "site_url"))
+            _haystack = " ".join(
+                str(row.get(f) or "")
+                for f in ("job_title", "job_text", "site_name", "job_url", "site_url")
+            )
             matched_rejection_rule = jd_blocklist_match(_haystack, rejection_rules)
             if matched_rejection_rule is not None:
                 tracking_status = "Filtered"
@@ -270,9 +277,16 @@ def _re_evaluate_career_scan_results(
                 updates["match_reasoning"] = result["reasoning"]
                 rescored += 1
             except Exception as exc:
-                logger.warning("Career result re-evaluation failed for row %s: %s", row.get("id"), exc, exc_info=True)
+                logger.warning(
+                    "Career result re-evaluation failed for row %s: %s",
+                    row.get("id"),
+                    exc,
+                    exc_info=True,
+                )
                 updates["match_score"] = None
-                updates["match_reasoning"] = f"Scoring failed: {safe_error_message(exc, 'Anthropic scoring failed')}"
+                updates["match_reasoning"] = (
+                    f"Scoring failed: {safe_error_message(exc, 'Anthropic scoring failed')}"
+                )
                 failed += 1
 
         results_repo.update(row["id"], updates)
@@ -286,7 +300,9 @@ def _re_evaluate_career_scan_results(
     }
 
 
-def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None) -> None:
+def _run_career_site_scan(
+    trigger: str = "manual", source_id: int | None = None
+) -> None:
     with _career_lock:
         _career_state.running = True
         _career_state.progress = 0
@@ -435,7 +451,9 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     conn.commit()
 
                 try:
-                    outcome = scanner.scan_site(site_name=source_name, site_url=source_url)
+                    outcome = scanner.scan_site(
+                        site_name=source_name, site_url=source_url
+                    )
                     jobs = outcome["jobs"]
                     detected_platform = outcome["detected_platform"]
                     logger.info(
@@ -449,8 +467,12 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     )
                     conn.commit()
                 except Exception as exc:
-                    logger.warning("Career-site scan failed for %s: %s", source_url, exc)
-                    _update_career_scan(error=f"{source_name}: {exc.__class__.__name__}: {exc}")
+                    logger.warning(
+                        "Career-site scan failed for %s: %s", source_url, exc
+                    )
+                    _update_career_scan(
+                        error=f"{source_name}: {exc.__class__.__name__}: {exc}"
+                    )
                     failures_repo.insert(
                         {
                             "site_source_id": current_source_id,
@@ -459,7 +481,9 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                             "platform": platform_for_site_url(source_url),
                             "error_message": f"{exc.__class__.__name__}: {exc}",
                             "trigger": trigger,
-                            "occurred_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                            "occurred_at": datetime.now(UTC).isoformat(
+                                timespec="seconds"
+                            ),
                         }
                     )
                     conn.commit()
@@ -481,7 +505,9 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                                 f"{failure['error_type']}: {failure['error_message']}"
                             ),
                             "trigger": trigger,
-                            "occurred_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                            "occurred_at": datetime.now(UTC).isoformat(
+                                timespec="seconds"
+                            ),
                         }
                     )
                     conn.commit()
@@ -512,10 +538,13 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                             for row in known_jobs
                             if (row.get("url") or "").strip()
                             and (
-                                (row.get("url") or "").strip().lower() == current_job_url.lower()
+                                (row.get("url") or "").strip().lower()
+                                == current_job_url.lower()
                                 or (
                                     current_ashby_job_id is not None
-                                    and extract_ashby_job_id((row.get("url") or "").strip())
+                                    and extract_ashby_job_id(
+                                        (row.get("url") or "").strip()
+                                    )
                                     == current_ashby_job_id
                                 )
                             )
@@ -523,7 +552,9 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                         None,
                     )
                     if exact_match is not None:
-                        sheet_status = (exact_match.get("status") or "").strip() or "Tracked"
+                        sheet_status = (
+                            exact_match.get("status") or ""
+                        ).strip() or "Tracked"
                         tracking_source = "db_url"
                     elif (
                         (job.get("site_name") or "").strip()
@@ -540,12 +571,16 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                                 (
                                     row
                                     for row in known_jobs
-                                    if (row.get("company") or "") == dup["sheet_company"]
-                                    and (row.get("job_title") or "") == dup["sheet_title"]
+                                    if (row.get("company") or "")
+                                    == dup["sheet_company"]
+                                    and (row.get("job_title") or "")
+                                    == dup["sheet_title"]
                                 ),
                                 None,
                             )
-                            sheet_status = ((matched or {}).get("status") or "Tracked").strip()
+                            sheet_status = (
+                                (matched or {}).get("status") or "Tracked"
+                            ).strip()
                             tracking_source = "db_fuzzy"
 
                     local_job = (
@@ -557,12 +592,20 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
 
                     _dismissed = {"rejected", "skipped"}
                     listing_filtered = False
-                    if (sheet_status and sheet_status.lower() in _dismissed) or (local_status and local_status.lower() in _dismissed):
-                        tracking_status = f"Tracked: {sheet_status}" if sheet_status else f"Inbox: {local_status}"
+                    if (sheet_status and sheet_status.lower() in _dismissed) or (
+                        local_status and local_status.lower() in _dismissed
+                    ):
+                        tracking_status = (
+                            f"Tracked: {sheet_status}"
+                            if sheet_status
+                            else f"Inbox: {local_status}"
+                        )
                         tracking_source = "db_rejected"
                         listing_filtered = True
                     elif sheet_status and local_status:
-                        tracking_status = f"Tracked: {sheet_status} · Inbox: {local_status}"
+                        tracking_status = (
+                            f"Tracked: {sheet_status} · Inbox: {local_status}"
+                        )
                     elif sheet_status:
                         tracking_status = f"Tracked: {sheet_status}"
                     elif local_status:
@@ -571,8 +614,19 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                         tracking_status = "New"
                     rejection_reason = None
                     rejection_source = None
-                    _haystack = " ".join(str(job.get(f) or "") for f in ("job_title", "job_text", "site_name", "job_url", "site_url"))
-                    matched_rejection_rule = jd_blocklist_match(_haystack, rejection_rules)
+                    _haystack = " ".join(
+                        str(job.get(f) or "")
+                        for f in (
+                            "job_title",
+                            "job_text",
+                            "site_name",
+                            "job_url",
+                            "site_url",
+                        )
+                    )
+                    matched_rejection_rule = jd_blocklist_match(
+                        _haystack, rejection_rules
+                    )
                     if matched_rejection_rule is not None:
                         tracking_status = "Filtered"
                         tracking_source = "career_rule"
@@ -637,7 +691,9 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                         conn.commit()
                     except Exception as exc:
                         conn.rollback()
-                        logger.debug("Career-scan insert skipped for %s: %s", job["job_url"], exc)
+                        logger.debug(
+                            "Career-scan insert skipped for %s: %s", job["job_url"], exc
+                        )
 
                     if local_job is not None and not listing_filtered:
                         incoming_text = str(job.get("job_text") or "").strip()
@@ -668,7 +724,11 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                     # Auto-promote genuinely new jobs (not filtered, not already in queue,
                     # no fuzzy duplicate match) into the main job queue so they appear in
                     # triage/pending_review without requiring a separate export/import step.
-                    if local_job is None and not listing_filtered and tracking_source is None:
+                    if (
+                        local_job is None
+                        and not listing_filtered
+                        and tracking_source is None
+                    ):
                         queue_status = (
                             "pending_review"
                             if (match_score is not None and match_score >= 70)
@@ -684,7 +744,9 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                             "fit_score": match_score,
                             "fit_reasoning": match_reasoning,
                             "status": queue_status,
-                            "parser_confidence": str(job.get("confidence_level") or "low"),
+                            "parser_confidence": str(
+                                job.get("confidence_level") or "low"
+                            ),
                             "confidence_reason": "",
                             "date_found": datetime.now(UTC).date().isoformat(),
                             "duplicate_hint": None,
@@ -693,8 +755,13 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                             "confidence_score": int(job.get("confidence_score") or 50),
                         }
                         job_dict, import_warnings = normalize_and_validate(job_dict)
-                        job_dict["import_warnings"] = import_warnings_to_json(import_warnings)
-                        if import_warnings and job_dict["status"] != "possible_duplicate":
+                        job_dict["import_warnings"] = import_warnings_to_json(
+                            import_warnings
+                        )
+                        if (
+                            import_warnings
+                            and job_dict["status"] != "possible_duplicate"
+                        ):
                             job_dict["status"] = "triage"
                         try:
                             new_job_id = jobs_repo.insert(job_dict)
@@ -749,7 +816,11 @@ def _run_career_site_scan(trigger: str = "manual", source_id: int | None = None)
                 progress=100,
                 message=(
                     f"Career-site scan complete. {jobs_added_total} new listing(s) added"
-                    + (f", {jobs_promoted_total} promoted to queue." if jobs_promoted_total else ".")
+                    + (
+                        f", {jobs_promoted_total} promoted to queue."
+                        if jobs_promoted_total
+                        else "."
+                    )
                 ),
                 sites_scanned=scanned_sites,
                 jobs_found=jobs_found_total,
@@ -783,6 +854,7 @@ configure_career_site_scheduler(
 
 
 # ─── Career-site scanner routes ───────────────────────────────────────────────
+
 
 @career_sites_bp.route("/career-sites")
 def get_career_sites() -> ResponseReturnValue:
@@ -848,12 +920,16 @@ def update_career_site(source_id: int) -> ResponseReturnValue:
         fields["url"] = url
     if "enabled" in data:
         try:
-            fields["enabled"] = 1 if _parse_bool(data.get("enabled"), default=True) else 0
+            fields["enabled"] = (
+                1 if _parse_bool(data.get("enabled"), default=True) else 0
+            )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
     if "collection_mode" in data:
         try:
-            fields["collection_mode"] = _parse_collection_mode(data.get("collection_mode"))
+            fields["collection_mode"] = _parse_collection_mode(
+                data.get("collection_mode")
+            )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
     if "recapture_interval_days" in data:
@@ -894,13 +970,18 @@ def delete_career_site(source_id: int) -> ResponseReturnValue:
     return jsonify({"status": "ok"})
 
 
-@career_sites_bp.route("/career-sites/<int:source_id>/dismiss-recapture", methods=["POST"])
+@career_sites_bp.route(
+    "/career-sites/<int:source_id>/dismiss-recapture", methods=["POST"]
+)
 def dismiss_recapture_reminder(source_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         existing = repos["career_sites"].get_by_id(source_id)
         if not existing:
             return jsonify({"error": "Career site not found"}), 404
-        repos["career_sites"].update(source_id, {"last_captured_at": datetime.now(UTC).isoformat(timespec="seconds")})
+        repos["career_sites"].update(
+            source_id,
+            {"last_captured_at": datetime.now(UTC).isoformat(timespec="seconds")},
+        )
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -912,7 +993,10 @@ def run_career_scan_for_site(source_id: int) -> ResponseReturnValue:
     if not existing:
         return jsonify({"error": "Career site not found"}), 404
     if (existing.get("collection_mode") or "automatic") != "automatic":
-        return jsonify({"error": "This career site is marked for manual collection."}), 400
+        return (
+            jsonify({"error": "This career site is marked for manual collection."}),
+            400,
+        )
 
     with _career_lock:
         if _career_state.running:
@@ -985,7 +1069,12 @@ def re_evaluate_career_scan_results() -> ResponseReturnValue:
             repos["conn"].commit()
     except Exception as exc:
         logger.warning("Career-site re-evaluation failed: %s", exc)
-        return jsonify({"error": safe_error_message(exc, "Career-site re-evaluation failed")}), 500
+        return (
+            jsonify(
+                {"error": safe_error_message(exc, "Career-site re-evaluation failed")}
+            ),
+            500,
+        )
     return jsonify(summary)
 
 
@@ -1042,7 +1131,9 @@ def update_career_rejection_rule(rule_id: int) -> ResponseReturnValue:
         fields["rule_text"] = rule_text
     if "enabled" in data:
         try:
-            fields["enabled"] = 1 if _parse_bool(data.get("enabled"), default=True) else 0
+            fields["enabled"] = (
+                1 if _parse_bool(data.get("enabled"), default=True) else 0
+            )
         except ValueError:
             return jsonify({"error": "enabled must be a boolean value"}), 400
     fields["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
@@ -1109,13 +1200,22 @@ def reject_career_scan_result(row_id: int) -> ResponseReturnValue:
     return jsonify({"row": updated_row, "created_rule": created_rule})
 
 
-@career_sites_bp.route("/career-scan/results/<int:row_id>/tracking-status", methods=["POST"])
+@career_sites_bp.route(
+    "/career-scan/results/<int:row_id>/tracking-status", methods=["POST"]
+)
 def set_career_scan_result_tracking_status(row_id: int) -> ResponseReturnValue:
     data = request.get_json(silent=True) or {}
     status = (data.get("status") or "").strip()
     _VALID_STATUSES = {"Applied", "Employer Rejected"}
     if status not in _VALID_STATUSES:
-        return jsonify({"error": f"status must be one of: {', '.join(sorted(_VALID_STATUSES))}"}), 400
+        return (
+            jsonify(
+                {
+                    "error": f"status must be one of: {', '.join(sorted(_VALID_STATUSES))}"
+                }
+            ),
+            400,
+        )
 
     _SOURCE_MAP = {
         "Applied": "manual_applied",
@@ -1138,5 +1238,9 @@ def set_career_scan_result_tracking_status(row_id: int) -> ResponseReturnValue:
             repos["conn"].commit()
         return jsonify(updated)
     except Exception as exc:
-        logger.warning("Unexpected error setting tracking status for career result %s: %s", row_id, exc)
+        logger.warning(
+            "Unexpected error setting tracking status for career result %s: %s",
+            row_id,
+            exc,
+        )
         return jsonify({"error": "Unexpected error"}), 500

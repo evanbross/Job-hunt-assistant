@@ -89,7 +89,15 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 raw_body          = COALESCE(EXCLUDED.raw_body, scanned_emails.raw_body),
                 parser_error_msg  = COALESCE(EXCLUDED.parser_error_msg, scanned_emails.parser_error_msg)
             """,
-            (email_id, sender_email, subject, disposition, email_date, raw_body, parser_error_msg),
+            (
+                email_id,
+                sender_email,
+                subject,
+                disposition,
+                email_date,
+                raw_body,
+                parser_error_msg,
+            ),
         )
 
     def get_all_with_job_status(self) -> list[dict[str, Any]]:
@@ -198,9 +206,7 @@ class PostgresScannedEmailRepository(_BaseRepo):
         )
 
     def delete(self, email_id: str) -> None:
-        self._execute(
-            "DELETE FROM scanned_emails WHERE email_id = %s", (email_id,)
-        )
+        self._execute("DELETE FROM scanned_emails WHERE email_id = %s", (email_id,))
 
     def delete_all(self) -> None:
         self._execute("DELETE FROM scanned_emails")

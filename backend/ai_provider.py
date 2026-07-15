@@ -78,10 +78,18 @@ class AIProviderClient:
     def __init__(self, on_retry: Callable[[str], None] | None = None) -> None:
         self._on_retry = on_retry
         cfg = config.load_runtime_config()
-        self._provider = str(cfg.get("ai_provider") or config.AI_PROVIDER).strip().lower()
-        self._anthropic_model = str(cfg.get("anthropic_model") or config.SCORER_MODEL).strip()
+        self._provider = (
+            str(cfg.get("ai_provider") or config.AI_PROVIDER).strip().lower()
+        )
+        self._anthropic_model = str(
+            cfg.get("anthropic_model") or config.SCORER_MODEL
+        ).strip()
         self._openai_model = str(cfg.get("openai_model") or config.OPENAI_MODEL).strip()
-        self._ollama_base_url = str(cfg.get("ollama_base_url") or config.OLLAMA_BASE_URL).strip().rstrip("/")
+        self._ollama_base_url = (
+            str(cfg.get("ollama_base_url") or config.OLLAMA_BASE_URL)
+            .strip()
+            .rstrip("/")
+        )
         self._ollama_model = str(cfg.get("ollama_model") or config.OLLAMA_MODEL).strip()
         self._anthropic_client: Anthropic | None = (
             Anthropic(
@@ -104,11 +112,15 @@ class AIProviderClient:
         json_response: bool = False,
     ) -> str:
         if self._provider == "anthropic":
-            return self._complete_anthropic(messages, system, max_tokens, self._on_retry)
+            return self._complete_anthropic(
+                messages, system, max_tokens, self._on_retry
+            )
         if self._provider == "openai":
             return self._complete_openai(messages, system, max_tokens, self._on_retry)
         if self._provider == "ollama":
-            return self._complete_ollama(messages, system, json_response, max_tokens, self._on_retry)
+            return self._complete_ollama(
+                messages, system, json_response, max_tokens, self._on_retry
+            )
         raise AIProviderError(f"Unknown AI provider: {self._provider}")
 
     def _complete_anthropic(
@@ -123,7 +135,10 @@ class AIProviderClient:
         kwargs: dict[str, Any] = {
             "model": self._anthropic_model,
             "max_tokens": max_tokens,
-            "messages": [{"role": message.role, "content": message.content} for message in messages],
+            "messages": [
+                {"role": message.role, "content": message.content}
+                for message in messages
+            ],
         }
         if system:
             kwargs["system"] = system
@@ -132,7 +147,11 @@ class AIProviderClient:
             if attempt > 0:
                 delay = _TRANSIENT_RETRY_DELAYS[attempt - 1]
                 msg = f"Connection trouble — retrying in {delay:.0f}s…"
-                logger.warning("Transient Anthropic connection error (retry in %.0fs): %s", delay, last_exc)
+                logger.warning(
+                    "Transient Anthropic connection error (retry in %.0fs): %s",
+                    delay,
+                    last_exc,
+                )
                 if on_retry:
                     on_retry(msg)
                 time.sleep(delay)
@@ -142,18 +161,30 @@ class AIProviderClient:
                     raise AIProviderError("Anthropic returned an empty response")
                 return response.content[0].text.strip()
             except APIStatusError as exc:
-                raise AIProviderError(_anthropic_error_message(exc), status_code=exc.status_code) from exc
+                raise AIProviderError(
+                    _anthropic_error_message(exc), status_code=exc.status_code
+                ) from exc
             except (APIConnectionError, ssl.SSLError, OSError) as exc:
                 last_exc = exc
-        raise AIProviderError(f"SSL/network error contacting Anthropic: {last_exc}") from last_exc
+        raise AIProviderError(
+            f"SSL/network error contacting Anthropic: {last_exc}"
+        ) from last_exc
 
-    def _complete_openai(self, messages: list[AIMessage], system: str, max_tokens: int, on_retry: Callable[[str], None] | None = None) -> str:
+    def _complete_openai(
+        self,
+        messages: list[AIMessage],
+        system: str,
+        max_tokens: int,
+        on_retry: Callable[[str], None] | None = None,
+    ) -> str:
         if not config.OPENAI_API_KEY:
             raise AIProviderError("OPENAI_API_KEY is not set")
         input_items: list[dict[str, str]] = []
         if system:
             input_items.append({"role": "developer", "content": system})
-        input_items.extend({"role": message.role, "content": message.content} for message in messages)
+        input_items.extend(
+            {"role": message.role, "content": message.content} for message in messages
+        )
         payload = {
             "model": self._openai_model,
             "input": input_items,
@@ -175,12 +206,22 @@ class AIProviderClient:
                     return text.strip()
         raise AIProviderError("OpenAI returned an empty response")
 
-    def _complete_ollama(self, messages: list[AIMessage], system: str, json_response: bool, max_tokens: int, on_retry: Callable[[str], None] | None = None) -> str:
+    def _complete_ollama(
+        self,
+        messages: list[AIMessage],
+        system: str,
+        json_response: bool,
+        max_tokens: int,
+        on_retry: Callable[[str], None] | None = None,
+    ) -> str:
         payload: dict[str, Any] = {
             "model": self._ollama_model,
             "messages": [
                 *([{"role": "system", "content": system}] if system else []),
-                *[{"role": message.role, "content": message.content} for message in messages],
+                *[
+                    {"role": message.role, "content": message.content}
+                    for message in messages
+                ],
             ],
             "stream": False,
             "options": {"num_predict": max_tokens},
@@ -223,12 +264,18 @@ class AIProviderClient:
             if attempt > 0:
                 delay = _TRANSIENT_RETRY_DELAYS[attempt - 1]
                 msg = f"Connection trouble — retrying in {delay:.0f}s…"
-                logger.warning("Transient AI connection error (retry in %.0fs): %s", delay, last_exc)
+                logger.warning(
+                    "Transient AI connection error (retry in %.0fs): %s",
+                    delay,
+                    last_exc,
+                )
                 if on_retry:
                     on_retry(msg)
                 time.sleep(delay)
             try:
-                with safe_urlopen(request, timeout=600, allow_loopback=allow_loopback) as response:
+                with safe_urlopen(
+                    request, timeout=600, allow_loopback=allow_loopback
+                ) as response:
                     raw = response.read().decode("utf-8")
                     try:
                         return json.loads(raw)
@@ -243,10 +290,14 @@ class AIProviderClient:
                 raise AIProviderError(f"AI provider URL rejected: {exc}") from exc
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")
-                raise AIProviderError(_http_error_message(body, exc.reason), status_code=exc.code) from exc
+                raise AIProviderError(
+                    _http_error_message(body, exc.reason), status_code=exc.code
+                ) from exc
             except (urllib.error.URLError, TimeoutError) as exc:
                 last_exc = exc
-        raise AIProviderError(f"AI provider connection failed: {last_exc}") from last_exc
+        raise AIProviderError(
+            f"AI provider connection failed: {last_exc}"
+        ) from last_exc
 
 
 def _anthropic_error_message(exc: APIStatusError) -> str:

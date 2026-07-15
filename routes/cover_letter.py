@@ -69,9 +69,13 @@ def job_and_resume_prompt_blocks(job: dict, resume_row: dict | None) -> tuple[st
     fit scoring. Both blocks are truncated to keep chat prompts bounded, and
     each is an empty string when its source data is missing.
     """
-    job_description = (job.get("job_description") or job.get("raw_email_snippet") or "").strip()
+    job_description = (
+        job.get("job_description") or job.get("raw_email_snippet") or ""
+    ).strip()
     resume_text = ((resume_row["content"] if resume_row else "") or "").strip()
-    job_block = f"\nJOB DESCRIPTION:\n{job_description[:4000]}\n" if job_description else ""
+    job_block = (
+        f"\nJOB DESCRIPTION:\n{job_description[:4000]}\n" if job_description else ""
+    )
     resume_block = f"\nCANDIDATE RESUME:\n{resume_text[:4000]}\n" if resume_text else ""
     return job_block, resume_block
 
@@ -90,8 +94,12 @@ def generate_cover_letter(job_id: int) -> ResponseReturnValue:
         generator = CoverLetterGenerator()
         cover_letter = generator.generate(job, resume_text=resume_text)
     except Exception as exc:
-        logger.error("Cover letter generation failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Cover letter generation failed")}), _ai_error_http_status(exc)
+        logger.error(
+            "Cover letter generation failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Cover letter generation failed")}
+        ), _ai_error_http_status(exc)
 
     return jsonify({"cover_letter": cover_letter})
 
@@ -169,7 +177,9 @@ def save_cover_letter() -> ResponseReturnValue:
             doc = fitz.open()
             page = doc.new_page()
             margin = 72
-            rect = fitz.Rect(margin, margin, page.rect.width - margin, page.rect.height - margin)
+            rect = fitz.Rect(
+                margin, margin, page.rect.width - margin, page.rect.height - margin
+            )
             page.insert_textbox(rect, text, fontsize=11, fontname="helv", align=0)
             doc.save(str(path))
             doc.close()
@@ -180,7 +190,9 @@ def save_cover_letter() -> ResponseReturnValue:
 
     # ai: claude-fable-5 | 2026-07-13
     except OSError as exc:
-        logger.error("Failed to write %s to %s: %s", extension, folder, exc, exc_info=True)
+        logger.error(
+            "Failed to write %s to %s: %s", extension, folder, exc, exc_info=True
+        )
         return (
             jsonify(
                 {
@@ -231,7 +243,9 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
     if not context_block:
         fit_reasoning = (job.get("fit_reasoning") or "").strip()
         if fit_reasoning:
-            context_block = f"\nJOB CONTEXT (from fit analysis):\n{fit_reasoning[:1500]}\n"
+            context_block = (
+                f"\nJOB CONTEXT (from fit analysis):\n{fit_reasoning[:1500]}\n"
+            )
 
     system_prompt = (
         f"You are writing on behalf of a job candidate.\n\n"
@@ -267,8 +281,12 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
             max_tokens=450,
         )
     except Exception as exc:
-        logger.error("Pitch generation failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Generation failed")}), _ai_error_http_status(exc)
+        logger.error(
+            "Pitch generation failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Generation failed")}
+        ), _ai_error_http_status(exc)
 
     return jsonify({"text": text.strip()})
 
@@ -341,10 +359,14 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
         )
     except Exception as exc:
         logger.error("Pitch chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Pitch chat failed")}), _ai_error_http_status(exc)
+        return jsonify(
+            {"error": safe_error_message(exc, "Pitch chat failed")}
+        ), _ai_error_http_status(exc)
 
     updated_pitch: str | None = None
-    tag_match = re.search(r"<UPDATED_PITCH>(.*?)</UPDATED_PITCH>", reply_text, re.DOTALL)
+    tag_match = re.search(
+        r"<UPDATED_PITCH>(.*?)</UPDATED_PITCH>", reply_text, re.DOTALL
+    )
     if tag_match:
         updated_pitch = tag_match.group(1).strip()
         reply_text = re.sub(
@@ -414,8 +436,12 @@ def cover_letter_chat(job_id: int) -> ResponseReturnValue:
             max_tokens=1200,
         )
     except Exception as exc:
-        logger.error("Cover letter chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Cover letter chat failed")}), _ai_error_http_status(exc)
+        logger.error(
+            "Cover letter chat failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Cover letter chat failed")}
+        ), _ai_error_http_status(exc)
 
     updated_cover_letter: str | None = None
     tag_match = re.search(
@@ -447,8 +473,12 @@ def generate_resume_tailor(job_id: int) -> ResponseReturnValue:
         generator = ResumeTailoringGenerator()
         analysis = generator.generate(job, resume_text=resume_text)
     except Exception as exc:
-        logger.error("Resume tailoring failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Resume tailoring failed")}), _ai_error_http_status(exc)
+        logger.error(
+            "Resume tailoring failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Resume tailoring failed")}
+        ), _ai_error_http_status(exc)
 
     return jsonify({"analysis": analysis})
 
@@ -511,12 +541,18 @@ def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
             max_tokens=1400,
         )
     except Exception as exc:
-        logger.error("Resume tailor chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Resume tailor chat failed")}), _ai_error_http_status(exc)
+        logger.error(
+            "Resume tailor chat failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Resume tailor chat failed")}
+        ), _ai_error_http_status(exc)
 
     updated_analysis: str | None = None
     tag_match = re.search(
-        r"<UPDATED_RESUME_TAILORING>(.*?)</UPDATED_RESUME_TAILORING>", reply_text, re.DOTALL
+        r"<UPDATED_RESUME_TAILORING>(.*?)</UPDATED_RESUME_TAILORING>",
+        reply_text,
+        re.DOTALL,
     )
     if tag_match:
         updated_analysis = tag_match.group(1).strip()

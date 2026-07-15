@@ -41,34 +41,52 @@ _CORS_ORIGINS = ["http://localhost:5173", "http://localhost:5174"]
 
 
 def test_missing_source_is_trusted() -> None:
-    assert is_trusted_api_write_origin(None, "http://localhost:5004", _CORS_ORIGINS) is True
+    assert (
+        is_trusted_api_write_origin(None, "http://localhost:5004", _CORS_ORIGINS)
+        is True
+    )
 
 
 def test_same_origin_is_trusted() -> None:
-    assert is_trusted_api_write_origin(
-        "http://localhost:5004", "http://localhost:5004", _CORS_ORIGINS
-    ) is True
+    assert (
+        is_trusted_api_write_origin(
+            "http://localhost:5004", "http://localhost:5004", _CORS_ORIGINS
+        )
+        is True
+    )
 
 
 def test_same_origin_referer_with_path_is_trusted() -> None:
-    assert is_trusted_api_write_origin(
-        "http://localhost:5004/some/page", "http://localhost:5004", _CORS_ORIGINS
-    ) is True
+    assert (
+        is_trusted_api_write_origin(
+            "http://localhost:5004/some/page", "http://localhost:5004", _CORS_ORIGINS
+        )
+        is True
+    )
 
 
 def test_cors_allowlisted_origin_is_trusted() -> None:
-    assert is_trusted_api_write_origin(
-        "http://localhost:5173", "http://localhost:5004", _CORS_ORIGINS
-    ) is True
+    assert (
+        is_trusted_api_write_origin(
+            "http://localhost:5173", "http://localhost:5004", _CORS_ORIGINS
+        )
+        is True
+    )
 
 
 def test_untrusted_cross_origin_is_rejected() -> None:
-    assert is_trusted_api_write_origin(
-        "http://evil.example.com", "http://localhost:5004", _CORS_ORIGINS
-    ) is False
+    assert (
+        is_trusted_api_write_origin(
+            "http://evil.example.com", "http://localhost:5004", _CORS_ORIGINS
+        )
+        is False
+    )
 
 
 def test_scheme_mismatch_is_rejected() -> None:
-    assert is_trusted_api_write_origin(
-        "https://localhost:5004", "http://localhost:5004", _CORS_ORIGINS
-    ) is False
+    assert (
+        is_trusted_api_write_origin(
+            "https://localhost:5004", "http://localhost:5004", _CORS_ORIGINS
+        )
+        is False
+    )
