@@ -528,9 +528,10 @@ def is_job_board_url(url: str) -> bool:
     host = parsed.netloc.lower()
 
     if "greenhouse.io" in host:
-        return _has_greenhouse_board_token(
+        # ai: claude-fable-5 | 2026-07-16
+        return _greenhouse_board_token(
             parsed
-        ) and not _is_greenhouse_single_job_url(parsed)
+        ) is not None and not _is_greenhouse_single_job_url(parsed)
 
     if "lever.co" in host:
         segments = [s for s in parsed.path.split("/") if s]

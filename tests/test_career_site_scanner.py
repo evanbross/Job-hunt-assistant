@@ -51,6 +51,7 @@ from backend.career_site_scanner import (
     _workday_job_url,
     _workday_parts,
     _workday_single_job_parts,
+    is_job_board_url,
 )
 
 
@@ -106,6 +107,40 @@ def test_greenhouse_single_job_url_is_detected() -> None:
 def test_greenhouse_board_url_is_not_single_job() -> None:
     parsed = urlparse("https://job-boards.greenhouse.io/acme/jobs")
     assert not _is_greenhouse_single_job_url(parsed)
+
+
+# ai: claude-fable-5 | 2026-07-16
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://boards.greenhouse.io/acme",
+        "https://job-boards.greenhouse.io/acme/jobs",
+        "https://boards.greenhouse.io/embed/job_board?for=acme",
+        "https://jobs.lever.co/acme",
+        "https://jobs.ashbyhq.com/acme",
+    ],
+)
+def test_is_job_board_url_accepts_board_listings(url: str) -> None:
+    assert is_job_board_url(url)
+
+
+# ai: claude-fable-5 | 2026-07-16
+@pytest.mark.parametrize(
+    "url",
+    [
+        "",
+        "https://job-boards.greenhouse.io/acme/jobs/12345",
+        "https://boards.greenhouse.io/embed/job_board",
+        "https://my.greenhouse.io/jobs?query=software&salary=more_than_200k",
+        "https://jobs.lever.co/acme/0aaf1234-5678-90ab-cdef-1234567890ab",
+        "https://jobs.lever.co/",
+        "https://jobs.ashbyhq.com/acme/9b1a2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+        "https://jobs.ashbyhq.com/acme?jobId=abc123",
+        "https://www.linkedin.com/jobs/view/999",
+    ],
+)
+def test_is_job_board_url_rejects_non_board_urls(url: str) -> None:
+    assert not is_job_board_url(url)
 
 
 def test_workday_parts_extract_tenant_and_slug() -> None:
