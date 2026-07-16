@@ -61,6 +61,7 @@ from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.job_validator import import_warnings_to_json, normalize_and_validate
 from backend.manual_job_ingest_service import ManualJobIngestService
+from backend.skip_reasons import VALID_SKIP_REASONS  # ai: claude-fable-5 | 2026-07-16
 from backend.utils import (
     _ai_error_http_status,
     db_match_for_job,
@@ -76,20 +77,6 @@ logger = logging.getLogger(__name__)
 
 jobs_bp = Blueprint("jobs", __name__)
 
-_VALID_SKIP_REASONS = frozenset(
-    {
-        "rejected",
-        "duplicate",
-        "req_closed",
-        "not_remote",
-        "not_a_fit",
-        "salary_too_low",
-        "not_interested",
-        "wrong_role",
-        "garbage",
-        "other",
-    }
-)
 _VALID_MISMATCH_REASONS = frozenset(
     {
         "Not Remote",
@@ -299,7 +286,7 @@ def patch_job(job_id: int) -> ResponseReturnValue:
 def skip_job(job_id: int) -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     reason = body.get("reason", "other")
-    if reason not in _VALID_SKIP_REASONS:
+    if reason not in VALID_SKIP_REASONS:  # ai: claude-fable-5 | 2026-07-16
         reason = "other"
     feedback = (body.get("feedback") or "").strip() or None
     mismatch_reasons_raw = body.get("mismatch_reasons") or []
