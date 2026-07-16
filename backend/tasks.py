@@ -74,6 +74,7 @@ from backend.utils import (
     get_repos,
     is_richer_description,
     jd_blocklist_match,
+    mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
 )
 
 logger = logging.getLogger(__name__)
@@ -486,6 +487,19 @@ def run_import_task(
                         matched_rule.get("rule_text"),
                     )
                     continue
+
+            # ai: claude-fable-5 | 2026-07-16
+            hybrid_note = mongodb_hybrid_rejection_note(
+                str(url_row.get("company") or ""),
+                str(url_row.get("listing_text") or ""),
+            )
+            if hybrid_note is not None:
+                filtered += 1
+                filtered_details.append(
+                    _import_outcome_detail(url_row, hybrid_note, "filtered")
+                )
+                logger.debug("MongoDB hybrid filter rejected %s", url)
+                continue
 
             try:
                 self.update_state(

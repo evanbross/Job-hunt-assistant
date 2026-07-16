@@ -62,6 +62,7 @@ from backend.utils import (
     get_repos,
     get_subject_rule_match,
     is_near_certain_duplicate,
+    mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
 )
 from backend.wellfound_scraper import (  # ai: claude-fable-5 | 2026-07-14
     WellfoundJobFetcher,
@@ -313,6 +314,7 @@ def _run_scan(rescan_all: bool = False) -> None:
             triage_jobs: int = 0
             possible_duplicate_jobs: int = 0
             auto_skipped_duplicate_jobs: int = 0
+            auto_skipped_hybrid_jobs: int = 0  # ai: claude-fable-5 | 2026-07-16
             low_fit_score_jobs: int = 0
             scoring_failed_jobs: int = 0
             moved_successful_emails: int = 0
@@ -695,6 +697,18 @@ def _run_scan(rescan_all: bool = False) -> None:
 
                     raw_snippet = jd_text[:6000] if jd_text else email_body[:300]
 
+                    # ai: claude-fable-5 | 2026-07-16
+                    # MongoDB postings are hybrid unless they explicitly say remote;
+                    # auto-reject them before scoring (duplicates take precedence).
+                    hybrid_reject_note = None
+                    if status != "skipped":
+                        hybrid_reject_note = mongodb_hybrid_rejection_note(
+                            str(parsed.get("company") or ""),
+                            jd_text if jd_text else email_body,
+                        )
+                        if hybrid_reject_note:
+                            status = "skipped"
+
                     job_data: dict = {
                         "email_id": job_email_id,
                         "company": parsed.get("company", ""),
@@ -717,8 +731,11 @@ def _run_scan(rescan_all: bool = False) -> None:
                         "confidence_score": parsed.get("confidence_score", 50),
                     }
 
-                    # ai: claude-sonnet-4-6 | 2026-06-10
-                    if status == "skipped":
+                    # ai: claude-fable-5 | 2026-07-16
+                    if status == "skipped" and hybrid_reject_note:
+                        job_data["skip_reason"] = "not_remote"
+                        job_data["skip_feedback"] = hybrid_reject_note
+                    elif status == "skipped":
                         job_data["skip_reason"] = "duplicate"
                         job_data["skip_feedback"] = (
                             f"Auto-rejected: near-certain duplicate of job #{duplicate_of_id} ({duplicate_hint})."
@@ -726,7 +743,11 @@ def _run_scan(rescan_all: bool = False) -> None:
 
                     # Score high-confidence jobs immediately
                     if status == "skipped":
-                        outcome = "auto-rejected duplicate"
+                        outcome = (
+                            "auto-rejected hybrid (MongoDB)"
+                            if hybrid_reject_note
+                            else "auto-rejected duplicate"
+                        )
                     elif status == "pending_review":
                         outcome = "queued for review"
                     else:
@@ -799,8 +820,11 @@ def _run_scan(rescan_all: bool = False) -> None:
                     job_title = str(parsed.get("job_title") or "").strip()
                     if job_title:
                         job_titles.append(job_title)
-                    if status == "skipped":
-                        auto_skipped_duplicate_jobs += 1
+                    if status == "skipped":  # ai: claude-fable-5 | 2026-07-16
+                        if hybrid_reject_note:
+                            auto_skipped_hybrid_jobs += 1
+                        else:
+                            auto_skipped_duplicate_jobs += 1
                     elif status == "possible_duplicate":
                         possible_duplicate_jobs += 1
                     elif status == "triage":
@@ -904,6 +928,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                     "triage_jobs": triage_jobs,
                     "possible_duplicate_jobs": possible_duplicate_jobs,
                     "auto_skipped_duplicate_jobs": auto_skipped_duplicate_jobs,
+                    "auto_skipped_hybrid_jobs": auto_skipped_hybrid_jobs,  # ai: claude-fable-5 | 2026-07-16
                     "low_fit_score_jobs": low_fit_score_jobs,
                     "scoring_failed_jobs": scoring_failed_jobs,
                     "move_successfully_processed_emails": move_successfully_processed_emails,

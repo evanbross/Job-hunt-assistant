@@ -85,6 +85,7 @@ _PLATFORM_LABELS: dict[str, str] = {
     "linkedin": "LinkedIn",
     "wttj": "Welcome to the Jungle",
     "wellfound": "Wellfound",
+    "mongodb": "MongoDB",  # ai: claude-fable-5 | 2026-07-16
 }
 
 # ai: claude-sonnet-4-6 | 2026-07-02
@@ -106,6 +107,21 @@ _LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
 # LinkedIn redirects an expired posting's canonical URL to a generic jobs
 # search results page carrying this marker, rather than returning 404/410.
 _LINKEDIN_EXPIRED_REDIRECT_MARKER = "expired_jd_redirect"
+
+
+# ai: claude-fable-5 | 2026-07-16
+def _is_mongodb_teams_hub_url(url: str) -> bool:
+    """True when *url* is MongoDB's generic careers teams hub page.
+
+    MongoDB redirects a closed posting's URL to mongodb.com/company/careers/teams
+    (sometimes with a locale prefix) instead of returning 404/410, so landing
+    there means the job description no longer exists.
+    """
+    parsed = urlparse(url)
+    if "mongodb.com" not in parsed.netloc.lower():
+        return False
+    return parsed.path.rstrip("/").lower().endswith("/careers/teams")
+
 
 _TRACKING_COLUMNS: list[dict] = [
     {"index": 0, "label": "Company", "hidden": False},
@@ -337,8 +353,8 @@ def mark_ghost_applications() -> ResponseReturnValue:
 
 
 def _detect_closed_req_platform(job: dict, url: str) -> str | None:
-    """Return 'linkedin', 'wttj', or 'wellfound' if job/url belongs to a supported
-    platform, else None."""
+    """Return 'linkedin', 'wttj', 'wellfound', or 'mongodb' if job/url belongs to a
+    supported platform, else None."""
     source = str(job.get("source") or "").lower()
     netloc = urlparse(url).netloc.lower()
     if "linkedin" in source or "linkedin.com" in netloc or "lnkd.in" in netloc:
@@ -351,6 +367,9 @@ def _detect_closed_req_platform(job: dict, url: str) -> str | None:
         return "wttj"
     if "wellfound" in source or "wellfound.com" in netloc:
         return "wellfound"
+    # ai: claude-fable-5 | 2026-07-16
+    if "mongodb.com" in netloc:
+        return "mongodb"
     return None
 
 
@@ -383,6 +402,9 @@ def _classify_closed_req_page(
         platform == "linkedin"
         and _LINKEDIN_EXPIRED_REDIRECT_MARKER in final_url.lower()
     ):
+        return "closed"
+    # ai: claude-fable-5 | 2026-07-16
+    if platform == "mongodb" and _is_mongodb_teams_hub_url(final_url):
         return "closed"
     phrases = _CLOSED_PHRASES_BY_PLATFORM.get(platform, ())
     return "closed" if any(phrase in page_text_lower for phrase in phrases) else "open"
@@ -478,7 +500,7 @@ def _update_req_closed_state(**kwargs: object) -> None:
 
 
 def _closed_req_candidates(repos: dict) -> list[tuple[dict, str, str]]:
-    """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, or Wellfound, with their platform."""
+    """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, Wellfound, or MongoDB, with their platform."""
     jobs = repos["jobs"].get_all_ordered()
     all_stages = repos["stages"].get_all()
     terminal_keys = {
@@ -654,7 +676,7 @@ def _run_req_closed_scan() -> None:
         running=True,
         progress=0,
         total=0,
-        message="Finding LinkedIn, Welcome to the Jungle, and Wellfound jobs to check…",
+        message="Finding LinkedIn, Welcome to the Jungle, Wellfound, and MongoDB jobs to check…",
         marked=[],
         errors=[],
         checked=0,
@@ -794,7 +816,7 @@ def _run_req_closed_scan() -> None:
 
 @applications_bp.route("/applications/scan-closed-reqs", methods=["POST"])
 def start_closed_req_scan() -> ResponseReturnValue:
-    """Kick off a background scan of LinkedIn, Welcome to the Jungle, and Wellfound job URLs for closed-req banners."""
+    """Kick off a background scan of LinkedIn, Welcome to the Jungle, Wellfound, and MongoDB job URLs for closed-req banners."""
     with _req_closed_lock:
         if _req_closed_state.running:
             return jsonify({"error": "Scan already running"}), 409

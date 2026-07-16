@@ -1842,7 +1842,7 @@ export default function JobQueue({
                   opacity: anyQueueActionRunning ? 0.5 : 1,
                 }}
               >
-                {reqClosedScanning ? "Scanning…" : "Scan for Closed Reqs (LinkedIn + WTTJ + Wellfound)"}
+                {reqClosedScanning ? "Scanning…" : "Scan for Closed Reqs (LinkedIn + WTTJ + Wellfound + MongoDB)"}
               </button>
               <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
               <button

@@ -216,6 +216,65 @@ def jd_blocklist_match(haystack: str, rules: list[dict]) -> dict | None:
     return None
 
 
+# ai: claude-fable-5 | 2026-07-16
+# MongoDB hybrid-policy boilerplate comes in two forms. The possessive form
+# ("MongoDB's hybrid working model", straight or curly apostrophe) is
+# self-identifying; the "our" form — usually "We are looking to speak to
+# candidates who are based in <city> for our hybrid working model" — only
+# counts when the job's company identifies as MongoDB.
+_MONGODB_POSSESSIVE_HYBRID_RE = re.compile(
+    r"mongodb[’']s\s+hybrid\s+(?:work(?:ing)?\s+)?model", re.IGNORECASE
+)
+_OUR_HYBRID_MODEL_RE = re.compile(
+    r"\bour\s+hybrid\s+work(?:ing)?\s+model\b", re.IGNORECASE
+)
+_BASED_IN_HYBRID_LOCATION_RE = re.compile(
+    r"based\s+in\s+(?P<location>[^.,;\n]{1,60}?)\s+for\s+our\s+hybrid\s+"
+    r"work(?:ing)?\s+model",
+    re.IGNORECASE,
+)
+# Mirrors the explicit-remote language recognized by FitScorer's remote exception,
+# plus bare "remotely" ("this role will be based remotely in <region>").
+_EXPLICIT_REMOTE_RE = re.compile(
+    r"\b(?:remote(?:ly)?|fully remote|remote-first|work remotely|remote work|"
+    r"remote position|remote role|remote opportunity|option to work remotely)\b",
+    re.IGNORECASE,
+)
+
+
+# ai: claude-fable-5 | 2026-07-16
+def mongodb_hybrid_rejection_note(company: str, job_text: str) -> str | None:
+    """Return an auto-rejection note when a MongoDB posting references its hybrid
+    working model without explicitly stating the role is remote, else None.
+
+    Most MongoDB postings are hybrid and signal it only through boilerplate like
+    "We are looking to speak to candidates who are based in Sydney for our hybrid
+    working model". Unless the posting explicitly says remote, that reference
+    means an in-office requirement in the named location.
+    """
+    if not job_text:
+        return None
+    is_mongodb_company = "mongodb" in (company or "").lower()
+    matched = _MONGODB_POSSESSIVE_HYBRID_RE.search(job_text) or (
+        is_mongodb_company and _OUR_HYBRID_MODEL_RE.search(job_text)
+    )
+    if not matched:
+        return None
+    if _EXPLICIT_REMOTE_RE.search(job_text):
+        return None
+    location_match = _BASED_IN_HYBRID_LOCATION_RE.search(job_text)
+    if location_match:
+        location = re.sub(r"\s+", " ", location_match.group("location")).strip()
+        return (
+            f"Auto-rejected: MongoDB hybrid role based in {location}, "
+            "with no explicit remote statement."
+        )
+    return (
+        "Auto-rejected: references MongoDB's hybrid working model without an "
+        "explicit remote statement."
+    )
+
+
 def is_application_acknowledgement(
     subject: str, patterns: list[str] | None = None
 ) -> bool:

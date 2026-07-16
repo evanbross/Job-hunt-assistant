@@ -53,6 +53,7 @@ from routes.applications import (
     _classify_closed_req_page,
     _closed_req_browser_queue_snapshot,
     _closed_req_candidates,
+    _detect_closed_req_platform,  # ai: claude-fable-5 | 2026-07-16
     _record_closed_req,
     _req_closed_lock,
     _req_closed_state,
@@ -135,6 +136,46 @@ def test_check_closed_req_detects_wellfound_closed_banner_phrase() -> None:
     with patch("routes.applications.safe_urlopen", return_value=fake_resp):
         result = _check_closed_req(url, "wellfound")
     assert result == "closed"
+
+
+# ai: claude-fable-5 | 2026-07-16
+def test_detect_closed_req_platform_recognizes_mongodb_url() -> None:
+    job = {"source": "Career site: MongoDB"}
+    url = "https://www.mongodb.com/careers/job/?gh_jid=7590547"
+    assert _detect_closed_req_platform(job, url) == "mongodb"
+
+
+# ai: claude-fable-5 | 2026-07-16
+def test_check_closed_req_detects_mongodb_teams_hub_redirect() -> None:
+    """MongoDB redirects a closed posting to its generic careers teams hub."""
+    url = "https://www.mongodb.com/careers/job/?gh_jid=1234567"
+    fake_resp = _fake_response(
+        b"<html>Explore our teams</html>",
+        "https://www.mongodb.com/company/careers/teams",
+    )
+    with patch("routes.applications.safe_urlopen", return_value=fake_resp):
+        result = _check_closed_req(url, "mongodb")
+    assert result == "closed"
+
+
+# ai: claude-fable-5 | 2026-07-16
+def test_check_closed_req_keeps_open_mongodb_job() -> None:
+    url = "https://www.mongodb.com/careers/jobs/7590547"
+    fake_resp = _fake_response(b"<html>Senior Engineer - apply now</html>", url)
+    with patch("routes.applications.safe_urlopen", return_value=fake_resp):
+        result = _check_closed_req(url, "mongodb")
+    assert result == "open"
+
+
+# ai: claude-fable-5 | 2026-07-16
+def test_classify_closed_req_page_detects_mongodb_locale_teams_hub() -> None:
+    """The teams-hub redirect may carry a locale prefix (e.g. /de-de/) and a
+    trailing slash; both still mean the posting is gone."""
+    final_url = "https://mongodb.com/de-de/company/careers/teams/"
+    assert (
+        _classify_closed_req_page("<html>teams</html>", final_url, "mongodb")
+        == "closed"
+    )
 
 
 def test_check_closed_req_returns_closed_on_404() -> None:

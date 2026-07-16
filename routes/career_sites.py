@@ -69,6 +69,7 @@ from backend.utils import (
     get_repos,
     is_richer_description,
     jd_blocklist_match,
+    mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
     platform_for_site_url,
     safe_error_message,
 )
@@ -242,11 +243,21 @@ def _re_evaluate_career_scan_results(
                 for f in ("job_title", "job_text", "site_name", "job_url", "site_url")
             )
             matched_rejection_rule = jd_blocklist_match(_haystack, rejection_rules)
+            hybrid_note = mongodb_hybrid_rejection_note(
+                str(row.get("site_name") or ""),
+                str(row.get("job_text") or ""),
+            )  # ai: claude-fable-5 | 2026-07-16
             if matched_rejection_rule is not None:
                 tracking_status = "Filtered"
                 tracking_source = "career_rule"
                 rejection_reason = matched_rejection_rule["rule_text"]
                 rejection_source = "career_rule"
+                rejected_by_rule += 1
+            elif hybrid_note:  # ai: claude-fable-5 | 2026-07-16
+                tracking_status = "Filtered"
+                tracking_source = "career_rule"
+                rejection_reason = hybrid_note
+                rejection_source = "mongodb_hybrid"
                 rejected_by_rule += 1
 
         row_filtered = tracking_source == "career_rule"
@@ -633,6 +644,18 @@ def _run_career_site_scan(
                         rejection_reason = matched_rejection_rule["rule_text"]
                         rejection_source = "career_rule"
                         listing_filtered = True
+                    if not listing_filtered:
+                        # ai: claude-fable-5 | 2026-07-16
+                        hybrid_note = mongodb_hybrid_rejection_note(
+                            str(job.get("site_name") or ""),
+                            str(job.get("job_text") or ""),
+                        )
+                        if hybrid_note:
+                            tracking_status = "Filtered"
+                            tracking_source = "career_rule"
+                            rejection_reason = hybrid_note
+                            rejection_source = "mongodb_hybrid"
+                            listing_filtered = True
                     if listing_filtered:
                         listings_filtered_total += 1
 
