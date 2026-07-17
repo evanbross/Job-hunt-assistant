@@ -33,6 +33,10 @@
  */
 
 import { reasoningWithoutPenaltySummary } from "./fitScoringUtils.js";
+// ai: claude-fable-5 | 2026-07-16
+// Canonical skip-reason list shared with the backend allowlist
+// (backend/skip_reasons.py) — edit shared/skip_reasons.json, not this file.
+import skipReasons from "../../../shared/skip_reasons.json";
 
 export const PLATFORM_LABELS = {
   greenhouse: "Greenhouse",
@@ -41,19 +45,7 @@ export const PLATFORM_LABELS = {
   workday: "Workday",
 };
 
-export const SKIP_REASONS = [
-  { key: "rejected", label: "Rejected" },
-  { key: "duplicate", label: "Duplicate" },
-  { key: "req_closed", label: "Req Closed", color: "var(--red-medium)" },
-  { key: "not_remote", label: "Not Remote" },
-  { key: "not_a_fit", label: "Not a Fit" },
-  { key: "salary_too_low", label: "Salary Too Low" },
-  { key: "not_interested", label: "Not Interested" },
-  { key: "wrong_role", label: "Wrong Role", color: "var(--red-medium)" },
-  { key: "wrong_tech", label: "Wrong Tech", color: "var(--red-medium)" },
-  { key: "garbage", label: "Garbage Card" },
-  { key: "other", label: "Other" },
-];
+export const SKIP_REASONS = skipReasons; // ai: claude-fable-5 | 2026-07-16
 
 export const MISMATCH_REASONS = [
   "Not Remote",

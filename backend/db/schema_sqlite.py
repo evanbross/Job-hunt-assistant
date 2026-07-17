@@ -34,6 +34,7 @@
 
 """SQLite schema creation and migrations — the SQLite-dialect counterpart to
 schema.py, used for local/dev/test databases."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -47,7 +48,9 @@ def _sqlite_has_column(cur: Any, table: str, column: str) -> bool:
     return any(row["name"] == column for row in cur.fetchall())
 
 
-def _sqlite_add_column_if_missing(cur: Any, table: str, column: str, definition: str) -> None:
+def _sqlite_add_column_if_missing(
+    cur: Any, table: str, column: str, definition: str
+) -> None:
     if not _sqlite_has_column(cur, table, column):
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
@@ -55,6 +58,23 @@ def _sqlite_add_column_if_missing(cur: Any, table: str, column: str, definition:
 def _migrate_sqlite(conn: Any) -> None:
     """Apply incremental schema changes for SQLite databases."""
     cur = conn.cursor()
+
+    # ai: claude-fable-5 | 2026-07-14
+    # date_added_to_sheet is retired: its date value now lives in date_found and
+    # its "job is tracked on the Applications sheet" role in the on_sheet flag.
+    # Mirrors the Postgres migration in schema.py; must run before the 'applied'
+    # stage backfill below so date_found already carries the old sheet date.
+    _sqlite_add_column_if_missing(cur, "jobs", "on_sheet", "INTEGER NOT NULL DEFAULT 0")
+    if _sqlite_has_column(cur, "jobs", "date_added_to_sheet"):
+        cur.execute(
+            "UPDATE jobs SET date_found = date_added_to_sheet"
+            " WHERE date_added_to_sheet IS NOT NULL"
+        )
+        cur.execute(
+            "UPDATE jobs SET on_sheet = 1 WHERE date_added_to_sheet IS NOT NULL"
+        )
+        cur.execute("ALTER TABLE jobs DROP COLUMN date_added_to_sheet")
+    conn.commit()
 
     for col, defn in [
         ("duplicate_hint", "TEXT"),
@@ -80,16 +100,14 @@ def _migrate_sqlite(conn: Any) -> None:
         ("subject_filter_match_mode", "TEXT DEFAULT 'text'"),
     ]:
         _sqlite_add_column_if_missing(cur, "email_sources", col, defn)
-    cur.execute(
-        """
+    cur.execute("""
         UPDATE email_sources
         SET subject_filter_mode = 'starts_with',
             subject_filter_value = 'new match'
         WHERE LOWER(COALESCE(match_value, '')) LIKE '%welcometothejungle.com%'
           AND COALESCE(subject_filter_mode, '') = ''
           AND COALESCE(subject_filter_value, '') = ''
-        """
-    )
+        """)
 
     for col, defn in [
         ("email_date", "TEXT"),
@@ -155,11 +173,13 @@ def _migrate_sqlite(conn: Any) -> None:
         "UPDATE application_stages SET created_at = COALESCE(created_at, datetime('now'))"
         " WHERE created_at IS NULL"
     )
-    _sqlite_add_column_if_missing(cur, "ack_patterns", "rule_type", "TEXT NOT NULL DEFAULT 'blacklist'")
+    _sqlite_add_column_if_missing(
+        cur, "ack_patterns", "rule_type", "TEXT NOT NULL DEFAULT 'blacklist'"
+    )
 
     cur.execute("""
         INSERT INTO application_stages (job_id, status, date)
-        SELECT id, 'applied', COALESCE(date_added_to_sheet, date_found, date('now'))
+        SELECT id, 'applied', COALESCE(date_found, date('now'))
         FROM jobs
         WHERE status IN ('added_to_sheet', 'applied')
           AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
@@ -247,7 +267,7 @@ def _create_tables_sqlite(conn: Any) -> None:
             parser_confidence     TEXT,
             confidence_reason     TEXT,
             date_found            TEXT DEFAULT (date('now')),  -- UTC; SQLite 'now' is always UTC
-            date_added_to_sheet   TEXT,
+            on_sheet              INTEGER NOT NULL DEFAULT 0,
             duplicate_hint        TEXT,
             duplicate_of_id       INTEGER,
             sender_email          TEXT,

@@ -34,6 +34,7 @@
 
 """Connection layer — dialect-translation helpers and connection wrappers
 shared by every repository, plus get_connection() to open either backend."""
+
 from __future__ import annotations
 
 import re
@@ -41,7 +42,7 @@ import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, unquote
+from urllib.parse import unquote, urlparse
 
 import psycopg2
 import psycopg2.extras
@@ -131,7 +132,9 @@ def _sqlite_sql(sql: str) -> str:
     # DDL or migration SQL above.
     # ai: claude-sonnet-4-6 | 2026-06-25
     translated = sql.replace("%s", "?")
-    translated = translated.replace("(NOW() AT TIME ZONE 'UTC')::date::text", "date('now')")
+    translated = translated.replace(
+        "(NOW() AT TIME ZONE 'UTC')::date::text", "date('now')"
+    )
     translated = translated.replace("NOW()::text", "datetime('now')")
     translated = translated.replace("NOW()", "datetime('now')")
     translated = translated.replace("CURRENT_DATE::text", "date('now')")
@@ -141,7 +144,9 @@ def _sqlite_sql(sql: str) -> str:
         translated,
     )
     translated = translated.replace("TIMESTAMPTZ", "TEXT")
-    translated = re.sub(r"\bSERIAL\s+PRIMARY\s+KEY\b", "INTEGER PRIMARY KEY AUTOINCREMENT", translated)
+    translated = re.sub(
+        r"\bSERIAL\s+PRIMARY\s+KEY\b", "INTEGER PRIMARY KEY AUTOINCREMENT", translated
+    )
     return translated
 
 
@@ -181,6 +186,7 @@ class _ReconnectingPgConn:
         conn = psycopg2.connect(
             self._dsn,
             cursor_factory=psycopg2.extras.RealDictCursor,
+            connect_timeout=10,  # ai: claude-fable-5 | 2026-07-14 — bound per-host TCP wait so a dead endpoint fails in seconds, not minutes
             keepalives=1,
             keepalives_idle=60,
             keepalives_interval=10,
@@ -212,6 +218,10 @@ class _ReconnectingPgConn:
 
 def get_connection(dsn: str) -> Any:
     """Open a database connection for the configured backend."""
-    if dsn.startswith("sqlite://") or dsn.endswith(".sqlite") or dsn.endswith(".sqlite3"):
+    if (
+        dsn.startswith("sqlite://")
+        or dsn.endswith(".sqlite")
+        or dsn.endswith(".sqlite3")
+    ):
         return _SQLiteConnection(_sqlite_path_from_dsn(dsn))
     return _ReconnectingPgConn(dsn)

@@ -41,25 +41,27 @@ from ..connection import _row_to_dict
 
 
 class PostgresCareerScanResultRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "id",
-        "site_source_id",
-        "site_name",
-        "site_url",
-        "job_title",
-        "job_url",
-        "job_text",
-        "confidence_level",
-        "confidence_score",
-        "match_score",
-        "match_reasoning",
-        "tracking_status",
-        "tracking_source",
-        "rejection_reason",
-        "rejection_source",
-        "scanned_at",
-        "posted_at",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "id",
+            "site_source_id",
+            "site_name",
+            "site_url",
+            "job_title",
+            "job_url",
+            "job_text",
+            "confidence_level",
+            "confidence_score",
+            "match_score",
+            "match_reasoning",
+            "tracking_status",
+            "tracking_source",
+            "rejection_reason",
+            "rejection_source",
+            "scanned_at",
+            "posted_at",
+        }
+    )
 
     def get_all(self) -> list[dict[str, Any]]:
         cur = self._execute(

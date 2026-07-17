@@ -60,6 +60,26 @@ logger = logging.getLogger(__name__)
 cover_letter_bp = Blueprint("cover_letter", __name__)
 
 
+# ai: claude-fable-5 | 2026-07-13
+def job_and_resume_prompt_blocks(job: dict, resume_row: dict | None) -> tuple[str, str]:
+    """Build the job-description and resume prompt sections shared by the
+    pitch/chat routes in this blueprint.
+
+    Prefers the full stored job description over the email snippet used for
+    fit scoring. Both blocks are truncated to keep chat prompts bounded, and
+    each is an empty string when its source data is missing.
+    """
+    job_description = (
+        job.get("job_description") or job.get("raw_email_snippet") or ""
+    ).strip()
+    resume_text = ((resume_row["content"] if resume_row else "") or "").strip()
+    job_block = (
+        f"\nJOB DESCRIPTION:\n{job_description[:4000]}\n" if job_description else ""
+    )
+    resume_block = f"\nCANDIDATE RESUME:\n{resume_text[:4000]}\n" if resume_text else ""
+    return job_block, resume_block
+
+
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter", methods=["POST"])
 def generate_cover_letter(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
@@ -74,8 +94,12 @@ def generate_cover_letter(job_id: int) -> ResponseReturnValue:
         generator = CoverLetterGenerator()
         cover_letter = generator.generate(job, resume_text=resume_text)
     except Exception as exc:
-        logger.error("Cover letter generation failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Cover letter generation failed")}), _ai_error_http_status(exc)
+        logger.error(
+            "Cover letter generation failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Cover letter generation failed")}
+        ), _ai_error_http_status(exc)
 
     return jsonify({"cover_letter": cover_letter})
 
@@ -93,20 +117,30 @@ def save_cover_letter() -> ResponseReturnValue:
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    with get_repos() as repos:
-        settings = repos["settings"]
-        if folder_override:
-            folder = Path(folder_override)
-            settings.set("cover_letter_folder", str(folder))
-        else:
-            saved = settings.get("cover_letter_folder")
-            folder = Path(saved) if saved else Path.home() / "Documents" / "Cover Letters"
-        repos["conn"].commit()
+    # ai: claude-fable-5 | 2026-07-13
+    if folder_override:
+        folder = Path(folder_override)
+    else:
+        with get_repos() as repos:
+            saved = repos["settings"].get("cover_letter_folder")
+        folder = Path(saved) if saved else Path.home() / "Documents" / "Cover Letters"
 
     try:
         folder.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        return jsonify({"error": f"Cannot create folder: {exc}"}), 500
+        # folder_error tells the frontend to prompt for a replacement folder
+        # (e.g. the saved folder is on a drive that no longer exists).
+        logger.warning("Cover letter folder unavailable %s: %s", folder, exc)
+        return (
+            jsonify(
+                {
+                    "error": f"Cannot create folder: {exc}",
+                    "folder_error": True,
+                    "folder": str(folder),
+                }
+            ),
+            500,
+        )
 
     # Sanitize filename components to remove characters illegal on Windows/macOS
     _illegal = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -143,7 +177,9 @@ def save_cover_letter() -> ResponseReturnValue:
             doc = fitz.open()
             page = doc.new_page()
             margin = 72
-            rect = fitz.Rect(margin, margin, page.rect.width - margin, page.rect.height - margin)
+            rect = fitz.Rect(
+                margin, margin, page.rect.width - margin, page.rect.height - margin
+            )
             page.insert_textbox(rect, text, fontsize=11, fontname="helv", align=0)
             doc.save(str(path))
             doc.close()
@@ -152,9 +188,32 @@ def save_cover_letter() -> ResponseReturnValue:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
 
+    # ai: claude-fable-5 | 2026-07-13
+    except OSError as exc:
+        logger.error(
+            "Failed to write %s to %s: %s", extension, folder, exc, exc_info=True
+        )
+        return (
+            jsonify(
+                {
+                    "error": f"Failed to write file: {exc}",
+                    "folder_error": True,
+                    "folder": str(folder),
+                }
+            ),
+            500,
+        )
     except Exception as exc:
         logger.error("Failed to save %s: %s", extension, exc, exc_info=True)
         return jsonify({"error": f"Failed to write file: {exc}"}), 500
+
+    # ai: claude-fable-5 | 2026-07-13
+    # Persist a folder override only after the write succeeded, so a bad
+    # folder never becomes the remembered default.
+    if folder_override:
+        with get_repos() as repos:
+            repos["settings"].set("cover_letter_folder", str(folder))
+            repos["conn"].commit()
 
     return jsonify({"path": str(path), "filename": filename, "folder": str(folder)})
 
@@ -177,12 +236,16 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
 
     company = job.get("company") or "the company"
     job_title = job.get("job_title") or "the position"
-    job_context = (job.get("raw_email_snippet") or job.get("fit_reasoning") or "").strip()
-    resume_text = (resume_row["content"] if resume_row else "") or ""
     candidate_profile = config.load_candidate_profile()
 
-    context_block = f"\nJob context:\n{job_context[:1500]}\n" if job_context else ""
-    resume_block = f"\nResume (for reference):\n{resume_text[:2000]}\n" if resume_text else ""
+    # ai: claude-fable-5 | 2026-07-13
+    context_block, resume_block = job_and_resume_prompt_blocks(job, resume_row)
+    if not context_block:
+        fit_reasoning = (job.get("fit_reasoning") or "").strip()
+        if fit_reasoning:
+            context_block = (
+                f"\nJOB CONTEXT (from fit analysis):\n{fit_reasoning[:1500]}\n"
+            )
 
     system_prompt = (
         f"You are writing on behalf of a job candidate.\n\n"
@@ -218,8 +281,12 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
             max_tokens=450,
         )
     except Exception as exc:
-        logger.error("Pitch generation failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Generation failed")}), _ai_error_http_status(exc)
+        logger.error(
+            "Pitch generation failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Generation failed")}
+        ), _ai_error_http_status(exc)
 
     return jsonify({"text": text.strip()})
 
@@ -229,6 +296,7 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
     """AI chat for refining a why-company or why-fit pitch."""
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
+        resume_row = repos["resume"].get_latest()  # ai: claude-fable-5 | 2026-07-13
     # Connection released before AI call
 
     if not job:
@@ -254,10 +322,14 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
         else "why you'd be a good fit for this role"
     )
 
+    # ai: claude-fable-5 | 2026-07-13
+    job_block, resume_block = job_and_resume_prompt_blocks(job, resume_row)
+
     system_prompt = (
         f"You are helping a job applicant refine a short pitch about {pitch_label} "
         f"for the role of {job_title} at {company}.\n\n"
-        f"CANDIDATE PROFILE:\n{candidate_profile}\n\n"
+        f"CANDIDATE PROFILE:\n{candidate_profile}\n"
+        f"{job_block}{resume_block}\n"
         f"CURRENT PITCH:\n{current_text}\n\n"
         "Help the applicant improve the pitch, answer questions about it, or make specific edits "
         "they request. Keep it to 2 paragraphs maximum. No bullet points. No headers. First person. "
@@ -287,10 +359,14 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
         )
     except Exception as exc:
         logger.error("Pitch chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Pitch chat failed")}), _ai_error_http_status(exc)
+        return jsonify(
+            {"error": safe_error_message(exc, "Pitch chat failed")}
+        ), _ai_error_http_status(exc)
 
     updated_pitch: str | None = None
-    tag_match = re.search(r"<UPDATED_PITCH>(.*?)</UPDATED_PITCH>", reply_text, re.DOTALL)
+    tag_match = re.search(
+        r"<UPDATED_PITCH>(.*?)</UPDATED_PITCH>", reply_text, re.DOTALL
+    )
     if tag_match:
         updated_pitch = tag_match.group(1).strip()
         reply_text = re.sub(
@@ -307,6 +383,7 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
 def cover_letter_chat(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
+        resume_row = repos["resume"].get_latest()  # ai: claude-fable-5 | 2026-07-13
     # Connection released before AI call
 
     if not job:
@@ -324,10 +401,14 @@ def cover_letter_chat(job_id: int) -> ResponseReturnValue:
 
     candidate_profile = config.load_candidate_profile()
 
+    # ai: claude-fable-5 | 2026-07-13
+    job_block, resume_block = job_and_resume_prompt_blocks(job, resume_row)
+
     system_prompt = (
         f"You are helping a job applicant refine their cover letter for the role of "
         f"{job_title} at {company}.\n\n"
-        f"CANDIDATE PROFILE:\n{candidate_profile}\n\n"
+        f"CANDIDATE PROFILE:\n{candidate_profile}\n"
+        f"{job_block}{resume_block}\n"
         f"CURRENT COVER LETTER:\n{cover_letter}\n\n"
         "Help the applicant improve it, answer questions about it, or make specific edits "
         "they request. If you are providing a substantially rewritten or updated version "
@@ -355,8 +436,12 @@ def cover_letter_chat(job_id: int) -> ResponseReturnValue:
             max_tokens=1200,
         )
     except Exception as exc:
-        logger.error("Cover letter chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Cover letter chat failed")}), _ai_error_http_status(exc)
+        logger.error(
+            "Cover letter chat failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Cover letter chat failed")}
+        ), _ai_error_http_status(exc)
 
     updated_cover_letter: str | None = None
     tag_match = re.search(
@@ -388,8 +473,12 @@ def generate_resume_tailor(job_id: int) -> ResponseReturnValue:
         generator = ResumeTailoringGenerator()
         analysis = generator.generate(job, resume_text=resume_text)
     except Exception as exc:
-        logger.error("Resume tailoring failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Resume tailoring failed")}), _ai_error_http_status(exc)
+        logger.error(
+            "Resume tailoring failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Resume tailoring failed")}
+        ), _ai_error_http_status(exc)
 
     return jsonify({"analysis": analysis})
 
@@ -398,6 +487,7 @@ def generate_resume_tailor(job_id: int) -> ResponseReturnValue:
 def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
+        resume_row = repos["resume"].get_latest()  # ai: claude-fable-5 | 2026-07-13
     # Connection released before AI call
 
     if not job:
@@ -413,9 +503,13 @@ def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
     company = job.get("company") or "the company"
     job_title = job.get("job_title") or "the position"
 
+    # ai: claude-fable-5 | 2026-07-13
+    job_block, resume_block = job_and_resume_prompt_blocks(job, resume_row)
+
     system_prompt = (
         f"You are helping a job applicant refine a resume tailoring analysis for the role of "
-        f"{job_title} at {company}.\n\n"
+        f"{job_title} at {company}.\n"
+        f"{job_block}{resume_block}\n"
         f"CURRENT ANALYSIS:\n{current_analysis}\n\n"
         "The analysis has three sections: Keyword & Skill Gaps, Suggested Bullet Rewrites, "
         "and Strengths to Lead With. Help the applicant adjust the suggestions — for example, "
@@ -447,12 +541,18 @@ def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
             max_tokens=1400,
         )
     except Exception as exc:
-        logger.error("Resume tailor chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Resume tailor chat failed")}), _ai_error_http_status(exc)
+        logger.error(
+            "Resume tailor chat failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Resume tailor chat failed")}
+        ), _ai_error_http_status(exc)
 
     updated_analysis: str | None = None
     tag_match = re.search(
-        r"<UPDATED_RESUME_TAILORING>(.*?)</UPDATED_RESUME_TAILORING>", reply_text, re.DOTALL
+        r"<UPDATED_RESUME_TAILORING>(.*?)</UPDATED_RESUME_TAILORING>",
+        reply_text,
+        re.DOTALL,
     )
     if tag_match:
         updated_analysis = tag_match.group(1).strip()

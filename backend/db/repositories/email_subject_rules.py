@@ -41,7 +41,9 @@ from ..connection import _row_to_dict
 
 
 class PostgresEmailSubjectRuleRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({"id", "pattern", "enabled", "rule_type"})
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {"id", "pattern", "enabled", "rule_type"}
+    )
 
     def get_all(self) -> list[dict[str, Any]]:
         cur = self._execute(

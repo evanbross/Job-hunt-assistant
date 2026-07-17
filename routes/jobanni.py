@@ -44,10 +44,12 @@ from datetime import UTC, datetime
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import BaseModel, ValidationError, field_validator
 
 import config
 from backend.jobanni_scanner import scan as jobanni_scan
 from backend.tasks import run_import_task
+from backend.url_safety import UnsafeUrlError, validate_outbound_url
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,7 @@ jobanni_bp = Blueprint("jobanni", __name__)
 
 
 # ── Scan state (in-memory, protected by a lock) ───────────────────────────────
+
 
 @dataclass
 class JobanniScanState:
@@ -81,6 +84,7 @@ def _update(**kwargs: object) -> None:
 
 # ── Background scan thread ────────────────────────────────────────────────────
 
+
 def _run_scan(search_url: str, max_jobs: int) -> None:
     _update(
         running=True,
@@ -92,6 +96,7 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
         task_id=None,
     )
     try:
+
         def on_progress(current: int, total: int, message: str) -> None:
             _update(progress=current, total=total, message=message)
 
@@ -135,6 +140,35 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+
+# ai: claude-fable-5 | 2026-07-15
+class JobanniScanRequest(BaseModel):
+    """Validated body for POST /jobanni/scan. Empty/missing fields fall back
+    to the configured defaults; max_jobs is clamped to [1, 500]."""
+
+    search_url: str = ""
+    max_jobs: int = 0
+
+    @field_validator("search_url", mode="before")
+    @classmethod
+    def _normalize_search_url(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        return normalized or str(config.JOBANNI_SEARCH_URL or "").strip()
+
+    @field_validator("max_jobs", mode="before")
+    @classmethod
+    def _normalize_max_jobs(cls, value: object) -> int:
+        try:
+            return int(value or config.JOBANNI_MAX_JOBS)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_jobs must be an integer") from exc
+
+    @field_validator("max_jobs")
+    @classmethod
+    def _clamp_max_jobs(cls, value: int) -> int:
+        return min(max(value, 1), 500)
+
+
 @jobanni_bp.route("/jobanni/scan", methods=["POST"])
 def start_scan() -> ResponseReturnValue:
     """Trigger a Jobanni scrape and enqueue results for import."""
@@ -142,12 +176,26 @@ def start_scan() -> ResponseReturnValue:
         if _state.running:
             return jsonify({"error": "Scan already running"}), 409
 
-    body = request.get_json(silent=True) or {}
-    search_url = str(body.get("search_url") or config.JOBANNI_SEARCH_URL).strip()
-    if not search_url:
+    # ai: claude-fable-5 | 2026-07-15 — validate the boundary data and reject
+    # unsafe scan targets before the background thread ever starts.
+    try:
+        body = JobanniScanRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return (
+            jsonify({"error": "search_url must be a string and max_jobs an integer"}),
+            400,
+        )
+
+    if not body.search_url:
         return jsonify({"error": "JOBANNI_SEARCH_URL not configured"}), 400
 
-    max_jobs = min(max(int(body.get("max_jobs") or config.JOBANNI_MAX_JOBS), 1), 500)
+    try:
+        validate_outbound_url(body.search_url)
+    except UnsafeUrlError as exc:
+        return jsonify({"error": f"search_url rejected: {exc}"}), 400
+
+    search_url = body.search_url
+    max_jobs = body.max_jobs
 
     threading.Thread(
         target=_run_scan,
@@ -163,15 +211,17 @@ def start_scan() -> ResponseReturnValue:
 def scan_status() -> ResponseReturnValue:
     """Return the current Jobanni scan state."""
     with _lock:
-        return jsonify({
-            "running": _state.running,
-            "progress": _state.progress,
-            "total": _state.total,
-            "message": _state.message,
-            "found": _state.found,
-            "task_id": _state.task_id,
-            "last_run_at": _state.last_run_at,
-            "last_found": _state.last_found,
-            "error": _state.error,
-            "default_search_url": config.JOBANNI_SEARCH_URL,
-        })
+        return jsonify(
+            {
+                "running": _state.running,
+                "progress": _state.progress,
+                "total": _state.total,
+                "message": _state.message,
+                "found": _state.found,
+                "task_id": _state.task_id,
+                "last_run_at": _state.last_run_at,
+                "last_found": _state.last_found,
+                "error": _state.error,
+                "default_search_url": config.JOBANNI_SEARCH_URL,
+            }
+        )

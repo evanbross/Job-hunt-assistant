@@ -76,9 +76,9 @@ def test_sqlite_backend_initializes_and_supports_repositories(tmp_path: Path) ->
                 "url": "https://jobs.example.com/acme",
                 "enabled": 1,
                 "detected_platform": "generic",
-                "last_captured_at": (
-                    datetime.now(UTC) - timedelta(days=8)
-                ).isoformat(timespec="seconds"),
+                "last_captured_at": (datetime.now(UTC) - timedelta(days=8)).isoformat(
+                    timespec="seconds"
+                ),
                 "recapture_interval_days": 4,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             }
@@ -87,7 +87,10 @@ def test_sqlite_backend_initializes_and_supports_repositories(tmp_path: Path) ->
 
         assert settings.get("cover_letter_folder") == "C:/letters"
         assert jobs.get_by_id(job_id)["company"] == "Acme"
-        assert jobs.get_by_url("https://example.com/jobs/1")["job_title"] == "Senior Engineer"
+        assert (
+            jobs.get_by_url("https://example.com/jobs/1")["job_title"]
+            == "Senior Engineer"
+        )
         assert career_sites.get_by_id(source_id)["collection_mode"] == "automatic"
         assert [site["id"] for site in career_sites.get_enabled()] == [source_id]
 
@@ -121,9 +124,9 @@ def test_open_repositories_selects_sqlite_implementations(tmp_path: Path) -> Non
                 "url": "https://jobs.example.com/widget",
                 "enabled": 1,
                 "detected_platform": "generic",
-                "last_captured_at": (
-                    datetime.now(UTC) - timedelta(days=8)
-                ).isoformat(timespec="seconds"),
+                "last_captured_at": (datetime.now(UTC) - timedelta(days=8)).isoformat(
+                    timespec="seconds"
+                ),
                 "recapture_interval_days": 4,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             }
@@ -141,7 +144,9 @@ def test_open_repositories_selects_sqlite_implementations(tmp_path: Path) -> Non
         repos["conn"].commit()
 
         assert repos["jobs"].get_by_id(job_id)["company"] == "Widget Co"
-        assert [site["id"] for site in repos["career_sites"].get_due_recapture()] == [source_id]
+        assert [site["id"] for site in repos["career_sites"].get_due_recapture()] == [
+            source_id
+        ]
         repos["career_sites"].update(source_id, {"collection_mode": "manual"})
         repos["conn"].commit()
         assert repos["career_sites"].get_enabled() == []
@@ -234,7 +239,9 @@ def test_scanned_email_get_by_id_returns_disposition(tmp_path: Path) -> None:
         repos["conn"].close()
 
 
-def test_relevance_feedback_requires_subject_overlap_for_exact_sender(tmp_path: Path) -> None:
+def test_relevance_feedback_requires_subject_overlap_for_exact_sender(
+    tmp_path: Path,
+) -> None:
     dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
     init_db(dsn)
     conn = get_connection(dsn)
@@ -251,13 +258,19 @@ def test_relevance_feedback_requires_subject_overlap_for_exact_sender(tmp_path: 
         )
         conn.commit()
 
-        assert feedback.find_match(
-            "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
-            "Principal Product Manager posted on 5/9/26",
-        ) is None
-        assert feedback.find_match(
-            "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
-            "Staff Software Engineer posted on 5/9/26",
-        ) is not None
+        assert (
+            feedback.find_match(
+                "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+                "Principal Product Manager posted on 5/9/26",
+            )
+            is None
+        )
+        assert (
+            feedback.find_match(
+                "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+                "Staff Software Engineer posted on 5/9/26",
+            )
+            is not None
+        )
     finally:
         conn.close()

@@ -43,9 +43,9 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any, Generator
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlunparse  # ai: claude-fable-5 | 2026-07-17
 
 from flask import request
 
@@ -65,17 +65,61 @@ from backend.gmail_client import GmailClient, NotAuthenticatedError
 
 logger = logging.getLogger(__name__)
 
-ACTIVE_JOB_STATUSES: frozenset[str] = frozenset({
-    "pending_review",
-    "triage",
-    "possible_duplicate",
-})
+# ai: claude-fable-5 | 2026-07-17 — shared by the closed-req scan and the WTTJ
+# repair flow (moved from routes/applications.py).
+RATE_LIMIT_DEFAULT_BACKOFF_SECONDS = 30.0
+RATE_LIMIT_BACKOFF_CAP_SECONDS = 120.0
 
-FIT_PANEL_STATUSES: frozenset[str] = frozenset({
-    "pending_review",
-    "triage",
-    "skipped",
-})
+
+# ai: claude-fable-5 | 2026-07-17
+def rate_limit_backoff_seconds(retry_after: str | None) -> float:
+    """Seconds to wait before retrying after an HTTP 429.
+
+    Honors a numeric Retry-After header value, clamped to a sane range;
+    falls back to a default backoff when the header is absent or unparseable
+    (HTTP-date form included — not worth parsing for this use)."""
+    try:
+        seconds = float(retry_after) if retry_after is not None else None
+    except ValueError:
+        seconds = None
+    if seconds is None or not 0 <= seconds:
+        return RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+    return min(max(seconds, 1.0), RATE_LIMIT_BACKOFF_CAP_SECONDS)
+
+
+# ai: claude-fable-5 | 2026-07-17 — moved from routes/applications.py so both the
+# closed-req scan and the WTTJ repair flow share one canonicalization.
+def canonicalize_wttj_url(url: str) -> str:
+    """Strip the query string and fragment from a Welcome to the Jungle job URL.
+
+    WTTJ email links carry a ?token=<JWT> auth param plus tracking params. When
+    fetched with the token, app.welcometothejungle.com serves a client-side app
+    shell with no job content — no closed-req banner and no JSON-LD JobPosting
+    block ever appear in the HTML. The bare path URL gets the full
+    server-rendered page. WTTJ job URLs identify the job entirely by path, so
+    dropping the query is always safe.
+    """
+    parsed = urlparse(url)
+    if "welcometothejungle.com" not in parsed.netloc.lower():
+        return url
+    return urlunparse(parsed._replace(query="", fragment=""))
+
+
+ACTIVE_JOB_STATUSES: frozenset[str] = frozenset(
+    {
+        "pending_review",
+        "triage",
+        "possible_duplicate",
+    }
+)
+
+FIT_PANEL_STATUSES: frozenset[str] = frozenset(
+    {
+        "pending_review",
+        "triage",
+        "skipped",
+    }
+)
 ACK_SUBJECT_PATTERNS: tuple[str, ...] = (
     "your application was sent",
     "your application has been sent",
@@ -89,6 +133,7 @@ ACK_SUBJECT_PATTERNS: tuple[str, ...] = (
     "successfully submitted",  # Wellfound: "Application to <company> successfully submitted"
 )
 
+
 @contextmanager
 def get_repos() -> Generator[dict, None, None]:
     """Open a DB connection and yield repos; always closes the connection on exit."""
@@ -100,7 +145,9 @@ def get_repos() -> Generator[dict, None, None]:
 
 
 # ai: claude-sonnet-4-6 | 2026-07-02
-def maybe_mark_source_email_read(job: dict[str, object], job_repo: IJobRepository) -> None:
+def maybe_mark_source_email_read(
+    job: dict[str, object], job_repo: IJobRepository
+) -> None:
     """Mark the source Gmail message read once no active queue jobs remain for it.
 
     Shared by routes/jobs.py (manual skip) and routes/applications.py (closed-req
@@ -123,7 +170,9 @@ def maybe_mark_source_email_read(job: dict[str, object], job_repo: IJobRepositor
     try:
         GmailClient().mark_as_read(base_email_id)
     except NotAuthenticatedError:
-        logger.warning("Could not mark email %s as read: Gmail is not authenticated", base_email_id)
+        logger.warning(
+            "Could not mark email %s as read: Gmail is not authenticated", base_email_id
+        )
     except Exception as exc:
         logger.warning("Could not mark email %s as read: %s", base_email_id, exc)
 
@@ -159,13 +208,13 @@ def _parse_positive_int(value: object, *, default: int, field_name: str) -> int:
 def _tracking_payload() -> dict[str, str]:
     data = request.get_json(silent=True) or {}
     return {
-        "company":   str(data.get("company")   or "").strip(),
-        "status":    str(data.get("status")    or "").strip(),
-        "source":    str(data.get("source")    or "").strip(),
-        "date":      str(data.get("date")      or "").strip(),
+        "company": str(data.get("company") or "").strip(),
+        "status": str(data.get("status") or "").strip(),
+        "source": str(data.get("source") or "").strip(),
+        "date": str(data.get("date") or "").strip(),
         "job_title": str(data.get("job_title") or "").strip(),
-        "url":       str(data.get("url")       or "").strip(),
-        "notes":     str(data.get("notes")     or "").strip(),
+        "url": str(data.get("url") or "").strip(),
+        "notes": str(data.get("notes") or "").strip(),
     }
 
 
@@ -207,7 +256,68 @@ def jd_blocklist_match(haystack: str, rules: list[dict]) -> dict | None:
     return None
 
 
-def is_application_acknowledgement(subject: str, patterns: list[str] | None = None) -> bool:
+# ai: claude-fable-5 | 2026-07-16
+# MongoDB hybrid-policy boilerplate comes in two forms. The possessive form
+# ("MongoDB's hybrid working model", straight or curly apostrophe) is
+# self-identifying; the "our" form — usually "We are looking to speak to
+# candidates who are based in <city> for our hybrid working model" — only
+# counts when the job's company identifies as MongoDB.
+_MONGODB_POSSESSIVE_HYBRID_RE = re.compile(
+    r"mongodb[’']s\s+hybrid\s+(?:work(?:ing)?\s+)?model", re.IGNORECASE
+)
+_OUR_HYBRID_MODEL_RE = re.compile(
+    r"\bour\s+hybrid\s+work(?:ing)?\s+model\b", re.IGNORECASE
+)
+_BASED_IN_HYBRID_LOCATION_RE = re.compile(
+    r"based\s+in\s+(?P<location>[^.,;\n]{1,60}?)\s+for\s+our\s+hybrid\s+"
+    r"work(?:ing)?\s+model",
+    re.IGNORECASE,
+)
+# Mirrors the explicit-remote language recognized by FitScorer's remote exception,
+# plus bare "remotely" ("this role will be based remotely in <region>").
+_EXPLICIT_REMOTE_RE = re.compile(
+    r"\b(?:remote(?:ly)?|fully remote|remote-first|work remotely|remote work|"
+    r"remote position|remote role|remote opportunity|option to work remotely)\b",
+    re.IGNORECASE,
+)
+
+
+# ai: claude-fable-5 | 2026-07-16
+def mongodb_hybrid_rejection_note(company: str, job_text: str) -> str | None:
+    """Return an auto-rejection note when a MongoDB posting references its hybrid
+    working model without explicitly stating the role is remote, else None.
+
+    Most MongoDB postings are hybrid and signal it only through boilerplate like
+    "We are looking to speak to candidates who are based in Sydney for our hybrid
+    working model". Unless the posting explicitly says remote, that reference
+    means an in-office requirement in the named location.
+    """
+    if not job_text:
+        return None
+    is_mongodb_company = "mongodb" in (company or "").lower()
+    matched = _MONGODB_POSSESSIVE_HYBRID_RE.search(job_text) or (
+        is_mongodb_company and _OUR_HYBRID_MODEL_RE.search(job_text)
+    )
+    if not matched:
+        return None
+    if _EXPLICIT_REMOTE_RE.search(job_text):
+        return None
+    location_match = _BASED_IN_HYBRID_LOCATION_RE.search(job_text)
+    if location_match:
+        location = re.sub(r"\s+", " ", location_match.group("location")).strip()
+        return (
+            f"Auto-rejected: MongoDB hybrid role based in {location}, "
+            "with no explicit remote statement."
+        )
+    return (
+        "Auto-rejected: references MongoDB's hybrid working model without an "
+        "explicit remote statement."
+    )
+
+
+def is_application_acknowledgement(
+    subject: str, patterns: list[str] | None = None
+) -> bool:
     """Return True if the subject matches an application-acknowledgement pattern.
 
     Pass *patterns* (from the DB) to override the hardcoded defaults.
@@ -223,7 +333,9 @@ def email_date_from_message(full_msg: dict) -> str | None:
     if not raw:
         return None
     try:
-        return datetime.fromtimestamp(int(raw) / 1000, UTC).isoformat(timespec="seconds")
+        return datetime.fromtimestamp(int(raw) / 1000, UTC).isoformat(
+            timespec="seconds"
+        )
     except (ValueError, OSError):
         return None
 
@@ -372,6 +484,7 @@ _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
 )
 
+
 # ai: claude-sonnet-4-6 | 2026-06-18
 def slug_to_title_case(slug: str) -> str:
     """Convert a hyphen/underscore slug to a title-cased name.
@@ -381,7 +494,9 @@ def slug_to_title_case(slug: str) -> str:
     """
     value = re.sub(r"[-_]+", " ", slug)
     value = re.sub(r"\s+", " ", value).strip()
-    return " ".join(word.capitalize() if not word.isupper() else word for word in value.split())
+    return " ".join(
+        word.capitalize() if not word.isupper() else word for word in value.split()
+    )
 
 
 # ai: claude-sonnet-4-6 | 2026-06-18
@@ -418,26 +533,59 @@ def company_from_ats_url(url: str) -> str | None:
 # Third-party job boards/ATS hosts where the domain itself is not the
 # employer's name. Excluded so a career-domain guess never misidentifies the
 # board as the company.
-_KNOWN_JOB_BOARD_HOSTS: frozenset[str] = frozenset({
-    "ashbyhq.com", "lever.co", "greenhouse.io", "myworkdayjobs.com",
-    "linkedin.com", "wellfound.com", "indeed.com", "glassdoor.com",
-    "ziprecruiter.com", "monster.com", "simplyhired.com", "careerbuilder.com",
-    "dice.com", "smartrecruiters.com", "icims.com", "jobvite.com",
-    "taleo.net", "successfactors.com", "oraclecloud.com", "bamboohr.com",
-    "breezy.hr", "workable.com", "recruitee.com", "applytojob.com",
-    "personio.com",
-})
+_KNOWN_JOB_BOARD_HOSTS: frozenset[str] = frozenset(
+    {
+        "ashbyhq.com",
+        "lever.co",
+        "greenhouse.io",
+        "myworkdayjobs.com",
+        "linkedin.com",
+        "wellfound.com",
+        "indeed.com",
+        "glassdoor.com",
+        "ziprecruiter.com",
+        "monster.com",
+        "simplyhired.com",
+        "careerbuilder.com",
+        "dice.com",
+        "smartrecruiters.com",
+        "icims.com",
+        "jobvite.com",
+        "taleo.net",
+        "successfactors.com",
+        "oraclecloud.com",
+        "bamboohr.com",
+        "breezy.hr",
+        "workable.com",
+        "recruitee.com",
+        "applytojob.com",
+        "personio.com",
+    }
+)
 
 # Subdomain labels that indicate a career-site landing page rather than the
 # company name itself, e.g. "careers.labcorp.com" -> strip "careers" -> "labcorp".
-_CAREER_SUBDOMAIN_PREFIXES: frozenset[str] = frozenset({
-    "careers", "career", "jobs", "job", "talent", "recruiting", "recruitment",
-    "apply", "hiring", "www", "join",
-})
+_CAREER_SUBDOMAIN_PREFIXES: frozenset[str] = frozenset(
+    {
+        "careers",
+        "career",
+        "jobs",
+        "job",
+        "talent",
+        "recruiting",
+        "recruitment",
+        "apply",
+        "hiring",
+        "www",
+        "join",
+    }
+)
 
 # Second-to-last labels that signal a multi-part country-code TLD (e.g.
 # "co.uk", "com.au") so the registrable label sits one position further left.
-_MULTI_PART_TLD_SECOND_LABELS: frozenset[str] = frozenset({"co", "com", "org", "net", "gov", "ac"})
+_MULTI_PART_TLD_SECOND_LABELS: frozenset[str] = frozenset(
+    {"co", "com", "org", "net", "gov", "ac"}
+)
 
 
 def _registrable_domain_label(labels: list[str]) -> str | None:
@@ -471,7 +619,10 @@ def company_from_career_domain(url: str) -> str | None:
         host = parsed.netloc.lower().split(":")[0]
         if not host:
             return None
-        if any(host == board or host.endswith(f".{board}") for board in _KNOWN_JOB_BOARD_HOSTS):
+        if any(
+            host == board or host.endswith(f".{board}")
+            for board in _KNOWN_JOB_BOARD_HOSTS
+        ):
             return None
 
         labels = host.split(".")
@@ -571,14 +722,19 @@ def db_match_for_job(
             f"at {exact_match.get('company') or company} with status \"{tracked_status}\"."
         )
         matched_id = exact_match.get("id")
-        return tracked_status, "db_url", duplicate_hint, (int(matched_id) if matched_id is not None else None), None
+        return (
+            tracked_status,
+            "db_url",
+            duplicate_hint,
+            (int(matched_id) if matched_id is not None else None),
+            None,
+        )
 
     if not company.strip() or not job_title.strip() or not known_jobs:
         return None, None, None, None, None
 
     fuzzy_candidates = [
-        row for row in known_jobs
-        if exclude_id is None or row.get("id") != exclude_id
+        row for row in known_jobs if exclude_id is None or row.get("id") != exclude_id
     ]
     dup = dedup_checker.check(
         job_title=job_title,
@@ -604,8 +760,17 @@ def db_match_for_job(
         f"(title match: {dup['title_score']}%, company match: {dup['company_score']}%)"
     )
     matched_id = matched.get("id") if matched else None
-    match_scores: dict[str, int] = {"title_score": dup["title_score"], "company_score": dup["company_score"]}
-    return tracked_status, "db_fuzzy", duplicate_hint, (int(matched_id) if matched_id is not None else None), match_scores
+    match_scores: dict[str, int] = {
+        "title_score": dup["title_score"],
+        "company_score": dup["company_score"],
+    }
+    return (
+        tracked_status,
+        "db_fuzzy",
+        duplicate_hint,
+        (int(matched_id) if matched_id is not None else None),
+        match_scores,
+    )
 
 
 # Thresholds for treating a duplicate match as near-certain enough to auto-skip
@@ -615,7 +780,9 @@ AUTO_REJECT_DUPLICATE_TITLE_THRESHOLD: int = 95
 AUTO_REJECT_DUPLICATE_COMPANY_THRESHOLD: int = 95
 
 
-def is_near_certain_duplicate(tracking_source: str | None, match_scores: dict[str, int] | None) -> bool:
+def is_near_certain_duplicate(
+    tracking_source: str | None, match_scores: dict[str, int] | None
+) -> bool:
     """True when a duplicate match is confident enough to auto-skip without review.
 
     An exact URL/Ashby/LinkedIn job-id match (tracking_source == "db_url") is always
@@ -627,7 +794,8 @@ def is_near_certain_duplicate(tracking_source: str | None, match_scores: dict[st
     if tracking_source == "db_fuzzy" and match_scores:
         return (
             match_scores.get("title_score", 0) >= AUTO_REJECT_DUPLICATE_TITLE_THRESHOLD
-            and match_scores.get("company_score", 0) >= AUTO_REJECT_DUPLICATE_COMPANY_THRESHOLD
+            and match_scores.get("company_score", 0)
+            >= AUTO_REJECT_DUPLICATE_COMPANY_THRESHOLD
         )
     return False
 
@@ -692,7 +860,9 @@ def is_richer_description(incoming_text: str, existing_job: dict[str, Any]) -> b
     if len(incoming_text) < _ENRICH_MIN_CHARS:
         return False
     existing = str(
-        existing_job.get("job_description") or existing_job.get("raw_email_snippet") or ""
+        existing_job.get("job_description")
+        or existing_job.get("raw_email_snippet")
+        or ""
     )
     return len(incoming_text) > len(existing) + _ENRICH_ADVANTAGE_CHARS
 
@@ -711,10 +881,13 @@ def enrich_job_description(
     Does not change status for applied or skipped jobs.
     """
     job_id = int(job["id"])
-    repos["jobs"].update(job_id, {
-        "job_description": description,
-        "raw_email_snippet": description[:6000],
-    })
+    repos["jobs"].update(
+        job_id,
+        {
+            "job_description": description,
+            "raw_email_snippet": description[:6000],
+        },
+    )
     try:
         result = FitScorer().score(
             job_title=str(job.get("job_title") or ""),
@@ -756,7 +929,8 @@ def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
     for job in queue_jobs:
         try:
             scoring_text = "\n".join(
-                part for part in [
+                part
+                for part in [
                     job.get("email_subject", ""),
                     job.get("raw_email_snippet", ""),
                 ]
@@ -781,7 +955,12 @@ def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
             rescored += 1
         except Exception as exc:
             repos["conn"].rollback()
-            logger.warning("Queue re-score failed for job %s: %s", job.get("id"), exc, exc_info=True)
+            logger.warning(
+                "Queue re-score failed for job %s: %s",
+                job.get("id"),
+                exc,
+                exc_info=True,
+            )
             failed += 1
 
     return {"rescored": rescored, "failed": failed}

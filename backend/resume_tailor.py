@@ -63,9 +63,7 @@ class ResumeTailoringGenerator:
         if job_description:
             jd_block = f"JOB DESCRIPTION:\n{job_description[:4000]}"
         elif fit_reasoning:
-            jd_block = (
-                f"FIT ANALYSIS (AI-generated summary of requirements):\n{fit_reasoning[:2000]}"
-            )
+            jd_block = f"FIT ANALYSIS (AI-generated summary of requirements):\n{fit_reasoning[:2000]}"
         else:
             jd_block = "No job description available. Work from the role title and company name."
 

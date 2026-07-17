@@ -59,17 +59,20 @@ setup_bp = Blueprint("setup", __name__)
 
 _ENV_PATH: Path = config.BASE_DIR / ".env"
 
-_ALLOWED_ENV_KEYS: frozenset[str] = frozenset({
-    "ANTHROPIC_API_KEY",
-    "FLASK_SECRET_KEY",
-    "OLLAMA_BASE_URL",
-    "OLLAMA_MODEL",
-    "OPENAI_API_KEY",
-    "OPENAI_MODEL",
-})
+_ALLOWED_ENV_KEYS: frozenset[str] = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "FLASK_SECRET_KEY",
+        "OLLAMA_BASE_URL",
+        "OLLAMA_MODEL",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+    }
+)
 
 
 # ─── Status ───────────────────────────────────────────────────────────────────
+
 
 @setup_bp.route("/setup/status")
 def setup_status() -> Any:
@@ -87,33 +90,37 @@ def setup_status() -> Any:
     profile_char_count, profile_done = _check_profile(profile_path)
 
     current_secret = env_vals.get("FLASK_SECRET_KEY", "") or config.FLASK_SECRET_KEY
-    flask_secret_ok = bool(current_secret and current_secret != "change-this-in-production")
+    flask_secret_ok = bool(
+        current_secret and current_secret != "change-this-in-production"
+    )
 
-    return jsonify({
-        "complete": ai_done and profile_done,
-        "steps": {
-            "ai_provider": {
-                "done": ai_done,
-                "provider": provider,
-                "required": True,
+    return jsonify(
+        {
+            "complete": ai_done and profile_done,
+            "steps": {
+                "ai_provider": {
+                    "done": ai_done,
+                    "provider": provider,
+                    "required": True,
+                },
+                "google_credentials": {
+                    "done": creds_done,
+                    "required": False,
+                },
+                "google_auth": {
+                    "done": auth_done,
+                    "required": False,
+                },
+                "candidate_profile": {
+                    "done": profile_done,
+                    "char_count": profile_char_count,
+                    "required": True,
+                },
             },
-            "google_credentials": {
-                "done": creds_done,
-                "required": False,
-            },
-            "google_auth": {
-                "done": auth_done,
-                "required": False,
-            },
-            "candidate_profile": {
-                "done": profile_done,
-                "char_count": profile_char_count,
-                "required": True,
-            },
-        },
-        "redis_reachable": _check_redis_reachable(),
-        "flask_secret_ok": flask_secret_ok,
-    })
+            "redis_reachable": _check_redis_reachable(),
+            "flask_secret_ok": flask_secret_ok,
+        }
+    )
 
 
 def _check_ai_provider_done(
@@ -128,7 +135,11 @@ def _check_ai_provider_done(
         key = env_vals.get("OPENAI_API_KEY") or config.OPENAI_API_KEY
         return bool(key and key.strip())
     if provider == "ollama":
-        base_url = runtime.get("ollama_base_url") or env_vals.get("OLLAMA_BASE_URL") or config.OLLAMA_BASE_URL
+        base_url = (
+            runtime.get("ollama_base_url")
+            or env_vals.get("OLLAMA_BASE_URL")
+            or config.OLLAMA_BASE_URL
+        )
         return bool(base_url and base_url.strip())
     return False
 
@@ -144,6 +155,7 @@ def _check_profile(profile_path: Path) -> tuple[int, bool]:
 
 
 # ─── Save env vars ────────────────────────────────────────────────────────────
+
 
 @setup_bp.route("/setup/save-env", methods=["POST"])
 def setup_save_env() -> Any:
@@ -171,6 +183,7 @@ def setup_save_env() -> Any:
 
 # ─── Test AI connection ───────────────────────────────────────────────────────
 
+
 @setup_bp.route("/setup/test-ai", methods=["POST"])
 def setup_test_ai() -> Any:
     """Test that the provided AI credentials are reachable."""
@@ -191,7 +204,9 @@ def setup_test_ai() -> Any:
         return _test_openai(api_key, model)
 
     if provider == "ollama":
-        base_url = str(data.get("base_url") or config.OLLAMA_BASE_URL).strip().rstrip("/")
+        base_url = (
+            str(data.get("base_url") or config.OLLAMA_BASE_URL).strip().rstrip("/")
+        )
         model = str(data.get("model") or config.OLLAMA_MODEL).strip()
         return _test_ollama(base_url, model)
 
@@ -208,7 +223,9 @@ def _test_anthropic(api_key: str) -> Any:
         )
         return jsonify({"ok": True, "message": "Anthropic API key is valid."})
     except anthropic.AuthenticationError:
-        return jsonify({"ok": False, "message": "Invalid API key — authentication failed."})
+        return jsonify(
+            {"ok": False, "message": "Invalid API key — authentication failed."}
+        )
     except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
         return jsonify({"ok": False, "message": f"Anthropic API error: {exc}"})
 
@@ -216,15 +233,23 @@ def _test_anthropic(api_key: str) -> Any:
 def _test_openai(api_key: str, model: str) -> Any:
     try:
         import openai  # noqa: PLC0415 — optional dep, degrades gracefully without it
+
         client = openai.OpenAI(api_key=api_key)
         client.chat.completions.create(
             model=model,
             max_tokens=1,
             messages=[{"role": "user", "content": "hi"}],
         )
-        return jsonify({"ok": True, "message": f"OpenAI key is valid (model: {model})."})
+        return jsonify(
+            {"ok": True, "message": f"OpenAI key is valid (model: {model})."}
+        )
     except ImportError:
-        return jsonify({"ok": False, "message": "openai package is not installed. Run: pip install openai"})
+        return jsonify(
+            {
+                "ok": False,
+                "message": "openai package is not installed. Run: pip install openai",
+            }
+        )
     except Exception as exc:  # noqa: BLE001 — surface any openai error to the user
         return jsonify({"ok": False, "message": f"OpenAI test failed: {exc}"})
 
@@ -240,20 +265,35 @@ def _test_ollama(base_url: str, model: str) -> Any:
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return jsonify({"ok": False, "message": f"Could not connect to Ollama: {exc}"})
     except json.JSONDecodeError:
-        return jsonify({"ok": False, "message": "Connected but received an unexpected response from Ollama."})
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Connected but received an unexpected response from Ollama.",
+            }
+        )
 
     available = [m.get("name", "") for m in body.get("models", [])]
     if model in available:
-        return jsonify({"ok": True, "message": f"Connected. Model '{model}' is available."})
+        return jsonify(
+            {"ok": True, "message": f"Connected. Model '{model}' is available."}
+        )
     if available:
-        return jsonify({
+        return jsonify(
+            {
+                "ok": False,
+                "message": f"Connected, but model '{model}' not found. Available: {', '.join(available)}",
+            }
+        )
+    return jsonify(
+        {
             "ok": False,
-            "message": f"Connected, but model '{model}' not found. Available: {', '.join(available)}",
-        })
-    return jsonify({"ok": False, "message": f"Connected, but model '{model}' not found (no models installed)."})
+            "message": f"Connected, but model '{model}' not found (no models installed).",
+        }
+    )
 
 
 # ─── Upload Google credentials ────────────────────────────────────────────────
+
 
 @setup_bp.route("/setup/upload-credentials", methods=["POST"])
 def setup_upload_credentials() -> Any:
@@ -264,26 +304,41 @@ def setup_upload_credentials() -> Any:
 
     installed: dict[str, object] | None = data.get("installed") or data.get("web")  # type: ignore[assignment]
     if not installed or not isinstance(installed, dict):
-        return jsonify({
-            "error": (
-                "Invalid credentials file. Expected an OAuth2 desktop or web app "
-                "credentials JSON downloaded from Google Cloud Console."
-            )
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "Invalid credentials file. Expected an OAuth2 desktop or web app "
+                        "credentials JSON downloaded from Google Cloud Console."
+                    )
+                }
+            ),
+            400,
+        )
 
     required_fields = {"client_id", "client_secret", "redirect_uris"}
     missing = required_fields - set(installed.keys())
     if missing:
-        return jsonify({"error": f"Credentials file is missing required fields: {', '.join(sorted(missing))}"}), 400
+        return (
+            jsonify(
+                {
+                    "error": f"Credentials file is missing required fields: {', '.join(sorted(missing))}"
+                }
+            ),
+            400,
+        )
 
     config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
-    config.GOOGLE_CREDENTIALS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    config.GOOGLE_CREDENTIALS_FILE.write_text(
+        json.dumps(data, indent=2), encoding="utf-8"
+    )
     logger.info("Google credentials saved to %s", config.GOOGLE_CREDENTIALS_FILE)
 
     return jsonify({"ok": True, "message": "Credentials saved successfully."})
 
 
 # ─── Candidate profile ────────────────────────────────────────────────────────
+
 
 @setup_bp.route("/setup/candidate-profile", methods=["POST"])
 def setup_candidate_profile() -> Any:
@@ -296,12 +351,15 @@ def setup_candidate_profile() -> Any:
     profile_path = config.get_candidate_profile_path()
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     profile_path.write_text(content, encoding="utf-8")
-    logger.info("Candidate profile written to %s (%d chars)", profile_path, len(content))
+    logger.info(
+        "Candidate profile written to %s (%d chars)", profile_path, len(content)
+    )
 
     return jsonify({"ok": True, "char_count": len(content)})
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def _read_env_file() -> dict[str, str]:
     if not _ENV_PATH.exists():

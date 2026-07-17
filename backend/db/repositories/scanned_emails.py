@@ -89,7 +89,15 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 raw_body          = COALESCE(EXCLUDED.raw_body, scanned_emails.raw_body),
                 parser_error_msg  = COALESCE(EXCLUDED.parser_error_msg, scanned_emails.parser_error_msg)
             """,
-            (email_id, sender_email, subject, disposition, email_date, raw_body, parser_error_msg),
+            (
+                email_id,
+                sender_email,
+                subject,
+                disposition,
+                email_date,
+                raw_body,
+                parser_error_msg,
+            ),
         )
 
     def get_all_with_job_status(self) -> list[dict[str, Any]]:
@@ -115,8 +123,7 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 j.parser_confidence AS child_parser_confidence,
                 j.confidence_score AS child_confidence_score,
                 j.duplicate_hint AS child_duplicate_hint,
-                j.date_found AS child_date_found,
-                j.date_added_to_sheet AS child_date_added_to_sheet
+                j.date_found AS child_date_found
             FROM scanned_emails se
             LEFT JOIN jobs j
               ON j.email_id = se.email_id
@@ -168,7 +175,6 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 "confidence_score": email_job_row["child_confidence_score"],
                 "duplicate_hint": email_job_row["child_duplicate_hint"],
                 "date_found": email_job_row["child_date_found"],
-                "date_added_to_sheet": email_job_row["child_date_added_to_sheet"],
             }
             email_record = emails_by_id[email_id]
             email_record["jobs"].append(child_job)
@@ -200,9 +206,7 @@ class PostgresScannedEmailRepository(_BaseRepo):
         )
 
     def delete(self, email_id: str) -> None:
-        self._execute(
-            "DELETE FROM scanned_emails WHERE email_id = %s", (email_id,)
-        )
+        self._execute("DELETE FROM scanned_emails WHERE email_id = %s", (email_id,))
 
     def delete_all(self) -> None:
         self._execute("DELETE FROM scanned_emails")

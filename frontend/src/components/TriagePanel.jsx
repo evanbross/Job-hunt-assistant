@@ -45,6 +45,7 @@ import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
 import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 import { fitReasoningBullets } from "../utils/fitScoringUtils.js";
+import { describeFetchError } from "../utils/fetchErrorUtils.js"; // ai: claude-fable-5 | 2026-07-15
 import {
   MISMATCH_REASONS,
   SKIP_REASONS,
@@ -622,7 +623,6 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
             job={job}
             onSameJob={() => handleSkipAsDuplicate(job)}
             onDifferentJob={() => handleMarkUnique(job)}
-            onMarkUnique={() => handleMarkUnique(job)}
             onMarkApplied={() => handleMarkApplied(job)}
             onSkip={(reason, feedback, mismatchReasons) => handleSkip(job, reason, feedback, mismatchReasons)}
             onSkipDuplicate={(jobId) => handleSkip({ id: jobId }, "duplicate", "", [])}
@@ -773,7 +773,7 @@ function CompanyNameEditor({ jobId, company, onSave, onError }) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard }) {
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard }) {
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
@@ -925,12 +925,16 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMar
     setReEvaluateError(null);
     try {
       const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
       setCoverLetter(data.cover_letter);
       setCoverLetterOpen(true);
     } catch (err) {
-      setReEvaluateError(err.message || "Cover letter generation failed");
+      setReEvaluateError(describeFetchError(err) || "Cover letter generation failed"); // ai: claude-fable-5 | 2026-07-15
     } finally {
       setLoadingAction(null);
     }
@@ -1196,21 +1200,15 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkUnique, onMar
           {loadingAction === "same" ? "Removing…" : "Yes, same job — skip it"}
         </button>
         <button
-          className="btn-secondary btn-sm"
-          onClick={() => act(onMarkUnique, "unique")}
-          disabled={loadingAction !== null}
-        >
-          {loadingAction === "unique" ? "Moving…" : "Mark as Unique"}
-        </button>
-        <button
           className="btn-success btn-sm"
           onClick={() => act(onDifferentJob, "different")}
           disabled={loadingAction !== null}
         >
           {loadingAction === "different" ? "Moving…" : "No, it's a different role"}
         </button>
+        {/* ai: claude-fable-5 | 2026-07-14 */}
         <button
-          className="btn-secondary btn-sm"
+          className="btn-primary btn-sm"
           onClick={() => act(onMarkApplied, "applied")}
           disabled={loadingAction !== null}
         >
@@ -1503,12 +1501,16 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     setReEvaluateError(null);
     try {
       const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
+      // ai: claude-fable-5 | 2026-07-15
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
       setCoverLetter(data.cover_letter);
       setCoverLetterOpen(true);
     } catch (err) {
-      setReEvaluateError(err.message || "Cover letter generation failed");
+      setReEvaluateError(describeFetchError(err) || "Cover letter generation failed"); // ai: claude-fable-5 | 2026-07-15
     } finally {
       setLoadingAction(null);
     }
@@ -2136,8 +2138,9 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         >
           {loadingAction === "approve" ? "Moving…" : "It's a Job Posting"}
         </button>
+        {/* ai: claude-fable-5 | 2026-07-14 */}
         <button
-          className="btn-secondary"
+          className="btn-primary"
           onClick={() => act(onMarkApplied, "applied")}
           disabled={loadingAction !== null}
           style={{ flexShrink: 0 }}
@@ -2395,7 +2398,6 @@ export function ReEvaluatePopup({ popup, onClose }) {
       subtitle={`${title}${companyText}`}
       onClose={onClose}
       showCloseButton={!isRunning}
-      blockClose={isRunning}
       footer={footer}
       maxWidth="460px"
     >
@@ -2452,7 +2454,6 @@ export function BatchRefreshPopup({ popup, onClose }) {
         : `${successCount} refreshed, ${movedCount} moved to queue${queuedCount ? `, ${queuedCount} queued for extension` : ""}, ${errorCount} failed`}
       onClose={onClose}
       showCloseButton={!isRunning}
-      blockClose={isRunning}
       footer={footer}
       maxWidth="680px"
     >

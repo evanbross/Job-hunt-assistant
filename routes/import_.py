@@ -67,7 +67,9 @@ from backend.utils import (
 logger = logging.getLogger(__name__)
 
 import_bp = Blueprint("import_", __name__)
-_STUCK_TASK_TIMEOUT_SECONDS = 900  # 15 minutes — tasks stuck PENDING/STARTED longer than this are auto-cleared
+_STUCK_TASK_TIMEOUT_SECONDS = (
+    900  # 15 minutes — tasks stuck PENDING/STARTED longer than this are auto-cleared
+)
 
 
 # ─── Active task tracking ─────────────────────────────────────────────────────
@@ -189,7 +191,9 @@ def _is_task_stale(started_at: str) -> bool:
         return False
     try:
         started_dt = datetime.fromisoformat(started_at)
-        return (datetime.now(UTC) - started_dt).total_seconds() > _STUCK_TASK_TIMEOUT_SECONDS
+        return (
+            datetime.now(UTC) - started_dt
+        ).total_seconds() > _STUCK_TASK_TIMEOUT_SECONDS
     except (ValueError, TypeError):
         return False
 
@@ -203,10 +207,14 @@ def _dismiss_capture_queue_item(page_url: str | None) -> None:
             repos["browser_capture_queue"].mark_done_by_urls([page_url])
             repos["conn"].commit()
     except Exception as exc:
-        logger.warning("Failed to dismiss browser capture queue item for %s: %s", page_url, exc)
+        logger.warning(
+            "Failed to dismiss browser capture queue item for %s: %s", page_url, exc
+        )
 
 
-def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source: dict | None) -> tuple[dict | None, dict | None]:
+def _resolve_capture_source(
+    repos: dict[str, object], body: dict, guessed_source: dict | None
+) -> tuple[dict | None, dict | None]:
     career_sites_repo = repos["career_sites"]
     interval_days = _parse_positive_int(
         body.get("recapture_interval_days"),
@@ -245,7 +253,9 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
                 "url": guessed_url,
                 "enabled": 1,
                 "collection_mode": "manual",
-                "detected_platform": str(guessed_source.get("platform") or platform_for_site_url(guessed_url)),
+                "detected_platform": str(
+                    guessed_source.get("platform") or platform_for_site_url(guessed_url)
+                ),
                 "recapture_interval_days": interval_days,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             }
@@ -286,13 +296,17 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
 
     if source_url:
         if not re.match(r"^https?://", source_url, re.IGNORECASE):
-            return None, ({"error": "capture_source_url must start with http:// or https://"}, 400)
+            return None, (
+                {"error": "capture_source_url must start with http:// or https://"},
+                400,
+            )
         existing = career_sites_repo.get_by_url(source_url)
         if existing:
             return existing, None
         new_source_id = career_sites_repo.insert(
             {
-                "name": source_name or platform_label(platform_for_site_url(source_url)),
+                "name": source_name
+                or platform_label(platform_for_site_url(source_url)),
                 "url": source_url,
                 "enabled": 1,
                 "collection_mode": "manual",
@@ -303,7 +317,9 @@ def _resolve_capture_source(repos: dict[str, object], body: dict, guessed_source
         )
         return career_sites_repo.get_by_id(new_source_id), None
 
-    logger.warning("capture source could not be inferred for url=%s", source_url or "(none)")
+    logger.warning(
+        "capture source could not be inferred for url=%s", source_url or "(none)"
+    )
     return None, (
         {
             "error": "Capture source could not be inferred. Enter the source site.",
@@ -337,7 +353,11 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         if existing.state not in ("SUCCESS", "FAILURE", "REVOKED"):
             if _is_task_stale(existing_started_at):
                 # Stale PENDING/STARTED task — treat as timed out and allow new import
-                logger.warning("Clearing stale import task %s (started %s)", existing_task_id, existing_started_at)
+                logger.warning(
+                    "Clearing stale import task %s (started %s)",
+                    existing_task_id,
+                    existing_started_at,
+                )
                 with _task_id_lock:
                     _current_task_id = None
             else:
@@ -488,10 +508,17 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         _current_trigger = trigger
         _current_started_at = started_at
     # ai: claude-sonnet-4-6 | 2026-06-26
-    _source_label = (capture_source or {}).get("name") or (capture_source or {}).get("url") or "(unknown source)"
+    _source_label = (
+        (capture_source or {}).get("name")
+        or (capture_source or {}).get("url")
+        or "(unknown source)"
+    )
     logger.info(
         "IMPORT QUEUED  trigger=%s  source=%s  urls=%d  task=%s",
-        trigger, _source_label, len(extracted), task.id,
+        trigger,
+        _source_label,
+        len(extracted),
+        task.id,
     )
 
     # ai: claude-sonnet-4-6 | 2026-06-21
@@ -518,6 +545,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
 
 
 # ─── Import routes ────────────────────────────────────────────────────────────
+
 
 # ai: claude-sonnet-4-6 | 2026-06-20
 @import_bp.route("/import/reset", methods=["POST"])
@@ -548,7 +576,9 @@ def fix_unknown_companies() -> ResponseReturnValue:
                     repos["conn"].commit()
                     updated_job = repos["jobs"].get_by_id(int(job["id"]))
                     if updated_job:
-                        post_repair_duplicate_check(repos["jobs"], updated_job, all_jobs)
+                        post_repair_duplicate_check(
+                            repos["jobs"], updated_job, all_jobs
+                        )
                         repos["conn"].commit()
             remaining = repos["jobs"].count_with_missing_company()
             return jsonify({"fixed": fixed, "remaining": remaining})
@@ -584,12 +614,17 @@ def extract_imported_job_urls() -> ResponseReturnValue:
 
     try:
         page_url = str(body.get("url") or "").strip() or None
-        analysis = CapturedPageImportService().analyze_capture(raw_content, content_format, base_url=page_url)
+        analysis = CapturedPageImportService().analyze_capture(
+            raw_content, content_format, base_url=page_url
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         logger.error("Captured page import failed: %s", exc)
-        return jsonify({"error": safe_error_message(exc, "Captured page import failed")}), 500
+        return (
+            jsonify({"error": safe_error_message(exc, "Captured page import failed")}),
+            500,
+        )
 
     return jsonify(analysis)
 
@@ -613,20 +648,22 @@ def import_status() -> ResponseReturnValue:
     if not task_id:
         if listener_status:
             return jsonify(listener_status.as_dict())
-        return jsonify({
-            "running": False,
-            "phase": "idle",
-            "progress": 0,
-            "message": "Idle",
-            "total": 0,
-            "result": None,
-            "current_job_url": "",
-            "current_platform": "",
-            "trigger": trigger,
-            "started_at": started_at,
-            "capture_source": None,
-            "steps": _import_steps("idle", False),
-        })
+        return jsonify(
+            {
+                "running": False,
+                "phase": "idle",
+                "progress": 0,
+                "message": "Idle",
+                "total": 0,
+                "result": None,
+                "current_job_url": "",
+                "current_platform": "",
+                "trigger": trigger,
+                "started_at": started_at,
+                "capture_source": None,
+                "steps": _import_steps("idle", False),
+            }
+        )
 
     if listener_status and listener_status.started_at != started_at:
         return jsonify(listener_status.as_dict())
@@ -639,110 +676,126 @@ def import_status() -> ResponseReturnValue:
         # Auto-clear tasks that have been stuck PENDING/STARTED for over 15 minutes;
         # the Celery worker likely died without updating the result backend.
         if _is_task_stale(started_at):
-            logger.warning("Auto-clearing stuck import task %s (started %s)", task_id, started_at)
+            logger.warning(
+                "Auto-clearing stuck import task %s (started %s)", task_id, started_at
+            )
             with _task_id_lock:
                 _current_task_id = None
-            return jsonify({
-                "running": False,
-                "phase": "error",
-                "progress": 0,
-                "message": "Import task timed out and was cleared automatically. You may start a new import.",
-                "total": 0,
-                "result": None,
-                "current_job_url": "",
-                "current_platform": "",
-                "trigger": trigger,
-                "started_at": started_at,
-                "capture_source": None,
-                "steps": _import_steps("error", False),
-            })
+            return jsonify(
+                {
+                    "running": False,
+                    "phase": "error",
+                    "progress": 0,
+                    "message": "Import task timed out and was cleared automatically. You may start a new import.",
+                    "total": 0,
+                    "result": None,
+                    "current_job_url": "",
+                    "current_platform": "",
+                    "trigger": trigger,
+                    "started_at": started_at,
+                    "capture_source": None,
+                    "steps": _import_steps("error", False),
+                }
+            )
         # ai: claude-sonnet-4-6 | 2026-06-21
         # Log when stuck in PENDING/STARTED > 15s; fires roughly every 30s so
         # it's visible without flooding the log. Most likely cause: worker not running.
         try:
             if started_at:
-                elapsed = (datetime.now(UTC) - datetime.fromisoformat(started_at)).total_seconds()
+                elapsed = (
+                    datetime.now(UTC) - datetime.fromisoformat(started_at)
+                ).total_seconds()
                 if elapsed > 15 and int(elapsed) % 30 < 3:
                     logger.warning(
                         "import_status: task=%s stuck in %s for %.0fs — "
                         "worker may not be running (check: celery -A backend.celery_app worker)",
-                        task_id[:12], state, elapsed,
+                        task_id[:12],
+                        state,
+                        elapsed,
                     )
         except (ValueError, TypeError):
             pass
         meta = result.info if isinstance(result.info, dict) else {}
-        return jsonify({
-            "running": True,
-            "phase": meta.get("phase", "processing"),
-            "progress": meta.get("progress", 0),
-            "message": meta.get("message", "Starting…"),
-            "total": meta.get("total", 0),
-            "result": None,
-            "current_job_url": meta.get("current_job_url", ""),
-            "current_platform": meta.get("current_platform", ""),
-            "trigger": trigger,
-            "started_at": started_at,
-            "capture_source": meta.get("capture_source"),
-            "steps": _import_steps(str(meta.get("phase", "processing")), True),
-            "queued": meta.get("queued", 0),
-            "skipped": meta.get("skipped", 0),
-            "repaired": meta.get("repaired", 0),
-            "enriched": meta.get("enriched", 0),
-            "failed": meta.get("failed", 0),
-        })
+        return jsonify(
+            {
+                "running": True,
+                "phase": meta.get("phase", "processing"),
+                "progress": meta.get("progress", 0),
+                "message": meta.get("message", "Starting…"),
+                "total": meta.get("total", 0),
+                "result": None,
+                "current_job_url": meta.get("current_job_url", ""),
+                "current_platform": meta.get("current_platform", ""),
+                "trigger": trigger,
+                "started_at": started_at,
+                "capture_source": meta.get("capture_source"),
+                "steps": _import_steps(str(meta.get("phase", "processing")), True),
+                "queued": meta.get("queued", 0),
+                "skipped": meta.get("skipped", 0),
+                "repaired": meta.get("repaired", 0),
+                "enriched": meta.get("enriched", 0),
+                "failed": meta.get("failed", 0),
+            }
+        )
 
     if state == "PROGRESS":
         meta = result.info or {}
-        return jsonify({
-            "running": True,
-            "phase": meta.get("phase", "processing"),
-            "progress": meta.get("progress", 0),
-            "message": meta.get("message", ""),
-            "total": meta.get("total", 0),
-            "result": None,
-            "current_job_url": meta.get("current_job_url", ""),
-            "current_platform": meta.get("current_platform", ""),
-            "trigger": trigger,
-            "started_at": started_at,
-            "capture_source": meta.get("capture_source"),
-            "steps": _import_steps(str(meta.get("phase", "processing")), True),
-            "queued": meta.get("queued", 0),
-            "skipped": meta.get("skipped", 0),
-            "repaired": meta.get("repaired", 0),
-            "enriched": meta.get("enriched", 0),
-            "failed": meta.get("failed", 0),
-        })
+        return jsonify(
+            {
+                "running": True,
+                "phase": meta.get("phase", "processing"),
+                "progress": meta.get("progress", 0),
+                "message": meta.get("message", ""),
+                "total": meta.get("total", 0),
+                "result": None,
+                "current_job_url": meta.get("current_job_url", ""),
+                "current_platform": meta.get("current_platform", ""),
+                "trigger": trigger,
+                "started_at": started_at,
+                "capture_source": meta.get("capture_source"),
+                "steps": _import_steps(str(meta.get("phase", "processing")), True),
+                "queued": meta.get("queued", 0),
+                "skipped": meta.get("skipped", 0),
+                "repaired": meta.get("repaired", 0),
+                "enriched": meta.get("enriched", 0),
+                "failed": meta.get("failed", 0),
+            }
+        )
 
     if state == "SUCCESS":
         task_result = result.result if isinstance(result.result, dict) else {}
-        return jsonify({
+        return jsonify(
+            {
+                "running": False,
+                "phase": "done",
+                "progress": 100,
+                "message": "Import complete",
+                "total": 0,
+                "result": result.result,
+                "current_job_url": "",
+                "current_platform": "",
+                "trigger": trigger,
+                "started_at": started_at,
+                "capture_source": task_result.get("capture_source"),
+                "steps": _import_steps("done", False),
+            }
+        )
+
+    # FAILURE or REVOKED
+    err = str(result.result) if result.result else "Import failed"
+    return jsonify(
+        {
             "running": False,
-            "phase": "done",
-            "progress": 100,
-            "message": "Import complete",
+            "phase": "error",
+            "progress": 0,
+            "message": err,
             "total": 0,
-            "result": result.result,
+            "result": None,
             "current_job_url": "",
             "current_platform": "",
             "trigger": trigger,
             "started_at": started_at,
-            "capture_source": task_result.get("capture_source"),
-            "steps": _import_steps("done", False),
-        })
-
-    # FAILURE or REVOKED
-    err = str(result.result) if result.result else "Import failed"
-    return jsonify({
-        "running": False,
-        "phase": "error",
-        "progress": 0,
-        "message": err,
-        "total": 0,
-        "result": None,
-        "current_job_url": "",
-        "current_platform": "",
-        "trigger": trigger,
-        "started_at": started_at,
-        "capture_source": None,
-        "steps": _import_steps("error", False),
-    })
+            "capture_source": None,
+            "steps": _import_steps("error", False),
+        }
+    )

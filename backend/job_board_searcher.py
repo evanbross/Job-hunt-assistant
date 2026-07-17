@@ -43,6 +43,7 @@ Sources (free, no additional API keys required):
 Each source is tried independently; failures are logged and skipped so a
 single unavailable board does not abort the whole run.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -64,7 +65,7 @@ class JobBoardResult(TypedDict):
     title: str
     company: str
     url: str
-    description: str   # plain text, max 8000 chars
+    description: str  # plain text, max 8000 chars
     source: str
     date_posted: str | None  # ISO date (YYYY-MM-DD) or None
 

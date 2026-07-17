@@ -66,7 +66,9 @@ class CoverLetterGenerator:
         # Prefer the full stored job description; fall back to the email snippet used
         # for fit scoring. Without this the prompt only contains the URL which Claude
         # cannot visit, causing "can't access the URL" errors.
-        job_description = (job.get("job_description") or job.get("raw_email_snippet") or "").strip()
+        job_description = (
+            job.get("job_description") or job.get("raw_email_snippet") or ""
+        ).strip()
 
         resume_section = (
             f"\n\nCANDIDATE RESUME:\n{resume_text.strip()}"
@@ -82,9 +84,7 @@ class CoverLetterGenerator:
 
         # ai: claude-sonnet-4-6 | 2026-06-25
         job_description_section = (
-            f"\n\nJOB DESCRIPTION:\n{job_description}"
-            if job_description
-            else ""
+            f"\n\nJOB DESCRIPTION:\n{job_description}" if job_description else ""
         )
 
         job_url_line = f"\nJob posting URL: {url}" if url else ""

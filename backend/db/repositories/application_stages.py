@@ -41,14 +41,16 @@ from ..connection import _row_to_dict
 
 
 class PostgresApplicationStageRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "id",
-        "job_id",
-        "status",
-        "date",
-        "notes",
-        "created_at",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "id",
+            "job_id",
+            "status",
+            "date",
+            "notes",
+            "created_at",
+        }
+    )
 
     def get_all(self) -> list[dict[str, Any]]:
         cur = self._execute(

@@ -65,6 +65,7 @@ fit_bp = Blueprint("fit", __name__)
 
 # ─── Re-evaluate state (in-memory, protected by a lock) ───────────────────────
 
+
 @dataclass
 class ReEvalState:
     running: bool = False
@@ -94,10 +95,13 @@ def _run_re_evaluate() -> None:
             total = len(queue_jobs)
 
             with _re_eval_lock:
-                _re_eval_state.message = f"Re-evaluating {total} job{'s' if total != 1 else ''}…"
+                _re_eval_state.message = (
+                    f"Re-evaluating {total} job{'s' if total != 1 else ''}…"
+                )
 
             known_jobs = [
-                j for j in jobs_repo.get_all_ordered()
+                j
+                for j in jobs_repo.get_all_ordered()
                 if j.get("status") not in ACTIVE_JOB_STATUSES
             ]
             resume_row = resume_repo.get_latest()
@@ -115,7 +119,11 @@ def _run_re_evaluate() -> None:
             for i, job in enumerate(queue_jobs):
                 company = str(job.get("company") or "")
                 title = str(job.get("job_title") or "")
-                label = f"{company} — {title}" if company and title else (company or title or f"job {job.get('id')}")
+                label = (
+                    f"{company} — {title}"
+                    if company and title
+                    else (company or title or f"job {job.get('id')}")
+                )
                 with _re_eval_lock:
                     _re_eval_state.progress = round((i / total) * 100) if total else 0
                     _re_eval_state.message = f"Job {i + 1} of {total}: {label}"
@@ -125,7 +133,13 @@ def _run_re_evaluate() -> None:
                 score: int | None = None
 
                 # ai: claude-sonnet-4-6 | 2026-06-09
-                tracked_status, _tracking_source, duplicate_hint, duplicate_of_id, _match_scores = db_match_for_job(
+                (
+                    tracked_status,
+                    _tracking_source,
+                    duplicate_hint,
+                    duplicate_of_id,
+                    _match_scores,
+                ) = db_match_for_job(
                     job_title=title,
                     company=company,
                     job_url=str(job.get("url") or ""),
@@ -144,7 +158,8 @@ def _run_re_evaluate() -> None:
 
                 try:
                     scoring_text = "\n".join(
-                        part for part in [
+                        part
+                        for part in [
                             job.get("email_subject", ""),
                             job.get("raw_email_snippet", ""),
                         ]
@@ -163,7 +178,9 @@ def _run_re_evaluate() -> None:
                     updates["fit_reasoning"] = result["reasoning"]
                     rescored += 1
                 except Exception as exc:
-                    logger.warning("Re-evaluation failed for job %s: %s", job.get("id"), exc)
+                    logger.warning(
+                        "Re-evaluation failed for job %s: %s", job.get("id"), exc
+                    )
                     failed += 1
 
                 score_for_status = score
@@ -174,7 +191,9 @@ def _run_re_evaluate() -> None:
                         score_for_status = None
 
                 if tracked_status is None and score_for_status is not None:
-                    updates["status"] = "pending_review" if score_for_status >= 70 else "triage"
+                    updates["status"] = (
+                        "pending_review" if score_for_status >= 70 else "triage"
+                    )
 
                 if updates.get("status") and updates["status"] != previous_status:
                     status_changed += 1
@@ -186,7 +205,11 @@ def _run_re_evaluate() -> None:
                 _re_eval_state.progress = 100
                 _re_eval_state.message = (
                     f"Done — {rescored} rescored"
-                    + (f", {db_matches} duplicate{'s' if db_matches != 1 else ''} flagged" if db_matches else "")
+                    + (
+                        f", {db_matches} duplicate{'s' if db_matches != 1 else ''} flagged"
+                        if db_matches
+                        else ""
+                    )
                     + (f", {status_changed} moved" if status_changed else "")
                     + (f", {failed} failed" if failed else "")
                 )
@@ -208,6 +231,7 @@ def _run_re_evaluate() -> None:
 
 # ─── Fit routes ───────────────────────────────────────────────────────────────
 
+
 @fit_bp.route("/jobs/re-evaluate", methods=["POST"])
 def re_evaluate_queue_jobs() -> ResponseReturnValue:
     with _re_eval_lock:
@@ -221,12 +245,14 @@ def re_evaluate_queue_jobs() -> ResponseReturnValue:
 @fit_bp.route("/jobs/re-evaluate/status")
 def re_evaluate_status() -> ResponseReturnValue:
     with _re_eval_lock:
-        return jsonify({
-            "running": _re_eval_state.running,
-            "progress": _re_eval_state.progress,
-            "message": _re_eval_state.message,
-            "result": _re_eval_state.result,
-        })
+        return jsonify(
+            {
+                "running": _re_eval_state.running,
+                "progress": _re_eval_state.progress,
+                "message": _re_eval_state.message,
+                "result": _re_eval_state.result,
+            }
+        )
 
 
 @fit_bp.route("/jobs/triage")
@@ -257,7 +283,11 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
             continue
         role = message.get("role")
         content = message.get("content")
-        if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+        if (
+            role in {"user", "assistant"}
+            and isinstance(content, str)
+            and content.strip()
+        ):
             messages.append({"role": role, "content": content.strip()[:4000]})
 
     if not messages:
@@ -292,12 +322,17 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
     try:
         reply_text = AIProviderClient().complete(
             system=system_prompt,
-            messages=[AIMessage(role=message["role"], content=message["content"]) for message in messages],
+            messages=[
+                AIMessage(role=message["role"], content=message["content"])
+                for message in messages
+            ],
             max_tokens=1000,
         )
     except Exception as exc:
         logger.warning("Fit chat failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Fit chat failed")}), _ai_error_http_status(exc)
+        return jsonify(
+            {"error": safe_error_message(exc, "Fit chat failed")}
+        ), _ai_error_http_status(exc)
     reclassification = None
     tag_match = re.search(
         r"<FIT_RECLASSIFICATION>(.*?)</FIT_RECLASSIFICATION>",
@@ -317,7 +352,9 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
                     "fit_reasoning": reasoning[:2000],
                 }
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            logger.warning("Ignoring malformed fit reclassification for job %d: %s", job_id, exc)
+            logger.warning(
+                "Ignoring malformed fit reclassification for job %d: %s", job_id, exc
+            )
         reply_text = re.sub(
             r"\s*<FIT_RECLASSIFICATION>.*?</FIT_RECLASSIFICATION>\s*",
             "",
@@ -341,7 +378,14 @@ def update_fit_classification(job_id: int) -> ResponseReturnValue:
     if fit_score < 0 or fit_score > 100:
         return jsonify({"error": "fit_score must be an integer from 0 to 100"}), 400
     if status not in FIT_PANEL_STATUSES:
-        return jsonify({"error": f"status must be one of: {', '.join(sorted(FIT_PANEL_STATUSES))}"}), 400
+        return (
+            jsonify(
+                {
+                    "error": f"status must be one of: {', '.join(sorted(FIT_PANEL_STATUSES))}"
+                }
+            ),
+            400,
+        )
     if not fit_reasoning:
         return jsonify({"error": "fit_reasoning is required"}), 400
 
@@ -394,8 +438,12 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
             fit_feedback=fit_feedback,
         )
     except Exception as exc:
-        logger.warning("Fit re-evaluation failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
+        logger.warning(
+            "Fit re-evaluation failed for job %d: %s", job_id, exc, exc_info=True
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Fit re-evaluation failed")}
+        ), _ai_error_http_status(exc)
 
     score = int(result["score"])
     current_status = str(job.get("status") or "")
@@ -423,7 +471,14 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     description = str(body.get("description") or "").strip()
     if len(description) < 80:
-        return jsonify({"error": "Description is too short to be useful (minimum 80 characters)"}), 400
+        return (
+            jsonify(
+                {
+                    "error": "Description is too short to be useful (minimum 80 characters)"
+                }
+            ),
+            400,
+        )
 
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
@@ -449,8 +504,15 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
             fit_feedback=fit_feedback,
         )
     except Exception as exc:
-        logger.warning("Fit scoring after description save failed for job %d: %s", job_id, exc, exc_info=True)
-        return jsonify({"error": safe_error_message(exc, "Fit re-evaluation failed")}), _ai_error_http_status(exc)
+        logger.warning(
+            "Fit scoring after description save failed for job %d: %s",
+            job_id,
+            exc,
+            exc_info=True,
+        )
+        return jsonify(
+            {"error": safe_error_message(exc, "Fit re-evaluation failed")}
+        ), _ai_error_http_status(exc)
 
     score = int(result["score"])
     new_status = "pending_review" if score >= 70 else "triage"

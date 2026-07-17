@@ -85,6 +85,7 @@ _ACTIVE_RESCAN_STATUSES: tuple[str, ...] = (
 
 # ─── Scanned email routes ────────────────────────────────────────────────────
 
+
 @emails_bp.route("/emails")
 def get_scanned_emails() -> ResponseReturnValue:
     """
@@ -101,7 +102,8 @@ def get_scanned_emails() -> ResponseReturnValue:
     filter_param = request.args.get("filter", "")
     if filter_param == "acted":
         emails = [
-            e for e in emails
+            e
+            for e in emails
             if any(
                 job.get("status") in ("applied", "skipped")
                 for job in e.get("jobs") or []
@@ -110,7 +112,8 @@ def get_scanned_emails() -> ResponseReturnValue:
         ]
     elif filter_param == "potential":
         emails = [
-            e for e in emails
+            e
+            for e in emails
             if any(
                 job.get("status") in ("pending_review", "triage", "possible_duplicate")
                 for job in e.get("jobs") or []
@@ -177,15 +180,22 @@ def move_scanned_emails() -> ResponseReturnValue:
                 base_eid = eid.split(":")[0]
                 status_info = scanned_repo.get_by_id(base_eid)
                 if status_info and status_info.get("disposition") == "noise":
-                    logger.info("Skipping move of email %s because it is marked as 'noise'", base_eid)
+                    logger.info(
+                        "Skipping move of email %s because it is marked as 'noise'",
+                        base_eid,
+                    )
                     continue
                 filtered_email_ids.append(eid)
         # Connection released before Gmail call
 
         if not filtered_email_ids:
-            return jsonify({"status": "ok", "moved": 0, "message": "No eligible emails to move"})
+            return jsonify(
+                {"status": "ok", "moved": 0, "message": "No eligible emails to move"}
+            )
 
-        moved_count = GmailClient().move_messages_to_label(filtered_email_ids, scanned_email_label)
+        moved_count = GmailClient().move_messages_to_label(
+            filtered_email_ids, scanned_email_label
+        )
     except NotAuthenticatedError as exc:
         return jsonify({"error": str(exc)}), 401
     except Exception:
@@ -211,9 +221,7 @@ def clean_displayed_emails() -> ResponseReturnValue:
         return jsonify({"error": "email_ids must be a list"}), 400
 
     email_ids = [
-        str(email_id).strip()
-        for email_id in raw_email_ids
-        if str(email_id).strip()
+        str(email_id).strip() for email_id in raw_email_ids if str(email_id).strip()
     ]
     if not email_ids:
         return jsonify({"checked": 0, "hidden": 0, "hidden_email_ids": []})
@@ -238,7 +246,12 @@ def clean_displayed_emails() -> ResponseReturnValue:
                 repos["conn"].commit()
             except Exception as exc:
                 logger.exception("Email cleanup failed")
-                return jsonify({"error": safe_error_message(exc, "Failed to clean emails")}), 500
+                return (
+                    jsonify(
+                        {"error": safe_error_message(exc, "Failed to clean emails")}
+                    ),
+                    500,
+                )
     except Exception:
         logger.exception("Email cleanup DB access failed")
         return jsonify({"error": "Failed to clean emails"}), 500
@@ -281,7 +294,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         existing_jobs = job_repo.get_by_statuses(list(_ACTIVE_RESCAN_STATUSES))
         base_id = email_id.split(":")[0]
         for job in existing_jobs:
-            eid = (job.get("email_id") or "")
+            eid = job.get("email_id") or ""
             if eid == email_id or eid.startswith(base_id + ":"):
                 job_repo.delete(job["id"])
 
@@ -291,28 +304,68 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
             subject, sender, email_body = gmail.extract_text(full_msg)
             email_raw_html = gmail.extract_raw_html(full_msg)
         except Exception as exc:
-            return jsonify({"error": safe_error_message(exc, "Failed to fetch email from Gmail")}), 500
+            return (
+                jsonify(
+                    {
+                        "error": safe_error_message(
+                            exc, "Failed to fetch email from Gmail"
+                        )
+                    }
+                ),
+                500,
+            )
 
         email_date = email_date_from_message(full_msg)
 
         subject_rules = repos["email_subject_rules"].get_enabled()
         subject_rule = get_subject_rule_match(subject, subject_rules)
         if subject_rule == "blacklist":
-            scanned_repo.mark_scanned(email_id, sender, subject, disposition="ack", email_date=email_date, raw_body=email_body)
+            scanned_repo.mark_scanned(
+                email_id,
+                sender,
+                subject,
+                disposition="ack",
+                email_date=email_date,
+                raw_body=email_body,
+            )
             repos["conn"].commit()
-            return jsonify({"jobs": [], "message": "Acknowledged application email — no job extracted."})
+            return jsonify(
+                {
+                    "jobs": [],
+                    "message": "Acknowledged application email — no job extracted.",
+                }
+            )
 
         try:
-            parsed_jobs = EmailParser().parse(subject, sender, email_body, raw_html=email_raw_html)
+            parsed_jobs = EmailParser().parse(
+                subject, sender, email_body, raw_html=email_raw_html
+            )
         except Exception as exc:
-            scanned_repo.mark_scanned(email_id, sender, subject, disposition="parser_error", email_date=email_date, raw_body=email_body, parser_error_msg=str(exc))
+            scanned_repo.mark_scanned(
+                email_id,
+                sender,
+                subject,
+                disposition="parser_error",
+                email_date=email_date,
+                raw_body=email_body,
+                parser_error_msg=str(exc),
+            )
             repos["conn"].commit()
             return jsonify({"jobs": [], "message": f"Parser error: {exc}"})
 
         if not parsed_jobs:
-            scanned_repo.mark_scanned(email_id, sender, subject, disposition="noise", email_date=email_date, raw_body=email_body)
+            scanned_repo.mark_scanned(
+                email_id,
+                sender,
+                subject,
+                disposition="noise",
+                email_date=email_date,
+                raw_body=email_body,
+            )
             repos["conn"].commit()
-            return jsonify({"jobs": [], "message": "No job postings found in this email."})
+            return jsonify(
+                {"jobs": [], "message": "No job postings found in this email."}
+            )
 
         # Expand board-listing URLs into individual job entries
         parsed_jobs = expand_board_url_parsed_jobs(parsed_jobs)
@@ -337,7 +390,13 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 confidence = "high"
 
             # ai: claude-sonnet-4-6 | 2026-06-10
-            _tracked_status, tracking_source, duplicate_hint, duplicate_of_id, match_scores = db_match_for_job(
+            (
+                _tracked_status,
+                tracking_source,
+                duplicate_hint,
+                duplicate_of_id,
+                match_scores,
+            ) = db_match_for_job(
                 job_title=str(parsed.get("job_title") or ""),
                 company=str(parsed.get("company") or ""),
                 job_url=str(parsed.get("url") or ""),
@@ -346,7 +405,11 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
             )
 
             # ai: claude-sonnet-4-6 | 2026-06-10
-            if duplicate_hint and confidence == "high" and is_near_certain_duplicate(tracking_source, match_scores):
+            if (
+                duplicate_hint
+                and confidence == "high"
+                and is_near_certain_duplicate(tracking_source, match_scores)
+            ):
                 status = "skipped"
             elif duplicate_hint:
                 status = "possible_duplicate"
@@ -365,7 +428,6 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 "parser_confidence": confidence,
                 "confidence_reason": parsed.get("confidence_reason", ""),
                 "date_found": datetime.now(UTC).date().isoformat(),
-                "date_added_to_sheet": None,
                 "duplicate_hint": duplicate_hint,
                 "duplicate_of_id": duplicate_of_id,
                 "sender_email": sender,
@@ -399,15 +461,30 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
 
             job_data, import_warnings = normalize_and_validate(job_data)
             job_data["import_warnings"] = import_warnings_to_json(import_warnings)
-            if import_warnings and job_data["status"] not in ("possible_duplicate", "skipped"):
+            if import_warnings and job_data["status"] not in (
+                "possible_duplicate",
+                "skipped",
+            ):
                 job_data["status"] = "triage"
 
             new_id = job_repo.insert(job_data)
             created.append(job_repo.get_by_id(new_id))
 
-        scanned_repo.mark_scanned(email_id, sender, subject, disposition="job_created", email_date=email_date, raw_body=email_body)
+        scanned_repo.mark_scanned(
+            email_id,
+            sender,
+            subject,
+            disposition="job_created",
+            email_date=email_date,
+            raw_body=email_body,
+        )
         repos["conn"].commit()
-        return jsonify({"jobs": created, "message": f"Rescanned — {len(created)} job(s) extracted."})
+        return jsonify(
+            {
+                "jobs": created,
+                "message": f"Rescanned — {len(created)} job(s) extracted.",
+            }
+        )
 
 
 def _rescan_job_email_id(job_repo: object, base_email_id: str, job_idx: int) -> str:
@@ -424,6 +501,7 @@ def _rescan_job_email_id(job_repo: object, base_email_id: str, job_idx: int) -> 
 
 
 # ─── Email source routes ──────────────────────────────────────────────────────
+
 
 @emails_bp.route("/sources")
 def get_sources() -> ResponseReturnValue:
@@ -484,7 +562,9 @@ def _email_source_payload(
     *,
     partial: bool = False,
 ) -> tuple[dict[str, object], object | None]:
-    updates = {key: value for key, value in data.items() if key in _EMAIL_SOURCE_ALLOWED_FIELDS}
+    updates = {
+        key: value for key, value in data.items() if key in _EMAIL_SOURCE_ALLOWED_FIELDS
+    }
 
     for field_name in ("name", "match_type", "match_value"):
         if not partial or field_name in updates:
@@ -499,22 +579,45 @@ def _email_source_payload(
             return {}, (jsonify({"error": "match_type is invalid"}), 400)
         updates["match_type"] = match_type
 
-    if not partial or "subject_filter_mode" in updates or "subject_filter_value" in updates:
+    if (
+        not partial
+        or "subject_filter_mode" in updates
+        or "subject_filter_value" in updates
+    ):
         mode = str(updates.get("subject_filter_mode") or "").strip()
         value = str(updates.get("subject_filter_value") or "").strip()
         if mode not in _EMAIL_SOURCE_SUBJECT_FILTER_MODES:
             return {}, (jsonify({"error": "subject_filter_mode is invalid"}), 400)
         if mode and not value:
-            return {}, (jsonify({"error": "subject_filter_value is required when a subject filter is selected"}), 400)
+            return {}, (
+                jsonify(
+                    {
+                        "error": "subject_filter_value is required when a subject filter is selected"
+                    }
+                ),
+                400,
+            )
         if value and not mode:
-            return {}, (jsonify({"error": "subject_filter_mode is required when a subject filter value is provided"}), 400)
+            return {}, (
+                jsonify(
+                    {
+                        "error": "subject_filter_mode is required when a subject filter value is provided"
+                    }
+                ),
+                400,
+            )
         updates["subject_filter_mode"] = mode
         updates["subject_filter_value"] = value
 
     if not partial or "subject_filter_match_mode" in updates:
         match_mode = str(updates.get("subject_filter_match_mode") or "text").strip()
         if match_mode not in _EMAIL_SOURCE_SUBJECT_FILTER_MATCH_MODES:
-            return {}, (jsonify({"error": "subject_filter_match_mode must be text, glob, or regex"}), 400)
+            return {}, (
+                jsonify(
+                    {"error": "subject_filter_match_mode must be text, glob, or regex"}
+                ),
+                400,
+            )
         updates["subject_filter_match_mode"] = match_mode
 
     if not partial and "enabled" not in updates:

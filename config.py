@@ -37,6 +37,7 @@ Configuration constants — loaded once at startup.
 Runtime-mutable settings (e.g. lookback days) are persisted to data/runtime_config.json
 so they survive restarts without touching the .env file.
 """
+
 from __future__ import annotations
 
 import json
@@ -103,7 +104,9 @@ REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 # ─── Wellfound scraper ────────────────────────────────────────────────────────
 WELLFOUND_EMAIL: str = os.getenv("WELLFOUND_EMAIL", "")
 WELLFOUND_PASSWORD: str = os.getenv("WELLFOUND_PASSWORD", "")
-WELLFOUND_SEARCH_URL: str = os.getenv("WELLFOUND_SEARCH_URL", "https://wellfound.com/jobs")
+WELLFOUND_SEARCH_URL: str = os.getenv(
+    "WELLFOUND_SEARCH_URL", "https://wellfound.com/jobs"
+)
 WELLFOUND_SESSION_FILE: Path = CREDENTIALS_DIR / "wellfound_session.json"
 
 # ─── Jobanni scanner ─────────────────────────────────────────────────────────
@@ -154,10 +157,9 @@ DEFAULT_SCANNED_EMAIL_LABEL: str = os.getenv(
     "SCANNED_EMAIL_LABEL",
     ".Job Hunt 2025/Scanned By Assistant",
 )
-DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS: bool = (
-    os.getenv("MOVE_SUCCESSFULLY_PROCESSED_EMAILS", "false").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
+DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS: bool = os.getenv(
+    "MOVE_SUCCESSFULLY_PROCESSED_EMAILS", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 # Minimum fit score (0-100) for a board-search result to be inserted into the DB.
 # Jobs scoring below this are silently discarded.
 BOARD_SEARCH_MIN_SCORE: int = int(os.getenv("BOARD_SEARCH_MIN_SCORE", "40"))
@@ -165,12 +167,15 @@ BOARD_SEARCH_MIN_SCORE: int = int(os.getenv("BOARD_SEARCH_MIN_SCORE", "40"))
 CAREER_SITE_SCAN_INTERVAL_MINUTES: int = int(
     os.getenv("CAREER_SITE_SCAN_INTERVAL_MINUTES", "30")
 )
-DEFAULT_JOB_IMPORT_LISTENER_ENABLED: bool = (
-    os.getenv("JOB_IMPORT_LISTENER_ENABLED", "true").strip().lower()
-    not in {"0", "false", "no", "off"}
+DEFAULT_JOB_IMPORT_LISTENER_ENABLED: bool = os.getenv(
+    "JOB_IMPORT_LISTENER_ENABLED", "true"
+).strip().lower() not in {"0", "false", "no", "off"}
+DEFAULT_JOB_IMPORT_LISTENER_HOST: str = os.getenv(
+    "JOB_IMPORT_LISTENER_HOST", "127.0.0.1"
 )
-DEFAULT_JOB_IMPORT_LISTENER_HOST: str = os.getenv("JOB_IMPORT_LISTENER_HOST", "127.0.0.1")
-DEFAULT_JOB_IMPORT_LISTENER_PORT: int = int(os.getenv("JOB_IMPORT_LISTENER_PORT", "8765"))
+DEFAULT_JOB_IMPORT_LISTENER_PORT: int = int(
+    os.getenv("JOB_IMPORT_LISTENER_PORT", "8765")
+)
 DEFAULT_JOB_IMPORT_LISTENER_TOKEN: str = os.getenv("JOB_IMPORT_LISTENER_TOKEN", "")
 DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES: int = int(
     os.getenv("JOB_IMPORT_LISTENER_MAX_BYTES", str(15 * 1024 * 1024))
@@ -208,6 +213,7 @@ DEFAULT_COVER_LETTER_PROMPT_TEMPLATE: str = (
 
 # ─── Runtime config helpers ───────────────────────────────────────────────────
 
+
 def load_runtime_config() -> dict[str, Any]:
     """Load mutable runtime config, falling back to .env defaults."""
     if RUNTIME_CONFIG_PATH.exists():
@@ -215,13 +221,19 @@ def load_runtime_config() -> dict[str, Any]:
             with open(RUNTIME_CONFIG_PATH) as fh:
                 raw_cfg: dict[str, Any] = json.load(fh)
                 return {
-                    "email_lookback_days": raw_cfg.get("email_lookback_days", DEFAULT_EMAIL_LOOKBACK_DAYS),
-                    "scanned_email_label": raw_cfg.get("scanned_email_label", DEFAULT_SCANNED_EMAIL_LABEL),
+                    "email_lookback_days": raw_cfg.get(
+                        "email_lookback_days", DEFAULT_EMAIL_LOOKBACK_DAYS
+                    ),
+                    "scanned_email_label": raw_cfg.get(
+                        "scanned_email_label", DEFAULT_SCANNED_EMAIL_LABEL
+                    ),
                     "move_successfully_processed_emails": _config_bool(
                         raw_cfg.get("move_successfully_processed_emails"),
                         DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
                     ),
-                    "candidate_profile_path": raw_cfg.get("candidate_profile_path", str(DEFAULT_CANDIDATE_PROFILE_PATH)),
+                    "candidate_profile_path": raw_cfg.get(
+                        "candidate_profile_path", str(DEFAULT_CANDIDATE_PROFILE_PATH)
+                    ),
                     "ai_provider": raw_cfg.get("ai_provider", AI_PROVIDER),
                     "anthropic_model": raw_cfg.get("anthropic_model", SCORER_MODEL),
                     "openai_model": raw_cfg.get("openai_model", OPENAI_MODEL),
@@ -247,7 +259,9 @@ def load_runtime_config() -> dict[str, Any]:
                         "job_import_listener_max_bytes",
                         DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
                     ),
-                    "candidate_timezone": raw_cfg.get("candidate_timezone", DEFAULT_CANDIDATE_TIMEZONE),
+                    "candidate_timezone": raw_cfg.get(
+                        "candidate_timezone", DEFAULT_CANDIDATE_TIMEZONE
+                    ),
                 }
         except (json.JSONDecodeError, OSError):
             pass
@@ -337,7 +351,9 @@ def get_job_import_listener_config() -> dict[str, Any]:
             cfg.get("job_import_listener_enabled"),
             DEFAULT_JOB_IMPORT_LISTENER_ENABLED,
         ),
-        "host": str(cfg.get("job_import_listener_host") or DEFAULT_JOB_IMPORT_LISTENER_HOST),
+        "host": str(
+            cfg.get("job_import_listener_host") or DEFAULT_JOB_IMPORT_LISTENER_HOST
+        ),
         "port": _config_int(
             cfg.get("job_import_listener_port"),
             DEFAULT_JOB_IMPORT_LISTENER_PORT,

@@ -43,8 +43,8 @@ import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import font as tkfont, messagebox, ttk
-
+from tkinter import font as tkfont
+from tkinter import messagebox, ttk
 
 _HERE = Path(__file__).resolve().parent
 _PREFERRED_PORT = 5004
@@ -213,7 +213,9 @@ class LauncherWindow:
                     env=env,
                     stdout=log_file,
                     stderr=log_file,
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                    creationflags=(
+                        subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                    ),
                 )
 
             self._set_status(f"Waiting for server on port {port}...")
@@ -224,10 +226,16 @@ class LauncherWindow:
             else:
                 self._set_status("Server did not start. Check server.log for details.")
         except Exception as exc:
+            # ai: claude-fable-5 | 2026-07-15 — capture the message now: Python
+            # unbinds `exc` when the except block exits, so a deferred lambda
+            # closing over it would raise NameError instead of showing the error.
+            error_message = str(exc)
             self._set_status("Startup failed.")
             self._root.after(
                 0,
-                lambda: messagebox.showerror("Startup Failed", str(exc), parent=self._root),
+                lambda: messagebox.showerror(
+                    "Startup Failed", error_message, parent=self._root
+                ),
             )
 
     def _start_celery_worker(self, env: dict, log_path: Path) -> None:
@@ -235,8 +243,12 @@ class LauncherWindow:
             with log_path.open("a", encoding="utf-8") as log_file:
                 self._worker_process = subprocess.Popen(
                     [
-                        _python_executable(), "-m", "celery",
-                        "-A", "backend.celery_app", "worker",
+                        _python_executable(),
+                        "-m",
+                        "celery",
+                        "-A",
+                        "backend.celery_app",
+                        "worker",
                         "--loglevel=info",
                         "--concurrency=2",
                         "--pool=threads",
@@ -245,7 +257,9 @@ class LauncherWindow:
                     env=env,
                     stdout=log_file,
                     stderr=log_file,
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                    creationflags=(
+                        subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                    ),
                 )
         except Exception as exc:
             self._set_status(f"Celery worker failed to start: {exc}")

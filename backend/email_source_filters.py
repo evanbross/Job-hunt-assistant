@@ -64,7 +64,9 @@ def email_matches_source_filters(
 ) -> bool:
     """Return whether a fetched email satisfies an enabled source and its subject filter."""
     return any(
-        _email_matches_source_filter(sender=sender, subject=subject, source_filter=source_filter)
+        _email_matches_source_filter(
+            sender=sender, subject=subject, source_filter=source_filter
+        )
         for source_filter in source_filters
     )
 
@@ -85,7 +87,9 @@ def _gmail_source_query(source_filter: dict[str, Any]) -> str:
         return ""
 
     subject_filter_value = str(source_filter.get("subject_filter_value") or "").strip()
-    subject_filter_match_mode = str(source_filter.get("subject_filter_match_mode") or "text").strip()
+    subject_filter_match_mode = str(
+        source_filter.get("subject_filter_match_mode") or "text"
+    ).strip()
     # Regex/glob patterns are not valid Gmail query syntax; app-side filtering handles those.
     if not subject_filter_value or subject_filter_match_mode in ("regex", "glob"):
         return base_query
@@ -117,7 +121,9 @@ def _email_matches_source_filter(
 
     subject_filter_mode = str(source_filter.get("subject_filter_mode") or "").strip()
     subject_filter_value = str(source_filter.get("subject_filter_value") or "").strip()
-    subject_filter_match_mode = str(source_filter.get("subject_filter_match_mode") or "text").strip()
+    subject_filter_match_mode = str(
+        source_filter.get("subject_filter_match_mode") or "text"
+    ).strip()
     if not subject_filter_mode or not subject_filter_value:
         return True
     return _subject_filter_matches(
@@ -138,7 +144,9 @@ def _subject_filter_matches(
     if match_mode == "glob":
         normalized = subject.lower()
         pattern = filter_value.lower()
-        glob = (pattern + "*") if filter_mode == "starts_with" else ("*" + pattern + "*")
+        glob = (
+            (pattern + "*") if filter_mode == "starts_with" else ("*" + pattern + "*")
+        )
         return fnmatch.fnmatchcase(normalized, glob)
 
     if match_mode == "regex":

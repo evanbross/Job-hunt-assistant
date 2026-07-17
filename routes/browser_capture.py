@@ -95,7 +95,9 @@ def delete_queue_item(item_id: int) -> tuple:
             repos["conn"].commit()
         return jsonify({"deleted": item_id}), 200
     except Exception as exc:
-        logger.warning("Failed to delete browser capture queue item %s: %s", item_id, exc)
+        logger.warning(
+            "Failed to delete browser capture queue item %s: %s", item_id, exc
+        )
         return jsonify({"error": "Could not delete item."}), 500
 
 

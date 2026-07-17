@@ -47,8 +47,14 @@ class PostgresJobStatusHistoryRepository(_BaseRepo):
             INSERT INTO job_status_history (job_id, from_status, to_status, changed_at, trigger, extra_data)
             VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
             """,
-            (row["job_id"], row["from_status"], row["to_status"],
-             row["changed_at"], row["trigger"], row.get("extra_data")),
+            (
+                row["job_id"],
+                row["from_status"],
+                row["to_status"],
+                row["changed_at"],
+                row["trigger"],
+                row.get("extra_data"),
+            ),
         )
         return cur.fetchone()["id"]
 

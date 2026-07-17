@@ -41,16 +41,18 @@ from ..connection import _row_to_dict
 
 
 class PostgresEmailSourceRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "id",
-        "name",
-        "match_type",
-        "match_value",
-        "subject_filter_mode",
-        "subject_filter_value",
-        "subject_filter_match_mode",
-        "enabled",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "id",
+            "name",
+            "match_type",
+            "match_value",
+            "subject_filter_mode",
+            "subject_filter_value",
+            "subject_filter_match_mode",
+            "enabled",
+        }
+    )
 
     def get_all(self) -> list[dict[str, Any]]:
         cur = self._execute("SELECT * FROM email_sources ORDER BY name")
@@ -63,9 +65,7 @@ class PostgresEmailSourceRepository(_BaseRepo):
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def get_by_id(self, source_id: int) -> dict[str, Any] | None:
-        cur = self._execute(
-            "SELECT * FROM email_sources WHERE id = %s", (source_id,)
-        )
+        cur = self._execute("SELECT * FROM email_sources WHERE id = %s", (source_id,))
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 

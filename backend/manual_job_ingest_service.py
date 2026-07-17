@@ -41,11 +41,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
-from backend.duplicate_checker import DuplicateChecker
-from backend.job_validator import normalize_and_validate, import_warnings_to_json
 from backend.career_site_scanner import CareerSiteScanner
+from backend.duplicate_checker import DuplicateChecker
 from backend.email_parser import EmailParser, ParsedJob
 from backend.fit_scorer import FitScorer
+from backend.job_validator import import_warnings_to_json, normalize_and_validate
 from backend.utils import company_from_ats_url, company_from_career_domain
 
 logger = logging.getLogger(__name__)
@@ -121,10 +121,11 @@ class ManualJobIngestService:
 
         # ai: claude-sonnet-4-6 | 2026-06-18
         # If this is coming from the browser extension listener, use distinct labeling.
-        is_streamed = (trigger == "listener")
+        is_streamed = trigger == "listener"
         email_id_prefix = "browser_ext" if is_streamed else "manual"
         email_subject = (
-            "Browser Extension streamed job listing" if is_streamed
+            "Browser Extension streamed job listing"
+            if is_streamed
             else "Manual pasted job listing"
         )
         source_prefix = "Browser Extension" if is_streamed else "Manual Paste"
@@ -156,28 +157,39 @@ class ManualJobIngestService:
             # the full description from the job URL so scoring and the stored
             # snippet aren't based on near-empty text.
             job_url = str(parsed.get("url") or "").strip()
-            if len(score_body) < _MIN_DESCRIPTION_CHARS and job_url.startswith("https://"):
+            if len(score_body) < _MIN_DESCRIPTION_CHARS and job_url.startswith(
+                "https://"
+            ):
                 try:
-                    fetched_job = self._career_site_scanner.scan_single_job_url("", job_url)
+                    fetched_job = self._career_site_scanner.scan_single_job_url(
+                        "", job_url
+                    )
                     fetched_text = fetched_job.get("job_text", "")
                     if len(fetched_text) >= _MIN_DESCRIPTION_CHARS:
                         score_body = fetched_text
                     else:
                         logger.debug(
                             "JD enrichment returned too little content for %s (%d chars)",
-                            job_url, len(fetched_text),
+                            job_url,
+                            len(fetched_text),
                         )
                     # ai: claude-sonnet-4-6 | 2026-06-27
                     # Propagate company/title from the fetched job if the parser
                     # couldn't extract them from the sparse captured text.
-                    if not (parsed.get("company") or "").strip() and fetched_job.get("company"):
+                    if not (parsed.get("company") or "").strip() and fetched_job.get(
+                        "company"
+                    ):
                         parsed["company"] = fetched_job["company"]
-                    if not (parsed.get("job_title") or "").strip() and fetched_job.get("job_title"):
+                    if not (parsed.get("job_title") or "").strip() and fetched_job.get(
+                        "job_title"
+                    ):
                         parsed["job_title"] = fetched_job["job_title"]
                 except (ValueError, OSError) as exc:
                     logger.debug("JD enrichment failed for %s: %s", job_url, exc)
         elif normalized_source_url:
-            fetched_job = self._career_site_scanner.scan_single_job_url("Manual URL", normalized_source_url)
+            fetched_job = self._career_site_scanner.scan_single_job_url(
+                "Manual URL", normalized_source_url
+            )
             inferred_company, clean_title = self._company_and_title_from_fetched(
                 normalized_source_url, fetched_job["job_title"]
             )
@@ -185,7 +197,8 @@ class ManualJobIngestService:
                 company=fetched_job.get("company") or inferred_company,
                 job_title=clean_title,
                 url=fetched_job["job_url"],
-                source=source_name.strip() or self._source_name_for_url(normalized_source_url),
+                source=source_name.strip()
+                or self._source_name_for_url(normalized_source_url),
                 confidence="high",
                 confidence_score=fetched_job["confidence_score"],
                 confidence_reason="Loaded from public job URL.",
@@ -193,7 +206,9 @@ class ManualJobIngestService:
             score_body = fetched_job["job_text"]
 
         company = normalized_company_override or (parsed.get("company") or "").strip()
-        job_title = normalized_job_title_override or (parsed.get("job_title") or "").strip()
+        job_title = (
+            normalized_job_title_override or (parsed.get("job_title") or "").strip()
+        )
         url = normalized_source_url or (parsed.get("url") or "").strip()
         # ai: claude-sonnet-4-6 | 2026-06-27
         # Last-resort fallback: extract company from the ATS URL slug when all
@@ -214,7 +229,9 @@ class ManualJobIngestService:
                 source = f"{source_prefix} - {platform_source}"
 
         if not company and not job_title:
-            raise ValueError("Enter a company name or job title when the parser cannot extract them.")
+            raise ValueError(
+                "Enter a company name or job title when the parser cannot extract them."
+            )
 
         # ai: claude-sonnet-4-6 | 2026-06-09
         duplicate_hint, duplicate_of_id = self._duplicate_hint_for(
@@ -250,7 +267,6 @@ class ManualJobIngestService:
             "parser_confidence": parsed.get("confidence", "low"),
             "confidence_reason": parsed.get("confidence_reason", ""),
             "date_found": datetime.now(UTC).date().isoformat(),
-            "date_added_to_sheet": None,
             "duplicate_hint": duplicate_hint,
             "duplicate_of_id": duplicate_of_id,
             "sender_email": None,
@@ -268,7 +284,9 @@ class ManualJobIngestService:
         if created_job is None:
             raise ValueError("Job was created but could not be loaded.")
 
-        return ManualJobIngestResult(job=created_job, parsed_job_count=max(1, len(parsed_jobs)))
+        return ManualJobIngestResult(
+            job=created_job, parsed_job_count=max(1, len(parsed_jobs))
+        )
 
     def _resume_text(self) -> str:
         resume_row = self._resume_repo.get_latest()
@@ -308,9 +326,12 @@ class ManualJobIngestService:
             f"company match: {duplicate_match['company_score']}%)"
         )
         matched_job = next(
-            (j for j in sheet_jobs
-             if (j.get("company") or "") == duplicate_match["sheet_company"]
-             and (j.get("job_title") or "") == duplicate_match["sheet_title"]),
+            (
+                j
+                for j in sheet_jobs
+                if (j.get("company") or "") == duplicate_match["sheet_company"]
+                and (j.get("job_title") or "") == duplicate_match["sheet_title"]
+            ),
             None,
         )
         matched_id = matched_job.get("id") if matched_job else None
@@ -338,11 +359,15 @@ class ManualJobIngestService:
         return "Manual URL"
 
     @staticmethod
-    def _company_and_title_from_fetched(source_url: str, page_title: str) -> tuple[str, str]:
+    def _company_and_title_from_fetched(
+        source_url: str, page_title: str
+    ) -> tuple[str, str]:
         """For aggregator boards like LinkedIn, parse 'Title at Company | Site' page titles."""
         if "linkedin.com" not in source_url.lower():
             return "", page_title
-        clean = re.sub(r"\s*\|\s*LinkedIn\s*$", "", page_title, flags=re.IGNORECASE).strip()
+        clean = re.sub(
+            r"\s*\|\s*LinkedIn\s*$", "", page_title, flags=re.IGNORECASE
+        ).strip()
         match = re.search(r"^(.+?)\s+at\s+(.+)$", clean)
         if match:
             return match.group(2).strip(), match.group(1).strip()

@@ -51,6 +51,7 @@ from backend.career_site_scanner import (
     _workday_job_url,
     _workday_parts,
     _workday_single_job_parts,
+    is_job_board_url,
 )
 
 
@@ -85,12 +86,16 @@ def test_greenhouse_token_absent_on_generic_embed_path() -> None:
 
 
 def test_greenhouse_token_absent_on_cross_company_search() -> None:
-    parsed = urlparse("https://my.greenhouse.io/jobs?query=software&salary=more_than_200k")
+    parsed = urlparse(
+        "https://my.greenhouse.io/jobs?query=software&salary=more_than_200k"
+    )
     assert _greenhouse_board_token(parsed) is None
 
 
 def test_greenhouse_search_url_marked_unsupported() -> None:
-    parsed = urlparse("https://my.greenhouse.io/jobs?query=software&salary=more_than_200k")
+    parsed = urlparse(
+        "https://my.greenhouse.io/jobs?query=software&salary=more_than_200k"
+    )
     assert _is_unsupported_greenhouse_search_url(parsed)
 
 
@@ -102,6 +107,40 @@ def test_greenhouse_single_job_url_is_detected() -> None:
 def test_greenhouse_board_url_is_not_single_job() -> None:
     parsed = urlparse("https://job-boards.greenhouse.io/acme/jobs")
     assert not _is_greenhouse_single_job_url(parsed)
+
+
+# ai: claude-fable-5 | 2026-07-16
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://boards.greenhouse.io/acme",
+        "https://job-boards.greenhouse.io/acme/jobs",
+        "https://boards.greenhouse.io/embed/job_board?for=acme",
+        "https://jobs.lever.co/acme",
+        "https://jobs.ashbyhq.com/acme",
+    ],
+)
+def test_is_job_board_url_accepts_board_listings(url: str) -> None:
+    assert is_job_board_url(url)
+
+
+# ai: claude-fable-5 | 2026-07-16
+@pytest.mark.parametrize(
+    "url",
+    [
+        "",
+        "https://job-boards.greenhouse.io/acme/jobs/12345",
+        "https://boards.greenhouse.io/embed/job_board",
+        "https://my.greenhouse.io/jobs?query=software&salary=more_than_200k",
+        "https://jobs.lever.co/acme/0aaf1234-5678-90ab-cdef-1234567890ab",
+        "https://jobs.lever.co/",
+        "https://jobs.ashbyhq.com/acme/9b1a2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+        "https://jobs.ashbyhq.com/acme?jobId=abc123",
+        "https://www.linkedin.com/jobs/view/999",
+    ],
+)
+def test_is_job_board_url_rejects_non_board_urls(url: str) -> None:
+    assert not is_job_board_url(url)
 
 
 def test_workday_parts_extract_tenant_and_slug() -> None:
@@ -221,7 +260,9 @@ def test_greenhouse_single_job_from_api_strips_html_content() -> None:
     }
     parsed = urlparse("https://job-boards.greenhouse.io/breezeway/jobs/5222431008")
     with patch("backend.career_site_scanner._fetch_json", return_value=api_response):
-        job = scanner._greenhouse_single_job_from_api("Breezeway", parsed.geturl(), parsed)
+        job = scanner._greenhouse_single_job_from_api(
+            "Breezeway", parsed.geturl(), parsed
+        )
 
     assert "<div" not in job["job_text"]
     assert "<h4>" not in job["job_text"]
@@ -231,7 +272,9 @@ def test_greenhouse_single_job_from_api_strips_html_content() -> None:
 
 # ai: claude-sonnet-4-6 | 2026-06-14
 def test_workday_single_job_url_is_detected() -> None:
-    parsed = urlparse("https://acme.wd1.myworkdayjobs.com/en-US/External/job/Loc/Title_JR123")
+    parsed = urlparse(
+        "https://acme.wd1.myworkdayjobs.com/en-US/External/job/Loc/Title_JR123"
+    )
     assert _is_workday_single_job_url(parsed)
 
 
@@ -243,14 +286,22 @@ def test_workday_board_url_is_not_single_job() -> None:
 
 # ai: claude-sonnet-4-6 | 2026-06-14
 def test_workday_single_job_parts_with_location_segment() -> None:
-    parsed = urlparse("https://acme.wd1.myworkdayjobs.com/en-US/External/job/Loc/Title_JR123")
+    parsed = urlparse(
+        "https://acme.wd1.myworkdayjobs.com/en-US/External/job/Loc/Title_JR123"
+    )
     assert _workday_single_job_parts(parsed) == ("acme", "External", "Title_JR123")
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
 def test_workday_single_job_parts_without_location_segment() -> None:
-    parsed = urlparse("https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site/job/Title_JR253369")
-    assert _workday_single_job_parts(parsed) == ("salesforce", "External_Career_Site", "Title_JR253369")
+    parsed = urlparse(
+        "https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site/job/Title_JR253369"
+    )
+    assert _workday_single_job_parts(parsed) == (
+        "salesforce",
+        "External_Career_Site",
+        "Title_JR253369",
+    )
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
@@ -272,7 +323,9 @@ def test_workday_single_job_from_api_strips_html_content() -> None:
     assert "<p>" not in job["job_text"]
     assert job["job_text"].startswith("Location: California - San Francisco.")
     assert "Build things & ship." in job["job_text"]
-    assert job["job_title"] == "Full-Stack Software Engineer"
+    # ai: claude-fable-5 | 2026-07-15 — the req ID from the job URL is appended
+    # to the title for easier duplicate identification (commit 3f15483)
+    assert job["job_title"] == "Full-Stack Software Engineer (JR253369)"
     assert job["posted_at"] == "2026-05-15"
 
 
@@ -290,7 +343,9 @@ def test_scan_single_job_url_uses_workday_api_for_single_job_url() -> None:
         "confidence_level": "high",
         "confidence_score": 90,
     }
-    with patch.object(scanner, "_workday_single_job_from_api", return_value=expected_job) as single_job:
+    with patch.object(
+        scanner, "_workday_single_job_from_api", return_value=expected_job
+    ) as single_job:
         result = scanner.scan_single_job_url("Salesforce", job_url)
 
     single_job.assert_called_once()
@@ -309,8 +364,12 @@ def test_scan_site_uses_single_greenhouse_job_adapter() -> None:
         "confidence_level": "high",
         "confidence_score": 88,
     }
-    with patch.object(scanner, "scan_single_job_url", return_value=expected_job) as single_scan:
-        outcome = scanner.scan_site("Acme", "https://job-boards.greenhouse.io/acme/jobs/12345")
+    with patch.object(
+        scanner, "scan_single_job_url", return_value=expected_job
+    ) as single_scan:
+        outcome = scanner.scan_site(
+            "Acme", "https://job-boards.greenhouse.io/acme/jobs/12345"
+        )
 
     single_scan.assert_called_once()
     assert outcome["detected_platform"] == "greenhouse"

@@ -45,9 +45,16 @@ when this was a single db.py file, and it defines open_repositories()/init_db()
 since those are the only two functions that need visibility into every
 repository/schema module at once.
 """
+
 from __future__ import annotations
 
+import logging
+import sqlite3
+import threading
+import time
 from typing import Any
+
+import psycopg2
 
 from .connection import _is_sqlite_connection, get_connection
 from .interfaces import (
@@ -180,10 +187,34 @@ __all__ = [
     "SQLiteResumeRepository",
     "SQLiteScannedEmailRepository",
     "SQLiteStageStatusRepository",
+    "db_startup_error",
     "get_connection",
     "init_db",
+    "init_db_with_retry",
     "open_repositories",
 ]
+
+logger = logging.getLogger(__name__)
+
+# Exceptions that indicate the database is unreachable/unavailable (as opposed
+# to a programming error), and therefore worth retrying.
+_DB_UNAVAILABLE_ERRORS = (psycopg2.OperationalError, sqlite3.OperationalError)
+
+# ai: claude-fable-5 | 2026-07-14 — degraded-startup state, read by /api/system/health
+_startup_error_lock = threading.Lock()
+_startup_error: str | None = None
+
+
+def db_startup_error() -> str | None:
+    """Return the startup DB-init failure message, or None if init succeeded."""
+    with _startup_error_lock:
+        return _startup_error
+
+
+def _set_db_startup_error(message: str | None) -> None:
+    global _startup_error
+    with _startup_error_lock:
+        _startup_error = message
 
 
 def init_db(dsn: str) -> None:
@@ -199,6 +230,78 @@ def init_db(dsn: str) -> None:
         _seed_data(conn)
     finally:
         conn.close()
+
+
+# ai: claude-fable-5 | 2026-07-14
+def _run_background_init_retry(dsn: str, interval_seconds: float) -> None:
+    """Keep retrying init_db until it succeeds, then clear the degraded flag."""
+    while True:
+        time.sleep(interval_seconds)
+        try:
+            init_db(dsn)
+        except _DB_UNAVAILABLE_ERRORS as exc:
+            logger.warning("Background database init retry failed: %s", exc)
+            continue
+        _set_db_startup_error(None)
+        logger.info(
+            "Database initialization succeeded on background retry — leaving degraded mode."
+        )
+        return
+
+
+# ai: claude-fable-5 | 2026-07-14
+def _start_background_init_retry(dsn: str, interval_seconds: float) -> None:
+    thread = threading.Thread(
+        target=_run_background_init_retry,
+        args=(dsn, interval_seconds),
+        name="db-init-retry",
+        daemon=True,
+    )
+    thread.start()
+
+
+# ai: claude-fable-5 | 2026-07-14
+def init_db_with_retry(
+    dsn: str,
+    attempts: int = 3,
+    initial_delay_seconds: float = 2.0,
+    background_interval_seconds: float = 60.0,
+) -> bool:
+    """
+    init_db with retry/backoff; on exhaustion, enter degraded mode instead of crashing.
+
+    Degraded mode records the failure (surfaced by /api/system/health via
+    db_startup_error()) and keeps retrying in a daemon thread so the app
+    self-heals once the database is reachable again. Returns True if init
+    succeeded, False if the app is starting degraded.
+    """
+    delay_seconds = initial_delay_seconds
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            init_db(dsn)
+            _set_db_startup_error(None)
+            return True
+        except _DB_UNAVAILABLE_ERRORS as exc:
+            last_error = exc
+            logger.warning(
+                "Database init attempt %d/%d failed: %s", attempt, attempts, exc
+            )
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+                delay_seconds *= 2
+
+    _set_db_startup_error(str(last_error))
+    logger.critical(
+        "Database initialization failed after %d attempts — starting in DEGRADED mode. "
+        "API routes that need the database will fail and /api/system/health will report "
+        "the outage. Retrying every %.0f seconds in the background. Last error: %s",
+        attempts,
+        background_interval_seconds,
+        last_error,
+    )
+    _start_background_init_retry(dsn, background_interval_seconds)
+    return False
 
 
 def open_repositories(dsn: str) -> dict[str, Any]:

@@ -5,10 +5,11 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
-import { useEffect, useRef } from "react";
-
 /**
  * Standard Modal component for consistent dialogs across the app.
+ *
+ * Modals are dismissed only via the top-right X or an explicit Close button —
+ * never by clicking the backdrop or pressing ESC.
  *
  * @param {Object} props
  * @param {string} props.title - Main title of the modal.
@@ -19,6 +20,7 @@ import { useEffect, useRef } from "react";
  * @param {string} [props.maxWidth] - Optional override for max-width (e.g. "800px").
  * @param {boolean} [props.showCloseButton=true] - Whether to show the top-right X.
  */
+// ai: claude-fable-5 | 2026-07-14
 export default function Modal({
   title,
   subtitle,
@@ -27,35 +29,12 @@ export default function Modal({
   onClose,
   maxWidth,
   showCloseButton = true,
-  // ai: claude-sonnet-4-6 | 2026-06-26
-  // Suppress ESC and backdrop click — use during "running" phases so a
-  // dismissed-but-still-running operation can't re-open the popup on completion.
-  blockClose = false,
 }) {
-  const panelRef = useRef(null);
-
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === "Escape" && !blockClose) onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, blockClose]);
-
-  const handleBackdropClick = (e) => {
-    if (blockClose) return;
-    if (panelRef.current && !panelRef.current.contains(e.target)) {
-      onClose();
-    }
-  };
-
   return (
-    <div className="modal-backdrop" onClick={handleBackdropClick}>
+    <div className="modal-backdrop">
       <div
-        ref={panelRef}
         className="modal-panel"
         style={maxWidth ? { maxWidth } : undefined}
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-header">
           <div className="modal-title-group">

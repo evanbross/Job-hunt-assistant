@@ -71,11 +71,11 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         )
         return cur.fetchone()["id"]
 
-    # ai: claude-sonnet-4-6 | 2026-07-04
+    # ai: claude-fable-5 | 2026-07-16
     def enqueue_once_for_purpose(
         self, url: str, site_name: str, purpose: str, job_id: int
     ) -> int | None:
-        """Insert a queue row for `purpose` unless one is already in flight for this URL+purpose.
+        """Insert a queue row for `purpose` unless one is already in flight for this job+purpose.
 
         Dedupes against pending/processing rows only, so a job already awaiting or
         undergoing an authenticated browser check isn't queued twice. A prior row that
@@ -83,12 +83,17 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         re-escalation on a later scan — the whole point of rescanning non-terminal jobs
         is to catch postings that closed since the last check. Returns None if a matching
         in-flight row already exists.
+
+        The dedupe key is job_id, not the URL: Wellfound (jobs?job_listing_slug=...)
+        and other platforms identify the job in the query string, so any base-URL
+        comparison collapses distinct jobs into one key and starves all but the
+        first of ever being checked.
         """
         existing = self._execute(
             "SELECT id FROM browser_capture_queue"
-            " WHERE split_part(url, '?', 1) = split_part(%s, '?', 1) AND purpose = %s"
+            " WHERE job_id = %s AND purpose = %s"
             " AND status IN ('pending', 'processing')",
-            (url, purpose),
+            (job_id, purpose),
         ).fetchone()
         if existing:
             return None
@@ -104,7 +109,9 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
     # ai: claude-sonnet-4-6 | 2026-06-21
     def claim_pending(self, limit: int = 10) -> list[dict[str, Any]]:
         now = datetime.now(UTC).isoformat(timespec="seconds")
-        stale_cutoff = (datetime.now(UTC) - timedelta(minutes=10)).isoformat(timespec="seconds")
+        stale_cutoff = (datetime.now(UTC) - timedelta(minutes=10)).isoformat(
+            timespec="seconds"
+        )
         # Stale processing items are re-queued with an incremented retry_count.
         # Once retry_count reaches the max they are marked failed instead.
         self._execute(

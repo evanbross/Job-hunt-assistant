@@ -37,15 +37,17 @@ import Modal from "../common/Modal.jsx";
 export default function WttjRepairDialog({ result, onClose }) {
   const repaired = result.repaired ?? [];
   const urlOnly = result.url_only ?? [];
+  const titleFixed = result.title_fixed ?? []; // ai: claude-fable-5 | 2026-07-17
   const failed = result.failed ?? [];
   const skipped = result.skipped ?? [];
   const running = !!result.running;
   const progress = result.total ? Math.round((result.progress / result.total) * 100) : 0;
   const allItems = [...repaired.map((j) => ({ ...j, outcome: "repaired" })),
                    ...urlOnly.map((j) => ({ ...j, outcome: "url only" })),
+                   ...titleFixed.map((j) => ({ ...j, outcome: "title fixed" })), // ai: claude-fable-5 | 2026-07-17
                    ...failed.map((j) => ({ ...j, outcome: "failed" })),
                    ...skipped.map((j) => ({ ...j, outcome: "skipped" }))];
-  const title = running ? "Repairing WTTJ Sendgrid URLs…" : "WTTJ URL Repair Complete";
+  const title = running ? "Repairing WTTJ Jobs…" : "WTTJ Repair Complete";
   const subtitle = result.error
     ? `Repair failed: ${result.error}`
     : result.message || (running ? "Repairing…" : "Done.");
@@ -76,6 +78,7 @@ export default function WttjRepairDialog({ result, onClose }) {
       <div className="metric-grid" style={{ marginTop: running ? "14px" : "0" }}>
         <div className="metric-item"><div className="metric-value" style={{ color: "var(--green)" }}>{repaired.length}</div><div className="metric-label">url + JD fixed</div></div>
         <div className="metric-item"><div className="metric-value">{urlOnly.length}</div><div className="metric-label">url only</div></div>
+        <div className="metric-item"><div className="metric-value" style={{ color: "var(--green)" }}>{titleFixed.length}</div><div className="metric-label">title fixed</div></div>{/* ai: claude-fable-5 | 2026-07-17 */}
         <div className="metric-item"><div className="metric-value" style={{ color: urlOnly.length + failed.length > 0 ? "var(--orange)" : undefined }}>{failed.length}</div><div className="metric-label">failed</div></div>
         <div className="metric-item"><div className="metric-value" style={{ color: "var(--text-muted)" }}>{skipped.length}</div><div className="metric-label">skipped</div></div>
       </div>
@@ -87,11 +90,13 @@ export default function WttjRepairDialog({ result, onClose }) {
                 <span style={{ fontWeight: 600 }}>{job.job_title || "Untitled"}</span>
                 {job.company && <span style={{ color: "var(--text-muted)" }}> at {job.company}</span>}
                 {job.url && <div style={{ color: "var(--text-muted)", fontSize: "11px", overflowWrap: "anywhere" }}>{job.url}</div>}
+                {job.reason && <div style={{ color: "var(--orange, #d97706)", fontSize: "11px", overflowWrap: "anywhere" }}>{job.reason}</div>}{/* ai: claude-fable-5 | 2026-07-17 */}
               </div>
               <span style={{
                 flexShrink: 0, fontSize: "11px", fontWeight: 700, padding: "2px 8px", borderRadius: "999px",
-                background: job.outcome === "repaired" ? "var(--green-bg, #1a3a1a)" : job.outcome === "url only" ? "var(--surface)" : "var(--red-bg, #3a1f1f)",
-                color: job.outcome === "repaired" ? "var(--green)" : job.outcome === "url only" ? "var(--text-muted)" : "var(--red)",
+                // ai: claude-fable-5 | 2026-07-17
+                background: ["repaired", "title fixed"].includes(job.outcome) ? "var(--green-bg, #1a3a1a)" : ["url only", "skipped"].includes(job.outcome) ? "var(--surface)" : "var(--red-bg, #3a1f1f)",
+                color: ["repaired", "title fixed"].includes(job.outcome) ? "var(--green)" : ["url only", "skipped"].includes(job.outcome) ? "var(--text-muted)" : "var(--red)",
                 border: "1px solid var(--border)",
               }}>{job.outcome}</span>
             </div>

@@ -41,16 +41,18 @@ from ..connection import _row_to_dict
 
 
 class PostgresCareerScanFailureRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "id",
-        "site_source_id",
-        "site_name",
-        "site_url",
-        "platform",
-        "error_message",
-        "trigger",
-        "occurred_at",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "id",
+            "site_source_id",
+            "site_name",
+            "site_url",
+            "platform",
+            "error_message",
+            "trigger",
+            "occurred_at",
+        }
+    )
 
     def get_recent(self, limit: int = 200) -> list[dict[str, Any]]:
         cur = self._execute(

@@ -96,7 +96,9 @@ class _DocumentParser(HTMLParser):
                     raw = urljoin(self._base_url, raw)
                 self.hrefs.append(raw)
                 if self._is_wellfound_job_href(raw) and self._current_wellfound_company:
-                    self.wellfound_company_by_href[raw] = self._current_wellfound_company
+                    self.wellfound_company_by_href[raw] = (
+                        self._current_wellfound_company
+                    )
                 self._active_anchor_href = raw
                 self._active_anchor_parts = []
             return
@@ -122,7 +124,9 @@ class _DocumentParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         normalized_tag = tag.lower()
         if normalized_tag == "a" and self._active_anchor_href:
-            existing = self.anchor_parts_by_href.setdefault(self._active_anchor_href, [])
+            existing = self.anchor_parts_by_href.setdefault(
+                self._active_anchor_href, []
+            )
             existing.extend(self._active_anchor_parts)
             if self._is_wellfound_company_href(self._active_anchor_href):
                 company = " ".join(self._active_anchor_parts).strip()
@@ -144,15 +148,21 @@ class _DocumentParser(HTMLParser):
     @staticmethod
     def _is_wellfound_company_href(href: str) -> bool:
         parsed = urlparse(href)
-        return "wellfound.com" in parsed.netloc.lower() and parsed.path.startswith("/company/")
+        return "wellfound.com" in parsed.netloc.lower() and parsed.path.startswith(
+            "/company/"
+        )
 
     @staticmethod
     def _is_wellfound_job_href(href: str) -> bool:
         parsed = urlparse(href)
-        return "wellfound.com" in parsed.netloc.lower() and re.match(
-            r"^/jobs/(\d+[-/][^/?#]+)",
-            parsed.path,
-        ) is not None
+        return (
+            "wellfound.com" in parsed.netloc.lower()
+            and re.match(
+                r"^/jobs/(\d+[-/][^/?#]+)",
+                parsed.path,
+            )
+            is not None
+        )
 
 
 class CapturedPageImportService:
@@ -177,7 +187,9 @@ class CapturedPageImportService:
         *,
         base_url: str | None = None,
     ) -> list[ExtractedJobUrl]:
-        return self.analyze_capture(raw_content, content_format, base_url=base_url)["urls"]
+        return self.analyze_capture(raw_content, content_format, base_url=base_url)[
+            "urls"
+        ]
 
     def analyze_capture(
         self,
@@ -192,7 +204,9 @@ class CapturedPageImportService:
 
         normalized_format = self._resolve_content_format(normalized, content_format)
         if normalized_format == "json":
-            return self._analyze_json_capture(normalized)
+            return self._analyze_json_capture(
+                normalized, base_url=base_url
+            )  # ai: claude-fable-5 | 2026-07-14
 
         html_documents = self._extract_html_documents(normalized, normalized_format)
         seen: set[str] = set()
@@ -266,7 +280,10 @@ class CapturedPageImportService:
             return "mhtml"
         return "html"
 
-    def _analyze_json_capture(self, raw_content: str) -> CaptureAnalysis:
+    # ai: claude-fable-5 | 2026-07-14 — base_url fallback for aggregator captures
+    def _analyze_json_capture(
+        self, raw_content: str, *, base_url: str | None = None
+    ) -> CaptureAnalysis:
         try:
             payload = json.loads(raw_content)
         except json.JSONDecodeError as exc:
@@ -301,16 +318,17 @@ class CapturedPageImportService:
                 continue
             seen.add(public_url)
             parsed = urlparse(public_url)
-            platform = (
-                str(raw_job.get("platform") or "").strip()
-                or self._platform_for_host(parsed.netloc.lower())
-            )
+            platform = str(
+                raw_job.get("platform") or ""
+            ).strip() or self._platform_for_host(parsed.netloc.lower())
             result = ExtractedJobUrl(
                 url=public_url,
                 platform=platform,
                 host=parsed.netloc.lower(),
             )
-            job_title = str(raw_job.get("job_title") or raw_job.get("title") or "").strip()
+            job_title = str(
+                raw_job.get("job_title") or raw_job.get("title") or ""
+            ).strip()
             listing_text = str(
                 raw_job.get("listing_text")
                 or raw_job.get("description")
@@ -318,9 +336,7 @@ class CapturedPageImportService:
                 or ""
             ).strip()
             company = (
-                self._clean_wellfound_company(
-                    str(raw_job.get("company") or "").strip()
-                )
+                self._clean_wellfound_company(str(raw_job.get("company") or "").strip())
                 if platform == "Wellfound"
                 else str(raw_job.get("company") or "").strip()
             )
@@ -340,6 +356,13 @@ class CapturedPageImportService:
         source = self._source_from_json(raw_source)
         if source is None:
             source = self._guess_capture_source([], results)
+        # ai: claude-fable-5 | 2026-07-14
+        # Last resort: use the capture page URL itself. Aggregators like
+        # hnhiring.com link out to many employer domains, so the job-link
+        # roots above never converge, but the page being captured is the
+        # board root (its origin, via the generic _board_root_url fallback).
+        if source is None and base_url:
+            source = self._guess_capture_source([base_url], [])
         return CaptureAnalysis(urls=results, source=source)
 
     def _source_from_json(self, raw_source: object) -> CapturedSourceGuess | None:
@@ -350,17 +373,18 @@ class CapturedPageImportService:
         if not board_url:
             return None
         parsed = urlparse(board_url)
-        platform = (
-            str(raw_source.get("platform") or "").strip()
-            or self._platform_for_host(parsed.netloc.lower())
-        )
+        platform = str(
+            raw_source.get("platform") or ""
+        ).strip() or self._platform_for_host(parsed.netloc.lower())
         name = str(raw_source.get("name") or "").strip() or self._source_name_for_url(
             board_url,
             platform,
         )
         return CapturedSourceGuess(name=name, url=board_url, platform=platform)
 
-    def _extract_html_documents(self, raw_content: str, content_format: str) -> list[str]:
+    def _extract_html_documents(
+        self, raw_content: str, content_format: str
+    ) -> list[str]:
         normalized_format = content_format.strip().lower() or "html"
         if normalized_format == "mhtml":
             return self._extract_html_from_mhtml(raw_content)
@@ -388,12 +412,16 @@ class CapturedPageImportService:
         else:
             payload = message.get_content()
             if isinstance(payload, str) and payload.strip():
-                html_parts.append(self._inject_content_locations(payload, content_locations))
+                html_parts.append(
+                    self._inject_content_locations(payload, content_locations)
+                )
         if not html_parts:
             raise ValueError("No HTML content found in uploaded MHTML file.")
         return html_parts
 
-    def _inject_content_locations(self, html_text: str, content_locations: list[str]) -> str:
+    def _inject_content_locations(
+        self, html_text: str, content_locations: list[str]
+    ) -> str:
         links = "\n".join(
             f'<link rel="canonical" href="{unescape(location.strip())}">'
             for location in content_locations
@@ -433,7 +461,9 @@ class CapturedPageImportService:
             fragment="",
         ).geturl()
 
-    def _linkedin_listing_fields(self, public_url: str, anchor_parts: list[str]) -> dict[str, str]:
+    def _linkedin_listing_fields(
+        self, public_url: str, anchor_parts: list[str]
+    ) -> dict[str, str]:
         combined = " ".join(part.strip() for part in anchor_parts if part.strip())
         if not combined:
             return {}
@@ -526,7 +556,9 @@ class CapturedPageImportService:
     @staticmethod
     def _clean_wellfound_company(company: str) -> str:
         cleaned = company.strip()
-        if not cleaned or CapturedPageImportService._is_wellfound_non_company_text(cleaned):
+        if not cleaned or CapturedPageImportService._is_wellfound_non_company_text(
+            cleaned
+        ):
             return ""
         for marker in (
             "Actively Hiring",
@@ -613,14 +645,25 @@ class CapturedPageImportService:
         path_parts = [part for part in parsed.path.split("/") if part]
         if "greenhouse.io" in host:
             if host == "my.greenhouse.io" and path_parts:
-                return parsed._replace(path=f"/{path_parts[0]}", query="", fragment="").geturl()
-            if host in {"boards.greenhouse.io", "job-boards.greenhouse.io"} and path_parts:
-                return parsed._replace(path=f"/{path_parts[0]}", query="", fragment="").geturl()
+                return parsed._replace(
+                    path=f"/{path_parts[0]}", query="", fragment=""
+                ).geturl()
+            if (
+                host in {"boards.greenhouse.io", "job-boards.greenhouse.io"}
+                and path_parts
+            ):
+                return parsed._replace(
+                    path=f"/{path_parts[0]}", query="", fragment=""
+                ).geturl()
             return parsed._replace(path="", query="", fragment="").geturl()
         if host == "jobs.lever.co" and path_parts:
-            return parsed._replace(path=f"/{path_parts[0]}", query="", fragment="").geturl()
+            return parsed._replace(
+                path=f"/{path_parts[0]}", query="", fragment=""
+            ).geturl()
         if "ashbyhq.com" in host and path_parts:
-            return parsed._replace(path=f"/{path_parts[0]}", query="", fragment="").geturl()
+            return parsed._replace(
+                path=f"/{path_parts[0]}", query="", fragment=""
+            ).geturl()
         if "myworkdayjobs.com" in host:
             return parsed._replace(query="", fragment="").geturl()
         if host == "wellfound.com" and path_parts and path_parts[0] == "jobs":
@@ -629,7 +672,11 @@ class CapturedPageImportService:
             return parsed._replace(path="/jobs", query="", fragment="").geturl()
         if "workatastartup.com" in host:
             return parsed._replace(path="/jobs", query="", fragment="").geturl()
-        if host == "discord.com" and path_parts and path_parts[0] in {"careers", "jobs"}:
+        if (
+            host == "discord.com"
+            and path_parts
+            and path_parts[0] in {"careers", "jobs"}
+        ):
             return parsed._replace(path="/careers", query="", fragment="").geturl()
         # ai: claude-sonnet-4-6 | 2026-06-16
         if "welcometothejungle.com" in host:

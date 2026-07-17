@@ -51,6 +51,7 @@ def make_fake_get_repos(repos: dict) -> Any:
             yield repos
         finally:
             repos["conn"].close()
+
     return fake
 
 
@@ -101,8 +102,20 @@ class FakePenaltyRepo:
 class FakeStagesRepo:
     def __init__(self) -> None:
         self.rows: list[dict[str, Any]] = [
-            {"id": 11, "job_id": 7, "status": "applied", "date": "2026-05-14", "notes": None},
-            {"id": 12, "job_id": 7, "status": "waiting_call", "date": "2026-05-15", "notes": "Keep"},
+            {
+                "id": 11,
+                "job_id": 7,
+                "status": "applied",
+                "date": "2026-05-14",
+                "notes": None,
+            },
+            {
+                "id": 12,
+                "job_id": 7,
+                "status": "waiting_call",
+                "date": "2026-05-15",
+                "notes": "Keep",
+            },
         ]
 
     def get_by_job_id(self, job_id: int) -> list[dict[str, Any]]:
@@ -135,7 +148,9 @@ class FakeFitScorer:
         return {"score": 86, "reasoning": f"{job_title} at {company} is relevant."}
 
 
-def test_update_job_description_replaces_text_and_rescores(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_update_job_description_replaces_text_and_rescores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     jobs_repo = FakeJobsRepo()
     repos = {
         "conn": FakeConnection(),
@@ -169,7 +184,9 @@ def test_update_job_description_replaces_text_and_rescores(monkeypatch: pytest.M
     assert "full job description" in data["raw_email_snippet"]
 
 
-def test_patch_job_rechecks_duplicate_after_company_edit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_patch_job_rechecks_duplicate_after_company_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     jobs_repo = FakeJobsRepo()
     repos = {
         "conn": FakeConnection(),
@@ -179,7 +196,13 @@ def test_patch_job_rechecks_duplicate_after_company_edit(monkeypatch: pytest.Mon
     }
 
     def fake_db_match_for_job(**_kwargs: Any) -> tuple[None, None, str, None, None]:
-        return None, None, "Possible duplicate of \"Platform Engineer\" at Acme already tracked.", None, None
+        return (
+            None,
+            None,
+            'Possible duplicate of "Platform Engineer" at Acme already tracked.',
+            None,
+            None,
+        )
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.jobs.db_match_for_job", fake_db_match_for_job)
@@ -207,7 +230,9 @@ def test_patch_job_accepts_manual_url(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
-    monkeypatch.setattr("routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None, None, None))
+    monkeypatch.setattr(
+        "routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None, None, None)
+    )
 
     app = Flask(__name__)
     app.register_blueprint(jobs_bp, url_prefix="/api")
@@ -240,7 +265,9 @@ def test_patch_job_rejects_invalid_manual_url(monkeypatch: pytest.MonkeyPatch) -
     assert response.get_json()["error"] == "url must start with http:// or https://"
 
 
-def test_patch_job_clears_stale_duplicate_when_no_match(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_patch_job_clears_stale_duplicate_when_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     jobs_repo = FakeJobsRepo()
     jobs_repo.row.update(
         {
@@ -275,11 +302,13 @@ def test_patch_job_clears_stale_duplicate_when_no_match(monkeypatch: pytest.Monk
     assert data["duplicate_hint"] is None
 
 
-def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     jobs_repo = FakeJobsRepo()
     jobs_repo.row.update(
         {
-            "date_added_to_sheet": "2026-05-14",
+            "on_sheet": 1,  # ai: claude-fable-5 | 2026-07-14
             "status": "applied",
             "fit_score": 86,
         }
@@ -304,7 +333,7 @@ def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(monke
 
     assert response.status_code == 200
     assert jobs_repo.row["status"] == "pending_review"
-    assert jobs_repo.row["date_added_to_sheet"] is None
+    assert jobs_repo.row["on_sheet"] == 0
     assert [stage["id"] for stage in stages_repo.rows] == [12]
     assert len(history_repo.rows) == 1
     assert history_repo.rows[0]["from_status"] == "applied"

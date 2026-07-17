@@ -75,10 +75,10 @@ def test_extracts_html_parts_from_mhtml() -> None:
     service = CapturedPageImportService()
     mhtml = (
         "MIME-Version: 1.0\n"
-        "Content-Type: multipart/related; boundary=\"BOUNDARY\"\n\n"
+        'Content-Type: multipart/related; boundary="BOUNDARY"\n\n'
         "--BOUNDARY\n"
-        "Content-Type: text/html; charset=\"utf-8\"\n\n"
-        "<html><body><a href=\"https://job-boards.greenhouse.io/acme/jobs/123\">Job</a></body></html>\n"
+        'Content-Type: text/html; charset="utf-8"\n\n'
+        '<html><body><a href="https://job-boards.greenhouse.io/acme/jobs/123">Job</a></body></html>\n'
         "--BOUNDARY--\n"
     )
 
@@ -93,10 +93,10 @@ def test_auto_detects_mhtml_capture() -> None:
     service = CapturedPageImportService()
     mhtml = (
         "MIME-Version: 1.0\n"
-        "Content-Type: multipart/related; boundary=\"BOUNDARY\"\n\n"
+        'Content-Type: multipart/related; boundary="BOUNDARY"\n\n'
         "--BOUNDARY\n"
-        "Content-Type: text/html; charset=\"utf-8\"\n\n"
-        "<html><body><a href=\"https://jobs.lever.co/acme/456\">Job</a></body></html>\n"
+        'Content-Type: text/html; charset="utf-8"\n\n'
+        '<html><body><a href="https://jobs.lever.co/acme/456">Job</a></body></html>\n'
         "--BOUNDARY--\n"
     )
 
@@ -126,11 +126,11 @@ def test_analyzes_capture_source_from_mhtml_content_location() -> None:
     service = CapturedPageImportService()
     mhtml = (
         "MIME-Version: 1.0\n"
-        "Content-Type: multipart/related; boundary=\"BOUNDARY\"\n\n"
+        'Content-Type: multipart/related; boundary="BOUNDARY"\n\n'
         "--BOUNDARY\n"
-        "Content-Type: text/html; charset=\"utf-8\"\n"
+        'Content-Type: text/html; charset="utf-8"\n'
         "Content-Location: https://jobs.lever.co/acme\n\n"
-        "<html><body><a href=\"https://jobs.lever.co/acme/456\">Job</a></body></html>\n"
+        '<html><body><a href="https://jobs.lever.co/acme/456">Job</a></body></html>\n'
         "--BOUNDARY--\n"
     )
 
@@ -330,6 +330,56 @@ def test_ignores_wellfound_location_text_as_company() -> None:
 
     assert "company" not in analysis["urls"][0]
     assert analysis["urls"][0]["job_title"] == "AI Research Engineer"
+
+
+# ai: claude-fable-5 | 2026-07-14
+def test_json_capture_falls_back_to_page_url_for_aggregator_source() -> None:
+    """hnhiring.com-style aggregators link out to many employer domains, so the
+    job-link roots never converge; the capture page URL itself is the source."""
+    service = CapturedPageImportService()
+    payload = """
+    {
+      "jobs": [
+        {
+          "url": "https://acme-robotics.example.com/careers/1",
+          "job_title": "Backend Engineer",
+          "listing_text": "Backend Engineer at Acme Robotics"
+        },
+        {
+          "url": "https://widgets.example.org/jobs/2",
+          "job_title": "Python Developer",
+          "listing_text": "Python Developer at Widgets"
+        }
+      ]
+    }
+    """
+
+    analysis = service.analyze_capture(
+        payload, "json", base_url="https://hnhiring.com/technologies/python"
+    )
+
+    assert len(analysis["urls"]) == 2
+    assert analysis["source"] is not None
+    assert analysis["source"]["url"] == "https://hnhiring.com"
+
+
+# ai: claude-fable-5 | 2026-07-14
+def test_json_capture_explicit_source_beats_page_url_fallback() -> None:
+    service = CapturedPageImportService()
+    payload = """
+    {
+      "source": {"name": "Wellfound Jobs", "url": "https://wellfound.com/jobs"},
+      "jobs": [
+        {"url": "https://acme-robotics.example.com/careers/1", "job_title": "Backend Engineer"}
+      ]
+    }
+    """
+
+    analysis = service.analyze_capture(
+        payload, "json", base_url="https://hnhiring.com/technologies/python"
+    )
+
+    assert analysis["source"]["url"] == "https://wellfound.com/jobs"
 
 
 def test_rejects_empty_content() -> None:

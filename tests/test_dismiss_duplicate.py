@@ -38,6 +38,7 @@ def make_fake_get_repos(repos: dict) -> Any:
             yield repos
         finally:
             repos["conn"].close()
+
     return fake
 
 
@@ -67,7 +68,9 @@ class FakeMultiJobsRepo:
         return [dict(row) for row in self.rows.values()]
 
 
-def test_dismiss_duplicate_resolves_when_two_jobs_fuzzy_match(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dismiss_duplicate_resolves_when_two_jobs_fuzzy_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Job 1 fuzzy-matches both job 2 and job 3 (two Workiva "Principal Software
     Engineer" postings). Dismissing must exclude every previously-dismissed match,
     not just the latest one, so the second dismiss reaches a clean, non-duplicate
@@ -77,11 +80,13 @@ def test_dismiss_duplicate_resolves_when_two_jobs_fuzzy_match(monkeypatch: pytes
             {
                 "id": 1,
                 "company": "Workiva",
-                "job_title": "Senior Staff Software Engineer",
+                # Abbreviated form of "Principal Software Engineer" so it fuzzy-matches
+                # jobs 2 and 3 — same seniority level, or the seniority gate would reject.
+                "job_title": "Principal SWE",
                 "url": "https://www.linkedin.com/jobs/view/1111111111/",
                 "status": "possible_duplicate",
                 "duplicate_of_id": 3,
-                "duplicate_hint": "Possible duplicate of \"Principal Software Engineer\" at Workiva.",
+                "duplicate_hint": 'Possible duplicate of "Principal Software Engineer" at Workiva.',
                 "fit_score": 78,
                 "dismissed_duplicate_ids": None,
             },
@@ -103,7 +108,7 @@ def test_dismiss_duplicate_resolves_when_two_jobs_fuzzy_match(monkeypatch: pytes
                 "url": "https://www.linkedin.com/jobs/view/3333333333/",
                 "status": "skipped",
                 "duplicate_of_id": 2,
-                "duplicate_hint": "Already tracked as \"Principal Software Engineer\" at Workiva.",
+                "duplicate_hint": 'Already tracked as "Principal Software Engineer" at Workiva.',
                 "fit_score": None,
                 "dismissed_duplicate_ids": None,
             },

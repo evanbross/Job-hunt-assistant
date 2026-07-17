@@ -45,8 +45,12 @@ def _feedback_subject_matches(feedback_row: dict[str, Any], subject: str) -> boo
     pattern = str(feedback_row.get("subject_pattern") or "").strip()
     if not pattern:
         return True
-    pattern_words = {word.lower() for word in re.split(r"\W+", pattern) if len(word) > 3}
-    subject_words = {word.lower() for word in re.split(r"\W+", subject) if len(word) > 3}
+    pattern_words = {
+        word.lower() for word in re.split(r"\W+", pattern) if len(word) > 3
+    }
+    subject_words = {
+        word.lower() for word in re.split(r"\W+", subject) if len(word) > 3
+    }
     return bool(pattern_words and pattern_words & subject_words)
 
 
@@ -56,19 +60,19 @@ def _sender_domain(sender_email: str) -> str:
 
 
 class PostgresRelevanceFeedbackRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset({
-        "id",
-        "sender_email",
-        "subject_pattern",
-        "is_relevant",
-        "source_name",
-        "created_at",
-    })
+    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+        {
+            "id",
+            "sender_email",
+            "subject_pattern",
+            "is_relevant",
+            "source_name",
+            "created_at",
+        }
+    )
 
     def get_all(self) -> list[dict[str, Any]]:
-        cur = self._execute(
-            "SELECT * FROM relevance_feedback ORDER BY created_at DESC"
-        )
+        cur = self._execute("SELECT * FROM relevance_feedback ORDER BY created_at DESC")
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def find_match(self, sender_email: str, subject: str) -> dict[str, Any] | None:
@@ -110,9 +114,7 @@ class PostgresRelevanceFeedbackRepository(_BaseRepo):
         return cur.fetchone()["id"]
 
     def delete(self, feedback_id: int) -> None:
-        self._execute(
-            "DELETE FROM relevance_feedback WHERE id = %s", (feedback_id,)
-        )
+        self._execute("DELETE FROM relevance_feedback WHERE id = %s", (feedback_id,))
 
 
 SQLiteRelevanceFeedbackRepository = PostgresRelevanceFeedbackRepository

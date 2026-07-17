@@ -39,6 +39,7 @@ by both ``backend/career_site_scanner.py`` and ``backend/email_parser.py``, whic
 are themselves imported by ``backend/utils.py``, so importing this helper from
 ``utils.py`` would create a circular import.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -95,8 +96,10 @@ def validate_outbound_url(
         raise UnsafeUrlError("URL has no hostname")
 
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    allowed_ports = allowed_ports if allowed_ports is not None else (
-        None if allow_loopback else _DEFAULT_ALLOWED_PORTS
+    allowed_ports = (
+        allowed_ports
+        if allowed_ports is not None
+        else (None if allow_loopback else _DEFAULT_ALLOWED_PORTS)
     )
     if allowed_ports is not None and port not in allowed_ports:
         raise UnsafeUrlError(f"Port {port} is not allowed for outbound requests")
@@ -138,7 +141,9 @@ class _ValidatingRedirectHandler(HTTPRedirectHandler):
         newurl: str,
     ) -> Request | None:  # noqa: D102
         validate_outbound_url(
-            newurl, allow_loopback=self._allow_loopback, allowed_ports=self._allowed_ports
+            newurl,
+            allow_loopback=self._allow_loopback,
+            allowed_ports=self._allowed_ports,
         )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -166,7 +171,9 @@ def safe_urlopen(
         request.full_url, allow_loopback=allow_loopback, allowed_ports=allowed_ports
     )
     handlers: list = [
-        _ValidatingRedirectHandler(allow_loopback=allow_loopback, allowed_ports=allowed_ports),
+        _ValidatingRedirectHandler(
+            allow_loopback=allow_loopback, allowed_ports=allowed_ports
+        ),
     ]
     if not verify_ssl:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)

@@ -41,6 +41,7 @@ all backend API routes under /api/.
 Authentication note: Google OAuth flows live exclusively in /api/auth/* so
 that background scan calls never trigger browser redirects.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -68,9 +69,10 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 import config
-from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db
+from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
+from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
 from backend.import_listener import start_job_import_listener
-from backend.utils import is_trusted_api_write_origin, start_career_site_scheduler
+from backend.utils import is_trusted_api_write_origin
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
 try:
@@ -98,12 +100,15 @@ _SILENT_PATHS = {
     "/api/browser-capture-queue",
     "/api/career-sites/recapture-due",
     "/api/jobs/stats",
+    "/api/system/health",  # ai: claude-fable-5 | 2026-07-14
 }
+
 
 class _PollFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
         return not any(path in msg for path in _SILENT_PATHS)
+
 
 logging.getLogger("werkzeug").addFilter(_PollFilter())
 
@@ -142,13 +147,18 @@ def _reject_cross_origin_api_writes() -> tuple[flask.Response, int] | None:
     (non-browser clients: tests, curl, internal tooling) is let through since
     there is nothing forgeable to check.
     """
-    if not request.path.startswith("/api/") or request.method not in _API_UNSAFE_METHODS:
+    if (
+        not request.path.startswith("/api/")
+        or request.method not in _API_UNSAFE_METHODS
+    ):
         return None
 
     source = request.headers.get("Origin") or request.headers.get("Referer")
     self_origin = f"{request.scheme}://{request.host}"
     if not is_trusted_api_write_origin(source, self_origin, _cors_origins):
-        logger.warning("Rejected cross-origin API write from %s to %s", source, request.path)
+        logger.warning(
+            "Rejected cross-origin API write from %s to %s", source, request.path
+        )
         return jsonify({"error": "Cross-origin request rejected"}), 403
     return None
 
@@ -157,8 +167,11 @@ def _reject_cross_origin_api_writes() -> tuple[flask.Response, int] | None:
 config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
 config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Initialize DB on startup
-init_db(config.DATABASE_URL)
+# Initialize DB on startup. Retries with backoff; if the database is still
+# unreachable the app starts in degraded mode (so /api/system/health can report
+# the outage to the frontend) and keeps retrying in the background.
+# ai: claude-fable-5 | 2026-07-14
+init_db_with_retry(config.DATABASE_URL)
 
 
 # ─── Swagger / OpenAPI docs ──────────────────────────────────────────────────
@@ -183,7 +196,9 @@ def _swagger_path_for_rule(rule_path: str) -> tuple[str, list[dict[str, object]]
 
     def _replace_path_param(path_match: re.Match[str]) -> str:
         param_name = path_match.group("name")
-        param_type, param_format = _swagger_parameter_type(path_match.group("converter"))
+        param_type, param_format = _swagger_parameter_type(
+            path_match.group("converter")
+        )
         parameter: dict[str, object] = {
             "name": param_name,
             "in": "path",
@@ -239,7 +254,9 @@ def _swagger_operation_for_rule(
 
 def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
     paths: dict[str, dict[str, object]] = {}
-    for url_rule in sorted(flask_app.url_map.iter_rules(), key=lambda route_rule: route_rule.rule):
+    for url_rule in sorted(
+        flask_app.url_map.iter_rules(), key=lambda route_rule: route_rule.rule
+    ):
         if not url_rule.rule.startswith("/api/"):
             continue
 
@@ -270,6 +287,7 @@ def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
 
 # ─── Blueprint registration ───────────────────────────────────────────────────
 
+from routes.applications import applications_bp, submit_closed_req_capture
 from routes.auth import auth_bp
 from routes.board_search import board_search_bp
 from routes.browser_capture import browser_capture_bp
@@ -279,15 +297,14 @@ from routes.emails import emails_bp
 from routes.fit import fit_bp
 from routes.greenhouse import greenhouse_bp
 from routes.import_ import import_bp, queue_import_capture
+from routes.jobanni import jobanni_bp
 from routes.jobs import jobs_bp
 from routes.scan import scan_bp
 from routes.settings import settings_bp
 from routes.setup import setup_bp
-from routes.applications import applications_bp, submit_closed_req_capture
 from routes.system import system_bp
-from routes.jobanni import jobanni_bp
-from routes.wellfound import wellfound_bp
 from routes.toptal import toptal_bp
+from routes.wellfound import wellfound_bp
 
 app.register_blueprint(auth_bp, url_prefix="/api")
 app.register_blueprint(board_search_bp, url_prefix="/api")
@@ -312,14 +329,17 @@ app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /ap
 def _claim_browser_capture_queue() -> list[dict]:
     """Called from the import listener thread — opens a short-lived DB connection."""
     from backend.utils import get_repos
+
     with get_repos() as repos:
-        items = repos["browser_capture_queue"].claim_pending(limit=BROWSER_QUEUE_CLAIM_BATCH_SIZE)
+        items = repos["browser_capture_queue"].claim_pending(
+            limit=BROWSER_QUEUE_CLAIM_BATCH_SIZE
+        )
         repos["conn"].commit()
     return items
 
 
-# Auto-scheduler disabled — use the manual scan banner in the UI instead
-# start_career_site_scheduler()
+# Career-site auto-scheduler intentionally not started — scans are triggered
+# manually from the UI banner (see backend.utils.start_career_site_scheduler).
 # ai: claude-sonnet-4-6 | 2026-07-02
 def _handle_listener_capture(body: dict) -> tuple[dict, int]:
     """Routes captures from the browser extension by purpose.
@@ -350,6 +370,7 @@ _swagger = Swagger(app, template=_build_swagger_template(app))
 
 # ─── Startup checks ───────────────────────────────────────────────────────────
 
+
 def _check_redis() -> None:
     parsed = urllib.parse.urlparse(config.REDIS_URL)
     host = parsed.hostname or "localhost"
@@ -361,7 +382,8 @@ def _check_redis() -> None:
         logger.warning(
             "Redis is NOT reachable at %s:%s — Celery task submission will fail. "
             "Start the infra container: cd ../infra && docker-compose up -d",
-            host, port,
+            host,
+            port,
         )
 
 
@@ -433,7 +455,9 @@ def _maybe_rebuild_frontend() -> None:
     if result.returncode == 0:
         logger.info("Frontend rebuild complete.")
     else:
-        logger.warning("Frontend rebuild failed (exit %d) — serving stale dist.", result.returncode)
+        logger.warning(
+            "Frontend rebuild failed (exit %d) — serving stale dist.", result.returncode
+        )
 
 
 def _start_vite() -> None:
@@ -506,11 +530,27 @@ def _start_celery_worker() -> None:
     if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         return  # reloader fork — worker already running from the parent
 
+    # ai: claude-fable-5 | 2026-07-16
+    # A worker may already exist: workers outlive a killed app.py parent, and a
+    # second app.py launch would otherwise stack another worker on the same
+    # broker, double-processing tasks. Trade-off: the surviving worker may
+    # belong to another app.py instance whose atexit hook will take it down
+    # when that instance exits — restart this instance if tasks stop running.
+    if worker_is_running():
+        logger.warning(
+            "A Celery worker for this app is already running — not spawning another."
+        )
+        return
+
     try:
         _celery_proc = _subprocess.Popen(
             [
-                sys.executable, "-m", "celery",
-                "-A", "backend.celery_app", "worker",
+                sys.executable,
+                "-m",
+                "celery",
+                "-A",
+                "backend.celery_app",
+                "worker",
                 "--loglevel=warning",
                 "--concurrency=2",
                 "--pool=threads",

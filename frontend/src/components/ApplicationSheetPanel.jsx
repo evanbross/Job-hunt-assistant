@@ -396,7 +396,11 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     loadSheet();
     if (!repairFiredRef.current) {
       repairFiredRef.current = true;
+      // ai: claude-fable-5 | 2026-07-15 — also surface HTTP-error responses, not just network errors
       fetch("/api/applications/repair/normalize-stage-statuses", { method: "POST" })
+        .then((res) => {
+          if (!res.ok) console.error(`Stage status repair failed: HTTP ${res.status}`);
+        })
         .catch((err) => console.error("Stage status repair failed:", err));
     }
     fetch("/api/applications/stage-statuses")
@@ -662,13 +666,26 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     }
   };
 
-  const scanClosedReqs = async () => {
+  // ai: claude-fable-5 | 2026-07-16
+  // Opens the setup step of the dialog (career-site checkboxes) instead of
+  // starting the scan immediately; scanClosedReqs runs when the user confirms
+  // a selection there.
+  const openReqClosedScanSetup = () => {
     setActionMenuOpen(false);
+    reqClosedDismissedRef.current = false;
+    setReqClosedDialog({ setup: true });
+  };
+
+  const scanClosedReqs = async (platforms) => {
     setSavingKey("req-closed");
     reqClosedDismissedRef.current = false;
     reqClosedBrowserDoneRef.current = 0;
     try {
-      const res = await fetch("/api/applications/scan-closed-reqs", { method: "POST" });
+      const res = await fetch("/api/applications/scan-closed-reqs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platforms }),
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         window.alert(data.error || `Scan failed (${res.status})`);
@@ -926,11 +943,11 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                 </button>
                 <button
                   type="button"
-                  onClick={scanClosedReqs}
+                  onClick={openReqClosedScanSetup}
                   disabled={savingKey === "req-closed"}
                   style={actionMenuItemStyle}
                 >
-                  {savingKey === "req-closed" ? "Scanning..." : "Scan for Closed Reqs (LinkedIn + WTTJ + Wellfound)"}
+                  {savingKey === "req-closed" ? "Scanning..." : "Scan for Closed Reqs…"}
                 </button>
                 <button
                   type="button"
@@ -977,6 +994,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
       {reqClosedDialog && (
         <ReqClosedDialog
           result={reqClosedDialog}
+          onStart={scanClosedReqs}
           onClose={() => {
             reqClosedDismissedRef.current = true;
             setReqClosedDialogVisible(false);

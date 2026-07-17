@@ -41,6 +41,7 @@ NotAuthenticatedError is raised so the caller (a Flask route) can return an
 error to the frontend. The interactive auth flow lives exclusively in the
 dedicated /api/auth/* endpoints in app.py.
 """
+
 from __future__ import annotations
 
 import base64
@@ -221,17 +222,23 @@ class GmailClient:
         Gmail labels are additive; removing INBOX archives the message while the
         custom label keeps it findable in the configured folder.
         """
-        unique_message_ids = list(dict.fromkeys(message_id for message_id in message_ids if message_id))
+        unique_message_ids = list(
+            dict.fromkeys(message_id for message_id in message_ids if message_id)
+        )
         if not unique_message_ids:
             return 0
         if READ_ONLY_MODE:
-            logger.debug("READ_ONLY_MODE: skipping move of %d messages to %s", len(unique_message_ids), label_name)
+            logger.debug(
+                "READ_ONLY_MODE: skipping move of %d messages to %s",
+                len(unique_message_ids),
+                label_name,
+            )
             return 0
 
         label_id = self._get_or_create_label_id(label_name)
         moved_count = 0
         for start in range(0, len(unique_message_ids), 1000):
-            batch = unique_message_ids[start:start + 1000]
+            batch = unique_message_ids[start : start + 1000]
             try:
                 self._service.users().messages().batchModify(
                     userId="me",
@@ -243,17 +250,15 @@ class GmailClient:
                 ).execute()
                 moved_count += len(batch)
             except HttpError as exc:
-                logger.warning("Could not move %d messages to %s: %s", len(batch), label_name, exc)
+                logger.warning(
+                    "Could not move %d messages to %s: %s", len(batch), label_name, exc
+                )
                 raise
         return moved_count
 
     def _get_or_create_label_id(self, label_name: str) -> str:
         labels = (
-            self._service.users()
-            .labels()
-            .list(userId="me")
-            .execute()
-            .get("labels", [])
+            self._service.users().labels().list(userId="me").execute().get("labels", [])
         )
         for label_row in labels:
             if label_row.get("name") == label_name:
@@ -353,7 +358,21 @@ class _HTMLTextExtractor(HTMLParser):
     """Converts HTML to readable plain text, skipping scripts/styles."""
 
     _BLOCK_TAGS: frozenset[str] = frozenset(
-        {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "article", "section"}
+        {
+            "p",
+            "div",
+            "br",
+            "tr",
+            "li",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "article",
+            "section",
+        }
     )
     _SKIP_TAGS: frozenset[str] = frozenset({"script", "style", "head"})
 
@@ -370,7 +389,11 @@ class _HTMLTextExtractor(HTMLParser):
         elif tag in self._BLOCK_TAGS:
             self._parts.append("\n")
         if tag == "a" and self._skip_depth == 0:
-            attr_map = {str(name).lower(): str(value) for name, value in attrs if value is not None}
+            attr_map = {
+                str(name).lower(): str(value)
+                for name, value in attrs
+                if value is not None
+            }
             self._href_stack.append(attr_map.get("href"))
             self._anchor_text_stack.append([])
 
@@ -380,8 +403,14 @@ class _HTMLTextExtractor(HTMLParser):
         elif tag == "a" and self._skip_depth == 0 and self._href_stack:
             href = self._href_stack.pop()
             anchor_text = "".join(self._anchor_text_stack.pop()).strip()
-            if href and href.startswith(("http://", "https://")) and href not in anchor_text:
-                self._parts.append(f"\n{anchor_text}: {href}" if anchor_text else f"\n{href}")
+            if (
+                href
+                and href.startswith(("http://", "https://"))
+                and href not in anchor_text
+            ):
+                self._parts.append(
+                    f"\n{anchor_text}: {href}" if anchor_text else f"\n{href}"
+                )
 
     def handle_data(self, data: str) -> None:
         if self._skip_depth == 0:
@@ -401,7 +430,9 @@ def _html_to_text(html: str) -> str:
         extractor.feed(html)
         return extractor.get_text()
     except Exception:
-        logger.warning("HTML-to-text parser failed; returning partial text", exc_info=True)
+        logger.warning(
+            "HTML-to-text parser failed; returning partial text", exc_info=True
+        )
         return extractor.get_text()
 
 

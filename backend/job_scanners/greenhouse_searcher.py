@@ -46,6 +46,7 @@ Job descriptions are fetched from the Greenhouse public Job Board API
 (boards-api.greenhouse.io) rather than rendering each listing page, which
 is faster and does not require the authenticated session.
 """
+
 from __future__ import annotations
 
 import html as _html
@@ -136,7 +137,8 @@ class GreenhouseSearcher:
                 job_urls = self._scrape_job_links(page, search_url, max_jobs)
                 if status_cb:
                     status_cb(
-                        f"Found {len(job_urls)} listings — fetching full descriptions…", 0
+                        f"Found {len(job_urls)} listings — fetching full descriptions…",
+                        0,
                     )
                 return self._fetch_all_jds(job_urls, progress_cb)
             finally:
@@ -190,7 +192,9 @@ class GreenhouseSearcher:
                 'a[href*="job-boards.greenhouse.io"]', timeout=15_000
             )
         except Exception:
-            logger.warning("Greenhouse: timed out waiting for job card links — proceeding anyway")
+            logger.warning(
+                "Greenhouse: timed out waiting for job card links — proceeding anyway"
+            )
 
         # Collect absolute hrefs for all job-board links on the page
         hrefs: list[str] = page.eval_on_selector_all(
@@ -225,7 +229,9 @@ class GreenhouseSearcher:
         results: list[dict] = []
         for idx, url in enumerate(job_urls):
             if progress_cb:
-                progress_cb(idx + 1, len(job_urls), f"Fetching JD {idx + 1}/{len(job_urls)}")
+                progress_cb(
+                    idx + 1, len(job_urls), f"Fetching JD {idx + 1}/{len(job_urls)}"
+                )
             match = _JOB_URL_RE.match(url)
             if not match:
                 continue
@@ -259,9 +265,7 @@ class GreenhouseSearcher:
         if not title:
             return None
 
-        company: str = (
-            (data.get("company") or {}).get("name") or board_token
-        ).strip()
+        company: str = ((data.get("company") or {}).get("name") or board_token).strip()
 
         raw_content: str = data.get("content") or ""
         listing_text: str = _strip_html(raw_content)[:8000]
@@ -316,9 +320,13 @@ class GreenhouseSearcher:
                     try:
                         for p in context.pages:
                             if "my.greenhouse.io" in p.url:
-                                time.sleep(1)  # let the page settle before saving cookies
+                                time.sleep(
+                                    1
+                                )  # let the page settle before saving cookies
                                 self._persist_session(context)
-                                logger.info("Greenhouse manual login complete — session saved")
+                                logger.info(
+                                    "Greenhouse manual login complete — session saved"
+                                )
                                 return
                     except Exception:
                         pass
@@ -330,9 +338,7 @@ class GreenhouseSearcher:
             except GreenhouseLoginError:
                 raise
             except Exception as exc:
-                raise GreenhouseLoginError(
-                    f"Login timed out or failed: {exc}"
-                ) from exc
+                raise GreenhouseLoginError(f"Login timed out or failed: {exc}") from exc
             finally:
                 try:
                     browser.close()

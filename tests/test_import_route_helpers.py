@@ -36,7 +36,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.import_repair import repair_existing_job_company
+from backend.import_repair import (  # ai: claude-fable-5 | 2026-07-17
+    repair_existing_job_company,
+    wttj_page_title_company,
+    wttj_title_repair_updates,
+)
 
 
 class FakeJobsRepo:
@@ -71,3 +75,129 @@ def test_does_not_overwrite_existing_company() -> None:
 
     assert repaired is False
     assert repo.updated is None
+
+
+# ── WTTJ title/company repair from live job-page JSON-LD ──────────────────────
+# ai: claude-fable-5 | 2026-07-17
+
+_WTTJ_PAGE_HTML = (
+    "<html><head><script type=\"application/ld+json\">"
+    '{"@context":"https://schema.org","@type":"JobPosting",'
+    '"title":"Senior Fullstack Software Engineer (Digital Storefront)",'
+    '"hiringOrganization":{"@type":"Organization","name":"Toast"}}'
+    "</script></head><body>job page</body></html>"
+)
+
+
+def test_wttj_page_title_company_reads_json_ld() -> None:
+    title, company = wttj_page_title_company(_WTTJ_PAGE_HTML)
+    assert title == "Senior Fullstack Software Engineer (Digital Storefront)"
+    assert company == "Toast"
+
+
+def test_wttj_page_title_company_handles_graph_container() -> None:
+    html = (
+        '<script type="application/ld+json">'
+        '{"@graph":[{"@type":"WebSite"},{"@type":"JobPosting","title":"Staff Engineer",'
+        '"hiringOrganization":{"@type":"Organization","name":"Acme"}}]}'
+        "</script>"
+    )
+    assert wttj_page_title_company(html) == ("Staff Engineer", "Acme")
+
+
+def test_wttj_page_title_company_returns_empty_without_job_posting() -> None:
+    assert wttj_page_title_company("<html><body>404</body></html>") == ("", "")
+
+
+def test_wttj_title_repair_replaces_salary_line_title() -> None:
+    """Production regression: pre-2026-06-22 parser rows (e.g. job 1440) stored
+    the digest email's salary line as the job title."""
+    updates, problem = wttj_title_repair_updates(
+        {"id": 1440, "company": "Toast", "job_title": "Salary: $125-254K"},
+        _WTTJ_PAGE_HTML,
+    )
+    assert problem == ""
+    assert updates == {
+        "job_title": "Senior Fullstack Software Engineer (Digital Storefront)"
+    }
+
+
+def test_wttj_title_repair_flags_company_mismatch_without_updating() -> None:
+    """Production regression: pre-2026-06-22 parser rows (e.g. jobs 735/736)
+    attached one job's URL to another company's row. The row must be flagged,
+    never overwritten with the other job's identity."""
+    updates, problem = wttj_title_repair_updates(
+        {"id": 736, "company": "Docker", "job_title": "Staff Backend Engineer (Hub)"},
+        _WTTJ_PAGE_HTML,
+    )
+    assert updates == {}
+    assert "'Toast'" in problem and "'Docker'" in problem
+
+
+def test_wttj_title_repair_keeps_healthy_title_with_different_phrasing() -> None:
+    updates, problem = wttj_title_repair_updates(
+        {
+            "id": 1,
+            "company": "Toast",
+            "job_title": "Senior Fullstack Software Engineer",
+        },
+        _WTTJ_PAGE_HTML,
+    )
+    assert problem == ""
+    assert updates == {}
+
+
+def test_wttj_title_repair_fills_missing_company_and_recases() -> None:
+    updates, _ = wttj_title_repair_updates(
+        {"id": 2, "company": "", "job_title": "See all top matches"}, _WTTJ_PAGE_HTML
+    )
+    assert updates["company"] == "Toast"
+    assert updates["job_title"].startswith("Senior Fullstack")
+
+    recase_updates, recase_problem = wttj_title_repair_updates(
+        {
+            "id": 3,
+            "company": "toast",
+            "job_title": "Senior Fullstack Software Engineer",
+        },
+        _WTTJ_PAGE_HTML,
+    )
+    assert recase_problem == ""
+    assert recase_updates == {"company": "Toast"}
+
+
+def test_wttj_title_repair_accepts_company_name_variant() -> None:
+    """Production case (job 1989): row says 'Virta', page says 'Virta Health' —
+    same company, so align to the page's fuller name instead of flagging."""
+    html = (
+        '<script type="application/ld+json">'
+        '{"@type":"JobPosting","title":"Senior Software Engineer, Care Delivery",'
+        '"hiringOrganization":{"@type":"Organization","name":"Virta Health"}}'
+        "</script>"
+    )
+    updates, problem = wttj_title_repair_updates(
+        {
+            "id": 1989,
+            "company": "Virta",
+            "job_title": "Senior Software Engineer, Care Delivery",
+        },
+        html,
+    )
+    assert problem == ""
+    assert updates == {"company": "Virta Health"}
+
+    prefix_updates, prefix_problem = wttj_title_repair_updates(
+        {"id": 5, "company": "Meta", "job_title": "Software Engineer"},
+        html.replace("Virta Health", "Metabase"),
+    )
+    assert prefix_updates == {}
+    assert "Metabase" in prefix_problem  # word-boundary rule: Meta ≠ Metabase
+
+
+def test_wttj_title_repair_reports_missing_job_posting_data() -> None:
+    updates, problem = wttj_title_repair_updates(
+        {"id": 4, "company": "Toast", "job_title": "Salary: $125-254K"},
+        "<html><body>page without JSON-LD</body></html>",
+    )
+    assert updates == {}
+    assert problem == "no JobPosting data on page"

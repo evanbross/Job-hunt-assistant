@@ -56,7 +56,10 @@ def _fake_getaddrinfo(
     def _fake(
         host: str, port: int, **_kwargs: object
     ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port))]
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port))
+        ]
+
     return _fake
 
 
@@ -88,7 +91,9 @@ def test_allows_public_ip_on_default_port(monkeypatch: pytest.MonkeyPatch) -> No
     validate_outbound_url("https://example.com/")  # must not raise
 
 
-def test_rejects_public_ip_on_nonstandard_port_without_allow_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rejects_public_ip_on_nonstandard_port_without_allow_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("93.184.216.34"))
     with pytest.raises(UnsafeUrlError, match="Port"):
         validate_outbound_url("http://example.com:8080/")
@@ -105,7 +110,9 @@ def test_allows_loopback_when_permitted(monkeypatch: pytest.MonkeyPatch) -> None
     validate_outbound_url("http://localhost:11434/api/tags", allow_loopback=True)
 
 
-def test_rejects_non_loopback_private_even_when_loopback_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rejects_non_loopback_private_even_when_loopback_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("192.168.1.5"))
     with pytest.raises(UnsafeUrlError):
         validate_outbound_url("http://internal-host:11434/", allow_loopback=True)
@@ -114,12 +121,15 @@ def test_rejects_non_loopback_private_even_when_loopback_allowed(monkeypatch: py
 def test_rejects_unresolvable_host(monkeypatch: pytest.MonkeyPatch) -> None:
     def _raise(*_a: object, **_k: object) -> NoReturn:
         raise socket.gaierror("no such host")
+
     monkeypatch.setattr(socket, "getaddrinfo", _raise)
     with pytest.raises(UnsafeUrlError, match="resolve"):
         validate_outbound_url("http://nonexistent.invalid/")
 
 
-def test_redirect_handler_rejects_private_redirect_target(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_redirect_handler_rejects_private_redirect_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("10.0.0.1"))
     handler = _ValidatingRedirectHandler(allow_loopback=False, allowed_ports=None)
     with pytest.raises(UnsafeUrlError):
@@ -128,7 +138,9 @@ def test_redirect_handler_rejects_private_redirect_target(monkeypatch: pytest.Mo
         )
 
 
-def test_safe_urlopen_blocks_before_any_network_call(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_safe_urlopen_blocks_before_any_network_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("127.0.0.1"))
     req = Request("http://localhost:11434/api/tags", method="GET")
     with pytest.raises(UnsafeUrlError):

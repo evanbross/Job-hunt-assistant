@@ -958,11 +958,24 @@ export default function JobQueue({
   // background thread on the server since checking every LinkedIn job's URL
   // over the network can take minutes, so this polls for progress instead of
   // waiting on one long request.
-  const startReqClosedScan = async () => {
+  // ai: claude-fable-5 | 2026-07-16
+  // Opens the setup step of the dialog (career-site checkboxes) instead of
+  // starting the scan immediately; startReqClosedScan runs when the user
+  // confirms a selection there.
+  const openReqClosedScanSetup = () => {
     setMoreToolsOpen(false);
     reqClosedDismissedRef.current = false;
+    setReqClosedDialog({ setup: true });
+  };
+
+  const startReqClosedScan = async (platforms) => {
+    reqClosedDismissedRef.current = false;
     reqClosedBrowserDoneRef.current = 0;
-    const res = await fetch("/api/applications/scan-closed-reqs", { method: "POST" });
+    const res = await fetch("/api/applications/scan-closed-reqs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platforms }),
+    });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       window.alert(data.error || `Scan failed (${res.status})`);
@@ -1407,9 +1420,18 @@ export default function JobQueue({
   // ai: claude-sonnet-4-6 | 2026-06-20
   const handleForceResetImport = async () => {
     if (!window.confirm("Force-clear the stuck import? This does not cancel any running Celery worker — it just unblocks the queue so a new import can start.")) return;
+    // ai: claude-fable-5 | 2026-07-15 — only clear local import UI state once
+    // the server actually accepted the reset
     try {
-      await fetch("/api/import/reset", { method: "POST" });
-    } catch { /* no-op */ }
+      const res = await fetch("/api/import/reset", { method: "POST" });
+      if (!res.ok) {
+        window.alert(`Force reset failed: HTTP ${res.status}`);
+        return;
+      }
+    } catch (e) {
+      window.alert("Force reset failed: " + (e?.message || e));
+      return;
+    }
     clearInterval(importPollRef.current);
     setImportSubmitting(false);
     setImportState(null);
@@ -1818,7 +1840,7 @@ export default function JobQueue({
               </button>
               <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
               <button
-                onClick={startReqClosedScan}
+                onClick={openReqClosedScanSetup}
                 disabled={anyQueueActionRunning}
                 style={{
                   display: "block",
@@ -1833,7 +1855,7 @@ export default function JobQueue({
                   opacity: anyQueueActionRunning ? 0.5 : 1,
                 }}
               >
-                {reqClosedScanning ? "Scanning…" : "Scan for Closed Reqs (LinkedIn + WTTJ + Wellfound)"}
+                {reqClosedScanning ? "Scanning…" : "Scan for Closed Reqs…"}
               </button>
               <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
               <button
@@ -1869,6 +1891,7 @@ export default function JobQueue({
       {reqClosedDialog && (
         <ReqClosedDialog
           result={reqClosedDialog}
+          onStart={startReqClosedScan}
           onClose={() => {
             reqClosedDismissedRef.current = true;
             setReqClosedDialogVisible(false);
@@ -1908,11 +1931,9 @@ export default function JobQueue({
       )}
 
       {importPanelOpen && (
-        <div style={popupBackdropStyle} onClick={() => !importSubmitting && !manualSubmitting && setImportPanelOpen(false)}>
-          <div
-            style={importDialogPanelStyle}
-            onClick={(e) => e.stopPropagation()}
-          >
+        <div style={popupBackdropStyle}>
+          {/* ai: claude-fable-5 | 2026-07-14 — dismissed only via the Close button, not backdrop clicks */}
+          <div style={importDialogPanelStyle}>
             <div style={popupHeaderStyle}>
               <div>
                 <div style={popupTitleStyle}>Import Jobs</div>

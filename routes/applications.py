@@ -41,6 +41,7 @@ import logging
 import re
 import socket
 import threading
+import time  # ai: claude-fable-5 | 2026-07-17
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from urllib.error import HTTPError, URLError
@@ -49,14 +50,17 @@ from urllib.request import Request
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import BaseModel, ValidationError, field_validator
 
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
 from backend.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils import (
     _tracking_payload,
+    canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17 — moved to utils, shared with WTTJ repair
     get_repos,
     maybe_mark_source_email_read,
     normalize_stage_status,
+    rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17 — moved to utils, shared with WTTJ repair
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +70,42 @@ applications_bp = Blueprint("applications", __name__)
 
 _CLOSED_REQ_FETCH_TIMEOUT_SECONDS = 15
 _CLOSED_REQ_FETCH_MAX_BYTES = 2_000_000
+
+# ai: claude-fable-5 | 2026-07-17
+# app.welcometothejungle.com starts returning HTTP 429 after roughly 60 rapid
+# requests, so an unpaced scan over a large candidate list mislabels the whole
+# tail of the list. Successive fetches to the same host are therefore spaced at
+# least _HOST_FETCH_MIN_INTERVAL_SECONDS apart, and a 429 that still slips
+# through is retried after the server's Retry-After (or a default backoff, see
+# backend.utils.rate_limit_backoff_seconds) before being reported as transient
+# ('unreachable' — never 'bad_url').
+_HOST_FETCH_MIN_INTERVAL_SECONDS = 1.0
+_RATE_LIMIT_MAX_RETRIES = 2
+
+_host_fetch_last_at: dict[str, float] = {}
+_host_fetch_lock = threading.Lock()
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _throttle_host_fetch(host: str) -> None:
+    """Sleep as needed so successive fetches to the same host stay at least
+    _HOST_FETCH_MIN_INTERVAL_SECONDS apart. Fetches to different hosts are
+    never delayed by each other."""
+    while True:
+        with _host_fetch_lock:
+            now = time.monotonic()
+            last = _host_fetch_last_at.get(host)
+            wait = (
+                0.0
+                if last is None
+                else last + _HOST_FETCH_MIN_INTERVAL_SECONDS - now
+            )
+            if wait <= 0:
+                _host_fetch_last_at[host] = now
+                return
+        time.sleep(wait)
+
+
 
 _CLOSED_PHRASES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
     "linkedin": (
@@ -78,24 +118,34 @@ _CLOSED_PHRASES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
         "ce poste n'est plus disponible",
     ),
     # ai: claude-sonnet-5 | 2026-07-12
-    "wellfound": (
-        "recently taken down and is no longer available",
-    ),
+    "wellfound": ("recently taken down and is no longer available",),
 }
 
 _PLATFORM_LABELS: dict[str, str] = {
     "linkedin": "LinkedIn",
     "wttj": "Welcome to the Jungle",
     "wellfound": "Wellfound",
+    "mongodb": "MongoDB",  # ai: claude-fable-5 | 2026-07-16
 }
 
-# ai: claude-sonnet-4-6 | 2026-07-02
+# ai: claude-fable-5 | 2026-07-17
 # LinkedIn only renders its closure banner to logged-in sessions, so a job the
-# unauthenticated fetch reports as "open" may still be closed. Cap how many such
-# jobs get escalated to an authenticated browser-extension capture per scan run,
-# so a large backlog drains gradually across several runs instead of flooding the
-# extension's capture queue at once.
+# unauthenticated fetch reports as "open" may still be closed. Such jobs are
+# escalated to an authenticated browser-extension capture in batches of this
+# size: the scan queues one batch, waits for the extension to drain it, then
+# queues the next until every escalated job has been rechecked — so the whole
+# backlog is covered in a single run without ever flooding the extension's
+# capture queue.
 _CLOSED_REQ_BROWSER_CHECK_CAP = 20
+
+# ai: claude-fable-5 | 2026-07-17
+# How often the scan thread re-reads the capture queue while waiting for the
+# extension to drain a recheck batch, and how long it tolerates zero completed
+# rechecks before concluding the extension is offline and giving up on the
+# remaining batches (the extension polls every ~60s and a batch takes 2-3
+# cycles, so 5 minutes of total silence means nobody is picking work up).
+_BROWSER_DRAIN_POLL_SECONDS = 5.0
+_BROWSER_DRAIN_STALL_TIMEOUT_SECONDS = 300.0
 
 # ai: claude-sonnet-4-6 | 2026-07-04
 # Matches browser-extension/background.js's 'jha-queue-poll' chrome.alarms period —
@@ -109,14 +159,33 @@ _LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
 # search results page carrying this marker, rather than returning 404/410.
 _LINKEDIN_EXPIRED_REDIRECT_MARKER = "expired_jd_redirect"
 
+
+# ai: claude-fable-5 | 2026-07-16
+def _is_mongodb_teams_hub_url(url: str) -> bool:
+    """True when *url* is MongoDB's generic careers teams hub page.
+
+    MongoDB redirects a closed posting's URL to mongodb.com/company/careers/teams
+    (sometimes with a locale prefix) instead of returning 404/410, so landing
+    there means the job description no longer exists.
+    """
+    parsed = urlparse(url)
+    if "mongodb.com" not in parsed.netloc.lower():
+        return False
+    return parsed.path.rstrip("/").lower().endswith("/careers/teams")
+
+
 _TRACKING_COLUMNS: list[dict] = [
-    {"index": 0, "label": "Company",   "hidden": False},
-    {"index": 1, "label": "Status",    "hidden": False},
-    {"index": 2, "label": "Source",    "hidden": False},
-    {"index": 3, "label": "Date",      "hidden": False},
-    {"index": 4, "label": "Job Title", "hidden": False},  # index 4 relied on by frontend
-    {"index": 5, "label": "URL",       "hidden": False},
-    {"index": 6, "label": "Notes",     "hidden": False},
+    {"index": 0, "label": "Company", "hidden": False},
+    {"index": 1, "label": "Status", "hidden": False},
+    {"index": 2, "label": "Source", "hidden": False},
+    {"index": 3, "label": "Date", "hidden": False},
+    {
+        "index": 4,
+        "label": "Job Title",
+        "hidden": False,
+    },  # index 4 relied on by frontend
+    {"index": 5, "label": "URL", "hidden": False},
+    {"index": 6, "label": "Notes", "hidden": False},
 ]
 
 
@@ -134,13 +203,8 @@ def get_application_sheet() -> ResponseReturnValue:
     def _make_row(job: dict) -> dict:
         stages = stages_by_job_id.get(job["id"], [])
         latest_stage = stages[-1] if stages else None
-        # ai: claude-sonnet-4-6 | 2026-06-17
-        status_date = (
-            (latest_stage or {}).get("date")
-            or job.get("date_added_to_sheet")
-            or job.get("date_found")
-            or ""
-        )
+        # ai: claude-fable-5 | 2026-07-14
+        status_date = (latest_stage or {}).get("date") or job.get("date_found") or ""
         values = [
             job.get("company") or "",
             (latest_stage or {}).get("status") or job.get("status") or "",
@@ -154,15 +218,19 @@ def get_application_sheet() -> ResponseReturnValue:
             "row_number": job["id"],
             "cells": [{"column_index": i, "value": v} for i, v in enumerate(values)],
             "stages": stages,
-            "duplicate_of_id": job.get("duplicate_of_id"),  # ai: claude-sonnet-4-6 | 2026-06-09
+            "duplicate_of_id": job.get(
+                "duplicate_of_id"
+            ),  # ai: claude-sonnet-4-6 | 2026-06-09
             "skip_reason": job.get("skip_reason"),  # ai: claude-sonnet-4-6 | 2026-06-10
         }
 
-    return jsonify({
-        "sheet_name": "Applications",
-        "columns": _TRACKING_COLUMNS,
-        "rows": [_make_row(j) for j in jobs],
-    })
+    return jsonify(
+        {
+            "sheet_name": "Applications",
+            "columns": _TRACKING_COLUMNS,
+            "rows": [_make_row(j) for j in jobs],
+        }
+    )
 
 
 @applications_bp.route("/applications", methods=["POST"])
@@ -171,26 +239,32 @@ def add_application_sheet_row() -> ResponseReturnValue:
     row = _tracking_payload()
     if not row["company"] and not row["job_title"]:
         return jsonify({"error": "company or job_title is required"}), 400
+    # ai: claude-fable-5 | 2026-07-14
     job_data: dict = {
-        k: v for k, v in {
-            "company":             row["company"] or None,
-            "status":              row["status"] or None,
-            "source":              row["source"] or None,
-            "date_added_to_sheet": row["date"] or datetime.now(UTC).date().isoformat(),
-            "job_title":           row["job_title"] or None,
-            "url":                 row["url"] or None,
-            "notes":               row["notes"] or None,
-        }.items() if v is not None
+        k: v
+        for k, v in {
+            "company": row["company"] or None,
+            "status": row["status"] or None,
+            "source": row["source"] or None,
+            "date_found": row["date"] or datetime.now(UTC).date().isoformat(),
+            "on_sheet": 1,
+            "job_title": row["job_title"] or None,
+            "url": row["url"] or None,
+            "notes": row["notes"] or None,
+        }.items()
+        if v is not None
     }
     try:
         with get_repos() as repos:
             new_job_id = repos["jobs"].insert(job_data)
-            repos["stages"].insert({
-                "job_id": new_job_id,
-                "status": "applied",
-                "date": job_data["date_added_to_sheet"],
-                "notes": None,
-            })
+            repos["stages"].insert(
+                {
+                    "job_id": new_job_id,
+                    "status": "applied",
+                    "date": job_data["date_found"],
+                    "notes": None,
+                }
+            )
             repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error inserting tracking row: %s", exc)
@@ -205,15 +279,17 @@ def update_application_sheet_row(job_id: int) -> ResponseReturnValue:
     if not row["company"] and not row["job_title"]:
         return jsonify({"error": "company or job_title is required"}), 400
     fields: dict = {
-        k: v for k, v in {
-            "company":             row["company"] or None,
-            "status":              row["status"] or None,
-            "source":              row["source"] or None,
-            "date_added_to_sheet": row["date"] or None,
-            "job_title":           row["job_title"] or None,
-            "url":                 row["url"] or None,
-            "notes":               row["notes"] or None,
-        }.items() if v is not None
+        k: v
+        for k, v in {
+            "company": row["company"] or None,
+            "status": row["status"] or None,
+            "source": row["source"] or None,
+            "date_found": row["date"] or None,  # ai: claude-fable-5 | 2026-07-14
+            "job_title": row["job_title"] or None,
+            "url": row["url"] or None,
+            "notes": row["notes"] or None,
+        }.items()
+        if v is not None
     }
     if not fields:
         return jsonify({"error": "No fields to update"}), 400
@@ -242,8 +318,17 @@ def add_application_sheet_stage(job_id: int) -> ResponseReturnValue:
         with get_repos() as repos:
             valid_keys = {s["key"] for s in repos["stage_statuses"].get_all()}
             if status not in valid_keys:
-                return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(valid_keys))}"}), 400
-            repos["stages"].insert({"job_id": job_id, "status": status, "date": stage_date, "notes": notes})
+                return (
+                    jsonify(
+                        {
+                            "error": f"Invalid status. Must be one of: {', '.join(sorted(valid_keys))}"
+                        }
+                    ),
+                    400,
+                )
+            repos["stages"].insert(
+                {"job_id": job_id, "status": status, "date": stage_date, "notes": notes}
+            )
             repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error adding stage for job %s: %s", job_id, exc, exc_info=True)
@@ -273,10 +358,7 @@ def mark_ghost_applications() -> ResponseReturnValue:
                     (latest_stage or {}).get("status") or job.get("status")
                 )
                 latest_date = str(
-                    (latest_stage or {}).get("date")
-                    or job.get("date_added_to_sheet")
-                    or job.get("date_found")
-                    or ""
+                    (latest_stage or {}).get("date") or job.get("date_found") or ""
                 ).strip()
 
                 if latest_status != "applied" or not latest_date:
@@ -316,20 +398,29 @@ def mark_ghost_applications() -> ResponseReturnValue:
         logger.warning("Error marking ghost applications: %s", exc, exc_info=True)
         return jsonify({"error": "Failed to mark ghosts"}), 500
 
-    return jsonify({"marked": marked, "count": len(marked), "cutoff_date": cutoff_date.isoformat()})
+    return jsonify(
+        {"marked": marked, "count": len(marked), "cutoff_date": cutoff_date.isoformat()}
+    )
 
 
 def _detect_closed_req_platform(job: dict, url: str) -> str | None:
-    """Return 'linkedin', 'wttj', or 'wellfound' if job/url belongs to a supported
-    platform, else None."""
+    """Return 'linkedin', 'wttj', 'wellfound', or 'mongodb' if job/url belongs to a
+    supported platform, else None."""
     source = str(job.get("source") or "").lower()
     netloc = urlparse(url).netloc.lower()
     if "linkedin" in source or "linkedin.com" in netloc or "lnkd.in" in netloc:
         return "linkedin"
-    if "welcome to the jungle" in source or "wttj" in source or "welcometothejungle.com" in netloc:
+    if (
+        "welcome to the jungle" in source
+        or "wttj" in source
+        or "welcometothejungle.com" in netloc
+    ):
         return "wttj"
     if "wellfound" in source or "wellfound.com" in netloc:
         return "wellfound"
+    # ai: claude-fable-5 | 2026-07-16
+    if "mongodb.com" in netloc:
+        return "mongodb"
     return None
 
 
@@ -349,14 +440,22 @@ def _canonicalize_linkedin_url(url: str) -> str:
     return f"https://www.linkedin.com/jobs/view/{match.group(1)}/"
 
 
-def _classify_closed_req_page(page_text_lower: str, final_url: str, platform: str) -> str:
+def _classify_closed_req_page(
+    page_text_lower: str, final_url: str, platform: str
+) -> str:
     """Classify already-fetched/captured page text as 'closed' or 'open'.
 
     Shared by the unauthenticated fetch path (_check_closed_req) and the
     authenticated browser-extension capture path (submit_closed_req_capture),
     so both interpret the same banner/redirect signals identically.
     """
-    if platform == "linkedin" and _LINKEDIN_EXPIRED_REDIRECT_MARKER in final_url.lower():
+    if (
+        platform == "linkedin"
+        and _LINKEDIN_EXPIRED_REDIRECT_MARKER in final_url.lower()
+    ):
+        return "closed"
+    # ai: claude-fable-5 | 2026-07-16
+    if platform == "mongodb" and _is_mongodb_teams_hub_url(final_url):
         return "closed"
     phrases = _CLOSED_PHRASES_BY_PLATFORM.get(platform, ())
     return "closed" if any(phrase in page_text_lower for phrase in phrases) else "open"
@@ -370,9 +469,9 @@ def _check_closed_req(url: str, platform: str) -> str:
     to its generic jobs-search page carrying an expired-posting marker.
     'bad_url' is an unrelated HTTP error (e.g. 400/403/500) suggesting the URL
     itself is broken rather than the job being closed. 'unreachable' is a
-    network-level failure (timeout, DNS, etc.) unrelated to the job's status,
-    so the caller can skip it rather than risk a false positive from a
-    transient error.
+    network-level failure (timeout, DNS, etc.) or persistent rate limiting
+    (HTTP 429 after retries) unrelated to the job's status, so the caller can
+    skip it rather than risk a false positive from a transient error.
 
     Note: LinkedIn only renders its closure banner to authenticated sessions,
     so this unauthenticated fetch can return 'open' for a job that is actually
@@ -385,6 +484,8 @@ def _check_closed_req(url: str, platform: str) -> str:
     """
     if platform == "linkedin":
         url = _canonicalize_linkedin_url(url)
+    elif platform == "wttj":  # ai: claude-fable-5 | 2026-07-16
+        url = canonicalize_wttj_url(url)
     req = Request(
         url,
         headers={
@@ -396,28 +497,53 @@ def _check_closed_req(url: str, platform: str) -> str:
             "Accept": "text/html,application/xhtml+xml",
         },
     )
-    try:
-        with safe_urlopen(req, timeout=_CLOSED_REQ_FETCH_TIMEOUT_SECONDS) as resp:
-            raw = resp.read(_CLOSED_REQ_FETCH_MAX_BYTES)
-            charset = resp.headers.get_content_charset() or "utf-8"
-            final_url = resp.geturl()
-        page_text = raw.decode(charset, errors="replace").lower()
-    except UnsafeUrlError as exc:
-        logger.warning("Closed-req check rejected unsafe URL %s: %s", url, exc)
-        return "bad_url"
-    except HTTPError as exc:
-        if exc.code in (404, 410):
-            return "closed"
-        logger.warning("Closed-req check got HTTP %s for %s", exc.code, url)
-        return "bad_url"
-    except (URLError, TimeoutError, socket.error) as exc:
-        logger.warning("Closed-req check failed for %s: %s", url, exc)
-        return "unreachable"
-    return _classify_closed_req_page(page_text, final_url, platform)
+    # ai: claude-fable-5 | 2026-07-17
+    retries_left = _RATE_LIMIT_MAX_RETRIES
+    while True:
+        _throttle_host_fetch(urlparse(url).netloc)
+        try:
+            with safe_urlopen(req, timeout=_CLOSED_REQ_FETCH_TIMEOUT_SECONDS) as resp:
+                raw = resp.read(_CLOSED_REQ_FETCH_MAX_BYTES)
+                charset = resp.headers.get_content_charset() or "utf-8"
+                final_url = resp.geturl()
+            page_text = raw.decode(charset, errors="replace").lower()
+        except UnsafeUrlError as exc:
+            logger.warning("Closed-req check rejected unsafe URL %s: %s", url, exc)
+            return "bad_url"
+        except HTTPError as exc:
+            if exc.code in (404, 410):
+                return "closed"
+            if exc.code == 429:
+                if retries_left > 0:
+                    retries_left -= 1
+                    delay = rate_limit_backoff_seconds(
+                        exc.headers.get("Retry-After") if exc.headers else None
+                    )
+                    logger.warning(
+                        "Closed-req check rate-limited (HTTP 429) for %s — "
+                        "retrying in %.0fs",
+                        url,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.warning(
+                    "Closed-req check still rate-limited (HTTP 429) for %s "
+                    "after retries",
+                    url,
+                )
+                return "unreachable"
+            logger.warning("Closed-req check got HTTP %s for %s", exc.code, url)
+            return "bad_url"
+        except (URLError, TimeoutError, socket.error) as exc:
+            logger.warning("Closed-req check failed for %s: %s", url, exc)
+            return "unreachable"
+        return _classify_closed_req_page(page_text, final_url, platform)
 
 
 # ── Req-closed scan state (in-memory, protected by a lock) ────────────────────
 # Co-located with the routes that read/control it per FLASK_STANDARDS.md.
+
 
 @dataclass
 class ReqClosedScanState:
@@ -433,6 +559,8 @@ class ReqClosedScanState:
     bad_url_count: int = 0
     unreachable_count: int = 0
     browser_checks_queued: int = 0
+    browser_checks_total: int = 0  # ai: claude-fable-5 | 2026-07-17
+    browser_checks_done: int = 0  # ai: claude-fable-5 | 2026-07-17
     current_platform: str = ""
     current_company: str = ""
     current_job_title: str = ""
@@ -451,10 +579,12 @@ def _update_req_closed_state(**kwargs: object) -> None:
 
 
 def _closed_req_candidates(repos: dict) -> list[tuple[dict, str, str]]:
-    """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, or Wellfound, with their platform."""
+    """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, Wellfound, or MongoDB, with their platform."""
     jobs = repos["jobs"].get_all_ordered()
     all_stages = repos["stages"].get_all()
-    terminal_keys = {s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")}
+    terminal_keys = {
+        s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")
+    }
     stages_by_job_id: dict[int, list[dict]] = {}
     for stage in all_stages:
         stages_by_job_id.setdefault(stage["job_id"], []).append(stage)
@@ -493,14 +623,20 @@ def _closed_req_browser_queue_snapshot(repos: dict) -> dict[str, int]:
     extension only picks up BROWSER_QUEUE_CLAIM_BATCH_SIZE items per poll, see
     app.py's _claim_browser_capture_queue).
     """
-    rows = [r for r in repos["browser_capture_queue"].get_all() if r.get("purpose") == "closed_req"]
+    rows = [
+        r
+        for r in repos["browser_capture_queue"].get_all()
+        if r.get("purpose") == "closed_req"
+    ]
     counts = {"pending": 0, "processing": 0, "done": 0, "failed": 0}
     for row in rows:
         status = row.get("status")
         if status in counts:
             counts[status] += 1
     remaining = counts["pending"] + counts["processing"]
-    poll_cycles_remaining = -(-remaining // BROWSER_QUEUE_CLAIM_BATCH_SIZE)  # ceil division
+    poll_cycles_remaining = -(
+        -remaining // BROWSER_QUEUE_CLAIM_BATCH_SIZE
+    )  # ceil division
     return {
         **counts,
         "remaining": remaining,
@@ -511,7 +647,7 @@ def _closed_req_browser_queue_snapshot(repos: dict) -> dict[str, int]:
 def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
     """Record a detected closed req in whichever place the UI actually reads from.
 
-    Jobs already on the Applications Sheet (date_added_to_sheet set) are
+    Jobs already on the Applications Sheet (on_sheet flag set) are
     tracked via application_stages, so add a 'req_closed' stage there — the
     Applications Sheet renders status from the latest stage.
 
@@ -522,7 +658,7 @@ def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
     actually leaves the queue.
     """
     with get_repos() as repos:
-        if job.get("date_added_to_sheet"):
+        if job.get("on_sheet"):  # ai: claude-fable-5 | 2026-07-14
             repos["stages"].insert(
                 {
                     "job_id": job["id"],
@@ -533,20 +669,28 @@ def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
             )
         else:
             from_status = str(job.get("status") or "")
-            repos["jobs"].update(job["id"], {"status": "skipped", "skip_reason": "req_closed"})
+            repos["jobs"].update(
+                job["id"], {"status": "skipped", "skip_reason": "req_closed"}
+            )
             maybe_mark_source_email_read(job, repos["jobs"])
-            repos["job_status_history"].insert({
-                "job_id": job["id"],
-                "from_status": from_status,
-                "to_status": "skipped",
-                "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
-                "trigger": "req_closed_scan",
-                "extra_data": json.dumps({
-                    "prev_skip_reason": job.get("skip_reason"),
-                    "prev_skip_feedback": job.get("skip_feedback"),
-                    "prev_skip_mismatch_reasons": job.get("skip_mismatch_reasons"),
-                }),
-            })
+            repos["job_status_history"].insert(
+                {
+                    "job_id": job["id"],
+                    "from_status": from_status,
+                    "to_status": "skipped",
+                    "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "trigger": "req_closed_scan",
+                    "extra_data": json.dumps(
+                        {
+                            "prev_skip_reason": job.get("skip_reason"),
+                            "prev_skip_feedback": job.get("skip_feedback"),
+                            "prev_skip_mismatch_reasons": job.get(
+                                "skip_mismatch_reasons"
+                            ),
+                        }
+                    ),
+                }
+            )
         repos["conn"].commit()
 
 
@@ -575,7 +719,10 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
             job = repos["jobs"].get_by_id(job_id) if job_id else None
 
         if job:
-            platform = _detect_closed_req_platform(job, str(job.get("url") or captured_url)) or "linkedin"
+            platform = (
+                _detect_closed_req_platform(job, str(job.get("url") or captured_url))
+                or "linkedin"
+            )
             page_text = content.lower()
             if _classify_closed_req_page(page_text, captured_url, platform) == "closed":
                 _record_closed_req(
@@ -584,34 +731,206 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
                     datetime.now(UTC).date().isoformat(),
                 )
         else:
-            logger.warning("Closed-req capture had no matching job for job_id=%s", raw_job_id)
+            logger.warning(
+                "Closed-req capture had no matching job for job_id=%s", raw_job_id
+            )
 
         with get_repos() as repos:
             repos["browser_capture_queue"].mark_done_by_urls([queue_url, captured_url])
             repos["conn"].commit()
     except Exception as exc:
-        logger.warning("Closed-req capture handling failed for job_id=%s: %s", raw_job_id, exc, exc_info=True)
+        logger.warning(
+            "Closed-req capture handling failed for job_id=%s: %s",
+            raw_job_id,
+            exc,
+            exc_info=True,
+        )
         return {"error": "Failed to process closed-req capture"}, 500
     return {"ok": True}, 200
 
 
-def _run_req_closed_scan() -> None:
+# ai: claude-fable-5 | 2026-07-17
+def _browser_recheck_found_closed(repos: dict, job: dict) -> bool:
+    """True if *job* has been recorded closed since the scan snapshotted it.
+
+    Mirrors the two storage shapes _record_closed_req writes (a req_closed
+    stage for sheet-tracked jobs, a skipped/req_closed status for pre-triage
+    queue jobs) — the browser-extension capture path lands its result through
+    that same function, so this is how the scan thread observes it.
+    """
+    if job.get("on_sheet"):
+        stages = repos["stages"].get_by_job_id(job["id"])
+        return any(s.get("status") == "req_closed" for s in stages)
+    fresh = repos["jobs"].get_by_id(job["id"])
+    return (
+        fresh is not None
+        and fresh.get("status") == "skipped"
+        and fresh.get("skip_reason") == "req_closed"
+    )
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _fold_browser_recheck_outcome(
+    repos: dict, item: tuple[dict, str, str, str], row_status: str
+) -> None:
+    """Fold one finished authenticated recheck into the live scan state.
+
+    LinkedIn jobs were already counted "kept" when the unauthenticated fetch
+    reported them open, so a recheck that finds them closed (or fails) moves
+    them out of that bucket. Wellfound jobs were counted nowhere — their
+    unauthenticated fetch is always bot-blocked — so the recheck is their
+    first real classification.
+    """
+    job, _url, platform, platform_label = item
+    closed = _browser_recheck_found_closed(repos, job)
+    summary = {
+        "id": job["id"],
+        "company": job.get("company") or "",
+        "job_title": job.get("job_title") or "",
+        "platform": platform_label,
+    }
+    with _req_closed_lock:
+        _req_closed_state.browser_checks_done += 1
+        if closed:
+            _req_closed_state.closed_count += 1
+            _req_closed_state.marked = [*_req_closed_state.marked, summary]
+            if platform == "linkedin":
+                _req_closed_state.kept_count = max(
+                    0, _req_closed_state.kept_count - 1
+                )
+        elif row_status == "failed":
+            if platform == "linkedin":
+                _req_closed_state.kept_count = max(
+                    0, _req_closed_state.kept_count - 1
+                )
+            _req_closed_state.unreachable_count += 1
+            _req_closed_state.errors = [
+                *_req_closed_state.errors,
+                {**summary, "reason": "unreachable"},
+            ]
+        elif platform == "wellfound":
+            _req_closed_state.kept_count += 1
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _drain_browser_recheck_batch(
+    batch: list[tuple[dict, str, str, str]], total_rechecks: int
+) -> bool:
+    """Wait for this batch's queued authenticated rechecks to finish, folding
+    each outcome into the scan state as it lands so the progress dialog stays
+    live. Opens a short-lived DB connection per poll — never holds one while
+    sleeping. Returns False when the extension appears offline (the batch made
+    no progress for _BROWSER_DRAIN_STALL_TIMEOUT_SECONDS).
+    """
+    items_by_job_id = {item[0]["id"]: item for item in batch}
+    settled: set[int] = set()
+    last_remaining: int | None = None
+    last_progress_at = time.monotonic()
+    while True:
+        with get_repos() as repos:
+            # get_all() returns newest-first, so the first row seen per job is
+            # its current recheck — older 'done' rows from earlier scan runs
+            # must not be mistaken for this batch's result.
+            latest_by_job: dict[int, dict] = {}
+            for row in repos["browser_capture_queue"].get_all():
+                row_job_id = row.get("job_id")
+                if row.get("purpose") != "closed_req":
+                    continue
+                if row_job_id not in items_by_job_id:
+                    continue
+                latest_by_job.setdefault(row_job_id, row)
+            remaining = 0
+            for batch_job_id, item in items_by_job_id.items():
+                if batch_job_id in settled:
+                    continue
+                row = latest_by_job.get(batch_job_id)
+                # A row deleted mid-scan (e.g. via the queue-management UI)
+                # can't be waited on — treat it as finished.
+                status = (row or {}).get("status") or "done"
+                if status in ("pending", "processing"):
+                    remaining += 1
+                    continue
+                _fold_browser_recheck_outcome(repos, item, str(status))
+                settled.add(batch_job_id)
+        with _req_closed_lock:
+            done = _req_closed_state.browser_checks_done
+            closed_so_far = _req_closed_state.closed_count
+        overall_left = max(0, total_rechecks - done)
+        poll_cycles_left = -(-overall_left // BROWSER_QUEUE_CLAIM_BATCH_SIZE)
+        eta_minutes = max(
+            1, poll_cycles_left * _BROWSER_QUEUE_POLL_INTERVAL_SECONDS // 60
+        )
+        _update_req_closed_state(
+            message=(
+                f"Authenticated browser recheck — {done} of {total_rechecks} "
+                f"checked, {closed_so_far} closed so far. About {eta_minutes} min "
+                "left (requires the browser extension to be running)."
+            ),
+        )
+        if remaining == 0:
+            return True
+        if remaining != last_remaining:
+            last_remaining = remaining
+            last_progress_at = time.monotonic()
+        elif (
+            time.monotonic() - last_progress_at
+            >= _BROWSER_DRAIN_STALL_TIMEOUT_SECONDS
+        ):
+            return False
+        time.sleep(_BROWSER_DRAIN_POLL_SECONDS)
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
+    """Scan candidate jobs for closed reqs, limited to `platforms` (keys of
+    _PLATFORM_LABELS). None means scan every supported platform.
+
+    Runs in two phases, both under running=True so the progress dialog stays
+    up until everything has actually been checked:
+      1. Unauthenticated fetch of every candidate URL.
+      2. Authenticated browser-extension rechecks for jobs phase 1 can't
+         classify (LinkedIn hides its closure banner from logged-out sessions;
+         Wellfound bot-blocks anonymous fetches entirely), queued in batches of
+         _CLOSED_REQ_BROWSER_CHECK_CAP and awaited batch-by-batch until the
+         whole pool is done or the extension goes quiet.
+    """
     today = datetime.now(UTC).date().isoformat()
+    selected = platforms if platforms is not None else frozenset(_PLATFORM_LABELS)
+    selected_labels = ", ".join(
+        label for key, label in _PLATFORM_LABELS.items() if key in selected
+    )
     _update_req_closed_state(
-        running=True, progress=0, total=0,
-        message="Finding LinkedIn, Welcome to the Jungle, and Wellfound jobs to check…",
-        marked=[], errors=[], checked=0,
-        kept_count=0, closed_count=0, bad_url_count=0, unreachable_count=0,
+        running=True,
+        progress=0,
+        total=0,
+        message=f"Finding {selected_labels} jobs to check…",
+        marked=[],
+        errors=[],
+        checked=0,
+        kept_count=0,
+        closed_count=0,
+        bad_url_count=0,
+        unreachable_count=0,
         browser_checks_queued=0,
-        current_platform="", current_company="", current_job_title="", error=None,
+        browser_checks_total=0,  # ai: claude-fable-5 | 2026-07-17
+        browser_checks_done=0,  # ai: claude-fable-5 | 2026-07-17
+        current_platform="",
+        current_company="",
+        current_job_title="",
+        error=None,
     )
     try:
         with get_repos() as repos:
-            candidates = _closed_req_candidates(repos)
+            # ai: claude-fable-5 | 2026-07-16
+            candidates = [
+                c for c in _closed_req_candidates(repos) if c[2] in selected
+            ]
         # Connection released before the external fetches below.
 
         total = len(candidates)
-        _update_req_closed_state(total=total, message=f"Checking {total} job{'s' if total != 1 else ''}…")
+        _update_req_closed_state(
+            total=total, message=f"Checking {total} job{'s' if total != 1 else ''}…"
+        )
 
         marked: list[dict[str, object]] = []
         errors: list[dict[str, object]] = []
@@ -626,7 +945,7 @@ def _run_req_closed_scan() -> None:
         # real status, so both are collected here and escalated to the browser-extension
         # capture queue after the fetch loop, which keeps its "no DB connection held
         # during external fetches" behavior.
-        to_browser_check: list[tuple[dict, str, str]] = []
+        to_browser_check: list[tuple[dict, str, str, str]] = []
         for i, (job, url, platform) in enumerate(candidates):
             platform_label = _PLATFORM_LABELS.get(platform, platform)
             job_title = job.get("job_title") or "Untitled"
@@ -651,10 +970,10 @@ def _run_req_closed_scan() -> None:
             elif result == "open":
                 kept_count += 1
                 if platform == "linkedin":
-                    to_browser_check.append((job, url, platform_label))
+                    to_browser_check.append((job, url, platform, platform_label))
             elif result == "bad_url":
                 if platform == "wellfound":
-                    to_browser_check.append((job, url, platform_label))
+                    to_browser_check.append((job, url, platform, platform_label))
                 else:
                     errors.append({**job_summary, "reason": "bad_url"})
                     bad_url_count += 1
@@ -675,14 +994,15 @@ def _run_req_closed_scan() -> None:
             )
 
         browser_checks_queued = 0
+        extension_stalled = False
+        total_rechecks = len(to_browser_check)
         if to_browser_check:
             with get_repos() as repos:
                 # Prioritize jobs that have never been through an authenticated recheck
                 # (or were checked longest ago) over jobs that already got a slot in an
-                # earlier run. Without this, _closed_req_candidates' ordering (Applications
-                # Sheet jobs before pre-triage Job Queue jobs) means a large pool of sheet
-                # jobs permanently consumes every cap slot, starving queue jobs of ever
-                # reaching an authenticated check.
+                # earlier run. The batch loop below now covers the whole pool in one
+                # run, but the ordering still matters if the extension goes offline
+                # mid-run and only the first batches complete.
                 last_checked: dict[int, str] = {}
                 for row in repos["browser_capture_queue"].get_all():
                     if row.get("purpose") != "closed_req" or row.get("job_id") is None:
@@ -690,45 +1010,141 @@ def _run_req_closed_scan() -> None:
                     created = row.get("created_at") or ""
                     if created > last_checked.get(row["job_id"], ""):
                         last_checked[row["job_id"]] = created
-                to_browser_check.sort(key=lambda item: last_checked.get(item[0]["id"], ""))
+                to_browser_check.sort(
+                    key=lambda item: last_checked.get(item[0]["id"], "")
+                )
 
-                for job, url, platform_label in to_browser_check[:_CLOSED_REQ_BROWSER_CHECK_CAP]:
-                    new_id = repos["browser_capture_queue"].enqueue_once_for_purpose(
-                        url, f"{platform_label} (closed-req check)", "closed_req", job["id"]
-                    )
-                    if new_id is not None:
-                        browser_checks_queued += 1
-                repos["conn"].commit()
+            # ai: claude-fable-5 | 2026-07-17
+            # Queue rechecks one batch at a time and wait for the extension to
+            # drain each batch before queueing the next, so a single scan run
+            # covers the entire pool instead of only the first
+            # _CLOSED_REQ_BROWSER_CHECK_CAP jobs per run (which starved
+            # already-checked jobs of ever being rechecked once the pool
+            # outgrew the cap).
+            _update_req_closed_state(
+                browser_checks_total=total_rechecks,
+                current_platform="",
+                current_company="",
+                current_job_title="",
+                message=(
+                    f"Queueing {total_rechecks} authenticated browser "
+                    f"recheck{'s' if total_rechecks != 1 else ''}…"
+                ),
+            )
+            for start in range(0, total_rechecks, _CLOSED_REQ_BROWSER_CHECK_CAP):
+                batch = to_browser_check[start : start + _CLOSED_REQ_BROWSER_CHECK_CAP]
+                with get_repos() as repos:
+                    for job, url, _platform, platform_label in batch:
+                        new_id = repos[
+                            "browser_capture_queue"
+                        ].enqueue_once_for_purpose(
+                            url,
+                            f"{platform_label} (closed-req check)",
+                            "closed_req",
+                            job["id"],
+                        )
+                        if new_id is not None:
+                            browser_checks_queued += 1
+                    repos["conn"].commit()
+                _update_req_closed_state(browser_checks_queued=browser_checks_queued)
+                if not _drain_browser_recheck_batch(batch, total_rechecks):
+                    extension_stalled = True
+                    break
 
+        # The browser-recheck phase folds its outcomes straight into the shared
+        # state (see _fold_browser_recheck_outcome), so re-read the counters
+        # rather than trusting this thread's now-stale fetch-phase locals.
+        with _req_closed_lock:
+            closed_count = _req_closed_state.closed_count
+            kept_count = _req_closed_state.kept_count
+            unreachable_count = _req_closed_state.unreachable_count
+            browser_checks_done = _req_closed_state.browser_checks_done
+        if extension_stalled:
+            final_message = (
+                f"Stopped waiting — the browser extension isn't picking up "
+                f"rechecks ({browser_checks_done} of {total_rechecks} done). "
+                "Already-queued jobs will finish once the extension is running; "
+                "re-run the scan afterwards for the rest."
+            )
+        else:
+            final_message = (
+                f"Done — {closed_count} marked Req Closed, {kept_count} still open, "
+                f"{bad_url_count} bad URLs, {unreachable_count} unreachable. "
+                f"Completed {browser_checks_done} authenticated browser "
+                f"recheck{'s' if browser_checks_done != 1 else ''}."
+            )
         _update_req_closed_state(
             running=False,
             browser_checks_queued=browser_checks_queued,
-            message=(
-                f"Done — {closed_count} marked Req Closed, {kept_count} still open, "
-                f"{bad_url_count} bad URLs, {unreachable_count} unreachable. "
-                f"Queued {browser_checks_queued} for authenticated browser re-check."
-            ),
-            current_platform="", current_company="", current_job_title="",
+            message=final_message,
+            current_platform="",
+            current_company="",
+            current_job_title="",
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
     except Exception as exc:
         logger.warning("Closed-req scan failed: %s", exc, exc_info=True)
-        _update_req_closed_state(running=False, error=str(exc), message="Scan failed — see server logs")
+        _update_req_closed_state(
+            running=False, error=str(exc), message="Scan failed — see server logs"
+        )
+
+
+# ai: claude-fable-5 | 2026-07-16
+class ClosedReqScanRequest(BaseModel):
+    """Optional body for POST /applications/scan-closed-reqs. `platforms` limits
+    the scan to a subset of the supported platform keys; omitted means all."""
+
+    platforms: list[str] | None = None
+
+    @field_validator("platforms")
+    @classmethod
+    def _validate_platforms(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        if not value:
+            raise ValueError("select at least one platform")
+        unknown = set(value) - _PLATFORM_LABELS.keys()
+        if unknown:
+            raise ValueError(f"unknown platforms: {', '.join(sorted(unknown))}")
+        return value
+
+
+# ai: claude-fable-5 | 2026-07-16
+@applications_bp.route("/applications/scan-closed-reqs/platforms", methods=["GET"])
+def closed_req_scan_platforms() -> ResponseReturnValue:
+    """Supported closed-req scan platforms, for the scan-setup dialog's checkboxes.
+    Served from _PLATFORM_LABELS so the UI's list can't drift from the backend."""
+    return jsonify(
+        [{"key": key, "label": label} for key, label in _PLATFORM_LABELS.items()]
+    )
 
 
 @applications_bp.route("/applications/scan-closed-reqs", methods=["POST"])
 def start_closed_req_scan() -> ResponseReturnValue:
-    """Kick off a background scan of LinkedIn, Welcome to the Jungle, and Wellfound job URLs for closed-req banners."""
+    """Kick off a background scan of job URLs for closed-req banners, optionally
+    limited to a caller-selected subset of the supported platforms."""
+    # ai: claude-fable-5 | 2026-07-16
+    try:
+        body = ClosedReqScanRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return jsonify({"error": "Invalid platform selection"}), 400
+    platforms = (
+        frozenset(body.platforms)
+        if body.platforms is not None
+        else frozenset(_PLATFORM_LABELS)
+    )
+
     with _req_closed_lock:
         if _req_closed_state.running:
             return jsonify({"error": "Scan already running"}), 409
 
     threading.Thread(
         target=_run_req_closed_scan,
+        args=(platforms,),
         daemon=True,
         name="closed-req-scan",
     ).start()
-    return jsonify({"status": "started"})
+    return jsonify({"status": "started", "platforms": sorted(platforms)})
 
 
 @applications_bp.route("/applications/scan-closed-reqs/status", methods=["GET"])
@@ -739,26 +1155,30 @@ def closed_req_scan_status() -> ResponseReturnValue:
     with get_repos() as repos:
         browser_queue = _closed_req_browser_queue_snapshot(repos)
     with _req_closed_lock:
-        return jsonify({
-            "running": _req_closed_state.running,
-            "progress": _req_closed_state.progress,
-            "total": _req_closed_state.total,
-            "message": _req_closed_state.message,
-            "marked": _req_closed_state.marked,
-            "errors": _req_closed_state.errors,
-            "checked": _req_closed_state.checked,
-            "kept_count": _req_closed_state.kept_count,
-            "closed_count": _req_closed_state.closed_count,
-            "bad_url_count": _req_closed_state.bad_url_count,
-            "unreachable_count": _req_closed_state.unreachable_count,
-            "browser_checks_queued": _req_closed_state.browser_checks_queued,
-            "browser_queue": browser_queue,
-            "current_platform": _req_closed_state.current_platform,
-            "current_company": _req_closed_state.current_company,
-            "current_job_title": _req_closed_state.current_job_title,
-            "last_run_at": _req_closed_state.last_run_at,
-            "error": _req_closed_state.error,
-        })
+        return jsonify(
+            {
+                "running": _req_closed_state.running,
+                "progress": _req_closed_state.progress,
+                "total": _req_closed_state.total,
+                "message": _req_closed_state.message,
+                "marked": _req_closed_state.marked,
+                "errors": _req_closed_state.errors,
+                "checked": _req_closed_state.checked,
+                "kept_count": _req_closed_state.kept_count,
+                "closed_count": _req_closed_state.closed_count,
+                "bad_url_count": _req_closed_state.bad_url_count,
+                "unreachable_count": _req_closed_state.unreachable_count,
+                "browser_checks_queued": _req_closed_state.browser_checks_queued,
+                "browser_checks_total": _req_closed_state.browser_checks_total,  # ai: claude-fable-5 | 2026-07-17
+                "browser_checks_done": _req_closed_state.browser_checks_done,  # ai: claude-fable-5 | 2026-07-17
+                "browser_queue": browser_queue,
+                "current_platform": _req_closed_state.current_platform,
+                "current_company": _req_closed_state.current_company,
+                "current_job_title": _req_closed_state.current_job_title,
+                "last_run_at": _req_closed_state.last_run_at,
+                "error": _req_closed_state.error,
+            }
+        )
 
 
 @applications_bp.route("/applications/stage-statuses")
@@ -768,7 +1188,9 @@ def get_stage_statuses() -> ResponseReturnValue:
         return jsonify(repos["stage_statuses"].get_all())
 
 
-@applications_bp.route("/applications/repair/normalize-stage-statuses", methods=["POST"])
+@applications_bp.route(
+    "/applications/repair/normalize-stage-statuses", methods=["POST"]
+)
 def normalize_stage_statuses() -> ResponseReturnValue:
     """One-time migration: normalise all stage status values to snake_case lowercase."""
     try:

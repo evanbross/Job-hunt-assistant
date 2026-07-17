@@ -37,6 +37,7 @@ Email parser — uses the Anthropic API to extract structured job data from
 raw email content. Returns confidence level so the triage system can decide
 whether to auto-queue or hold for manual review.
 """
+
 from __future__ import annotations
 
 import html as _html_mod
@@ -69,8 +70,8 @@ class ParsedJob(TypedDict):
     job_title: str
     url: str
     source: str
-    confidence: str          # "high" | "low"
-    confidence_score: int    # 0–100 numeric certainty
+    confidence: str  # "high" | "low"
+    confidence_score: int  # 0–100 numeric certainty
     confidence_reason: str
 
 
@@ -168,7 +169,9 @@ class EmailParser:
         self._client = client or AIProviderClient()
 
     # ai: claude-sonnet-4-6 | 2026-06-29
-    def parse(self, subject: str, sender: str, body_snippet: str, raw_html: str = "") -> list[ParsedJob]:
+    def parse(
+        self, subject: str, sender: str, body_snippet: str, raw_html: str = ""
+    ) -> list[ParsedJob]:
         """
         Extract all job postings from an email. Returns a list of ParsedJob dicts
         (empty list if the email contains no job postings).
@@ -182,7 +185,9 @@ class EmailParser:
         jymbii_jobs = _parse_linkedin_jymbii_jobs(subject, sender, body_snippet)
         if jymbii_jobs:
             return jymbii_jobs
-        wttj_jobs = _parse_welcome_to_the_jungle_jobs(sender, body_snippet, raw_html=raw_html)
+        wttj_jobs = _parse_welcome_to_the_jungle_jobs(
+            sender, body_snippet, raw_html=raw_html
+        )
         if wttj_jobs:
             return wttj_jobs
         # ai: claude-sonnet-4-6 | 2026-06-22
@@ -222,7 +227,9 @@ class EmailParser:
             if match:
                 try:
                     result = json.loads(match.group())
-                    logger.warning("Email parser: extracted JSON array from prose response")
+                    logger.warning(
+                        "Email parser: extracted JSON array from prose response"
+                    )
                 except json.JSONDecodeError as exc:
                     logger.error("Email parser returned non-JSON: %s", raw)
                     raise ValueError(f"Parser returned invalid JSON: {exc}") from exc
@@ -240,20 +247,31 @@ class EmailParser:
         for item in result:
             if not isinstance(item, dict):
                 continue
-            for key in ("company", "job_title", "url", "source", "confidence", "confidence_reason"):
+            for key in (
+                "company",
+                "job_title",
+                "url",
+                "source",
+                "confidence",
+                "confidence_reason",
+            ):
                 item.setdefault(key, "")
             if item.get("confidence") not in ("high", "low"):
                 item["confidence"] = "low"
                 item["confidence_reason"] = "Confidence value was missing or invalid."
             try:
-                item["confidence_score"] = max(0, min(100, int(item.get("confidence_score", 50))))
+                item["confidence_score"] = max(
+                    0, min(100, int(item.get("confidence_score", 50)))
+                )
             except (TypeError, ValueError):
                 item["confidence_score"] = 50
             normalize_title_company(item, subject, body_snippet)
             if item.get("company"):
                 item["company"] = _trim_company_tail(item["company"])
             # Restore any [URL_N] token the LLM returned to the original URL.
-            if url_token_map and _URL_TOKEN_PLACEHOLDER_RE.fullmatch(str(item.get("url") or "").strip()):
+            if url_token_map and _URL_TOKEN_PLACEHOLDER_RE.fullmatch(
+                str(item.get("url") or "").strip()
+            ):
                 item["url"] = _detokenize_url(str(item["url"]), url_token_map)
 
             # Resolve tracking/redirect URLs that the LLM may have extracted
@@ -283,7 +301,9 @@ def normalize_title_company(item: dict, subject: str, body_snippet: str = "") ->
 
     raw_title = str(item.get("job_title") or "").strip()
     raw_source = str(item.get("source") or "").strip()
-    for candidate in _title_company_candidates(raw_title, raw_source, subject, body_snippet):
+    for candidate in _title_company_candidates(
+        raw_title, raw_source, subject, body_snippet
+    ):
         parsed = _extract_title_company(candidate)
         if not parsed:
             continue
@@ -351,8 +371,12 @@ _LINKEDIN_COMM_JOB_URL_RE = re.compile(
     r"https?://(?:www\.)?linkedin\.com/comm/jobs/view/\d+/",
     re.IGNORECASE,
 )
-_WTTJ_SENDER_RE = re.compile(r"welcometothejungle\.com|welcome to the jungle", re.IGNORECASE)
-_WTTJ_JOB_URL_RE = re.compile(r"https?://[^\s<>()\"']*welcometothejungle\.com/[^\s<>()\"']+", re.IGNORECASE)
+_WTTJ_SENDER_RE = re.compile(
+    r"welcometothejungle\.com|welcome to the jungle", re.IGNORECASE
+)
+_WTTJ_JOB_URL_RE = re.compile(
+    r"https?://[^\s<>()\"']*welcometothejungle\.com/[^\s<>()\"']+", re.IGNORECASE
+)
 _ANY_HTTP_URL_RE = re.compile(r"https?://[^\s<>()\"']+", re.IGNORECASE)
 # HTML-based company extraction: match <a href="URL"> ... alt="Name logo" ... </a>
 # ai: claude-sonnet-4-6 | 2026-06-29
@@ -370,15 +394,38 @@ _WTTJ_SKIP_TITLE_LINES = {
 # Lines that contain salary/compensation info or bullet-separated metadata (location,
 # contract type, etc.) should never be mistaken for job titles.
 _WTTJ_METADATA_LINE_RE = re.compile(
-    r"[\$£€₹¥]"            # currency symbols → salary
-    r"|[•·]"               # bullet separators → "Paris • Full-time" metadata
+    r"[\$£€₹¥]"  # currency symbols → salary
+    r"|[•·]"  # bullet separators → "Paris • Full-time" metadata
     r"|\b\d+\s*[kK]\s*[-–—]"  # "80k –" → salary range
     r"|\bsalary\b|\bcompensation\b",
     re.IGNORECASE,
 )
 
 
-def _parse_linkedin_alert_jobs(subject: str, sender: str, body_snippet: str) -> list[ParsedJob]:
+# ai: claude-fable-5 | 2026-07-17
+def looks_like_wttj_misparsed_title(title: str) -> bool:
+    """True when a stored WTTJ job title is clearly a misparsed email fragment.
+
+    Versions of the WTTJ digest parser before the metadata-line filter and
+    split-title rejoin (2026-06-22) stored salary lines ("Salary: $125-254K"),
+    CTA lines ("See all top matches"), or orphaned parenthetical qualifiers
+    ("(Backend)") as job titles. The WTTJ repair flow uses this to find rows
+    whose title must be re-read from the live job page. Deliberately reuses
+    this module's skip-list and metadata regex so the two stay in sync.
+    """
+    normalized = _normalized_line(title)
+    if not normalized:
+        return True
+    if normalized in _WTTJ_SKIP_TITLE_LINES:
+        return True
+    if title.lstrip().startswith("("):
+        return True
+    return bool(_WTTJ_METADATA_LINE_RE.search(title))
+
+
+def _parse_linkedin_alert_jobs(
+    subject: str, sender: str, body_snippet: str
+) -> list[ParsedJob]:
     if not _looks_like_linkedin_alert(subject, sender, body_snippet):
         return []
 
@@ -445,7 +492,9 @@ def _linkedin_card_lines(raw_lines: list[str]) -> list[str]:
     return card_lines
 
 
-def _parse_linkedin_jymbii_jobs(subject: str, sender: str, body_snippet: str) -> list[ParsedJob]:
+def _parse_linkedin_jymbii_jobs(
+    subject: str, sender: str, body_snippet: str
+) -> list[ParsedJob]:
     """Parse LinkedIn JYMBII ('Jobs You Might Be Interested In') digest emails.
 
     The HTML extractor turns each job card anchor into lines like:
@@ -503,12 +552,15 @@ def _parse_linkedin_jymbii_jobs(subject: str, sender: str, body_snippet: str) ->
     return results
 
 
-_TRACKING_DOMAIN_FRAGMENTS = frozenset({
-    "sendgrid.net",
-    "track.customer.io",
-    "mandrillapp.com",
-    "link.matcha.fm",
-})
+_TRACKING_DOMAIN_FRAGMENTS = frozenset(
+    {
+        "sendgrid.net",
+        "track.customer.io",
+        "mandrillapp.com",
+        "link.matcha.fm",
+        "links.wellfound.com",  # ai: claude-fable-5 | 2026-07-14
+    }
+)
 
 _MATCHA_SENDER_RE = re.compile(r"matcha\.fm", re.IGNORECASE)
 # After HTML extraction each job link renders as: "Title at Company: https://link.matcha.fm/..."
@@ -523,11 +575,20 @@ _MATCHA_JOB_PATH_RE = re.compile(r"/job/[0-9a-f-]{36}", re.IGNORECASE)
 # Job-board URL patterns used as a fallback when the LLM returns an empty URL.
 # Ordered by specificity — more specific patterns first.
 _JOBBOARD_URL_FALLBACK_RES: list[re.Pattern[str]] = [
-    re.compile(r"https?://(?:www\.)?linkedin\.com/jobs/view/[^\s<>()\"']+", re.IGNORECASE),
-    re.compile(r"https?://(?:www\.)?linkedin\.com/comm/jobs/view/[^\s<>()\"']+", re.IGNORECASE),
+    re.compile(
+        r"https?://(?:www\.)?linkedin\.com/jobs/view/[^\s<>()\"']+", re.IGNORECASE
+    ),
+    re.compile(
+        r"https?://(?:www\.)?linkedin\.com/comm/jobs/view/[^\s<>()\"']+", re.IGNORECASE
+    ),
     re.compile(r"https?://jobs\.lever\.co/[^\s<>()\"']+", re.IGNORECASE),
-    re.compile(r"https?://[^\s<>()\"']*greenhouse\.io/[^\s<>()\"']*jobs[^\s<>()\"']+", re.IGNORECASE),
-    re.compile(r"https?://[^\s<>()\"']*myworkdayjobs\.com/[^\s<>()\"']+", re.IGNORECASE),
+    re.compile(
+        r"https?://[^\s<>()\"']*greenhouse\.io/[^\s<>()\"']*jobs[^\s<>()\"']+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"https?://[^\s<>()\"']*myworkdayjobs\.com/[^\s<>()\"']+", re.IGNORECASE
+    ),
 ]
 
 
@@ -563,6 +624,14 @@ def resolve_tracking_url(url: str, timeout: float = 3.0) -> str:
             )
             with safe_urlopen(req, timeout=timeout) as resp:
                 return resp.url
+        # ai: claude-fable-5 | 2026-07-14
+        except urllib.error.HTTPError as exc:
+            # The destination itself may refuse a bot fetch (e.g. Cloudflare 403
+            # on wellfound.com). The redirect was still followed to get there,
+            # so exc.url names the final destination — which is all we need.
+            if exc.url and exc.url != url:
+                return exc.url
+            continue
         except (UnsafeUrlError, urllib.error.URLError, socket.timeout, OSError):
             continue
     return url
@@ -590,7 +659,7 @@ def _wttj_company_map_from_html(raw_html: str) -> dict[str, str]:
         if a_end < 0:
             pos = href_m.end()
             continue
-        block = raw_html[href_m.end():a_end]
+        block = raw_html[href_m.end() : a_end]
         logo_m = _WTTJ_HTML_LOGO_ALT_RE.search(block)
         if logo_m:
             company = logo_m.group(1).strip()
@@ -602,7 +671,9 @@ def _wttj_company_map_from_html(raw_html: str) -> dict[str, str]:
 
 
 # ai: claude-sonnet-4-6 | 2026-06-29
-def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str, raw_html: str = "") -> list[ParsedJob]:
+def _parse_welcome_to_the_jungle_jobs(
+    sender: str, body_snippet: str, raw_html: str = ""
+) -> list[ParsedJob]:
     if not _looks_like_welcome_to_the_jungle(sender, body_snippet):
         return []
 
@@ -614,10 +685,14 @@ def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str, raw_html: 
     seen_job_ids: set[str] = set()
     # Primary company source: HTML card structure (company logo alt text co-located
     # with the tracking URL in a single <a> block — unambiguous regardless of text layout).
-    html_company_map: dict[str, str] = _wttj_company_map_from_html(raw_html) if raw_html else {}
+    html_company_map: dict[str, str] = (
+        _wttj_company_map_from_html(raw_html) if raw_html else {}
+    )
     logger.debug("WTTJ HTML company map: %d entries", len(html_company_map))
 
-    def _append_wttj_job(job_url: str, line_idx: int, raw_tracking_url: str = "") -> None:
+    def _append_wttj_job(
+        job_url: str, line_idx: int, raw_tracking_url: str = ""
+    ) -> None:
         job_id = _wttj_job_id_from_url(job_url)
         if not job_id:
             return  # not a job page (e.g. settings or unsubscribe URL)
@@ -666,7 +741,9 @@ def _parse_welcome_to_the_jungle_jobs(sender: str, body_snippet: str, raw_html: 
                 resolved = resolve_tracking_url(raw_url)
                 if "welcometothejungle.com" not in resolved.lower():
                     continue
-                _append_wttj_job(resolved.rstrip(".,;)"), line_idx, raw_tracking_url=raw_url)
+                _append_wttj_job(
+                    resolved.rstrip(".,;)"), line_idx, raw_tracking_url=raw_url
+                )
 
     return jobs
 
@@ -766,7 +843,7 @@ def _split_matcha_anchor(anchor_text: str) -> tuple[str, str]:
     if idx == -1:
         return normalized, ""
     title = normalized[:idx].strip()
-    company = _trim_company_tail(normalized[idx + 4:].strip())
+    company = _trim_company_tail(normalized[idx + 4 :].strip())
     return title, company
 
 
@@ -806,11 +883,13 @@ def _wttj_job_id_from_url(job_url: str) -> str:
 
 
 # ai: claude-sonnet-4-6 | 2026-06-22
-def _wttj_title_from_nearby_lines(lines: list[str], url_line_idx: int, company: str) -> str:
+def _wttj_title_from_nearby_lines(
+    lines: list[str], url_line_idx: int, company: str
+) -> str:
     normalized_company = _normalized_line(company)
     # Window of 12 (up from 8): WTTJ emails can place the title 10 lines above
     # the tracking URL due to salary and empty lines between them.
-    window = list(reversed(lines[max(0, url_line_idx - 12):url_line_idx]))
+    window = list(reversed(lines[max(0, url_line_idx - 12) : url_line_idx]))
     for i, candidate in enumerate(window):
         normalized_candidate = _normalized_line(candidate)
         if not normalized_candidate:
@@ -839,10 +918,12 @@ def _wttj_title_from_nearby_lines(lines: list[str], url_line_idx: int, company: 
                 prev_norm = _normalized_line(prev)
                 if not prev_norm:
                     continue  # skip blank lines, keep looking
-                if (prev_norm not in _WTTJ_SKIP_TITLE_LINES
-                        and not prev_norm.startswith(("http://", "https://"))
-                        and not _WTTJ_METADATA_LINE_RE.search(prev)
-                        and len(prev) <= 80):
+                if (
+                    prev_norm not in _WTTJ_SKIP_TITLE_LINES
+                    and not prev_norm.startswith(("http://", "https://"))
+                    and not _WTTJ_METADATA_LINE_RE.search(prev)
+                    and len(prev) <= 80
+                ):
                     result = f"{prev} {result}"
                 break  # stop at first non-empty line regardless of validity
 
@@ -851,7 +932,9 @@ def _wttj_title_from_nearby_lines(lines: list[str], url_line_idx: int, company: 
 
 
 # ai: claude-sonnet-4-6 | 2026-06-29
-def _wttj_company_from_nearby_lines(lines: list[str], url_line_idx: int, job_title: str) -> str:
+def _wttj_company_from_nearby_lines(
+    lines: list[str], url_line_idx: int, job_title: str
+) -> str:
     """Return the company name from nearby lines in a WTTJ email body.
 
     WTTJ emails render each job card twice (once for visual clients, once for
@@ -904,7 +987,9 @@ def _wttj_company_from_nearby_lines(lines: list[str], url_line_idx: int, job_tit
 def _title_case_slug(slug: str) -> str:
     value = re.sub(r"[-_]+", " ", slug)
     value = re.sub(r"\s+", " ", value).strip()
-    return " ".join(word.capitalize() if not word.isupper() else word for word in value.split())
+    return " ".join(
+        word.capitalize() if not word.isupper() else word for word in value.split()
+    )
 
 
 def _normalized_line(value: str) -> str:

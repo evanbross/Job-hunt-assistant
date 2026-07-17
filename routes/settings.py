@@ -48,7 +48,7 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 import config
-from backend.url_safety import UnsafeUrlError, safe_urlopen
+from backend.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
 from backend.utils import _rescore_active_queue_jobs, get_repos
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,7 @@ _VALID_PENALTY_SCOPES: frozenset[str] = frozenset({"title", "company", "body", "
 
 
 # ─── Config routes ────────────────────────────────────────────────────────────
+
 
 @settings_bp.route("/config")
 def get_config() -> ResponseReturnValue:
@@ -90,7 +91,12 @@ def update_config() -> ResponseReturnValue:
                 data.get("move_successfully_processed_emails")
             )
         except ValueError:
-            return jsonify({"error": "move_successfully_processed_emails must be a boolean"}), 400
+            return (
+                jsonify(
+                    {"error": "move_successfully_processed_emails must be a boolean"}
+                ),
+                400,
+            )
 
     if "candidate_profile_path" in data:
         candidate_profile_path = str(data.get("candidate_profile_path") or "").strip()
@@ -98,17 +104,28 @@ def update_config() -> ResponseReturnValue:
             return jsonify({"error": "candidate_profile_path cannot be empty"}), 400
         candidate_profile_file = Path(candidate_profile_path)
         if not candidate_profile_file.exists() or not candidate_profile_file.is_file():
-            return jsonify({"error": "candidate_profile_path must point to an existing file"}), 400
+            return (
+                jsonify(
+                    {"error": "candidate_profile_path must point to an existing file"}
+                ),
+                400,
+            )
         try:
             candidate_profile_file.read_text(encoding="utf-8")
         except OSError as exc:
-            return jsonify({"error": f"Could not read candidate profile file: {exc}"}), 400
+            return (
+                jsonify({"error": f"Could not read candidate profile file: {exc}"}),
+                400,
+            )
         cfg["candidate_profile_path"] = str(candidate_profile_file)
 
     if "ai_provider" in data:
         ai_provider = str(data.get("ai_provider") or "").strip().lower()
         if ai_provider not in {"anthropic", "openai", "ollama"}:
-            return jsonify({"error": "ai_provider must be anthropic, openai, or ollama"}), 400
+            return (
+                jsonify({"error": "ai_provider must be anthropic, openai, or ollama"}),
+                400,
+            )
         cfg["ai_provider"] = ai_provider
 
     for key in ("anthropic_model", "openai_model", "ollama_model", "ollama_base_url"):
@@ -116,6 +133,16 @@ def update_config() -> ResponseReturnValue:
             value = str(data.get(key) or "").strip()
             if not value:
                 return jsonify({"error": f"{key} cannot be empty"}), 400
+            # ai: claude-fable-5 | 2026-07-15 — reject unsafe Ollama URLs at
+            # save time; the AI client later fetches this URL server-side.
+            # allow_loopback matches the local-Ollama policy used by the
+            # connection-test endpoint below.
+            if key == "ollama_base_url":
+                try:
+                    validate_outbound_url(value, allow_loopback=True)
+                except UnsafeUrlError as exc:
+                    return jsonify({"error": f"ollama_base_url rejected: {exc}"}), 400
+                value = value.rstrip("/")
             cfg[key] = value
 
     if "job_import_listener_enabled" in data:
@@ -124,7 +151,10 @@ def update_config() -> ResponseReturnValue:
                 data.get("job_import_listener_enabled")
             )
         except ValueError:
-            return jsonify({"error": "job_import_listener_enabled must be a boolean"}), 400
+            return (
+                jsonify({"error": "job_import_listener_enabled must be a boolean"}),
+                400,
+            )
 
     if "job_import_listener_host" in data:
         listener_host = str(data.get("job_import_listener_host") or "").strip()
@@ -138,7 +168,12 @@ def update_config() -> ResponseReturnValue:
         except (TypeError, ValueError):
             return jsonify({"error": "job_import_listener_port must be a number"}), 400
         if listener_port < 1 or listener_port > 65535:
-            return jsonify({"error": "job_import_listener_port must be between 1 and 65535"}), 400
+            return (
+                jsonify(
+                    {"error": "job_import_listener_port must be between 1 and 65535"}
+                ),
+                400,
+            )
         cfg["job_import_listener_port"] = listener_port
 
     if "job_import_listener_token" in data:
@@ -153,25 +188,37 @@ def update_config() -> ResponseReturnValue:
         try:
             max_bytes = int(data.get("job_import_listener_max_bytes") or 0)
         except (TypeError, ValueError):
-            return jsonify({"error": "job_import_listener_max_bytes must be a number"}), 400
+            return (
+                jsonify({"error": "job_import_listener_max_bytes must be a number"}),
+                400,
+            )
         if max_bytes < 1024:
-            return jsonify({"error": "job_import_listener_max_bytes must be at least 1024"}), 400
+            return (
+                jsonify(
+                    {"error": "job_import_listener_max_bytes must be at least 1024"}
+                ),
+                400,
+            )
         cfg["job_import_listener_max_bytes"] = max_bytes
 
     config.save_runtime_config(cfg)
 
-    profile_changed = str(cfg.get("candidate_profile_path") or "").strip() != previous_profile_path
+    profile_changed = (
+        str(cfg.get("candidate_profile_path") or "").strip() != previous_profile_path
+    )
     rescore_summary = {"rescored": 0, "failed": 0}
     if profile_changed:
         with get_repos() as repos:
             rescore_summary = _rescore_active_queue_jobs(repos)
             repos["conn"].commit()
 
-    return jsonify({
-        **cfg,
-        "profile_changed": profile_changed,
-        "rescore_summary": rescore_summary,
-    })
+    return jsonify(
+        {
+            **cfg,
+            "profile_changed": profile_changed,
+            "rescore_summary": rescore_summary,
+        }
+    )
 
 
 def _parse_bool_setting(value: object) -> bool:
@@ -191,7 +238,11 @@ def _parse_bool_setting(value: object) -> bool:
 @settings_bp.route("/config/test-ollama", methods=["POST"])
 def test_ollama_connection() -> ResponseReturnValue:
     data: dict[str, object] | None = request.get_json()
-    base_url = str((data or {}).get("ollama_base_url") or config.OLLAMA_BASE_URL).strip().rstrip("/")
+    base_url = (
+        str((data or {}).get("ollama_base_url") or config.OLLAMA_BASE_URL)
+        .strip()
+        .rstrip("/")
+    )
     model = str((data or {}).get("ollama_model") or config.OLLAMA_MODEL).strip()
 
     tags_url = f"{base_url}/api/tags"
@@ -204,17 +255,35 @@ def test_ollama_connection() -> ResponseReturnValue:
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return jsonify({"ok": False, "message": f"Could not connect: {exc}"})
     except json.JSONDecodeError:
-        return jsonify({"ok": False, "message": "Connected but received an unexpected response from Ollama."})
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Connected but received an unexpected response from Ollama.",
+            }
+        )
 
     available = [m.get("name", "") for m in body.get("models", [])]
     if model in available:
-        return jsonify({"ok": True, "message": f"Connected. Model '{model}' is available."})
+        return jsonify(
+            {"ok": True, "message": f"Connected. Model '{model}' is available."}
+        )
     if available:
-        return jsonify({"ok": False, "message": f"Connected, but model '{model}' was not found. Available: {', '.join(available)}"})
-    return jsonify({"ok": False, "message": f"Connected, but model '{model}' was not found (no models installed)."})
+        return jsonify(
+            {
+                "ok": False,
+                "message": f"Connected, but model '{model}' was not found. Available: {', '.join(available)}",
+            }
+        )
+    return jsonify(
+        {
+            "ok": False,
+            "message": f"Connected, but model '{model}' was not found (no models installed).",
+        }
+    )
 
 
 # ─── Penalty rule routes ──────────────────────────────────────────────────────
+
 
 @settings_bp.route("/penalties")
 def get_penalties() -> ResponseReturnValue:
@@ -231,7 +300,14 @@ def create_penalty() -> ResponseReturnValue:
 
     scope = str(data.get("scope") or "any").strip().lower()
     if scope not in _VALID_PENALTY_SCOPES:
-        return jsonify({"error": f"scope must be one of: {', '.join(sorted(_VALID_PENALTY_SCOPES))}"}), 400
+        return (
+            jsonify(
+                {
+                    "error": f"scope must be one of: {', '.join(sorted(_VALID_PENALTY_SCOPES))}"
+                }
+            ),
+            400,
+        )
 
     with get_repos() as repos:
         rule_id = repos["penalties"].insert(
@@ -260,7 +336,14 @@ def update_penalty(rule_id: int) -> ResponseReturnValue:
     if "scope" in updates:
         updates["scope"] = str(updates["scope"] or "any").strip().lower()
         if updates["scope"] not in _VALID_PENALTY_SCOPES:
-            return jsonify({"error": f"scope must be one of: {', '.join(sorted(_VALID_PENALTY_SCOPES))}"}), 400
+            return (
+                jsonify(
+                    {
+                        "error": f"scope must be one of: {', '.join(sorted(_VALID_PENALTY_SCOPES))}"
+                    }
+                ),
+                400,
+            )
 
     with get_repos() as repos:
         if not repos["penalties"].get_by_id(rule_id):
@@ -285,6 +368,7 @@ def delete_penalty(rule_id: int) -> ResponseReturnValue:
 
 # ─── Relevance feedback routes ────────────────────────────────────────────────
 
+
 @settings_bp.route("/feedback")
 def get_feedback() -> ResponseReturnValue:
     with get_repos() as repos:
@@ -301,6 +385,7 @@ def delete_feedback(feedback_id: int) -> ResponseReturnValue:
 
 
 # ─── Email subject rule routes ────────────────────────────────────────────────
+
 
 @settings_bp.route("/email-subject-rules")
 def get_email_subject_rules() -> ResponseReturnValue:
@@ -368,6 +453,7 @@ def delete_email_subject_rule(rule_id: int) -> ResponseReturnValue:
 
 
 # ─── Resume routes ────────────────────────────────────────────────────────────
+
 
 @settings_bp.route("/resume", methods=["POST"])
 def upload_resume() -> ResponseReturnValue:

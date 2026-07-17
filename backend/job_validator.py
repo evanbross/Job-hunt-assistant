@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 _COMPANY_IN_TITLE_RE = re.compile(r"^(.+?)\s+[-–—]\s+(.+)$")
 
 
-def normalize_and_validate(job_data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def normalize_and_validate(
+    job_data: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
     """Normalize and validate a job dict before DB insertion.
 
     Returns (cleaned_job, warning_codes).  The cleaned_job is a shallow copy of
@@ -69,7 +71,12 @@ def normalize_and_validate(job_data: dict[str, Any]) -> tuple[dict[str, Any], li
             job["job_title"] = match.group(2).strip()
             company = job["company"]
             job_title = job["job_title"]
-            logger.debug("Auto-split company from title: %r → %r / %r", job_data.get("job_title"), company, job_title)
+            logger.debug(
+                "Auto-split company from title: %r → %r / %r",
+                job_data.get("job_title"),
+                company,
+                job_title,
+            )
 
     # Flag: missing job title after normalization
     if not job_title:

@@ -17,7 +17,11 @@ def _png(size: int, r: int, g: int, b: int) -> bytes:
 
     def chunk(tag: bytes, data: bytes) -> bytes:
         body = tag + data
-        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+        return (
+            struct.pack(">I", len(data))
+            + body
+            + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+        )
 
     ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
     # Each scanline: filter byte 0 followed by (r, g, b) * width
@@ -32,7 +36,7 @@ def main() -> None:
     os.makedirs(out_dir, exist_ok=True)
 
     # Blue (#1e40af) matching the popup header colour
-    r, g, b = 0x1e, 0x40, 0xAF
+    r, g, b = 0x1E, 0x40, 0xAF
 
     for size in (16, 48, 128):
         path = os.path.join(out_dir, f"icon{size}.png")
@@ -40,7 +44,9 @@ def main() -> None:
             fh.write(_png(size, r, g, b))
         print(f"  Created {path}")
 
-    print("Done. Icons are solid blue (#1e40af) — replace with your own artwork if desired.")
+    print(
+        "Done. Icons are solid blue (#1e40af) — replace with your own artwork if desired."
+    )
 
 
 if __name__ == "__main__":

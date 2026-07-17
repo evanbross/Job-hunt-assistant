@@ -78,6 +78,7 @@ export default function ScanSummaryPopup({ summary, onClose }) {
     triage_jobs = 0,
     possible_duplicate_jobs = 0,
     auto_skipped_duplicate_jobs = 0,
+    auto_skipped_hybrid_jobs = 0, // ai: claude-fable-5 | 2026-07-16
     low_fit_score_jobs = 0,
     scoring_failed_jobs = 0,
   } = summary;
@@ -104,6 +105,7 @@ export default function ScanSummaryPopup({ summary, onClose }) {
     { label: "Moved to Triage", value: triage_jobs, tone: "yellow" },
     { label: "Possible Duplicates", value: possible_duplicate_jobs },
     { label: "Auto-Rejected Duplicates", value: auto_skipped_duplicate_jobs },
+    { label: "Auto-Rejected Hybrid (MongoDB)", value: auto_skipped_hybrid_jobs }, // ai: claude-fable-5 | 2026-07-16
     { label: "Low Fit Score", value: low_fit_score_jobs, tone: "yellow" },
     { label: "Scoring Failed", value: scoring_failed_jobs, tone: "red" },
   ].filter((item) => item.value > 0);

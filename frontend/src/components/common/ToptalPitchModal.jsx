@@ -99,7 +99,10 @@ export default function ToptalPitchModal({ onClose }) {
 
   return (
     <Modal title="Toptal Client Pitch" subtitle="Paste the job description, generate a short third-person bio" onClose={onClose} maxWidth="700px">
-      <div style={{ maxHeight: "72vh", overflowY: "auto", paddingRight: "4px" }}>
+      {/* ai: claude-fable-5 | 2026-07-14 — no maxHeight/overflow here: .modal-body owns
+          scrolling. A nested scroller put the scrollbar mid-panel where overlay scrollbars
+          make it invisible, so long content just looked cut off. */}
+      <div>
 
         <label style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: "6px" }}>
           Client job description
