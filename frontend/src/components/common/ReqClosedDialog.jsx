@@ -129,6 +129,12 @@ export default function ReqClosedDialog({ result, onStart, onClose }) {
   const badUrlErrors = errors.filter((job) => job.reason === "bad_url");
   const unreachableErrors = errors.filter((job) => job.reason !== "bad_url");
   const running = !!result.running;
+  // ai: claude-fable-5 | 2026-07-17 — in-scan recheck progress, fed by the scan
+  // thread's batch loop (browser_checks_*) rather than the raw queue snapshot,
+  // which also counts done rows from earlier runs.
+  const browserChecksTotal = result.browser_checks_total ?? 0;
+  const browserChecksDone = result.browser_checks_done ?? 0;
+  const browserRecheckPhase = running && browserChecksTotal > 0;
   const browserQueue = result.browser_queue || {};
   const browserRemaining = browserQueue.remaining ?? 0;
   const browserDone = browserQueue.done ?? 0;
@@ -138,7 +144,7 @@ export default function ReqClosedDialog({ result, onStart, onClose }) {
   const browserEtaMinutes = browserQueue.eta_seconds ? Math.ceil(browserQueue.eta_seconds / 60) : 0;
   const progress = Math.max(0, Math.min(100, result.total ? Math.round(((result.progress ?? 0) / result.total) * 100) : 0));
   const title = running
-    ? "Scanning for Closed Reqs…"
+    ? (browserRecheckPhase ? "Rechecking via Browser Extension…" : "Scanning for Closed Reqs…") // ai: claude-fable-5 | 2026-07-17
     : browserDraining
       ? "Waiting on Authenticated LinkedIn Rechecks…"
       : "Scan for Closed Reqs Complete";
@@ -186,7 +192,23 @@ export default function ReqClosedDialog({ result, onStart, onClose }) {
         </MetricGrid>
       </div>
 
-      {browserTotal > 0 && (
+      {/* ai: claude-fable-5 | 2026-07-17 — while the scan runs, recheck progress
+          comes from the scan thread's batch loop; the raw queue snapshot below is
+          only shown after the scan exits with rechecks still queued (extension
+          offline), since its totals include done rows from earlier runs. */}
+      {browserRecheckPhase && (
+        <div style={{ marginTop: "14px", padding: "10px 12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
+            <span>Authenticated recheck (browser extension)</span>
+            <span>{browserChecksDone} of {browserChecksTotal} done</span>
+          </div>
+          <div className="loading-bar">
+            <div className="loading-bar-fill" style={{ width: `${Math.round((browserChecksDone / browserChecksTotal) * 100)}%` }} />
+          </div>
+        </div>
+      )}
+
+      {!running && browserTotal > 0 && (
         <div style={{ marginTop: "14px", padding: "10px 12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
             <span>Authenticated LinkedIn recheck (browser extension)</span>

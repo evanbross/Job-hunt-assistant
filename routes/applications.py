@@ -128,13 +128,24 @@ _PLATFORM_LABELS: dict[str, str] = {
     "mongodb": "MongoDB",  # ai: claude-fable-5 | 2026-07-16
 }
 
-# ai: claude-sonnet-4-6 | 2026-07-02
+# ai: claude-fable-5 | 2026-07-17
 # LinkedIn only renders its closure banner to logged-in sessions, so a job the
-# unauthenticated fetch reports as "open" may still be closed. Cap how many such
-# jobs get escalated to an authenticated browser-extension capture per scan run,
-# so a large backlog drains gradually across several runs instead of flooding the
-# extension's capture queue at once.
+# unauthenticated fetch reports as "open" may still be closed. Such jobs are
+# escalated to an authenticated browser-extension capture in batches of this
+# size: the scan queues one batch, waits for the extension to drain it, then
+# queues the next until every escalated job has been rechecked — so the whole
+# backlog is covered in a single run without ever flooding the extension's
+# capture queue.
 _CLOSED_REQ_BROWSER_CHECK_CAP = 20
+
+# ai: claude-fable-5 | 2026-07-17
+# How often the scan thread re-reads the capture queue while waiting for the
+# extension to drain a recheck batch, and how long it tolerates zero completed
+# rechecks before concluding the extension is offline and giving up on the
+# remaining batches (the extension polls every ~60s and a batch takes 2-3
+# cycles, so 5 minutes of total silence means nobody is picking work up).
+_BROWSER_DRAIN_POLL_SECONDS = 5.0
+_BROWSER_DRAIN_STALL_TIMEOUT_SECONDS = 300.0
 
 # ai: claude-sonnet-4-6 | 2026-07-04
 # Matches browser-extension/background.js's 'jha-queue-poll' chrome.alarms period —
@@ -548,6 +559,8 @@ class ReqClosedScanState:
     bad_url_count: int = 0
     unreachable_count: int = 0
     browser_checks_queued: int = 0
+    browser_checks_total: int = 0  # ai: claude-fable-5 | 2026-07-17
+    browser_checks_done: int = 0  # ai: claude-fable-5 | 2026-07-17
     current_platform: str = ""
     current_company: str = ""
     current_job_title: str = ""
@@ -736,10 +749,151 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
     return {"ok": True}, 200
 
 
-# ai: claude-fable-5 | 2026-07-16
+# ai: claude-fable-5 | 2026-07-17
+def _browser_recheck_found_closed(repos: dict, job: dict) -> bool:
+    """True if *job* has been recorded closed since the scan snapshotted it.
+
+    Mirrors the two storage shapes _record_closed_req writes (a req_closed
+    stage for sheet-tracked jobs, a skipped/req_closed status for pre-triage
+    queue jobs) — the browser-extension capture path lands its result through
+    that same function, so this is how the scan thread observes it.
+    """
+    if job.get("on_sheet"):
+        stages = repos["stages"].get_by_job_id(job["id"])
+        return any(s.get("status") == "req_closed" for s in stages)
+    fresh = repos["jobs"].get_by_id(job["id"])
+    return (
+        fresh is not None
+        and fresh.get("status") == "skipped"
+        and fresh.get("skip_reason") == "req_closed"
+    )
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _fold_browser_recheck_outcome(
+    repos: dict, item: tuple[dict, str, str, str], row_status: str
+) -> None:
+    """Fold one finished authenticated recheck into the live scan state.
+
+    LinkedIn jobs were already counted "kept" when the unauthenticated fetch
+    reported them open, so a recheck that finds them closed (or fails) moves
+    them out of that bucket. Wellfound jobs were counted nowhere — their
+    unauthenticated fetch is always bot-blocked — so the recheck is their
+    first real classification.
+    """
+    job, _url, platform, platform_label = item
+    closed = _browser_recheck_found_closed(repos, job)
+    summary = {
+        "id": job["id"],
+        "company": job.get("company") or "",
+        "job_title": job.get("job_title") or "",
+        "platform": platform_label,
+    }
+    with _req_closed_lock:
+        _req_closed_state.browser_checks_done += 1
+        if closed:
+            _req_closed_state.closed_count += 1
+            _req_closed_state.marked = [*_req_closed_state.marked, summary]
+            if platform == "linkedin":
+                _req_closed_state.kept_count = max(
+                    0, _req_closed_state.kept_count - 1
+                )
+        elif row_status == "failed":
+            if platform == "linkedin":
+                _req_closed_state.kept_count = max(
+                    0, _req_closed_state.kept_count - 1
+                )
+            _req_closed_state.unreachable_count += 1
+            _req_closed_state.errors = [
+                *_req_closed_state.errors,
+                {**summary, "reason": "unreachable"},
+            ]
+        elif platform == "wellfound":
+            _req_closed_state.kept_count += 1
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _drain_browser_recheck_batch(
+    batch: list[tuple[dict, str, str, str]], total_rechecks: int
+) -> bool:
+    """Wait for this batch's queued authenticated rechecks to finish, folding
+    each outcome into the scan state as it lands so the progress dialog stays
+    live. Opens a short-lived DB connection per poll — never holds one while
+    sleeping. Returns False when the extension appears offline (the batch made
+    no progress for _BROWSER_DRAIN_STALL_TIMEOUT_SECONDS).
+    """
+    items_by_job_id = {item[0]["id"]: item for item in batch}
+    settled: set[int] = set()
+    last_remaining: int | None = None
+    last_progress_at = time.monotonic()
+    while True:
+        with get_repos() as repos:
+            # get_all() returns newest-first, so the first row seen per job is
+            # its current recheck — older 'done' rows from earlier scan runs
+            # must not be mistaken for this batch's result.
+            latest_by_job: dict[int, dict] = {}
+            for row in repos["browser_capture_queue"].get_all():
+                row_job_id = row.get("job_id")
+                if row.get("purpose") != "closed_req":
+                    continue
+                if row_job_id not in items_by_job_id:
+                    continue
+                latest_by_job.setdefault(row_job_id, row)
+            remaining = 0
+            for batch_job_id, item in items_by_job_id.items():
+                if batch_job_id in settled:
+                    continue
+                row = latest_by_job.get(batch_job_id)
+                # A row deleted mid-scan (e.g. via the queue-management UI)
+                # can't be waited on — treat it as finished.
+                status = (row or {}).get("status") or "done"
+                if status in ("pending", "processing"):
+                    remaining += 1
+                    continue
+                _fold_browser_recheck_outcome(repos, item, str(status))
+                settled.add(batch_job_id)
+        with _req_closed_lock:
+            done = _req_closed_state.browser_checks_done
+            closed_so_far = _req_closed_state.closed_count
+        overall_left = max(0, total_rechecks - done)
+        poll_cycles_left = -(-overall_left // BROWSER_QUEUE_CLAIM_BATCH_SIZE)
+        eta_minutes = max(
+            1, poll_cycles_left * _BROWSER_QUEUE_POLL_INTERVAL_SECONDS // 60
+        )
+        _update_req_closed_state(
+            message=(
+                f"Authenticated browser recheck — {done} of {total_rechecks} "
+                f"checked, {closed_so_far} closed so far. About {eta_minutes} min "
+                "left (requires the browser extension to be running)."
+            ),
+        )
+        if remaining == 0:
+            return True
+        if remaining != last_remaining:
+            last_remaining = remaining
+            last_progress_at = time.monotonic()
+        elif (
+            time.monotonic() - last_progress_at
+            >= _BROWSER_DRAIN_STALL_TIMEOUT_SECONDS
+        ):
+            return False
+        time.sleep(_BROWSER_DRAIN_POLL_SECONDS)
+
+
+# ai: claude-fable-5 | 2026-07-17
 def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
     """Scan candidate jobs for closed reqs, limited to `platforms` (keys of
-    _PLATFORM_LABELS). None means scan every supported platform."""
+    _PLATFORM_LABELS). None means scan every supported platform.
+
+    Runs in two phases, both under running=True so the progress dialog stays
+    up until everything has actually been checked:
+      1. Unauthenticated fetch of every candidate URL.
+      2. Authenticated browser-extension rechecks for jobs phase 1 can't
+         classify (LinkedIn hides its closure banner from logged-out sessions;
+         Wellfound bot-blocks anonymous fetches entirely), queued in batches of
+         _CLOSED_REQ_BROWSER_CHECK_CAP and awaited batch-by-batch until the
+         whole pool is done or the extension goes quiet.
+    """
     today = datetime.now(UTC).date().isoformat()
     selected = platforms if platforms is not None else frozenset(_PLATFORM_LABELS)
     selected_labels = ", ".join(
@@ -758,6 +912,8 @@ def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
         bad_url_count=0,
         unreachable_count=0,
         browser_checks_queued=0,
+        browser_checks_total=0,  # ai: claude-fable-5 | 2026-07-17
+        browser_checks_done=0,  # ai: claude-fable-5 | 2026-07-17
         current_platform="",
         current_company="",
         current_job_title="",
@@ -789,7 +945,7 @@ def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
         # real status, so both are collected here and escalated to the browser-extension
         # capture queue after the fetch loop, which keeps its "no DB connection held
         # during external fetches" behavior.
-        to_browser_check: list[tuple[dict, str, str]] = []
+        to_browser_check: list[tuple[dict, str, str, str]] = []
         for i, (job, url, platform) in enumerate(candidates):
             platform_label = _PLATFORM_LABELS.get(platform, platform)
             job_title = job.get("job_title") or "Untitled"
@@ -814,10 +970,10 @@ def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
             elif result == "open":
                 kept_count += 1
                 if platform == "linkedin":
-                    to_browser_check.append((job, url, platform_label))
+                    to_browser_check.append((job, url, platform, platform_label))
             elif result == "bad_url":
                 if platform == "wellfound":
-                    to_browser_check.append((job, url, platform_label))
+                    to_browser_check.append((job, url, platform, platform_label))
                 else:
                     errors.append({**job_summary, "reason": "bad_url"})
                     bad_url_count += 1
@@ -838,14 +994,15 @@ def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
             )
 
         browser_checks_queued = 0
+        extension_stalled = False
+        total_rechecks = len(to_browser_check)
         if to_browser_check:
             with get_repos() as repos:
                 # Prioritize jobs that have never been through an authenticated recheck
                 # (or were checked longest ago) over jobs that already got a slot in an
-                # earlier run. Without this, _closed_req_candidates' ordering (Applications
-                # Sheet jobs before pre-triage Job Queue jobs) means a large pool of sheet
-                # jobs permanently consumes every cap slot, starving queue jobs of ever
-                # reaching an authenticated check.
+                # earlier run. The batch loop below now covers the whole pool in one
+                # run, but the ordering still matters if the extension goes offline
+                # mid-run and only the first batches complete.
                 last_checked: dict[int, str] = {}
                 for row in repos["browser_capture_queue"].get_all():
                     if row.get("purpose") != "closed_req" or row.get("job_id") is None:
@@ -857,27 +1014,69 @@ def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
                     key=lambda item: last_checked.get(item[0]["id"], "")
                 )
 
-                for job, url, platform_label in to_browser_check[
-                    :_CLOSED_REQ_BROWSER_CHECK_CAP
-                ]:
-                    new_id = repos["browser_capture_queue"].enqueue_once_for_purpose(
-                        url,
-                        f"{platform_label} (closed-req check)",
-                        "closed_req",
-                        job["id"],
-                    )
-                    if new_id is not None:
-                        browser_checks_queued += 1
-                repos["conn"].commit()
+            # ai: claude-fable-5 | 2026-07-17
+            # Queue rechecks one batch at a time and wait for the extension to
+            # drain each batch before queueing the next, so a single scan run
+            # covers the entire pool instead of only the first
+            # _CLOSED_REQ_BROWSER_CHECK_CAP jobs per run (which starved
+            # already-checked jobs of ever being rechecked once the pool
+            # outgrew the cap).
+            _update_req_closed_state(
+                browser_checks_total=total_rechecks,
+                current_platform="",
+                current_company="",
+                current_job_title="",
+                message=(
+                    f"Queueing {total_rechecks} authenticated browser "
+                    f"recheck{'s' if total_rechecks != 1 else ''}…"
+                ),
+            )
+            for start in range(0, total_rechecks, _CLOSED_REQ_BROWSER_CHECK_CAP):
+                batch = to_browser_check[start : start + _CLOSED_REQ_BROWSER_CHECK_CAP]
+                with get_repos() as repos:
+                    for job, url, _platform, platform_label in batch:
+                        new_id = repos[
+                            "browser_capture_queue"
+                        ].enqueue_once_for_purpose(
+                            url,
+                            f"{platform_label} (closed-req check)",
+                            "closed_req",
+                            job["id"],
+                        )
+                        if new_id is not None:
+                            browser_checks_queued += 1
+                    repos["conn"].commit()
+                _update_req_closed_state(browser_checks_queued=browser_checks_queued)
+                if not _drain_browser_recheck_batch(batch, total_rechecks):
+                    extension_stalled = True
+                    break
 
+        # The browser-recheck phase folds its outcomes straight into the shared
+        # state (see _fold_browser_recheck_outcome), so re-read the counters
+        # rather than trusting this thread's now-stale fetch-phase locals.
+        with _req_closed_lock:
+            closed_count = _req_closed_state.closed_count
+            kept_count = _req_closed_state.kept_count
+            unreachable_count = _req_closed_state.unreachable_count
+            browser_checks_done = _req_closed_state.browser_checks_done
+        if extension_stalled:
+            final_message = (
+                f"Stopped waiting — the browser extension isn't picking up "
+                f"rechecks ({browser_checks_done} of {total_rechecks} done). "
+                "Already-queued jobs will finish once the extension is running; "
+                "re-run the scan afterwards for the rest."
+            )
+        else:
+            final_message = (
+                f"Done — {closed_count} marked Req Closed, {kept_count} still open, "
+                f"{bad_url_count} bad URLs, {unreachable_count} unreachable. "
+                f"Completed {browser_checks_done} authenticated browser "
+                f"recheck{'s' if browser_checks_done != 1 else ''}."
+            )
         _update_req_closed_state(
             running=False,
             browser_checks_queued=browser_checks_queued,
-            message=(
-                f"Done — {closed_count} marked Req Closed, {kept_count} still open, "
-                f"{bad_url_count} bad URLs, {unreachable_count} unreachable. "
-                f"Queued {browser_checks_queued} for authenticated browser re-check."
-            ),
+            message=final_message,
             current_platform="",
             current_company="",
             current_job_title="",
@@ -970,6 +1169,8 @@ def closed_req_scan_status() -> ResponseReturnValue:
                 "bad_url_count": _req_closed_state.bad_url_count,
                 "unreachable_count": _req_closed_state.unreachable_count,
                 "browser_checks_queued": _req_closed_state.browser_checks_queued,
+                "browser_checks_total": _req_closed_state.browser_checks_total,  # ai: claude-fable-5 | 2026-07-17
+                "browser_checks_done": _req_closed_state.browser_checks_done,  # ai: claude-fable-5 | 2026-07-17
                 "browser_queue": browser_queue,
                 "current_platform": _req_closed_state.current_platform,
                 "current_company": _req_closed_state.current_company,

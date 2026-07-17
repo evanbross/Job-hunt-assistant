@@ -85,6 +85,25 @@ def _no_host_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(applications_module, "_host_fetch_last_at", {})
 
 
+# ai: claude-fable-5 | 2026-07-17
+@pytest.fixture(autouse=True)
+def _fast_browser_drain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero the browser-recheck drain pacing so a scan whose capture queue
+    nothing drains (tests have no extension) stalls out immediately instead of
+    waiting minutes. raising=False lets these tests also run against
+    pre-batch-loop code — where the constants don't exist — and fail on the
+    starved behavior rather than on the fixture."""
+    monkeypatch.setattr(
+        applications_module, "_BROWSER_DRAIN_POLL_SECONDS", 0.0, raising=False
+    )
+    monkeypatch.setattr(
+        applications_module,
+        "_BROWSER_DRAIN_STALL_TIMEOUT_SECONDS",
+        0.0,
+        raising=False,
+    )
+
+
 def test_canonicalize_linkedin_url_strips_email_tracking_params() -> None:
     tracking_url = (
         "https://www.linkedin.com/comm/jobs/view/4410030973/"
@@ -598,6 +617,121 @@ def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
             assert _req_closed_state.bad_url_count == 0
     finally:
         repos["conn"].close()
+
+
+# ai: claude-fable-5 | 2026-07-17
+def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for job 2840: with more escalations than one batch holds, the
+    scan must keep queueing batches and waiting for the extension to drain each
+    one until every job got an authenticated recheck — not stop after the first
+    batch and starve the rest of the pool for runs on end."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    total = _CLOSED_REQ_BROWSER_CHECK_CAP + 3
+    job_ids: list[int] = []
+    try:
+        for i in range(total):
+            job_ids.append(
+                repos["jobs"].insert(
+                    {
+                        "company": "Acme",
+                        "job_title": f"Engineer {i}",
+                        "url": f"https://www.linkedin.com/jobs/view/{500 + i}/",
+                        "source": "LinkedIn",
+                        "status": "pending_review",
+                    }
+                )
+            )
+        repos["conn"].commit()
+    finally:
+        repos["conn"].close()
+    closed_job_id = job_ids[-1]  # lands in the final batch
+
+    def _extension_drains_queue(_seconds: float) -> None:
+        """Stands in for the browser extension during the scan thread's drain
+        sleep: claims every pending recheck, records one job closed the same
+        way submit_closed_req_capture would, and marks the rows done."""
+        drain_repos = open_repositories(config.DATABASE_URL)
+        try:
+            queue_repo = drain_repos["browser_capture_queue"]
+            claimed = queue_repo.claim_pending(limit=100)
+            if any(item["job_id"] == closed_job_id for item in claimed):
+                drain_repos["jobs"].update(
+                    closed_job_id,
+                    {"status": "skipped", "skip_reason": "req_closed"},
+                )
+            queue_repo.mark_done_by_urls([item["url"] for item in claimed])
+            drain_repos["conn"].commit()
+        finally:
+            drain_repos["conn"].close()
+
+    monkeypatch.setattr(applications_module.time, "sleep", _extension_drains_queue)
+    with patch("routes.applications._check_closed_req", return_value="open"):
+        _run_req_closed_scan()
+
+    check_repos = open_repositories(config.DATABASE_URL)
+    try:
+        rows = [
+            r
+            for r in check_repos["browser_capture_queue"].get_all()
+            if r["purpose"] == "closed_req"
+        ]
+        closed_job = check_repos["jobs"].get_by_id(closed_job_id)
+    finally:
+        check_repos["conn"].close()
+
+    assert {r["job_id"] for r in rows} == set(job_ids)
+    assert closed_job["skip_reason"] == "req_closed"
+    with _req_closed_lock:
+        assert _req_closed_state.running is False
+        assert _req_closed_state.browser_checks_total == total
+        assert _req_closed_state.browser_checks_done == total
+        assert _req_closed_state.closed_count == 1
+        assert _req_closed_state.kept_count == total - 1
+        assert any(m["id"] == closed_job_id for m in _req_closed_state.marked)
+        assert _req_closed_state.message.startswith("Done")
+
+
+# ai: claude-fable-5 | 2026-07-17
+def test_run_req_closed_scan_stops_batching_when_extension_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With nothing draining the capture queue, the scan must give up after the
+    first batch with an explanatory message instead of waiting forever or
+    flooding the queue with every remaining batch."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    total = _CLOSED_REQ_BROWSER_CHECK_CAP + 5
+    try:
+        for i in range(total):
+            repos["jobs"].insert(
+                {
+                    "company": "Acme",
+                    "job_title": f"Engineer {i}",
+                    "url": f"https://www.linkedin.com/jobs/view/{700 + i}/",
+                    "source": "LinkedIn",
+                    "status": "pending_review",
+                }
+            )
+        repos["conn"].commit()
+
+        with patch("routes.applications._check_closed_req", return_value="open"):
+            _run_req_closed_scan()
+
+        rows = [
+            r
+            for r in repos["browser_capture_queue"].get_all()
+            if r["purpose"] == "closed_req"
+        ]
+    finally:
+        repos["conn"].close()
+
+    assert len(rows) == _CLOSED_REQ_BROWSER_CHECK_CAP
+    with _req_closed_lock:
+        assert _req_closed_state.running is False
+        assert _req_closed_state.browser_checks_total == total
+        assert _req_closed_state.browser_checks_done == 0
+        assert "extension" in _req_closed_state.message
 
 
 # ─── _classify_closed_req_page ─────────────────────────────────────────────────
