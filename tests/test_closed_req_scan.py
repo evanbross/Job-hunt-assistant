@@ -49,6 +49,7 @@ from routes.applications import (
     _BROWSER_QUEUE_POLL_INTERVAL_SECONDS,
     _CLOSED_REQ_BROWSER_CHECK_CAP,
     _canonicalize_linkedin_url,
+    _canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-16
     _check_closed_req,
     _classify_closed_req_page,
     _closed_req_browser_queue_snapshot,
@@ -135,6 +136,57 @@ def test_check_closed_req_detects_wellfound_closed_banner_phrase() -> None:
     )
     with patch("routes.applications.safe_urlopen", return_value=fake_resp):
         result = _check_closed_req(url, "wellfound")
+    assert result == "closed"
+
+
+# ai: claude-fable-5 | 2026-07-16
+def test_canonicalize_wttj_url_strips_token_and_tracking_params() -> None:
+    tokenized_url = (
+        "https://app.welcometothejungle.com/jobs/Tarr-ZBK"
+        "?token=eyJhbGciOiJIUzUxMiJ9.payload.sig&position=3&count=3"
+        "&utm_campaign=new_job_notification&utm_medium=email&utm_source=email"
+    )
+    assert (
+        _canonicalize_wttj_url(tokenized_url)
+        == "https://app.welcometothejungle.com/jobs/Tarr-ZBK"
+    )
+
+
+# ai: claude-fable-5 | 2026-07-16
+def test_canonicalize_wttj_url_leaves_plain_url_unchanged() -> None:
+    plain_url = "https://app.welcometothejungle.com/jobs/Tarr-ZBK"
+    assert _canonicalize_wttj_url(plain_url) == plain_url
+
+
+# ai: claude-fable-5 | 2026-07-16
+def test_canonicalize_wttj_url_leaves_non_wttj_url_unchanged() -> None:
+    other_url = "https://example.com/jobs/abc?token=xyz"
+    assert _canonicalize_wttj_url(other_url) == other_url
+
+
+# ai: claude-fable-5 | 2026-07-16
+def test_check_closed_req_fetches_wttj_via_canonical_url() -> None:
+    """A WTTJ email link's token/tracking params must be stripped before fetching.
+
+    With the token param present, app.welcometothejungle.com serves a client-side
+    app shell that never contains the closure banner, so a closed job is
+    misclassified as open (job 3044 regression, 2026-07-16).
+    """
+    tokenized_url = (
+        "https://app.welcometothejungle.com/jobs/Tarr-ZBK"
+        "?token=eyJhbGciOiJIUzUxMiJ9.payload.sig&position=3&count=3"
+        "&utm_campaign=new_job_notification&utm_medium=email&utm_source=email"
+    )
+    canonical_url = "https://app.welcometothejungle.com/jobs/Tarr-ZBK"
+    fake_resp = _fake_response(
+        b"<html><p>Job no longer available</p></html>", canonical_url
+    )
+    with patch(
+        "routes.applications.safe_urlopen", return_value=fake_resp
+    ) as mock_urlopen:
+        result = _check_closed_req(tokenized_url, "wttj")
+    fetched_request = mock_urlopen.call_args[0][0]
+    assert fetched_request.full_url == canonical_url
     assert result == "closed"
 
 
@@ -476,6 +528,40 @@ def test_enqueue_once_for_purpose_skips_duplicate_while_in_flight(
 
         rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
         assert len(rows) == 1
+    finally:
+        repos["conn"].close()
+
+
+# ai: claude-fable-5 | 2026-07-16
+def test_enqueue_once_for_purpose_queues_distinct_query_form_urls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wellfound identifies jobs in the query string (jobs?job_listing_slug=...),
+    so two different jobs sharing the same base URL must both be enqueueable.
+    Regression: base-URL dedupe collapsed every query-form Wellfound job to one
+    key, letting only a single Wellfound job per scan reach the browser check."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    try:
+        queue_repo = repos["browser_capture_queue"]
+        first_id = queue_repo.enqueue_once_for_purpose(
+            "https://wellfound.com/jobs?job_listing_slug=111-backend-engineer",
+            "Wellfound (closed-req check)",
+            "closed_req",
+            111,
+        )
+        assert first_id is not None
+        repos["conn"].commit()
+
+        second_id = queue_repo.enqueue_once_for_purpose(
+            "https://wellfound.com/jobs?job_listing_slug=222-staff-engineer",
+            "Wellfound (closed-req check)",
+            "closed_req",
+            222,
+        )
+        assert second_id is not None
+
+        rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
+        assert len(rows) == 2
     finally:
         repos["conn"].close()
 

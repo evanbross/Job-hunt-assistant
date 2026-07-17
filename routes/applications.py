@@ -44,7 +44,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from urllib.request import Request
 
 from flask import Blueprint, jsonify, request
@@ -389,6 +389,23 @@ def _canonicalize_linkedin_url(url: str) -> str:
     return f"https://www.linkedin.com/jobs/view/{match.group(1)}/"
 
 
+# ai: claude-fable-5 | 2026-07-16
+def _canonicalize_wttj_url(url: str) -> str:
+    """Strip the query string and fragment from a Welcome to the Jungle job URL.
+
+    WTTJ email links carry a ?token=<JWT> auth param plus tracking params. When
+    fetched with the token, app.welcometothejungle.com serves a client-side app
+    shell with no job content — the "Job no longer available" banner never
+    appears in the HTML, so a closed job is misclassified as open. The bare
+    path URL gets the full server-rendered page, banner included. WTTJ job URLs
+    identify the job entirely by path, so dropping the query is always safe.
+    """
+    parsed = urlparse(url)
+    if "welcometothejungle.com" not in parsed.netloc.lower():
+        return url
+    return urlunparse(parsed._replace(query="", fragment=""))
+
+
 def _classify_closed_req_page(
     page_text_lower: str, final_url: str, platform: str
 ) -> str:
@@ -433,6 +450,8 @@ def _check_closed_req(url: str, platform: str) -> str:
     """
     if platform == "linkedin":
         url = _canonicalize_linkedin_url(url)
+    elif platform == "wttj":  # ai: claude-fable-5 | 2026-07-16
+        url = _canonicalize_wttj_url(url)
     req = Request(
         url,
         headers={
