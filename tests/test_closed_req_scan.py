@@ -49,20 +49,22 @@ from flask.testing import FlaskClient
 import config
 import routes.applications as applications_module  # ai: claude-fable-5 | 2026-07-17
 from backend.db import init_db, open_repositories
+from backend.utils import (  # ai: claude-fable-5 | 2026-07-17
+    RATE_LIMIT_DEFAULT_BACKOFF_SECONDS,
+    canonicalize_wttj_url,
+    rate_limit_backoff_seconds,
+)
 from routes.applications import (
     _BROWSER_QUEUE_POLL_INTERVAL_SECONDS,
     _CLOSED_REQ_BROWSER_CHECK_CAP,
     _PLATFORM_LABELS,  # ai: claude-fable-5 | 2026-07-16
-    _RATE_LIMIT_DEFAULT_BACKOFF_SECONDS,  # ai: claude-fable-5 | 2026-07-17
     _RATE_LIMIT_MAX_RETRIES,  # ai: claude-fable-5 | 2026-07-17
     _canonicalize_linkedin_url,
-    _canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-16
     _check_closed_req,
     _classify_closed_req_page,
     _closed_req_browser_queue_snapshot,
     _closed_req_candidates,
     _detect_closed_req_platform,  # ai: claude-fable-5 | 2026-07-16
-    _rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17
     _record_closed_req,
     _req_closed_lock,
     _req_closed_state,
@@ -167,7 +169,7 @@ def test_canonicalize_wttj_url_strips_token_and_tracking_params() -> None:
         "&utm_campaign=new_job_notification&utm_medium=email&utm_source=email"
     )
     assert (
-        _canonicalize_wttj_url(tokenized_url)
+        canonicalize_wttj_url(tokenized_url)
         == "https://app.welcometothejungle.com/jobs/Tarr-ZBK"
     )
 
@@ -175,13 +177,13 @@ def test_canonicalize_wttj_url_strips_token_and_tracking_params() -> None:
 # ai: claude-fable-5 | 2026-07-16
 def test_canonicalize_wttj_url_leaves_plain_url_unchanged() -> None:
     plain_url = "https://app.welcometothejungle.com/jobs/Tarr-ZBK"
-    assert _canonicalize_wttj_url(plain_url) == plain_url
+    assert canonicalize_wttj_url(plain_url) == plain_url
 
 
 # ai: claude-fable-5 | 2026-07-16
 def test_canonicalize_wttj_url_leaves_non_wttj_url_unchanged() -> None:
     other_url = "https://example.com/jobs/abc?token=xyz"
-    assert _canonicalize_wttj_url(other_url) == other_url
+    assert canonicalize_wttj_url(other_url) == other_url
 
 
 # ai: claude-fable-5 | 2026-07-16
@@ -297,20 +299,20 @@ def test_check_closed_req_reports_persistent_429_as_unreachable() -> None:
     assert result == "unreachable"
     assert mock_urlopen.call_count == 1 + _RATE_LIMIT_MAX_RETRIES
     assert mock_sleep.call_count == _RATE_LIMIT_MAX_RETRIES
-    mock_sleep.assert_called_with(_RATE_LIMIT_DEFAULT_BACKOFF_SECONDS)
+    mock_sleep.assert_called_with(RATE_LIMIT_DEFAULT_BACKOFF_SECONDS)
 
 
 # ai: claude-fable-5 | 2026-07-17
 def test_rate_limit_backoff_seconds_honors_and_clamps_retry_after() -> None:
-    assert _rate_limit_backoff_seconds("7") == 7.0
-    assert _rate_limit_backoff_seconds("0") == 1.0  # clamped to the floor
-    assert _rate_limit_backoff_seconds("99999") == 120.0  # clamped to the cap
-    assert _rate_limit_backoff_seconds(None) == _RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+    assert rate_limit_backoff_seconds("7") == 7.0
+    assert rate_limit_backoff_seconds("0") == 1.0  # clamped to the floor
+    assert rate_limit_backoff_seconds("99999") == 120.0  # clamped to the cap
+    assert rate_limit_backoff_seconds(None) == RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
     assert (
-        _rate_limit_backoff_seconds("Wed, 21 Oct 2026 07:28:00 GMT")
-        == _RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+        rate_limit_backoff_seconds("Wed, 21 Oct 2026 07:28:00 GMT")
+        == RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
     )
-    assert _rate_limit_backoff_seconds("-5") == _RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+    assert rate_limit_backoff_seconds("-5") == RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
 
 
 # ai: claude-fable-5 | 2026-07-17

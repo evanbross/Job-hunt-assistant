@@ -45,7 +45,7 @@ import time  # ai: claude-fable-5 | 2026-07-17
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 from urllib.request import Request
 
 from flask import Blueprint, jsonify, request
@@ -56,9 +56,11 @@ from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
 from backend.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils import (
     _tracking_payload,
+    canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17 — moved to utils, shared with WTTJ repair
     get_repos,
     maybe_mark_source_email_read,
     normalize_stage_status,
+    rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17 — moved to utils, shared with WTTJ repair
 )
 
 logger = logging.getLogger(__name__)
@@ -74,12 +76,11 @@ _CLOSED_REQ_FETCH_MAX_BYTES = 2_000_000
 # requests, so an unpaced scan over a large candidate list mislabels the whole
 # tail of the list. Successive fetches to the same host are therefore spaced at
 # least _HOST_FETCH_MIN_INTERVAL_SECONDS apart, and a 429 that still slips
-# through is retried after the server's Retry-After (or a default backoff)
-# before being reported as transient ('unreachable' — never 'bad_url').
+# through is retried after the server's Retry-After (or a default backoff, see
+# backend.utils.rate_limit_backoff_seconds) before being reported as transient
+# ('unreachable' — never 'bad_url').
 _HOST_FETCH_MIN_INTERVAL_SECONDS = 1.0
 _RATE_LIMIT_MAX_RETRIES = 2
-_RATE_LIMIT_DEFAULT_BACKOFF_SECONDS = 30.0
-_RATE_LIMIT_BACKOFF_CAP_SECONDS = 120.0
 
 _host_fetch_last_at: dict[str, float] = {}
 _host_fetch_lock = threading.Lock()
@@ -105,20 +106,6 @@ def _throttle_host_fetch(host: str) -> None:
         time.sleep(wait)
 
 
-# ai: claude-fable-5 | 2026-07-17
-def _rate_limit_backoff_seconds(retry_after: str | None) -> float:
-    """Seconds to wait before retrying after an HTTP 429.
-
-    Honors a numeric Retry-After header value, clamped to a sane range;
-    falls back to a default backoff when the header is absent or unparseable
-    (HTTP-date form included — not worth parsing for this use)."""
-    try:
-        seconds = float(retry_after) if retry_after is not None else None
-    except ValueError:
-        seconds = None
-    if seconds is None or not 0 <= seconds:
-        return _RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
-    return min(max(seconds, 1.0), _RATE_LIMIT_BACKOFF_CAP_SECONDS)
 
 _CLOSED_PHRASES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
     "linkedin": (
@@ -442,23 +429,6 @@ def _canonicalize_linkedin_url(url: str) -> str:
     return f"https://www.linkedin.com/jobs/view/{match.group(1)}/"
 
 
-# ai: claude-fable-5 | 2026-07-16
-def _canonicalize_wttj_url(url: str) -> str:
-    """Strip the query string and fragment from a Welcome to the Jungle job URL.
-
-    WTTJ email links carry a ?token=<JWT> auth param plus tracking params. When
-    fetched with the token, app.welcometothejungle.com serves a client-side app
-    shell with no job content — the "Job no longer available" banner never
-    appears in the HTML, so a closed job is misclassified as open. The bare
-    path URL gets the full server-rendered page, banner included. WTTJ job URLs
-    identify the job entirely by path, so dropping the query is always safe.
-    """
-    parsed = urlparse(url)
-    if "welcometothejungle.com" not in parsed.netloc.lower():
-        return url
-    return urlunparse(parsed._replace(query="", fragment=""))
-
-
 def _classify_closed_req_page(
     page_text_lower: str, final_url: str, platform: str
 ) -> str:
@@ -504,7 +474,7 @@ def _check_closed_req(url: str, platform: str) -> str:
     if platform == "linkedin":
         url = _canonicalize_linkedin_url(url)
     elif platform == "wttj":  # ai: claude-fable-5 | 2026-07-16
-        url = _canonicalize_wttj_url(url)
+        url = canonicalize_wttj_url(url)
     req = Request(
         url,
         headers={
@@ -535,7 +505,7 @@ def _check_closed_req(url: str, platform: str) -> str:
             if exc.code == 429:
                 if retries_left > 0:
                     retries_left -= 1
-                    delay = _rate_limit_backoff_seconds(
+                    delay = rate_limit_backoff_seconds(
                         exc.headers.get("Retry-After") if exc.headers else None
                     )
                     logger.warning(

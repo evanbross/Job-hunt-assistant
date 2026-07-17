@@ -34,11 +34,16 @@
 
 from __future__ import annotations
 
+import json  # ai: claude-fable-5 | 2026-07-17
 import re
+from collections.abc import Iterator  # ai: claude-fable-5 | 2026-07-17
 from typing import Any, Protocol
 
 from backend.career_site_scanner import CareerSiteScanner
 from backend.duplicate_checker import DuplicateChecker
+from backend.email_parser import (  # ai: claude-fable-5 | 2026-07-17
+    looks_like_wttj_misparsed_title,
+)
 from backend.utils import company_from_ats_url
 
 
@@ -166,3 +171,105 @@ def repair_existing_job_company(
         return False
     jobs_repo.update(int(existing_job["id"]), {"company": captured_company})
     return True
+
+
+_LD_JSON_SCRIPT_RE = re.compile(
+    r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _iter_ld_nodes(data: object) -> Iterator[dict[str, Any]]:
+    """Yield every JSON-LD object in a parsed block, descending into lists
+    and @graph containers."""
+    if isinstance(data, list):
+        for item in data:
+            yield from _iter_ld_nodes(item)
+    elif isinstance(data, dict):
+        yield data
+        yield from _iter_ld_nodes(data.get("@graph", []))
+
+
+# ai: claude-fable-5 | 2026-07-17
+def wttj_page_title_company(page_html: str) -> tuple[str, str]:
+    """Return (job_title, company) from a WTTJ job page's JSON-LD JobPosting.
+
+    WTTJ server-renders a schema.org JobPosting block on every live job page;
+    its 'title' and 'hiringOrganization.name' are the posting's authoritative
+    values, unlike email-derived guesses. Returns ("", "") when no JobPosting
+    block is present (e.g. a removed listing or an error page).
+    """
+    for raw_block in _LD_JSON_SCRIPT_RE.findall(page_html):
+        try:
+            data = json.loads(raw_block)
+        except json.JSONDecodeError:
+            continue
+        for node in _iter_ld_nodes(data):
+            if node.get("@type") != "JobPosting":
+                continue
+            title = str(node.get("title") or "").strip()
+            if not title:
+                continue
+            org = node.get("hiringOrganization")
+            company = (
+                str(org.get("name") or "").strip() if isinstance(org, dict) else ""
+            )
+            return title, company
+    return "", ""
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _wttj_companies_match(a: str, b: str) -> bool:
+    """True when two company names refer to the same company.
+
+    Case-insensitive; also accepts a short-vs-long variant of the same name
+    ("Virta" vs "Virta Health") by requiring the longer name to extend the
+    shorter one at a word boundary — so "Meta" does not match "Metabase"."""
+    a_cf = a.casefold().strip()
+    b_cf = b.casefold().strip()
+    if a_cf == b_cf:
+        return True
+    shorter, longer = sorted((a_cf, b_cf), key=len)
+    return longer.startswith(shorter) and longer[len(shorter)] in " ,.-"
+
+
+# ai: claude-fable-5 | 2026-07-17
+def wttj_title_repair_updates(
+    job: dict[str, Any], page_html: str
+) -> tuple[dict[str, Any], str]:
+    """Compute title/company repairs for a WTTJ job row from its live job page.
+
+    Returns (updates, problem). A non-empty problem string means nothing could
+    be safely repaired: the page had no JobPosting data, or it belongs to a
+    different company than the row — the mis-attributed-URL failure mode of the
+    pre-2026-06-22 email parser — in which case the row is left untouched for
+    manual review rather than overwritten with another job's identity.
+
+    A misparsed title (salary line, CTA text, orphaned parenthetical) is
+    replaced with the page's title; healthy titles are kept even when their
+    phrasing differs from the page. The company is only ever filled in when
+    blank or aligned to the page's spelling of the same name (re-cased, or a
+    short-vs-long variant like "Virta" → "Virta Health") — never changed to a
+    different company.
+    """
+    page_title, page_company = wttj_page_title_company(page_html)
+    if not page_title:
+        return {}, "no JobPosting data on page"
+    row_company = str(job.get("company") or "").strip()
+    if (
+        row_company
+        and page_company
+        and not _wttj_companies_match(row_company, page_company)
+    ):
+        return {}, (
+            f"page belongs to '{page_company}', not '{row_company}' — "
+            "URL likely mis-attributed by the old email parser"
+        )
+    updates: dict[str, Any] = {}
+    row_title = str(job.get("job_title") or "").strip()
+    if looks_like_wttj_misparsed_title(row_title) and page_title != row_title:
+        updates["job_title"] = page_title
+    if page_company and page_company != row_company:
+        updates["company"] = page_company
+    return updates, ""

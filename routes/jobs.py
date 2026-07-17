@@ -38,11 +38,15 @@ from __future__ import annotations
 
 import json
 import logging
+import socket  # ai: claude-fable-5 | 2026-07-17
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from urllib.error import HTTPError as UrllibHTTPError  # ai: claude-fable-5 | 2026-07-17
+from urllib.error import URLError  # ai: claude-fable-5 | 2026-07-17
 from urllib.parse import urlparse
+from urllib.request import Request  # ai: claude-fable-5 | 2026-07-17
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
@@ -59,17 +63,24 @@ from backend.email_parser import (
 )
 from backend.fit_scorer import FitScorer
 from backend.gmail_client import GmailClient, NotAuthenticatedError
+from backend.import_repair import (  # ai: claude-fable-5 | 2026-07-17
+    post_repair_duplicate_check,
+    wttj_title_repair_updates,
+)
 from backend.job_validator import import_warnings_to_json, normalize_and_validate
 from backend.manual_job_ingest_service import ManualJobIngestService
 from backend.skip_reasons import VALID_SKIP_REASONS  # ai: claude-fable-5 | 2026-07-16
+from backend.url_safety import UnsafeUrlError, safe_urlopen  # ai: claude-fable-5 | 2026-07-17
 from backend.utils import (
     _ai_error_http_status,
+    canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17
     db_match_for_job,
     expand_board_url_parsed_jobs,
     get_repos,
     is_near_certain_duplicate,
     maybe_mark_source_email_read,
     normalize_stage_status,
+    rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17
     safe_error_message,
 )
 
@@ -1024,6 +1035,7 @@ class WttjRepairState:
     current_title: str = ""
     repaired: list[dict] = field(default_factory=list)
     url_only: list[dict] = field(default_factory=list)
+    title_fixed: list[dict] = field(default_factory=list)  # ai: claude-fable-5 | 2026-07-17
     failed: list[dict] = field(default_factory=list)
     skipped: list[dict] = field(default_factory=list)
     error: str | None = None
@@ -1056,21 +1068,67 @@ def _non_terminal_jobs(repos: dict) -> list[dict]:
     return non_terminal
 
 
+# ai: claude-fable-5 | 2026-07-17
 def _wttj_repair_candidates(repos: dict) -> list[dict]:
-    """Non-terminal WTTJ jobs whose URL is a sendgrid/tracking link or empty."""
+    """All non-terminal WTTJ jobs.
+
+    Every row is a candidate — not just sendgrid/tracking URLs — because the
+    repair pass now also verifies each row's title and company against the live
+    job page. That is what catches the pre-2026-06-22 parser's leftovers:
+    salary-line/CTA titles and URLs mis-attributed to a different job's row.
+    """
     candidates: list[dict] = []
     for job in _non_terminal_jobs(repos):
         source = (job.get("source") or "").lower()
         if "welcome to the jungle" not in source and "wttj" not in source:
             continue
-        url = (job.get("url") or "").strip()
-        if (
-            "welcometothejungle.com/jobs/" in url
-            or "app.welcometothejungle.com/jobs/" in url
-        ):
-            continue
         candidates.append(job)
     return candidates
+
+
+_WTTJ_REPAIR_FETCH_INTERVAL_SECONDS = 1.0  # ai: claude-fable-5 | 2026-07-17
+_WTTJ_REPAIR_FETCH_TIMEOUT_SECONDS = 15
+_WTTJ_REPAIR_FETCH_MAX_BYTES = 2_000_000
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _fetch_wttj_page_html(url: str) -> str:
+    """Fetch a WTTJ job page's HTML for JSON-LD title/company verification.
+
+    An HTTP 429 is retried once after the server's Retry-After (or the shared
+    default backoff) — WTTJ rate-limits sustained fetching, and a one-off 429
+    should not surface a healthy row as a repair failure."""
+    req = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
+    retried = False
+    while True:
+        try:
+            with safe_urlopen(req, timeout=_WTTJ_REPAIR_FETCH_TIMEOUT_SECONDS) as resp:
+                raw = resp.read(_WTTJ_REPAIR_FETCH_MAX_BYTES)
+                charset = resp.headers.get_content_charset() or "utf-8"
+            return raw.decode(charset, errors="replace")
+        except UrllibHTTPError as exc:
+            if exc.code != 429 or retried:
+                raise
+            retried = True
+            delay = rate_limit_backoff_seconds(
+                exc.headers.get("Retry-After") if exc.headers else None
+            )
+            logger.warning(
+                "WTTJ repair rate-limited (HTTP 429) for %s — retrying in %.0fs",
+                url,
+                delay,
+            )
+            time.sleep(delay)
 
 
 # ai: claude-sonnet-4-6 | 2026-06-25
@@ -1085,6 +1143,7 @@ def _run_wttj_repair() -> None:
         _wttj_repair_state.current_title = ""
         _wttj_repair_state.repaired = []
         _wttj_repair_state.url_only = []
+        _wttj_repair_state.title_fixed = []  # ai: claude-fable-5 | 2026-07-17
         _wttj_repair_state.failed = []
         _wttj_repair_state.skipped = []
         _wttj_repair_state.error = None
@@ -1092,6 +1151,9 @@ def _run_wttj_repair() -> None:
     try:
         with get_repos() as repos:
             candidates = _wttj_repair_candidates(repos)
+            # ai: claude-fable-5 | 2026-07-17 — snapshot for post-repair duplicate
+            # checks; taken once here rather than per repaired row.
+            all_jobs_snapshot = repos["jobs"].get_all_ordered()
 
         total = len(candidates)
         with _wttj_repair_lock:
@@ -1102,6 +1164,7 @@ def _run_wttj_repair() -> None:
 
         repaired: list[dict] = []
         url_only: list[dict] = []
+        title_fixed: list[dict] = []  # ai: claude-fable-5 | 2026-07-17
         failed: list[dict] = []
         skipped: list[dict] = []
 
@@ -1128,45 +1191,105 @@ def _run_wttj_repair() -> None:
                     _wttj_repair_state.skipped = list(skipped)
                 continue
 
-            # Follow the sendgrid redirect with a generous timeout.
-            resolved = resolve_tracking_url(url, timeout=10.0)
-            if "welcometothejungle.com" not in resolved.lower():
-                failed.append({**summary, "reason": "redirect did not reach WTTJ"})
+            # ai: claude-fable-5 | 2026-07-17
+            if "welcometothejungle.com/jobs/" not in url.lower():
+                # Sendgrid/tracking wrapper: follow the redirect with a generous
+                # timeout, then fetch the JD from the resolved page.
+                resolved = resolve_tracking_url(url, timeout=10.0)
+                if "welcometothejungle.com" not in resolved.lower():
+                    failed.append(
+                        {**summary, "reason": "redirect did not reach WTTJ"}
+                    )
+                    with _wttj_repair_lock:
+                        _wttj_repair_state.failed = list(failed)
+                    continue
+
+                jd_text = ""
+                try:
+                    fetched = scanner.scan_single_job_url(company, resolved)
+                    if len(fetched.get("job_text") or "") >= 200:
+                        jd_text = fetched["job_text"]
+                except Exception as exc:
+                    logger.warning(
+                        "WTTJ repair: JD fetch failed for job %d (%s): %s",
+                        job["id"],
+                        resolved,
+                        exc,
+                    )
+
+                url_updates: dict = {"url": resolved}
+                if jd_text:
+                    url_updates["raw_email_snippet"] = jd_text[:6000]
+                    url_updates["job_description"] = jd_text
+
+                with get_repos() as repos:
+                    repos["jobs"].update(job["id"], url_updates)
+                    repos["conn"].commit()
+
+                if jd_text:
+                    repaired.append({**summary, "url": resolved})
+                    with _wttj_repair_lock:
+                        _wttj_repair_state.repaired = list(repaired)
+                else:
+                    url_only.append({**summary, "url": resolved})
+                    with _wttj_repair_lock:
+                        _wttj_repair_state.url_only = list(url_only)
+
+                # Fall through so the resolved URL also gets the title check.
+                url = resolved
+                job = {**job, "url": resolved}
+
+            # ai: claude-fable-5 | 2026-07-17
+            # Title/company verification against the live job page. Fixes rows
+            # whose title is a misparsed email fragment (salary line, CTA text,
+            # orphaned parenthetical) and flags rows whose URL belongs to a
+            # different company's job — both leftovers of the pre-2026-06-22
+            # WTTJ email parser. Paced so WTTJ's rate limit isn't tripped.
+            # Canonicalized first: with a ?token= param WTTJ serves a
+            # client-side app shell whose HTML has no JSON-LD JobPosting block.
+            url = canonicalize_wttj_url(url)
+            time.sleep(_WTTJ_REPAIR_FETCH_INTERVAL_SECONDS)
+            try:
+                page_html = _fetch_wttj_page_html(url)
+            except (
+                UnsafeUrlError,
+                UrllibHTTPError,
+                URLError,
+                TimeoutError,
+                socket.error,
+            ) as exc:
+                failed.append({**summary, "url": url, "reason": f"page fetch failed: {exc}"})
                 with _wttj_repair_lock:
                     _wttj_repair_state.failed = list(failed)
                 continue
 
-            # Fetch the actual job description from WTTJ.
-            jd_text = ""
-            try:
-                fetched = scanner.scan_single_job_url(company, resolved)
-                if len(fetched.get("job_text") or "") >= 200:
-                    jd_text = fetched["job_text"]
-            except Exception as exc:
-                logger.warning(
-                    "WTTJ repair: JD fetch failed for job %d (%s): %s",
-                    job["id"],
-                    resolved,
-                    exc,
-                )
-
-            updates: dict = {"url": resolved}
-            if jd_text:
-                updates["raw_email_snippet"] = jd_text[:6000]
-                updates["job_description"] = jd_text
+            fix_updates, problem = wttj_title_repair_updates(job, page_html)
+            if problem:
+                failed.append({**summary, "url": url, "reason": problem})
+                with _wttj_repair_lock:
+                    _wttj_repair_state.failed = list(failed)
+                continue
+            if not fix_updates:
+                continue  # title and company already match the page
 
             with get_repos() as repos:
-                repos["jobs"].update(job["id"], updates)
+                repos["jobs"].update(job["id"], fix_updates)
                 repos["conn"].commit()
+                # A repaired title can reveal the row as a duplicate of an
+                # already-tracked job (e.g. a retitled "See all top matches"
+                # CTA row). Only re-flag rows still awaiting triage — don't
+                # resurface rows the user already skipped or is tracking.
+                if job.get("status") in ("pending_review", "triage"):
+                    updated_job = repos["jobs"].get_by_id(int(job["id"]))
+                    if updated_job:
+                        post_repair_duplicate_check(
+                            repos["jobs"], updated_job, all_jobs_snapshot
+                        )
+                        repos["conn"].commit()
 
-            if jd_text:
-                repaired.append({**summary, "url": resolved})
-                with _wttj_repair_lock:
-                    _wttj_repair_state.repaired = list(repaired)
-            else:
-                url_only.append({**summary, "url": resolved})
-                with _wttj_repair_lock:
-                    _wttj_repair_state.url_only = list(url_only)
+            title_fixed.append({**summary, **fix_updates, "url": url})
+            with _wttj_repair_lock:
+                _wttj_repair_state.title_fixed = list(title_fixed)
 
         with _wttj_repair_lock:
             _wttj_repair_state.running = False
@@ -1175,6 +1298,7 @@ def _run_wttj_repair() -> None:
             _wttj_repair_state.current_title = ""
             _wttj_repair_state.message = (
                 f"Done — {len(repaired)} fully repaired, {len(url_only)} URL only, "
+                f"{len(title_fixed)} titles/companies fixed, "
                 f"{len(failed)} failed, {len(skipped)} skipped (no URL)."
             )
 
@@ -1212,6 +1336,7 @@ def wttj_repair_status() -> ResponseReturnValue:
                 "current_title": _wttj_repair_state.current_title,
                 "repaired": _wttj_repair_state.repaired,
                 "url_only": _wttj_repair_state.url_only,
+                "title_fixed": _wttj_repair_state.title_fixed,  # ai: claude-fable-5 | 2026-07-17
                 "failed": _wttj_repair_state.failed,
                 "skipped": _wttj_repair_state.skipped,
                 "error": _wttj_repair_state.error,

@@ -402,6 +402,27 @@ _WTTJ_METADATA_LINE_RE = re.compile(
 )
 
 
+# ai: claude-fable-5 | 2026-07-17
+def looks_like_wttj_misparsed_title(title: str) -> bool:
+    """True when a stored WTTJ job title is clearly a misparsed email fragment.
+
+    Versions of the WTTJ digest parser before the metadata-line filter and
+    split-title rejoin (2026-06-22) stored salary lines ("Salary: $125-254K"),
+    CTA lines ("See all top matches"), or orphaned parenthetical qualifiers
+    ("(Backend)") as job titles. The WTTJ repair flow uses this to find rows
+    whose title must be re-read from the live job page. Deliberately reuses
+    this module's skip-list and metadata regex so the two stay in sync.
+    """
+    normalized = _normalized_line(title)
+    if not normalized:
+        return True
+    if normalized in _WTTJ_SKIP_TITLE_LINES:
+        return True
+    if title.lstrip().startswith("("):
+        return True
+    return bool(_WTTJ_METADATA_LINE_RE.search(title))
+
+
 def _parse_linkedin_alert_jobs(
     subject: str, sender: str, body_snippet: str
 ) -> list[ParsedJob]:

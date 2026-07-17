@@ -43,6 +43,7 @@ from backend.ai_provider import AIMessage
 from backend.email_parser import (
     EmailParser,
     _trim_company_tail,
+    looks_like_wttj_misparsed_title,  # ai: claude-fable-5 | 2026-07-17
     normalize_title_company,
 )
 
@@ -61,6 +62,29 @@ class FakeParserClient:
     ) -> str:
         self.messages = messages
         return "[]"
+
+
+# ai: claude-fable-5 | 2026-07-17
+def test_looks_like_wttj_misparsed_title_flags_junk_fragments() -> None:
+    """Titles the pre-2026-06-22 WTTJ parser stored from digest-email fragments
+    (jobs 1417-2411 in production data)."""
+    assert looks_like_wttj_misparsed_title("Salary: $125-254K")
+    assert looks_like_wttj_misparsed_title("Salary: $504-965K OTE, $270-375K base")
+    assert looks_like_wttj_misparsed_title("See all top matches")
+    assert looks_like_wttj_misparsed_title("(Adaptive Classification Team)")
+    assert looks_like_wttj_misparsed_title("(C++/Rust)")
+    assert looks_like_wttj_misparsed_title("")
+    assert looks_like_wttj_misparsed_title("New York • Full-time")
+
+
+# ai: claude-fable-5 | 2026-07-17
+def test_looks_like_wttj_misparsed_title_keeps_real_titles() -> None:
+    assert not looks_like_wttj_misparsed_title("Senior Software Engineer (Backend)")
+    assert not looks_like_wttj_misparsed_title("Staff Software Engineer")
+    assert not looks_like_wttj_misparsed_title("Principal Engineer, Card Readers Team")
+    assert not looks_like_wttj_misparsed_title(
+        "Senior Backend Engineer (Ruby or Golang, Tenant Scale, Cells Infrastructure)"
+    )
 
 
 def test_extracts_company_from_job_application_title() -> None:
