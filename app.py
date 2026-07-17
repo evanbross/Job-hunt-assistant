@@ -69,6 +69,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 import config
+from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
 from backend.import_listener import start_job_import_listener
 from backend.utils import is_trusted_api_write_origin
@@ -528,6 +529,18 @@ def _start_celery_worker() -> None:
 
     if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         return  # reloader fork — worker already running from the parent
+
+    # ai: claude-fable-5 | 2026-07-16
+    # A worker may already exist: workers outlive a killed app.py parent, and a
+    # second app.py launch would otherwise stack another worker on the same
+    # broker, double-processing tasks. Trade-off: the surviving worker may
+    # belong to another app.py instance whose atexit hook will take it down
+    # when that instance exits — restart this instance if tasks stop running.
+    if worker_is_running():
+        logger.warning(
+            "A Celery worker for this app is already running — not spawning another."
+        )
+        return
 
     try:
         _celery_proc = _subprocess.Popen(

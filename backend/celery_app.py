@@ -42,9 +42,14 @@ Run the worker with:
 
 from __future__ import annotations
 
+import logging
+
 from celery import Celery
+from celery.exceptions import OperationalError
 
 import config
+
+logger = logging.getLogger(__name__)
 
 celery_app = Celery(
     "job_hunt_assistant",
@@ -65,3 +70,21 @@ celery_app.conf.update(
     worker_pool="threads",
     worker_concurrency=4,
 )
+
+
+# ai: claude-fable-5 | 2026-07-16
+def worker_is_running(timeout: float = 1.0) -> bool:
+    """True if at least one Celery worker for this app answers a broker ping.
+
+    Used by app.py to avoid spawning a duplicate worker: each app.py launch
+    spawns its own worker, workers outlive a killed parent process, and
+    duplicate workers silently double-process queued tasks (they also share
+    the default nodename, triggering DuplicateNodenameWarning). A broker
+    outage returns False — the caller then proceeds to spawn, matching the
+    previous always-spawn behavior when Redis is unreachable.
+    """
+    try:
+        return bool(celery_app.control.ping(timeout=timeout))
+    except (OperationalError, OSError) as exc:
+        logger.warning("Celery worker ping failed (broker unreachable?): %s", exc)
+        return False
