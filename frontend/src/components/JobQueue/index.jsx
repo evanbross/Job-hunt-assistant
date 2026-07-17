@@ -958,11 +958,24 @@ export default function JobQueue({
   // background thread on the server since checking every LinkedIn job's URL
   // over the network can take minutes, so this polls for progress instead of
   // waiting on one long request.
-  const startReqClosedScan = async () => {
+  // ai: claude-fable-5 | 2026-07-16
+  // Opens the setup step of the dialog (career-site checkboxes) instead of
+  // starting the scan immediately; startReqClosedScan runs when the user
+  // confirms a selection there.
+  const openReqClosedScanSetup = () => {
     setMoreToolsOpen(false);
     reqClosedDismissedRef.current = false;
+    setReqClosedDialog({ setup: true });
+  };
+
+  const startReqClosedScan = async (platforms) => {
+    reqClosedDismissedRef.current = false;
     reqClosedBrowserDoneRef.current = 0;
-    const res = await fetch("/api/applications/scan-closed-reqs", { method: "POST" });
+    const res = await fetch("/api/applications/scan-closed-reqs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platforms }),
+    });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       window.alert(data.error || `Scan failed (${res.status})`);
@@ -1827,7 +1840,7 @@ export default function JobQueue({
               </button>
               <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
               <button
-                onClick={startReqClosedScan}
+                onClick={openReqClosedScanSetup}
                 disabled={anyQueueActionRunning}
                 style={{
                   display: "block",
@@ -1842,7 +1855,7 @@ export default function JobQueue({
                   opacity: anyQueueActionRunning ? 0.5 : 1,
                 }}
               >
-                {reqClosedScanning ? "Scanning…" : "Scan for Closed Reqs (LinkedIn + WTTJ + Wellfound + MongoDB)"}
+                {reqClosedScanning ? "Scanning…" : "Scan for Closed Reqs…"}
               </button>
               <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
               <button
@@ -1878,6 +1891,7 @@ export default function JobQueue({
       {reqClosedDialog && (
         <ReqClosedDialog
           result={reqClosedDialog}
+          onStart={startReqClosedScan}
           onClose={() => {
             reqClosedDismissedRef.current = true;
             setReqClosedDialogVisible(false);

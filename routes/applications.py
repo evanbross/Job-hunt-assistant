@@ -49,6 +49,7 @@ from urllib.request import Request
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import BaseModel, ValidationError, field_validator
 
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
 from backend.url_safety import UnsafeUrlError, safe_urlopen
@@ -689,13 +690,20 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
     return {"ok": True}, 200
 
 
-def _run_req_closed_scan() -> None:
+# ai: claude-fable-5 | 2026-07-16
+def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
+    """Scan candidate jobs for closed reqs, limited to `platforms` (keys of
+    _PLATFORM_LABELS). None means scan every supported platform."""
     today = datetime.now(UTC).date().isoformat()
+    selected = platforms if platforms is not None else frozenset(_PLATFORM_LABELS)
+    selected_labels = ", ".join(
+        label for key, label in _PLATFORM_LABELS.items() if key in selected
+    )
     _update_req_closed_state(
         running=True,
         progress=0,
         total=0,
-        message="Finding LinkedIn, Welcome to the Jungle, Wellfound, and MongoDB jobs to check…",
+        message=f"Finding {selected_labels} jobs to check…",
         marked=[],
         errors=[],
         checked=0,
@@ -711,7 +719,10 @@ def _run_req_closed_scan() -> None:
     )
     try:
         with get_repos() as repos:
-            candidates = _closed_req_candidates(repos)
+            # ai: claude-fable-5 | 2026-07-16
+            candidates = [
+                c for c in _closed_req_candidates(repos) if c[2] in selected
+            ]
         # Connection released before the external fetches below.
 
         total = len(candidates)
@@ -833,19 +844,62 @@ def _run_req_closed_scan() -> None:
         )
 
 
+# ai: claude-fable-5 | 2026-07-16
+class ClosedReqScanRequest(BaseModel):
+    """Optional body for POST /applications/scan-closed-reqs. `platforms` limits
+    the scan to a subset of the supported platform keys; omitted means all."""
+
+    platforms: list[str] | None = None
+
+    @field_validator("platforms")
+    @classmethod
+    def _validate_platforms(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        if not value:
+            raise ValueError("select at least one platform")
+        unknown = set(value) - _PLATFORM_LABELS.keys()
+        if unknown:
+            raise ValueError(f"unknown platforms: {', '.join(sorted(unknown))}")
+        return value
+
+
+# ai: claude-fable-5 | 2026-07-16
+@applications_bp.route("/applications/scan-closed-reqs/platforms", methods=["GET"])
+def closed_req_scan_platforms() -> ResponseReturnValue:
+    """Supported closed-req scan platforms, for the scan-setup dialog's checkboxes.
+    Served from _PLATFORM_LABELS so the UI's list can't drift from the backend."""
+    return jsonify(
+        [{"key": key, "label": label} for key, label in _PLATFORM_LABELS.items()]
+    )
+
+
 @applications_bp.route("/applications/scan-closed-reqs", methods=["POST"])
 def start_closed_req_scan() -> ResponseReturnValue:
-    """Kick off a background scan of LinkedIn, Welcome to the Jungle, Wellfound, and MongoDB job URLs for closed-req banners."""
+    """Kick off a background scan of job URLs for closed-req banners, optionally
+    limited to a caller-selected subset of the supported platforms."""
+    # ai: claude-fable-5 | 2026-07-16
+    try:
+        body = ClosedReqScanRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return jsonify({"error": "Invalid platform selection"}), 400
+    platforms = (
+        frozenset(body.platforms)
+        if body.platforms is not None
+        else frozenset(_PLATFORM_LABELS)
+    )
+
     with _req_closed_lock:
         if _req_closed_state.running:
             return jsonify({"error": "Scan already running"}), 409
 
     threading.Thread(
         target=_run_req_closed_scan,
+        args=(platforms,),
         daemon=True,
         name="closed-req-scan",
     ).start()
-    return jsonify({"status": "started"})
+    return jsonify({"status": "started", "platforms": sorted(platforms)})
 
 
 @applications_bp.route("/applications/scan-closed-reqs/status", methods=["GET"])

@@ -37,17 +37,21 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
 import pytest
+from flask import Flask
+from flask.testing import FlaskClient
 
 import config
 from backend.db import init_db, open_repositories
 from routes.applications import (
     _BROWSER_QUEUE_POLL_INTERVAL_SECONDS,
     _CLOSED_REQ_BROWSER_CHECK_CAP,
+    _PLATFORM_LABELS,  # ai: claude-fable-5 | 2026-07-16
     _canonicalize_linkedin_url,
     _canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-16
     _check_closed_req,
@@ -59,6 +63,7 @@ from routes.applications import (
     _req_closed_lock,
     _req_closed_state,
     _run_req_closed_scan,
+    applications_bp,  # ai: claude-fable-5 | 2026-07-16
     submit_closed_req_capture,
 )
 
@@ -414,6 +419,47 @@ def test_run_req_closed_scan_prioritizes_never_checked_job_over_cap(
         ), "pre-triage queue job never got a browser-check slot"
     finally:
         repos["conn"].close()
+
+
+# ai: claude-fable-5 | 2026-07-16
+def test_run_req_closed_scan_scans_only_selected_platforms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A platform selection must limit the scan to jobs on those platforms —
+    the point of the setup dialog's per-site checkboxes."""
+    repos = _fresh_repos(tmp_path, monkeypatch)
+    wellfound_url = "https://wellfound.com/jobs?job_listing_slug=1-engineer"
+    try:
+        repos["jobs"].insert(
+            {
+                "company": "Acme",
+                "job_title": "LinkedIn Job",
+                "url": "https://www.linkedin.com/jobs/view/9001/",
+                "source": "LinkedIn",
+                "status": "pending_review",
+            }
+        )
+        repos["jobs"].insert(
+            {
+                "company": "Astra",
+                "job_title": "Wellfound Job",
+                "url": wellfound_url,
+                "source": "Tampermonkey - Wellfound",
+                "status": "pending_review",
+            }
+        )
+        repos["conn"].commit()
+    finally:
+        repos["conn"].close()
+
+    with patch(
+        "routes.applications._check_closed_req", return_value="open"
+    ) as mock_check:
+        _run_req_closed_scan(frozenset({"wellfound"}))
+
+    assert [call.args[0] for call in mock_check.call_args_list] == [wellfound_url]
+    with _req_closed_lock:
+        assert _req_closed_state.total == 1
 
 
 def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
@@ -778,3 +824,78 @@ def test_submit_closed_req_capture_leaves_open_job_untouched(
 
     assert updated_job["status"] == "pending_review"
     assert queue_rows[0]["status"] == "done"
+
+
+# ─── scan-closed-reqs routes (platform selection) ───────────────────────────────
+# ai: claude-fable-5 | 2026-07-16
+
+
+def _scan_routes_client() -> FlaskClient:
+    app = Flask(__name__)
+    app.register_blueprint(applications_bp, url_prefix="/api")
+    return app.test_client()
+
+
+def test_closed_req_scan_platforms_lists_supported_platforms() -> None:
+    client = _scan_routes_client()
+    res = client.get("/api/applications/scan-closed-reqs/platforms")
+    assert res.status_code == 200
+    assert res.get_json() == [
+        {"key": key, "label": label} for key, label in _PLATFORM_LABELS.items()
+    ]
+
+
+def test_start_closed_req_scan_rejects_unknown_platform() -> None:
+    client = _scan_routes_client()
+    res = client.post(
+        "/api/applications/scan-closed-reqs", json={"platforms": ["myspace"]}
+    )
+    assert res.status_code == 400
+    assert res.get_json() == {"error": "Invalid platform selection"}
+
+
+def test_start_closed_req_scan_rejects_empty_platform_list() -> None:
+    client = _scan_routes_client()
+    res = client.post("/api/applications/scan-closed-reqs", json={"platforms": []})
+    assert res.status_code == 400
+
+
+def test_start_closed_req_scan_passes_selection_to_scan_thread() -> None:
+    client = _scan_routes_client()
+    scan_ran = threading.Event()
+    received: list[frozenset[str] | None] = []
+
+    def fake_scan(platforms: frozenset[str] | None = None) -> None:
+        received.append(platforms)
+        scan_ran.set()
+
+    with patch("routes.applications._run_req_closed_scan", side_effect=fake_scan):
+        res = client.post(
+            "/api/applications/scan-closed-reqs",
+            json={"platforms": ["wellfound", "mongodb"]},
+        )
+    assert res.status_code == 200
+    assert res.get_json() == {
+        "status": "started",
+        "platforms": ["mongodb", "wellfound"],
+    }
+    assert scan_ran.wait(timeout=5), "scan thread never ran"
+    assert received == [frozenset({"wellfound", "mongodb"})]
+
+
+def test_start_closed_req_scan_defaults_to_all_platforms() -> None:
+    """A bodyless POST (the pre-checkbox behavior) must still scan everything."""
+    client = _scan_routes_client()
+    scan_ran = threading.Event()
+    received: list[frozenset[str] | None] = []
+
+    def fake_scan(platforms: frozenset[str] | None = None) -> None:
+        received.append(platforms)
+        scan_ran.set()
+
+    with patch("routes.applications._run_req_closed_scan", side_effect=fake_scan):
+        res = client.post("/api/applications/scan-closed-reqs")
+    assert res.status_code == 200
+    assert res.get_json()["platforms"] == sorted(_PLATFORM_LABELS)
+    assert scan_ran.wait(timeout=5), "scan thread never ran"
+    assert received == [frozenset(_PLATFORM_LABELS)]
