@@ -47,11 +47,14 @@ from flask import Flask
 from flask.testing import FlaskClient
 
 import config
+import routes.applications as applications_module  # ai: claude-fable-5 | 2026-07-17
 from backend.db import init_db, open_repositories
 from routes.applications import (
     _BROWSER_QUEUE_POLL_INTERVAL_SECONDS,
     _CLOSED_REQ_BROWSER_CHECK_CAP,
     _PLATFORM_LABELS,  # ai: claude-fable-5 | 2026-07-16
+    _RATE_LIMIT_DEFAULT_BACKOFF_SECONDS,  # ai: claude-fable-5 | 2026-07-17
+    _RATE_LIMIT_MAX_RETRIES,  # ai: claude-fable-5 | 2026-07-17
     _canonicalize_linkedin_url,
     _canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-16
     _check_closed_req,
@@ -59,13 +62,25 @@ from routes.applications import (
     _closed_req_browser_queue_snapshot,
     _closed_req_candidates,
     _detect_closed_req_platform,  # ai: claude-fable-5 | 2026-07-16
+    _rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17
     _record_closed_req,
     _req_closed_lock,
     _req_closed_state,
     _run_req_closed_scan,
+    _throttle_host_fetch,  # ai: claude-fable-5 | 2026-07-17
     applications_bp,  # ai: claude-fable-5 | 2026-07-16
     submit_closed_req_capture,
 )
+
+
+# ai: claude-fable-5 | 2026-07-17
+@pytest.fixture(autouse=True)
+def _no_host_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero the per-host fetch spacing and isolate its state so unit tests that
+    call _check_closed_req repeatedly against the same host don't sleep for
+    real. The throttle itself is covered by its dedicated test below."""
+    monkeypatch.setattr(applications_module, "_HOST_FETCH_MIN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(applications_module, "_host_fetch_last_at", {})
 
 
 def test_canonicalize_linkedin_url_strips_email_tracking_params() -> None:
@@ -243,6 +258,86 @@ def test_check_closed_req_returns_closed_on_404() -> None:
     ):
         result = _check_closed_req(url, "linkedin")
     assert result == "closed"
+
+
+# ai: claude-fable-5 | 2026-07-17
+def test_check_closed_req_retries_429_and_succeeds() -> None:
+    """A rate-limited fetch must wait out Retry-After and retry, not fail.
+
+    WTTJ starts returning HTTP 429 after ~60 rapid requests, which the
+    2026-07-16 WTTJ-only scan misreported as 15 'bad URLs' (all of them fine).
+    """
+    url = "https://app.welcometothejungle.com/jobs/Tarr-ZBK"
+    fake_resp = _fake_response(b"<html>some job content</html>", url)
+    with patch(
+        "routes.applications.safe_urlopen",
+        side_effect=[
+            HTTPError(
+                url, 429, "Too Many Requests", hdrs={"Retry-After": "7"}, fp=None
+            ),
+            fake_resp,
+        ],
+    ) as mock_urlopen, patch("routes.applications.time.sleep") as mock_sleep:
+        result = _check_closed_req(url, "wttj")
+    assert result == "open"
+    assert mock_urlopen.call_count == 2
+    mock_sleep.assert_called_once_with(7.0)
+
+
+# ai: claude-fable-5 | 2026-07-17
+def test_check_closed_req_reports_persistent_429_as_unreachable() -> None:
+    """Still rate-limited after all retries → transient 'unreachable', never
+    'bad_url' — the URL itself is fine."""
+    url = "https://app.welcometothejungle.com/jobs/Tarr-ZBK"
+    with patch(
+        "routes.applications.safe_urlopen",
+        side_effect=HTTPError(url, 429, "Too Many Requests", hdrs=None, fp=None),
+    ) as mock_urlopen, patch("routes.applications.time.sleep") as mock_sleep:
+        result = _check_closed_req(url, "wttj")
+    assert result == "unreachable"
+    assert mock_urlopen.call_count == 1 + _RATE_LIMIT_MAX_RETRIES
+    assert mock_sleep.call_count == _RATE_LIMIT_MAX_RETRIES
+    mock_sleep.assert_called_with(_RATE_LIMIT_DEFAULT_BACKOFF_SECONDS)
+
+
+# ai: claude-fable-5 | 2026-07-17
+def test_rate_limit_backoff_seconds_honors_and_clamps_retry_after() -> None:
+    assert _rate_limit_backoff_seconds("7") == 7.0
+    assert _rate_limit_backoff_seconds("0") == 1.0  # clamped to the floor
+    assert _rate_limit_backoff_seconds("99999") == 120.0  # clamped to the cap
+    assert _rate_limit_backoff_seconds(None) == _RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+    assert (
+        _rate_limit_backoff_seconds("Wed, 21 Oct 2026 07:28:00 GMT")
+        == _RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+    )
+    assert _rate_limit_backoff_seconds("-5") == _RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+
+
+# ai: claude-fable-5 | 2026-07-17
+def test_throttle_host_fetch_spaces_same_host_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(applications_module, "_HOST_FETCH_MIN_INTERVAL_SECONDS", 1.0)
+    clock = {"now": 100.0}
+
+    def fake_sleep(seconds: float) -> None:
+        clock["now"] += seconds
+
+    with patch(
+        "routes.applications.time.monotonic", side_effect=lambda: clock["now"]
+    ), patch(
+        "routes.applications.time.sleep", side_effect=fake_sleep
+    ) as mock_sleep:
+        _throttle_host_fetch("app.welcometothejungle.com")
+        assert mock_sleep.call_count == 0  # first fetch is never delayed
+
+        _throttle_host_fetch("www.linkedin.com")
+        assert mock_sleep.call_count == 0  # different host is never delayed
+
+        clock["now"] = 100.2
+        _throttle_host_fetch("app.welcometothejungle.com")
+        assert mock_sleep.call_count == 1  # same host within the interval waits
+        assert mock_sleep.call_args[0][0] == pytest.approx(0.8)
 
 
 def _fresh_repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:

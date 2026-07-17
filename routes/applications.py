@@ -41,6 +41,7 @@ import logging
 import re
 import socket
 import threading
+import time  # ai: claude-fable-5 | 2026-07-17
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from urllib.error import HTTPError, URLError
@@ -67,6 +68,57 @@ applications_bp = Blueprint("applications", __name__)
 
 _CLOSED_REQ_FETCH_TIMEOUT_SECONDS = 15
 _CLOSED_REQ_FETCH_MAX_BYTES = 2_000_000
+
+# ai: claude-fable-5 | 2026-07-17
+# app.welcometothejungle.com starts returning HTTP 429 after roughly 60 rapid
+# requests, so an unpaced scan over a large candidate list mislabels the whole
+# tail of the list. Successive fetches to the same host are therefore spaced at
+# least _HOST_FETCH_MIN_INTERVAL_SECONDS apart, and a 429 that still slips
+# through is retried after the server's Retry-After (or a default backoff)
+# before being reported as transient ('unreachable' — never 'bad_url').
+_HOST_FETCH_MIN_INTERVAL_SECONDS = 1.0
+_RATE_LIMIT_MAX_RETRIES = 2
+_RATE_LIMIT_DEFAULT_BACKOFF_SECONDS = 30.0
+_RATE_LIMIT_BACKOFF_CAP_SECONDS = 120.0
+
+_host_fetch_last_at: dict[str, float] = {}
+_host_fetch_lock = threading.Lock()
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _throttle_host_fetch(host: str) -> None:
+    """Sleep as needed so successive fetches to the same host stay at least
+    _HOST_FETCH_MIN_INTERVAL_SECONDS apart. Fetches to different hosts are
+    never delayed by each other."""
+    while True:
+        with _host_fetch_lock:
+            now = time.monotonic()
+            last = _host_fetch_last_at.get(host)
+            wait = (
+                0.0
+                if last is None
+                else last + _HOST_FETCH_MIN_INTERVAL_SECONDS - now
+            )
+            if wait <= 0:
+                _host_fetch_last_at[host] = now
+                return
+        time.sleep(wait)
+
+
+# ai: claude-fable-5 | 2026-07-17
+def _rate_limit_backoff_seconds(retry_after: str | None) -> float:
+    """Seconds to wait before retrying after an HTTP 429.
+
+    Honors a numeric Retry-After header value, clamped to a sane range;
+    falls back to a default backoff when the header is absent or unparseable
+    (HTTP-date form included — not worth parsing for this use)."""
+    try:
+        seconds = float(retry_after) if retry_after is not None else None
+    except ValueError:
+        seconds = None
+    if seconds is None or not 0 <= seconds:
+        return _RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+    return min(max(seconds, 1.0), _RATE_LIMIT_BACKOFF_CAP_SECONDS)
 
 _CLOSED_PHRASES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
     "linkedin": (
@@ -436,9 +488,9 @@ def _check_closed_req(url: str, platform: str) -> str:
     to its generic jobs-search page carrying an expired-posting marker.
     'bad_url' is an unrelated HTTP error (e.g. 400/403/500) suggesting the URL
     itself is broken rather than the job being closed. 'unreachable' is a
-    network-level failure (timeout, DNS, etc.) unrelated to the job's status,
-    so the caller can skip it rather than risk a false positive from a
-    transient error.
+    network-level failure (timeout, DNS, etc.) or persistent rate limiting
+    (HTTP 429 after retries) unrelated to the job's status, so the caller can
+    skip it rather than risk a false positive from a transient error.
 
     Note: LinkedIn only renders its closure banner to authenticated sessions,
     so this unauthenticated fetch can return 'open' for a job that is actually
@@ -464,24 +516,48 @@ def _check_closed_req(url: str, platform: str) -> str:
             "Accept": "text/html,application/xhtml+xml",
         },
     )
-    try:
-        with safe_urlopen(req, timeout=_CLOSED_REQ_FETCH_TIMEOUT_SECONDS) as resp:
-            raw = resp.read(_CLOSED_REQ_FETCH_MAX_BYTES)
-            charset = resp.headers.get_content_charset() or "utf-8"
-            final_url = resp.geturl()
-        page_text = raw.decode(charset, errors="replace").lower()
-    except UnsafeUrlError as exc:
-        logger.warning("Closed-req check rejected unsafe URL %s: %s", url, exc)
-        return "bad_url"
-    except HTTPError as exc:
-        if exc.code in (404, 410):
-            return "closed"
-        logger.warning("Closed-req check got HTTP %s for %s", exc.code, url)
-        return "bad_url"
-    except (URLError, TimeoutError, socket.error) as exc:
-        logger.warning("Closed-req check failed for %s: %s", url, exc)
-        return "unreachable"
-    return _classify_closed_req_page(page_text, final_url, platform)
+    # ai: claude-fable-5 | 2026-07-17
+    retries_left = _RATE_LIMIT_MAX_RETRIES
+    while True:
+        _throttle_host_fetch(urlparse(url).netloc)
+        try:
+            with safe_urlopen(req, timeout=_CLOSED_REQ_FETCH_TIMEOUT_SECONDS) as resp:
+                raw = resp.read(_CLOSED_REQ_FETCH_MAX_BYTES)
+                charset = resp.headers.get_content_charset() or "utf-8"
+                final_url = resp.geturl()
+            page_text = raw.decode(charset, errors="replace").lower()
+        except UnsafeUrlError as exc:
+            logger.warning("Closed-req check rejected unsafe URL %s: %s", url, exc)
+            return "bad_url"
+        except HTTPError as exc:
+            if exc.code in (404, 410):
+                return "closed"
+            if exc.code == 429:
+                if retries_left > 0:
+                    retries_left -= 1
+                    delay = _rate_limit_backoff_seconds(
+                        exc.headers.get("Retry-After") if exc.headers else None
+                    )
+                    logger.warning(
+                        "Closed-req check rate-limited (HTTP 429) for %s — "
+                        "retrying in %.0fs",
+                        url,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.warning(
+                    "Closed-req check still rate-limited (HTTP 429) for %s "
+                    "after retries",
+                    url,
+                )
+                return "unreachable"
+            logger.warning("Closed-req check got HTTP %s for %s", exc.code, url)
+            return "bad_url"
+        except (URLError, TimeoutError, socket.error) as exc:
+            logger.warning("Closed-req check failed for %s: %s", url, exc)
+            return "unreachable"
+        return _classify_closed_req_page(page_text, final_url, platform)
 
 
 # ── Req-closed scan state (in-memory, protected by a lock) ────────────────────
