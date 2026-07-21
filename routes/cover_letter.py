@@ -48,6 +48,7 @@ from flask.typing import ResponseReturnValue
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.cover_letter_generator import CoverLetterGenerator
+from backend.cover_letter_learning import CoverLetterStyleLearner
 from backend.resume_tailor import ResumeTailoringGenerator
 from backend.utils import (
     _ai_error_http_status,
@@ -102,6 +103,33 @@ def generate_cover_letter(job_id: int) -> ResponseReturnValue:
         ), _ai_error_http_status(exc)
 
     return jsonify({"cover_letter": cover_letter})
+
+
+@cover_letter_bp.route("/jobs/<int:job_id>/cover-letter/learn", methods=["POST"])
+def learn_cover_letter_style(job_id: int) -> ResponseReturnValue:
+    """Silently distill generalizable style rules from an edited cover letter
+    and append them to the candidate profile for future generations."""
+    body = request.get_json(silent=True) or {}
+    draft = str(body.get("draft") or "").strip()
+    final = str(body.get("final") or "").strip()
+    chat_messages = body.get("chat_messages")
+    if not isinstance(chat_messages, list):
+        chat_messages = []
+
+    if not draft or not final:
+        return jsonify({"error": "draft and final text are required"}), 400
+
+    try:
+        applied = CoverLetterStyleLearner().learn_from_edit(
+            draft, final, chat_messages
+        )
+    except Exception as exc:
+        logger.warning(
+            "Cover letter style-learning failed for job %d: %s", job_id, exc
+        )
+        return jsonify({"applied": []})
+
+    return jsonify({"applied": applied})
 
 
 @cover_letter_bp.route("/cover-letter/save", methods=["POST"])

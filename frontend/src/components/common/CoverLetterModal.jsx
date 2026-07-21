@@ -63,6 +63,7 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
   const [chatSending, setChatSending] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState(null);
   const chatMessagesRef = useRef(null);
+  const hasLearnedRef = useRef(false);
 
   useEffect(() => {
     if (chatMessagesRef.current) {
@@ -109,10 +110,34 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
         throw new Error(data.error || `Save failed (${res.status})`);
       }
       setSaveStatus({ path: data.path, folder: data.folder, format });
+      triggerStyleLearning();
     } catch (e) {
       setSaveStatus(null);
       window.alert("Save failed: " + describeFetchError(e)); // ai: claude-fable-5 | 2026-07-15
     }
+  };
+
+  // ai: claude-sonnet-5 | 2026-07-21
+  // Fire-and-forget: on the first successful save of a session, if the letter
+  // was actually edited (directly or via chat), ask the backend to distill any
+  // generalizable style rules into the candidate profile. Silent by design —
+  // failures here must never surface as a save error to the user.
+  const triggerStyleLearning = () => {
+    if (hasLearnedRef.current) return;
+    const wasEdited = currentLetter.trim() !== coverLetter.trim() || chatMessages.length > 0;
+    if (!wasEdited) return;
+    hasLearnedRef.current = true;
+    fetch(`/api/jobs/${job.id}/cover-letter/learn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        draft: coverLetter,
+        final: currentLetter,
+        chat_messages: chatMessages,
+      }),
+    }).catch(() => {
+      // Best-effort — no user-facing failure mode for this.
+    });
   };
 
   // ai: claude-fable-5 | 2026-07-13
