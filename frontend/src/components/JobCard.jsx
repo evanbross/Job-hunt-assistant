@@ -1132,6 +1132,7 @@ function JobCard({
           onClose={companyHistory.close}
           onNavigateToJobCard={onNavigateToJobCard}
           onSkipDuplicate={(rowId) => onSkip(rowId, "duplicate", "", [])}
+          onRefresh={companyHistory.refresh}
         />
       )}
 

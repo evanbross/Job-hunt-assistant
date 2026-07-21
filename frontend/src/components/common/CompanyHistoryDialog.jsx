@@ -51,7 +51,7 @@ function isDeclaredDuplicate(row) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-28
-function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, dismissingId, dismissedIds, onSkipDuplicate, onDismissDuplicate, onNavigateToJobCard, onClose, handleSkipDuplicate, handleDismissDuplicate }) {
+function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, dismissingId, onSkipDuplicate, onDismissDuplicate, onNavigateToJobCard, onClose, handleSkipDuplicate, handleDismissDuplicate }) {
   return (
     <div
       style={{
@@ -110,7 +110,7 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, di
           status={effectiveRow.status}
           label={effectiveRow.status === "possible_duplicate" || effectiveRow.status === "skipped" ? rowStatusLabel(effectiveRow) : undefined}
         />
-        {effectiveRow.status === "possible_duplicate" && !dismissedIds?.has(row.id) && onSkipDuplicate && (
+        {effectiveRow.status === "possible_duplicate" && onSkipDuplicate && (
           <button
             type="button"
             className="btn-danger btn-sm"
@@ -120,7 +120,7 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, di
             {skippingId === row.id ? "Skipping…" : "Yes, Same Job - Skip It"}
           </button>
         )}
-        {effectiveRow.status === "possible_duplicate" && !dismissedIds?.has(row.id) && onDismissDuplicate && (
+        {effectiveRow.status === "possible_duplicate" && onDismissDuplicate && (
           <button
             type="button"
             className="btn-success btn-sm"
@@ -139,10 +139,9 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, di
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-28
-export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose, onNavigateToJobCard, onSkipDuplicate, onDismissDuplicate }) {
+export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose, onNavigateToJobCard, onSkipDuplicate, onDismissDuplicate, onRefresh }) {
   const [skippedIds, setSkippedIds] = useState(new Set());
   const [skippingId, setSkippingId] = useState(null);
-  const [dismissedIds, setDismissedIds] = useState(new Set());
   const [dismissingId, setDismissingId] = useState(null);
   const [showDuplicates, setShowDuplicates] = useState(true);
   const [sortBy, setSortBy] = useState("id");
@@ -152,6 +151,10 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
     try {
       await onSkipDuplicate(row.id);
       setSkippedIds((prev) => new Set(prev).add(row.id));
+      // ai: claude-sonnet-5 | 2026-07-21
+      // Re-fetch so the dialog reflects the new duplicate hint / newly-surfaced
+      // candidate in place, instead of showing stale data until closed and reopened.
+      await onRefresh?.();
     } finally {
       setSkippingId(null);
     }
@@ -161,7 +164,11 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
     setDismissingId(row.id);
     try {
       await onDismissDuplicate(row.id);
-      setDismissedIds((prev) => new Set(prev).add(row.id));
+      // ai: claude-sonnet-5 | 2026-07-21
+      // Refetch before deciding whether to hide the buttons: dismissing this
+      // candidate can surface a *new* duplicate hint for the same row id, which
+      // needs its own "Yes/No" prompt rather than staying permanently hidden.
+      await onRefresh?.();
     } finally {
       setDismissingId(null);
     }
@@ -267,7 +274,6 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                   navigable={false}
                   skippingId={skippingId}
                   dismissingId={dismissingId}
-                  dismissedIds={dismissedIds}
                   onSkipDuplicate={onSkipDuplicate}
                   onDismissDuplicate={onDismissDuplicate}
                   onNavigateToJobCard={onNavigateToJobCard}
@@ -291,7 +297,6 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                   navigable={navigable}
                   skippingId={skippingId}
                   dismissingId={dismissingId}
-                  dismissedIds={dismissedIds}
                   onSkipDuplicate={onSkipDuplicate}
                   onDismissDuplicate={onDismissDuplicate}
                   onNavigateToJobCard={onNavigateToJobCard}

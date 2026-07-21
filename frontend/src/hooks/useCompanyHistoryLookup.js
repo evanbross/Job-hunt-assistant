@@ -36,26 +36,48 @@ import { useState } from "react";
 import { describeFetchError } from "../utils/fetchErrorUtils.js";
 import { applicationRowFromSheet, jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.js";
 
+// ai: claude-sonnet-5 | 2026-07-21
+// Every duplicate candidate the job has ever been matched against — the current
+// hint plus every id previously dismissed via dismiss-duplicate — must stay
+// force-included. Only force-including the *current* duplicate_of_id caused
+// earlier candidates (e.g. #1822, #1821) to silently drop out of the list once
+// the hint moved on to a new candidate (#1755), because their stored company
+// name doesn't always pass the fuzzy match in rowMatchesCompany.
+function alwaysIncludedIds(job) {
+  const ids = new Set();
+  if (job.duplicate_of_id) ids.add(job.duplicate_of_id);
+  try {
+    const dismissed = JSON.parse(job.dismissed_duplicate_ids || "[]");
+    if (Array.isArray(dismissed)) {
+      for (const id of dismissed) ids.add(id);
+    }
+  } catch {
+    // malformed/legacy value — ignore, current duplicate_of_id is still included
+  }
+  return ids;
+}
+
 // ai: claude-sonnet-4-6 | 2026-06-11
 export function useCompanyHistoryLookup(job) {
   const [opened, setOpened] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [rows, setRows] = useState([]);
 
-  const open = async () => {
+  // ai: claude-sonnet-5 | 2026-07-21
+  // Shared fetch used by both the initial open and later in-place refreshes
+  // (e.g. after the user dismisses a duplicate candidate from inside the
+  // dialog). Callers decide whether to clear `rows` first — a refresh leaves
+  // the existing rows in place until the new data arrives so the dialog
+  // doesn't flash empty while the user is still looking at it.
+  const fetchRows = async () => {
     const company = String(job.company || "").trim();
-    setOpened(true);
-    setError("");
-    setRows([]);
     if (!company) {
       setError("This card does not have a company name to search.");
       return;
     }
-
-    setLoading(true);
     try {
-      // ai: claude-sonnet-4-6 | 2026-06-28
       // Fetch both sources in parallel:
       //   - sheet/applications: applied jobs (on_sheet flag set), with stage history
       //   - jobs/by-company: ALL jobs in the DB for this company, any status
@@ -85,26 +107,52 @@ export function useCompanyHistoryLookup(job) {
         ? merged
         : [jobToHistoryRow(job), ...merged];
 
-      // ai: claude-sonnet-4-6 | 2026-06-29
-      // If this job was flagged as a possible duplicate of another job, always
-      // include that referenced job in the list — even when its stored company
-      // name doesn't match the fuzzy threshold used by rowMatchesCompany.
-      const duplicateOfId = job.duplicate_of_id ?? null;
-      let withDuplicateRef = withCurrent;
-      if (duplicateOfId && !withCurrent.some((r) => r.id === duplicateOfId)) {
-        const refRes = await fetch(`/api/jobs/${duplicateOfId}`);
-        if (refRes.ok) {
+      // ai: claude-sonnet-5 | 2026-07-21
+      // Force-include the current duplicate hint AND every previously dismissed
+      // candidate — even when their stored company name doesn't match the
+      // fuzzy threshold used by rowMatchesCompany.
+      const forceIncludeIds = alwaysIncludedIds(job);
+      const missingIds = [...forceIncludeIds].filter((id) => !withCurrent.some((r) => r.id === id));
+      const fetchedRefs = await Promise.all(
+        missingIds.map(async (id) => {
+          const refRes = await fetch(`/api/jobs/${id}`);
+          if (!refRes.ok) return null;
           const refJob = await refRes.json();
-          withDuplicateRef = [...withCurrent, jobToHistoryRow(refJob)];
-        }
-      }
+          return jobToHistoryRow(refJob);
+        })
+      );
+      const withDuplicateRefs = [...withCurrent, ...fetchedRefs.filter(Boolean)];
 
-      setRows(withDuplicateRef.filter((row) => rowMatchesCompany(row.company, company) || row.id === duplicateOfId));
+      setRows(withDuplicateRefs.filter((row) => rowMatchesCompany(row.company, company) || forceIncludeIds.has(row.id)));
+      setError("");
     } catch (lookupError) {
       // ai: claude-sonnet-5 | 2026-07-09
       setError(describeFetchError(lookupError) || "Application lookup failed");
+    }
+  };
+
+  const open = async () => {
+    setOpened(true);
+    setError("");
+    setRows([]);
+    setLoading(true);
+    try {
+      await fetchRows();
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ai: claude-sonnet-5 | 2026-07-21
+  // Re-run the lookup without resetting `opened`/`rows` first, so an in-dialog
+  // action (dismiss/skip duplicate) can refresh the list in place instead of
+  // requiring the user to close and reopen the dialog to see the new state.
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      await fetchRows();
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -114,6 +162,8 @@ export function useCompanyHistoryLookup(job) {
     loading,
     open,
     opened,
+    refresh,
+    refreshing,
     rows,
   };
 }

@@ -1349,6 +1349,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           onNavigateToJobCard={onNavigateToJobCard}
           onSkipDuplicate={onSkipDuplicate}
           onDismissDuplicate={onDismissDuplicate}
+          onRefresh={companyHistory.refresh}
         />
       )}
     </div>
@@ -2282,6 +2283,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           onNavigateToJobCard={onNavigateToJobCard}
           onSkipDuplicate={onSkipDuplicate}
           onDismissDuplicate={onDismissDuplicate}
+          onRefresh={companyHistory.refresh}
         />
       )}
 
