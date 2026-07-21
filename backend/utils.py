@@ -36,6 +36,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -881,13 +882,27 @@ def enrich_job_description(
     Does not change status for applied or skipped jobs.
     """
     job_id = int(job["id"])
-    repos["jobs"].update(
-        job_id,
-        {
-            "job_description": description,
-            "raw_email_snippet": description[:6000],
-        },
-    )
+    update_fields: dict[str, Any] = {
+        "job_description": description,
+        "raw_email_snippet": description[:6000],
+    }
+    # ai: claude-sonnet-4-6 | 2026-07-20
+    # A real description means the "jd_body_is_tracking_link" warning (raised
+    # when the JD was empty and the snippet was just a tracking link) no
+    # longer applies; other warning codes are unrelated to JD content and
+    # stay untouched.
+    try:
+        existing_warnings = json.loads(job.get("import_warnings") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        existing_warnings = []
+    if "jd_body_is_tracking_link" in existing_warnings:
+        remaining_warnings = [
+            code for code in existing_warnings if code != "jd_body_is_tracking_link"
+        ]
+        update_fields["import_warnings"] = (
+            json.dumps(remaining_warnings) if remaining_warnings else None
+        )
+    repos["jobs"].update(job_id, update_fields)
     try:
         result = FitScorer().score(
             job_title=str(job.get("job_title") or ""),
