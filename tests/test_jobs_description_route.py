@@ -134,6 +134,22 @@ class FakeJobStatusHistoryRepo:
         self.rows.append(row)
 
 
+# ai: claude-sonnet-5 | 2026-07-22
+class FakeStageStatusesRepo:
+    def get_all(self) -> list[dict[str, Any]]:
+        return [
+            {"key": "applied", "is_terminal": False},
+            {"key": "waiting_call", "is_terminal": False},
+            {"key": "waiting_second", "is_terminal": False},
+            {"key": "eval_test", "is_terminal": False},
+            {"key": "req_closed", "is_terminal": True},
+            {"key": "rejected", "is_terminal": True},
+            {"key": "ghosted", "is_terminal": True},
+            {"key": "job_filled", "is_terminal": True},
+            {"key": "skipped", "is_terminal": True},
+        ]
+
+
 class FakeFitScorer:
     def score(
         self,
@@ -320,6 +336,7 @@ def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(
         "conn": FakeConnection(),
         "jobs": jobs_repo,
         "stages": stages_repo,
+        "stage_statuses": FakeStageStatusesRepo(),  # ai: claude-sonnet-5 | 2026-07-22
         "job_status_history": history_repo,
     }
 
@@ -339,3 +356,56 @@ def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(
     assert history_repo.rows[0]["from_status"] == "applied"
     assert history_repo.rows[0]["to_status"] == "pending_review"
     assert history_repo.rows[0]["trigger"] == "return_to_queue"
+
+
+# ai: claude-sonnet-5 | 2026-07-22
+def test_return_to_queue_blocks_job_with_terminal_latest_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A job whose latest stage is terminal (e.g. req_closed, auto-detected by the
+    req-closed scanner independently of jobs.status) must not be silently reset to
+    an active queue status — see routes/jobs.py's return_job_to_queue docstring for
+    why that previously left a stale terminal stage behind and hid the job from
+    future req-closed scans."""
+    jobs_repo = FakeJobsRepo()
+    jobs_repo.row.update(
+        {
+            "on_sheet": 1,
+            "status": "applied",
+            "fit_score": 86,
+        }
+    )
+    stages_repo = FakeStagesRepo()
+    stages_repo.rows.append(
+        {
+            "id": 13,
+            "job_id": 7,
+            "status": "req_closed",
+            "date": "2026-07-01",
+            "notes": "Req closed on LinkedIn (auto-detected).",
+        }
+    )
+    history_repo = FakeJobStatusHistoryRepo()
+    repos = {
+        "conn": FakeConnection(),
+        "jobs": jobs_repo,
+        "stages": stages_repo,
+        "stage_statuses": FakeStageStatusesRepo(),
+        "job_status_history": history_repo,
+    }
+
+    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+
+    app = Flask(__name__)
+    app.register_blueprint(jobs_bp, url_prefix="/api")
+    client = app.test_client()
+
+    response = client.post("/api/jobs/7/return-to-queue")
+
+    assert response.status_code == 409
+    assert "req_closed" in response.get_json()["error"]
+    # Nothing was touched — job stays applied, all stages including req_closed remain.
+    assert jobs_repo.row["status"] == "applied"
+    assert jobs_repo.row["on_sheet"] == 1
+    assert [stage["id"] for stage in stages_repo.rows] == [11, 12, 13]
+    assert len(history_repo.rows) == 0

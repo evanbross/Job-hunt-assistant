@@ -469,9 +469,37 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
                 409,
             )
 
-        # ai: claude-fable-5 | 2026-07-14
+        # ai: claude-sonnet-5 | 2026-07-22
+        # jobs.status stays 'applied' for the whole sheet-tracked lifecycle — real
+        # progress (including auto-detected outcomes like req_closed/ghosted, see
+        # applications.py's _record_closed_req / mark_ghost_applications) lives only
+        # in application_stages. Without this check, returning a job whose latest
+        # stage is terminal wipes it back to an active pending_review/triage status
+        # while leaving that terminal stage behind — which then permanently hides
+        # the job from _closed_req_candidates (terminal stages are treated as
+        # already resolved), so a genuinely closed/rejected/ghosted job silently
+        # reappears in the Job Queue looking untriaged and never gets rechecked.
+        stages = repos["stages"].get_by_job_id(job_id)
+        terminal_keys = {
+            s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")
+        }
+        latest_stage = stages[-1] if stages else None
+        if latest_stage and normalize_stage_status(latest_stage.get("status")) in terminal_keys:
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "This application has already reached a terminal stage "
+                            f"({latest_stage.get('status')}) and can't be returned "
+                            "to the queue."
+                        )
+                    }
+                ),
+                409,
+            )
+
         deleted_applied_date: str | None = None
-        for stage in repos["stages"].get_by_job_id(job_id):
+        for stage in stages:
             if stage.get("status") == "applied" and not stage.get("notes"):
                 if deleted_applied_date is None:
                     deleted_applied_date = stage.get("date")
