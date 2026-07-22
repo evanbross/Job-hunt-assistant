@@ -72,6 +72,7 @@ import config
 from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
 from backend.import_listener import start_job_import_listener
+from backend.queue_websocket import start_queue_websocket_server
 from backend.utils import is_trusted_api_write_origin
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
@@ -338,6 +339,15 @@ def _claim_browser_capture_queue() -> list[dict]:
     return items
 
 
+# ai: claude-sonnet-5 | 2026-07-22
+def _browser_capture_queue_has_pending() -> bool:
+    """Called from the queue WebSocket server's watcher thread."""
+    from backend.utils import get_repos
+
+    with get_repos() as repos:
+        return repos["browser_capture_queue"].has_pending()
+
+
 # Career-site auto-scheduler intentionally not started — scans are triggered
 # manually from the UI banner (see backend.utils.start_career_site_scheduler).
 # ai: claude-sonnet-4-6 | 2026-07-02
@@ -358,6 +368,7 @@ start_job_import_listener(
     _handle_listener_capture,
     claim_queue=_claim_browser_capture_queue,
 )
+start_queue_websocket_server(_browser_capture_queue_has_pending)
 
 # Register generated Swagger docs after API routes are loaded and before the SPA
 # catch-all. The UI is available at /apidocs/ and the JSON spec at /apispec_1.json.

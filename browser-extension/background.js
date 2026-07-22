@@ -68,6 +68,14 @@ let _queuePolling = false;
 // ─── Alarm setup ──────────────────────────────────────────────────────────
 // Alarms survive service-worker dormancy; re-register on each startup in case
 // the worker was killed after the last `onInstalled` fired.
+//
+// ai: claude-sonnet-5 | 2026-07-22
+// This alarm used to be the only way new queue work was discovered (poll every
+// 60s). Now it's a fallback safety net behind the WebSocket connection below —
+// the socket delivers a near-instant "queue-ready" push in the common case, so
+// this only matters if the socket is down (app restarting, network hiccup,
+// etc). 5 minutes bounds the worst case without paying a constant polling tax.
+const _FALLBACK_POLL_PERIOD_MINUTES = 5;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -75,16 +83,23 @@ chrome.runtime.onInstalled.addListener(() => {
     title: 'Send to Job Hunt App',
     contexts: ['page'],
   });
-  chrome.alarms.create('jha-queue-poll', { delayInMinutes: 0, periodInMinutes: 1 });
+  chrome.alarms.create('jha-queue-poll', {
+    delayInMinutes: 0,
+    periodInMinutes: _FALLBACK_POLL_PERIOD_MINUTES,
+  });
+  connectQueueSocket();
 });
 
 // Re-create alarm if the service worker restarted and it was lost.
 // Also poll immediately on startup so queue items captured since the last tick
-// are picked up without waiting up to 60 s for the next alarm.
+// are picked up without waiting for the next fallback alarm or a socket push.
 // ai: claude-sonnet-4-6 | 2026-06-20
 chrome.alarms.get('jha-queue-poll', (alarm) => {
   if (!alarm) {
-    chrome.alarms.create('jha-queue-poll', { delayInMinutes: 0, periodInMinutes: 1 });
+    chrome.alarms.create('jha-queue-poll', {
+      delayInMinutes: 0,
+      periodInMinutes: _FALLBACK_POLL_PERIOD_MINUTES,
+    });
   }
   pollQueue();
 });
@@ -92,6 +107,78 @@ chrome.alarms.get('jha-queue-poll', (alarm) => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'jha-queue-poll') pollQueue();
 });
+
+// Reconnect immediately when the browser itself restarts, rather than waiting
+// for the service worker's next natural wake.
+// ai: claude-sonnet-5 | 2026-07-22
+chrome.runtime.onStartup.addListener(() => connectQueueSocket());
+connectQueueSocket();
+
+// ─── Queue-ready WebSocket push ────────────────────────────────────────────
+// Holds a WebSocket open to the backend (see backend/queue_websocket.py) so new
+// queue work triggers an immediate pollQueue() instead of waiting for the
+// fallback alarm above. The socket is purely a wake-up signal — /queue (via
+// pollQueue) remains the single source of truth for what to actually do, so a
+// dropped connection never loses work, only adds latency up to the fallback
+// alarm's period.
+let _queueSocket = null;
+let _queueSocketReconnectDelayMs = 1000;
+const _QUEUE_SOCKET_MAX_RECONNECT_DELAY_MS = 30000;
+
+async function connectQueueSocket() {
+  if (_queueSocket && (_queueSocket.readyState === WebSocket.OPEN || _queueSocket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  const settings = await loadSettings();
+  let wsUrl;
+  try {
+    const parsed = new URL(settings.listenerUrl);
+    // ai: claude-sonnet-5 | 2026-07-22
+    // The queue WebSocket server defaults to one port above the HTTP listener
+    // (see config.DEFAULT_JOB_IMPORT_LISTENER_WS_PORT_OVERRIDE) rather than a
+    // separate setting, so this must be derived the same way here.
+    const wsPort = (parseInt(parsed.port, 10) || 8765) + 1;
+    const wsScheme = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+    wsUrl = `${wsScheme}//${parsed.hostname}:${wsPort}/`;
+    if (settings.token) wsUrl += `?token=${encodeURIComponent(settings.token)}`;
+  } catch {
+    return; // listenerUrl not configured yet
+  }
+
+  try {
+    _queueSocket = new WebSocket(wsUrl);
+  } catch {
+    scheduleQueueSocketReconnect();
+    return;
+  }
+
+  _queueSocket.addEventListener('open', () => {
+    _queueSocketReconnectDelayMs = 1000; // reset backoff on a successful connection
+  });
+  _queueSocket.addEventListener('message', (event) => {
+    let data;
+    try {
+      data = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (data?.type === 'queue-ready') pollQueue();
+  });
+  _queueSocket.addEventListener('close', scheduleQueueSocketReconnect);
+  _queueSocket.addEventListener('error', () => {
+    // 'close' always follows 'error' for a WebSocket, so reconnect scheduling
+    // happens there — this listener just prevents an unhandled-error log spam.
+  });
+}
+
+function scheduleQueueSocketReconnect() {
+  _queueSocket = null;
+  setTimeout(connectQueueSocket, _queueSocketReconnectDelayMs);
+  _queueSocketReconnectDelayMs = Math.min(
+    _queueSocketReconnectDelayMs * 2,
+    _QUEUE_SOCKET_MAX_RECONNECT_DELAY_MS
+  );
+}
 
 // ─── Queue polling ─────────────────────────────────────────────────────────
 

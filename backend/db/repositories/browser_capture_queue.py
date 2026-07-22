@@ -140,6 +140,18 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         )
         return rows
 
+    # ai: claude-sonnet-5 | 2026-07-22
+    def has_pending(self) -> bool:
+        """Return True if any queue row is waiting to be claimed.
+
+        Used by the queue-ready WebSocket watcher (backend/queue_websocket.py)
+        to decide whether to wake connected extension clients.
+        """
+        cur = self._execute(
+            "SELECT 1 FROM browser_capture_queue WHERE status = 'pending' LIMIT 1"
+        )
+        return cur.fetchone() is not None
+
     def mark_done_by_urls(self, urls: list[str]) -> None:
         if not urls:
             return

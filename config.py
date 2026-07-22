@@ -180,6 +180,19 @@ DEFAULT_JOB_IMPORT_LISTENER_TOKEN: str = os.getenv("JOB_IMPORT_LISTENER_TOKEN", 
 DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES: int = int(
     os.getenv("JOB_IMPORT_LISTENER_MAX_BYTES", str(15 * 1024 * 1024))
 )
+# ai: claude-sonnet-5 | 2026-07-22
+# The queue-ready WebSocket push server (backend/queue_websocket.py) defaults to
+# one port above the HTTP listener rather than a separate persisted setting, so
+# it always tracks JOB_IMPORT_LISTENER_PORT/job_import_listener_port without a
+# second value that could drift out of sync. The extension derives the same
+# port+1 from its own listenerUrl setting (see browser-extension/background.js).
+# Set JOB_IMPORT_LISTENER_WS_PORT explicitly only if that default collides with
+# something else on the host.
+DEFAULT_JOB_IMPORT_LISTENER_WS_PORT_OVERRIDE: int | None = (
+    int(os.environ["JOB_IMPORT_LISTENER_WS_PORT"])
+    if os.environ.get("JOB_IMPORT_LISTENER_WS_PORT")
+    else None
+)
 DEFAULT_CANDIDATE_TIMEZONE: str = os.getenv("CANDIDATE_TIMEZONE", "")
 
 # ai: claude-sonnet-4-6 | 2026-06-10
@@ -362,6 +375,14 @@ def get_job_import_listener_config() -> dict[str, Any]:
         "max_bytes": _config_int(
             cfg.get("job_import_listener_max_bytes"),
             DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
+        ),
+        "ws_port": DEFAULT_JOB_IMPORT_LISTENER_WS_PORT_OVERRIDE
+        or (
+            _config_int(
+                cfg.get("job_import_listener_port"),
+                DEFAULT_JOB_IMPORT_LISTENER_PORT,
+            )
+            + 1
         ),
     }
 
