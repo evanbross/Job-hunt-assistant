@@ -32,10 +32,19 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseUtcTimestamp } from "../utils/dateTimeUtils.js";
 import { isManualCollectionSite } from "../utils/careerSiteUtils.js";
+import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
 import { CareerScanProgressPopup, CareerScanSummaryPopup } from "./common/CareerScanModals.jsx";
+
+const SORT_STORAGE_KEY = "jha.careerSiteScanBanner.sort";
+const COLLAPSED_STORAGE_KEY = "jha.careerSiteScanBanner.collapsed";
+
+const SORT_OPTIONS = [
+  { key: "name", label: "Name" },
+  { key: "age", label: "Time since last scanned" },
+];
 
 function formatAge(isoTimestamp) {
   if (!isoTimestamp) return "never scanned";
@@ -48,27 +57,52 @@ function formatAge(isoTimestamp) {
   return `${days} days ago`;
 }
 
+// ai: claude-sonnet-5 | 2026-07-21
+function sortDueSites(sites, sortBy) {
+  const sorted = [...sites];
+  if (sortBy === "age") {
+    sorted.sort((a, b) => {
+      const aTime = parseUtcTimestamp(a.last_captured_at)?.getTime() ?? -Infinity;
+      const bTime = parseUtcTimestamp(b.last_captured_at)?.getTime() ?? -Infinity;
+      return aTime - bTime;
+    });
+  } else {
+    sorted.sort((a, b) => (a.name || a.url || "").localeCompare(b.name || b.url || ""));
+  }
+  return sorted;
+}
+
 export default function CareerSiteScanBanner() {
   const [dueSites, setDueSites] = useState([]);
   const [scanStatus, setScanStatus] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [scanSummary, setScanSummary] = useState(null);
+  const [sortBy, setSortBy] = useState(() => readStoredPref(SORT_STORAGE_KEY, "name"));
+  const [collapsed, setCollapsed] = useState(() => readStoredPref(COLLAPSED_STORAGE_KEY) === "true");
   const pollRef = useRef(null);
   const duePollRef = useRef(null);
+
+  useEffect(() => {
+    writeStoredPref(SORT_STORAGE_KEY, sortBy);
+  }, [sortBy]);
+
+  useEffect(() => {
+    writeStoredPref(COLLAPSED_STORAGE_KEY, String(collapsed));
+  }, [collapsed]);
 
   const fetchDueSites = useCallback(async () => {
     try {
       const res = await fetch("/api/career-sites/recapture-due");
       if (res.ok) {
         const sites = await res.json();
-        // ai: claude-sonnet-4-6 | 2026-06-17
-        sites.sort((a, b) => (a.name || a.url || "").localeCompare(b.name || b.url || ""));
         setDueSites(sites);
       }
     } catch {
       /* no-op */
     }
   }, []);
+
+  const sortedDueSites = useMemo(() => sortDueSites(dueSites, sortBy), [dueSites, sortBy]);
 
   const fetchScanStatus = useCallback(async () => {
     try {
@@ -159,10 +193,37 @@ export default function CareerSiteScanBanner() {
         <div style={bannerWrapStyle}>
           <div style={bannerInnerStyle}>
             <div style={headerRowStyle}>
-              <span style={labelStyle}>Career Sites Ready to Scan</span>
+              <span style={labelStyle}>
+                Career Sites Ready to Scan{dueSites.length > 0 ? ` (${dueSites.length})` : ""}
+              </span>
+              <div style={headerControlsStyle}>
+                {!collapsed && (
+                  <>
+                    <label style={sortLabelStyle}>Sort:</label>
+                    <select
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value)}
+                      style={sortSelectStyle}
+                    >
+                      {SORT_OPTIONS.map((opt) => (
+                        <option key={opt.key} value={opt.key}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </>
+                )}
+                <button
+                  className="btn-secondary"
+                  style={collapseBtnStyle}
+                  onClick={() => setCollapsed((prev) => !prev)}
+                  title={collapsed ? "Expand" : "Collapse"}
+                >
+                  {collapsed ? "Show" : "Hide"}
+                </button>
+              </div>
             </div>
-            <div style={siteListStyle}>
-              {dueSites.map((site) => (
+            {!collapsed && (
+              <div style={siteListStyle}>
+              {sortedDueSites.map((site) => (
                 <div key={site.id} style={siteRowStyle}>
                   <span style={siteNameStyle}>{site.name || site.url}</span>
                   <span style={siteAgeStyle}>{formatAge(site.last_captured_at)}</span>
@@ -192,7 +253,8 @@ export default function CareerSiteScanBanner() {
                   </button>
                 </div>
               ))}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -233,6 +295,38 @@ const siteListStyle = {
   display: "flex",
   flexDirection: "column",
   gap: "6px",
+  maxHeight: "33vh",
+  overflowY: "auto",
+};
+
+const headerControlsStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  flexShrink: 0,
+};
+
+const sortLabelStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  whiteSpace: "nowrap",
+};
+
+const sortSelectStyle = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  color: "var(--text)",
+  cursor: "pointer",
+  fontSize: "12px",
+  padding: "3px 6px",
+  width: "fit-content",
+};
+
+const collapseBtnStyle = {
+  flexShrink: 0,
+  padding: "3px 12px",
+  fontSize: "12px",
 };
 
 const siteRowStyle = {
