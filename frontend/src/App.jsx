@@ -45,6 +45,7 @@ import Modal from "./components/common/Modal.jsx";
 import RecentChangesModal from "./components/RecentChangesModal.jsx";
 import ToptalPitchModal from "./components/common/ToptalPitchModal.jsx";
 import MetricGrid, { MetricItem } from "./components/common/MetricGrid.jsx";
+import { ImportBreakdownDetails } from "./components/JobQueue/ImportSummaryPopup.jsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 
 // ai: claude-fable-5 | 2026-07-14 — Career Sites tab removed; sites are managed in Settings
@@ -678,25 +679,8 @@ function ListenerImportDialog({ state, onClose }) {
             <MetricItem label="skipped" value={result.skipped || 0} />
             <MetricItem label="failed" value={result.failed || 0} tone={result.failed ? "red" : ""} />
           </MetricGrid>
-          {/* ai: claude-sonnet-4-6 | 2026-06-22 */}
-          {[...(result.skipped_details || []), ...(result.enriched_details || [])].map((d, i) => (
-            <div
-              key={i}
-              style={{
-                marginTop: "10px",
-                padding: "8px 10px",
-                background: "var(--surface2)",
-                border: "1px solid var(--border)",
-                borderRadius: "var(--radius)",
-                fontSize: "12px",
-              }}
-            >
-              <div style={{ fontWeight: 600, color: d.action === "enriched" ? "var(--green)" : "var(--text-muted)", marginBottom: "2px", textTransform: "uppercase", fontSize: "11px" }}>
-                {d.action} {d.job_title ? `· ${d.job_title}` : ""}{d.company ? ` @ ${d.company}` : ""}
-              </div>
-              <div style={{ color: "var(--text)" }}>{d.reason}</div>
-            </div>
-          ))}
+          {/* ai: claude-sonnet-5 | 2026-07-21 */}
+          <ImportBreakdownDetails summary={result} compact />
         </div>
       )}
     </Modal>
