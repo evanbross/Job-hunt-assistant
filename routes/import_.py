@@ -335,16 +335,15 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     dump_import_capture(body)
     global _current_task_id, _current_trigger, _current_started_at
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
-    _set_import_progress(
-        ImportProgressState(
-            running=True,
-            phase="receiving",
-            progress=5,
-            message="Job description received from browser stream.",
-            trigger=trigger,
-            started_at=started_at,
-        )
-    )
+
+    # ai: claude-sonnet-5 | 2026-07-22
+    # Check for an in-flight import BEFORE touching the shared progress state.
+    # A rejected duplicate capture (e.g. several browser-extension captures fired
+    # back-to-back during an email import) must not overwrite the status that the
+    # UI is polling for the import that's actually running — doing so desynced
+    # _current_listener_status.started_at from _current_started_at and made
+    # /api/import/status permanently replay the stale rejection instead of the
+    # real task's live progress.
     with _task_id_lock:
         existing_task_id = _current_task_id
         existing_started_at = _current_started_at
@@ -361,17 +360,23 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
                 with _task_id_lock:
                     _current_task_id = None
             else:
-                _set_import_progress(
-                    ImportProgressState(
-                        running=False,
-                        phase="error",
-                        progress=0,
-                        message="An import is already running.",
-                        trigger=trigger,
-                        started_at=started_at,
-                    )
+                logger.info(
+                    "Rejected import capture (trigger=%s) — import %s already running",
+                    trigger,
+                    existing_task_id,
                 )
                 return {"error": "An import is already running"}, 409
+
+    _set_import_progress(
+        ImportProgressState(
+            running=True,
+            phase="receiving",
+            progress=5,
+            message="Job description received from browser stream.",
+            trigger=trigger,
+            started_at=started_at,
+        )
+    )
 
     raw_content = str(body.get("content") or "")
     content_format = str(body.get("format") or "auto")
