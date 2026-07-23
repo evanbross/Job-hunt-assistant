@@ -116,6 +116,10 @@ Rules:
 10. "source" should be the job board name if identifiable (e.g. "LinkedIn", "Dice"), \
    otherwise the sender domain.
 11. Leave a field as an empty string if it cannot be determined; do not invent values.
+12. If a "Company logo hints" section is present at the end of the message, use it \
+   to fill in "company" for the matching job (matched by URL token) when the \
+   visible text doesn't already give you a confident company name. This is not \
+   inventing a value — it is decoding a real company name from its slug.
 
 Each element schema:
 {
@@ -162,6 +166,38 @@ def _detokenize_url(value: str, token_map: dict[str, str]) -> str:
     return token_map.get(stripped, stripped)
 
 
+# ai: claude-sonnet-5 | 2026-07-23
+def _looks_like_jobgether(sender: str) -> bool:
+    return bool(_JOBGETHER_SENDER_RE.search(sender))
+
+
+# ai: claude-sonnet-5 | 2026-07-23
+def _jobgether_company_slug_map_from_html(raw_html: str) -> dict[str, str]:
+    """Return {tracking_url: company_slug} by parsing Jobgether job-card HTML.
+
+    Each job card is a `<div class="content-offers">` block containing a logo
+    `<img src=".../{slug}/profile.webp">` followed by the job-title `<a href="...">`
+    — structurally co-located regardless of distance in the extracted plain text.
+    Splitting on the card-opening div keeps each slug paired with its own card's
+    href instead of a neighboring card's, and `.search()` naturally picks the
+    genuine title link over the like/dislike links that follow it in an HTML
+    comment within the same card.
+
+    The slug itself (e.g. "thehomedepot", "ironmountain") is not a display name —
+    expanding it into a real company name needs brand-name knowledge that this
+    function deliberately does not attempt. See parse(), which hands the slug to
+    the LLM as a hint instead of guessing at word-segmentation here.
+    """
+    slug_map: dict[str, str] = {}
+    for card in _JOBGETHER_CARD_SPLIT_RE.split(raw_html)[1:]:
+        logo_m = _JOBGETHER_LOGO_SRC_RE.search(card)
+        href_m = _JOBGETHER_HREF_RE.search(card)
+        if logo_m and href_m:
+            href = _html_mod.unescape(href_m.group(1))
+            slug_map[href] = logo_m.group(1)
+    return slug_map
+
+
 class EmailParser:
     """Parses job emails using the Anthropic API."""
 
@@ -195,6 +231,12 @@ class EmailParser:
         if matcha_jobs:
             return matcha_jobs
 
+        jobgether_slug_map: dict[str, str] = (
+            _jobgether_company_slug_map_from_html(raw_html)
+            if raw_html and _looks_like_jobgether(sender)
+            else {}
+        )
+
         raw_content = (
             f"From: {sender}\n"
             f"Subject: {subject}\n\n"
@@ -204,6 +246,30 @@ class EmailParser:
         logger.debug(
             "Email parser: tokenized %d URLs before LLM call", len(url_token_map)
         )
+
+        if jobgether_slug_map:
+            # Jobgether's visible text never contains the company name (see
+            # _jobgether_company_slug_map_from_html) — the URL token lets the LLM
+            # match each slug to the job it already extracted from the body text.
+            token_by_url = {
+                url: token for token, url in url_token_map.items() if token.startswith("[")
+            }
+            hints = "\n".join(
+                f"{token_by_url[href]} -> {slug}"
+                for href, slug in jobgether_slug_map.items()
+                if href in token_by_url
+            )
+            if hints:
+                user_content += (
+                    "\n\nCompany logo hints (from the email's HTML — the visible "
+                    "text above does not contain the company name for these jobs). "
+                    "Each line maps a job's URL token to its logo image's CDN path "
+                    "segment: a concatenated, unspaced, lowercase version of the "
+                    'real company name (e.g. "thehomedepot" means "The Home Depot", '
+                    '"ironmountain" means "Iron Mountain"). Expand it into the real, '
+                    "properly capitalized company name for that job's \"company\" "
+                    f"field:\n{hints}"
+                )
 
         raw = self._client.complete(
             system=_SYSTEM_PROMPT,
@@ -398,6 +464,19 @@ _WTTJ_METADATA_LINE_RE = re.compile(
     r"|[•·]"  # bullet separators → "Paris • Full-time" metadata
     r"|\b\d+\s*[kK]\s*[-–—]"  # "80k –" → salary range
     r"|\bsalary\b|\bcompensation\b",
+    re.IGNORECASE,
+)
+# ai: claude-sonnet-5 | 2026-07-23
+# Jobgether's logo <img alt="..."> is always the literal word "jobgether" — it
+# carries no company info (unlike WTTJ's `alt="Company Name logo"`). The only
+# company signal is the CDN path segment in the logo's src, e.g.
+# https://cdn-s3-stag.jobgether.com/thehomedepot/profile.webp — a concatenated,
+# unspaced slug ("thehomedepot") rather than a display name.
+_JOBGETHER_SENDER_RE = re.compile(r"jobgether\.com", re.IGNORECASE)
+_JOBGETHER_CARD_SPLIT_RE = re.compile(r'(?=<div class="content-offers")')
+_JOBGETHER_HREF_RE = re.compile(r'<a\b[^>]*\bhref="([^"]+)"', re.IGNORECASE)
+_JOBGETHER_LOGO_SRC_RE = re.compile(
+    r'<img\b[^>]*\bsrc="https://cdn-s3-stag\.jobgether\.com/([a-z0-9][a-z0-9-]*)/profile\.webp"',
     re.IGNORECASE,
 )
 
