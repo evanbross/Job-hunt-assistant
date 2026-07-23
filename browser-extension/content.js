@@ -74,6 +74,11 @@
       return { site: 'Greenhouse', type: 'greenhouseSearch', jobCount: count, description: `${count}+ jobs (auto-scrolls to load all)` };
     }
 
+    // ai: claude-sonnet-5 | 2026-07-23
+    if (host.includes('jobgether.com') && /^\/offer\//.test(path)) {
+      return { site: 'Jobgether', type: 'jobgetherJob', jobCount: 1, description: 'Single job listing' };
+    }
+
     // ai: claude-sonnet-4-6 | 2026-06-20
     if (host.includes('jobanni.com') && /^\/search/.test(path)) {
       return { site: 'Jobanni', type: 'jobanni', jobCount: 0, description: 'Fetches job data via RSC API (~3s)' };
@@ -1411,6 +1416,53 @@
     });
   }
 
+  // ─── Jobgether ─────────────────────────────────────────────────────────────
+
+  // ai: claude-sonnet-5 | 2026-07-23
+  // The match-score widget (button#mobile-match-feedback, data-match-score="N")
+  // renders client-side after initial paint, so the button may not exist yet
+  // when this runs — poll briefly, same pattern as the Ashby/Wellfound waits.
+  // Jobgether only reveals the numeric score for roles scoring >=50%; below
+  // that it shows a fixed "Not a fit" badge with data-match-score forced to 0
+  // rather than the real value, so that case is reported as text, not a number.
+  function extractJobgetherMatchScore() {
+    const btn = document.querySelector('[data-match-score]');
+    if (!btn) return '';
+
+    const notFitEl = btn.querySelector('[id*="badge-not-fit"]');
+    if (notFitEl && !notFitEl.classList.contains('hidden')) {
+      return 'Your match score: Not a fit for this role (below 50%)';
+    }
+
+    const scoreTextEl = btn.querySelector('[id*="score-text"]');
+    const scoreAttr = btn.getAttribute('data-match-score');
+    const scoreText = (scoreTextEl?.innerText || '').trim() || (scoreAttr ? `${scoreAttr}%` : '');
+    return scoreText && scoreText !== '0%' ? `Your match score: ${scoreText}` : '';
+  }
+
+  async function buildJobgetherJobPayload() {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (document.querySelector('[data-match-score]')) break;
+      await sleep(300);
+    }
+
+    const title = pick(['h1[class*="title"]', 'h1', '[data-testid*="title"]']);
+    const matchScoreLine = extractJobgetherMatchScore();
+    const bodyText = document.body.innerText.trim().slice(0, 12000);
+
+    const lines = [];
+    if (title) lines.push(title);
+    lines.push('URL: ' + location.href);
+    if (matchScoreLine) lines.push(matchScoreLine);
+    if (bodyText) lines.push('', bodyText);
+
+    return JSON.stringify({
+      jobs: [{ url: location.href, job_title: title, company: '', listing_text: lines.join('\n') }],
+      source: { url: location.href },
+    });
+  }
+
   // ─── Build Dispatcher ──────────────────────────────────────────────────────
 
   // ai: claude-sonnet-4-6 | 2026-07-09
@@ -1447,6 +1499,7 @@
       case 'jibeSearch':       payload = await buildJibeSearchPayload(); break;
       case 'phenomSearch':     payload = await buildPhenomSearchPayload(); break;
       case 'jobanni':          payload = await buildJobanniPayload(); break;
+      case 'jobgetherJob':     payload = await buildJobgetherJobPayload(); break;
       case 'smartGeneric':     payload = buildSmartGenericPayload(); break;
       // ai: claude-sonnet-4-6 | 2026-06-26
       // For pages that don't match a known platform, extract body text rather
