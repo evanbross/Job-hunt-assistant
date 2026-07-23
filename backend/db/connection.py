@@ -147,6 +147,13 @@ def _sqlite_sql(sql: str) -> str:
     translated = re.sub(
         r"\bSERIAL\s+PRIMARY\s+KEY\b", "INTEGER PRIMARY KEY AUTOINCREMENT", translated
     )
+    # ai: claude-sonnet-5 | 2026-07-23
+    # SQLite has no row-locking concept to translate this to. It already serializes
+    # all writers to one connection, so the clause is simply dropped rather than
+    # translated — the atomicity FOR UPDATE SKIP LOCKED provides under concurrent
+    # Postgres connections is unnecessary (not unsafe) against SQLite's single-writer
+    # model.
+    translated = re.sub(r"\s+FOR UPDATE SKIP LOCKED\b", "", translated)
     return translated
 
 

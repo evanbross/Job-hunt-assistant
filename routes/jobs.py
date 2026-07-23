@@ -70,7 +70,10 @@ from backend.import_repair import (  # ai: claude-fable-5 | 2026-07-17
 from backend.job_validator import import_warnings_to_json, normalize_and_validate
 from backend.manual_job_ingest_service import ManualJobIngestService
 from backend.skip_reasons import VALID_SKIP_REASONS  # ai: claude-fable-5 | 2026-07-16
-from backend.url_safety import UnsafeUrlError, safe_urlopen  # ai: claude-fable-5 | 2026-07-17
+from backend.url_safety import (  # ai: claude-fable-5 | 2026-07-17
+    UnsafeUrlError,
+    safe_urlopen,
+)
 from backend.utils import (
     _ai_error_http_status,
     canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17
@@ -1742,9 +1745,13 @@ def _run_rescan_broken_imports() -> None:
             )
     except Exception as exc:
         logger.warning("Broken-import rescan failed: %s", exc, exc_info=True)
+        # ai: claude-sonnet-5 | 2026-07-23
+        # `error` is serialized verbatim by GET /jobs/rescan-broken-imports/status —
+        # don't put raw exception text where it reaches the client. Full detail is
+        # already in the log line above.
         with _rescan_import_lock:
             _rescan_import_state.running = False
-            _rescan_import_state.error = str(exc)
+            _rescan_import_state.error = "Rescan failed — see server logs"
             _rescan_import_state.message = "Rescan failed — see server logs"
 
 

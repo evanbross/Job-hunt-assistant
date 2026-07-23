@@ -1084,8 +1084,14 @@ def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
         )
     except Exception as exc:
         logger.warning("Closed-req scan failed: %s", exc, exc_info=True)
+        # ai: claude-sonnet-5 | 2026-07-23
+        # `error` is serialized verbatim by GET /applications/scan-closed-reqs/status
+        # (routes/applications.py) — don't put raw exception text where it reaches
+        # the client. Full detail is already in the log line above.
         _update_req_closed_state(
-            running=False, error=str(exc), message="Scan failed — see server logs"
+            running=False,
+            error="Scan failed — see server logs",
+            message="Scan failed — see server logs",
         )
 
 

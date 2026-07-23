@@ -275,7 +275,15 @@ def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
         "swagger": "2.0",
         "info": {
             "title": "Job Hunt Assistant API",
-            "description": "HTTP API for the Job Hunt Assistant Flask backend.",
+            # ai: claude-sonnet-5 | 2026-07-23
+            "description": (
+                "Auto-generated route inventory for the Job Hunt Assistant Flask "
+                "backend. Every request body is shown as a generic optional object and "
+                "every response as a generic 200/400/500 — this spec is NOT a real "
+                "request/response contract. Do not generate API clients from it; read "
+                "the route handler and its Pydantic models for actual field names, "
+                "required-ness, and status codes."
+            ),
             "version": "0.1.0",
         },
         "basePath": "/",
@@ -523,16 +531,14 @@ def _stop_vite() -> None:
 _celery_proc: _subprocess.Popen | None = None
 
 
-def _find_free_port(start: int, end: int) -> int:
-    for port in range(start, end + 1):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError(f"No free port found in range {start}–{end}")
+def _port_is_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
 
 
 def _start_celery_worker() -> None:
@@ -592,18 +598,23 @@ if __name__ == "__main__":
     _maybe_rebuild_frontend()
     _start_vite()
     _start_celery_worker()
-    _preferred_port = int(os.environ.get("FLASK_PORT", "5004"))
-    try:
-        _flask_port = _find_free_port(_preferred_port, 5999)
-    except RuntimeError as exc:
-        logger.error("%s", exc)
-        sys.exit(1)
-    if _flask_port != _preferred_port:
-        logger.warning(
-            "Port %s is not available; using port %s instead.",
-            _preferred_port,
+    _flask_port = int(os.environ.get("FLASK_PORT", "5004"))
+    if not _port_is_free(_flask_port):
+        # ai: claude-sonnet-5 | 2026-07-23
+        # Fail fast instead of silently falling back to another port: the Google
+        # OAuth redirect URI, frontend/vite.config.js proxy target, and README setup
+        # docs all hardcode this port. Auto-selecting a different one here would let
+        # the server "start successfully" while OAuth and the dev frontend proxy keep
+        # talking to the now-wrong port (see COMMON_CODING_STANDARDS.md § Auto-Selected
+        # Runtime Values Must Not Silently Diverge).
+        logger.error(
+            "Port %s is already in use. Free it, or stop the other process, before "
+            "starting the server — set FLASK_PORT to use a different port only if you "
+            "also update the Google OAuth redirect URI, frontend/vite.config.js proxy "
+            "target, and README setup docs to match.",
             _flask_port,
         )
+        sys.exit(1)
     if _caddy_registry is not None:
         _caddy_registry.register("jha", _flask_port)
         atexit.register(_caddy_registry.deregister, "jha")

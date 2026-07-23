@@ -46,7 +46,11 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, Generator
-from urllib.parse import parse_qs, urlparse, urlunparse  # ai: claude-fable-5 | 2026-07-17
+from urllib.parse import (  # ai: claude-fable-5 | 2026-07-17
+    parse_qs,
+    urlparse,
+    urlunparse,
+)
 
 from flask import request
 

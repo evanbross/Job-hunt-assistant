@@ -106,7 +106,7 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         )
         return cur.fetchone()["id"]
 
-    # ai: claude-sonnet-4-6 | 2026-06-21
+    # ai: claude-sonnet-5 | 2026-07-23
     def claim_pending(self, limit: int = 10) -> list[dict[str, Any]]:
         now = datetime.now(UTC).isoformat(timespec="seconds")
         stale_cutoff = (datetime.now(UTC) - timedelta(minutes=10)).isoformat(
@@ -123,22 +123,22 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
             " WHERE status = 'processing' AND updated_at < %s",
             (BROWSER_QUEUE_MAX_RETRIES, BROWSER_QUEUE_MAX_RETRIES, now, stale_cutoff),
         )
+        # Claim atomically in one statement: FOR UPDATE SKIP LOCKED lets concurrent
+        # callers (the threaded import listener can serve overlapping /queue requests)
+        # each lock and claim a disjoint set of pending rows, so two overlapping
+        # requests can never both claim the same row. A separate SELECT-then-UPDATE
+        # here would race under concurrent claimers.
         cur = self._execute(
-            "SELECT id, url, site_name, purpose, job_id FROM browser_capture_queue"
-            " WHERE status = 'pending' ORDER BY created_at LIMIT %s",
-            (limit,),
+            "UPDATE browser_capture_queue SET status = 'processing', updated_at = %s"
+            " WHERE id IN ("
+            "   SELECT id FROM browser_capture_queue"
+            "   WHERE status = 'pending' ORDER BY created_at LIMIT %s"
+            "   FOR UPDATE SKIP LOCKED"
+            " )"
+            " RETURNING id, url, site_name, purpose, job_id",
+            (now, limit),
         )
-        rows = [_row_to_dict(r) for r in cur.fetchall()]
-        if not rows:
-            return []
-        ids = [r["id"] for r in rows]
-        placeholders = ", ".join(["%s"] * len(ids))
-        self._execute(
-            f"UPDATE browser_capture_queue SET status = 'processing', updated_at = %s"
-            f" WHERE id IN ({placeholders})",
-            [now, *ids],
-        )
-        return rows
+        return [_row_to_dict(r) for r in cur.fetchall()]
 
     # ai: claude-sonnet-5 | 2026-07-22
     def has_pending(self) -> bool:
