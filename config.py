@@ -97,6 +97,10 @@ DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(
 DEFAULT_COVER_LETTER_PROMPT_PATH: Path = Path(
     os.getenv("COVER_LETTER_PROMPT_PATH", str(BASE_DIR / "cover_letter_prompt.md"))
 )
+# ai: claude-sonnet-5 | 2026-07-23
+DEFAULT_FIT_SCORER_PROMPT_PATH: Path = Path(
+    os.getenv("FIT_SCORER_PROMPT_PATH", str(BASE_DIR / "fit_scorer_prompt.md"))
+)
 
 # ─── Redis / Celery ───────────────────────────────────────────────────────────
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -222,6 +226,58 @@ DEFAULT_COVER_LETTER_PROMPT_TEMPLATE: str = (
     "- Tone: confident, direct, not sycophantic.\n"
     "- Output plain text only — no markdown, no bullet points, no headers."
 )
+
+# ai: claude-sonnet-5 | 2026-07-23
+# Default fit-scorer system prompt, written to DEFAULT_FIT_SCORER_PROMPT_PATH on
+# first run so the scoring instructions can be edited without touching Python code.
+# {{TOKEN}} placeholders are replaced via str.replace() in FitScorer._build_system_prompt.
+DEFAULT_FIT_SCORER_PROMPT_TEMPLATE: str = """\
+You are a job fit evaluator for a senior software engineer.
+
+CANDIDATE PROFILE:
+{{CANDIDATE_PROFILE}}
+
+{{RESUME_SECTION}}
+
+SCORING INSTRUCTIONS:
+- Score the job 0-100 based on fit with the candidate's skills and preferences.
+- 90-100: Near-perfect match; strong skills overlap, no office requirement stated or remote explicitly confirmed, senior level.
+- 70-89: Good match; most skills apply, location ambiguous with some uncertainty, or minor level mismatch.
+- 40-69: Partial match; some relevant skills, ambiguous location, or level concerns.
+- 0-39: Poor match; wrong skills, explicitly on-site/hybrid required, or wrong level.
+{{TIMEZONE_NOTE}}
+- IMPORTANT — location inference rule: a city or state name alone (e.g. "Redwood City, CA")
+  does NOT mean the role is on-site. Many remote jobs list the company's HQ address.
+  If the job header or early description explicitly states the role is remote (e.g.
+  "Remote - United States", "Fully Remote", "Remote-first", "100% remote"), treat it
+  as remote and do NOT penalise for location — even if "hybrid" or "in-office" appears
+  later in the description (those phrases likely refer to the company's general culture
+  or other roles, not this job's requirement).
+  Only treat a role as non-remote if it lacks any remote indicator AND uses explicit
+  requirement language such as "on-site required", "must be local", "hybrid required",
+  "X days per week in office", or "in-office position". If location is ambiguous,
+  assume remote is possible and do not penalise for it.
+- IMPORTANT — do not invent residency restrictions: a state or city shown alongside
+  "Remote" (e.g. "Austin, TX — Remote", "Base Location: Texas, Fully Remote") identifies
+  the requisition's home office or hiring entity, NOT a requirement that candidates live
+  in that state. Do NOT state or imply the role is "restricted to <state>-based workers"
+  unless the listing explicitly says so in words (e.g. "must reside in Texas", "Texas
+  residents only", "candidates must be located in <state>"). A bare state/city label next
+  to "Remote" is not that evidence.
+- When past rejection feedback includes structured mismatch reasons, treat them as high-signal preferences.
+- Return ONLY valid JSON — no markdown, no extra text.
+- Do NOT apply penalties yourself; they are handled by the caller.
+
+ACTIVE PENALTY RULES (for your awareness only — do not double-apply):
+{{PENALTY_LIST}}
+
+{{FEEDBACK_SECTION}}
+Response schema (JSON only):
+{
+  "score": <integer 0-100 before penalties>,
+  "reasoning": "<2-3 sentence explanation of the score>"
+}
+"""
 
 
 # ─── Runtime config helpers ───────────────────────────────────────────────────
@@ -353,6 +409,31 @@ def load_cover_letter_prompt_template() -> str:
         raise RuntimeError(
             f"Could not read cover letter prompt file at "
             f"{DEFAULT_COVER_LETTER_PROMPT_PATH}: {exc}"
+        ) from exc
+
+
+# ai: claude-sonnet-5 | 2026-07-23
+def load_fit_scorer_prompt_template() -> str:
+    """Load the external fit-scorer prompt template, creating it with
+    DEFAULT_FIT_SCORER_PROMPT_TEMPLATE on first run if it doesn't exist."""
+    if not DEFAULT_FIT_SCORER_PROMPT_PATH.exists():
+        try:
+            DEFAULT_FIT_SCORER_PROMPT_PATH.write_text(
+                DEFAULT_FIT_SCORER_PROMPT_TEMPLATE, encoding="utf-8"
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not create fit scorer prompt file at "
+                f"{DEFAULT_FIT_SCORER_PROMPT_PATH}: {exc}"
+            ) from exc
+        return DEFAULT_FIT_SCORER_PROMPT_TEMPLATE
+
+    try:
+        return DEFAULT_FIT_SCORER_PROMPT_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not read fit scorer prompt file at "
+            f"{DEFAULT_FIT_SCORER_PROMPT_PATH}: {exc}"
         ) from exc
 
 

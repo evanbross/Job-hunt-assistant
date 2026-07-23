@@ -192,46 +192,19 @@ class FitScorer:
         else:
             feedback_section = ""
 
-        return f"""\
-You are a job fit evaluator for a senior software engineer.
-
-CANDIDATE PROFILE:
-{config.load_candidate_profile()}
-
-{resume_section}
-
-SCORING INSTRUCTIONS:
-- Score the job 0-100 based on fit with the candidate's skills and preferences.
-- 90-100: Near-perfect match; strong skills overlap, no office requirement stated or remote explicitly confirmed, senior level.
-- 70-89: Good match; most skills apply, location ambiguous with some uncertainty, or minor level mismatch.
-- 40-69: Partial match; some relevant skills, ambiguous location, or level concerns.
-- 0-39: Poor match; wrong skills, explicitly on-site/hybrid required, or wrong level.
-{timezone_note}
-- IMPORTANT — location inference rule: a city or state name alone (e.g. "Redwood City, CA")
-  does NOT mean the role is on-site. Many remote jobs list the company's HQ address.
-  If the job header or early description explicitly states the role is remote (e.g.
-  "Remote - United States", "Fully Remote", "Remote-first", "100% remote"), treat it
-  as remote and do NOT penalise for location — even if "hybrid" or "in-office" appears
-  later in the description (those phrases likely refer to the company's general culture
-  or other roles, not this job's requirement).
-  Only treat a role as non-remote if it lacks any remote indicator AND uses explicit
-  requirement language such as "on-site required", "must be local", "hybrid required",
-  "X days per week in office", or "in-office position". If location is ambiguous,
-  assume remote is possible and do not penalise for it.
-- When past rejection feedback includes structured mismatch reasons, treat them as high-signal preferences.
-- Return ONLY valid JSON — no markdown, no extra text.
-- Do NOT apply penalties yourself; they are handled by the caller.
-
-ACTIVE PENALTY RULES (for your awareness only — do not double-apply):
-{penalty_list}
-
-{feedback_section}
-Response schema (JSON only):
-{{
-  "score": <integer 0-100 before penalties>,
-  "reasoning": "<2-3 sentence explanation of the score>"
-}}
-"""
+        # ai: claude-sonnet-5 | 2026-07-23
+        # Prompt text now lives in an external template (config.py's
+        # DEFAULT_FIT_SCORER_PROMPT_TEMPLATE, materialized to fit_scorer_prompt.md)
+        # so the scoring instructions can be edited without touching this file.
+        # Composition logic (which sections apply, in what order) stays here.
+        return (
+            config.load_fit_scorer_prompt_template()
+            .replace("{{CANDIDATE_PROFILE}}", config.load_candidate_profile())
+            .replace("{{RESUME_SECTION}}", resume_section)
+            .replace("{{TIMEZONE_NOTE}}", timezone_note)
+            .replace("{{PENALTY_LIST}}", penalty_list)
+            .replace("{{FEEDBACK_SECTION}}", feedback_section)
+        )
 
     @staticmethod
     def _penalty_rule_matches(rule_text: str, body_text: str) -> bool:
