@@ -312,8 +312,25 @@
   // job_listing_slug while the DOM still only had the generic grid. A fixed delay
   // can't reliably cover this (worse in a throttled background tab), so poll
   // until the page stops growing instead of guessing a wait time.
-  async function waitForStableRender(maxWaitMs, checkIntervalMs = 500, stableChecks = 2) {
+  //
+  // ai: claude-sonnet-5 | 2026-07-24
+  // The page renders in several sequential stages (company card, then banner/
+  // description, then related content), each its own client-side fetch. With
+  // stableChecks=2 and no floor, an ordinary ~1s pause between two of those
+  // stages looked identical to "done" and let this exit as early as ~1.5s in —
+  // before the closed-req banner text had actually mounted. Confirmed via 8
+  // real jobs that stayed misclassified "open" across 6-7 rechecks over 11
+  // days despite the banner being present when fetched directly. minWaitMs
+  // stops the poll from ever exiting on the very first pause it happens to
+  // see, and a higher stableChecks needs a longer genuinely-quiet stretch.
+  async function waitForStableRender(
+    maxWaitMs,
+    checkIntervalMs = 500,
+    stableChecks = 4,
+    minWaitMs = 3000
+  ) {
     const deadline = Date.now() + maxWaitMs;
+    const earliestExit = Date.now() + minWaitMs;
     let lastLen = -1;
     let stableCount = 0;
     while (Date.now() < deadline) {
@@ -321,7 +338,7 @@
       const len = document.body.innerText.length;
       if (len === lastLen) {
         stableCount++;
-        if (stableCount >= stableChecks) break;
+        if (stableCount >= stableChecks && Date.now() >= earliestExit) break;
       } else {
         stableCount = 0;
       }
