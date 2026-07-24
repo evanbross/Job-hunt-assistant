@@ -117,8 +117,14 @@ _CLOSED_PHRASES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
         "job no longer available",
         "ce poste n'est plus disponible",
     ),
-    # ai: claude-sonnet-5 | 2026-07-12
-    "wellfound": ("recently taken down and is no longer available",),
+    # ai: claude-sonnet-5 | 2026-07-23
+    # Wellfound serves at least two different closed-listing banner wordings —
+    # the second was found still showing "open" after 5 rechecks (job 1771)
+    # because only the first phrasing was in this tuple.
+    "wellfound": (
+        "recently taken down and is no longer available",
+        "no longer publicly available",
+    ),
 }
 
 _PLATFORM_LABELS: dict[str, str] = {
