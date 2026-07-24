@@ -314,20 +314,17 @@
   // until the page stops growing instead of guessing a wait time.
   //
   // ai: claude-sonnet-5 | 2026-07-24
-  // The page renders in several sequential stages (company card, then banner/
-  // description, then related content), each its own client-side fetch. With
-  // stableChecks=2 and no floor, an ordinary ~1s pause between two of those
-  // stages looked identical to "done" and let this exit as early as ~1.5s in —
-  // before the closed-req banner text had actually mounted. Confirmed via 8
-  // real jobs that stayed misclassified "open" across 6-7 rechecks over 11
-  // days despite the banner being present when fetched directly. minWaitMs
-  // stops the poll from ever exiting on the very first pause it happens to
-  // see, and a higher stableChecks needs a longer genuinely-quiet stretch.
+  // minWaitMs guards against a real failure mode (see call site): an ordinary
+  // ~1s pause between a page's sequential render stages can otherwise look
+  // identical to "done" after just 2 unchanged reads (~1.5s in), so a caller
+  // whose page genuinely renders in one shot can still pass 0/2 for a fast
+  // exit — only Wellfound's multi-stage render needs the higher floor, kept
+  // explicit at that call site rather than defaulted here for every caller.
   async function waitForStableRender(
     maxWaitMs,
     checkIntervalMs = 500,
-    stableChecks = 4,
-    minWaitMs = 3000
+    stableChecks = 2,
+    minWaitMs = 0
   ) {
     const deadline = Date.now() + maxWaitMs;
     const earliestExit = Date.now() + minWaitMs;
@@ -351,7 +348,14 @@
   // structured job-listing extraction the site-specific builders produce.
   async function buildClosedReqCheckPayload() {
     if (location.hostname.includes('wellfound.com')) {
-      await waitForStableRender(10000);
+      // ai: claude-sonnet-5 | 2026-07-24
+      // stableChecks=4 + minWaitMs=3000: Wellfound's job-detail panel (and its
+      // "taken down" closed banner) mounts after a second client-side call, in
+      // several sequential stages — confirmed via 8 real jobs that stayed
+      // misclassified "open" across 6-7 rechecks over 11 days because the
+      // default (2 checks, no floor) exited during an ordinary ~1s pause
+      // between stages, before the banner text had actually rendered.
+      await waitForStableRender(10000, 500, 4, 3000);
     }
     return JSON.stringify({
       content: document.documentElement.outerHTML,
