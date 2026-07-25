@@ -274,6 +274,66 @@ class TokenEchoingClient:
 
 
 # ai: claude-sonnet-5 | 2026-07-10
+# ai: claude-sonnet-5 | 2026-07-24
+class AwstrackEchoingClient:
+    """Simulates an LLM response that echoes the [URL_N] token for a job link
+    that was itself an AWS SES click-tracking redirect (awstrack.me)."""
+
+    def complete(
+        self,
+        *,
+        messages: list[AIMessage],
+        system: str,
+        max_tokens: int,
+        json_response: bool,
+    ) -> str:
+        return json.dumps(
+            [
+                {
+                    "company": "",
+                    "job_title": "Software Engineer",
+                    "url": "[URL_0]",
+                    "source": "Jobgether",
+                    "confidence": "high",
+                    "confidence_score": 90,
+                    "confidence_reason": "test",
+                }
+            ]
+        )
+
+
+# ai: claude-sonnet-5 | 2026-07-24
+def test_parser_resolves_awstrack_tracking_urls_for_jobgether_emails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Jobgether notification emails route every job link through an AWS SES
+    click-tracking redirect (r.<region>.awstrack.me). The parser must follow
+    it and store the resolved jobgether.com URL, not the tracking link —
+    storing the tracking link caused the browser-extension queue to open the
+    tracking hop, get redirected to a different registered domain, and abandon
+    the tab as a suspected login wall instead of capturing the job."""
+    real_jobgether_url = "https://jobgether.com/offer/abc123-software-engineer"
+    awstrack_url = (
+        "https://9sh28qce.r.us-east-1.awstrack.me/L0/https:%2F%2Fjobgether.com"
+        "%2Foffer%2Fabc123-software-engineer/1/0100"
+    )
+
+    monkeypatch.setattr(
+        email_parser_module,
+        "resolve_tracking_url",
+        lambda url, timeout=3.0: real_jobgether_url if "awstrack.me" in url else url,
+    )
+
+    client = AwstrackEchoingClient()
+    parser = EmailParser(client=client)
+    body = f"Software Engineer\nApply here: {awstrack_url}"
+
+    jobs = parser.parse("New job match", "Jobgether <no-reply@jobgether.com>", body)
+
+    assert len(jobs) == 1
+    assert jobs[0]["url"] == real_jobgether_url
+
+
 def test_parser_detokenizes_url_when_llm_drops_brackets() -> None:
     """Regression test: the LLM sometimes returns the bare "URL_N" token instead of
     "[URL_N]". The parser must still resolve it to the real URL rather than storing

@@ -638,6 +638,13 @@ _TRACKING_DOMAIN_FRAGMENTS = frozenset(
         "mandrillapp.com",
         "link.matcha.fm",
         "links.wellfound.com",  # ai: claude-fable-5 | 2026-07-14
+        # ai: claude-sonnet-5 | 2026-07-24
+        # Jobgether's notification emails route every job link through an AWS SES
+        # click-tracking redirect (e.g. r.us-east-1.awstrack.me/L0/<encoded-dest>/…).
+        # Without this entry the raw tracking URL was stored as job.url, which made
+        # every downstream consumer (browser-extension queue, direct re-fetch) open
+        # the tracking hop instead of the real jobgether.com page.
+        "awstrack.me",
     }
 )
 
