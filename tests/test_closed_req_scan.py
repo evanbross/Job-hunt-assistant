@@ -38,7 +38,6 @@
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -48,7 +47,7 @@ from flask.testing import FlaskClient
 
 import config
 import routes.applications as applications_module  # ai: claude-fable-5 | 2026-07-17
-from backend.db import init_db, open_repositories
+from backend.db import open_repositories
 from backend.utils import (  # ai: claude-fable-5 | 2026-07-17
     RATE_LIMIT_DEFAULT_BACKOFF_SECONDS,
     canonicalize_wttj_url,
@@ -180,6 +179,18 @@ def test_check_closed_req_detects_wellfound_closed_banner_phrase() -> None:
     assert result == "closed"
 
 
+# ai: claude-sonnet-5 | 2026-07-24
+def test_check_closed_req_detects_jobgether_closed_banner_phrase() -> None:
+    url = "https://jobgether.com/offer/6a53f99aac00a71a5a8aaeb6-software-engineer-4-mobile"
+    fake_resp = _fake_response(
+        b"<html>This job has expired on Jobgether. The employer is not accepting new applications</html>",
+        url,
+    )
+    with patch("routes.applications.safe_urlopen", return_value=fake_resp):
+        result = _check_closed_req(url, "jobgether")
+    assert result == "closed"
+
+
 # ai: claude-fable-5 | 2026-07-16
 def test_canonicalize_wttj_url_strips_token_and_tracking_params() -> None:
     tokenized_url = (
@@ -236,6 +247,26 @@ def test_detect_closed_req_platform_recognizes_mongodb_url() -> None:
     job = {"source": "Career site: MongoDB"}
     url = "https://www.mongodb.com/careers/job/?gh_jid=7590547"
     assert _detect_closed_req_platform(job, url) == "mongodb"
+
+
+# ai: claude-sonnet-5 | 2026-07-24
+def test_detect_closed_req_platform_recognizes_jobgether_source() -> None:
+    """Jobgether email links go through an AWS SES click-tracking redirect
+    (r.<region>.awstrack.me), not jobgether.com directly — source is the only
+    reliable signal for those, so it must be checked independently of netloc."""
+    job = {"source": "Jobgether"}
+    url = (
+        "https://9sh28qce.r.us-east-1.awstrack.me/L0/https:%2F%2Fjobgether.com"
+        "%2Foffer%2F6a53f99aac00a71a5a8aaeb6-software-engineer-4-mobile/1/0100"
+    )
+    assert _detect_closed_req_platform(job, url) == "jobgether"
+
+
+# ai: claude-sonnet-5 | 2026-07-24
+def test_detect_closed_req_platform_recognizes_jobgether_url() -> None:
+    job = {"source": "Career site"}
+    url = "https://jobgether.com/offer/6a53f99aac00a71a5a8aaeb6-software-engineer-4-mobile"
+    assert _detect_closed_req_platform(job, url) == "jobgether"
 
 
 # ai: claude-fable-5 | 2026-07-16
@@ -361,18 +392,16 @@ def test_throttle_host_fetch_spaces_same_host_only(
         assert mock_sleep.call_args[0][0] == pytest.approx(0.8)
 
 
-def _fresh_repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
-    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
-    init_db(dsn)
-    monkeypatch.setattr(config, "DATABASE_URL", dsn)
-    return open_repositories(dsn)
+def _fresh_repos(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> dict:
+    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    return open_repositories(pg_dsn)
 
 
 def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A job already on the Applications Sheet gets a req_closed stage, jobs.status untouched."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
             {
@@ -402,10 +431,10 @@ def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(
 
 
 def test_record_closed_req_skips_queue_job_out_of_job_queue(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A job still in the pre-triage queue must actually leave GET /jobs, not just get a stage."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
             {
@@ -442,10 +471,10 @@ def test_record_closed_req_skips_queue_job_out_of_job_queue(
 
 
 def test_closed_req_candidates_excludes_already_skipped_queue_jobs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A queue job already skipped for another reason must not be re-flagged as req_closed."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         repos["jobs"].insert(
             {
@@ -478,13 +507,13 @@ def test_closed_req_candidates_excludes_already_skipped_queue_jobs(
 
 
 def test_run_req_closed_scan_prioritizes_never_checked_job_over_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """_closed_req_candidates always orders Applications Sheet jobs before pre-triage
     Job Queue jobs. Without prioritizing jobs that haven't been rechecked yet, a large
     pool of already-checked sheet jobs would permanently consume every cap slot on
     every run, starving queue jobs of ever reaching an authenticated recheck."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
         # Fill the cap with sheet-tracked jobs that already went through one
@@ -539,11 +568,11 @@ def test_run_req_closed_scan_prioritizes_never_checked_job_over_cap(
 
 # ai: claude-fable-5 | 2026-07-16
 def test_run_req_closed_scan_scans_only_selected_platforms(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A platform selection must limit the scan to jobs on those platforms —
     the point of the setup dialog's per-site checkboxes."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     wellfound_url = "https://wellfound.com/jobs?job_listing_slug=1-engineer"
     try:
         repos["jobs"].insert(
@@ -579,13 +608,13 @@ def test_run_req_closed_scan_scans_only_selected_platforms(
 
 
 def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Wellfound bot-blocks unauthenticated fetches with a 403 on every job, so
     _check_closed_req always reports 'bad_url' there regardless of the job's real
     status. That must be escalated to an authenticated browser-extension capture
     rather than reported as a broken-URL error."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
             {
@@ -621,13 +650,13 @@ def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
 
 # ai: claude-fable-5 | 2026-07-17
 def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Regression for job 2840: with more escalations than one batch holds, the
     scan must keep queueing batches and waiting for the extension to drain each
     one until every job got an authenticated recheck — not stop after the first
     batch and starve the rest of the pool for runs on end."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     total = _CLOSED_REQ_BROWSER_CHECK_CAP + 3
     job_ids: list[int] = []
     try:
@@ -695,12 +724,12 @@ def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
 
 # ai: claude-fable-5 | 2026-07-17
 def test_run_req_closed_scan_stops_batching_when_extension_offline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With nothing draining the capture queue, the scan must give up after the
     first batch with an explanatory message instead of waiting forever or
     flooding the queue with every remaining batch."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     total = _CLOSED_REQ_BROWSER_CHECK_CAP + 5
     try:
         for i in range(total):
@@ -766,6 +795,19 @@ def test_classify_closed_req_page_detects_wellfound_banner_phrase() -> None:
     )
 
 
+# ai: claude-sonnet-5 | 2026-07-24
+def test_classify_closed_req_page_detects_jobgether_banner_phrase() -> None:
+    page_text = "<html>this job has expired on jobgether. the employer is not accepting new applications</html>"
+    assert (
+        _classify_closed_req_page(
+            page_text,
+            "https://jobgether.com/offer/6a53f99aac00a71a5a8aaeb6-software-engineer-4-mobile",
+            "jobgether",
+        )
+        == "closed"
+    )
+
+
 def test_classify_closed_req_page_returns_open_when_no_signal() -> None:
     page_text = "<html>principal software engineer, apply now</html>"
     assert (
@@ -780,10 +822,10 @@ def test_classify_closed_req_page_returns_open_when_no_signal() -> None:
 
 
 def test_enqueue_once_for_purpose_skips_duplicate_while_in_flight(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A URL+purpose already pending/processing is not re-enqueued."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
         first_id = queue_repo.enqueue_once_for_purpose(
@@ -811,13 +853,13 @@ def test_enqueue_once_for_purpose_skips_duplicate_while_in_flight(
 
 # ai: claude-fable-5 | 2026-07-16
 def test_enqueue_once_for_purpose_queues_distinct_query_form_urls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Wellfound identifies jobs in the query string (jobs?job_listing_slug=...),
     so two different jobs sharing the same base URL must both be enqueueable.
     Regression: base-URL dedupe collapsed every query-form Wellfound job to one
     key, letting only a single Wellfound job per scan reach the browser check."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
         first_id = queue_repo.enqueue_once_for_purpose(
@@ -844,11 +886,11 @@ def test_enqueue_once_for_purpose_queues_distinct_query_form_urls(
 
 
 def test_enqueue_once_for_purpose_reenqueues_after_done(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A job classified 'open' on a prior scan run must be re-escalated on a later run,
     otherwise a posting that closes after the first check is never rechecked."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
         first_id = queue_repo.enqueue_once_for_purpose(
@@ -885,9 +927,9 @@ def test_enqueue_once_for_purpose_reenqueues_after_done(
 
 
 def test_closed_req_browser_queue_snapshot_counts_by_status(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
         queue_repo.enqueue_once_for_purpose(
@@ -927,9 +969,9 @@ def test_closed_req_browser_queue_snapshot_counts_by_status(
 
 
 def test_closed_req_browser_queue_snapshot_empty_queue(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         snapshot = _closed_req_browser_queue_snapshot(repos)
         assert snapshot == {
@@ -948,11 +990,11 @@ def test_closed_req_browser_queue_snapshot_empty_queue(
 
 
 def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An authenticated capture showing the closure banner records the job as closed,
     even though the earlier unauthenticated fetch reported it as open."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
             {
@@ -1004,10 +1046,10 @@ def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(
 
 
 def test_submit_closed_req_capture_leaves_open_job_untouched(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A capture with no closure signal marks the queue item done but doesn't touch the job."""
-    repos = _fresh_repos(tmp_path, monkeypatch)
+    repos = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
             {

@@ -335,7 +335,7 @@ def _migrate(conn: Any) -> None:
 
     conn.commit()
 
-    _backfill_duplicate_of_id(conn, is_postgres=True)
+    _backfill_duplicate_of_id(conn)  # ai: claude-sonnet-5 | 2026-07-25
 
 
 # ai: claude-sonnet-4-6 | 2026-06-09
@@ -349,21 +349,18 @@ _HINT_COMPANY_RE = re.compile(
 )
 
 
-def _backfill_duplicate_of_id(conn: Any, is_postgres: bool) -> None:
+# ai: claude-sonnet-5 | 2026-07-25 — dropped the is_postgres flag now that SQLite support is gone; always uses %s placeholders
+def _backfill_duplicate_of_id(conn: Any) -> None:
     """Populate duplicate_of_id for existing possible_duplicate jobs that lack it.
 
     Tries URL exact match first, then falls back to extracting title/company
     from the duplicate_hint text and doing an exact DB lookup.
-
-    Shared by both _migrate (Postgres) and schema_sqlite._migrate_sqlite (SQLite)
-    via the is_postgres flag, which only changes the placeholder style used.
     """
     cur = conn.cursor()
-    ph = "%s" if is_postgres else "?"
 
     cur.execute(
-        f"SELECT id, url, company, duplicate_hint FROM jobs"
-        f" WHERE status = {ph} AND duplicate_of_id IS NULL",
+        "SELECT id, url, company, duplicate_hint FROM jobs"
+        " WHERE status = %s AND duplicate_of_id IS NULL",
         ("possible_duplicate",),
     )
     rows = cur.fetchall()
@@ -407,7 +404,7 @@ def _backfill_duplicate_of_id(conn: Any, is_postgres: bool) -> None:
 
         if matched_id is not None:
             cur.execute(
-                f"UPDATE jobs SET duplicate_of_id = {ph} WHERE id = {ph}",
+                "UPDATE jobs SET duplicate_of_id = %s WHERE id = %s",
                 (matched_id, job_id),
             )
 
@@ -651,6 +648,23 @@ def _create_tables(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_import_repair_history_source_code
             ON import_repair_history (source, warning_code, run_at DESC)
+        """,
+        # ai: claude-sonnet-5 | 2026-07-25
+        """
+        CREATE TABLE IF NOT EXISTS contacts (
+            id                  SERIAL PRIMARY KEY,
+            full_name           TEXT NOT NULL,
+            company_raw         TEXT NOT NULL DEFAULT '',
+            company_normalized  TEXT NOT NULL DEFAULT '',
+            position            TEXT NOT NULL DEFAULT '',
+            profile_url         TEXT UNIQUE,
+            connected_on        TEXT,
+            imported_at         TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_contacts_company_normalized
+            ON contacts (company_normalized)
         """,
     ]:
         cur.execute(stmt)

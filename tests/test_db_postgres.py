@@ -35,28 +35,25 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from backend.db import (
-    SQLiteAppSettingsRepository,
-    SQLiteCareerSiteSourceRepository,
-    SQLiteJobRepository,
-    SQLiteRelevanceFeedbackRepository,
+    PostgresAppSettingsRepository,
+    PostgresCareerSiteSourceRepository,
+    PostgresJobRepository,
+    PostgresRelevanceFeedbackRepository,
     get_connection,
-    init_db,
     open_repositories,
 )
 
+# ai: claude-sonnet-5 | 2026-07-25
 
-def test_sqlite_backend_initializes_and_supports_repositories(tmp_path: Path) -> None:
-    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
 
-    init_db(dsn)
-    conn = get_connection(dsn)
+def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
     try:
-        jobs = SQLiteJobRepository(conn)
-        settings = SQLiteAppSettingsRepository(conn)
-        career_sites = SQLiteCareerSiteSourceRepository(conn)
+        jobs = PostgresJobRepository(conn)
+        settings = PostgresAppSettingsRepository(conn)
+        career_sites = PostgresCareerSiteSourceRepository(conn)
 
         settings.set("cover_letter_folder", "C:/letters")
         job_id = jobs.insert(
@@ -100,11 +97,8 @@ def test_sqlite_backend_initializes_and_supports_repositories(tmp_path: Path) ->
         conn.close()
 
 
-def test_open_repositories_selects_sqlite_implementations(tmp_path: Path) -> None:
-    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
-
-    init_db(dsn)
-    repos = open_repositories(dsn)
+def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None:
+    repos = open_repositories(pg_dsn)
     try:
         job_id = repos["jobs"].insert(
             {
@@ -161,11 +155,8 @@ def test_open_repositories_selects_sqlite_implementations(tmp_path: Path) -> Non
         repos["conn"].close()
 
 
-def test_scanned_email_history_includes_all_child_jobs(tmp_path: Path) -> None:
-    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
-
-    init_db(dsn)
-    repos = open_repositories(dsn)
+def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
+    repos = open_repositories(pg_dsn)
     try:
         repos["scanned_emails"].mark_scanned(
             "email-3",
@@ -212,11 +203,8 @@ def test_scanned_email_history_includes_all_child_jobs(tmp_path: Path) -> None:
         repos["conn"].close()
 
 
-def test_scanned_email_get_by_id_returns_disposition(tmp_path: Path) -> None:
-    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
-
-    init_db(dsn)
-    repos = open_repositories(dsn)
+def test_scanned_email_get_by_id_returns_disposition(pg_dsn: str) -> None:
+    repos = open_repositories(pg_dsn)
     try:
         repos["scanned_emails"].mark_scanned(
             "email-noise-1",
@@ -240,13 +228,11 @@ def test_scanned_email_get_by_id_returns_disposition(tmp_path: Path) -> None:
 
 
 def test_relevance_feedback_requires_subject_overlap_for_exact_sender(
-    tmp_path: Path,
+    pg_dsn: str,
 ) -> None:
-    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
-    init_db(dsn)
-    conn = get_connection(dsn)
+    conn = get_connection(pg_dsn)
     try:
-        feedback = SQLiteRelevanceFeedbackRepository(conn)
+        feedback = PostgresRelevanceFeedbackRepository(conn)
         feedback.insert(
             {
                 "sender_email": "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",

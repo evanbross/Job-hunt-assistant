@@ -41,6 +41,7 @@ import { extractSender, extractSubjectWords } from "../../utils/triagePanelUtils
 import { applicationRowFromSheet } from "../../utils/sheetUtils.js";
 import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../../utils/reqClosedScanStorage.js";
 import { readStoredPref, writeStoredPref } from "../../utils/storedPreference.js";
+import { runBatchRefreshFromUrls } from "../../utils/batchRefreshFromUrls.js";
 import { sortJobList, readStoredViewPref } from "./helpers.jsx";
 import FixCompaniesDialog from "./FixCompaniesDialog.jsx";
 import ProgressPopup from "./ProgressPopup.jsx";
@@ -228,8 +229,11 @@ export default function JobQueue({
   const [triageJobs, setTriageJobs] = useState([]);
   const [triageLoading, setTriageLoading] = useState(false);
   const [allSheetRows, setAllSheetRows] = useState(null);
+  // ai: claude-sonnet-5 | 2026-07-25
+  const [contactsByCompany, setContactsByCompany] = useState({});
   const [triageReEvaluatePopup, setTriageReEvaluatePopup] = useState(null);
   const [triageBatchRefreshPopup, setTriageBatchRefreshPopup] = useState(null);
+  const [queueUnratedRefreshPopup, setQueueUnratedRefreshPopup] = useState(null);
   const [triageDescriptionUpdatePopup, setTriageDescriptionUpdatePopup] = useState(null);
   const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -360,6 +364,14 @@ export default function JobQueue({
       .then((data) => setAllSheetRows(Array.isArray(data.rows) ? data.rows.map(applicationRowFromSheet) : []))
       .catch(() => setAllSheetRows([]));
   }, [viewMode]);
+
+  // ai: claude-sonnet-5 | 2026-07-25
+  useEffect(() => {
+    fetch("/api/contacts/company-map")
+      .then((res) => res.json())
+      .then((data) => setContactsByCompany(data && typeof data === "object" ? data : {}))
+      .catch(() => setContactsByCompany({}));
+  }, []);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -843,69 +855,65 @@ export default function JobQueue({
     const refreshable = triageJobs.filter((job) => job.status !== "possible_duplicate" && job.url);
     if (refreshable.length === 0) return;
 
-    const results = [];
     let nextJobs = [...triageJobs];
-
-    setTriageBatchRefreshPopup({
-      currentIndex: 0,
-      currentJob: refreshable[0],
-      phase: "running",
-      results: [],
-      total: refreshable.length,
-    });
-
-    for (let index = 0; index < refreshable.length; index += 1) {
-      const job = refreshable[index];
-      setTriageBatchRefreshPopup((popup) => ({ ...popup, currentIndex: index, currentJob: job }));
-
-      try {
-        const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to re-fetch job");
-
-        if (data.queued_for_browser_capture) {
-          results.push({
-            company: job.company || "",
-            error: "",
-            jobTitle: job.job_title || "",
-            newScore: null,
-            previousScore: job.fit_score,
-            status: "queued",
-          });
-        } else {
-          results.push({
-            company: data.company || job.company || "",
-            error: "",
-            jobTitle: data.job_title || job.job_title || "",
-            newScore: data.fit_score,
-            previousScore: job.fit_score,
-            status: data.status,
-          });
-
-          const triageStatuses = new Set(["triage", "possible_duplicate"]);
-          if (triageStatuses.has(data.status)) {
-            nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
-          } else {
-            nextJobs = nextJobs.filter((item) => item.id !== job.id);
-          }
-          setTriageJobs(nextJobs);
-          onTriageCountChange(nextJobs.length);
-        }
-      } catch (err) {
-        results.push({
-          company: job.company || "",
-          error: err.message || "Failed to re-fetch job",
-          jobTitle: job.job_title || "",
-          newScore: null,
-          previousScore: job.fit_score,
-          status: "error",
-        });
+    await runBatchRefreshFromUrls(refreshable, setTriageBatchRefreshPopup, (job, data) => {
+      const triageStatuses = new Set(["triage", "possible_duplicate"]);
+      if (triageStatuses.has(data.status)) {
+        nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
+      } else {
+        nextJobs = nextJobs.filter((item) => item.id !== job.id);
       }
+      setTriageJobs(nextJobs);
+      onTriageCountChange(nextJobs.length);
+    });
+  };
 
-      setTriageBatchRefreshPopup((popup) => ({ ...popup, currentIndex: index + 1, results: [...results] }));
+  // ai: claude-sonnet-5 | 2026-07-24
+  // Re-fetches and re-scores every active job card that has never been rated
+  // (fit_score is null) — queue (pending_review) AND triage/possible_duplicate
+  // cards alike, since "Needs score" counts both. triageJobs is only loaded
+  // lazily when viewMode !== "queue" (see fetchTriageJobs' effect above), so
+  // this re-fetches it fresh here rather than trusting possibly-stale state.
+  //
+  // Only `jobs` is kept in sync incrementally during the loop, mirroring
+  // handleTriageBatchRefreshFromUrls above — the trailing updateTriageCount()
+  // call is the sole, authoritative resync for triageJobs, so there's no need
+  // to also patch it up mid-loop only to have that work overwritten.
+  const handleQueueRefreshUnrated = async () => {
+    let triageSource = triageJobs;
+    try {
+      const res = await fetch("/api/jobs/triage");
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        triageSource = data;
+        setTriageJobs(data);
+        onTriageCountChange(data.length);
+      }
+    } catch {
+      /* fall back to whatever triage data is already loaded */
     }
 
-    setTriageBatchRefreshPopup({ phase: "done", results, total: refreshable.length });
+    const refreshable = [...jobs, ...triageSource].filter((job) => job.fit_score == null && job.url);
+    if (refreshable.length === 0) {
+      window.alert("No unrated jobs with a URL to refresh.");
+      return;
+    }
+
+    let nextJobs = [...jobs];
+    await runBatchRefreshFromUrls(refreshable, setQueueUnratedRefreshPopup, (job, data) => {
+      if (data.status === "pending_review") {
+        nextJobs = nextJobs.some((item) => item.id === data.id)
+          ? nextJobs.map((item) => (item.id === data.id ? data : item))
+          : [...nextJobs, data];
+      } else {
+        nextJobs = nextJobs.filter((item) => item.id !== job.id);
+      }
+      setJobs(nextJobs);
+    });
+
+    // A refreshed triage job can graduate to pending_review (and vice versa);
+    // this is the authoritative resync for the triage list and its badge count.
+    await updateTriageCount();
   };
 
   const handleReEvaluate = async () => {
@@ -1561,7 +1569,17 @@ export default function JobQueue({
   };
 
   const isBatchRefreshing = triageBatchRefreshPopup?.phase === "running";
-  const refreshableCount = triageJobs.filter((job) => job.status !== "possible_duplicate" && job.url).length;
+  const refreshableCount = useMemo(
+    () => triageJobs.filter((job) => job.status !== "possible_duplicate" && job.url).length,
+    [triageJobs],
+  );
+  const isQueueUnratedRefreshing = queueUnratedRefreshPopup?.phase === "running";
+  const unratedQueueRefreshableCount = useMemo(
+    () => jobs.filter((job) => job.fit_score == null && job.url).length
+      + triageJobs.filter((job) => job.fit_score == null && job.url).length,
+    [jobs, triageJobs],
+  );
+  const unratedQueueRefreshDisabled = anyQueueActionRunning || isQueueUnratedRefreshing || unratedQueueRefreshableCount === 0;
 
   return (
     <div>
@@ -1837,6 +1855,27 @@ export default function JobQueue({
                 }}
               >
                 {rescanImportRunning ? "Rescanning…" : "Rescan Broken Imports (bad URL)"}
+              </button>
+              <button
+                onClick={() => { setMoreToolsOpen(false); handleQueueRefreshUnrated(); }}
+                disabled={unratedQueueRefreshDisabled}
+                title="Re-fetch and re-score every queued job that has no fit score yet"
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 14px",
+                  fontSize: "13px",
+                  background: "none",
+                  border: "none",
+                  color: "var(--text)",
+                  cursor: unratedQueueRefreshDisabled ? "not-allowed" : "pointer",
+                  opacity: unratedQueueRefreshDisabled ? 0.5 : 1,
+                }}
+              >
+                {isQueueUnratedRefreshing
+                  ? "Re-fetching unrated…"
+                  : `Re-fetch Unrated Jobs${unratedQueueRefreshableCount > 0 ? ` (${unratedQueueRefreshableCount})` : ""}`}
               </button>
               <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
               <button
@@ -2272,6 +2311,9 @@ export default function JobQueue({
       {triageBatchRefreshPopup && (
         <TriageBatchRefreshPopup popup={triageBatchRefreshPopup} onClose={() => setTriageBatchRefreshPopup(null)} />
       )}
+      {queueUnratedRefreshPopup && (
+        <TriageBatchRefreshPopup popup={queueUnratedRefreshPopup} onClose={() => setQueueUnratedRefreshPopup(null)} />
+      )}
       {triageDescriptionUpdatePopup && (
         <DescriptionUpdatePopup popup={triageDescriptionUpdatePopup} onClose={() => setTriageDescriptionUpdatePopup(null)} />
       )}
@@ -2295,7 +2337,7 @@ export default function JobQueue({
         sortedTriageJobs.length === 0 ? (
           <div className="empty-state"><p>No triage jobs match your search.</p></div>
         ) : (
-          sortedTriageJobs.map((job) => renderJobOrTriageCard(job, null, triageHandlers, allSheetRows, onNavigateToJobCard))
+          sortedTriageJobs.map((job) => renderJobOrTriageCard(job, null, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany))
         )
       ) : viewMode === "company" ? (
         companiesList.length === 0 ? (
@@ -2308,6 +2350,7 @@ export default function JobQueue({
               jobs={companyJobs}
               triageHandlers={triageHandlers}
               allSheetRows={allSheetRows}
+              contactsByCompany={contactsByCompany}
               onNavigateToJobCard={onNavigateToJobCard}
               onQueueApprove={handleApprove}
               onQueueReEvaluate={handleJobReEvaluate}
@@ -2369,7 +2412,7 @@ export default function JobQueue({
               setJobs((prev) => prev.filter((j) => j.id !== jobId));
               updateTriageCount();
             },
-          }, triageHandlers, allSheetRows, onNavigateToJobCard))
+          }, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany))
         )
       ) : (
         /* viewMode === "queue" */
@@ -2385,6 +2428,7 @@ export default function JobQueue({
               onSkip={handleSkip}
               onSnooze={handleSnooze}
               onNavigateToJobCard={onNavigateToJobCard}
+              contactsByCompany={contactsByCompany}
               onUpdate={(jobId, updatedJob) => {
                 captureScrollAnchor(jobId);
                 if (updatedJob.fit_score !== job.fit_score || updatedJob.fit_reasoning !== job.fit_reasoning) {

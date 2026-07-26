@@ -88,6 +88,3 @@ class PostgresEmailSubjectRuleRepository(_BaseRepo):
 
     def delete(self, rule_id: int) -> None:
         self._execute("DELETE FROM ack_patterns WHERE id = %s", (rule_id,))
-
-
-SQLiteEmailSubjectRuleRepository = PostgresEmailSubjectRuleRepository

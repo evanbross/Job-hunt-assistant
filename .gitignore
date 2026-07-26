@@ -11,10 +11,6 @@ googleusercontent.com.json
 *.apps.googleusercontent.com.json
 
 # Database
-data/jobhunt.db
-data/job_hunt_assistant.sqlite3
-data/job_hunt_assistant.sqlite3-shm
-data/job_hunt_assistant.sqlite3-wal
 data/runtime_config.json
 server.log
 

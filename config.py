@@ -61,15 +61,7 @@ FRONTEND_DIST: Path = BASE_DIR / "frontend" / "dist"
 DATA_DIR: Path = BASE_DIR / "data"
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-DATABASE_BACKEND: str = os.getenv("DATABASE_BACKEND", "postgres").strip().lower()
-_sqlite_database_path = Path(
-    os.getenv("SQLITE_DATABASE_PATH", str(DATA_DIR / "job_hunt_assistant.sqlite3"))
-)
-SQLITE_DATABASE_PATH: Path = (
-    _sqlite_database_path
-    if _sqlite_database_path.is_absolute()
-    else BASE_DIR / _sqlite_database_path
-)
+# ai: claude-sonnet-5 | 2026-07-25 — removed DATABASE_BACKEND/SQLITE_DATABASE_PATH; Postgres only now
 _pg_host: str = os.getenv("POSTGRES_HOST", "")
 _pg_port: str = os.getenv("POSTGRES_PORT", "5432")
 _pg_db: str = os.getenv("POSTGRES_DB", "")
@@ -77,18 +69,13 @@ _pg_user: str = os.getenv("POSTGRES_USER", "")
 _pg_password: str = os.getenv("POSTGRES_PASSWORD", "")
 _pg_sslmode: str = os.getenv("POSTGRES_SSLMODE", "require")
 
-_postgres_database_url: str = os.getenv("DATABASE_URL", "") or (
+DATABASE_URL: str = os.getenv("DATABASE_URL", "") or (
     (
         f"postgresql://{_pg_user}:{_pg_password}@{_pg_host}:{_pg_port}/{_pg_db}"
         f"?sslmode={_pg_sslmode}"
     )
     if _pg_host and _pg_db and _pg_user
     else ""
-)
-DATABASE_URL: str = (
-    f"sqlite:///{SQLITE_DATABASE_PATH}"
-    if DATABASE_BACKEND == "sqlite"
-    else _postgres_database_url
 )
 RUNTIME_CONFIG_PATH: Path = DATA_DIR / "runtime_config.json"
 DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(

@@ -27,13 +27,13 @@ Read these detailed standards only when touching the related area:
 ## Project Overview
 
 Flask backend + React/Vite frontend (`frontend/src/`).
-Migrating from SQLite to Neon Postgres — all DB access goes through
-repository classes in `backend/db.py`. Do not add raw queries to route handlers.
+Postgres (Neon) only — all DB access goes through repository classes in
+`backend/db/`. Do not add raw queries to route handlers.
 
 Key files:
 - `app.py` — Flask app factory; registers blueprints from `routes/`
 - `routes/` — one blueprint per feature area (jobs, scan, fit, emails, applications, career_sites, import_, cover_letter, settings, system, board_search, auth)
-- `backend/db.py` — repository implementations (SQLite today, Postgres next)
+- `backend/db/` — repository implementations (Postgres only)
 - `backend/fit_scorer.py` — Anthropic API job-fit scoring
 - `backend/career_site_scanner.py` — scrapes company career pages
 - `backend/gmail_client.py` — Gmail integration

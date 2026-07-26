@@ -19,6 +19,4 @@
   sender matching, the ideal fix is to store sender_email as its own column in the jobs table during the scan. That's a small schema/scan-pipeline addition when
    you want tighter feedback learning.
   - uv.lock — Not generated yet since we haven't run uv sync. Run it once to generate the lock file, then commit both pyproject.toml and uv.lock.
-  - NULLS LAST in SQLite — The ORDER BY fit_score DESC NULLS LAST in db.py requires SQLite 3.30+ (released 2019), which Python 3.11's bundled SQLite satisfies.
-  If you see an error there, SQLite is older than expected.
 

@@ -69,6 +69,3 @@ class PostgresResumeRepository(_BaseRepo):
 
     def delete_all(self) -> None:
         self._execute("DELETE FROM resume")
-
-
-SQLiteResumeRepository = PostgresResumeRepository

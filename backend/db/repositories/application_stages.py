@@ -100,15 +100,9 @@ class PostgresApplicationStageRepository(_BaseRepo):
         self._execute("DELETE FROM application_stages WHERE id = %s", (stage_id,))
 
 
-SQLiteApplicationStageRepository = PostgresApplicationStageRepository
-
-
 class PostgresStageStatusRepository(_BaseRepo):
     def get_all(self) -> list[dict[str, Any]]:
         cur = self._execute(
             "SELECT * FROM stage_statuses ORDER BY sort_order ASC, key ASC"
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
-
-
-SQLiteStageStatusRepository = PostgresStageStatusRepository

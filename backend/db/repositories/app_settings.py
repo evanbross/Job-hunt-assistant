@@ -49,6 +49,3 @@ class PostgresAppSettingsRepository(_BaseRepo):
             " ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value",
             (key, value),
         )
-
-
-SQLiteAppSettingsRepository = PostgresAppSettingsRepository

@@ -34,12 +34,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 import config
-from backend.db import init_db, open_repositories
+from backend.db import open_repositories
 from routes import scan
 
 
@@ -101,10 +99,9 @@ class FakeEmailParser:
 
 
 def test_noise_feedback_does_not_skip_entire_email(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, pg_dsn: str
 ) -> None:
-    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
-    init_db(dsn)
+    dsn = pg_dsn
     repos = open_repositories(dsn)
     try:
         repos["sources"].insert(

@@ -32,17 +32,13 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""Connection layer — dialect-translation helpers and connection wrappers
-shared by every repository, plus get_connection() to open either backend."""
+"""Connection layer — row-dict conversion and the reconnecting Postgres
+connection wrapper shared by every repository, plus get_connection()."""
 
 from __future__ import annotations
 
-import re
-import sqlite3
 from datetime import date, datetime
-from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 import psycopg2
 import psycopg2.extras
@@ -59,120 +55,6 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         else:
             result[key] = val
     return result
-
-
-class _SQLiteCursor:
-    def __init__(self, cursor: sqlite3.Cursor) -> None:
-        self._cursor = cursor
-
-    def execute(self, sql: str, params: tuple | list = ()) -> "_SQLiteCursor":
-        self._cursor.execute(_sqlite_sql(sql), tuple(params))
-        return self
-
-    def executemany(self, sql: str, seq_of_params: list | tuple) -> "_SQLiteCursor":
-        self._cursor.executemany(_sqlite_sql(sql), seq_of_params)
-        return self
-
-    def fetchone(self) -> dict[str, Any] | None:
-        row = self._cursor.fetchone()
-        return _row_to_dict(row) if row is not None else None
-
-    def fetchall(self) -> list[dict[str, Any]]:
-        return [_row_to_dict(row) for row in self._cursor.fetchall()]
-
-
-def _split_part(value: str | None, delimiter: str, index: int) -> str | None:
-    """SQLite equivalent of PostgreSQL's split_part(string, delimiter, index).
-
-    1-indexed, like Postgres; returns '' (not an error) when index is out of range.
-    """
-    if value is None:
-        return None
-    parts = value.split(delimiter)
-    if index < 1 or index > len(parts):
-        return ""
-    return parts[index - 1]
-
-
-class _SQLiteConnection:
-    def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(path)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        # ai: claude-sonnet-4-6 | 2026-07-02
-        # Repo queries use Postgres's split_part(...) to strip URL query strings for
-        # dedup matching; register the equivalent function so those queries also work
-        # against SQLite (dev/test DBs) instead of only ever having been exercised
-        # against production Postgres.
-        self._conn.create_function("split_part", 3, _split_part)
-        self.autocommit = False
-        self.backend = "sqlite"
-
-    def cursor(self) -> _SQLiteCursor:
-        return _SQLiteCursor(self._conn.cursor())
-
-    def commit(self) -> None:
-        self._conn.commit()
-
-    def rollback(self) -> None:
-        self._conn.rollback()
-
-    def close(self) -> None:
-        self._conn.close()
-
-
-def _sqlite_sql(sql: str) -> str:
-    # Translates Postgres-dialect SQL to SQLite-compatible SQL.
-    # UTC contract: SQLite's datetime('now') and date('now') return UTC values
-    # by specification — SQLite's internal time source is always UTC. The
-    # translations below are semantically equivalent to the original Postgres
-    # UTC expressions. Add a new entry here whenever you introduce a
-    # Postgres-specific expression (date function, cast, type name) in schema
-    # DDL or migration SQL above.
-    # ai: claude-sonnet-4-6 | 2026-06-25
-    translated = sql.replace("%s", "?")
-    translated = translated.replace(
-        "(NOW() AT TIME ZONE 'UTC')::date::text", "date('now')"
-    )
-    translated = translated.replace("NOW()::text", "datetime('now')")
-    translated = translated.replace("NOW()", "datetime('now')")
-    translated = translated.replace("CURRENT_DATE::text", "date('now')")
-    translated = re.sub(
-        r"scanned_at::timestamptz\s*>=\s*datetime\('now'\)\s*-\s*\(\?\s*\*\s*INTERVAL '1 day'\)",
-        "datetime(scanned_at) >= datetime('now', '-' || ? || ' days')",
-        translated,
-    )
-    translated = translated.replace("TIMESTAMPTZ", "TEXT")
-    translated = re.sub(
-        r"\bSERIAL\s+PRIMARY\s+KEY\b", "INTEGER PRIMARY KEY AUTOINCREMENT", translated
-    )
-    # ai: claude-sonnet-5 | 2026-07-23
-    # SQLite has no row-locking concept to translate this to. It already serializes
-    # all writers to one connection, so the clause is simply dropped rather than
-    # translated — the atomicity FOR UPDATE SKIP LOCKED provides under concurrent
-    # Postgres connections is unnecessary (not unsafe) against SQLite's single-writer
-    # model.
-    translated = re.sub(r"\s+FOR UPDATE SKIP LOCKED\b", "", translated)
-    return translated
-
-
-def _is_sqlite_connection(conn: Any) -> bool:
-    return getattr(conn, "backend", "") == "sqlite"
-
-
-def _sqlite_path_from_dsn(dsn: str) -> Path:
-    if dsn.startswith("sqlite:///"):
-        parsed = urlparse(dsn)
-        raw_path = unquote(parsed.path)
-        if re.match(r"^/[A-Za-z]:[\\/]", raw_path):
-            raw_path = raw_path[1:]
-        return Path(raw_path)
-    if dsn.startswith("sqlite://"):
-        parsed = urlparse(dsn)
-        raw_path = unquote(parsed.path or parsed.netloc)
-        return Path(raw_path)
-    return Path(dsn)
 
 
 class _ReconnectingPgConn:
@@ -223,12 +105,7 @@ class _ReconnectingPgConn:
         self._conn = self._connect()
 
 
+# ai: claude-sonnet-5 | 2026-07-25 — SQLite dialect support removed; Postgres only now
 def get_connection(dsn: str) -> Any:
-    """Open a database connection for the configured backend."""
-    if (
-        dsn.startswith("sqlite://")
-        or dsn.endswith(".sqlite")
-        or dsn.endswith(".sqlite3")
-    ):
-        return _SQLiteConnection(_sqlite_path_from_dsn(dsn))
+    """Open a Postgres database connection."""
     return _ReconnectingPgConn(dsn)

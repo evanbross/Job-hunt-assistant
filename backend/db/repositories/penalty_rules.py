@@ -92,6 +92,3 @@ class PostgresPenaltyRuleRepository(_BaseRepo):
 
     def delete(self, rule_id: int) -> None:
         self._execute("DELETE FROM penalty_rules WHERE id = %s", (rule_id,))
-
-
-SQLitePenaltyRuleRepository = PostgresPenaltyRuleRepository

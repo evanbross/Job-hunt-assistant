@@ -33,7 +33,7 @@
 # =============================================================================
 
 """
-Database layer — PostgreSQL or SQLite with repository pattern.
+Database layer — PostgreSQL with repository pattern.
 
 Each repository exposes a stable interface (defined as a Protocol) so business
 logic and routes never touch raw SQL. Concrete implementations accept an injected
@@ -49,14 +49,13 @@ repository/schema module at once.
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 import time
 from typing import Any
 
 import psycopg2
 
-from .connection import _is_sqlite_connection, get_connection
+from .connection import get_connection
 from .interfaces import (
     IApplicationStageRepository,
     IAppSettingsRepository,
@@ -65,6 +64,7 @@ from .interfaces import (
     ICareerScanFailureRepository,
     ICareerScanResultRepository,
     ICareerSiteSourceRepository,
+    IContactRepository,
     IEmailSourceRepository,
     IEmailSubjectRuleRepository,
     IImportRepairHistoryRepository,
@@ -76,64 +76,31 @@ from .interfaces import (
     IScannedEmailRepository,
     IStageStatusRepository,
 )
-from .repositories.app_settings import (
-    PostgresAppSettingsRepository,
-    SQLiteAppSettingsRepository,
-)
+from .repositories.app_settings import PostgresAppSettingsRepository
 from .repositories.application_stages import (
     PostgresApplicationStageRepository,
     PostgresStageStatusRepository,
-    SQLiteApplicationStageRepository,
-    SQLiteStageStatusRepository,
 )
 from .repositories.browser_capture_queue import (
     BROWSER_QUEUE_CLAIM_BATCH_SIZE,
     BROWSER_QUEUE_MAX_RETRIES,
     PostgresBrowserCaptureQueueRepository,
-    SQLiteBrowserCaptureQueueRepository,
 )
-from .repositories.career_rejection_rules import (
-    PostgresCareerRejectionRuleRepository,
-    SQLiteCareerRejectionRuleRepository,
-)
-from .repositories.career_scan_failures import (
-    PostgresCareerScanFailureRepository,
-    SQLiteCareerScanFailureRepository,
-)
-from .repositories.career_scan_results import (
-    PostgresCareerScanResultRepository,
-    SQLiteCareerScanResultRepository,
-)
-from .repositories.career_site_sources import (
-    PostgresCareerSiteSourceRepository,
-    SQLiteCareerSiteSourceRepository,
-)
-from .repositories.email_sources import (
-    PostgresEmailSourceRepository,
-    SQLiteEmailSourceRepository,
-)
-from .repositories.email_subject_rules import (
-    PostgresEmailSubjectRuleRepository,
-    SQLiteEmailSubjectRuleRepository,
-)
+from .repositories.career_rejection_rules import PostgresCareerRejectionRuleRepository
+from .repositories.career_scan_failures import PostgresCareerScanFailureRepository
+from .repositories.career_scan_results import PostgresCareerScanResultRepository
+from .repositories.career_site_sources import PostgresCareerSiteSourceRepository
+from .repositories.contacts import PostgresContactRepository
+from .repositories.email_sources import PostgresEmailSourceRepository
+from .repositories.email_subject_rules import PostgresEmailSubjectRuleRepository
 from .repositories.import_repair_history import PostgresImportRepairHistoryRepository
 from .repositories.job_status_history import PostgresJobStatusHistoryRepository
-from .repositories.jobs import PostgresJobRepository, SQLiteJobRepository
-from .repositories.penalty_rules import (
-    PostgresPenaltyRuleRepository,
-    SQLitePenaltyRuleRepository,
-)
-from .repositories.relevance_feedback import (
-    PostgresRelevanceFeedbackRepository,
-    SQLiteRelevanceFeedbackRepository,
-)
-from .repositories.resumes import PostgresResumeRepository, SQLiteResumeRepository
-from .repositories.scanned_emails import (
-    PostgresScannedEmailRepository,
-    SQLiteScannedEmailRepository,
-)
+from .repositories.jobs import PostgresJobRepository
+from .repositories.penalty_rules import PostgresPenaltyRuleRepository
+from .repositories.relevance_feedback import PostgresRelevanceFeedbackRepository
+from .repositories.resumes import PostgresResumeRepository
+from .repositories.scanned_emails import PostgresScannedEmailRepository
 from .schema import _create_tables, _migrate, _seed_data
-from .schema_sqlite import _create_tables_sqlite, _migrate_sqlite
 
 __all__ = [
     "IApplicationStageRepository",
@@ -143,6 +110,7 @@ __all__ = [
     "ICareerScanFailureRepository",
     "ICareerScanResultRepository",
     "ICareerSiteSourceRepository",
+    "IContactRepository",
     "IEmailSourceRepository",
     "IEmailSubjectRuleRepository",
     "IImportRepairHistoryRepository",
@@ -162,6 +130,7 @@ __all__ = [
     "PostgresCareerScanFailureRepository",
     "PostgresCareerScanResultRepository",
     "PostgresCareerSiteSourceRepository",
+    "PostgresContactRepository",
     "PostgresEmailSourceRepository",
     "PostgresEmailSubjectRuleRepository",
     "PostgresImportRepairHistoryRepository",
@@ -172,21 +141,6 @@ __all__ = [
     "PostgresResumeRepository",
     "PostgresScannedEmailRepository",
     "PostgresStageStatusRepository",
-    "SQLiteAppSettingsRepository",
-    "SQLiteApplicationStageRepository",
-    "SQLiteBrowserCaptureQueueRepository",
-    "SQLiteCareerRejectionRuleRepository",
-    "SQLiteCareerScanFailureRepository",
-    "SQLiteCareerScanResultRepository",
-    "SQLiteCareerSiteSourceRepository",
-    "SQLiteEmailSourceRepository",
-    "SQLiteEmailSubjectRuleRepository",
-    "SQLiteJobRepository",
-    "SQLitePenaltyRuleRepository",
-    "SQLiteRelevanceFeedbackRepository",
-    "SQLiteResumeRepository",
-    "SQLiteScannedEmailRepository",
-    "SQLiteStageStatusRepository",
     "db_startup_error",
     "get_connection",
     "init_db",
@@ -198,7 +152,7 @@ logger = logging.getLogger(__name__)
 
 # Exceptions that indicate the database is unreachable/unavailable (as opposed
 # to a programming error), and therefore worth retrying.
-_DB_UNAVAILABLE_ERRORS = (psycopg2.OperationalError, sqlite3.OperationalError)
+_DB_UNAVAILABLE_ERRORS = (psycopg2.OperationalError,)
 
 # ai: claude-fable-5 | 2026-07-14 — degraded-startup state, read by /api/system/health
 _startup_error_lock = threading.Lock()
@@ -217,16 +171,13 @@ def _set_db_startup_error(message: str | None) -> None:
         _startup_error = message
 
 
+# ai: claude-sonnet-5 | 2026-07-25 — dropped the SQLite/Postgres branch, always uses the Postgres schema module now
 def init_db(dsn: str) -> None:
     """Create all tables and seed reference data if the DB is new."""
     conn = get_connection(dsn)
     try:
-        if _is_sqlite_connection(conn):
-            _create_tables_sqlite(conn)
-            _migrate_sqlite(conn)
-        else:
-            _create_tables(conn)
-            _migrate(conn)
+        _create_tables(conn)
+        _migrate(conn)
         _seed_data(conn)
     finally:
         conn.close()
@@ -304,19 +255,16 @@ def init_db_with_retry(
     return False
 
 
+# ai: claude-sonnet-5 | 2026-07-25 — dropped the sqlite/postgres career_sites class branch, always Postgres now
 def open_repositories(dsn: str) -> dict[str, Any]:
     """
     Open the configured database and return repository interfaces.
 
     This is the application-facing abstraction boundary. Route and service code
-    should depend on these repository keys/protocols, not concrete SQLite or
-    PostgreSQL repository classes.
+    should depend on these repository keys/protocols, not concrete repository
+    classes.
     """
     conn = get_connection(dsn)
-    if _is_sqlite_connection(conn):
-        career_site_source_cls = SQLiteCareerSiteSourceRepository
-    else:
-        career_site_source_cls = PostgresCareerSiteSourceRepository
 
     return {
         "conn": conn,
@@ -328,7 +276,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "resume": PostgresResumeRepository(conn),
         "stages": PostgresApplicationStageRepository(conn),
         "settings": PostgresAppSettingsRepository(conn),
-        "career_sites": career_site_source_cls(conn),
+        "career_sites": PostgresCareerSiteSourceRepository(conn),
         "career_scan_results": PostgresCareerScanResultRepository(conn),
         "career_scan_failures": PostgresCareerScanFailureRepository(conn),
         "career_rejection_rules": PostgresCareerRejectionRuleRepository(conn),
@@ -337,4 +285,5 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "job_status_history": PostgresJobStatusHistoryRepository(conn),
         "browser_capture_queue": PostgresBrowserCaptureQueueRepository(conn),
         "import_repair_history": PostgresImportRepairHistoryRepository(conn),
+        "contacts": PostgresContactRepository(conn),
     }

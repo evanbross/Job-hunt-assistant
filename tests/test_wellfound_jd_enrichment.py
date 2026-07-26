@@ -44,12 +44,10 @@ integration (with the fetcher faked out — no browser involved).
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 import config
-from backend.db import init_db, open_repositories
+from backend.db import open_repositories
 from backend.email_parser import is_email_tracking_url
 from backend.wellfound_scraper import (
     canonical_wellfound_job_url,
@@ -171,10 +169,9 @@ class ExplodingCareerSiteScanner:
 
 
 def test_scan_enriches_wellfound_job_via_fetcher(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, pg_dsn: str
 ) -> None:
-    dsn = f"sqlite:///{tmp_path / 'jobhunt.sqlite3'}"
-    init_db(dsn)
+    dsn = pg_dsn
     repos = open_repositories(dsn)
     try:
         repos["sources"].insert(

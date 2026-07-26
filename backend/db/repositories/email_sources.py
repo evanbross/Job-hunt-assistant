@@ -95,6 +95,3 @@ class PostgresEmailSourceRepository(_BaseRepo):
 
     def delete(self, source_id: int) -> None:
         self._execute("DELETE FROM email_sources WHERE id = %s", (source_id,))
-
-
-SQLiteEmailSourceRepository = PostgresEmailSourceRepository

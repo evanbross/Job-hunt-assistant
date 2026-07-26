@@ -37,6 +37,7 @@ import StatusBadge from "./common/StatusBadge.jsx";
 import Modal from "./common/Modal.jsx";
 import CoverLetterModal from "./common/CoverLetterModal.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
+import ContactsBadge from "./common/ContactsBadge.jsx";
 import UndoEditNotice from "./common/UndoEditNotice.jsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
@@ -72,6 +73,7 @@ function JobCard({
   onSnooze,
   onUpdate,
   onNavigateToJobCard,
+  contactsByCompany,
 }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
@@ -1100,6 +1102,8 @@ function JobCard({
           >
             Company History
           </button>
+          {/* ai: claude-sonnet-5 | 2026-07-25 */}
+          <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
           <span className="badge badge-accent">{job.source || "?"}</span>
           {salaryRange && <span className="badge badge-green">Salary: {salaryRange}</span>}
           <span className="badge badge-gray">{job.date_found || "—"}</span>

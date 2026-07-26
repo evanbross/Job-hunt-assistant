@@ -115,6 +115,3 @@ class PostgresRelevanceFeedbackRepository(_BaseRepo):
 
     def delete(self, feedback_id: int) -> None:
         self._execute("DELETE FROM relevance_feedback WHERE id = %s", (feedback_id,))
-
-
-SQLiteRelevanceFeedbackRepository = PostgresRelevanceFeedbackRepository

@@ -301,6 +301,7 @@ from routes.auth import auth_bp
 from routes.board_search import board_search_bp
 from routes.browser_capture import browser_capture_bp
 from routes.career_sites import career_sites_bp
+from routes.contacts import contacts_bp
 from routes.cover_letter import cover_letter_bp
 from routes.emails import emails_bp
 from routes.fit import fit_bp
@@ -319,6 +320,7 @@ app.register_blueprint(auth_bp, url_prefix="/api")
 app.register_blueprint(board_search_bp, url_prefix="/api")
 app.register_blueprint(browser_capture_bp, url_prefix="/api")
 app.register_blueprint(career_sites_bp, url_prefix="/api")
+app.register_blueprint(contacts_bp, url_prefix="/api")
 app.register_blueprint(cover_letter_bp, url_prefix="/api")
 app.register_blueprint(emails_bp, url_prefix="/api")
 app.register_blueprint(fit_bp, url_prefix="/api")

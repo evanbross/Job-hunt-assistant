@@ -75,6 +75,3 @@ class PostgresCareerScanFailureRepository(_BaseRepo):
 
     def delete_all(self) -> None:
         self._execute("DELETE FROM career_scan_failures")
-
-
-SQLiteCareerScanFailureRepository = PostgresCareerScanFailureRepository

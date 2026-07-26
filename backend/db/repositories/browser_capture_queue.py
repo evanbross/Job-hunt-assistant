@@ -194,6 +194,3 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
     # ai: claude-sonnet-4-6 | 2026-06-20
     def delete_all(self) -> None:
         self._execute("DELETE FROM browser_capture_queue")
-
-
-SQLiteBrowserCaptureQueueRepository = PostgresBrowserCaptureQueueRepository

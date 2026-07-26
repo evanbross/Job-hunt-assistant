@@ -210,6 +210,3 @@ class PostgresScannedEmailRepository(_BaseRepo):
 
     def delete_all(self) -> None:
         self._execute("DELETE FROM scanned_emails")
-
-
-SQLiteScannedEmailRepository = PostgresScannedEmailRepository

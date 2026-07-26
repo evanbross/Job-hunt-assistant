@@ -33,7 +33,7 @@
 # =============================================================================
 
 """Repository Protocols (interfaces) — the app-facing contracts that routes and
-services depend on instead of concrete SQLite/Postgres repository classes."""
+services depend on instead of concrete Postgres repository classes."""
 
 from __future__ import annotations
 
@@ -223,3 +223,11 @@ class IImportRepairHistoryRepository(Protocol):
         self, source: str, warning_code: str, limit: int = 100
     ) -> list[dict[str, Any]]: ...
     def delete_all(self) -> None: ...
+
+
+# ai: claude-sonnet-5 | 2026-07-25
+@runtime_checkable
+class IContactRepository(Protocol):
+    def get_all(self) -> list[dict[str, Any]]: ...
+    def replace_all(self, rows: list[dict[str, Any]]) -> None: ...
+    def count(self) -> int: ...

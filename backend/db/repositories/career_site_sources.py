@@ -37,7 +37,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..base import _BaseRepo
-from ..connection import _is_sqlite_connection, _row_to_dict
+from ..connection import _row_to_dict
 
 
 class PostgresCareerSiteSourceRepository(_BaseRepo):
@@ -158,23 +158,3 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
 
     def delete(self, source_id: int) -> None:
         self._execute("DELETE FROM career_site_sources WHERE id = %s", (source_id,))
-
-
-class SQLiteCareerSiteSourceRepository(PostgresCareerSiteSourceRepository):
-    def get_due_recapture(self) -> list[dict[str, Any]]:
-        if not _is_sqlite_connection(self._conn):
-            return super().get_due_recapture()
-
-        cur = self._execute("""
-            SELECT *,
-                   datetime(last_captured_at, '+' || recapture_interval_days || ' days')
-                       AS next_capture_due_at
-            FROM career_site_sources
-            WHERE last_captured_at IS NOT NULL
-              AND recapture_interval_days IS NOT NULL
-              AND recapture_interval_days > 0
-              AND datetime(last_captured_at, '+' || recapture_interval_days || ' days')
-                  <= datetime('now')
-            ORDER BY next_capture_due_at ASC, name ASC
-            """)
-        return [_row_to_dict(r) for r in cur.fetchall()]

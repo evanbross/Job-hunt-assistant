@@ -252,6 +252,3 @@ class PostgresJobRepository(_BaseRepo):
 
     def delete_email_sourced(self) -> None:
         self._execute("DELETE FROM jobs WHERE sender_email IS NOT NULL")
-
-
-SQLiteJobRepository = PostgresJobRepository

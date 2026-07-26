@@ -187,11 +187,11 @@ job-hunt-assistant/
 ├── config.py           # Configuration constants
 ├── pyproject.toml      # uv project + dependencies
 ├── .env                # API keys (gitignored)
-├── data/               # SQLite database
+├── data/               # Runtime config (Postgres/Neon is the database)
 ├── uploads/            # Uploaded resume PDF
 ├── credentials/        # Google OAuth files (gitignored)
 └── backend/
-    ├── db.py           # Repository pattern — all SQLite access
+    ├── db/             # Repository pattern — all Postgres access
     ├── email_parser.py # Anthropic-powered email parsing
     ├── fit_scorer.py   # Anthropic-powered job scoring
     ├── gmail_client.py # Gmail API wrapper

@@ -96,6 +96,3 @@ class PostgresCareerRejectionRuleRepository(_BaseRepo):
 
     def delete(self, rule_id: int) -> None:
         self._execute("DELETE FROM career_rejection_rules WHERE id = %s", (rule_id,))
-
-
-SQLiteCareerRejectionRuleRepository = PostgresCareerRejectionRuleRepository

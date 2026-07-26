@@ -37,6 +37,7 @@ import Modal from "./common/Modal.jsx";
 import CoverLetterModal from "./common/CoverLetterModal.jsx";
 import StatusBadge from "./common/StatusBadge.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
+import ContactsBadge from "./common/ContactsBadge.jsx";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
 import { applicationRowFromSheet, isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.js";
 import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.js";
@@ -70,6 +71,7 @@ import {
 } from "../utils/triagePanelUtils.js";
 import { parseImportWarnings, importWarningTooltip, possibleDuplicateLabel } from "../utils/jobQueueUtils.js";
 import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
+import { runBatchRefreshFromUrls } from "../utils/batchRefreshFromUrls.js";
 
 const TRIAGE_SEARCH_STORAGE_KEY = "jha.triage.search";
 const TRIAGE_SEARCH_ALL_FIELDS_KEY = "jha.triage.searchAllFields";
@@ -357,80 +359,16 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     const refreshableJobs = jobs.filter((job) => job.status !== "possible_duplicate" && job.url);
     if (refreshableJobs.length === 0) return;
 
-    const results = [];
     let nextJobs = [...jobs];
-
-    setBatchRefreshPopup({
-      currentIndex: 0,
-      currentJob: refreshableJobs[0],
-      phase: "running",
-      results: [],
-      total: refreshableJobs.length,
-    });
-
-    for (let index = 0; index < refreshableJobs.length; index += 1) {
-      const job = refreshableJobs[index];
-      setBatchRefreshPopup((popup) => ({
-        ...popup,
-        currentIndex: index,
-        currentJob: job,
-      }));
-
-      try {
-        const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to re-fetch job");
-
-        if (data.queued_for_browser_capture) {
-          results.push({
-            company: job.company || "",
-            error: "",
-            jobTitle: job.job_title || "",
-            newScore: null,
-            previousScore: job.fit_score,
-            status: "queued",
-          });
-        } else {
-          results.push({
-            company: data.company || job.company || "",
-            error: "",
-            jobTitle: data.job_title || job.job_title || "",
-            newScore: data.fit_score,
-            previousScore: job.fit_score,
-            status: data.status,
-          });
-
-          const triageStatuses = new Set(["triage", "possible_duplicate"]);
-          if (triageStatuses.has(data.status)) {
-            nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
-          } else {
-            nextJobs = nextJobs.filter((item) => item.id !== job.id);
-          }
-          setJobs(nextJobs);
-          onCountChange(nextJobs.length);
-        }
-      } catch (err) {
-        results.push({
-          company: job.company || "",
-          error: err.message || "Failed to re-fetch job",
-          jobTitle: job.job_title || "",
-          newScore: null,
-          previousScore: job.fit_score,
-          status: "error",
-        });
+    await runBatchRefreshFromUrls(refreshableJobs, setBatchRefreshPopup, (job, data) => {
+      const triageStatuses = new Set(["triage", "possible_duplicate"]);
+      if (triageStatuses.has(data.status)) {
+        nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
+      } else {
+        nextJobs = nextJobs.filter((item) => item.id !== job.id);
       }
-
-      setBatchRefreshPopup((popup) => ({
-        ...popup,
-        currentIndex: index + 1,
-        results: [...results],
-      }));
-    }
-
-    setBatchRefreshPopup({
-      phase: "done",
-      results,
-      total: refreshableJobs.length,
+      setJobs(nextJobs);
+      onCountChange(nextJobs.length);
     });
   };
 
@@ -773,7 +711,7 @@ function CompanyNameEditor({ jobId, company, onSave, onError }) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard }) {
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard, contactsByCompany }) {
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
@@ -1083,6 +1021,8 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           >
             Company History
           </button>
+          {/* ai: claude-sonnet-5 | 2026-07-25 */}
+          <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
           <SalaryBadge job={job} />
           <button
             type="button"
@@ -1359,7 +1299,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
 export const DuplicateCard = memo(DuplicateCardImpl, arePropsEqualIgnoringFunctions);
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard }) {
+function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard, contactsByCompany }) {
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
@@ -1929,6 +1869,8 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           >
             Company History
           </button>
+          {/* ai: claude-sonnet-5 | 2026-07-25 */}
+          <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
           {salaryRange && <span className="badge badge-green">Salary: {salaryRange}</span>}
           {companySheetRows !== null && companySheetRows.length > 0 && (
             <span
