@@ -145,6 +145,7 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
   const [dismissingId, setDismissingId] = useState(null);
   const [showDuplicates, setShowDuplicates] = useState(true);
   const [sortBy, setSortBy] = useState("id");
+  const [search, setSearch] = useState("");
 
   const handleSkipDuplicate = async (row) => {
     setSkippingId(row.id);
@@ -186,6 +187,11 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
   // ai: claude-sonnet-4-6 | 2026-06-12
   const declaredDuplicateCount = previousRows.filter(isDeclaredDuplicate).length;
   const visiblePreviousRows = showDuplicates ? previousRows : previousRows.filter((row) => !isDeclaredDuplicate(row));
+  // ai: claude-sonnet-5 | 2026-07-26
+  const trimmedSearch = search.trim().toLowerCase();
+  const searchedPreviousRows = trimmedSearch
+    ? visiblePreviousRows.filter((row) => (row.title || "").toLowerCase().includes(trimmedSearch))
+    : visiblePreviousRows;
 
   return (
     <Modal
@@ -284,8 +290,23 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
               </div>
             );
           })}
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {visiblePreviousRows.map((row) => {
+          {/* ai: claude-sonnet-5 | 2026-07-26 */}
+          {previousRows.length > 5 && (
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search jobs by title"
+              style={{ marginBottom: "8px", width: "100%" }}
+            />
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "420px", overflowY: "auto" }}>
+            {trimmedSearch && searchedPreviousRows.length === 0 && (
+              <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "10px 2px" }}>
+                No jobs match "{search.trim()}".
+              </div>
+            )}
+            {searchedPreviousRows.map((row) => {
               const navigable = Boolean(onNavigateToJobCard && row.id && jobCardTabForStatus(row.status));
               const effectiveRow = skippedIds.has(row.id) ? { ...row, status: "skipped" } : row;
               return (
