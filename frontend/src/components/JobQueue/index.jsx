@@ -36,6 +36,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import JobCard from "../JobCard.jsx";
 import { ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "../TriagePanel.jsx";
 import { jobMatchesSearch } from "../../utils/jobSearchUtils.js";
+import { contactsMatchKey } from "../../utils/contactsUtils.js";
 import ReqClosedDialog from "../common/ReqClosedDialog.jsx";
 import { extractSender, extractSubjectWords } from "../../utils/triagePanelUtils.js";
 import { applicationRowFromSheet } from "../../utils/sheetUtils.js";
@@ -236,6 +237,8 @@ export default function JobQueue({
   const [queueUnratedRefreshPopup, setQueueUnratedRefreshPopup] = useState(null);
   const [triageDescriptionUpdatePopup, setTriageDescriptionUpdatePopup] = useState(null);
   const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
+  // ai: claude-sonnet-5 | 2026-07-26
+  const [showOnlyWithContacts, setShowOnlyWithContacts] = useState(false);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [scanState, setScanState] = useState(null);
@@ -1257,17 +1260,31 @@ export default function JobQueue({
   // ai: claude-sonnet-4-6 | 2026-06-26
   // All derived arrays are memoized so unrelated state changes (dialogs, hover,
   // etc.) don't re-run the filter+sort chain on every render.
+  // ai: claude-sonnet-5 | 2026-07-26
+  const jobHasContact = useCallback(
+    (job) => (contactsByCompany[contactsMatchKey(job.company)] ?? []).length > 0,
+    [contactsByCompany],
+  );
+
   const filteredJobs = useMemo(() => jobs.filter((job) => {
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
+    if (showOnlyWithContacts && !jobHasContact(job)) return false;
     return true;
-  }), [jobs, debouncedSearchText, searchAllFields, showOnlyUnscored]);
+  }), [jobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact]);
 
   const filteredTriageJobs = useMemo(() => triageJobs.filter((job) => {
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
+    if (showOnlyWithContacts && !jobHasContact(job)) return false;
     return true;
-  }), [triageJobs, debouncedSearchText, searchAllFields, showOnlyUnscored]);
+  }), [triageJobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact]);
+
+  const contactsCount = useMemo(
+    () => jobs.filter(jobHasContact).length
+      + (viewMode !== "queue" ? triageJobs.filter(jobHasContact).length : 0),
+    [jobs, triageJobs, viewMode, jobHasContact],
+  );
 
   const unscoredCount = useMemo(
     () => jobs.filter((j) => j.fit_score == null).length
@@ -1722,6 +1739,18 @@ export default function JobQueue({
               style={{ cursor: "pointer" }}
             />
             Needs score ({unscoredCount})
+          </label>
+        )}
+
+        {contactsCount > 0 && (
+          <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={showOnlyWithContacts}
+              onChange={(e) => setShowOnlyWithContacts(e.target.checked)}
+              style={{ cursor: "pointer" }}
+            />
+            Know someone ({contactsCount})
           </label>
         )}
 
