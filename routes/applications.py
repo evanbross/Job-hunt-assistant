@@ -125,6 +125,11 @@ _CLOSED_PHRASES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
         "recently taken down and is no longer available",
         "no longer publicly available",
     ),
+    # ai: claude-sonnet-5 | 2026-07-24
+    "jobgether": (
+        "this job has expired on jobgether",
+        "the employer is not accepting new applications",
+    ),
 }
 
 _PLATFORM_LABELS: dict[str, str] = {
@@ -132,6 +137,7 @@ _PLATFORM_LABELS: dict[str, str] = {
     "wttj": "Welcome to the Jungle",
     "wellfound": "Wellfound",
     "mongodb": "MongoDB",  # ai: claude-fable-5 | 2026-07-16
+    "jobgether": "Jobgether",  # ai: claude-sonnet-5 | 2026-07-24
 }
 
 # ai: claude-fable-5 | 2026-07-17
@@ -410,8 +416,8 @@ def mark_ghost_applications() -> ResponseReturnValue:
 
 
 def _detect_closed_req_platform(job: dict, url: str) -> str | None:
-    """Return 'linkedin', 'wttj', 'wellfound', or 'mongodb' if job/url belongs to a
-    supported platform, else None."""
+    """Return 'linkedin', 'wttj', 'wellfound', 'mongodb', or 'jobgether' if job/url
+    belongs to a supported platform, else None."""
     source = str(job.get("source") or "").lower()
     netloc = urlparse(url).netloc.lower()
     if "linkedin" in source or "linkedin.com" in netloc or "lnkd.in" in netloc:
@@ -424,6 +430,13 @@ def _detect_closed_req_platform(job: dict, url: str) -> str | None:
         return "wttj"
     if "wellfound" in source or "wellfound.com" in netloc:
         return "wellfound"
+    # ai: claude-sonnet-5 | 2026-07-24
+    # Job-notification emails link through an AWS SES click-tracking redirect
+    # (r.<region>.awstrack.me) rather than jobgether.com directly, so source is
+    # the only reliable signal for those — the netloc check only helps for
+    # already-canonical/manually-pasted jobgether.com URLs.
+    if "jobgether" in source or "jobgether.com" in netloc:
+        return "jobgether"
     # ai: claude-fable-5 | 2026-07-16
     if "mongodb.com" in netloc:
         return "mongodb"
@@ -585,7 +598,7 @@ def _update_req_closed_state(**kwargs: object) -> None:
 
 
 def _closed_req_candidates(repos: dict) -> list[tuple[dict, str, str]]:
-    """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, Wellfound, or MongoDB, with their platform."""
+    """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, Wellfound, MongoDB, or Jobgether, with their platform."""
     jobs = repos["jobs"].get_all_ordered()
     all_stages = repos["stages"].get_all()
     terminal_keys = {
