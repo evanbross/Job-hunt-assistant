@@ -110,6 +110,15 @@ _SENIORITY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bjunior\b"), "junior"),
 ]
 
+# ai: claude-sonnet-5 | 2026-07-25
+# A trailing digit or roman numeral on an "engineer" title names a specific
+# numbered rung on the pre-Senior career ladder (Engineer I/II/III, Software
+# Engineer 1/2/3) — entry-to-mid-level roles a candidate works up through
+# before reaching "Senior". It is never a synonym for "Senior"/"Staff"/etc.,
+# and each number is its own distinct level (Engineer 2 != Engineer 3).
+_NUMBERED_LEVEL_RE: re.Pattern[str] = re.compile(r"\bengineer\s+(iv|iii|ii|i|[1-5])\b")
+_ROMAN_NUMERAL_LEVELS: dict[str, str] = {"i": "1", "ii": "2", "iii": "3", "iv": "4"}
+
 # Marriott prefixes temporary/flexible positions with "FLEX" — a FLEX role and
 # its non-FLEX namesake are different jobs. Matched against the raw title.
 _FLEX_PREFIX_RE: re.Pattern[str] = re.compile(r"^\s*flex\b", re.IGNORECASE)
@@ -171,6 +180,10 @@ def _extract_seniority(normalized_title: str) -> str | None:
     Expects _normalize() output so abbreviations ("Prin SE", "Sr SWE") are
     already expanded into the words the patterns look for.
     """
+    numbered_match = _NUMBERED_LEVEL_RE.search(normalized_title)
+    if numbered_match:
+        raw_level = numbered_match.group(1)
+        return f"engineer level {_ROMAN_NUMERAL_LEVELS.get(raw_level, raw_level)}"
     for pattern, level in _SENIORITY_PATTERNS:
         if pattern.search(normalized_title):
             return level

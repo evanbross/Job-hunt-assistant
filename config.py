@@ -251,6 +251,14 @@ SCORING INSTRUCTIONS:
   unless the listing explicitly says so in words (e.g. "must reside in Texas", "Texas
   residents only", "candidates must be located in <state>"). A bare state/city label next
   to "Remote" is not that evidence.
+- IMPORTANT — numbered engineer titles are not senior: a trailing digit or roman
+  numeral on an "Engineer" title (e.g. "Software Engineer 2", "Engineer II",
+  "SDE I") names a specific rung on the pre-Senior career ladder — an
+  entry-to-mid-level role a candidate works up through (typically levels 1-3)
+  before reaching "Senior Software Engineer". It is NOT a synonym or prefix
+  variant of "Senior" — score it as a level mismatch for a senior candidate
+  the same way you would an unqualified "Software Engineer" or "Software
+  Engineer I" posting, regardless of how many skills otherwise match.
 - When past rejection feedback includes structured mismatch reasons, treat them as high-signal preferences.
 - Return ONLY valid JSON — no markdown, no extra text.
 - Do NOT apply penalties yourself; they are handled by the caller.

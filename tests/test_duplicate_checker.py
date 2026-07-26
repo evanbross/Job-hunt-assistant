@@ -63,6 +63,13 @@ def _match(title_a: str, title_b: str) -> bool:
             "Senior Software Engineer- GraphQL Engineering",
             "FLEX Senior Software Engineer- GraphQL Engineering",
         ),
+        # ai: claude-sonnet-5 | 2026-07-25
+        # A numbered rung (Engineer 1/2/3, Engineer I/II/III) is a distinct
+        # pre-Senior level — never equivalent to another number or to Senior.
+        ("Software Engineer 2", "Software Engineer 3"),
+        ("Software Engineer I", "Software Engineer II"),
+        ("Software Engineer 2", "Senior Software Engineer"),
+        ("Software Engineer 1", "Staff Software Engineer"),
     ],
 )
 def test_different_roles_at_same_company_are_not_duplicates(
@@ -89,6 +96,11 @@ def test_different_roles_at_same_company_are_not_duplicates(
         ("Software Engineer, Full Stack", "Senior Software Engineer, Full Stack"),
         # Two FLEX postings with the same title are the same job.
         ("FLEX Senior Software Engineer", "FLEX Senior Software Engineer"),
+        # Same numbered level, different roman/arabic numeral style.
+        ("Software Engineer 2", "Software Engineer II"),
+        # Numbered level on only one side still matches (consistent with the
+        # existing "seniority named on only one side still matches" rule).
+        ("Software Engineer 2", "Software Engineer"),
     ],
 )
 def test_equivalent_titles_are_duplicates(title_a: str, title_b: str) -> None:
