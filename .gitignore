@@ -27,6 +27,7 @@ __pycache__/
 dist/
 build/
 .uv/
+.coverage
 
 # Node / frontend
 frontend/node_modules/
