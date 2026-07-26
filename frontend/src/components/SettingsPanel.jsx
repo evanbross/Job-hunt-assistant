@@ -37,9 +37,11 @@ import { collectionModeLabel } from "../utils/careerSiteUtils.js";
 import Modal from "./common/Modal.jsx";
 import ContactsImport from "./ContactsImport.jsx";
 import ResumeUpload from "./ResumeUpload.jsx";
+import SetupWizardPanel from "./SetupWizardPanel.jsx";
 
-export default function SettingsPanel() {
-  const [activeSection, setActiveSection] = useState("resume");
+// ai: claude-sonnet-5 | 2026-07-26
+export default function SettingsPanel({ initialSection, onSetupComplete }) {
+  const [activeSection, setActiveSection] = useState(() => initialSection || "resume");
 
   const sections = [
     { id: "resume", label: "Resume" },
@@ -52,13 +54,15 @@ export default function SettingsPanel() {
     { id: "penalties", label: "Scoring Rules" },
     { id: "feedback", label: "Learned Patterns" },
     { id: "config", label: "Configuration" },
+    { id: "setup", label: "Setup" },
   ];
+  const sortedSections = [...sections].sort((a, b) => a.label.localeCompare(b.label));
 
   return (
     <div style={{ display: "flex", gap: "20px" }}>
       {/* Sidebar nav */}
       <nav style={sideNav}>
-        {sections.map((s) => (
+        {sortedSections.map((s) => (
           <button
             key={s.id}
             onClick={() => setActiveSection(s.id)}
@@ -81,6 +85,7 @@ export default function SettingsPanel() {
         {activeSection === "penalties" && <PenaltiesSection />}
         {activeSection === "feedback" && <FeedbackSection />}
         {activeSection === "config" && <ConfigSection />}
+        {activeSection === "setup" && <SetupWizardPanel onSetupComplete={onSetupComplete} />}
       </div>
     </div>
   );

@@ -35,7 +35,6 @@
 import { useEffect, useState } from "react";
 import JobQueue from "./components/JobQueue/index.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
-import SetupWizardPanel from "./components/SetupWizardPanel.jsx";
 import EmailsPanel from "./components/EmailsPanel.jsx";
 import HistoryPanel from "./components/HistoryPanel.jsx";
 import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
@@ -49,12 +48,12 @@ import { ImportBreakdownDetails } from "./components/JobQueue/ImportSummaryPopup
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 
 // ai: claude-fable-5 | 2026-07-14 — Career Sites tab removed; sites are managed in Settings
+// ai: claude-sonnet-5 | 2026-07-26 — Setup tab removed; the wizard now lives in Settings
 const TABS = [
   { key: "queue", label: "Job Queue" },
   { key: "applications", label: "Applications" },
   { key: "emails", label: "Email History" },
   { key: "settings", label: "Settings" },
-  { key: "setup", label: "Setup" },
 ];
 const LEGACY_TAB_KEYS = ["queue", "triage", "history", "applications", "emails", "career", "settings"];
 
@@ -197,6 +196,7 @@ export default function App() {
   const [listenerImportState, setListenerImportState] = useState(null);
   const [listenerImportDismissedAt, setListenerImportDismissedAt] = useState("");
   const [setupComplete, setSetupComplete] = useState(true); // optimistic; corrected on mount
+  const [settingsInitialSection, setSettingsInitialSection] = useState(null);
   const [showRecentChanges, setShowRecentChanges] = useState(false);
   const [showToptalPitch, setShowToptalPitch] = useState(false);
   const [backendHealth, setBackendHealth] = useState("ok"); // "ok" | "db_down" | "unreachable"
@@ -331,8 +331,9 @@ export default function App() {
       const data = await res.json();
       setSetupComplete(data.complete);
       if (!data.complete) {
-        setActiveTab("setup");
-        localStorage.setItem("activeTab", "setup");
+        setSettingsInitialSection("setup");
+        setActiveTab("settings");
+        localStorage.setItem("activeTab", "settings");
       }
     } catch {
       /* don't block app startup if setup endpoint is unreachable */
@@ -341,6 +342,7 @@ export default function App() {
 
   const handleSetupComplete = async () => {
     await fetchSetupStatus();
+    setSettingsInitialSection(null);
     setActiveTab("queue");
     localStorage.setItem("activeTab", "queue");
   };
@@ -469,7 +471,7 @@ export default function App() {
         </div>
       )}
 
-      {authStatus === false && activeTab !== "setup" && (
+      {authStatus === false && activeTab !== "settings" && (
         <div style={{ maxWidth: "1200px", margin: "0 auto", width: "100%", padding: "16px 28px 0 28px" }}>
           <div style={styles.authBanner}>
             <span style={{ color: "var(--accent)", fontSize: "13px" }}>
@@ -482,7 +484,7 @@ export default function App() {
         </div>
       )}
 
-      {!setupComplete && activeTab !== "setup" && (
+      {!setupComplete && activeTab !== "settings" && (
         <div style={{ maxWidth: "1200px", margin: "0 auto", width: "100%", padding: "10px 28px 0 28px" }}>
           <div style={{ background: "rgba(251,191,36,0.12)", border: "1px solid var(--orange)", borderRadius: "var(--radius)", padding: "10px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
             <span style={{ color: "var(--text)", fontSize: "13px" }}>
@@ -491,7 +493,11 @@ export default function App() {
             <button
               className="btn-secondary"
               style={{ flexShrink: 0, fontSize: "12px" }}
-              onClick={() => { setActiveTab("setup"); localStorage.setItem("activeTab", "setup"); }}
+              onClick={() => {
+                setSettingsInitialSection("setup");
+                setActiveTab("settings");
+                localStorage.setItem("activeTab", "settings");
+              }}
             >
               Open Setup Wizard
             </button>
@@ -499,8 +505,8 @@ export default function App() {
         </div>
       )}
 
-      {/* ai: claude-opus-4-8 | 2026-07-01 — hide scan banner during first-run setup so it doesn't push the wizard off-screen */}
-      {activeTab !== "setup" && <CareerSiteScanBanner />}
+      {/* ai: claude-sonnet-5 | 2026-07-26 — hide scan banner while in Settings so it doesn't push the Setup Wizard section off-screen */}
+      {activeTab !== "settings" && <CareerSiteScanBanner />}
 
       <main style={styles.content}>
         {activeTab === "queue" && (
@@ -523,9 +529,8 @@ export default function App() {
             focusEmailId={emailFocusId}
           />
         )}
-        {activeTab === "settings" && <SettingsPanel />}
-        {activeTab === "setup" && (
-          <SetupWizardPanel onSetupComplete={handleSetupComplete} />
+        {activeTab === "settings" && (
+          <SettingsPanel initialSection={settingsInitialSection} onSetupComplete={handleSetupComplete} />
         )}
       </main>
 

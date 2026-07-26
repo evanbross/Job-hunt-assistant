@@ -15,8 +15,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import Modal from "./common/Modal.jsx";
 
-// ai: claude-sonnet-5 | 2026-07-25
+// ai: claude-sonnet-5 | 2026-07-26
 export default function ContactsImport() {
   const [status, setStatus] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -129,6 +130,16 @@ export default function ContactsImport() {
 
         {error && <span style={{ color: "var(--red)", fontSize: "12px" }}>{error}</span>}
       </div>
+
+      {uploading && (
+        // ai: claude-sonnet-5 | 2026-07-26
+        <Modal title="Importing Contacts" onClose={() => {}} showCloseButton={false} maxWidth="420px">
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-muted)", fontSize: "14px" }}>
+            <span className="inline-spinner" style={{ color: "var(--accent)" }} />
+            <span>Importing your LinkedIn connections…</span>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
