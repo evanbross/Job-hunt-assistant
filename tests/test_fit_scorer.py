@@ -34,6 +34,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 from backend.fit_scorer import FitScorer
 
 
@@ -131,3 +133,46 @@ def test_non_level_penalty_not_suppressed_by_senior_title() -> None:
         "on-site",
         "Senior Software Engineer",
     )
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+def test_coerce_salary_handles_valid_and_malformed_values() -> None:
+    assert FitScorer._coerce_salary(None) is None
+    assert FitScorer._coerce_salary("not a number") is None
+    assert FitScorer._coerce_salary(110000) == 110000
+    assert FitScorer._coerce_salary("110000") == 110000
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+def test_score_extracts_salary_range_from_ai_response() -> None:
+    mock_client = MagicMock()
+    mock_client.complete.return_value = (
+        '{"score": 80, "reasoning": "Good fit.", '
+        '"salary_min": 110000, "salary_max": 120000}'
+    )
+    with patch("backend.fit_scorer.AIProviderClient", return_value=mock_client):
+        result = FitScorer().score(
+            job_title="Sr Software Engineer",
+            company="Prometric",
+            email_body="Salary range: $110,000 - $120,000 per year.",
+            resume_text="",
+            penalty_rules=[],
+        )
+    assert result["salary_min"] == 110000
+    assert result["salary_max"] == 120000
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+def test_score_defaults_salary_to_none_when_ai_omits_it() -> None:
+    mock_client = MagicMock()
+    mock_client.complete.return_value = '{"score": 60, "reasoning": "Okay fit."}'
+    with patch("backend.fit_scorer.AIProviderClient", return_value=mock_client):
+        result = FitScorer().score(
+            job_title="Engineer",
+            company="Acme",
+            email_body="No salary mentioned.",
+            resume_text="",
+            penalty_rules=[],
+        )
+    assert result["salary_min"] is None
+    assert result["salary_max"] is None

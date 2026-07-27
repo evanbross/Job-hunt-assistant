@@ -161,7 +161,12 @@ class FakeFitScorer:
         fit_feedback: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         assert "full job description" in email_body
-        return {"score": 86, "reasoning": f"{job_title} at {company} is relevant."}
+        return {
+            "score": 86,
+            "reasoning": f"{job_title} at {company} is relevant.",
+            "salary_min": None,
+            "salary_max": None,
+        }
 
 
 def test_update_job_description_replaces_text_and_rescores(

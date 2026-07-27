@@ -69,13 +69,19 @@ let _queuePolling = false;
 // Alarms survive service-worker dormancy; re-register on each startup in case
 // the worker was killed after the last `onInstalled` fired.
 //
-// ai: claude-sonnet-5 | 2026-07-22
+// ai: claude-sonnet-5 | 2026-07-27
 // This alarm used to be the only way new queue work was discovered (poll every
-// 60s). Now it's a fallback safety net behind the WebSocket connection below —
-// the socket delivers a near-instant "queue-ready" push in the common case, so
-// this only matters if the socket is down (app restarting, network hiccup,
-// etc). 5 minutes bounds the worst case without paying a constant polling tax.
-const _FALLBACK_POLL_PERIOD_MINUTES = 5;
+// 60s). It's meant to be a fallback safety net behind the WebSocket connection
+// below — the socket should deliver a near-instant "queue-ready" push in the
+// common case — but in practice a WebSocket idling in an MV3 service worker is
+// not reliable: Chrome can suspend the worker after ~30s of inactivity, which
+// kills the socket, and the plain setTimeout in scheduleQueueSocketReconnect()
+// does not survive that suspension (only chrome.alarms does), so the
+// reconnect can silently never happen. The alarm handler below now also calls
+// connectQueueSocket() every tick as a self-heal, but until/unless the socket
+// proves reliable this period should stay short (1 min) rather than the 5 min
+// it was set to when the socket was assumed to carry the common case.
+const _FALLBACK_POLL_PERIOD_MINUTES = 1;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -105,7 +111,14 @@ chrome.alarms.get('jha-queue-poll', (alarm) => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'jha-queue-poll') pollQueue();
+  if (alarm.name !== 'jha-queue-poll') return;
+  pollQueue();
+  // ai: claude-sonnet-5 | 2026-07-27
+  // Self-heal: connectQueueSocket() no-ops if the socket is already open/connecting,
+  // so this is safe to call unconditionally. chrome.alarms is guaranteed to survive
+  // service-worker suspension (unlike the setTimeout in scheduleQueueSocketReconnect),
+  // so this is the one place we can be sure eventually retries a dead connection.
+  connectQueueSocket();
 });
 
 // Reconnect immediately when the browser itself restarts, rather than waiting

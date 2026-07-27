@@ -176,6 +176,8 @@ def _run_re_evaluate() -> None:
                     score = result["score"]
                     updates["fit_score"] = score
                     updates["fit_reasoning"] = result["reasoning"]
+                    updates["salary_min"] = result["salary_min"]
+                    updates["salary_max"] = result["salary_max"]
                     rescored += 1
                 except Exception as exc:
                     logger.warning(
@@ -458,6 +460,8 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
             {
                 "fit_score": score,
                 "fit_reasoning": result["reasoning"],
+                "salary_min": result["salary_min"],
+                "salary_max": result["salary_max"],
                 "status": new_status,
             },
         )
@@ -523,6 +527,8 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
             {
                 "fit_score": score,
                 "fit_reasoning": result["reasoning"],
+                "salary_min": result["salary_min"],
+                "salary_max": result["salary_max"],
                 "status": new_status,
             },
         )

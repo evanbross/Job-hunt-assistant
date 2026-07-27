@@ -260,6 +260,10 @@ SCORING INSTRUCTIONS:
   the same way you would an unqualified "Software Engineer" or "Software
   Engineer I" posting, regardless of how many skills otherwise match.
 - When past rejection feedback includes structured mismatch reasons, treat them as high-signal preferences.
+- If the text states an annual USD compensation range or figure (e.g. "$110k-$120k",
+  "$150,000 - $180,000", "base salary of $140,000"), extract it into salary_min/salary_max.
+  Use the same number for both fields if only a single figure is given. Do NOT guess or
+  infer a range from level/title/company when none is stated — leave both null.
 - Return ONLY valid JSON — no markdown, no extra text.
 - Do NOT apply penalties yourself; they are handled by the caller.
 
@@ -270,7 +274,9 @@ ACTIVE PENALTY RULES (for your awareness only — do not double-apply):
 Response schema (JSON only):
 {
   "score": <integer 0-100 before penalties>,
-  "reasoning": "<2-3 sentence explanation of the score>"
+  "reasoning": "<2-3 sentence explanation of the score>",
+  "salary_min": <integer annual USD, or null if no salary/range is stated>,
+  "salary_max": <integer annual USD, or null if no salary/range is stated>
 }
 """
 

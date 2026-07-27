@@ -41,6 +41,7 @@ from backend.career_site_scanner import (
     CareerSiteScanner,
     _detect_embedded_ashby_base_url,
     _extract_json_array_by_key,
+    _extract_offsite_apply_url,
     _greenhouse_board_token,
     _html_to_text,
     _is_greenhouse_single_job_url,
@@ -268,6 +269,97 @@ def test_greenhouse_single_job_from_api_strips_html_content() -> None:
     assert "<h4>" not in job["job_text"]
     assert "Breezeway helps teams" in job["job_text"]
     assert job["job_text"].startswith("Location: Remote - US.")
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+def test_extract_offsite_apply_url_finds_code_block() -> None:
+    html = (
+        '<code id="applyUrl" style="display: none">'
+        '"https:\\/\\/jobs.dayforcehcm.com\\/en-US\\/prometric\\/CANDIDATEPORTAL\\/jobs\\/65203?source=Linkedin"'
+        "</code>"
+    )
+    assert _extract_offsite_apply_url(html) == (
+        "https://jobs.dayforcehcm.com/en-US/prometric/CANDIDATEPORTAL/jobs/65203?source=Linkedin"
+    )
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+def test_extract_offsite_apply_url_finds_anchor_fallback() -> None:
+    html = (
+        '<a class="apply-button top-card-layout__cta" '
+        'data-tracking-control-name="public_jobs_apply-link-offsite" '
+        'href="https://boards.greenhouse.io/acme/jobs/123">Apply</a>'
+    )
+    assert (
+        _extract_offsite_apply_url(html)
+        == "https://boards.greenhouse.io/acme/jobs/123"
+    )
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+def test_extract_offsite_apply_url_rejects_linkedin_domain() -> None:
+    html = (
+        '<code id="applyUrl" style="display: none">'
+        '"https:\\/\\/www.linkedin.com\\/jobs\\/view\\/1234\\/"'
+        "</code>"
+    )
+    assert _extract_offsite_apply_url(html) is None
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+def test_extract_offsite_apply_url_returns_none_when_absent() -> None:
+    assert _extract_offsite_apply_url("<div>Easy Apply</div>") is None
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+def test_linkedin_guest_api_appends_apply_page_text() -> None:
+    scanner = CareerSiteScanner()
+    guest_html = (
+        "<title>Senior Software Engineer</title>"
+        "<div>Great backend role at Prometric.</div>"
+        '<code id="applyUrl" style="display: none">'
+        '"https:\\/\\/jobs.dayforcehcm.com\\/en-US\\/prometric\\/CANDIDATEPORTAL\\/jobs\\/65203"'
+        "</code>"
+    )
+    # Padded well past the 200-char merge threshold in _linkedin_job_from_guest_api.
+    apply_html = (
+        "<div>Salary range: $110,000 - $120,000 per year. "
+        "We are looking for a Senior Software Engineer to join our backend "
+        "platform team, building services that support millions of test "
+        "takers worldwide across our credentialing and assessment products.</div>"
+    )
+    with patch(
+        "backend.career_site_scanner._fetch_html",
+        side_effect=[guest_html, apply_html],
+    ):
+        job = scanner._linkedin_job_from_guest_api(
+            "LinkedIn", "https://www.linkedin.com/jobs/view/4417539736/", "4417539736"
+        )
+
+    assert "Great backend role at Prometric." in job["job_text"]
+    assert "Salary range: $110,000 - $120,000 per year." in job["job_text"]
+    assert "Application page" in job["job_text"]
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+def test_linkedin_guest_api_survives_apply_page_fetch_failure() -> None:
+    scanner = CareerSiteScanner()
+    guest_html = (
+        "<title>Senior Software Engineer</title>"
+        "<div>Great backend role at Prometric.</div>"
+        '<code id="applyUrl" style="display: none">'
+        '"https:\\/\\/jobs.dayforcehcm.com\\/en-US\\/prometric\\/CANDIDATEPORTAL\\/jobs\\/65203"'
+        "</code>"
+    )
+    with patch(
+        "backend.career_site_scanner._fetch_html",
+        side_effect=[guest_html, OSError("connection refused")],
+    ):
+        job = scanner._linkedin_job_from_guest_api(
+            "LinkedIn", "https://www.linkedin.com/jobs/view/4417539736/", "4417539736"
+        )
+
+    assert "Great backend role at Prometric." in job["job_text"]
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14

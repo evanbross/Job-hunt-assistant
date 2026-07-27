@@ -673,6 +673,8 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
                 )
                 updates["fit_score"] = result["score"]
                 updates["fit_reasoning"] = result["reasoning"]
+                updates["salary_min"] = result["salary_min"]
+                updates["salary_max"] = result["salary_max"]
             except Exception as exc:
                 logger.warning("Scoring failed during approval: %s", exc)
 
@@ -768,7 +770,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
             jsonify(
                 {
                     "queued_for_browser_capture": True,
-                    "message": "Direct fetch returned no content — the page likely requires sign-in. URL queued for browser extension; it will auto-capture on the next poll (~1 min) and update this card in place.",
+                    "message": "Direct fetch returned no content — the page likely requires sign-in. URL queued for browser extension; it will auto-capture (usually within seconds, up to 1 min as a fallback) and update this card in place.",
                 }
             ),
             200,
@@ -827,6 +829,8 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
                 "raw_email_snippet": new_text[:6000],
                 "fit_score": fit_score,
                 "fit_reasoning": score_result["reasoning"],
+                "salary_min": score_result["salary_min"],
+                "salary_max": score_result["salary_max"],
                 "status": current_status,
                 "parser_confidence": None,
                 "confidence_score": None,
@@ -899,6 +903,8 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
                 "raw_email_snippet": description[:6000],
                 "fit_score": fit_score,
                 "fit_reasoning": score_result["reasoning"],
+                "salary_min": score_result["salary_min"],
+                "salary_max": score_result["salary_max"],
                 "status": current_status,
                 "parser_confidence": None,
                 "confidence_score": None,
@@ -1679,6 +1685,8 @@ def _run_rescan_broken_imports() -> None:
                         )
                         updates["fit_score"] = score_result["score"]
                         updates["fit_reasoning"] = score_result["reasoning"]
+                        updates["salary_min"] = score_result["salary_min"]
+                        updates["salary_max"] = score_result["salary_max"]
                         updates["raw_email_snippet"] = (
                             jd_text if jd_text else email_body
                         )[:6000]

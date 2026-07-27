@@ -33,10 +33,27 @@
  */
 
 export function salaryRangeForJob(job) {
+  const structured = formatSalaryRange(job.salary_min, job.salary_max);
+  if (structured) return structured;
   const sourceText = [job.raw_email_snippet, job.fit_reasoning]
     .filter(Boolean)
     .join("\n");
   return extractSalaryRange(sourceText);
+}
+
+// The fit scorer now extracts salary_min/salary_max directly (annual USD) when
+// the job description states a range, so prefer that structured value over the
+// regex text-scrape below, which stays as a fallback for jobs scored before
+// this field existed or where the LLM didn't find a range but the raw text has one.
+function formatSalaryRange(min, max) {
+  const hasMin = typeof min === "number" && Number.isFinite(min);
+  const hasMax = typeof max === "number" && Number.isFinite(max);
+  if (!hasMin && !hasMax) return "";
+  const formatOne = (value) => `$${Math.round(value / 1000)}k`;
+  if (hasMin && hasMax && min !== max) {
+    return `${formatOne(min)} - ${formatOne(max)}`;
+  }
+  return formatOne(hasMin ? min : max);
 }
 
 export function extractSalaryRange(text) {

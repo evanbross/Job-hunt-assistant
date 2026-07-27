@@ -42,8 +42,8 @@ import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
 import { applicationRowFromSheet, isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.js";
 import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.js";
 import UndoEditNotice from "./common/UndoEditNotice.jsx";
+import SalaryBadge from "./common/SalaryBadge.jsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
-import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
 import { fitReasoningBullets } from "../utils/fitScoringUtils.js";
 import { describeFetchError } from "../utils/fetchErrorUtils.js"; // ai: claude-fable-5 | 2026-07-15
@@ -1335,7 +1335,6 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
   const companyHistory = useCompanyHistoryLookup(job);
   const triageReasoning = triageReasoningForJob(job);
   const penaltiesApplied = penaltiesAppliedForJob(job);
-  const salaryRange = salaryRangeForJob(job);
   const rawJobDescription = String(job.job_description || job.raw_email_snippet || "").trim();
   const jobDescription = formatJobDescription(rawJobDescription);
   const descriptionUnavailable = isDescriptionUnavailable(rawJobDescription);
@@ -1871,7 +1870,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           </button>
           {/* ai: claude-sonnet-5 | 2026-07-25 */}
           <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
-          {salaryRange && <span className="badge badge-green">Salary: {salaryRange}</span>}
+          <SalaryBadge job={job} />
           {companySheetRows !== null && companySheetRows.length > 0 && (
             <span
               className={`badge ${companyHistoryBadgeClass(companySheetRows)}`}
@@ -2356,7 +2355,7 @@ export function ReEvaluatePopup({ popup, onClose }) {
         </div>
       ) : isQueued ? (
         <div style={{ color: "var(--text-muted)", fontSize: "14px" }}>
-          The page requires sign-in. URL queued — the extension will auto-capture it on the next poll (~1 min) and update this job&apos;s description in place.
+          The page requires sign-in. URL queued — the extension will auto-capture it (usually within seconds, up to 1 min as a fallback) and update this job&apos;s description in place.
         </div>
       ) : (
         <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "22px", fontWeight: 700, color: "var(--text)" }}>
@@ -2434,7 +2433,7 @@ export function BatchRefreshPopup({ popup, onClose }) {
                   <div style={{ color: "var(--red)", fontSize: "12px", marginTop: "3px", overflowWrap: "anywhere" }}>{result.error}</div>
                 ) : result.status === "queued" ? (
                   <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "3px" }}>
-                    Page requires sign-in — queued for browser extension (~1 min)
+                    Page requires sign-in — queued for browser extension (usually seconds, ≤1 min)
                   </div>
                 ) : (
                   <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "3px" }}>
@@ -2472,12 +2471,6 @@ function SourceText({ job }) {
     return <span>{label}</span>;
   }
   return <span>Manual or pasted entry</span>;
-}
-
-function SalaryBadge({ job }) {
-  const salaryRange = salaryRangeForJob(job);
-  if (!salaryRange) return null;
-  return <span className="badge badge-green">Salary: {salaryRange}</span>;
 }
 
 function DescriptionPasteModal({ job, value, saving, onChange, onClose, onSubmit }) {

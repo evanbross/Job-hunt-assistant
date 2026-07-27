@@ -71,6 +71,8 @@ class PostgresJobRepository(_BaseRepo):
             "import_warnings",
             "snoozed_until",
             "dismissed_duplicate_ids",
+            "salary_min",
+            "salary_max",
         }
     )
 

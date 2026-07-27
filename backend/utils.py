@@ -921,6 +921,8 @@ def enrich_job_description(
         score_updates: dict[str, Any] = {
             "fit_score": score,
             "fit_reasoning": result["reasoning"],
+            "salary_min": result["salary_min"],
+            "salary_max": result["salary_max"],
         }
         if current_status not in {"skipped", "applied"}:
             score_updates["status"] = "pending_review" if score >= 70 else "triage"
@@ -968,6 +970,8 @@ def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
                 {
                     "fit_score": result["score"],
                     "fit_reasoning": result["reasoning"],
+                    "salary_min": result["salary_min"],
+                    "salary_max": result["salary_max"],
                 },
             )
             repos["conn"].commit()

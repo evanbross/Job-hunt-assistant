@@ -1222,7 +1222,8 @@ export default function JobQueue({
 
   // ai: claude-sonnet-4-6 | 2026-06-27
   // Polls import status after a triage job is queued for browser-extension capture.
-  // The extension captures asynchronously (~1 min), so we cannot just check once.
+  // The extension captures asynchronously (usually seconds via its WebSocket push,
+  // up to 1 min via the polling fallback), so we cannot just check once.
   // We keep polling until we see an import run AND finish, then refresh triage jobs.
   // Stops automatically after 5 minutes via the captureWatchRef.timeoutId fallback.
   const stopBrowserCaptureWatch = () => {

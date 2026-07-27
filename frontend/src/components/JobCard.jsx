@@ -38,10 +38,10 @@ import Modal from "./common/Modal.jsx";
 import CoverLetterModal from "./common/CoverLetterModal.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
 import ContactsBadge from "./common/ContactsBadge.jsx";
+import SalaryBadge from "./common/SalaryBadge.jsx";
 import UndoEditNotice from "./common/UndoEditNotice.jsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
-import { salaryRangeForJob } from "../utils/salaryUtils.js";
 import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
 import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
 import { pickSaveFolder, promptForSaveFolder } from "../utils/saveFolderUtils.js"; // ai: claude-fable-5 | 2026-07-13
@@ -169,7 +169,6 @@ function JobCard({
   }, [resumeTailorChatMessages, resumeTailorOpen]);
 
   const score = job.fit_score;
-  const salaryRange = salaryRangeForJob(job);
   const sourceSummary = sourceSummaryForJob(job);
   const reasoningText = reasoningWithoutPenaltySummary(job.fit_reasoning);
   const reasoningBullets = fitReasoningBullets(reasoningText);
@@ -1105,7 +1104,7 @@ function JobCard({
           {/* ai: claude-sonnet-5 | 2026-07-25 */}
           <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
           <span className="badge badge-accent">{job.source || "?"}</span>
-          {salaryRange && <span className="badge badge-green">Salary: {salaryRange}</span>}
+          <SalaryBadge job={job} />
           <span className="badge badge-gray">{job.date_found || "—"}</span>
         </div>
       </div>
@@ -1191,7 +1190,7 @@ function JobCard({
           <strong style={{ color: "var(--green)", display: "block", marginBottom: "4px" }}>
             Opening in browser shortly
           </strong>
-          Direct fetch returned no content — the page likely requires sign-in. The browser extension will open this URL in a visible tab (within ~1 min). If you&apos;re already logged in, it auto-captures and closes the tab. If a login page appears, sign in and the tab captures automatically once you reach the job page.
+          Direct fetch returned no content — the page likely requires sign-in. The browser extension will open this URL in a visible tab (usually within seconds, up to 1 min as a fallback). If you&apos;re already logged in, it auto-captures and closes the tab. If a login page appears, sign in and the tab captures automatically once you reach the job page.
           <button
             type="button"
             onClick={() => setRefreshQueued(false)}

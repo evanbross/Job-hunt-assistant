@@ -1461,6 +1461,14 @@
     return scoreText && scoreText !== '0%' ? `Your match score: ${scoreText}` : '';
   }
 
+  // ai: claude-sonnet-5 | 2026-07-27
+  // Company was previously always sent as '', leaving it entirely to the
+  // server-side LLM to guess from the page body — which repeats the title and
+  // company as bare adjacent lines with no label ("Staff Software Engineer \n
+  // Rocket Companies"), and occasionally swapped which line was which. Confirmed
+  // live against multiple jobgether.com/offer/ postings that document.title
+  // reliably follows "Job Title at Company Name" (same pattern already used for
+  // Greenhouse in buildGreenhouseJobPayload above), so use it as a structured hint.
   async function buildJobgetherJobPayload() {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
@@ -1468,18 +1476,27 @@
       await sleep(300);
     }
 
-    const title = pick(['h1[class*="title"]', 'h1', '[data-testid*="title"]']);
+    let title = pick(['h1[class*="title"]', 'h1', '[data-testid*="title"]']);
+    let company = '';
+    const titleAtMatch = document.title.match(/\bat\s+(.+?)(?:\s*[-–|]|$)/i);
+    if (titleAtMatch) company = titleAtMatch[1].trim();
+    if (!title) {
+      const docTitleMatch = document.title.match(/^(.+?)\s+at\s+/i);
+      if (docTitleMatch) title = docTitleMatch[1].trim();
+    }
+
     const matchScoreLine = extractJobgetherMatchScore();
     const bodyText = document.body.innerText.trim().slice(0, 12000);
 
     const lines = [];
     if (title) lines.push(title);
+    if (company) lines.push('Company: ' + company);
     lines.push('URL: ' + location.href);
     if (matchScoreLine) lines.push(matchScoreLine);
     if (bodyText) lines.push('', bodyText);
 
     return JSON.stringify({
-      jobs: [{ url: location.href, job_title: title, company: '', listing_text: lines.join('\n') }],
+      jobs: [{ url: location.href, job_title: title, company, listing_text: lines.join('\n') }],
       source: { url: location.href },
     });
   }

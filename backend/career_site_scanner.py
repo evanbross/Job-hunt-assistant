@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
 import ssl
 import time
 from datetime import UTC, datetime
@@ -54,7 +55,7 @@ from urllib.error import URLError
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
 from urllib.request import Request
 
-from backend.url_safety import safe_urlopen
+from backend.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,54 @@ def _html_to_text(html: str) -> str:
     parser = _TextParser()
     parser.feed(unescape(html))
     return _clean_text(" ".join(parser.text_chunks))
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+_APPLY_URL_CODE_RE = re.compile(
+    r'id=["\']applyUrl["\'][^>]*>\s*(?P<payload>[^<]+?)\s*</code>', re.IGNORECASE
+)
+_APPLY_HREF_RE = re.compile(
+    r"<a[^>]+(?:class=[\"'][^\"']*apply-button[^\"']*[\"']|"
+    r"data-tracking-control-name=[\"'][^\"']*apply-link-offsite[^\"']*[\"'])"
+    r"[^>]*href=[\"'](?P<url>https?://[^\"']+)[\"']",
+    re.IGNORECASE,
+)
+
+
+# ai: claude-sonnet-5 | 2026-07-26
+def _extract_offsite_apply_url(page_html: str) -> str | None:
+    """Best-effort extraction of the external "Apply" URL LinkedIn embeds for
+    postings that use an offsite (non-Easy-Apply) application flow.
+
+    LinkedIn's guest job-posting page typically embeds this in a hidden
+    ``<code id="applyUrl">`` element as a JSON-escaped string, with an
+    ``<a class="apply-button" href="...">`` as a secondary pattern. Returns
+    None on no match or a same-domain (Easy Apply) URL — this is best-effort
+    enrichment, never a required field.
+    """
+    candidate: str | None = None
+    match = _APPLY_URL_CODE_RE.search(page_html)
+    if match:
+        payload = match.group("payload").strip()
+        try:
+            decoded = json.loads(payload if payload.startswith('"') else f'"{payload}"')
+            candidate = decoded if isinstance(decoded, str) else None
+        except (json.JSONDecodeError, ValueError):
+            candidate = None
+        if candidate is None:
+            url_match = re.search(r"https?:(?:\\/|/)+[^\"\s\\]+", payload)
+            if url_match:
+                candidate = url_match.group(0).replace("\\/", "/")
+    if candidate is None:
+        href_match = _APPLY_HREF_RE.search(page_html)
+        if href_match:
+            candidate = href_match.group("url")
+    if not candidate:
+        return None
+    parsed = urlparse(candidate)
+    if not parsed.scheme.startswith("http") or "linkedin.com" in parsed.netloc.lower():
+        return None
+    return candidate
 
 
 def _fetch_html(url: str) -> str:
@@ -1075,6 +1124,31 @@ class CareerSiteScanner:
         page_text = _clean_text(" ".join(details.text_chunks))
         if not page_text:
             raise ValueError(f"LinkedIn guest API returned no text for job {job_id}")
+
+        # ai: claude-sonnet-5 | 2026-07-26
+        # LinkedIn's own listing frequently omits salary/compensation, which
+        # only appears on the employer's actual ATS page reached via "Apply".
+        # Follow that link best-effort so the fit scorer sees it too. Both
+        # halves are budgeted so the merge stays comfortably under
+        # FitScorer's 6000-char prompt window — otherwise the compensation
+        # section (the whole point of fetching it) could get truncated off
+        # before the LLM ever sees it.
+        apply_url = _extract_offsite_apply_url(page_html)
+        if apply_url:
+            try:
+                apply_text = _html_to_text(_fetch_html(apply_url))
+                if len(apply_text) >= 200:
+                    page_text = (
+                        f"{page_text[:3000]}\n\n"
+                        "--- Application page (may include compensation details) ---\n\n"
+                        f"{apply_text[:2500]}"
+                    )
+            except (UnsafeUrlError, URLError, socket.timeout, OSError) as exc:
+                logger.debug(
+                    "LinkedIn offsite apply-page fetch failed for %s: %s",
+                    apply_url,
+                    exc,
+                )
 
         confidence_level, confidence_score = _confidence_for(page_title, page_text)
         return CareerSiteJob(

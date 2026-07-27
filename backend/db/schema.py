@@ -173,6 +173,10 @@ def _migrate(conn: Any) -> None:
         ("import_warnings", "TEXT"),
         ("snoozed_until", "TEXT"),
         ("dismissed_duplicate_ids", "TEXT"),
+        # Annual USD, extracted by the fit scorer from job_description when a
+        # compensation range is stated; NULL when none was found.
+        ("salary_min", "INTEGER"),
+        ("salary_max", "INTEGER"),
     ]:
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {defn}")
 

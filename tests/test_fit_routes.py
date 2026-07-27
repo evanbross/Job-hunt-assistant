@@ -115,7 +115,12 @@ class FakeFitScorer:
         assert job_title == "Platform Engineer"
         assert company == "Acme"
         assert "platform engineering" in email_body.lower()
-        return {"score": 92, "reasoning": "Strong platform engineering match."}
+        return {
+            "score": 92,
+            "reasoning": "Strong platform engineering match.",
+            "salary_min": None,
+            "salary_max": None,
+        }
 
 
 def test_re_evaluate_fit_preserves_possible_duplicate_status(

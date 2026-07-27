@@ -53,6 +53,8 @@ logger = logging.getLogger(__name__)
 class ScoreResult(TypedDict):
     score: int  # 0-100, penalties already applied
     reasoning: str
+    salary_min: int | None  # annual USD, extracted from job_description if stated
+    salary_max: int | None
 
 
 class FitScorer:
@@ -115,6 +117,8 @@ class FitScorer:
 
         raw_score: int = int(result.get("score", 50))
         reasoning: str = result.get("reasoning", "No reasoning provided.")
+        salary_min = self._coerce_salary(result.get("salary_min"))
+        salary_max = self._coerce_salary(result.get("salary_max"))
 
         # Apply penalty deductions for matching rules
         total_penalty = 0
@@ -147,7 +151,22 @@ class FitScorer:
         if penalties_applied:
             reasoning += " Penalties applied: " + ", ".join(penalties_applied) + "."
 
-        return ScoreResult(score=final_score, reasoning=reasoning)
+        return ScoreResult(
+            score=final_score,
+            reasoning=reasoning,
+            salary_min=salary_min,
+            salary_max=salary_max,
+        )
+
+    @staticmethod
+    def _coerce_salary(value: object) -> int | None:
+        """Best-effort int coercion for a salary field the AI may omit or malform."""
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _build_system_prompt(
         self, resume_text: str, penalty_rules: list[dict], fit_feedback: list[dict]

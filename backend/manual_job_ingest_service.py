@@ -157,8 +157,16 @@ class ManualJobIngestService:
             # the full description from the job URL so scoring and the stored
             # snippet aren't based on near-empty text.
             job_url = str(parsed.get("url") or "").strip()
-            if len(score_body) < _MIN_DESCRIPTION_CHARS and job_url.startswith(
-                "https://"
+            # ai: claude-sonnet-5 | 2026-07-26
+            # A LinkedIn DOM capture can be long yet still miss salary/compensation
+            # (LinkedIn's own listing frequently omits it; it only shows up on the
+            # employer's ATS page reached via "Apply"). Capture length says nothing
+            # about whether that page was reached, so always re-fetch LinkedIn URLs
+            # via CareerSiteScanner — which now follows the offsite apply link too —
+            # regardless of how much text the DOM scrape already captured.
+            is_linkedin_job = "linkedin.com/jobs" in job_url.lower()
+            if job_url.startswith("https://") and (
+                len(score_body) < _MIN_DESCRIPTION_CHARS or is_linkedin_job
             ):
                 try:
                     fetched_job = self._career_site_scanner.scan_single_job_url(
@@ -263,6 +271,8 @@ class ManualJobIngestService:
             "raw_email_snippet": score_body[:6000],
             "fit_score": fit_score,
             "fit_reasoning": score_result["reasoning"],
+            "salary_min": score_result["salary_min"],
+            "salary_max": score_result["salary_max"],
             "status": status,
             "parser_confidence": parsed.get("confidence", "low"),
             "confidence_reason": parsed.get("confidence_reason", ""),

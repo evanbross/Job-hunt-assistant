@@ -90,7 +90,12 @@ class StubScorer:
         penalty_rules: list[dict],
         fit_feedback: list[dict] | None = None,
     ) -> dict:
-        return {"score": self._score, "reasoning": f"{job_title} at {company}"}
+        return {
+            "score": self._score,
+            "reasoning": f"{job_title} at {company}",
+            "salary_min": None,
+            "salary_max": None,
+        }
 
 
 class StubCareerSiteScanner:
