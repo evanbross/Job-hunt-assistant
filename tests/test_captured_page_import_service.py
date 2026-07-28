@@ -220,6 +220,49 @@ def test_extracts_wellfound_company_from_startup_card_header() -> None:
     ]
 
 
+# ai: claude-sonnet-5 | 2026-07-28
+def test_kforce_hash_fragment_distinguishes_jobs() -> None:
+    """Regression test: every Kforce job shares the same pathname
+    (/find-work/search-jobs/) and only differs by hash fragment
+    (#/detail/<id>/). The generic JSON-capture branch used to strip
+    fragments unconditionally, collapsing all jobs on the page into one
+    deduped URL and silently dropping the rest."""
+    service = CapturedPageImportService()
+    payload = """
+    {
+      "jobs": [
+        {
+          "url": "https://www.kforce.com/find-work/search-jobs/#/detail/AAA111/",
+          "job_title": "Scrum Master",
+          "company": "Kforce",
+          "listing_text": "Scrum Master"
+        },
+        {
+          "url": "https://www.kforce.com/find-work/search-jobs/#/detail/BBB222/",
+          "job_title": "Software Engineer",
+          "company": "Kforce",
+          "listing_text": "Software Engineer"
+        },
+        {
+          "url": "https://myhiring.kforce.com/careersection/jobdetail.ftl?job=260393",
+          "job_title": "Mgr IT Site Reliability Eng",
+          "company": "Kforce",
+          "listing_text": "Mgr IT Site Reliability Eng"
+        }
+      ]
+    }
+    """
+
+    analysis = service.analyze_capture(payload, "json")
+
+    urls = [row["url"] for row in analysis["urls"]]
+    assert urls == [
+        "https://www.kforce.com/find-work/search-jobs/#/detail/AAA111/",
+        "https://www.kforce.com/find-work/search-jobs/#/detail/BBB222/",
+        "https://myhiring.kforce.com/careersection/jobdetail.ftl?job=260393",
+    ]
+
+
 def test_analyzes_bookmarklet_json_capture() -> None:
     service = CapturedPageImportService()
     payload = """

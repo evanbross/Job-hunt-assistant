@@ -178,6 +178,7 @@ class CapturedPageImportService:
         ("linkedin.com", "LinkedIn"),
         ("workatastartup.com", "WorkAtAStartup"),
         ("welcometothejungle.com", "WelcomeToTheJungle"),
+        ("kforce.com", "Kforce"),
     )
 
     def extract_public_job_urls(
@@ -445,6 +446,8 @@ class CapturedPageImportService:
             return self._normalize_linkedin_job_url(parsed)
         if platform == "WorkAtAStartup":
             return self._normalize_workatastartup_job_url(parsed)
+        if platform == "Kforce":
+            return self._normalize_kforce_job_url(parsed)
         cleaned = parsed._replace(fragment="", query="")
         return cleaned.geturl()
 
@@ -482,6 +485,33 @@ class CapturedPageImportService:
         if not re.match(r"^/jobs/view/\d+", parsed.path):
             return None
         return parsed._replace(query="", fragment="").geturl()
+
+    @staticmethod
+    def _normalize_kforce_job_url(parsed: ParseResult) -> str | None:
+        # ai: claude-sonnet-5 | 2026-07-28
+        # www.kforce.com/find-work/search-jobs/ is a single-path Angular SPA —
+        # job identity lives entirely in the hash fragment (#/detail/<id>/),
+        # unlike every other supported host where the fragment is just an
+        # anchor. The generic branch above strips fragments unconditionally,
+        # which collapsed every distinct job on the site down to one URL
+        # (https://www.kforce.com/find-work/search-jobs/) and silently
+        # dropped all but the first as duplicates.
+        #
+        # Kforce also posts some of its own internal reqs through a separate,
+        # older Taleo-style portal (myhiring.kforce.com/careersection/
+        # jobdetail.ftl?job=<id>) where identity is a query param instead —
+        # that one must keep its query and drop the fragment.
+        host = parsed.netloc.lower()
+        if host == "myhiring.kforce.com":
+            job_id = (parse_qs(parsed.query).get("job") or [""])[0].strip()
+            if not job_id:
+                return None
+            return parsed._replace(
+                query=urlencode({"job": job_id}), fragment=""
+            ).geturl()
+        if re.match(r"^/detail/", parsed.fragment):
+            return parsed._replace(query="").geturl()
+        return None
 
     @staticmethod
     def _normalize_workatastartup_job_url(parsed: ParseResult) -> str | None:
