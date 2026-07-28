@@ -138,6 +138,47 @@
       return { site: 'MongoDB Careers', type: 'mongoDBCareer', jobCount: count, description: `${count} jobs` };
     }
 
+    // ai: claude-sonnet-5 | 2026-07-28
+    // Insight Global's search-results page is server-rendered with numbered-page
+    // URLs (/jobs/find_a_job/2/, /3/, …) rather than an in-page "load more" — the
+    // old smartGeneric fallback only ever saw page 1. Detail pages have extra path
+    // segments ending in /job-<id>/ and must be checked first so they don't match
+    // the bare-search-page pattern below.
+    if (host.includes('insightglobal.com')) {
+      if (/^\/jobs\/find_a_job\/.+\/job-\d+\/?$/i.test(path)) {
+        return { site: 'Insight Global', type: 'insightGlobalJob', jobCount: 1, description: 'Single job listing' };
+      }
+      if (/^\/jobs\/find_a_job\/(?:\d+\/)?$/.test(path)) {
+        const total = insightGlobalTotalHits();
+        return {
+          site: 'Insight Global',
+          type: 'insightGlobalSearch',
+          jobCount: total,
+          description: `${total} jobs — auto-fetches all pages`,
+        };
+      }
+    }
+
+    // ai: claude-sonnet-5 | 2026-07-28
+    // Kforce's search page is a client-side Angular app entirely behind one
+    // fixed path (/find-work/search-jobs/) — job identity lives in
+    // location.hash (#/detail/<id>/ for a single posting, #/?t=...&l=...
+    // for a search), which countSmartGenericJobs() can't see because it
+    // only inspects u.pathname. "Load more" appends 25 rows client-side
+    // per click rather than paginating via URL or a fetchable API.
+    if (host.includes('kforce.com') && /^\/find-work\/search-jobs\/?$/.test(path)) {
+      if (/^#\/detail\//.test(location.hash)) {
+        return { site: 'Kforce', type: 'kforceJob', jobCount: 1, description: 'Single job listing' };
+      }
+      const total = kforceTotalHits();
+      return {
+        site: 'Kforce',
+        type: 'kforceSearch',
+        jobCount: total,
+        description: total ? `${total} jobs — auto-clicks "Load more" to fetch all` : 'No jobs found',
+      };
+    }
+
     // ai: claude-sonnet-4-6 | 2026-06-17
     if (isPhenomSearchPage()) {
       const total = phenomTotalHits();
@@ -1024,6 +1065,224 @@
       : buildHtmlPayload();
   }
 
+  // ─── Insight Global (insightglobal.com) ────────────────────────────────────
+
+  // ai: claude-sonnet-5 | 2026-07-28
+  // The result count is only rendered as page text ("82 Results for …"), not a
+  // data attribute, so it's read off document.body.innerText.
+  function insightGlobalTotalHits() {
+    const m = document.body.innerText.match(/(\d+)\s+Results?\s+for/i);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+
+  // ai: claude-sonnet-5 | 2026-07-28
+  // Each div.result card embeds a hidden (display:none) <div> holding the full
+  // job record as JSON — including the untruncated description, which the
+  // visible card only shows a "…More" snippet of. This works identically on
+  // pages fetched via fetch()+DOMParser, so no per-job detail request is needed.
+  function parseInsightGlobalResult(resultEl) {
+    const jobInfo = resultEl.querySelector('div.job-info');
+    if (!jobInfo) return null;
+    const jsonDiv = [...jobInfo.children].find(
+      c => c.tagName === 'DIV' && c.style.display === 'none' && c.textContent.trim().startsWith('{')
+    );
+    if (!jsonDiv) return null;
+
+    let job;
+    try { job = JSON.parse(jsonDiv.textContent.trim()); } catch { return null; }
+
+    const link = resultEl.querySelector('div.job-title a[href]');
+    if (!link) return null;
+    const url = new URL(link.getAttribute('href'), location.origin).href;
+
+    const isHourly = (job.JobType || []).some(t => /contract/i.test(t));
+    const pay = job.SalaryLow && job.SalaryHigh
+      ? (isHourly
+          ? `$${job.SalaryLow} - $${job.SalaryHigh}/hr`
+          : `$${job.SalaryLow.toLocaleString()} - $${job.SalaryHigh.toLocaleString()}/year`)
+      : '';
+    const postedMatch = /\/Date\((\d+)\)\//.exec(job.PostedDate || '');
+    const posted = postedMatch ? new Date(parseInt(postedMatch[1], 10)).toISOString().slice(0, 10) : '';
+    const jobLocation = [job.City, job.State].filter(Boolean).join(', ');
+
+    const lines = [
+      job.Title || '',
+      'Company: Insight Global',
+      `URL: ${url}`,
+      jobLocation && `Location: ${jobLocation}`,
+      job.IsRemote && 'Work Environment: Remote',
+      (job.JobType || []).length && `Job Type: ${job.JobType.join(', ')}`,
+      pay && `Pay: ${pay}`,
+      posted && `Posted: ${posted}`,
+      job.Description && `\n${job.Description}`,
+    ].filter(Boolean);
+
+    return { url, job_title: job.Title || '', company: 'Insight Global', listing_text: lines.join('\n'), jobId: job.JobID };
+  }
+
+  // ai: claude-sonnet-5 | 2026-07-28
+  // Pagination is a plain numbered path segment (/jobs/find_a_job/2/, /3/, …)
+  // with page 1 having no segment at all — a full page reload per page, not an
+  // API or "load more" click. Fetch every page's HTML directly instead.
+  async function buildInsightGlobalSearchPayload() {
+    const total = insightGlobalTotalHits();
+    if (!total) return buildHtmlPayload();
+
+    const pageSize = document.querySelectorAll('div.result').length || 10;
+    const totalPages = Math.ceil(total / pageSize);
+    const basePath = location.pathname.replace(/\/\d+\/$/, '/');
+
+    const seen = new Set();
+    const allJobs = [];
+
+    for (let page = 1; page <= totalPages; page++) {
+      sendProgress(`Fetching page ${page} of ${totalPages}…`, page / totalPages);
+
+      const pageUrl = new URL(location.href);
+      pageUrl.pathname = page === 1 ? basePath : `${basePath}${page}/`;
+
+      let doc;
+      try {
+        const res = await fetch(pageUrl.href, { credentials: 'include' });
+        if (!res.ok) break;
+        doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+      } catch { break; }
+
+      const results = doc.querySelectorAll('div.result');
+      if (!results.length) break;
+
+      results.forEach(resultEl => {
+        const job = parseInsightGlobalResult(resultEl);
+        if (!job || seen.has(job.jobId)) return;
+        seen.add(job.jobId);
+        allJobs.push({ url: job.url, job_title: job.job_title, company: job.company, listing_text: job.listing_text });
+      });
+
+      if (page < totalPages) await sleep(400);
+    }
+
+    return allJobs.length
+      ? JSON.stringify({ jobs: allJobs, source: { url: location.href } })
+      : buildHtmlPayload();
+  }
+
+  // ─── Kforce (kforce.com) ────────────────────────────────────────────────────
+
+  // ai: claude-sonnet-5 | 2026-07-28
+  // Result count only ever shows up as page text ("Displaying 1 - 25 of 471");
+  // a search with no hits renders no .data-job-pagination element at all.
+  function kforceTotalHits() {
+    if (/No search results found/i.test(document.body.innerText)) return 0;
+    const countEl = document.querySelector('.data-job-pagination .count');
+    const m = countEl && countEl.textContent.match(/of\s+([\d,]+)/i);
+    return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
+  }
+
+  // ai: claude-sonnet-5 | 2026-07-28
+  function parseKforceRow(li) {
+    const link = li.querySelector('h2 a.linkForJob');
+    if (!link) return null;
+    const title = link.textContent.trim();
+    const url = new URL(link.getAttribute('href'), location.href).href;
+    const posted = li.querySelector('h2 span')?.textContent.trim() || '';
+    const snippet = li.querySelector('.col-md-10 p')?.textContent.replace(/\s+/g, ' ').trim() || '';
+    const jobType = li.querySelector('.job-list-detail .type')?.textContent.trim() || '';
+    const jobLocation = li.querySelector('.job-list-detail .locations')?.textContent.trim() || '';
+
+    const lines = [
+      title,
+      'Company: Kforce',
+      `URL: ${url}`,
+      jobLocation && `Location: ${jobLocation}`,
+      jobType && `Job Type: ${jobType}`,
+      posted && `Posted: ${posted}`,
+      snippet && `\n${snippet}`,
+    ].filter(Boolean);
+
+    return { url, job_title: title, company: 'Kforce', listing_text: lines.join('\n') };
+  }
+
+  // ai: claude-sonnet-5 | 2026-07-28
+  // Single Kforce job page. There's no JSON-LD block, so title/location/type/
+  // compensation/JobID are read off the rendered .page-meta columns. The URL
+  // must keep location.hash — every job on this Angular SPA shares the same
+  // pathname (/find-work/search-jobs/), so the hash (#/detail/<id>/) is the
+  // only part of the URL that actually identifies the posting.
+  function buildKforceJobPayload() {
+    const title = document.querySelector('article h1')?.textContent.trim() || '';
+    const meta = {};
+    document.querySelectorAll('article .page-meta .col-xs-12').forEach(el => {
+      const text = el.textContent.replace(/\s+/g, ' ').trim();
+      const idx = text.indexOf(':');
+      if (idx !== -1) meta[text.slice(0, idx).trim().toLowerCase()] = text.slice(idx + 1).trim();
+    });
+    const description = document.querySelector('article .data-job-desc')?.innerText.trim() || '';
+    const url = location.origin + location.pathname + location.hash;
+
+    const lines = [
+      title,
+      'Company: Kforce',
+      `URL: ${url}`,
+      meta.location && `Location: ${meta.location}`,
+      meta['job type'] && `Job Type: ${meta['job type']}`,
+      meta.compensation && `Compensation: ${meta.compensation}`,
+      meta.jobid && `JobID: ${meta.jobid}`,
+      description && `\n${description}`,
+    ].filter(Boolean);
+
+    return JSON.stringify({
+      jobs: [{ url, job_title: title, company: 'Kforce', listing_text: lines.join('\n') }],
+      source: { url: location.href },
+    });
+  }
+
+  // ai: claude-sonnet-5 | 2026-07-28
+  // "Load more" appends the next 25 results client-side rather than navigating
+  // to a numbered page or a fetchable API endpoint (confirmed: the site's own
+  // search calls an Azure Search index directly with an api-key header, which
+  // this isolated-world content script can't reuse — Chrome only exposes the
+  // page's own fetch/XHR calls to a script injected in the MAIN world, and
+  // this one runs isolated per manifest defaults). Pagination is therefore
+  // driven by repeatedly clicking the button and waiting for new rows.
+  //
+  // Only the truncated card snippet is available per job here, not the full
+  // description: unlike Jibe/Insight Global, a per-job fetch() can't get the
+  // full text either, because every job's content is rendered client-side by
+  // Angular reading location.hash — the fetched HTML would just be the same
+  // empty SPA shell. Opening a job (which flips detectPage to kforceJob) is
+  // the only way to get its full description.
+  async function buildKforceSearchPayload() {
+    const total = kforceTotalHits();
+    if (!total) return buildHtmlPayload();
+
+    const maxClicks = Math.ceil(total / 25) + 2;
+    for (let i = 0; i < maxClicks; i++) {
+      const rowsBefore = document.querySelectorAll('ul.data-jobs > li.row').length;
+      if (rowsBefore >= total) break;
+
+      const loadMore = [...document.querySelectorAll('.data-job-pagination span')]
+        .find(s => s.textContent.trim() === 'Load more');
+      if (!loadMore) break;
+
+      sendProgress(`Loading jobs… (${rowsBefore}/${total})`, rowsBefore / total);
+      loadMore.click();
+
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        await sleep(400);
+        if (document.querySelectorAll('ul.data-jobs > li.row').length > rowsBefore) break;
+      }
+    }
+
+    const jobs = [...document.querySelectorAll('ul.data-jobs > li.row')]
+      .map(parseKforceRow)
+      .filter(Boolean);
+
+    return jobs.length
+      ? JSON.stringify({ jobs, source: { url: location.href } })
+      : buildHtmlPayload();
+  }
+
   // ─── Jibe / iCIMS (careers.marriott.com, …) ────────────────────────────────
 
   // ai: claude-fable-5 | 2026-07-13
@@ -1536,6 +1795,9 @@
       case 'jibeJob':          payload = buildJibeJobPayload(); break;
       case 'jibeSearch':       payload = await buildJibeSearchPayload(); break;
       case 'phenomSearch':     payload = await buildPhenomSearchPayload(); break;
+      case 'insightGlobalSearch': payload = await buildInsightGlobalSearchPayload(); break;
+      case 'kforceJob':        payload = buildKforceJobPayload(); break;
+      case 'kforceSearch':     payload = await buildKforceSearchPayload(); break;
       case 'jobanni':          payload = await buildJobanniPayload(); break;
       case 'jobgetherJob':     payload = await buildJobgetherJobPayload(); break;
       case 'smartGeneric':     payload = buildSmartGenericPayload(); break;
