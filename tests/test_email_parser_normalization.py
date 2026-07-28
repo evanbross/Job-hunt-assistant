@@ -384,6 +384,47 @@ View job: {sendgrid_url}
     assert jobs[0]["job_title"] == "Senior Backend Engineer"
 
 
+# ai: claude-sonnet-5 | 2026-07-28
+def test_parser_decodes_html_entities_in_wttj_company_logo_alt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for jobs 2740/3084/3360, imported as 'Hims &amp; Hers' instead of
+    'Hims & Hers'. The company name is sourced from an <img alt="..."> attribute in
+    the raw HTML card, which must be HTML-unescaped just like the href is."""
+    real_wttj_url = "https://app.welcometothejungle.com/jobs/gUJttt-e?token=abc123&position=2&count=3"
+    sendgrid_url = "https://u9999.ct.sendgrid.net/ls/click?upn=FAKETOKEN"
+    raw_html = f"""
+    <a href="{sendgrid_url}">
+      <img alt="Hims &amp; Hers logo" src="logo.png">
+    </a>
+    """
+
+    monkeypatch.setattr(
+        email_parser_module,
+        "resolve_tracking_url",
+        lambda url, timeout=3.0: real_wttj_url if "sendgrid" in url else url,
+    )
+
+    client = FakeParserClient()
+    parser = EmailParser(client=client)
+    body = f"""New match for your search
+
+Staff Engineer (AI-Assisted Engineering Practices)
+View job: {sendgrid_url}
+"""
+
+    jobs = parser.parse(
+        "New match: Staff Engineer",
+        "Welcome to the Jungle <hello@welcometothejungle.com>",
+        body,
+        raw_html=raw_html,
+    )
+
+    assert client.messages == [], "LLM should not be called for a WTTJ email"
+    assert len(jobs) == 1
+    assert jobs[0]["company"] == "Hims & Hers"
+
+
 def test_parser_extracts_welcome_to_the_jungle_jobs_from_urls_without_ai() -> None:
     client = FakeParserClient()
     parser = EmailParser(client=client)

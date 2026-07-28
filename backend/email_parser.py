@@ -748,7 +748,8 @@ def _wttj_company_map_from_html(raw_html: str) -> dict[str, str]:
         block = raw_html[href_m.end() : a_end]
         logo_m = _WTTJ_HTML_LOGO_ALT_RE.search(block)
         if logo_m:
-            company = logo_m.group(1).strip()
+            # ai: claude-sonnet-5 | 2026-07-28
+            company = _html_mod.unescape(logo_m.group(1).strip())  # was: no unescape, leaked "&amp;"
             # Skip the WTTJ site logo itself ("Welcome to the Jungle logo")
             if not _WTTJ_SENDER_RE.search(company):
                 company_map[href] = company
