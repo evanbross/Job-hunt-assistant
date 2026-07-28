@@ -97,11 +97,29 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, di
         )}
         {row.stages.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
-            {row.stages.map((stage) => (
-              <span key={stage.id || `${stage.status}-${stage.date}`} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "999px", color: "var(--text-muted)", fontSize: "11px", padding: "3px 8px" }}>
-                {stage.status || "stage"}{stage.date ? ` · ${stage.date}` : ""}
-              </span>
-            ))}
+            {row.stages.map((stage) => {
+              // ai: claude-sonnet-5 | 2026-07-27
+              // Match the solid-red treatment the stage-select dropdown in
+              // ApplicationSheetPanel.jsx gives rejected stages (stageOptionStyle),
+              // instead of the same neutral gray used for every other stage here.
+              const isRejected = String(stage.status || "").toLowerCase().includes("reject");
+              return (
+                <span
+                  key={stage.id || `${stage.status}-${stage.date}`}
+                  style={{
+                    background: isRejected ? "var(--red)" : "var(--surface)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "999px",
+                    color: isRejected ? "#fff" : "var(--text-muted)",
+                    fontSize: "11px",
+                    fontWeight: isRejected ? 700 : 400,
+                    padding: "3px 8px",
+                  }}
+                >
+                  {stage.status || "stage"}{stage.date ? ` · ${stage.date}` : ""}
+                </span>
+              );
+            })}
           </div>
         )}
       </div>

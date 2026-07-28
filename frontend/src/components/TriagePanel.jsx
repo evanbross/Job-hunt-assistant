@@ -35,6 +35,9 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Modal from "./common/Modal.jsx";
 import CoverLetterModal from "./common/CoverLetterModal.jsx";
+import PitchModal from "./common/PitchModal.jsx";
+import ResumeTailorModal from "./common/ResumeTailorModal.jsx";
+import TailorProgressModal from "./common/TailorProgressModal.jsx";
 import StatusBadge from "./common/StatusBadge.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
 import ContactsBadge from "./common/ContactsBadge.jsx";
@@ -730,6 +733,13 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
   // ai: claude-sonnet-4-6 | 2026-06-20
   const [coverLetter, setCoverLetter] = useState(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
+  // ai: claude-sonnet-5 | 2026-07-27
+  const [pitchText, setPitchText] = useState(null);
+  const [pitchType, setPitchType] = useState(null); // "why_company" | "why_fit"
+  const [pitchOpen, setPitchOpen] = useState(false);
+  const [resumeTailor, setResumeTailor] = useState(null);
+  const [resumeTailorOpen, setResumeTailorOpen] = useState(false);
+  const [tailorPhaseIdx, setTailorPhaseIdx] = useState(0);
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
   const companyHistory = useCompanyHistoryLookup(job);
   const triageReasoning = triageReasoningForJob(job);
@@ -874,6 +884,61 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     } catch (err) {
       setReEvaluateError(describeFetchError(err) || "Cover letter generation failed"); // ai: claude-fable-5 | 2026-07-15
     } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  // ai: claude-sonnet-5 | 2026-07-27
+  const handlePitch = async (type) => {
+    if (pitchType === type && pitchText) { setPitchOpen(true); return; }
+    setPitchType(type);
+    setPitchOpen(false);
+    setLoadingAction("pitch");
+    setReEvaluateError(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/pitch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
+      const data = await res.json();
+      setPitchText(data.text);
+      setPitchOpen(true);
+    } catch (err) {
+      setReEvaluateError(describeFetchError(err) || "Pitch generation failed");
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  // ai: claude-sonnet-5 | 2026-07-27
+  const handleResumeTailor = async () => {
+    if (resumeTailor) { setResumeTailorOpen(true); return; }
+    setLoadingAction("tailor");
+    setReEvaluateError(null);
+    setTailorPhaseIdx(0);
+    const t1 = setTimeout(() => setTailorPhaseIdx(1), 3000);
+    const t2 = setTimeout(() => setTailorPhaseIdx(2), 7000);
+    const t3 = setTimeout(() => setTailorPhaseIdx(3), 12000);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/resume-tailor`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
+      const data = await res.json();
+      setResumeTailor(data.analysis);
+      setResumeTailorOpen(true);
+    } catch (err) {
+      setReEvaluateError(describeFetchError(err) || "Resume tailoring failed");
+    } finally {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
       setLoadingAction(null);
     }
   };
@@ -1108,6 +1173,48 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
             "Cover Letter"
           )}
         </button>
+        {/* ai: claude-sonnet-5 | 2026-07-27 */}
+        <button
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "5px 11px" }}
+          type="button"
+          onClick={() => handlePitch("why_company")}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "pitch" && pitchType === "why_company" ? (
+            <span style={buttonSpinnerContentStyle}>
+              <span className="inline-spinner" />
+              Generating...
+            </span>
+          ) : (
+            "Why I want to work here"
+          )}
+        </button>
+        <button
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "5px 11px" }}
+          type="button"
+          onClick={() => handlePitch("why_fit")}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "pitch" && pitchType === "why_fit" ? (
+            <span style={buttonSpinnerContentStyle}>
+              <span className="inline-spinner" />
+              Generating...
+            </span>
+          ) : (
+            "Why I'd be good for this job"
+          )}
+        </button>
+        <button
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "5px 11px" }}
+          type="button"
+          onClick={handleResumeTailor}
+          disabled={loadingAction !== null}
+        >
+          Tailor Resume
+        </button>
       </div>
 
       {reasoningOpen && (
@@ -1277,6 +1384,19 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
         />
       )}
 
+      {/* ai: claude-sonnet-5 | 2026-07-27 */}
+      {pitchOpen && pitchText && (
+        <PitchModal job={job} pitchType={pitchType} text={pitchText} onClose={() => setPitchOpen(false)} />
+      )}
+
+      {loadingAction === "tailor" && (
+        <TailorProgressModal job={job} phaseIdx={tailorPhaseIdx} />
+      )}
+
+      {resumeTailorOpen && resumeTailor && (
+        <ResumeTailorModal job={job} analysis={resumeTailor} onClose={() => setResumeTailorOpen(false)} />
+      )}
+
       {companyHistory.opened && (
         <CompanyHistoryDialog
           company={job.company || "Unknown Company"}
@@ -1324,6 +1444,13 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
   // ai: claude-sonnet-4-6 | 2026-06-20
   const [coverLetter, setCoverLetter] = useState(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
+  // ai: claude-sonnet-5 | 2026-07-27
+  const [pitchText, setPitchText] = useState(null);
+  const [pitchType, setPitchType] = useState(null); // "why_company" | "why_fit"
+  const [pitchOpen, setPitchOpen] = useState(false);
+  const [resumeTailor, setResumeTailor] = useState(null);
+  const [resumeTailorOpen, setResumeTailorOpen] = useState(false);
+  const [tailorPhaseIdx, setTailorPhaseIdx] = useState(0);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
@@ -1452,6 +1579,61 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     } catch (err) {
       setReEvaluateError(describeFetchError(err) || "Cover letter generation failed"); // ai: claude-fable-5 | 2026-07-15
     } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  // ai: claude-sonnet-5 | 2026-07-27
+  const handlePitch = async (type) => {
+    if (pitchType === type && pitchText) { setPitchOpen(true); return; }
+    setPitchType(type);
+    setPitchOpen(false);
+    setLoadingAction("pitch");
+    setReEvaluateError(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/pitch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
+      const data = await res.json();
+      setPitchText(data.text);
+      setPitchOpen(true);
+    } catch (err) {
+      setReEvaluateError(describeFetchError(err) || "Pitch generation failed");
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  // ai: claude-sonnet-5 | 2026-07-27
+  const handleResumeTailor = async () => {
+    if (resumeTailor) { setResumeTailorOpen(true); return; }
+    setLoadingAction("tailor");
+    setReEvaluateError(null);
+    setTailorPhaseIdx(0);
+    const t1 = setTimeout(() => setTailorPhaseIdx(1), 3000);
+    const t2 = setTimeout(() => setTailorPhaseIdx(2), 7000);
+    const t3 = setTimeout(() => setTailorPhaseIdx(3), 12000);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/resume-tailor`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Generation failed (${res.status})`);
+      }
+      const data = await res.json();
+      setResumeTailor(data.analysis);
+      setResumeTailorOpen(true);
+    } catch (err) {
+      setReEvaluateError(describeFetchError(err) || "Resume tailoring failed");
+    } finally {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
       setLoadingAction(null);
     }
   };
@@ -1965,6 +2147,48 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
             "Cover Letter"
           )}
         </button>
+        {/* ai: claude-sonnet-5 | 2026-07-27 */}
+        <button
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "4px 10px", marginLeft: "8px" }}
+          type="button"
+          onClick={() => handlePitch("why_company")}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "pitch" && pitchType === "why_company" ? (
+            <span style={buttonSpinnerContentStyle}>
+              <span className="inline-spinner" />
+              Generating...
+            </span>
+          ) : (
+            "Why I want to work here"
+          )}
+        </button>
+        <button
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "4px 10px", marginLeft: "8px" }}
+          type="button"
+          onClick={() => handlePitch("why_fit")}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "pitch" && pitchType === "why_fit" ? (
+            <span style={buttonSpinnerContentStyle}>
+              <span className="inline-spinner" />
+              Generating...
+            </span>
+          ) : (
+            "Why I'd be good for this job"
+          )}
+        </button>
+        <button
+          className="btn-secondary"
+          style={{ fontSize: "12px", padding: "4px 10px", marginLeft: "8px" }}
+          type="button"
+          onClick={handleResumeTailor}
+          disabled={loadingAction !== null}
+        >
+          Tailor Resume
+        </button>
         {reasoningOpen && (
           <div style={reasoningBoxStyle}>
             <ul style={reasoningListStyle}>
@@ -2210,6 +2434,19 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           coverLetter={coverLetter}
           onClose={() => setCoverLetterOpen(false)}
         />
+      )}
+
+      {/* ai: claude-sonnet-5 | 2026-07-27 */}
+      {pitchOpen && pitchText && (
+        <PitchModal job={job} pitchType={pitchType} text={pitchText} onClose={() => setPitchOpen(false)} />
+      )}
+
+      {loadingAction === "tailor" && (
+        <TailorProgressModal job={job} phaseIdx={tailorPhaseIdx} />
+      )}
+
+      {resumeTailorOpen && resumeTailor && (
+        <ResumeTailorModal job={job} analysis={resumeTailor} onClose={() => setResumeTailorOpen(false)} />
       )}
 
       {companyHistory.opened && (
