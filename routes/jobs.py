@@ -224,6 +224,27 @@ def patch_job(job_id: int) -> ResponseReturnValue:
 
             old_status = str(job.get("status") or "")
             repos["jobs"].update(job_id, fields)
+
+            # ai: claude-sonnet-5 | 2026-07-29
+            # Clear parser-confidence fields when the user edits company or
+            # job_title: they describe email-parse quality (e.g. "company name
+            # missing from the listing") and go stale the moment the user
+            # supplies/corrects the value by hand. Same rationale as the JD-refresh
+            # paths below (refresh_job_from_url, update_job_description).
+            if {"company", "job_title"} & fields.keys() and (
+                job.get("parser_confidence") is not None
+                or job.get("confidence_score") is not None
+                or job.get("confidence_reason") is not None
+            ):
+                repos["jobs"].update(
+                    job_id,
+                    {
+                        "parser_confidence": None,
+                        "confidence_score": None,
+                        "confidence_reason": None,
+                    },
+                )
+
             updated_job = repos["jobs"].get_by_id(job_id)
             if updated_job is None:
                 return jsonify({"error": "Job not found"}), 404

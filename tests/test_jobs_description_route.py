@@ -323,6 +323,80 @@ def test_patch_job_clears_stale_duplicate_when_no_match(
     assert data["duplicate_hint"] is None
 
 
+# ai: claude-sonnet-5 | 2026-07-29
+def test_patch_job_clears_stale_parser_confidence_on_company_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs_repo = FakeJobsRepo()
+    jobs_repo.row.update(
+        {
+            "parser_confidence": "low",
+            "confidence_score": 55,
+            "confidence_reason": "Company name missing from the listing.",
+        }
+    )
+    repos = {
+        "conn": FakeConnection(),
+        "jobs": jobs_repo,
+        "resume": FakeResumeRepo(),
+        "penalties": FakePenaltyRepo(),
+    }
+
+    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr(
+        "routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None, None, None)
+    )
+
+    app = Flask(__name__)
+    app.register_blueprint(jobs_bp, url_prefix="/api")
+    client = app.test_client()
+
+    response = client.patch("/api/jobs/7", json={"company": "Promenade Group"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["company"] == "Promenade Group"
+    assert data["parser_confidence"] is None
+    assert data["confidence_score"] is None
+    assert data["confidence_reason"] is None
+
+
+# ai: claude-sonnet-5 | 2026-07-29
+def test_patch_job_leaves_parser_confidence_untouched_on_url_only_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs_repo = FakeJobsRepo()
+    jobs_repo.row.update(
+        {
+            "parser_confidence": "low",
+            "confidence_score": 55,
+            "confidence_reason": "Company name missing from the listing.",
+        }
+    )
+    repos = {
+        "conn": FakeConnection(),
+        "jobs": jobs_repo,
+        "resume": FakeResumeRepo(),
+        "penalties": FakePenaltyRepo(),
+    }
+
+    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr(
+        "routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None, None, None)
+    )
+
+    app = Flask(__name__)
+    app.register_blueprint(jobs_bp, url_prefix="/api")
+    client = app.test_client()
+
+    response = client.patch("/api/jobs/7", json={"url": "https://example.com/jobs/7"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["parser_confidence"] == "low"
+    assert data["confidence_score"] == 55
+
+
 def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
