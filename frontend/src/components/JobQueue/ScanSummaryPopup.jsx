@@ -102,7 +102,7 @@ export default function ScanSummaryPopup({ summary, onClose }) {
 
   const createdJobDetails = [
     { label: "Added to Queue", value: pending_review_jobs, tone: "green" },
-    { label: "Moved to Triage", value: triage_jobs, tone: "yellow" },
+    { label: "Added to Triage", value: triage_jobs, tone: "yellow" },
     { label: "Possible Duplicates", value: possible_duplicate_jobs },
     { label: "Auto-Rejected Duplicates", value: auto_skipped_duplicate_jobs },
     { label: "Auto-Rejected Hybrid (MongoDB)", value: auto_skipped_hybrid_jobs }, // ai: claude-fable-5 | 2026-07-16

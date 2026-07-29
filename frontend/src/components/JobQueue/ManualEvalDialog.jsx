@@ -64,7 +64,7 @@ export default function ManualEvalDialog({ submitting, result, onClose }) {
     : "var(--red)";
   const statusLabel =
     status === "pending_review" ? "In Job Queue"
-    : status === "triage" ? "Moved to triage"
+    : status === "triage" ? "Added to triage"
     : status || "";
   const statusColor = status === "pending_review" ? "var(--green)" : "var(--yellow)";
   const statusBg = status === "pending_review" ? "rgba(76,175,129,0.15)" : "rgba(255,193,7,0.15)";

@@ -49,7 +49,7 @@ export function dispositionLabel(status) {
     pending_review: "In Job Queue",
     possible_duplicate: "Possible duplicate",
     skipped: "Skipped",
-    triage: "Moved to triage",
+    triage: "Added to triage",
   };
   return labels[status] || status || "";
 }

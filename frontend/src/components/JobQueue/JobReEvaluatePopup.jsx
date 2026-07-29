@@ -44,7 +44,7 @@ export default function JobReEvaluatePopup({ popup, onClose }) {
   const reasoningBullets = fitReasoningBullets(reasoningWithoutPenaltySummary(popup.fitReasoning));
   const statusText =
     popup.status === "pending_review" ? "In Job Queue"
-    : popup.status === "triage" ? "Moved to triage"
+    : popup.status === "triage" ? "Added to triage"
     : popup.status ? dispositionLabel(popup.status)
     : "";
 
