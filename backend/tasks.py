@@ -110,6 +110,10 @@ def _import_outcome_detail(
         "company": str(url_row.get("company") or job_row.get("company") or ""),
         "action": action,
         "reason": reason,
+        # ai: claude-sonnet-5 | 2026-07-30
+        # Surfaced in the import-complete dialog so a "captured content too short"
+        # skip is debuggable without digging through tmp/import_captures/ dumps.
+        "captured_text": str(url_row.get("listing_text") or "").strip(),
     }
 
 

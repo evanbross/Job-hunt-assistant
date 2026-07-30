@@ -770,6 +770,8 @@ function JobCard({
             )}
           </div>
           <div style={sourceSummaryStyle}>
+            {/* ai: claude-sonnet-5 | 2026-07-30 — date moved here to match TriagePanel's meta line */}
+            {job.date_found && <span style={{ marginRight: "8px" }}>{job.date_found}</span>}
             {sourceSummary && (
               <>
                 <span style={{ fontWeight: 600, color: "var(--text)" }}>Source: </span>
@@ -783,7 +785,7 @@ function JobCard({
               </>
             )}
             <span
-              style={{ color: "var(--text-muted)", cursor: "pointer", fontFamily: "monospace", fontSize: "11px", marginLeft: sourceSummary ? "8px" : 0 }}
+              style={{ color: "var(--text-muted)", cursor: "pointer", fontFamily: "monospace", fontSize: "11px", marginLeft: (job.date_found || sourceSummary) ? "8px" : 0 }}
               title={`Job ID: ${job.id} — click to copy`}
               onClick={() => navigator.clipboard.writeText(String(job.id))}
             >
@@ -920,7 +922,6 @@ function JobCard({
           <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
           <span className="badge badge-accent">{job.source || "?"}</span>
           <SalaryBadge job={job} />
-          <span className="badge badge-gray">{job.date_found || "—"}</span>
         </div>
       </div>
 

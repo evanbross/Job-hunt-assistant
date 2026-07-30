@@ -132,6 +132,27 @@ export function ImportBreakdownDetails({ summary, compact = false }) {
                     {row.reason}
                     {row.error_type && ` (${row.error_type}${row.stage ? ` during ${row.stage}` : ""})`}
                   </div>
+                  {/* ai: claude-sonnet-5 | 2026-07-30 */}
+                  {row.captured_text && (
+                    <pre
+                      style={{
+                        margin: "4px 0 0",
+                        padding: "6px 8px",
+                        background: "var(--surface2)",
+                        border: "1px solid var(--border)",
+                        borderRadius: "4px",
+                        fontSize: "11px",
+                        lineHeight: 1.4,
+                        color: "var(--text-muted)",
+                        whiteSpace: "pre-wrap",
+                        overflowWrap: "anywhere",
+                        maxHeight: "80px",
+                        overflowY: "auto",
+                      }}
+                    >
+                      {row.captured_text}
+                    </pre>
+                  )}
                 </li>
               ))}
             </ul>
@@ -151,6 +172,7 @@ function normalizeImportOutcomeDetails(summary, key, expectedCount, fallback) {
     company: row?.company || "",
     action: row?.action || fallback.action,
     reason: row?.reason || fallback.reason,
+    captured_text: row?.captured_text || "",
   }));
   for (let index = normalized.length; index < expectedCount; index += 1) {
     normalized.push({
@@ -160,6 +182,7 @@ function normalizeImportOutcomeDetails(summary, key, expectedCount, fallback) {
       company: "",
       action: fallback.action,
       reason: fallback.reason,
+      captured_text: "",
     });
   }
   return normalized;
