@@ -32,20 +32,47 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useSyncExternalStore } from "react";
+
+// ai: claude-sonnet-5 | 2026-07-30
+// Module-level store shared by every card instance. Each JobCard/TriagePanel
+// row calls this hook independently, so per-instance useState let every card
+// hold its own "menu open" flag at once -- right-clicking card A no longer
+// closed card A's menu when card B was opened. A single shared record of
+// which owner currently has the menu ensures only one card renders it at a time.
+let activeMenu = null;
+const listeners = new Set();
+
+function setActiveMenu(next) {
+  activeMenu = next;
+  listeners.forEach((listener) => listener());
+}
+
+function subscribeToActiveMenu(listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function getActiveMenuSnapshot() {
+  return activeMenu;
+}
 
 /**
  * Manages right-click context menu state and global dismiss listeners.
  * Returns contextMenu state, a default openContextMenu handler (y-offset 120px),
  * setContextMenu for custom open logic, and runContextAction for menu item clicks.
+ * Menu state is shared across all cards so opening one closes any other that
+ * was already open.
  */
 export function useCardContextMenu() {
-  const [contextMenu, setContextMenu] = useState(null);
+  const ownerId = useId();
+  const globalMenu = useSyncExternalStore(subscribeToActiveMenu, getActiveMenuSnapshot);
+  const contextMenu = globalMenu && globalMenu.ownerId === ownerId ? globalMenu.position : null;
 
   useEffect(() => {
     if (!contextMenu) return undefined;
 
-    const close = () => setContextMenu(null);
+    const close = () => setActiveMenu(null);
     const onKey = (event) => { if (event.key === "Escape") close(); };
 
     window.addEventListener("click", close);
@@ -58,6 +85,10 @@ export function useCardContextMenu() {
     };
   }, [contextMenu]);
 
+  const setContextMenu = (position) => {
+    setActiveMenu(position ? { ownerId, position } : null);
+  };
+
   const openContextMenu = (event) => {
     if (event.target.closest("a,button,input,textarea,select")) return;
     event.preventDefault();
@@ -68,7 +99,7 @@ export function useCardContextMenu() {
   };
 
   const runContextAction = (action) => {
-    setContextMenu(null);
+    setActiveMenu(null);
     action();
   };
 
