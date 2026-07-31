@@ -617,9 +617,17 @@ if __name__ == "__main__":
             _flask_port,
         )
         sys.exit(1)
+    # ai: claude-sonnet-5 | 2026-07-31
     if _caddy_registry is not None:
-        _caddy_registry.register("jha", _flask_port)
-        atexit.register(_caddy_registry.deregister, "jha")
+        if _caddy_registry.register("jha", _flask_port):
+            atexit.register(_caddy_registry.deregister, "jha")
+        else:
+            logger.warning(
+                "Caddy registration failed — http://jha.localhost will not work; "
+                "use http://127.0.0.1:%d directly, or start the infra stack "
+                "(cd ../infra && docker-compose up -d).",
+                _flask_port,
+            )
     try:
         app.run(
             debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",
