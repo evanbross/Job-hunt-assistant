@@ -47,7 +47,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
     { id: "resume", label: "Resume" },
     { id: "contacts", label: "LinkedIn Contacts" },
     { id: "sources", label: "Email" },
-    { id: "email_subject_rules", label: "Subject Rules" },
+    { id: "email_subject_rules", label: "Email Subject Rules" },
     { id: "career_sites", label: "Career Sites" },
     { id: "import_listener", label: "Import Listener" },
     { id: "fetch_queue", label: "Fetch Queue" },
