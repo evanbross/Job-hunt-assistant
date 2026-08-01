@@ -32,12 +32,26 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+const REGEX_SPECIAL_CHARS = /[.+^${}()|[\]\\]/g;
+
+// ai: claude-sonnet-4-6 | 2026-08-01
+// Converts a search term into a RegExp, treating * / % as "any sequence" and
+// ? / _ as "any single character" (glob and SQL LIKE wildcard styles both accepted).
+function wildcardTermToRegex(term) {
+  const escaped = term.replace(REGEX_SPECIAL_CHARS, "\\$&");
+  const pattern = escaped
+    .replace(/[*%]/g, ".*")
+    .replace(/[?_]/g, ".");
+  return new RegExp(pattern);
+}
+
 export function jobMatchesSearch(job, searchText, searchAllFields = false) {
   const terms = String(searchText || "")
     .trim()
     .toLowerCase()
     .split(/\s+/)
-    .filter(Boolean);
+    .filter(Boolean)
+    .map(wildcardTermToRegex);
   if (terms.length === 0) return true;
 
   const fields = searchAllFields
@@ -62,5 +76,5 @@ export function jobMatchesSearch(job, searchText, searchAllFields = false) {
     .join(" ")
     .toLowerCase();
 
-  return terms.every((term) => haystack.includes(term));
+  return terms.every((term) => term.test(haystack));
 }

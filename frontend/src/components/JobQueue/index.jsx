@@ -1715,7 +1715,7 @@ export default function JobQueue({
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           onFocus={(e) => e.target.select()}
-          placeholder="Search jobs"
+          placeholder="Search jobs (* ? or % _ wildcards)"
           style={queueSearchInputStyle}
         />
 
