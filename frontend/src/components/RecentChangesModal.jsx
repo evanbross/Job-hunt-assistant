@@ -43,16 +43,22 @@ function timeAgo(iso) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-export default function RecentChangesModal({ onClose }) {
+export default function RecentChangesModal({
+  onClose,
+  trigger = null,
+  title = "Recent Status Changes",
+  subtitle = "Undo an accidental status change. Only the most recent 30 changes are shown.",
+}) {
   const [entries, setEntries] = useState(null);
   const [undoing, setUndoing] = useState(null);
 
   useEffect(() => {
-    fetch("/api/jobs/status-history?limit=30")
+    const query = trigger ? `limit=30&trigger=${encodeURIComponent(trigger)}` : "limit=30";
+    fetch(`/api/jobs/status-history?${query}`)
       .then((r) => r.json())
       .then((data) => setEntries(Array.isArray(data) ? data : []))
       .catch(() => setEntries([]));
-  }, []);
+  }, [trigger]);
 
   const undo = async (entry) => {
     setUndoing(entry.id);
@@ -68,8 +74,8 @@ export default function RecentChangesModal({ onClose }) {
 
   return (
     <Modal
-      title="Recent Status Changes"
-      subtitle="Undo an accidental status change. Only the most recent 30 changes are shown."
+      title={title}
+      subtitle={subtitle}
       onClose={onClose}
       maxWidth="560px"
     >

@@ -367,8 +367,9 @@ def skip_job(job_id: int) -> ResponseReturnValue:
 @jobs_bp.route("/jobs/status-history")
 def get_job_status_history() -> ResponseReturnValue:
     limit = min(int(request.args.get("limit", 30)), 100)
+    trigger = request.args.get("trigger") or None
     with get_repos() as repos:
-        history = repos["job_status_history"].get_recent(limit)
+        history = repos["job_status_history"].get_recent(limit, trigger=trigger)
     return jsonify(history)
 
 

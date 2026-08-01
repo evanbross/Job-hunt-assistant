@@ -57,6 +57,7 @@ import ImportRepairDialog from "./ImportRepairDialog.jsx";
 import RescanImportDialog from "./RescanImportDialog.jsx";
 import CompanyGroup from "./CompanyGroup.jsx";
 import renderJobOrTriageCard from "./renderJobOrTriageCard.jsx";
+import RecentChangesModal from "../RecentChangesModal.jsx";
 
 const JOB_QUEUE_SEARCH_STORAGE_KEY = "jha.jobQueue.search";
 
@@ -269,6 +270,7 @@ export default function JobQueue({
   const [importPanelOpen, setImportPanelOpen] = useState(false);
   const [importMode, setImportMode] = useState("text");
   const [moreToolsOpen, setMoreToolsOpen] = useState(false);
+  const [showRecentlyApplied, setShowRecentlyApplied] = useState(false);
   const [fixingCompanies, setFixingCompanies] = useState(false);
   const [fixProgress, setFixProgress] = useState(null);
   const [deletingUnknownCompanies, setDeletingUnknownCompanies] = useState(false);
@@ -1796,6 +1798,24 @@ export default function JobQueue({
               overflow: "hidden",
             }}>
               <button
+                onClick={() => { setMoreToolsOpen(false); setShowRecentlyApplied(true); }}
+                title="View recently applied jobs and undo one if marked by accident"
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 14px",
+                  fontSize: "13px",
+                  background: "none",
+                  border: "none",
+                  color: "var(--text)",
+                  cursor: "pointer",
+                }}
+              >
+                Recently Applied…
+              </button>
+              <div style={{ height: "1px", background: "var(--border)", margin: "2px 0" }} />
+              <button
                 onClick={() => { setMoreToolsOpen(false); handleFixUnknownCompanies(); }}
                 disabled={anyQueueActionRunning}
                 style={{
@@ -1949,6 +1969,15 @@ export default function JobQueue({
           )}
         </div>
       </div>
+
+      {showRecentlyApplied && (
+        <RecentChangesModal
+          trigger="apply"
+          title="Recently Applied"
+          subtitle="Undo an accidental 'Mark as Applied'. Only the most recent 30 applies are shown."
+          onClose={() => setShowRecentlyApplied(false)}
+        />
+      )}
 
       {fixProgress && (
         <FixCompaniesDialog

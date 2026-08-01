@@ -58,17 +58,22 @@ class PostgresJobStatusHistoryRepository(_BaseRepo):
         )
         return cur.fetchone()["id"]
 
-    def get_recent(self, limit: int = 30) -> list[dict[str, Any]]:
+    def get_recent(
+        self, limit: int = 30, trigger: str | None = None
+    ) -> list[dict[str, Any]]:
+        where_clause = "WHERE h.trigger = %s" if trigger else ""
+        params: tuple[Any, ...] = (trigger, limit) if trigger else (limit,)
         cur = self._execute(
-            """
+            f"""
             SELECT h.id, h.job_id, h.from_status, h.to_status, h.changed_at, h.trigger, h.extra_data,
                    j.job_title, j.company
             FROM job_status_history h
             JOIN jobs j ON j.id = h.job_id
+            {where_clause}
             ORDER BY h.id DESC
             LIMIT %s
             """,
-            (limit,),
+            params,
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
