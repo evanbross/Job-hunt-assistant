@@ -268,6 +268,41 @@ def _extract_offsite_apply_url(page_html: str) -> str | None:
     return candidate
 
 
+# ai: claude-sonnet-5 | 2026-08-02
+_LD_JSON_SCRIPT_RE = re.compile(
+    r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(?P<json>.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _wttj_ats_url_from_html(page_html: str) -> str | None:
+    """Extract the underlying ATS apply URL from a Welcome to the Jungle job page.
+
+    WTTJ is a client-rendered SPA (its own DOM content requires JS), but the
+    server-rendered HTML still embeds a schema.org JobPosting JSON-LD block for
+    SEO whose "identifier.value" is the canonical URL on the employer's actual
+    ATS (Ashby, Greenhouse, Lever, etc.) — the same URL reached by clicking
+    "Apply" twice on the page. Following it gets the full structured posting
+    (including workplace type / hybrid-vs-remote) instead of WTTJ's own sparser
+    aggregator copy.
+    """
+    for match in _LD_JSON_SCRIPT_RE.finditer(page_html):
+        try:
+            data = json.loads(match.group("json").strip())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict) or data.get("@type") != "JobPosting":
+            continue
+        identifier = data.get("identifier")
+        url = identifier.get("value") if isinstance(identifier, dict) else identifier
+        if not isinstance(url, str):
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme.startswith("http") and "welcometothejungle.com" not in parsed.netloc.lower():
+            return url
+    return None
+
+
 def _fetch_html(url: str) -> str:
     req = Request(
         url,
@@ -854,6 +889,34 @@ class CareerSiteScanner:
         t0 = time.monotonic()
         logger.info("scan_single_job_url: starting for %s", job_url)
         parsed = urlparse(job_url)
+
+        # ai: claude-sonnet-5 | 2026-08-02
+        # WTTJ's own page is a client-rendered aggregator copy that's missing
+        # fields like workplace type (see job 3154/EvenUp — scored "remote"
+        # despite being hybrid). Resolve to the underlying ATS URL and recurse
+        # so the rest of this method's ATS-specific handling (Ashby, Greenhouse,
+        # etc.) parses the real, structured posting instead.
+        if "welcometothejungle.com" in parsed.netloc.lower():
+            logger.info("scan_single_job_url: WTTJ URL, resolving underlying ATS URL")
+            try:
+                wttj_html = _fetch_html(job_url)
+                ats_url = _wttj_ats_url_from_html(wttj_html)
+                if ats_url:
+                    logger.info(
+                        "scan_single_job_url: WTTJ resolved to ATS URL %s", ats_url
+                    )
+                    return self.scan_single_job_url(site_name, ats_url)
+                logger.info(
+                    "scan_single_job_url: WTTJ page had no resolvable ATS URL, "
+                    "falling back to generic parser"
+                )
+            except (UnsafeUrlError, URLError, socket.timeout, OSError) as exc:
+                logger.info(
+                    "scan_single_job_url: WTTJ ATS-URL resolution failed, "
+                    "falling back to generic parser: %s",
+                    exc,
+                )
+
         if "greenhouse.io" in parsed.netloc.lower() and _is_greenhouse_single_job_url(
             parsed
         ):

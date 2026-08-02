@@ -52,6 +52,7 @@ from backend.career_site_scanner import (
     _workday_job_url,
     _workday_parts,
     _workday_single_job_parts,
+    _wttj_ats_url_from_html,
     is_job_board_url,
 )
 
@@ -466,3 +467,98 @@ def test_scan_site_uses_single_greenhouse_job_adapter() -> None:
     single_scan.assert_called_once()
     assert outcome["detected_platform"] == "greenhouse"
     assert outcome["jobs"] == [expected_job]
+
+
+# ai: claude-sonnet-5 | 2026-08-02
+def test_wttj_ats_url_from_html_extracts_identifier() -> None:
+    html = (
+        '<script data-rh="true" type="application/ld+json">'
+        '{"@context":"https://schema.org/","@type":"JobPosting",'
+        '"title":"Backend Engineer",'
+        '"identifier":{"@type":"URL","value":'
+        '"https://jobs.ashbyhq.com/evenup/f41eab94-6361-418a-ae60-089a894032fc?utm_source=Otta"}}'
+        "</script>"
+    )
+    assert _wttj_ats_url_from_html(html) == (
+        "https://jobs.ashbyhq.com/evenup/f41eab94-6361-418a-ae60-089a894032fc?utm_source=Otta"
+    )
+
+
+def test_wttj_ats_url_from_html_ignores_non_job_posting_ld_json() -> None:
+    html = (
+        '<script type="application/ld+json">{"@type":"Organization","name":"WTTJ"}</script>'
+    )
+    assert _wttj_ats_url_from_html(html) is None
+
+
+def test_wttj_ats_url_from_html_returns_none_when_absent() -> None:
+    assert _wttj_ats_url_from_html("<div>No structured data here</div>") is None
+
+
+def test_wttj_ats_url_from_html_ignores_self_referential_identifier() -> None:
+    html = (
+        '<script type="application/ld+json">'
+        '{"@type":"JobPosting","identifier":'
+        '{"value":"https://app.welcometothejungle.com/jobs/abc123"}}'
+        "</script>"
+    )
+    assert _wttj_ats_url_from_html(html) is None
+
+
+def test_scan_single_job_url_resolves_wttj_to_underlying_ats() -> None:
+    scanner = CareerSiteScanner()
+    wttj_html = (
+        '<script type="application/ld+json">'
+        '{"@type":"JobPosting","identifier":{"value":'
+        '"https://job-boards.greenhouse.io/acme/jobs/12345"}}'
+        "</script>"
+    )
+    expected_job = {
+        "site_name": "Acme",
+        "site_url": "https://job-boards.greenhouse.io/acme/jobs/12345",
+        "job_title": "Senior Engineer",
+        "job_url": "https://job-boards.greenhouse.io/acme/jobs/12345",
+        "job_text": "Full description | Hybrid",
+        "posted_at": None,
+        "confidence_level": "high",
+        "confidence_score": 88,
+    }
+    with (
+        patch("backend.career_site_scanner._fetch_html", return_value=wttj_html),
+        patch.object(
+            scanner, "_greenhouse_single_job_from_api", return_value=expected_job
+        ) as greenhouse_api,
+    ):
+        result = scanner.scan_single_job_url(
+            "Welcome to the Jungle",
+            "https://app.welcometothejungle.com/jobs/hxE-2lk8",
+        )
+
+    greenhouse_api.assert_called_once()
+    assert result == expected_job
+
+
+def test_scan_single_job_url_falls_back_when_wttj_has_no_ats_url() -> None:
+    scanner = CareerSiteScanner()
+    with (
+        patch(
+            "backend.career_site_scanner._fetch_html",
+            return_value="<div>No structured data</div>",
+        ),
+        patch.object(
+            scanner, "_job_from_detail_page", return_value={"job_title": "fallback"}
+        ) as generic_parser,
+        patch("backend.career_site_scanner.safe_urlopen") as mock_urlopen,
+    ):
+        mock_resp = mock_urlopen.return_value.__enter__.return_value
+        mock_resp.read.return_value = b"<div>No structured data</div>"
+        mock_resp.headers.get_content_charset.return_value = "utf-8"
+        mock_resp.geturl.return_value = (
+            "https://app.welcometothejungle.com/jobs/hxE-2lk8"
+        )
+        scanner.scan_single_job_url(
+            "Welcome to the Jungle",
+            "https://app.welcometothejungle.com/jobs/hxE-2lk8",
+        )
+
+    generic_parser.assert_called_once()

@@ -661,6 +661,8 @@ def _run_scan(rescan_all: bool = False) -> None:
                     # scan_single_job_url handles Greenhouse (via API), Lever, and
                     # plain HTML pages; it also follows redirects, so LinkedIn tracking
                     # links that resolve to a structured ATS page are handled correctly.
+                    # It also resolves WTTJ aggregator URLs through to the underlying
+                    # ATS posting (Ashby, Greenhouse, etc.) for the same reason.
                     job_url_str = str(parsed.get("url") or "").strip()
                     jd_text = ""
                     if job_url_str and job_url_str.startswith("https://"):
