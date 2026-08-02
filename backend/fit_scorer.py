@@ -294,7 +294,12 @@ class FitScorer:
             r"hybrid\s+(role|schedule|position|required|requirement|mandatory)|"
             r"on[\s-]site\s+(role|position|required|requirement|mandatory)|"
             r"(required|requires|must|mandatory)\s+.{0,60}\b(hybrid|on[\s-]site|in[\s-]office|in[\s-]person)\b|"
-            r"\b(hybrid|on[\s-]site|in[\s-]office)\b.{0,60}\b(required|requires|must|mandatory|days per week|days a week)\b"
+            r"\b(hybrid|on[\s-]site|in[\s-]office)\b.{0,60}\b(required|requires|must|mandatory|days per week|days a week)\b|"
+            # ai: claude-sonnet-5 | 2026-08-02
+            # Job board "quick facts" tags often state the cadence before the
+            # location term (e.g. Welcome to the Jungle's "3+ days a week in
+            # office"), the reverse of the patterns above — catch that order too.
+            r"\d+\+?\s*days?\s*(a|per)\s*week\s*.{0,20}\b(in[\s-]office|on[\s-]site|hybrid)\b"
             r")"
         )
         return (
