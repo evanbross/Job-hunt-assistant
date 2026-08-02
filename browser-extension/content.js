@@ -1720,6 +1720,25 @@
     return scoreText && scoreText !== '0%' ? `Your match score: ${scoreText}` : '';
   }
 
+  // ai: claude-sonnet-5 | 2026-08-02
+  // The <title> "Job Title at Company Name" pattern (see below) is populated
+  // client-side and isn't guaranteed to have updated by the time we read it —
+  // job 3697 (Obsidian Security) shipped with document.title still missing
+  // the "at Company" suffix, leaving company ''. The header also renders a
+  // dedicated company link (<a href="/remote-jobs/company-<slug>" class="underline">
+  // Company Name</a>) immediately after the h1, which is present as soon as the
+  // job data itself has loaded — use it as the primary source. The same href
+  // pattern also appears on unrelated "See all jobs" links further down the
+  // page, so skip those and take the first link with non-"see all jobs" text.
+  function extractJobgetherCompanyFromLink() {
+    const links = document.querySelectorAll('a[href*="/remote-jobs/company-"]');
+    for (const link of links) {
+      const text = link.innerText.trim();
+      if (text && !/^see all jobs/i.test(text)) return text;
+    }
+    return '';
+  }
+
   // ai: claude-sonnet-5 | 2026-07-27
   // Company was previously always sent as '', leaving it entirely to the
   // server-side LLM to guess from the page body — which repeats the title and
@@ -1727,7 +1746,8 @@
   // Rocket Companies"), and occasionally swapped which line was which. Confirmed
   // live against multiple jobgether.com/offer/ postings that document.title
   // reliably follows "Job Title at Company Name" (same pattern already used for
-  // Greenhouse in buildGreenhouseJobPayload above), so use it as a structured hint.
+  // Greenhouse in buildGreenhouseJobPayload above), so use it as a fallback hint
+  // when the company link above isn't found.
   async function buildJobgetherJobPayload() {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
@@ -1736,9 +1756,9 @@
     }
 
     let title = pick(['h1[class*="title"]', 'h1', '[data-testid*="title"]']);
-    let company = '';
+    let company = extractJobgetherCompanyFromLink();
     const titleAtMatch = document.title.match(/\bat\s+(.+?)(?:\s*[-–|]|$)/i);
-    if (titleAtMatch) company = titleAtMatch[1].trim();
+    if (!company && titleAtMatch) company = titleAtMatch[1].trim();
     if (!title) {
       const docTitleMatch = document.title.match(/^(.+?)\s+at\s+/i);
       if (docTitleMatch) title = docTitleMatch[1].trim();
