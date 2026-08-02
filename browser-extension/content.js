@@ -1613,6 +1613,25 @@
     return JSON.stringify({ jobs, source: { url: location.href } });
   }
 
+  // ai: claude-sonnet-5 | 2026-08-02
+  // WTTJ periodically shows a "Did you apply?" modal (data-testid="modal",
+  // role="dialog") nagging about a completely unrelated previous job the user
+  // viewed — it renders as an overlay outside <main>/<article>, so selector-based
+  // extraction misses it, but the document.body.innerText fallback (used when no
+  // selector matches) picks up its text and prepends irrelevant company/title
+  // text ahead of the real JD, which can confuse fit scoring. Hide it for the
+  // duration of the text read (not removed — WTTJ's own JS may still reference
+  // it) rather than clicking "Yes"/"No", which would record an unintended answer.
+  function bodyTextExcludingWttjModal() {
+    const modal = document.querySelector('[data-testid="modal"], [role="dialog"]');
+    if (!modal) return document.body.innerText.trim();
+    const prevDisplay = modal.style.display;
+    modal.style.display = 'none';
+    const text = document.body.innerText.trim();
+    modal.style.display = prevDisplay;
+    return text;
+  }
+
   // ai: claude-sonnet-4-6 | 2026-06-27
   // WTTJ is a Next.js SPA. Email-link URLs (/jobs/<id>) trigger a client-side
   // redirect and async API fetch; the DOM is often not ready when content.js first
@@ -1674,7 +1693,7 @@
     // Fall back to full page text so the importer always gets enough content,
     // even when DOM selectors find nothing after the poll timeout.
     if (!descContent) {
-      descContent = document.body.innerText.trim().slice(0, 12000);
+      descContent = bodyTextExcludingWttjModal().slice(0, 12000);
     }
 
     const lines = [];
