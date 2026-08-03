@@ -73,7 +73,7 @@ from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
 from backend.import_listener import start_job_import_listener
 from backend.queue_websocket import start_queue_websocket_server
-from backend.utils import is_trusted_api_write_origin
+from backend.utils import is_trusted_api_write_origin, start_jd_health_check_scheduler
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
 try:
@@ -307,6 +307,7 @@ from routes.emails import emails_bp
 from routes.fit import fit_bp
 from routes.greenhouse import greenhouse_bp
 from routes.import_ import import_bp, queue_import_capture
+from routes.jd_health_check import jd_health_check_bp
 from routes.jobanni import jobanni_bp
 from routes.jobs import jobs_bp
 from routes.scan import scan_bp
@@ -326,6 +327,7 @@ app.register_blueprint(emails_bp, url_prefix="/api")
 app.register_blueprint(fit_bp, url_prefix="/api")
 app.register_blueprint(greenhouse_bp, url_prefix="/api")
 app.register_blueprint(import_bp, url_prefix="/api")
+app.register_blueprint(jd_health_check_bp, url_prefix="/api")
 app.register_blueprint(jobs_bp, url_prefix="/api")
 app.register_blueprint(scan_bp, url_prefix="/api")
 app.register_blueprint(settings_bp, url_prefix="/api")
@@ -600,6 +602,13 @@ if __name__ == "__main__":
     _maybe_rebuild_frontend()
     _start_vite()
     _start_celery_worker()
+    # ai: claude-sonnet-5 | 2026-08-03
+    # Needs the Celery worker started above — it submits runs via .delay().
+    # Unlike the career-site scheduler (see comment near _handle_listener_capture),
+    # this one is actually started: it's opt-in (jd_health_check_enabled defaults
+    # to False) and its poll-then-submit loop is what implements "catch up on
+    # next launch" for the JD parser health check.
+    start_jd_health_check_scheduler()
     _flask_port = int(os.environ.get("FLASK_PORT", "5004"))
     if not _port_is_free(_flask_port):
         # ai: claude-sonnet-5 | 2026-07-23

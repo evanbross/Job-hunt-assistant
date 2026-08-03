@@ -58,9 +58,19 @@ import urllib.error
 from datetime import UTC, datetime
 from typing import Any
 
+from googleapiclient.errors import HttpError
+
+import config
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.career_site_scanner import (
+    CareerSiteScanner,
+    is_job_board_url,
+    validate_board_scan,
+    validate_extraction,
+)
 from backend.celery_app import celery_app
 from backend.duplicate_checker import DuplicateChecker
+from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.import_repair import (
     post_repair_duplicate_check,
     repair_ats_url_company,
@@ -655,3 +665,148 @@ def _record_capture_source(source: dict | None, repos: dict, body: dict) -> None
     except Exception as exc:
         repos["conn"].rollback()
         logger.warning("Failed to record capture source: %s", exc)
+
+
+# ai: claude-sonnet-5 | 2026-08-03
+def _send_jd_health_check_failure_email(failure_details: list[dict[str, str]]) -> None:
+    """Best-effort failure notification. Never raises -- a send failure (not
+    configured, not authenticated, or a token missing the gmail.send scope)
+    is logged and swallowed; the health check run itself already completed
+    and was recorded regardless. Per COMMON_CODING_STANDARDS.md's OAuth
+    rule, this must never attempt to trigger auth itself from a background
+    task -- only GmailClient's documented NotAuthenticatedError/HttpError
+    are caught, so a missing-scope 403 surfaces as a log line, not a crash.
+    """
+    notify_email = str(
+        config.load_runtime_config().get("jd_health_check_notify_email") or ""
+    ).strip()
+    if not notify_email:
+        logger.info(
+            "JD health check: %d failure(s) but no notify email configured",
+            len(failure_details),
+        )
+        return
+
+    lines = [
+        f"JD parser health check found {len(failure_details)} failing target(s):",
+        "",
+    ]
+    for detail in failure_details:
+        lines.append(f"- {detail['label']} ({detail['url']}): {detail['reason']}")
+    body_text = "\n".join(lines)
+
+    try:
+        GmailClient().send_email(
+            to=notify_email,
+            subject=f"JD parser health check: {len(failure_details)} failure(s)",
+            body_text=body_text,
+        )
+    except (NotAuthenticatedError, HttpError) as exc:
+        logger.warning(
+            "JD health check: could not send failure-notification email to %s "
+            "(may need to reconnect Gmail with the gmail.send scope): %s",
+            notify_email,
+            exc,
+        )
+
+
+@celery_app.task(bind=True)
+def run_jd_health_check_task(self, triggered_by: str = "scheduled") -> dict:
+    """Run every enabled JD health check target through the real scanner,
+    record one result row per target, and email a failure notification if
+    anything failed.
+
+    Uses the same validate_extraction/validate_board_scan functions the
+    opt-in live pytest suite uses (backend/career_site_scanner.py) so what
+    counts as "the parser broke" is defined exactly once.
+    """
+    t0 = time.monotonic()
+    run_at = datetime.now(UTC).isoformat(timespec="seconds")
+
+    with get_repos() as repos:
+        targets = repos["jd_health_targets"].get_enabled()
+
+    total = len(targets)
+    logger.info(
+        "JD_HEALTH_CHECK START triggered_by=%s total_targets=%d", triggered_by, total
+    )
+    self.update_state(state="PROGRESS", meta={"total": total, "completed": 0})
+
+    passed = 0
+    failed = 0
+    failure_details: list[dict[str, str]] = []
+
+    for i, target in enumerate(targets):
+        url = str(target["url"])
+        label = str(target["label"])
+        result_row: dict[str, Any] = {
+            "run_at": run_at,
+            "target_id": target["id"],
+            "platform": target["platform"],
+            "url": url,
+            "label": label,
+            "triggered_by": triggered_by,
+        }
+
+        scanner = CareerSiteScanner()  # fresh per target so pop_failures() is unambiguous
+        job: dict[str, Any] | None = None
+        try:
+            if is_job_board_url(url):
+                outcome = scanner.scan_site(label, url)
+                check = validate_board_scan(outcome)
+                job = outcome["jobs"][0] if outcome["jobs"] else None
+            else:
+                job = scanner.scan_single_job_url(label, url)
+                check = validate_extraction(job)
+
+            scanner_failures = scanner.pop_failures()
+            ok = bool(check["ok"]) and not scanner_failures
+            if check["ok"] and scanner_failures:
+                reason = f"scanner recorded {len(scanner_failures)} failure(s): {scanner_failures}"
+            else:
+                reason = check["reason"]
+        except (ValueError, urllib.error.URLError, TimeoutError, socket.error, OSError) as exc:
+            ok = False
+            reason = str(exc)[:2000]
+        except Exception as exc:  # noqa: BLE001 - one bad target must not abort the whole run
+            ok = False
+            reason = f"unexpected error: {exc}"[:2000]
+            logger.exception(
+                "JD health check: unexpected error for target %s (%s)", label, url
+            )
+
+        result_row.update(
+            {
+                "success": 1 if ok else 0,
+                "error_message": None if ok else reason,
+                "extracted_title": job.get("job_title") if job else None,
+                "extracted_company": job.get("company") if job else None,
+                "text_length": len(job.get("job_text") or "") if job else None,
+                "confidence_level": job.get("confidence_level") if job else None,
+            }
+        )
+
+        with get_repos() as repos:
+            repos["jd_health_results"].insert(result_row)
+            repos["conn"].commit()
+
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+            failure_details.append({"label": label, "url": url, "reason": reason or ""})
+
+        self.update_state(state="PROGRESS", meta={"total": total, "completed": i + 1})
+
+    logger.info(
+        "JD_HEALTH_CHECK DONE %.1fs total=%d passed=%d failed=%d",
+        time.monotonic() - t0,
+        total,
+        passed,
+        failed,
+    )
+
+    if failure_details:
+        _send_jd_health_check_failure_email(failure_details)
+
+    return {"total": total, "passed": passed, "failed": failed}

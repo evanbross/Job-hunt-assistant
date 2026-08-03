@@ -60,7 +60,6 @@ from backend.duplicate_checker import DuplicateChecker
 from backend.fit_scorer import FitScorer
 from backend.job_validator import import_warnings_to_json, normalize_and_validate
 from backend.utils import (
-    _parse_bool,
     _parse_positive_int,
     configure_career_site_scheduler,
     db_match_for_job,
@@ -70,6 +69,7 @@ from backend.utils import (
     is_richer_description,
     jd_blocklist_match,
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
+    parse_bool,
     platform_for_site_url,
     safe_error_message,
 )
@@ -892,7 +892,7 @@ def create_career_site() -> ResponseReturnValue:
     name = (data.get("name") or "").strip()
     url = (data.get("url") or "").strip()
     try:
-        enabled = 1 if _parse_bool(data.get("enabled"), default=True) else 0
+        enabled = 1 if parse_bool(data.get("enabled"), default=True) else 0
         collection_mode = _parse_collection_mode(data.get("collection_mode"))
         recapture_interval_days = _parse_positive_int(
             data.get("recapture_interval_days"),
@@ -944,7 +944,7 @@ def update_career_site(source_id: int) -> ResponseReturnValue:
     if "enabled" in data:
         try:
             fields["enabled"] = (
-                1 if _parse_bool(data.get("enabled"), default=True) else 0
+                1 if parse_bool(data.get("enabled"), default=True) else 0
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -1124,7 +1124,7 @@ def create_career_rejection_rule() -> ResponseReturnValue:
     if not rule_text:
         return jsonify({"error": "rule_text is required"}), 400
     try:
-        enabled = 1 if _parse_bool(data.get("enabled"), default=True) else 0
+        enabled = 1 if parse_bool(data.get("enabled"), default=True) else 0
     except ValueError:
         return jsonify({"error": "enabled must be a boolean value"}), 400
 
@@ -1155,7 +1155,7 @@ def update_career_rejection_rule(rule_id: int) -> ResponseReturnValue:
     if "enabled" in data:
         try:
             fields["enabled"] = (
-                1 if _parse_bool(data.get("enabled"), default=True) else 0
+                1 if parse_bool(data.get("enabled"), default=True) else 0
             )
         except ValueError:
             return jsonify({"error": "enabled must be a boolean value"}), 400

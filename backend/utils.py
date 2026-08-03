@@ -45,7 +45,9 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from datetime import time as time_of_day  # avoid shadowing the `time` module (time.sleep) above
+from datetime import (
+    time as time_of_day,  # avoid shadowing the `time` module (time.sleep) above
+)
 from typing import Any, Generator
 from urllib.parse import (  # ai: claude-fable-5 | 2026-07-17
     parse_qs,
@@ -183,7 +185,7 @@ def maybe_mark_source_email_read(
         logger.warning("Could not mark email %s as read: %s", base_email_id, exc)
 
 
-def _parse_bool(value: object, *, default: bool) -> bool:
+def parse_bool(value: object, *, default: bool) -> bool:
     if value is None:
         return default
     if isinstance(value, bool):
