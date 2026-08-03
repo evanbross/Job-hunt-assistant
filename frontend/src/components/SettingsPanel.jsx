@@ -935,11 +935,29 @@ function JdHealthCheckSection() {
   }, []);
 
   const saveConfig = async () => {
+    const frequencyDays = parseInt(cfg?.jd_health_check_frequency_days, 10);
+    if (!Number.isFinite(frequencyDays) || frequencyDays < 1) {
+      window.alert("Frequency must be a positive number of days.");
+      return;
+    }
+
     setSaving(true);
+    // ai: claude-sonnet-5 | 2026-08-04
+    // Send only the fields this section owns, not the whole cfg object --
+    // PUT /api/config re-validates every field present in the payload, and a
+    // stale/unrelated value elsewhere in cfg (e.g. an old ollama_base_url
+    // that no longer resolves) would otherwise block saving settings that
+    // have nothing to do with it. Matches EmailSourcesSection's saveConfig,
+    // not ConfigSection's (which legitimately owns every field it sends).
     const res = await fetch("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(cfg),
+      body: JSON.stringify({
+        jd_health_check_enabled: !!cfg?.jd_health_check_enabled,
+        jd_health_check_time_utc: cfg?.jd_health_check_time_utc,
+        jd_health_check_frequency_days: frequencyDays,
+        jd_health_check_notify_email: cfg?.jd_health_check_notify_email || "",
+      }),
     });
     const data = await res.json();
     setSaving(false);
