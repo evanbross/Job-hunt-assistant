@@ -48,6 +48,7 @@ import base64
 import logging
 import re
 from dataclasses import dataclass
+from email.message import EmailMessage
 from html.parser import HTMLParser
 from typing import Any
 
@@ -278,6 +279,37 @@ class GmailClient:
             .execute()
         )
         return created_label["id"]
+
+    # ── Message sending ───────────────────────────────────────────────────────
+
+    # ai: claude-sonnet-5 | 2026-08-03
+    def send_email(self, *, to: str, subject: str, body_text: str) -> str:
+        """Send a plain-text email via the Gmail API. Returns the sent message id.
+
+        Requires the gmail.send scope (config.GMAIL_SCOPES). A token issued
+        before that scope was added will fail here with an HttpError (403,
+        insufficient permission) until the user re-authenticates via
+        /api/auth/google — this method never attempts to fix that itself; per
+        this file's own rule, interactive auth only happens in the dedicated
+        auth endpoints, never from a background caller like the JD health
+        check's failure-notification path.
+        """
+        message = EmailMessage()
+        message["To"] = to
+        message["Subject"] = subject
+        message.set_content(body_text)
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+        try:
+            result = (
+                self._service.users()
+                .messages()
+                .send(userId="me", body={"raw": raw})
+                .execute()
+            )
+        except HttpError as exc:
+            logger.error("Gmail send error to %s: %s", to, exc)
+            raise
+        return result["id"]
 
     # ── Message parsing helpers ───────────────────────────────────────────────
 

@@ -35,12 +35,26 @@
 from __future__ import annotations
 
 import base64
+from unittest.mock import MagicMock, patch
+
+import pytest
+from googleapiclient.errors import HttpError
 
 from backend.email_source_filters import (
     build_gmail_source_query,
     email_matches_source_filters,
 )
 from backend.gmail_client import GmailClient
+
+
+def _client_with_mocked_service() -> tuple[GmailClient, MagicMock]:
+    """A GmailClient whose constructor never touches disk/network — __init__
+    eagerly calls _build_service(), so that's what gets patched, following
+    this file's OAuth-never-triggered-from-code design (see GmailClient's
+    module docstring)."""
+    with patch.object(GmailClient, "_build_service", return_value=MagicMock()):
+        client = GmailClient()
+    return client, client._service
 
 
 def test_source_query_combines_sender_and_subject_filter() -> None:
@@ -136,3 +150,37 @@ def test_extract_text_preserves_html_anchor_urls() -> None:
         "View job: https://www.welcometothejungle.com/en/companies/"
         "acme-health/jobs/senior-backend-engineer_remote"
     ) in body
+
+
+# ai: claude-sonnet-5 | 2026-08-03
+def test_send_email_builds_raw_message_and_returns_id() -> None:
+    client, service = _client_with_mocked_service()
+    service.users.return_value.messages.return_value.send.return_value.execute.return_value = {
+        "id": "abc123"
+    }
+
+    message_id = client.send_email(
+        to="evan@eross.com", subject="JD health check failed", body_text="2 of 4 targets failed."
+    )
+
+    assert message_id == "abc123"
+    send_call = service.users.return_value.messages.return_value.send
+    send_call.assert_called_once()
+    _, kwargs = send_call.call_args
+    assert kwargs["userId"] == "me"
+    raw = kwargs["body"]["raw"]
+    decoded = base64.urlsafe_b64decode(raw).decode("utf-8")
+    assert "To: evan@eross.com" in decoded
+    assert "Subject: JD health check failed" in decoded
+    assert "2 of 4 targets failed." in decoded
+
+
+def test_send_email_propagates_http_error_unchanged() -> None:
+    client, service = _client_with_mocked_service()
+    http_error = HttpError(resp=MagicMock(status=403), content=b'{"error": "insufficient scope"}')
+    service.users.return_value.messages.return_value.send.return_value.execute.side_effect = (
+        http_error
+    )
+
+    with pytest.raises(HttpError):
+        client.send_email(to="evan@eross.com", subject="x", body_text="y")

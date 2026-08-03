@@ -126,10 +126,19 @@ GOOGLE_TOKEN_FILE: Path = CREDENTIALS_DIR / "token.json"
 # While True, OAuth scopes are read-only and all write methods are no-ops.
 READ_ONLY_MODE: bool = False
 
+# ai: claude-sonnet-5 | 2026-08-03
+# gmail.send added for the JD health check's failure-notification email
+# (GmailClient.send_email). Existing users must re-consent via
+# /api/auth/disconnect + /api/auth/google — a stored token issued before this
+# change won't carry the new scope until then (see routes/auth.py's
+# has_send_scope check, which surfaces that state to the Settings UI).
 GMAIL_SCOPES: list[str] = (
     ["https://www.googleapis.com/auth/gmail.readonly"]
     if READ_ONLY_MODE
-    else ["https://www.googleapis.com/auth/gmail.modify"]
+    else [
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.send",
+    ]
 )
 GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:5004/api/auth/google/callback"
 
@@ -185,6 +194,21 @@ DEFAULT_JOB_IMPORT_LISTENER_WS_PORT_OVERRIDE: int | None = (
     else None
 )
 DEFAULT_CANDIDATE_TIMEZONE: str = os.getenv("CANDIDATE_TIMEZONE", "")
+
+# ai: claude-sonnet-5 | 2026-08-03
+# JD parser health check: hits real job-board URLs on a schedule to catch
+# scraper drift (see backend/tasks.py's run_jd_health_check_task). Opt-in —
+# off by default since it makes real outbound requests to third-party sites.
+# Time is UTC-only (not the candidate's local timezone) to sidestep DST
+# entirely, per PYTHON_STANDARDS.md's UTC-only rule.
+DEFAULT_JD_HEALTH_CHECK_ENABLED: bool = os.getenv(
+    "JD_HEALTH_CHECK_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+DEFAULT_JD_HEALTH_CHECK_TIME_UTC: str = os.getenv("JD_HEALTH_CHECK_TIME_UTC", "03:00")
+DEFAULT_JD_HEALTH_CHECK_FREQUENCY_DAYS: int = int(
+    os.getenv("JD_HEALTH_CHECK_FREQUENCY_DAYS", "1")
+)
+DEFAULT_JD_HEALTH_CHECK_NOTIFY_EMAIL: str = os.getenv("JD_HEALTH_CHECK_NOTIFY_EMAIL", "")
 
 # ai: claude-sonnet-4-6 | 2026-06-10
 # Default cover letter prompt template, written to DEFAULT_COVER_LETTER_PROMPT_PATH
@@ -332,6 +356,21 @@ def load_runtime_config() -> dict[str, Any]:
                     "candidate_timezone": raw_cfg.get(
                         "candidate_timezone", DEFAULT_CANDIDATE_TIMEZONE
                     ),
+                    "jd_health_check_enabled": _config_bool(
+                        raw_cfg.get("jd_health_check_enabled"),
+                        DEFAULT_JD_HEALTH_CHECK_ENABLED,
+                    ),
+                    "jd_health_check_time_utc": raw_cfg.get(
+                        "jd_health_check_time_utc", DEFAULT_JD_HEALTH_CHECK_TIME_UTC
+                    ),
+                    "jd_health_check_frequency_days": raw_cfg.get(
+                        "jd_health_check_frequency_days",
+                        DEFAULT_JD_HEALTH_CHECK_FREQUENCY_DAYS,
+                    ),
+                    "jd_health_check_notify_email": raw_cfg.get(
+                        "jd_health_check_notify_email",
+                        DEFAULT_JD_HEALTH_CHECK_NOTIFY_EMAIL,
+                    ),
                 }
         except (json.JSONDecodeError, OSError):
             pass
@@ -351,6 +390,10 @@ def load_runtime_config() -> dict[str, Any]:
         "job_import_listener_token": DEFAULT_JOB_IMPORT_LISTENER_TOKEN,
         "job_import_listener_max_bytes": DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
         "candidate_timezone": DEFAULT_CANDIDATE_TIMEZONE,
+        "jd_health_check_enabled": DEFAULT_JD_HEALTH_CHECK_ENABLED,
+        "jd_health_check_time_utc": DEFAULT_JD_HEALTH_CHECK_TIME_UTC,
+        "jd_health_check_frequency_days": DEFAULT_JD_HEALTH_CHECK_FREQUENCY_DAYS,
+        "jd_health_check_notify_email": DEFAULT_JD_HEALTH_CHECK_NOTIFY_EMAIL,
     }
 
 
