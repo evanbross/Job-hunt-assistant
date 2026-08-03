@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
@@ -200,6 +201,46 @@ def update_config() -> ResponseReturnValue:
                 400,
             )
         cfg["job_import_listener_max_bytes"] = max_bytes
+
+    if "jd_health_check_enabled" in data:
+        try:
+            cfg["jd_health_check_enabled"] = _parse_bool_setting(
+                data.get("jd_health_check_enabled")
+            )
+        except ValueError:
+            return jsonify({"error": "jd_health_check_enabled must be a boolean"}), 400
+
+    if "jd_health_check_time_utc" in data:
+        time_utc = str(data.get("jd_health_check_time_utc") or "").strip()
+        if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", time_utc):
+            return (
+                jsonify(
+                    {"error": "jd_health_check_time_utc must be in HH:MM 24-hour format"}
+                ),
+                400,
+            )
+        cfg["jd_health_check_time_utc"] = time_utc
+
+    if "jd_health_check_frequency_days" in data:
+        try:
+            frequency_days = int(data.get("jd_health_check_frequency_days") or 0)
+        except (TypeError, ValueError):
+            return (
+                jsonify({"error": "jd_health_check_frequency_days must be a number"}),
+                400,
+            )
+        if frequency_days < 1:
+            return (
+                jsonify({"error": "jd_health_check_frequency_days must be at least 1"}),
+                400,
+            )
+        cfg["jd_health_check_frequency_days"] = frequency_days
+
+    if "jd_health_check_notify_email" in data:
+        notify_email = str(data.get("jd_health_check_notify_email") or "").strip()
+        if notify_email and "@" not in notify_email:
+            return jsonify({"error": "jd_health_check_notify_email is not a valid email"}), 400
+        cfg["jd_health_check_notify_email"] = notify_email
 
     config.save_runtime_config(cfg)
 
