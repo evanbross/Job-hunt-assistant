@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
@@ -59,6 +60,37 @@ from backend.utils import (
 logger = logging.getLogger(__name__)
 
 jd_health_check_bp = Blueprint("jd_health_check", __name__)
+
+
+# ai: claude-sonnet-5 | 2026-08-03
+# ─── JD health-check run state (in-memory, protected by a lock) ───────────────
+# Tracks the most recently dispatched Celery task id so manual triggers (from
+# any browser tab) and the scheduled "catch up on next launch" run never
+# overlap. The actual running/finished state lives in Celery's Redis result
+# backend, not here — this just remembers which task id to check.
+
+_jd_health_run_lock = threading.Lock()
+_jd_health_last_task_id: str | None = None
+_JD_HEALTH_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
+
+
+def _submit_jd_health_check_run(triggered_by: str) -> str | None:
+    """Submit a JD health check run unless one is already in progress.
+
+    Returns the new task id, or None if a run was already active (the
+    caller should treat None as "rejected, one is already running").
+    """
+    global _jd_health_last_task_id
+    with _jd_health_run_lock:
+        if (
+            _jd_health_last_task_id is not None
+            and AsyncResult(_jd_health_last_task_id, app=celery_app).state
+            in _JD_HEALTH_ACTIVE_STATES
+        ):
+            return None
+        task = run_jd_health_check_task.delay(triggered_by=triggered_by)
+        _jd_health_last_task_id = task.id
+        return task.id
 
 
 @jd_health_check_bp.route("/jd-health-check/targets")
@@ -163,8 +195,11 @@ def get_jd_health_check_results() -> ResponseReturnValue:
 
 @jd_health_check_bp.route("/jd-health-check/run", methods=["POST"])
 def trigger_jd_health_check_run() -> ResponseReturnValue:
-    task = run_jd_health_check_task.delay(triggered_by="manual")
-    return jsonify({"status": "started", "task_id": task.id}), 202
+    # ai: claude-sonnet-5 | 2026-08-03
+    task_id = _submit_jd_health_check_run("manual")
+    if task_id is None:
+        return jsonify({"error": "A JD health check run is already in progress"}), 409
+    return jsonify({"status": "started", "task_id": task_id}), 202
 
 
 @jd_health_check_bp.route("/jd-health-check/run/<task_id>/status")
@@ -184,10 +219,10 @@ def jd_health_check_run_status(task_id: str) -> ResponseReturnValue:
 # Wires the "catch up on next launch" scheduler thread (backend/utils.py) to
 # this task, matching the DI pattern already used for the (never-started)
 # career-site scheduler in routes/career_sites.py. Actually starting the
-# thread happens in app.py, after the Celery worker is up.
+# thread happens in app.py, after the Celery worker is up. Routed through
+# _submit_jd_health_check_run so a scheduled tick can never fire on top of
+# a manual "Run Now" (or another scheduled tick) that's still in progress.
 configure_jd_health_check_scheduler(
     should_run_now=jd_health_check_should_run_now,
-    submit_run=lambda triggered_by: run_jd_health_check_task.delay(
-        triggered_by=triggered_by
-    ),
+    submit_run=_submit_jd_health_check_run,
 )

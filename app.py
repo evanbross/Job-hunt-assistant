@@ -602,13 +602,6 @@ if __name__ == "__main__":
     _maybe_rebuild_frontend()
     _start_vite()
     _start_celery_worker()
-    # ai: claude-sonnet-5 | 2026-08-03
-    # Needs the Celery worker started above — it submits runs via .delay().
-    # Unlike the career-site scheduler (see comment near _handle_listener_capture),
-    # this one is actually started: it's opt-in (jd_health_check_enabled defaults
-    # to False) and its poll-then-submit loop is what implements "catch up on
-    # next launch" for the JD parser health check.
-    start_jd_health_check_scheduler()
     _flask_port = int(os.environ.get("FLASK_PORT", "5004"))
     if not _port_is_free(_flask_port):
         # ai: claude-sonnet-5 | 2026-07-23
@@ -626,6 +619,17 @@ if __name__ == "__main__":
             _flask_port,
         )
         sys.exit(1)
+    # ai: claude-sonnet-5 | 2026-08-03
+    # Started only after the port fail-fast check above: the scheduler's poll
+    # loop checks-then-submits immediately on thread start, so starting it
+    # earlier could fire a real outbound parser check (and possible Gmail
+    # notification) moments before the process exits for an occupied port.
+    # Needs the Celery worker started above — it submits runs via .delay().
+    # Unlike the career-site scheduler (see comment near _handle_listener_capture),
+    # this one is actually started: it's opt-in (jd_health_check_enabled defaults
+    # to False) and its poll-then-submit loop is what implements "catch up on
+    # next launch" for the JD parser health check.
+    start_jd_health_check_scheduler()
     # ai: claude-sonnet-5 | 2026-07-31
     if _caddy_registry is not None:
         if _caddy_registry.register("jha", _flask_port):

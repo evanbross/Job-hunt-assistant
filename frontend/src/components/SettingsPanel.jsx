@@ -1050,6 +1050,7 @@ function JdHealthCheckSection() {
   };
 
   const runNow = async () => {
+    if (running) return;
     setRunning(true);
     const res = await fetch("/api/jd-health-check/run", { method: "POST" });
     const data = await res.json();
@@ -1069,7 +1070,7 @@ function JdHealthCheckSection() {
     <div>
       <SectionHeader
         title="JD Parser Health Check"
-        action={{ label: running ? "Running…" : "Run Now", onClick: runNow }}
+        action={{ label: running ? "Running…" : "Run Now", onClick: runNow, disabled: running }}
       />
       <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
         Periodically re-checks a small set of real, live job-board URLs to catch when a site
@@ -2044,7 +2045,12 @@ function SectionHeader({ title, action }) {
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
       <h2 style={{ fontSize: "16px", fontWeight: "700" }}>{title}</h2>
       {action && (
-        <button className="btn-primary" style={{ padding: "6px 14px" }} onClick={action.onClick}>
+        <button
+          className="btn-primary"
+          style={{ padding: "6px 14px" }}
+          onClick={action.onClick}
+          disabled={!!action.disabled} // ai: claude-sonnet-5 | 2026-08-03
+        >
           {action.label}
         </button>
       )}

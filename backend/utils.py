@@ -515,6 +515,13 @@ def jd_health_check_should_run_now() -> bool:
     frequency_days = int(cfg.get("jd_health_check_frequency_days") or 1)
 
     with get_repos() as repos:
+        # ai: claude-sonnet-5 | 2026-08-03
+        # A run with zero enabled targets never writes a jd_health_results row
+        # (see run_jd_health_check_task), so last_run_at would stay None forever
+        # and this function would keep reporting "overdue" on every poll --
+        # submitting a new no-op Celery task every 15 minutes indefinitely.
+        if not repos["jd_health_targets"].get_enabled():
+            return False
         last_run_at_raw = repos["jd_health_results"].get_last_run_at()
 
     last_run_at = None
@@ -535,14 +542,14 @@ def jd_health_check_should_run_now() -> bool:
 _jd_health_scheduler_lock = threading.Lock()
 _jd_health_scheduler_started = False
 _jd_health_scheduler_should_run_now: Callable[[], bool] | None = None
-_jd_health_scheduler_submit_run: Callable[[str], None] | None = None
+_jd_health_scheduler_submit_run: Callable[[str], str | None] | None = None
 _JD_HEALTH_CHECK_POLL_SECONDS = 15 * 60
 
 
 def configure_jd_health_check_scheduler(
     *,
     should_run_now: Callable[[], bool],
-    submit_run: Callable[[str], None],
+    submit_run: Callable[[str], str | None],
 ) -> None:
     global _jd_health_scheduler_should_run_now, _jd_health_scheduler_submit_run
     _jd_health_scheduler_should_run_now = should_run_now
