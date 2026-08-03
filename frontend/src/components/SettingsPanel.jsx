@@ -49,6 +49,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
     { id: "sources", label: "Email" },
     { id: "email_subject_rules", label: "Email Subject Rules" },
     { id: "career_sites", label: "Career Sites" },
+    { id: "jd_health_check", label: "JD Parser Health Check" },
     { id: "import_listener", label: "Import Listener" },
     { id: "fetch_queue", label: "Fetch Queue" },
     { id: "penalties", label: "Scoring Rules" },
@@ -80,6 +81,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
         {activeSection === "sources" && <EmailSourcesSection />}
         {activeSection === "email_subject_rules" && <EmailSubjectRulesSection />}
         {activeSection === "career_sites" && <CareerSitesSection />}
+        {activeSection === "jd_health_check" && <JdHealthCheckSection />}
         {activeSection === "import_listener" && <ImportListenerSection />}
         {activeSection === "fetch_queue" && <FetchQueueSection />}
         {activeSection === "penalties" && <PenaltiesSection />}
@@ -869,6 +871,338 @@ function CareerSitesSection() {
               </td>
             </tr>
           ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── JD Parser Health Check ───────────────────────────────────────────────────
+
+const JD_HEALTH_CHECK_PLATFORMS = [
+  { value: "greenhouse", label: "Greenhouse" },
+  { value: "ashby", label: "Ashby" },
+  { value: "wttj", label: "Welcome to the Jungle" },
+  { value: "linkedin", label: "LinkedIn" },
+  { value: "workday", label: "Workday" },
+  { value: "generic", label: "Generic" },
+];
+
+const EMPTY_JD_TARGET_FORM = { platform: "greenhouse", label: "", url: "", enabled: true };
+
+// ai: claude-sonnet-5 | 2026-08-03
+function JdHealthCheckSection() {
+  const [cfg, setCfg] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [authStatus, setAuthStatus] = useState(null);
+  const [targets, setTargets] = useState([]);
+  const [results, setResults] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState(EMPTY_JD_TARGET_FORM);
+  const [editId, setEditId] = useState(null);
+  const [running, setRunning] = useState(false);
+  const runPollRef = useRef(null);
+
+  const fetchConfig = async () => {
+    const res = await fetch("/api/config");
+    setCfg(await res.json());
+  };
+
+  const fetchAuthStatus = async () => {
+    const res = await fetch("/api/auth/status");
+    setAuthStatus(await res.json());
+  };
+
+  const fetchTargets = async () => {
+    const res = await fetch("/api/jd-health-check/targets");
+    const data = await res.json();
+    setTargets(Array.isArray(data) ? data : []);
+  };
+
+  const fetchResults = async () => {
+    const res = await fetch("/api/jd-health-check/results?limit=50");
+    const data = await res.json();
+    setResults(Array.isArray(data) ? data : []);
+  };
+
+  useEffect(() => {
+    fetchConfig();
+    fetchAuthStatus();
+    fetchTargets();
+    fetchResults();
+    return () => clearInterval(runPollRef.current);
+  }, []);
+
+  const saveConfig = async () => {
+    setSaving(true);
+    const res = await fetch("/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg),
+    });
+    const data = await res.json();
+    setSaving(false);
+    if (!res.ok) {
+      window.alert(data.error || "Failed to save configuration");
+      return;
+    }
+    setCfg(data);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  };
+
+  const reconnectGmail = async () => {
+    const res = await fetch("/api/auth/google");
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      window.alert(data.error || "Failed to start Gmail auth");
+      return;
+    }
+    window.location.href = data.auth_url;
+  };
+
+  const closeForm = () => { setShowForm(false); setEditId(null); setForm(EMPTY_JD_TARGET_FORM); };
+
+  const startEdit = (target) => {
+    setEditId(target.id);
+    setForm({
+      platform: target.platform,
+      label: target.label,
+      url: target.url,
+      enabled: !!target.enabled,
+    });
+    setShowForm(true);
+  };
+
+  const submitForm = async () => {
+    if (!form.label || !form.url) return;
+    const url = editId ? `/api/jd-health-check/targets/${editId}` : "/api/jd-health-check/targets";
+    const res = await fetch(url, {
+      method: editId ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      window.alert(data.error || `Save failed (${res.status})`);
+      return;
+    }
+    closeForm();
+    await fetchTargets();
+  };
+
+  const toggleEnabled = async (target) => {
+    const res = await fetch(`/api/jd-health-check/targets/${target.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !target.enabled }),
+    });
+    if (!res.ok) {
+      window.alert(`Save failed (${res.status})`);
+      return;
+    }
+    await fetchTargets();
+  };
+
+  const deleteTarget = async (id) => {
+    if (!window.confirm("Delete this canary target?")) return;
+    const res = await fetch(`/api/jd-health-check/targets/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      window.alert(`Delete failed (${res.status})`);
+      return;
+    }
+    await fetchTargets();
+  };
+
+  const pollRunStatus = (taskId) => {
+    clearInterval(runPollRef.current);
+    runPollRef.current = setInterval(async () => {
+      const res = await fetch(`/api/jd-health-check/run/${taskId}/status`);
+      const data = await res.json();
+      if (data.state === "SUCCESS" || data.state === "FAILURE") {
+        clearInterval(runPollRef.current);
+        setRunning(false);
+        await fetchResults();
+        if (data.state === "FAILURE") {
+          window.alert(`Health check run failed: ${data.error || "unknown error"}`);
+        }
+      }
+    }, 2000);
+  };
+
+  const runNow = async () => {
+    setRunning(true);
+    const res = await fetch("/api/jd-health-check/run", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) {
+      setRunning(false);
+      window.alert(data.error || `Failed to start run (${res.status})`);
+      return;
+    }
+    pollRunStatus(data.task_id);
+  };
+
+  if (!cfg) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+
+  const needsGmailReconnect = authStatus?.authenticated && !authStatus?.has_send_scope;
+
+  return (
+    <div>
+      <SectionHeader
+        title="JD Parser Health Check"
+        action={{ label: running ? "Running…" : "Run Now", onClick: runNow }}
+      />
+      <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
+        Periodically re-checks a small set of real, live job-board URLs to catch when a site
+        changes its page format and silently breaks the parser — mocked tests can't detect that.
+        Only runs while the app is open; a run overdue from when the app was closed fires as soon
+        as it's next opened.
+      </p>
+
+      {needsGmailReconnect && (
+        <div style={{ ...configNoticeStyle, background: "rgba(217,164,6,0.1)", border: "1px solid rgba(217,164,6,0.3)", color: "var(--yellow, #d9a406)" }}>
+          Gmail is connected but needs an additional permission to send the failure-notification
+          email.{" "}
+          <button className="btn-secondary" style={{ padding: "2px 8px", fontSize: "11px" }} onClick={reconnectGmail}>
+            Reconnect Gmail
+          </button>
+        </div>
+      )}
+
+      <div style={{ ...formGrid, maxWidth: "640px", marginTop: needsGmailReconnect ? "14px" : 0 }}>
+        <label style={labelStyle}>
+          Enabled
+          <Toggle checked={!!cfg.jd_health_check_enabled} onChange={() => setCfg({ ...cfg, jd_health_check_enabled: !cfg.jd_health_check_enabled })} />
+        </label>
+        <label style={labelStyle}>
+          Run Time (UTC)
+          <input
+            value={cfg.jd_health_check_time_utc || "03:00"}
+            onChange={(e) => setCfg({ ...cfg, jd_health_check_time_utc: e.target.value })}
+            placeholder="03:00"
+          />
+          <span style={helpTextStyle}>24-hour HH:MM, UTC (not your local time).</span>
+        </label>
+        <label style={labelStyle}>
+          Frequency (days)
+          <input
+            type="number"
+            min="1"
+            value={cfg.jd_health_check_frequency_days ?? 1}
+            onChange={(e) => setCfg({ ...cfg, jd_health_check_frequency_days: e.target.value })}
+          />
+        </label>
+        <label style={labelStyle}>
+          Notify Email
+          <input
+            value={cfg.jd_health_check_notify_email || ""}
+            onChange={(e) => setCfg({ ...cfg, jd_health_check_notify_email: e.target.value })}
+            placeholder="you@example.com"
+          />
+          <span style={helpTextStyle}>Sent only when a run has at least one failing target.</span>
+        </label>
+      </div>
+      <button className="btn-primary" style={{ marginTop: "12px" }} onClick={saveConfig} disabled={saving}>
+        {saving ? "Saving…" : "Save"}
+      </button>
+      {saved && <div style={configNoticeStyle}>Saved.</div>}
+
+      <h3 style={{ ...sectionSubheadingStyle, marginTop: "28px" }}>Canary Targets</h3>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
+        <button className="btn-secondary" onClick={() => { setEditId(null); setForm(EMPTY_JD_TARGET_FORM); setShowForm(true); }}>
+          Add Target
+        </button>
+      </div>
+
+      {showForm && (
+        <Modal
+          title={editId ? "Edit Target" : "Add Target"}
+          onClose={closeForm}
+          maxWidth="520px"
+          footer={
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button className="btn-primary" onClick={submitForm}>{editId ? "Save" : "Add"}</button>
+              <button className="btn-secondary" onClick={closeForm}>Cancel</button>
+            </div>
+          }
+        >
+          <div style={formGrid}>
+            <label style={labelStyle}>Platform
+              <select value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value })}>
+                {JD_HEALTH_CHECK_PLATFORMS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
+            </label>
+            <label style={labelStyle}>Label
+              <input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="Acme (Greenhouse board)" autoFocus />
+            </label>
+            <label style={labelStyle}>URL
+              <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="https://job-boards.greenhouse.io/acme" />
+            </label>
+          </div>
+        </Modal>
+      )}
+
+      <table style={tableStyle}>
+        <thead>
+          <tr>
+            <th style={thStyle}>Platform</th>
+            <th style={thStyle}>Label</th>
+            <th style={thStyle}>URL</th>
+            <th style={thStyle}>Enabled</th>
+            <th style={thStyle}>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {targets.map((t) => (
+            <tr key={t.id}>
+              <td style={tdStyle}>{t.platform}</td>
+              <td style={tdStyle}>{t.label}</td>
+              <td style={{ ...tdStyle, maxWidth: "280px" }}>
+                <div style={{ overflowX: "auto", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: "12px" }}>{t.url}</div>
+              </td>
+              <td style={tdStyle}><Toggle checked={!!t.enabled} onChange={() => toggleEnabled(t)} /></td>
+              <td style={tdStyle}>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <button className="btn-secondary" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={() => startEdit(t)}>Edit</button>
+                  <button className="btn-danger" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={() => deleteTarget(t.id)}>Delete</button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h3 style={{ ...sectionSubheadingStyle, marginTop: "28px" }}>Recent Runs</h3>
+      <table style={tableStyle}>
+        <thead>
+          <tr>
+            <th style={thStyle}>Run At (UTC)</th>
+            <th style={thStyle}>Platform</th>
+            <th style={thStyle}>Label</th>
+            <th style={thStyle}>Result</th>
+            <th style={thStyle}>Error</th>
+            <th style={thStyle}>Triggered By</th>
+          </tr>
+        </thead>
+        <tbody>
+          {results.map((r) => (
+            <tr key={r.id}>
+              <td style={tdStyle}>{r.run_at}</td>
+              <td style={tdStyle}>{r.platform}</td>
+              <td style={tdStyle}>{r.label}</td>
+              <td style={{ ...tdStyle, color: r.success ? "var(--green)" : "var(--red, #d9534f)" }}>
+                {r.success ? "✓ Pass" : "✗ Fail"}
+              </td>
+              <td style={{ ...tdStyle, fontSize: "12px", color: "var(--text-muted)" }}>{r.error_message || "—"}</td>
+              <td style={tdStyle}>{r.triggered_by}</td>
+            </tr>
+          ))}
+          {results.length === 0 && (
+            <tr><td style={tdStyle} colSpan={6}>No runs yet.</td></tr>
+          )}
         </tbody>
       </table>
     </div>
