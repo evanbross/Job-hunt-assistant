@@ -44,6 +44,10 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["tmp", ".venv", "frontend"]
+markers = [
+    "live: hits real, currently-live external job-board URLs over the network. Never runs in CI or a bare `pytest` invocation — opt in explicitly with `RUN_LIVE_JD_TESTS=1 pytest -m live`.",
+]
+addopts = "-m \"not live\""
 
 [tool.ruff]
 target-version = "py313"
