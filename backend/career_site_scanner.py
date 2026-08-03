@@ -801,6 +801,32 @@ def validate_extraction(job: CareerSiteJob) -> ExtractionCheck:
     return ExtractionCheck(ok=True, reason=None)
 
 
+# ai: claude-sonnet-5 | 2026-08-03
+def validate_board_scan(outcome: ScanOutcome) -> ExtractionCheck:
+    """Health check for a board/listing-page scan (CareerSiteScanner.scan_site).
+
+    Confirmed live against jobs.ashbyhq.com/evenup: board scans intentionally
+    return lightweight per-job summaries (title + location/workplace, not the
+    full description a single-job scan fetches) — validate_extraction's
+    full-JD text-length bar doesn't apply here. Success means "found real
+    listings," not "found a full description."
+    """
+    jobs = outcome.get("jobs") or []
+    if not jobs:
+        return ExtractionCheck(ok=False, reason="no jobs found on board")
+
+    real_titles = [
+        j for j in jobs if (j.get("job_title") or "").strip() not in ("", "Untitled Job")
+    ]
+    if not real_titles:
+        return ExtractionCheck(ok=False, reason="no job on the board has a real title")
+
+    if all(j.get("confidence_level") == "low" for j in jobs):
+        return ExtractionCheck(ok=False, reason="every job on the board scored low confidence")
+
+    return ExtractionCheck(ok=True, reason=None)
+
+
 class CareerSiteScanner:
     """Scans configured career pages and yields normalized job records."""
 

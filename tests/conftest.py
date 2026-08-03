@@ -77,6 +77,8 @@ _ALL_TABLES = (
     "career_scan_failures",
     "career_rejection_rules",
     "career_site_sources",
+    "jd_health_check_results",
+    "jd_health_check_targets",
     "scanned_emails",
     "relevance_feedback",
     "jobs",

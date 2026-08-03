@@ -41,6 +41,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from backend.jd_health_check_targets import LIVE_CANARY_TARGETS
+
 # ─── Seed data ────────────────────────────────────────────────────────────────
 
 # (key, label, sort_order, ghost_eligible, is_terminal)
@@ -578,6 +580,41 @@ def _create_tables(conn: Any) -> None:
             ON career_scan_failures (occurred_at DESC)
         """,
         """
+        CREATE TABLE IF NOT EXISTS jd_health_check_targets (
+            id         SERIAL PRIMARY KEY,
+            platform   TEXT NOT NULL,
+            label      TEXT NOT NULL,
+            url        TEXT NOT NULL,
+            enabled    INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS jd_health_check_results (
+            id                SERIAL PRIMARY KEY,
+            run_at            TEXT NOT NULL,
+            target_id         INTEGER REFERENCES jd_health_check_targets(id) ON DELETE SET NULL,
+            platform          TEXT NOT NULL,
+            url               TEXT NOT NULL,
+            label             TEXT NOT NULL,
+            success           INTEGER NOT NULL,
+            error_message     TEXT,
+            extracted_title   TEXT,
+            extracted_company TEXT,
+            text_length       INTEGER,
+            confidence_level  TEXT,
+            triggered_by      TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_jd_health_check_results_run_at
+            ON jd_health_check_results (run_at DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_jd_health_check_results_target
+            ON jd_health_check_results (target_id, run_at DESC)
+        """,
+        """
         CREATE TABLE IF NOT EXISTS career_rejection_rules (
             id         SERIAL PRIMARY KEY,
             rule_text  TEXT NOT NULL,
@@ -706,5 +743,12 @@ def _seed_data(conn: Any) -> None:
         """,
         _SEED_STAGE_STATUSES,
     )
+
+    cur.execute("SELECT COUNT(*) AS cnt FROM jd_health_check_targets")
+    if cur.fetchone()["cnt"] == 0:
+        cur.executemany(
+            "INSERT INTO jd_health_check_targets (platform, label, url) VALUES (%s, %s, %s)",
+            [(t["platform"], t["label"], t["url"]) for t in LIVE_CANARY_TARGETS],
+        )
 
     conn.commit()

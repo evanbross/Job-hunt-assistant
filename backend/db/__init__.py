@@ -68,6 +68,8 @@ from .interfaces import (
     IEmailSourceRepository,
     IEmailSubjectRuleRepository,
     IImportRepairHistoryRepository,
+    IJdHealthCheckResultRepository,
+    IJdHealthCheckTargetRepository,
     IJobRepository,
     IJobStatusHistoryRepository,
     IPenaltyRuleRepository,
@@ -94,6 +96,8 @@ from .repositories.contacts import PostgresContactRepository
 from .repositories.email_sources import PostgresEmailSourceRepository
 from .repositories.email_subject_rules import PostgresEmailSubjectRuleRepository
 from .repositories.import_repair_history import PostgresImportRepairHistoryRepository
+from .repositories.jd_health_check_results import PostgresJdHealthCheckResultRepository
+from .repositories.jd_health_check_targets import PostgresJdHealthCheckTargetRepository
 from .repositories.job_status_history import PostgresJobStatusHistoryRepository
 from .repositories.jobs import PostgresJobRepository
 from .repositories.penalty_rules import PostgresPenaltyRuleRepository
@@ -114,6 +118,8 @@ __all__ = [
     "IEmailSourceRepository",
     "IEmailSubjectRuleRepository",
     "IImportRepairHistoryRepository",
+    "IJdHealthCheckResultRepository",
+    "IJdHealthCheckTargetRepository",
     "IJobRepository",
     "IJobStatusHistoryRepository",
     "IPenaltyRuleRepository",
@@ -134,6 +140,8 @@ __all__ = [
     "PostgresEmailSourceRepository",
     "PostgresEmailSubjectRuleRepository",
     "PostgresImportRepairHistoryRepository",
+    "PostgresJdHealthCheckResultRepository",
+    "PostgresJdHealthCheckTargetRepository",
     "PostgresJobRepository",
     "PostgresJobStatusHistoryRepository",
     "PostgresPenaltyRuleRepository",
@@ -286,4 +294,6 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "browser_capture_queue": PostgresBrowserCaptureQueueRepository(conn),
         "import_repair_history": PostgresImportRepairHistoryRepository(conn),
         "contacts": PostgresContactRepository(conn),
+        "jd_health_targets": PostgresJdHealthCheckTargetRepository(conn),
+        "jd_health_results": PostgresJdHealthCheckResultRepository(conn),
     }

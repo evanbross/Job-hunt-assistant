@@ -38,7 +38,9 @@ from urllib.parse import urlparse
 import pytest
 
 from backend.career_site_scanner import (
+    CareerSiteJob,
     CareerSiteScanner,
+    ScanOutcome,
     _detect_embedded_ashby_base_url,
     _extract_json_array_by_key,
     _extract_offsite_apply_url,
@@ -54,6 +56,8 @@ from backend.career_site_scanner import (
     _workday_single_job_parts,
     _wttj_ats_url_from_html,
     is_job_board_url,
+    validate_board_scan,
+    validate_extraction,
 )
 
 
@@ -588,3 +592,81 @@ def test_scan_single_job_url_falls_back_when_wttj_has_no_ats_url() -> None:
         )
 
     generic_parser.assert_called_once()
+
+
+# ai: claude-sonnet-5 | 2026-08-03
+def _job(**overrides: object) -> CareerSiteJob:
+    job: dict[str, object] = {
+        "site_name": "Acme",
+        "site_url": "https://job-boards.greenhouse.io/acme",
+        "job_title": "Senior Engineer",
+        "job_url": "https://job-boards.greenhouse.io/acme/jobs/1",
+        "job_text": "x" * 300,
+        "posted_at": None,
+        "confidence_level": "high",
+        "confidence_score": 90,
+    }
+    job.update(overrides)
+    return job  # type: ignore[return-value]
+
+
+def test_validate_extraction_passes_on_good_job() -> None:
+    assert validate_extraction(_job())["ok"]
+
+
+def test_validate_extraction_fails_on_empty_title() -> None:
+    check = validate_extraction(_job(job_title=""))
+    assert not check["ok"]
+    assert "title" in (check["reason"] or "")
+
+
+def test_validate_extraction_fails_on_untitled_job_placeholder() -> None:
+    check = validate_extraction(_job(job_title="Untitled Job"))
+    assert not check["ok"]
+
+
+def test_validate_extraction_fails_on_short_text() -> None:
+    check = validate_extraction(_job(job_text="too short"))
+    assert not check["ok"]
+    assert "short" in (check["reason"] or "")
+
+
+def test_validate_extraction_fails_on_low_confidence() -> None:
+    check = validate_extraction(_job(confidence_level="low"))
+    assert not check["ok"]
+    assert "confidence" in (check["reason"] or "")
+
+
+def test_validate_board_scan_passes_with_real_jobs() -> None:
+    outcome: ScanOutcome = {
+        "jobs": [_job(job_text="short board summary", confidence_level="medium")],
+        "detected_platform": "ashby",
+    }
+    assert validate_board_scan(outcome)["ok"]
+
+
+def test_validate_board_scan_fails_on_empty_job_list() -> None:
+    outcome: ScanOutcome = {"jobs": [], "detected_platform": "greenhouse"}
+    check = validate_board_scan(outcome)
+    assert not check["ok"]
+    assert "no jobs" in (check["reason"] or "")
+
+
+def test_validate_board_scan_fails_when_every_title_is_untitled() -> None:
+    outcome: ScanOutcome = {
+        "jobs": [_job(job_title="Untitled Job"), _job(job_title="")],
+        "detected_platform": "greenhouse",
+    }
+    check = validate_board_scan(outcome)
+    assert not check["ok"]
+    assert "title" in (check["reason"] or "")
+
+
+def test_validate_board_scan_fails_when_every_job_low_confidence() -> None:
+    outcome: ScanOutcome = {
+        "jobs": [_job(confidence_level="low"), _job(confidence_level="low")],
+        "detected_platform": "greenhouse",
+    }
+    check = validate_board_scan(outcome)
+    assert not check["ok"]
+    assert "confidence" in (check["reason"] or "")
