@@ -40,7 +40,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.email_parser import is_email_tracking_url, resolve_tracking_url  # noqa: E402
+from backend.email_parser import (  # noqa: E402
+    is_email_tracking_url,
+    resolve_tracking_url,
+)
 from backend.utils import get_repos  # noqa: E402
 
 

@@ -55,16 +55,15 @@ _ACCENT = "#2da44e"
 _MUTED = "#8b949e"
 
 
-def _find_free_port(start: int = _PREFERRED_PORT, attempts: int = 20) -> int:
-    for port in range(start, start + attempts):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError(f"No free port found from {start} to {start + attempts - 1}")
+# ai: claude-sonnet-5 | 2026-08-03
+def _port_is_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
 
 
 def _wait_for_server(port: int, timeout: int = 60) -> bool:
@@ -193,14 +192,24 @@ class LauncherWindow:
 
     def _start_server(self) -> None:
         try:
-            port = _find_free_port()
+            # ai: claude-sonnet-5 | 2026-08-03
+            # Fail fast instead of scanning for the next free port: the Google
+            # OAuth redirect URI and frontend/vite.config.js proxy target are
+            # both hardcoded to _PREFERRED_PORT (see app.py's matching check
+            # and COMMON_CODING_STANDARDS.md § Auto-Selected Runtime Values
+            # Must Not Silently Diverge). Auto-selecting a different port here
+            # would let the server "start successfully" while OAuth and the
+            # dev frontend proxy keep talking to the now-wrong port.
+            if not _port_is_free(_PREFERRED_PORT):
+                raise RuntimeError(
+                    f"Port {_PREFERRED_PORT} is already in use. Free it, or stop "
+                    "the other process, before starting the server — the Google "
+                    "OAuth callback and Vite dev proxy are both hardcoded to "
+                    f"port {_PREFERRED_PORT}."
+                )
+            port = _PREFERRED_PORT
             self._port = port
             self._set_status(f"Starting server on port {port}...")
-
-            if port != _PREFERRED_PORT:
-                self._set_hint(
-                    "Port 5004 was busy. Google OAuth callback is configured for port 5004."
-                )
 
             env = os.environ.copy()
             env["FLASK_PORT"] = str(port)
@@ -304,9 +313,6 @@ class LauncherWindow:
 
     def _set_status(self, message: str) -> None:
         self._root.after(0, lambda: self._status_var.set(message))
-
-    def _set_hint(self, message: str) -> None:
-        self._root.after(0, lambda: self._hint_var.set(message))
 
 
 def main() -> None:
