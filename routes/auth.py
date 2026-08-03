@@ -36,14 +36,18 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 import time
 
 from flask import Blueprint, jsonify, redirect, request
 from flask.typing import ResponseReturnValue
+from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 
 import config
+
+logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -72,8 +76,25 @@ def _prune_pending_auths() -> None:
 
 @auth_bp.route("/auth/status")
 def auth_status() -> ResponseReturnValue:
-    authenticated = config.GOOGLE_TOKEN_FILE.exists()
-    return jsonify({"authenticated": authenticated})
+    # ai: claude-sonnet-5 | 2026-08-03
+    # has_send_scope lets the Settings UI show "reconnect Gmail" for the JD
+    # health check's failure-notification email (needs gmail.send, added
+    # after gmail.modify was already in use — existing tokens predate it).
+    # This only parses the locally stored token file (no network call, no
+    # refresh attempt), so it can't trigger auth itself.
+    if not config.GOOGLE_TOKEN_FILE.exists():
+        return jsonify({"authenticated": False, "has_send_scope": False})
+
+    has_send_scope = False
+    try:
+        creds = Credentials.from_authorized_user_file(str(config.GOOGLE_TOKEN_FILE))
+        has_send_scope = "https://www.googleapis.com/auth/gmail.send" in (
+            creds.scopes or []
+        )
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not read stored Google token scopes: %s", exc)
+
+    return jsonify({"authenticated": True, "has_send_scope": has_send_scope})
 
 
 @auth_bp.route("/auth/google")
