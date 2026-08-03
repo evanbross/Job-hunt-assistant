@@ -60,7 +60,15 @@ from backend.url_safety import UnsafeUrlError, safe_urlopen
 logger = logging.getLogger(__name__)
 
 _REQUEST_TIMEOUT_SECONDS = 15
-_MAX_PAGE_BYTES = 2_000_000
+# ai: claude-sonnet-5 | 2026-08-03
+# Was 2_000_000 — too small in practice: Greenhouse's board API with
+# content=true returns full HTML descriptions for every open job in one
+# response, and a company with as few as ~180 postings (confirmed live
+# against job-boards.greenhouse.io/affirm, 181 jobs, ~2.13MB) already
+# exceeded it, silently truncating the JSON mid-string and failing the whole
+# board scan. Raised with headroom for larger boards; still a firm ceiling,
+# not unbounded.
+_MAX_PAGE_BYTES = 8_000_000
 _MAX_JOBS_PER_SITE = 25
 
 _JOB_HINT_WORDS = (
@@ -757,6 +765,40 @@ def _confidence_for(job_title: str, job_text: str) -> tuple[str, int]:
     if score >= 65:
         return "medium", score
     return "low", score
+
+
+class ExtractionCheck(TypedDict):
+    ok: bool
+    reason: str | None
+
+
+_MIN_HEALTH_CHECK_TEXT_CHARS = 250  # matches the length bar _confidence_for already uses
+
+
+# ai: claude-sonnet-5 | 2026-08-03
+def validate_extraction(job: CareerSiteJob) -> ExtractionCheck:
+    """Single source of truth for "did this job-detail parse actually work."
+
+    Shared by the opt-in live pytest suite (tests/live/) and the scheduled
+    jd-health-check Celery task (backend/tasks.py) so what counts as success
+    can never drift between what the test asserts and what the scheduled
+    check alerts on (see COMMON_CODING_STANDARDS.md's Single Source of Truth).
+    """
+    title = (job.get("job_title") or "").strip()
+    if not title or title == "Untitled Job":
+        return ExtractionCheck(ok=False, reason=f"no real title extracted ({title!r})")
+
+    text = (job.get("job_text") or "").strip()
+    if len(text) < _MIN_HEALTH_CHECK_TEXT_CHARS:
+        return ExtractionCheck(
+            ok=False,
+            reason=f"job_text too short ({len(text)} chars, need {_MIN_HEALTH_CHECK_TEXT_CHARS})",
+        )
+
+    if job.get("confidence_level") == "low":
+        return ExtractionCheck(ok=False, reason="confidence_level is low")
+
+    return ExtractionCheck(ok=True, reason=None)
 
 
 class CareerSiteScanner:
