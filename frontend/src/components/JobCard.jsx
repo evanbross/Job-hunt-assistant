@@ -34,7 +34,6 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import StatusBadge from "./common/StatusBadge.jsx";
-import Modal from "./common/Modal.jsx";
 import CoverLetterModal from "./common/CoverLetterModal.jsx";
 import PitchModal from "./common/PitchModal.jsx";
 import ResumeTailorModal from "./common/ResumeTailorModal.jsx";
@@ -243,7 +242,6 @@ function JobCard({
       y: Math.max(8, Math.min(event.clientY, window.innerHeight - 300)),
     });
     setShowSkipMenu(false);
-    setShowSaveAsMenu(false);
   };
 
   const startDescriptionEdit = () => {
