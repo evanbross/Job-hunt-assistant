@@ -220,6 +220,18 @@ def _html_to_text(html: str) -> str:
     return _clean_text(" ".join(parser.text_chunks))
 
 
+# ai: claude-sonnet-5 | 2026-08-03
+# The guest jobs API returns an HTML *fragment* (no <html>/<head>/<title>), so
+# _TextParser's title_chunks (fed by a literal <title> tag) is always empty
+# here — confirmed live: every LinkedIn job scanned via scan_single_job_url
+# was silently getting job_title="Untitled Job". The real title lives in this
+# h2; found while curating a live LinkedIn canary URL for the JD health check.
+_LINKEDIN_GUEST_TITLE_RE = re.compile(
+    r'<h2\b[^>]*\bclass="[^"]*\btopcard__title\b[^"]*"[^>]*>(.*?)</h2>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
 # ai: claude-sonnet-5 | 2026-07-26
 _APPLY_URL_CODE_RE = re.compile(
     r'id=["\']applyUrl["\'][^>]*>\s*(?P<payload>[^<]+?)\s*</code>', re.IGNORECASE
@@ -1183,7 +1195,12 @@ class CareerSiteScanner:
         details = _TextParser()
         details.feed(page_html)
 
-        page_title = _clean_text(" ".join(details.title_chunks)) or "Untitled Job"
+        title_match = _LINKEDIN_GUEST_TITLE_RE.search(page_html)
+        page_title = (
+            (_clean_text(title_match.group(1)) if title_match else "")
+            or _clean_text(" ".join(details.title_chunks))
+            or "Untitled Job"
+        )
         page_text = _clean_text(" ".join(details.text_chunks))
         if not page_text:
             raise ValueError(f"LinkedIn guest API returned no text for job {job_id}")

@@ -312,16 +312,26 @@ def test_extract_offsite_apply_url_returns_none_when_absent() -> None:
     assert _extract_offsite_apply_url("<div>Easy Apply</div>") is None
 
 
-# ai: claude-sonnet-5 | 2026-07-26
+# ai: claude-sonnet-5 | 2026-08-03
+# The guest API returns an HTML *fragment* (no <html>/<head>/<title> — confirmed
+# live against a real posting while curating a JD-health-check canary URL). The
+# previous version of this fixture wrongly included a <title> tag, which masked
+# a real bug: every LinkedIn job was silently getting job_title="Untitled Job"
+# in production because _TextParser's title_chunks only ever populates from a
+# literal <title> tag. Fixed in _linkedin_job_from_guest_api to read the h2.topcard__title
+# element instead; these fixtures now match the real response shape.
+_LINKEDIN_GUEST_HTML = (
+    '<h2 class="top-card-layout__title font-sans text-lg topcard__title">'
+    "Senior Software Engineer</h2>"
+    "<div>Great backend role at Prometric.</div>"
+    '<code id="applyUrl" style="display: none">'
+    '"https:\\/\\/jobs.dayforcehcm.com\\/en-US\\/prometric\\/CANDIDATEPORTAL\\/jobs\\/65203"'
+    "</code>"
+)
+
+
 def test_linkedin_guest_api_appends_apply_page_text() -> None:
     scanner = CareerSiteScanner()
-    guest_html = (
-        "<title>Senior Software Engineer</title>"
-        "<div>Great backend role at Prometric.</div>"
-        '<code id="applyUrl" style="display: none">'
-        '"https:\\/\\/jobs.dayforcehcm.com\\/en-US\\/prometric\\/CANDIDATEPORTAL\\/jobs\\/65203"'
-        "</code>"
-    )
     # Padded well past the 200-char merge threshold in _linkedin_job_from_guest_api.
     apply_html = (
         "<div>Salary range: $110,000 - $120,000 per year. "
@@ -331,36 +341,52 @@ def test_linkedin_guest_api_appends_apply_page_text() -> None:
     )
     with patch(
         "backend.career_site_scanner._fetch_html",
-        side_effect=[guest_html, apply_html],
+        side_effect=[_LINKEDIN_GUEST_HTML, apply_html],
     ):
         job = scanner._linkedin_job_from_guest_api(
             "LinkedIn", "https://www.linkedin.com/jobs/view/4417539736/", "4417539736"
         )
 
+    assert job["job_title"] == "Senior Software Engineer"
     assert "Great backend role at Prometric." in job["job_text"]
     assert "Salary range: $110,000 - $120,000 per year." in job["job_text"]
     assert "Application page" in job["job_text"]
 
 
-# ai: claude-sonnet-5 | 2026-07-26
 def test_linkedin_guest_api_survives_apply_page_fetch_failure() -> None:
     scanner = CareerSiteScanner()
-    guest_html = (
-        "<title>Senior Software Engineer</title>"
-        "<div>Great backend role at Prometric.</div>"
-        '<code id="applyUrl" style="display: none">'
-        '"https:\\/\\/jobs.dayforcehcm.com\\/en-US\\/prometric\\/CANDIDATEPORTAL\\/jobs\\/65203"'
-        "</code>"
-    )
     with patch(
         "backend.career_site_scanner._fetch_html",
-        side_effect=[guest_html, OSError("connection refused")],
+        side_effect=[_LINKEDIN_GUEST_HTML, OSError("connection refused")],
     ):
         job = scanner._linkedin_job_from_guest_api(
             "LinkedIn", "https://www.linkedin.com/jobs/view/4417539736/", "4417539736"
         )
 
+    assert job["job_title"] == "Senior Software Engineer"
     assert "Great backend role at Prometric." in job["job_text"]
+
+
+def test_linkedin_guest_api_falls_back_to_title_tag_when_h2_absent() -> None:
+    scanner = CareerSiteScanner()
+    guest_html = "<title>Fallback Title</title><div>Some job text here.</div>"
+    with patch("backend.career_site_scanner._fetch_html", return_value=guest_html):
+        job = scanner._linkedin_job_from_guest_api(
+            "LinkedIn", "https://www.linkedin.com/jobs/view/1/", "1"
+        )
+
+    assert job["job_title"] == "Fallback Title"
+
+
+def test_linkedin_guest_api_title_untitled_when_neither_present() -> None:
+    scanner = CareerSiteScanner()
+    guest_html = "<div>Some job text with no title markers at all here.</div>"
+    with patch("backend.career_site_scanner._fetch_html", return_value=guest_html):
+        job = scanner._linkedin_job_from_guest_api(
+            "LinkedIn", "https://www.linkedin.com/jobs/view/1/", "1"
+        )
+
+    assert job["job_title"] == "Untitled Job"
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
