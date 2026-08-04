@@ -1034,15 +1034,24 @@ def run_career_scan_for_site(source_id: int) -> ResponseReturnValue:
     return jsonify({"status": "started"}), 202
 
 
-@career_sites_bp.route("/career-scan/run", methods=["POST"])
-def run_career_scan_now() -> ResponseReturnValue:
+# ai: claude-sonnet-5 | 2026-08-03
+# Extracted from run_career_scan_now() so backend/voice_actions.py's
+# start_career_scan voice action can reuse the same lock-guarded start
+# instead of duplicating it or making an HTTP call back into this process.
+def start_career_scan_now() -> tuple[dict, int]:
     with _career_lock:
         if _career_state.running:
-            return jsonify({"error": "Career-site scan is already running"}), 409
+            return {"error": "Career-site scan is already running"}, 409
 
     thread = threading.Thread(target=_run_career_site_scan, daemon=True)
     thread.start()
-    return jsonify({"status": "started"}), 202
+    return {"status": "started"}, 202
+
+
+@career_sites_bp.route("/career-scan/run", methods=["POST"])
+def run_career_scan_now() -> ResponseReturnValue:
+    body, status = start_career_scan_now()
+    return jsonify(body), status
 
 
 @career_sites_bp.route("/career-scan/status")

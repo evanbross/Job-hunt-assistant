@@ -348,8 +348,11 @@ def add_application_sheet_stage(job_id: int) -> ResponseReturnValue:
     return jsonify({"status": "ok"}), 201
 
 
-@applications_bp.route("/applications/mark-ghosts", methods=["POST"])
-def mark_ghost_applications() -> ResponseReturnValue:
+# ai: claude-sonnet-5 | 2026-08-03
+# Extracted from mark_ghost_applications() so backend/voice_actions.py's
+# mark_ghosts voice action can call the same logic instead of duplicating
+# the "walk stages, compute ghosted, insert, commit" work.
+def run_mark_ghosts() -> tuple[dict, int]:
     """Mark applications whose latest state has been Applied for 30+ days as ghosted."""
     utc_today = datetime.now(UTC).date()
     cutoff_date = utc_today - timedelta(days=30)
@@ -408,11 +411,18 @@ def mark_ghost_applications() -> ResponseReturnValue:
             repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error marking ghost applications: %s", exc, exc_info=True)
-        return jsonify({"error": "Failed to mark ghosts"}), 500
+        return {"error": "Failed to mark ghosts"}, 500
 
-    return jsonify(
-        {"marked": marked, "count": len(marked), "cutoff_date": cutoff_date.isoformat()}
+    return (
+        {"marked": marked, "count": len(marked), "cutoff_date": cutoff_date.isoformat()},
+        200,
     )
+
+
+@applications_bp.route("/applications/mark-ghosts", methods=["POST"])
+def mark_ghost_applications() -> ResponseReturnValue:
+    body, status = run_mark_ghosts()
+    return jsonify(body), status
 
 
 def _detect_closed_req_platform(job: dict, url: str) -> str | None:

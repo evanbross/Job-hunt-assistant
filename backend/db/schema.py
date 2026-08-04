@@ -519,6 +519,19 @@ def _create_tables(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_application_stages_job
             ON application_stages (job_id)
         """,
+        # ai: claude-sonnet-5 | 2026-08-03
+        # Backs the voice-query feature's "should be marked ghosted" question
+        # (backend/sql_guard.py's table allowlist): gives the LLM a plain filter
+        # to write instead of requiring it to freehand a DISTINCT ON window
+        # query. CREATE OR REPLACE is idempotent on its own, no guard needed.
+        """
+        CREATE OR REPLACE VIEW latest_application_stage AS
+        SELECT DISTINCT ON (job_id)
+            job_id, status AS latest_status, date AS latest_status_date,
+            notes, created_at
+        FROM application_stages
+        ORDER BY job_id, date DESC, created_at DESC, id DESC
+        """,
         """
         CREATE TABLE IF NOT EXISTS app_settings (
             key   TEXT PRIMARY KEY,

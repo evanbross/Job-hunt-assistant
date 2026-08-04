@@ -45,6 +45,7 @@ import RecentChangesModal from "./components/RecentChangesModal.jsx";
 import ToptalPitchModal from "./components/common/ToptalPitchModal.jsx";
 import MetricGrid, { MetricItem } from "./components/common/MetricGrid.jsx";
 import { ImportBreakdownDetails } from "./components/JobQueue/ImportSummaryPopup.jsx";
+import VoiceQuery from "./components/VoiceQuery/index.jsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 
 // ai: claude-fable-5 | 2026-07-14 — Career Sites tab removed; sites are managed in Settings
@@ -418,6 +419,7 @@ export default function App() {
           </nav>
 
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+            <VoiceQuery />
             <button
               onClick={() => setShowToptalPitch(true)}
               style={{ fontSize: "12px", padding: "5px 12px", background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "var(--radius)", cursor: "pointer" }}

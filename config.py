@@ -62,19 +62,22 @@ DATA_DIR: Path = BASE_DIR / "data"
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-07-25 — removed DATABASE_BACKEND/SQLITE_DATABASE_PATH; Postgres only now
-_pg_host: str = os.getenv("POSTGRES_HOST", "")
-_pg_port: str = os.getenv("POSTGRES_PORT", "5432")
-_pg_db: str = os.getenv("POSTGRES_DB", "")
+# ai: claude-sonnet-5 | 2026-08-03 — made the host/port/db/sslmode parts public
+# (dropped the leading underscore) so backend/db/readonly_role.py can build a
+# second DSN for the voice-query read-only role without importing private names.
+POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "")
+POSTGRES_PORT: str = os.getenv("POSTGRES_PORT", "5432")
+POSTGRES_DB: str = os.getenv("POSTGRES_DB", "")
+POSTGRES_SSLMODE: str = os.getenv("POSTGRES_SSLMODE", "require")
 _pg_user: str = os.getenv("POSTGRES_USER", "")
 _pg_password: str = os.getenv("POSTGRES_PASSWORD", "")
-_pg_sslmode: str = os.getenv("POSTGRES_SSLMODE", "require")
 
 DATABASE_URL: str = os.getenv("DATABASE_URL", "") or (
     (
-        f"postgresql://{_pg_user}:{_pg_password}@{_pg_host}:{_pg_port}/{_pg_db}"
-        f"?sslmode={_pg_sslmode}"
+        f"postgresql://{_pg_user}:{_pg_password}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+        f"?sslmode={POSTGRES_SSLMODE}"
     )
-    if _pg_host and _pg_db and _pg_user
+    if POSTGRES_HOST and POSTGRES_DB and _pg_user
     else ""
 )
 RUNTIME_CONFIG_PATH: Path = DATA_DIR / "runtime_config.json"

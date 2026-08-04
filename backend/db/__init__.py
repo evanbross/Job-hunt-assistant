@@ -78,6 +78,7 @@ from .interfaces import (
     IScannedEmailRepository,
     IStageStatusRepository,
 )
+from .readonly_role import ensure_readonly_role
 from .repositories.app_settings import PostgresAppSettingsRepository
 from .repositories.application_stages import (
     PostgresApplicationStageRepository,
@@ -187,6 +188,7 @@ def init_db(dsn: str) -> None:
         _create_tables(conn)
         _migrate(conn)
         _seed_data(conn)
+        ensure_readonly_role(conn)  # ai: claude-sonnet-5 | 2026-08-03
     finally:
         conn.close()
 

@@ -12,6 +12,7 @@ googleusercontent.com.json
 
 # Database
 data/runtime_config.json
+data/.readonly_db_password
 server.log
 
 # Uploaded files
