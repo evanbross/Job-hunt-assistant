@@ -49,8 +49,16 @@ export default function VoiceQuery() {
     }
   }, []);
 
+  const handleSpeechError = useCallback((message) => {
+    setOpen(true);
+    setTranscript("");
+    setQuerying(false);
+    setResult({ error: message });
+  }, []);
+
   const { listening, start, stop, supported } = useSpeechRecognition({
     onFinalResult: runQuery,
+    onError: handleSpeechError,
   });
 
   return (
