@@ -5,16 +5,68 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
+import { useEffect, useRef, useState } from "react";
 import Modal from "../common/Modal.jsx";
 
-export default function VoiceQueryPanel({ transcript, querying, result, onClose }) {
+// ai: claude-sonnet-5 | 2026-08-04
+// Text input, not a mic button that starts browser speech recognition --
+// Chrome's built-in SpeechRecognition streams audio to a Google cloud
+// service that turned out to fail with a network error, and is unreliable
+// in general. A plain focused text field works with any system dictation
+// tool (Vibe Type, Windows/Dragon dictation, etc.) or the keyboard, with no
+// dependency on that service at all -- the backend endpoint only ever
+// wanted a text string regardless of how it was produced.
+export default function VoiceQueryPanel({ transcript, querying, result, onSubmit, onClose }) {
+  const [value, setValue] = useState("");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const submit = () => {
+    const text = value.trim();
+    if (!text || querying) return;
+    onSubmit(text);
+    setValue("");
+    inputRef.current?.focus();
+  };
+
   return (
     <Modal
       title="Voice Assistant"
-      subtitle={transcript ? `“${transcript}”` : undefined}
+      subtitle="Type, or dictate with your system's dictation tool"
       onClose={onClose}
       maxWidth="640px"
     >
+      <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+          placeholder="Ask a question or give a command…"
+          disabled={querying}
+        />
+        <button
+          className="btn-primary"
+          onClick={submit}
+          disabled={querying || !value.trim()}
+          style={{ padding: "8px 16px", whiteSpace: "nowrap" }}
+        >
+          Ask
+        </button>
+      </div>
+
+      {transcript && (
+        <p style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "10px" }}>
+          “{transcript}”
+        </p>
+      )}
+
       {querying && <p style={{ color: "var(--text-muted)" }}>Thinking…</p>}
 
       {!querying && result?.error && (

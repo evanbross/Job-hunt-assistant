@@ -7,8 +7,7 @@
 
 import { useCallback, useState } from "react";
 import { describeFetchError } from "../../utils/fetchErrorUtils.js";
-import useSpeechRecognition from "./useSpeechRecognition.js";
-import VoiceMicButton from "./VoiceMicButton.jsx";
+import VoiceAssistantButton from "./VoiceAssistantButton.jsx";
 import VoiceQueryPanel from "./VoiceQueryPanel.jsx";
 
 // Mounted once in App.jsx's sticky header. Modal (used by VoiceQueryPanel)
@@ -22,7 +21,6 @@ export default function VoiceQuery() {
   const [result, setResult] = useState(null);
 
   const runQuery = useCallback(async (text) => {
-    setOpen(true);
     setTranscript(text);
     setResult(null);
     setQuerying(true);
@@ -49,30 +47,15 @@ export default function VoiceQuery() {
     }
   }, []);
 
-  const handleSpeechError = useCallback((message) => {
-    setOpen(true);
-    setTranscript("");
-    setQuerying(false);
-    setResult({ error: message });
-  }, []);
-
-  const { listening, start, stop, supported } = useSpeechRecognition({
-    onFinalResult: runQuery,
-    onError: handleSpeechError,
-  });
-
   return (
     <>
-      <VoiceMicButton
-        listening={listening}
-        supported={supported}
-        onToggle={() => (listening ? stop() : start())}
-      />
+      <VoiceAssistantButton onClick={() => setOpen(true)} />
       {open && (
         <VoiceQueryPanel
           transcript={transcript}
           querying={querying}
           result={result}
+          onSubmit={runQuery}
           onClose={() => setOpen(false)}
         />
       )}
