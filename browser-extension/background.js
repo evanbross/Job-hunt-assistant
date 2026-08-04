@@ -44,9 +44,11 @@
 //   from the email-link URL stored in the queue, so mark_done_by_urls would
 //   otherwise never find a match and the item would loop indefinitely.
 // Both Maps/Sets are in-memory. If the service worker is killed mid-capture
-// those tabs become orphaned (they just never close), which is acceptable
-// since the full cycle takes under 30 seconds and stale queue items are reset
-// after 10 minutes by the backend.
+// those tabs become orphaned (they just never close); stale queue items are
+// reset after 10 minutes by the backend as a last-resort safety net. The
+// SPA-render delay before capture (see scheduleQueueCapture below) is
+// deliberately NOT a plain setTimeout, precisely so hitting that 10-minute
+// fallback is the rare case rather than the common one.
 // ai: claude-sonnet-4-6 | 2026-06-16
 const _queueTabs = new Map();
 const _pendingCaptureTabs = new Set();
@@ -111,6 +113,15 @@ chrome.alarms.get('jha-queue-poll', (alarm) => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  // ai: claude-sonnet-5 | 2026-08-04
+  // Fires a queue-capture trigger scheduled by scheduleQueueCapture(). Handled
+  // here rather than a dedicated listener since chrome.alarms.onAlarm only
+  // supports one listener registration cleanly firing all alarm types.
+  if (alarm.name.startsWith(_CAPTURE_ALARM_PREFIX)) {
+    const tabId = parseInt(alarm.name.slice(_CAPTURE_ALARM_PREFIX.length), 10);
+    if (!Number.isNaN(tabId)) triggerQueueCapture(tabId);
+    return;
+  }
   if (alarm.name !== 'jha-queue-poll') return;
   pollQueue();
   // ai: claude-sonnet-5 | 2026-07-27
@@ -320,13 +331,30 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // a short settle delay avoids capturing before it mounts.
   const isClosedReqCheck = info.purpose === 'closed_req';
   if (isWttj || isWellfound) {
-    setTimeout(() => triggerQueueCapture(tabId), 5000);
+    scheduleQueueCapture(tabId, 5000);
   } else if (isClosedReqCheck) {
-    setTimeout(() => triggerQueueCapture(tabId), 1500);
+    scheduleQueueCapture(tabId, 1500);
   } else {
     triggerQueueCapture(tabId);
   }
 });
+
+// ai: claude-sonnet-5 | 2026-08-04
+// chrome.alarms (unlike setTimeout) survive MV3 service-worker suspension. A bare
+// setTimeout here was the root cause of WTTJ/Wellfound queue items getting stuck
+// in 'processing': if the worker went dormant during the SPA-render wait, the
+// timer was silently dropped, triggerQueueCapture() never ran, and the item only
+// recovered via the backend's 10-minute stale-processing reset in
+// browser_capture_queue.py's claim_pending() — producing a repeating "Receiving
+// Job Description" capture every ~10 minutes instead of the intended one-shot 5s
+// delay. Confirmed via tmp/import_captures/ dump timestamps and matching
+// retry_count values in the DB before this fix.
+const _CAPTURE_ALARM_PREFIX = 'jha-capture-';
+function scheduleQueueCapture(tabId, delayMs) {
+  chrome.alarms.create(`${_CAPTURE_ALARM_PREFIX}${tabId}`, {
+    delayInMinutes: delayMs / 60000,
+  });
+}
 
 async function triggerQueueCapture(tabId) {
   try {
