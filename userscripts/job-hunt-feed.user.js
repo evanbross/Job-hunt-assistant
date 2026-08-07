@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-05-29.01
+// @version      2026-08-07.01
 // @match        https://jobs.ashbyhq.com/vanta/*
 // @match        https://discord.com/careehrs*
 // @match        https://job-boards.greenhouse.io/*/jobs/*
@@ -25,6 +25,7 @@
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
+// @connect      jha-listener.localhost
 // @connect      wellfound.com
 // @run-at       document-idle
 // ==/UserScript==
@@ -823,7 +824,12 @@
 
         GM_xmlhttpRequest({
             method: 'POST',
-            url: 'http://localhost:8765/import',
+            // ai: claude-sonnet-5 | 2026-08-07
+            // Uses the app's stable Caddy name rather than a fixed port — see
+            // app.py's caddy_registry.register("jha-listener", ...) call. If you're
+            // not running the ../infra Caddy stack, change this back to
+            // http://localhost:8765/import.
+            url: 'http://jha-listener.localhost/import',
             data,
             headers: { 'Content-Type': 'application/json' },
             onload: (res) => {

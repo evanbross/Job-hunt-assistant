@@ -183,12 +183,16 @@ DEFAULT_JOB_IMPORT_LISTENER_TOKEN: str = os.getenv("JOB_IMPORT_LISTENER_TOKEN", 
 DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES: int = int(
     os.getenv("JOB_IMPORT_LISTENER_MAX_BYTES", str(15 * 1024 * 1024))
 )
-# ai: claude-sonnet-5 | 2026-07-22
+# ai: claude-sonnet-5 | 2026-08-07
 # The queue-ready WebSocket push server (backend/queue_websocket.py) defaults to
 # one port above the HTTP listener rather than a separate persisted setting, so
 # it always tracks JOB_IMPORT_LISTENER_PORT/job_import_listener_port without a
-# second value that could drift out of sync. The extension derives the same
-# port+1 from its own listenerUrl setting (see browser-extension/background.js).
+# second value that could drift out of sync. This is only the *attempted* port —
+# both servers fall back to an OS-assigned port on a bind conflict and register
+# their real port with Caddy under a stable name (jha-listener / jha-listener-ws,
+# see app.py), which is what the browser extension actually connects to. The
+# extension only recomputes port+1 itself as a fallback for users running the
+# listener directly without the Caddy dev-infra stack (browser-extension/background.js).
 # Set JOB_IMPORT_LISTENER_WS_PORT explicitly only if that default collides with
 # something else on the host.
 DEFAULT_JOB_IMPORT_LISTENER_WS_PORT_OVERRIDE: int | None = (

@@ -378,11 +378,12 @@ def _handle_listener_capture(body: dict) -> tuple[dict, int]:
 
 
 # ai: claude-sonnet-4-6 | 2026-06-16
-start_job_import_listener(
+# ai: claude-sonnet-5 | 2026-08-07 — capture return values for Caddy registration below
+_import_listener = start_job_import_listener(
     _handle_listener_capture,
     claim_queue=_claim_browser_capture_queue,
 )
-start_queue_websocket_server(_browser_capture_queue_has_pending)
+_queue_ws_server = start_queue_websocket_server(_browser_capture_queue_has_pending)
 
 # Register generated Swagger docs after API routes are loaded and before the SPA
 # catch-all. The UI is available at /apidocs/ and the JSON spec at /apispec_1.json.
@@ -633,16 +634,34 @@ if __name__ == "__main__":
     # next launch" for the JD parser health check.
     start_jd_health_check_scheduler()
     # ai: claude-sonnet-5 | 2026-07-31
-    if _caddy_registry is not None:
-        if _caddy_registry.register("jha", _flask_port):
-            atexit.register(_caddy_registry.deregister, "jha")
+
+    def _register_with_caddy(name: str, port: int, scheme: str) -> None:
+        assert _caddy_registry is not None
+        if _caddy_registry.register(name, port):
+            atexit.register(_caddy_registry.deregister, name)
         else:
             logger.warning(
-                "Caddy registration failed — http://jha.localhost will not work; "
-                "use http://127.0.0.1:%d directly, or start the infra stack "
+                "Caddy registration failed — %s://%s.localhost will not work; "
+                "use %s://127.0.0.1:%d directly, or start the infra stack "
                 "(cd ../infra && docker-compose up -d).",
-                _flask_port,
+                scheme,
+                name,
+                scheme,
+                port,
             )
+
+    if _caddy_registry is not None:
+        _register_with_caddy("jha", _flask_port, "http")
+        # ai: claude-sonnet-5 | 2026-08-07
+        # The browser extension talks to these two servers directly (see
+        # browser-extension/background.js) — registering them under stable Caddy
+        # names, rather than requiring a fixed port, lets both fall back to an
+        # OS-assigned port on conflict (see backend/import_listener.py and
+        # backend/queue_websocket.py) without the extension needing any changes.
+        if _import_listener is not None:
+            _register_with_caddy("jha-listener", _import_listener.port, "http")
+        if _queue_ws_server is not None:
+            _register_with_caddy("jha-listener-ws", _queue_ws_server.port, "ws")
     try:
         app.run(
             debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",

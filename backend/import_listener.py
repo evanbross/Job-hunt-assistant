@@ -201,6 +201,11 @@ class JobImportListener:
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
+    @property
+    def port(self) -> int:
+        """The port actually bound — may differ from the configured port (see start())."""
+        return self._port
+
     def start(self) -> None:
         if self._server is not None:
             return
@@ -299,9 +304,23 @@ class JobImportListener:
                 self.end_headers()
                 self.wfile.write(response_body)
 
-        self._server = ThreadingHTTPServer(
-            (self._host, self._port), ImportRequestHandler
-        )
+        try:
+            self._server = ThreadingHTTPServer(
+                (self._host, self._port), ImportRequestHandler
+            )
+        except OSError:
+            # ai: claude-sonnet-5 | 2026-08-07
+            # The configured port was taken — bind to an OS-assigned free port instead
+            # of disabling the listener entirely. This is safe now that callers reach
+            # this server by its Caddy name (see app.py's caddy_registry.register call)
+            # rather than a hardcoded port, so a shifted port never breaks a client.
+            logger.warning(
+                "Job import listener port %s is unavailable — binding to an "
+                "OS-assigned port instead.",
+                self._port,
+            )
+            self._server = ThreadingHTTPServer((self._host, 0), ImportRequestHandler)
+        self._port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         logger.info(
@@ -326,23 +345,27 @@ _listener: JobImportListener | None = None
 def start_job_import_listener(
     submit_capture: SubmitCapture,
     claim_queue: ClaimQueue | None = None,
-) -> None:
-    """Start the optional captured-page import listener once per process."""
+) -> JobImportListener | None:
+    """Start the optional captured-page import listener once per process.
+
+    Returns the running listener (so the caller can read its actual bound
+    `.port` for Caddy registration — see app.py) or None if disabled/unreachable.
+    """
     global _listener
 
     listener_config = config.get_job_import_listener_config()
     if not listener_config["enabled"]:
         logger.info("Job import listener disabled by configuration.")
-        return
+        return None
     if (
         os.environ.get("FLASK_DEBUG", "false").lower() == "true"
         and os.environ.get("WERKZEUG_RUN_MAIN") != "true"
     ):
-        return
+        return None
 
     with _listener_lock:
         if _listener is not None:
-            return
+            return _listener
         _listener = JobImportListener(
             host=str(listener_config["host"]),
             port=int(listener_config["port"]),
@@ -354,9 +377,13 @@ def start_job_import_listener(
         try:
             _listener.start()
         except OSError as exc:
+            # start() already falls back to an OS-assigned port on a plain bind
+            # conflict — this only fires for a genuinely unusable host (e.g. an
+            # invalid JOB_IMPORT_LISTENER_HOST).
             logger.warning(
-                "Job import listener could not start on port %s: %s",
-                listener_config["port"],
+                "Job import listener could not start on host %s: %s",
+                listener_config["host"],
                 exc,
             )
             _listener = None
+        return _listener

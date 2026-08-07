@@ -157,13 +157,21 @@ async function connectQueueSocket() {
   let wsUrl;
   try {
     const parsed = new URL(settings.listenerUrl);
-    // ai: claude-sonnet-5 | 2026-07-22
-    // The queue WebSocket server defaults to one port above the HTTP listener
-    // (see config.DEFAULT_JOB_IMPORT_LISTENER_WS_PORT_OVERRIDE) rather than a
-    // separate setting, so this must be derived the same way here.
-    const wsPort = (parseInt(parsed.port, 10) || 8765) + 1;
     const wsScheme = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-    wsUrl = `${wsScheme}//${parsed.hostname}:${wsPort}/`;
+    // ai: claude-sonnet-5 | 2026-08-07
+    // The backend registers the queue-ready push server under its own Caddy name
+    // (jha-listener-ws.localhost, one "-ws" suffix past jha-listener.localhost)
+    // rather than a fixed port offset, since the listener's actual port can now
+    // shift on conflict (see backend/import_listener.py). Only fall back to the
+    // legacy "one port above the HTTP listener" convention when listenerUrl is a
+    // raw host:port — i.e. Caddy's dev-infra stack isn't in use.
+    if (parsed.hostname !== 'localhost' && parsed.hostname.endsWith('.localhost')) {
+      const wsHost = parsed.hostname.replace(/\.localhost$/, '-ws.localhost');
+      wsUrl = `${wsScheme}//${wsHost}/`;
+    } else {
+      const wsPort = (parseInt(parsed.port, 10) || 8765) + 1;
+      wsUrl = `${wsScheme}//${parsed.hostname}:${wsPort}/`;
+    }
     if (settings.token) wsUrl += `?token=${encodeURIComponent(settings.token)}`;
   } catch {
     return; // listenerUrl not configured yet
@@ -484,7 +492,11 @@ function showNotification(message, success) {
 }
 
 async function loadSettings() {
-  const defaults = { listenerUrl: 'http://localhost:8765', token: '' };
+  // ai: claude-sonnet-5 | 2026-08-07
+  // Defaults to the app's stable Caddy name rather than a fixed port — see
+  // app.py's caddy_registry.register("jha-listener", ...) call. Falls back to a
+  // direct host:port only if the user overrides this in the extension options.
+  const defaults = { listenerUrl: 'http://jha-listener.localhost', token: '' };
   try {
     return await chrome.storage.sync.get(defaults);
   } catch {

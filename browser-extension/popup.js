@@ -184,7 +184,11 @@ function sendToTab(message) {
 }
 
 async function loadSettings() {
-  const defaults = { listenerUrl: 'http://localhost:8765', token: '', appUrl: 'http://localhost:5000' };
+  // ai: claude-sonnet-5 | 2026-08-07
+  // Defaults to stable Caddy names (see app.py's caddy_registry.register calls)
+  // rather than fixed ports, so a port shift on either server never needs an
+  // extension update.
+  const defaults = { listenerUrl: 'http://jha-listener.localhost', token: '', appUrl: 'http://jha.localhost' };
   try {
     return await chrome.storage.sync.get(defaults);
   } catch {

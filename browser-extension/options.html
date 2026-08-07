@@ -136,8 +136,8 @@
     <div class="card-title">Import Listener</div>
 
     <label for="listener-url">Listener URL</label>
-    <div class="hint">Where the extension POSTs captured jobs (matches IMPORT_LISTENER_PORT in your .env)</div>
-    <input type="text" id="listener-url" placeholder="http://localhost:8765">
+    <div class="hint">Where the extension POSTs captured jobs. Defaults to the app's stable Caddy name — only change this to a direct host:port if you're not running the ../infra Caddy stack.</div>
+    <input type="text" id="listener-url" placeholder="http://jha-listener.localhost">
 
     <label for="token">Auth Token (optional)</label>
     <div class="hint">Leave blank if IMPORT_LISTENER_TOKEN is not set</div>
@@ -149,7 +149,7 @@
 
     <label for="app-url">Job Hunt App URL</label>
     <div class="hint">Opened when you click "Open Job Hunt App" after a successful send</div>
-    <input type="text" id="app-url" placeholder="http://localhost:5000">
+    <input type="text" id="app-url" placeholder="http://jha.localhost">
   </div>
 
   <div class="row">

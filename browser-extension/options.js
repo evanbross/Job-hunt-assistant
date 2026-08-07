@@ -34,7 +34,10 @@
 
 'use strict';
 
-const DEFAULTS = { listenerUrl: 'http://localhost:8765', token: '', appUrl: 'http://localhost:5000' };
+// ai: claude-sonnet-5 | 2026-08-07
+// Defaults to stable Caddy names (see app.py's caddy_registry.register calls)
+// rather than fixed ports — see the field hints below for the direct-port fallback.
+const DEFAULTS = { listenerUrl: 'http://jha-listener.localhost', token: '', appUrl: 'http://jha.localhost' };
 
 document.addEventListener('DOMContentLoaded', async () => {
   const settings = await chrome.storage.sync.get(DEFAULTS);

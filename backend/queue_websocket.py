@@ -85,12 +85,22 @@ class QueueWebSocketServer:
         self._has_pending = has_pending
         self._thread: threading.Thread | None = None
         self._clients: set[ServerConnection] = set()
+        self._bound_event = threading.Event()
+
+    @property
+    def port(self) -> int:
+        """The port actually bound — may differ from the configured port (see _serve())."""
+        return self._port
 
     def start(self) -> None:
         if self._thread is not None:
             return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        # Block briefly so callers (see app.py's caddy_registry.register call) can
+        # read the real .port right after start() returns instead of racing the
+        # background thread's bind.
+        self._bound_event.wait(timeout=5)
 
     def _run(self) -> None:
         try:
@@ -103,16 +113,36 @@ class QueueWebSocketServer:
             )
 
     async def _serve(self) -> None:
-        async with serve(
-            self._handle_client,
-            self._host,
-            self._port,
-            process_request=self._process_request,
-        ):
-            logger.info(
-                "Queue WebSocket server started at ws://%s:%s", self._host, self._port
-            )
-            await self._watch_queue()
+        # ai: claude-sonnet-5 | 2026-08-07
+        # Try the configured port first; on a bind conflict fall back to an
+        # OS-assigned free port instead of disabling the server. Safe now that
+        # callers reach this server by its Caddy name rather than a hardcoded
+        # port+1 offset — see browser-extension/background.js.
+        for candidate_port in (self._port, 0):
+            try:
+                async with serve(
+                    self._handle_client,
+                    self._host,
+                    candidate_port,
+                    process_request=self._process_request,
+                ) as server:
+                    self._port = server.sockets[0].getsockname()[1]
+                    logger.info(
+                        "Queue WebSocket server started at ws://%s:%s",
+                        self._host,
+                        self._port,
+                    )
+                    self._bound_event.set()
+                    await self._watch_queue()
+                return
+            except OSError:
+                if candidate_port == 0:
+                    raise
+                logger.warning(
+                    "Queue WebSocket server port %s is unavailable — binding to "
+                    "an OS-assigned port instead.",
+                    self._port,
+                )
 
     def _process_request(
         self, connection: ServerConnection, request: Request
@@ -167,22 +197,28 @@ _server_lock = threading.Lock()
 _server: QueueWebSocketServer | None = None
 
 
-def start_queue_websocket_server(has_pending: HasPendingCheck) -> None:
-    """Start the optional queue-ready push server once per process."""
+def start_queue_websocket_server(
+    has_pending: HasPendingCheck,
+) -> QueueWebSocketServer | None:
+    """Start the optional queue-ready push server once per process.
+
+    Returns the running server (so the caller can read its actual bound `.port`
+    for Caddy registration — see app.py) or None if disabled.
+    """
     global _server
 
     listener_config = config.get_job_import_listener_config()
     if not listener_config["enabled"]:
-        return
+        return None
     if (
         os.environ.get("FLASK_DEBUG", "false").lower() == "true"
         and os.environ.get("WERKZEUG_RUN_MAIN") != "true"
     ):
-        return
+        return None
 
     with _server_lock:
         if _server is not None:
-            return
+            return _server
         _server = QueueWebSocketServer(
             host=str(listener_config["host"]),
             port=int(listener_config["ws_port"]),
@@ -190,3 +226,4 @@ def start_queue_websocket_server(has_pending: HasPendingCheck) -> None:
             has_pending=has_pending,
         )
         _server.start()
+        return _server
