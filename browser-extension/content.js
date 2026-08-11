@@ -53,10 +53,15 @@
       }
     }
 
-    // ai: claude-sonnet-4-6 | 2026-06-25
-    // my.greenhouse.io/<slug>/jobs/<numeric-id> is the individual job apply page —
-    // must be checked first because the search check below matches any path with "jobs".
-    if (host === 'my.greenhouse.io' && /^\/[^/]+\/jobs\/\d+/.test(path)) {
+    // ai: claude-sonnet-5 | 2026-08-06
+    // my.greenhouse.io individual job apply pages appear in two URL shapes —
+    // <slug>/jobs/<numeric-id> and jobs/<slug>/<numeric-id> — both observed in the
+    // wild across different company boards. Both must be checked first because the
+    // search check below matches any path starting with "jobs".
+    if (
+      host === 'my.greenhouse.io' &&
+      (/^\/[^/]+\/jobs\/\d+/.test(path) || /^\/jobs\/[^/]+\/\d+/.test(path))
+    ) {
       return { site: 'Greenhouse', type: 'greenhouseJob', jobCount: 1, description: 'Single job listing' };
     }
 
@@ -857,13 +862,14 @@
     return JSON.stringify({ jobs });
   }
 
-  // ai: claude-sonnet-4-6 | 2026-06-25
-  // Handles individual Greenhouse apply pages at my.greenhouse.io/<slug>/jobs/<id>.
-  // Company comes reliably from the URL slug; document.title refines it when the
-  // "Job Title at Company Name" pattern is present.
+  // ai: claude-sonnet-5 | 2026-08-06
+  // Handles individual Greenhouse apply pages at my.greenhouse.io, in either observed
+  // URL shape: <slug>/jobs/<id> or jobs/<slug>/<id>. Company comes reliably from the
+  // URL slug; document.title refines it when the "Job Title at Company Name" pattern
+  // is present.
   function buildGreenhouseJobPayload() {
     const pathParts = location.pathname.split('/').filter(Boolean);
-    const companySlug = pathParts[0] || '';
+    const companySlug = (pathParts[0] === 'jobs' ? pathParts[1] : pathParts[0]) || '';
     let company = companySlug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
     const titleAtMatch = document.title.match(/\bat\s+(.+?)(?:\s*[-–|]|$)/i);
