@@ -141,7 +141,18 @@ class AIProviderClient:
             ],
         }
         if system:
-            kwargs["system"] = system
+            # ai: claude-sonnet-5 | 2026-08-06
+            # Cache the system prompt (candidate profile + resume + scoring rules) as
+            # an ephemeral block. Bulk rescoring sends the same system prompt on every
+            # call in the loop with only the per-job user message differing, so this
+            # turns N full-price system-prompt reads into 1 write + (N-1) cache hits.
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
         last_exc: Exception | None = None
         for attempt in range(len(_TRANSIENT_RETRY_DELAYS) + 1):
             if attempt > 0:
