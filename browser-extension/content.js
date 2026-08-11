@@ -53,19 +53,29 @@
       }
     }
 
-    // ai: claude-sonnet-5 | 2026-08-06
-    // my.greenhouse.io individual job apply pages appear in two URL shapes —
-    // <slug>/jobs/<numeric-id> and jobs/<slug>/<numeric-id> — both observed in the
-    // wild across different company boards. Both must be checked first because the
-    // search check below matches any path starting with "jobs".
+    // ai: claude-sonnet-5 | 2026-08-11
+    // Individual Greenhouse job pages appear on three host shapes: my.greenhouse.io
+    // (embed/apply flow — <slug>/jobs/<numeric-id> or jobs/<slug>/<numeric-id>, both
+    // observed in the wild) and the two public board hosts job-boards.greenhouse.io /
+    // boards.greenhouse.io (<slug>/jobs/<numeric-id> only). Checked first because the
+    // search-page check below would otherwise also match.
+    const _GH_PUBLIC_BOARD_HOSTS = new Set(['job-boards.greenhouse.io', 'boards.greenhouse.io']);
+    const isGreenhouseHost = host === 'my.greenhouse.io' || _GH_PUBLIC_BOARD_HOSTS.has(host);
     if (
-      host === 'my.greenhouse.io' &&
+      isGreenhouseHost &&
       (/^\/[^/]+\/jobs\/\d+/.test(path) || /^\/jobs\/[^/]+\/\d+/.test(path))
     ) {
       return { site: 'Greenhouse', type: 'greenhouseJob', jobCount: 1, description: 'Single job listing' };
     }
 
-    if (host === 'my.greenhouse.io' && /^\/jobs/.test(path)) {
+    // my.greenhouse.io search pages live at /jobs; the public board hosts' board/search
+    // pages are just /<company-slug> (optionally with query filters like
+    // ?departments[]=...&keyword=...) since the single-job check above already
+    // consumed the /<company-slug>/jobs/<id> shape.
+    const isGreenhouseSearchPath = host === 'my.greenhouse.io'
+      ? /^\/jobs/.test(path)
+      : _GH_PUBLIC_BOARD_HOSTS.has(host) && /^\/[^/]+/.test(path);
+    if (isGreenhouseSearchPath) {
       // ai: claude-sonnet-4-6 | 2026-06-25
       // CSS attribute selectors match the raw href value, not the resolved URL, so
       // relative hrefs like /jobs/12345 would miss the greenhouse.io check. Use a.href

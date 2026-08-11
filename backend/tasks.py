@@ -438,8 +438,30 @@ def run_import_task(
                         or ""
                     )
                 )
-                if is_richer_description(incoming_text, existing_job):
-                    _enrich_job_description(repos, existing_job, incoming_text)
+                richer_text = (
+                    incoming_text
+                    if is_richer_description(incoming_text, existing_job)
+                    else None
+                )
+                # ai: claude-sonnet-5 | 2026-08-11
+                # A search/listing-page capture (e.g. a Greenhouse board card) often
+                # yields only a short blurb even though the captured url points at the
+                # individual job page — fetch that page directly before giving up.
+                # Mirrors the re-fetch ManualJobIngestService already does for
+                # brand-new jobs (see manual_job_ingest_service.py).
+                if richer_text is None and url.startswith("https://"):
+                    try:
+                        fetched_job = CareerSiteScanner().scan_single_job_url("", url)
+                    except (ValueError, OSError) as exc:
+                        logger.debug("Existing-job JD re-fetch failed for %s: %s", url, exc)
+                    else:
+                        fetched_text = fetched_job.get("job_text", "")
+                        if is_richer_description(fetched_text, existing_job):
+                            richer_text = fetched_text
+                            incoming_len = len(fetched_text)
+
+                if richer_text is not None:
+                    _enrich_job_description(repos, existing_job, richer_text)
                     repos["conn"].commit()
                     enriched += 1
                     enriched_details.append(
