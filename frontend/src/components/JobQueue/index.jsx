@@ -2268,7 +2268,7 @@ export default function JobQueue({
                       {importSummary.skipped > 0 && (
                         <div>
                           <div style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-muted)" }}>{importSummary.skipped}</div>
-                          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>already in queue</div>
+                          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>duplicate</div>
                         </div>
                       )}
                       {(importSummary.repaired ?? 0) > 0 && (

@@ -49,7 +49,7 @@ export default function ImportSummaryPopup({ summary, onClose }) {
     >
       <MetricGrid>
         <MetricItem label="queued" value={queued} tone={queued > 0 ? "green" : ""} />
-        {skipped > 0 && <MetricItem label="already in queue" value={skipped} />}
+        {skipped > 0 && <MetricItem label="duplicate" value={skipped} />}
         {repaired > 0 && <MetricItem label="company fixed" value={repaired} tone="green" />}
         {enriched > 0 && <MetricItem label="description enriched" value={enriched} tone="green" />}
         {failed > 0 && <MetricItem label="failed" value={failed} tone="red" />}
@@ -73,11 +73,11 @@ export function ImportBreakdownDetails({ summary, compact = false }) {
     },
     {
       key: "skipped",
-      title: "Skipped",
+      title: "Duplicate",
       tone: "var(--text-muted)",
       rows: normalizeImportOutcomeDetails(summary, "skipped_details", Number(summary?.skipped) || 0, {
         action: "skipped",
-        reason: "A duplicate or already-known job was skipped.",
+        reason: "This job was already in your queue, so it was skipped as a duplicate.",
       }),
     },
     {
