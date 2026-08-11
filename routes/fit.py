@@ -157,7 +157,7 @@ def _run_re_evaluate() -> None:
                     updates["duplicate_of_id"] = None
 
                 try:
-                    scoring_text = "\n".join(
+                    scoring_text = job.get("job_description") or "\n".join(
                         part
                         for part in [
                             job.get("email_subject", ""),
