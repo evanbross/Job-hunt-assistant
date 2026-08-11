@@ -722,6 +722,123 @@ def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
         assert _req_closed_state.message.startswith("Done")
 
 
+# ai: claude-sonnet-5 | 2026-08-09
+def test_run_req_closed_scan_sets_unreachable_since_on_direct_unreachable_result(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job whose fetch fails outright (not escalated to a browser recheck) must
+    get jobs.unreachable_since set so it surfaces in the Unreachable tab, without
+    its pipeline status changing."""
+    repos = _fresh_repos(pg_dsn, monkeypatch)
+    try:
+        job_id = repos["jobs"].insert(
+            {
+                "company": "Category Labs",
+                "job_title": "Formal Verification Engineer",
+                "url": "https://jobgether.com/offer/unreachable-example",
+                "source": "Jobgether",
+                "status": "triage",
+            }
+        )
+        repos["conn"].commit()
+
+        with patch("routes.applications._check_closed_req", return_value="unreachable"):
+            _run_req_closed_scan()
+
+        updated_job = repos["jobs"].get_by_id(job_id)
+    finally:
+        repos["conn"].close()
+
+    assert updated_job["unreachable_since"] is not None
+    assert updated_job["status"] == "triage"
+
+    check_repos = open_repositories(config.DATABASE_URL)
+    try:
+        unreachable_ids = {j["id"] for j in check_repos["jobs"].get_unreachable()}
+    finally:
+        check_repos["conn"].close()
+    assert job_id in unreachable_ids
+
+
+# ai: claude-sonnet-5 | 2026-08-09
+def test_run_req_closed_scan_clears_unreachable_since_once_reachable_again(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job previously flagged unreachable must have the flag cleared the next
+    time a scan actually gets a response from it."""
+    repos = _fresh_repos(pg_dsn, monkeypatch)
+    try:
+        job_id = repos["jobs"].insert(
+            {
+                "company": "Category Labs",
+                "job_title": "Formal Verification Engineer",
+                "url": "https://jobgether.com/offer/now-reachable-example",
+                "source": "Jobgether",
+                "status": "triage",
+                "unreachable_since": "2026-08-01",
+            }
+        )
+        repos["conn"].commit()
+
+        with patch("routes.applications._check_closed_req", return_value="open"):
+            _run_req_closed_scan()
+
+        updated_job = repos["jobs"].get_by_id(job_id)
+    finally:
+        repos["conn"].close()
+
+    assert updated_job["unreachable_since"] is None
+
+
+# ai: claude-sonnet-5 | 2026-08-09
+def test_run_req_closed_scan_sets_unreachable_since_when_browser_recheck_fails(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Wellfound job escalated to an authenticated browser recheck that then
+    exhausts its retries (queue row lands 'failed') must be flagged unreachable —
+    this is the actual path that produced the four unreachable Wellfound jobs
+    the user hit in production, since Wellfound bot-blocks the unauthenticated
+    fetch on every job and only the browser recheck gives a real verdict."""
+    repos = _fresh_repos(pg_dsn, monkeypatch)
+    try:
+        job_id = repos["jobs"].insert(
+            {
+                "company": "kolo",
+                "job_title": "Founding AI Software Engineer",
+                "url": "https://wellfound.com/jobs?job_listing_slug=example-failed",
+                "source": "Wellfound",
+                "status": "possible_duplicate",
+            }
+        )
+        repos["conn"].commit()
+    finally:
+        repos["conn"].close()
+
+    def _extension_exhausts_retries(_seconds: float) -> None:
+        drain_repos = open_repositories(config.DATABASE_URL)
+        try:
+            queue_repo = drain_repos["browser_capture_queue"]
+            for item in queue_repo.claim_pending(limit=100):
+                queue_repo.mark_failed(item["id"], "extension gave up")
+            drain_repos["conn"].commit()
+        finally:
+            drain_repos["conn"].close()
+
+    monkeypatch.setattr(applications_module.time, "sleep", _extension_exhausts_retries)
+    with patch("routes.applications._check_closed_req", return_value="bad_url"):
+        _run_req_closed_scan()
+
+    check_repos = open_repositories(config.DATABASE_URL)
+    try:
+        updated_job = check_repos["jobs"].get_by_id(job_id)
+    finally:
+        check_repos["conn"].close()
+
+    assert updated_job["unreachable_since"] is not None
+    with _req_closed_lock:
+        assert _req_closed_state.unreachable_count == 1
+
+
 # ai: claude-fable-5 | 2026-07-17
 def test_run_req_closed_scan_stops_batching_when_extension_offline(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch

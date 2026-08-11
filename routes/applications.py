@@ -673,6 +673,25 @@ def _closed_req_browser_queue_snapshot(repos: dict) -> dict[str, int]:
     }
 
 
+# ai: claude-sonnet-5 | 2026-08-09
+def _persist_unreachable_flag(
+    repos: dict, job: dict, today: str, is_unreachable: bool
+) -> None:
+    """Set jobs.unreachable_since to *today* the first time a scan finds this job
+    unreachable, or clear it once a later check gets a real response (closed/open/
+    bad_url). Preserves the original first-seen-unreachable date across repeat
+    failures so staleness is visible in the Unreachable tab. No-ops (and doesn't
+    touch the connection) when the flag's value wouldn't change.
+    """
+    current = job.get("unreachable_since")
+    if is_unreachable and not current:
+        repos["jobs"].update(job["id"], {"unreachable_since": today})
+        repos["conn"].commit()
+    elif not is_unreachable and current:
+        repos["jobs"].update(job["id"], {"unreachable_since": None})
+        repos["conn"].commit()
+
+
 def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
     """Record a detected closed req in whichever place the UI actually reads from.
 
@@ -800,7 +819,7 @@ def _browser_recheck_found_closed(repos: dict, job: dict) -> bool:
 
 # ai: claude-fable-5 | 2026-07-17
 def _fold_browser_recheck_outcome(
-    repos: dict, item: tuple[dict, str, str, str], row_status: str
+    repos: dict, item: tuple[dict, str, str, str], row_status: str, today: str
 ) -> None:
     """Fold one finished authenticated recheck into the live scan state.
 
@@ -812,6 +831,9 @@ def _fold_browser_recheck_outcome(
     """
     job, _url, platform, platform_label = item
     closed = _browser_recheck_found_closed(repos, job)
+    # ai: claude-sonnet-5 | 2026-08-09 — a 'failed' row is this job's real
+    # unreachable verdict (the browser extension exhausted its retries).
+    _persist_unreachable_flag(repos, job, today, row_status == "failed")
     summary = {
         "id": job["id"],
         "company": job.get("company") or "",
@@ -843,7 +865,7 @@ def _fold_browser_recheck_outcome(
 
 # ai: claude-fable-5 | 2026-07-17
 def _drain_browser_recheck_batch(
-    batch: list[tuple[dict, str, str, str]], total_rechecks: int
+    batch: list[tuple[dict, str, str, str]], total_rechecks: int, today: str
 ) -> bool:
     """Wait for this batch's queued authenticated rechecks to finish, folding
     each outcome into the scan state as it lands so the progress dialog stays
@@ -879,7 +901,7 @@ def _drain_browser_recheck_batch(
                 if status in ("pending", "processing"):
                     remaining += 1
                     continue
-                _fold_browser_recheck_outcome(repos, item, str(status))
+                _fold_browser_recheck_outcome(repos, item, str(status), today)
                 settled.add(batch_job_id)
         with _req_closed_lock:
             done = _req_closed_state.browser_checks_done
@@ -986,6 +1008,12 @@ def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
             )
 
             result = _check_closed_req(url, platform)
+            # ai: claude-sonnet-5 | 2026-08-09 — only opens a connection when the
+            # flag's value would actually change (see _persist_unreachable_flag).
+            is_unreachable = result == "unreachable"
+            if is_unreachable != bool(job.get("unreachable_since")):
+                with get_repos() as repos:
+                    _persist_unreachable_flag(repos, job, today, is_unreachable)
             job_summary = {
                 "id": job["id"],
                 "company": job.get("company") or "",
@@ -1076,7 +1104,7 @@ def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> None:
                             browser_checks_queued += 1
                     repos["conn"].commit()
                 _update_req_closed_state(browser_checks_queued=browser_checks_queued)
-                if not _drain_browser_recheck_batch(batch, total_rechecks):
+                if not _drain_browser_recheck_batch(batch, total_rechecks, today):
                     extension_stalled = True
                     break
 

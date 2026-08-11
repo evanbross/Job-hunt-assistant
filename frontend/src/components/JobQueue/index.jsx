@@ -58,6 +58,7 @@ import RescanImportDialog from "./RescanImportDialog.jsx";
 import CompanyGroup from "./CompanyGroup.jsx";
 import renderJobOrTriageCard from "./renderJobOrTriageCard.jsx";
 import RecentChangesModal from "../RecentChangesModal.jsx";
+import UnreachablePanel from "./UnreachablePanel.jsx";
 
 const JOB_QUEUE_SEARCH_STORAGE_KEY = "jha.jobQueue.search";
 
@@ -201,6 +202,7 @@ const VIEW_MODES = [
   { key: "triage", label: "Triage" },
   { key: "both", label: "Jobs & Triage" },
   { key: "company", label: "Company" },
+  { key: "unreachable", label: "Unreachable" },
 ];
 
 const SORT_OPTIONS = [
@@ -230,6 +232,8 @@ export default function JobQueue({
   const [sortBy, setSortBy] = useState(() => readStoredViewPref(SORT_STORAGE_KEY, "date_desc"));
   const [triageJobs, setTriageJobs] = useState([]);
   const [triageLoading, setTriageLoading] = useState(false);
+  const [unreachableJobs, setUnreachableJobs] = useState([]);
+  const [unreachableLoading, setUnreachableLoading] = useState(false);
   const [allSheetRows, setAllSheetRows] = useState(null);
   // ai: claude-sonnet-5 | 2026-07-25
   const [contactsByCompany, setContactsByCompany] = useState({});
@@ -363,6 +367,25 @@ export default function JobQueue({
     if (viewMode === "queue") return;
     fetchTriageJobs();
   }, [viewMode, fetchTriageJobs]);
+
+  // ai: claude-sonnet-5 | 2026-08-09
+  const fetchUnreachableJobs = useCallback(async () => {
+    setUnreachableLoading(true);
+    try {
+      const res = await fetch("/api/jobs/unreachable");
+      const data = await res.json();
+      setUnreachableJobs(Array.isArray(data) ? data : []);
+    } catch {
+      /* no-op */
+    } finally {
+      setUnreachableLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (viewMode !== "unreachable") return;
+    fetchUnreachableJobs();
+  }, [viewMode, fetchUnreachableJobs]);
 
   useEffect(() => {
     if (viewMode === "queue") return;
@@ -1296,6 +1319,12 @@ export default function JobQueue({
     return true;
   }), [triageJobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact]);
 
+  // ai: claude-sonnet-5 | 2026-08-09
+  const filteredUnreachableJobs = useMemo(
+    () => unreachableJobs.filter((job) => jobMatchesSearch(job, debouncedSearchText, searchAllFields)),
+    [unreachableJobs, debouncedSearchText, searchAllFields],
+  );
+
   const contactsCount = useMemo(
     () => jobs.filter(jobHasContact).length
       + (viewMode !== "queue" ? triageJobs.filter(jobHasContact).length : 0),
@@ -1652,6 +1681,11 @@ export default function JobQueue({
                   {triageJobs.length}
                 </span>
               )}
+              {mode.key === "unreachable" && unreachableJobs.length > 0 && (
+                <span style={{ background: "#ff5c5c", borderRadius: "999px", color: "#fff", fontSize: "10px", fontWeight: 700, padding: "1px 7px" }}>
+                  {unreachableJobs.length}
+                </span>
+              )}
             </label>
           );
         })}
@@ -1773,9 +1807,11 @@ export default function JobQueue({
         {(() => {
           const totalVisible = viewMode === "queue" ? filteredJobs.length
             : viewMode === "triage" ? filteredTriageJobs.length
+            : viewMode === "unreachable" ? filteredUnreachableJobs.length
             : combinedJobs.length;
           const totalAll = viewMode === "queue" ? jobs.length
             : viewMode === "triage" ? triageJobs.length
+            : viewMode === "unreachable" ? unreachableJobs.length
             : jobs.length + triageJobs.length;
           if (totalAll === 0) return null;
           return (
@@ -2454,6 +2490,13 @@ export default function JobQueue({
             />
           ))
         )
+      ) : viewMode === "unreachable" ? (
+        <UnreachablePanel
+          jobs={filteredUnreachableJobs}
+          loading={unreachableLoading}
+          onNavigateToJobCard={onNavigateToJobCard}
+          onCleared={(jobId) => setUnreachableJobs((prev) => prev.filter((j) => j.id !== jobId))}
+        />
       ) : viewMode === "both" ? (
         combinedJobs.length === 0 ? (
           <div className="empty-state"><p>No jobs match your search.</p></div>

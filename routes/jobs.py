@@ -140,6 +140,32 @@ def get_jobs() -> ResponseReturnValue:
     return jsonify(jobs)
 
 
+# ai: claude-sonnet-5 | 2026-08-09
+@jobs_bp.route("/jobs/unreachable")
+def get_unreachable_jobs() -> ResponseReturnValue:
+    """Jobs the closed-req scan couldn't get a response from on its most recent
+    check (see routes/applications.py's _persist_unreachable_flag), across every
+    pipeline status — the queue/triage tabs each only show one status slice."""
+    with get_repos() as repos:
+        jobs = repos["jobs"].get_unreachable()
+    return jsonify(jobs)
+
+
+# ai: claude-sonnet-5 | 2026-08-09
+@jobs_bp.route("/jobs/<int:job_id>/clear-unreachable", methods=["POST"])
+def clear_unreachable_job(job_id: int) -> ResponseReturnValue:
+    """Dismiss a job's unreachable flag after manual review, without touching its
+    pipeline status — the scan will re-flag it if a future check fails again."""
+    with get_repos() as repos:
+        job = repos["jobs"].get_by_id(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        repos["jobs"].update(job_id, {"unreachable_since": None})
+        updated_job = repos["jobs"].get_by_id(job_id)
+        repos["conn"].commit()
+    return jsonify(updated_job)
+
+
 # ai: claude-sonnet-4-6 | 2026-06-28
 @jobs_bp.route("/jobs/by-company")
 def get_jobs_by_company() -> ResponseReturnValue:

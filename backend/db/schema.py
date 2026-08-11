@@ -179,6 +179,11 @@ def _migrate(conn: Any) -> None:
         # compensation range is stated; NULL when none was found.
         ("salary_min", "INTEGER"),
         ("salary_max", "INTEGER"),
+        # ai: claude-sonnet-5 | 2026-08-09
+        # First date the closed-req scan found this job's URL unreachable (fetch
+        # failure or exhausted browser-extension retries), independent of the job's
+        # own status/stage — cleared the next time a scan gets a real response.
+        ("unreachable_since", "TEXT"),
     ]:
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {defn}")
 

@@ -73,6 +73,7 @@ class PostgresJobRepository(_BaseRepo):
             "dismissed_duplicate_ids",
             "salary_min",
             "salary_max",
+            "unreachable_since",
         }
     )
 
@@ -158,6 +159,17 @@ class PostgresJobRepository(_BaseRepo):
         # _closed_req_candidates depends on that ordering.
         cur = self._execute(
             "SELECT * FROM jobs ORDER BY on_sheet DESC, date_found DESC NULLS LAST, id DESC"
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    # ai: claude-sonnet-5 | 2026-08-09
+    def get_unreachable(self) -> list[dict[str, Any]]:
+        """Jobs the closed-req scan couldn't get a response from on its most recent
+        check, regardless of their current pipeline status (queue/triage/possible
+        duplicate/applied) — see routes/applications.py's _persist_unreachable_flag."""
+        cur = self._execute(
+            "SELECT * FROM jobs WHERE unreachable_since IS NOT NULL"
+            " ORDER BY unreachable_since ASC, id DESC"
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
