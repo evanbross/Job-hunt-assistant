@@ -14,6 +14,8 @@ googleusercontent.com.json
 data/runtime_config.json
 data/.readonly_db_password
 server.log
+.app_stdout.log
+.app_stderr.log
 
 # Uploaded files
 uploads/*.pdf
