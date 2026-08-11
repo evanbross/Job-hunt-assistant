@@ -358,6 +358,8 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   const [jobDialog, setJobDialog] = useState(null);
   // ai: claude-sonnet-4-6 | 2026-06-17
   const [statusFilters, setStatusFilters] = useState(new Set());
+  // ai: claude-sonnet-5 | 2026-08-11
+  const [defaultSnoozeDays, setDefaultSnoozeDays] = useState(4);
   const resizeCleanupRef = useRef(null);
   const reqClosedPollRef = useRef(null);
   const reqClosedDismissedRef = useRef(false);
@@ -367,6 +369,17 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
 
   useEffect(() => {
     return () => clearInterval(reqClosedPollRef.current);
+  }, []);
+
+  // ai: claude-sonnet-5 | 2026-08-11
+  useEffect(() => {
+    fetch("/api/config")
+      .then((res) => res.json())
+      .then((data) => {
+        const days = parseInt(data?.default_snooze_days, 10);
+        if (Number.isFinite(days) && days >= 1) setDefaultSnoozeDays(days);
+      })
+      .catch(() => {});
   }, []);
 
   const loadSheet = async () => {
@@ -1067,6 +1080,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                 setJobDialog(null);
                 onNavigateToJobCard?.(jobId, status);
               }}
+              defaultSnoozeDays={defaultSnoozeDays}
             />
           )}
         </Modal>

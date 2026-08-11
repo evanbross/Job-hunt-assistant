@@ -65,6 +65,7 @@ _VALID_PENALTY_SCOPES: frozenset[str] = frozenset({"title", "company", "body", "
 @settings_bp.route("/config")
 def get_config() -> ResponseReturnValue:
     cfg = config.load_runtime_config()
+    cfg["default_snooze_days"] = config.DEFAULT_SNOOZE_DAYS
     return jsonify(cfg)
 
 

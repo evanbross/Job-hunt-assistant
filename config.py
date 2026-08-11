@@ -166,6 +166,9 @@ DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS: bool = os.getenv(
 # Minimum fit score (0-100) for a board-search result to be inserted into the DB.
 # Jobs scoring below this are silently discarded.
 BOARD_SEARCH_MIN_SCORE: int = int(os.getenv("BOARD_SEARCH_MIN_SCORE", "40"))
+# Number of days a snoozed job/triage card stays hidden from the queue when no
+# explicit "days" value is provided (POST /api/jobs/<id>/snooze).
+DEFAULT_SNOOZE_DAYS: int = int(os.getenv("DEFAULT_SNOOZE_DAYS", "4"))
 # Minutes between automatic career-site scans while the app is running.
 CAREER_SITE_SCAN_INTERVAL_MINUTES: int = int(
     os.getenv("CAREER_SITE_SCAN_INTERVAL_MINUTES", "30")

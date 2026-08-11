@@ -75,6 +75,7 @@ function JobCard({
   onUpdate,
   onNavigateToJobCard,
   contactsByCompany,
+  defaultSnoozeDays,
 }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
@@ -90,7 +91,7 @@ function JobCard({
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [snoozeDays, setSnoozeDays] = useState(() => {
     const stored = parseInt(localStorage.getItem(_DEFAULT_SNOOZE_DAYS_KEY), 10);
-    return Number.isFinite(stored) && stored >= 1 ? stored : 4;
+    return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
   });
   const [pitchText, setPitchText] = useState(null);
   const [pitchType, setPitchType] = useState(null); // "why_company" | "why_fit"

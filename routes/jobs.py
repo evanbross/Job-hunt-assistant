@@ -630,9 +630,9 @@ def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
 def snooze_job(job_id: int) -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     try:
-        days = int(body.get("days", 4))
+        days = int(body.get("days", config.DEFAULT_SNOOZE_DAYS))
     except (TypeError, ValueError):
-        days = 4
+        days = config.DEFAULT_SNOOZE_DAYS
     if days < 1:
         return jsonify({"error": "days must be at least 1"}), 400
     if days > 365:

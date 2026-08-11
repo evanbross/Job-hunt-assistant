@@ -35,7 +35,7 @@
 import JobCard from "../JobCard.jsx";
 import { TriageCard, DuplicateCard } from "../TriagePanel.jsx";
 
-export default function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany) {
+export default function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays) {
   if (job.status === "pending_review") {
     return (
       <JobCard
@@ -48,6 +48,7 @@ export default function renderJobOrTriageCard(job, queueHandlers, triageHandlers
         onNavigateToJobCard={onNavigateToJobCard}
         onUpdate={(jobId, updatedJob) => queueHandlers.onUpdate(jobId, updatedJob, job)}
         contactsByCompany={contactsByCompany}
+        defaultSnoozeDays={defaultSnoozeDays}
       />
     );
   }
