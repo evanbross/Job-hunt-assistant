@@ -944,6 +944,7 @@ function JobCard({
           company={job.company || "Unknown Company"}
           currentJobId={job.id}
           currentJobTitle={job.job_title || ""}
+          duplicateOfId={job.duplicate_of_id}
           error={companyHistory.error}
           loading={companyHistory.loading}
           rows={companyHistory.rows}

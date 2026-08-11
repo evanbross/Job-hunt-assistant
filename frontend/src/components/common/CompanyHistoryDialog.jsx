@@ -157,7 +157,7 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, di
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-28
-export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, error, loading, rows, onClose, onNavigateToJobCard, onSkipDuplicate, onDismissDuplicate, onRefresh }) {
+export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, duplicateOfId, error, loading, rows, onClose, onNavigateToJobCard, onSkipDuplicate, onDismissDuplicate, onRefresh }) {
   const [skippedIds, setSkippedIds] = useState(new Set());
   const [skippingId, setSkippingId] = useState(null);
   const [dismissingId, setDismissingId] = useState(null);
@@ -210,6 +210,14 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
   const searchedPreviousRows = trimmedSearch
     ? visiblePreviousRows.filter((row) => (row.title || "").toLowerCase().includes(trimmedSearch))
     : visiblePreviousRows;
+  // ai: claude-sonnet-5 | 2026-08-11
+  // When the active card is flagged as a possible duplicate of another row,
+  // pull that candidate out of the sorted/filtered list and pin it right below
+  // the current card instead of leaving the user to hunt for it further down.
+  const pinnedMatchRow = duplicateOfId != null ? previousRows.find((row) => row.id === duplicateOfId) : null;
+  const remainingPreviousRows = pinnedMatchRow
+    ? searchedPreviousRows.filter((row) => row.id !== pinnedMatchRow.id)
+    : searchedPreviousRows;
 
   return (
     <Modal
@@ -308,6 +316,32 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
               </div>
             );
           })}
+          {/* ai: claude-sonnet-5 | 2026-08-11 */}
+          {pinnedMatchRow && (() => {
+            const effectiveRow = skippedIds.has(pinnedMatchRow.id) ? { ...pinnedMatchRow, status: "skipped" } : pinnedMatchRow;
+            const navigable = Boolean(onNavigateToJobCard && pinnedMatchRow.id && jobCardTabForStatus(pinnedMatchRow.status));
+            return (
+              <div style={{ marginBottom: "8px" }}>
+                <div style={{ color: "var(--text-muted)", fontSize: "11px", fontWeight: 700, letterSpacing: "0.03em", marginBottom: "4px", textTransform: "uppercase" }}>
+                  Possible match
+                </div>
+                <HistoryRow
+                  row={pinnedMatchRow}
+                  effectiveRow={effectiveRow}
+                  currentJobId={currentJobId}
+                  navigable={navigable}
+                  skippingId={skippingId}
+                  dismissingId={dismissingId}
+                  onSkipDuplicate={onSkipDuplicate}
+                  onDismissDuplicate={onDismissDuplicate}
+                  onNavigateToJobCard={onNavigateToJobCard}
+                  onClose={onClose}
+                  handleSkipDuplicate={handleSkipDuplicate}
+                  handleDismissDuplicate={handleDismissDuplicate}
+                />
+              </div>
+            );
+          })()}
           {/* ai: claude-sonnet-5 | 2026-07-26 */}
           {previousRows.length > 5 && (
             <input
@@ -324,7 +358,7 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                 No jobs match "{search.trim()}".
               </div>
             )}
-            {searchedPreviousRows.map((row) => {
+            {remainingPreviousRows.map((row) => {
               const navigable = Boolean(onNavigateToJobCard && row.id && jobCardTabForStatus(row.status));
               const effectiveRow = skippedIds.has(row.id) ? { ...row, status: "skipped" } : row;
               return (
