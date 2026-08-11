@@ -47,6 +47,7 @@ Output format per job matches what run_import_task expects:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -110,6 +111,43 @@ _DESCRIPTION_SELECTORS = [
     "main article",
 ]
 
+# ai: claude-sonnet-5 | 2026-08-11
+# Salary, location, and remote-work-policy are rendered in a page sidebar, not inside
+# any of the description selectors above — a description-only capture silently omits
+# them, which then reads to the fit-scoring AI as "not stated" even when the listing
+# clearly states them. These fields aren't reliably reachable via DOM selectors either
+# (no stable class names), but Wellfound embeds them as structured data in the page's
+# Next.js/Apollo cache (__NEXT_DATA__ -> apolloState.data["JobListing:<id>"]), which is
+# always present regardless of layout changes to the visible sidebar.
+_REMOTE_KIND_LABELS = {
+    "ONSITE_OR_REMOTE": "Onsite or remote",
+    "FULLY_REMOTE": "Fully remote",
+    "REMOTE_FIRST": "Remote-first",
+    "NOT_REMOTE": "Not remote",
+}
+
+_LISTING_METADATA_JS = """(listingId) => {
+    try {
+        const el = document.getElementById('__NEXT_DATA__');
+        if (!el) return null;
+        const nd = JSON.parse(el.textContent || '{}');
+        const data = nd?.props?.pageProps?.apolloState?.data;
+        const jl = data?.['JobListing:' + listingId];
+        if (!jl) return null;
+        const cfgRef = jl.remoteConfig?.__ref;
+        const cfgKind = cfgRef ? data?.[cfgRef]?.kind : null;
+        return {
+            compensation: jl.compensation || null,
+            locationNames: jl.locationNames || [],
+            remote: !!jl.remote,
+            remoteKind: cfgKind || null,
+            acceptedRemoteLocationNames: jl.acceptedRemoteLocationNames || [],
+        };
+    } catch (e) {
+        return null;
+    }
+}"""
+
 
 # ai: claude-fable-5 | 2026-07-14
 def is_wellfound_job_url(url: str) -> bool:
@@ -141,6 +179,48 @@ def canonical_wellfound_job_url(url: str) -> str:
     if not slug or not slug[0].isdigit() or "/" in slug:
         return ""
     return f"{_BASE}/jobs/{slug}"
+
+
+# ai: claude-sonnet-5 | 2026-08-11
+def _extract_listing_id(url: str) -> str:
+    """Pull the numeric listing ID from a canonical Wellfound job URL."""
+    slug = url.rstrip("/").rsplit("/", 1)[-1]
+    match = re.match(r"(\d+)", slug)
+    return match.group(1) if match else ""
+
+
+# ai: claude-sonnet-5 | 2026-08-11
+def _fetch_listing_metadata(page: Page, listing_id: str) -> str:
+    """Return compensation/location/remote-policy text for the current page's listing.
+
+    Reads Wellfound's embedded Next.js/Apollo cache rather than DOM selectors — see
+    the comment above _DESCRIPTION_SELECTORS for why. Returns "" if the listing id
+    can't be resolved or the cache shape doesn't match (page not fully loaded, or a
+    future Wellfound layout change), so callers can fall back to description-only text.
+    """
+    if not listing_id:
+        return ""
+    try:
+        raw = page.evaluate(_LISTING_METADATA_JS, listing_id)
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+
+    lines: list[str] = []
+    if raw.get("compensation"):
+        lines.append(f"Compensation: {raw['compensation']}")
+    if raw.get("locationNames"):
+        lines.append(f"Location: {', '.join(raw['locationNames'])}")
+    remote_text = _REMOTE_KIND_LABELS.get(raw.get("remoteKind") or "")
+    if not remote_text:
+        remote_text = "Remote" if raw.get("remote") else "Not remote"
+    lines.append(f"Remote work policy: {remote_text}")
+    if raw.get("acceptedRemoteLocationNames"):
+        lines.append(
+            f"Hires remotely in: {', '.join(raw['acceptedRemoteLocationNames'])}"
+        )
+    return "\n".join(lines)
 
 
 # ai: claude-fable-5 | 2026-07-14
@@ -223,7 +303,11 @@ class WellfoundJobFetcher:
                     "Wellfound fetcher: description selector never appeared for %s",
                     target,
                 )
-            return _first_matching_text(page, _DESCRIPTION_SELECTORS, long=True)
+            description = _first_matching_text(page, _DESCRIPTION_SELECTORS, long=True)
+            metadata = _fetch_listing_metadata(page, _extract_listing_id(target))
+            if metadata and description:
+                return f"{metadata}\n\n{description}"
+            return description or metadata
         except Exception as exc:
             logger.warning(
                 "Wellfound fetcher: failed to fetch %s: %s", target or url, exc
@@ -466,10 +550,17 @@ class WellfoundScraper:
                 logger.debug("Wellfound: no title found at %s — skipping", job_url)
                 return None
 
+            # ai: claude-sonnet-5 | 2026-08-11
+            metadata = _fetch_listing_metadata(page, _extract_listing_id(job_url))
+            if metadata and description:
+                listing_text = f"{metadata}\n\n{description}"
+            else:
+                listing_text = description or metadata or ""
+
             return {
                 "url": job_url,
                 "platform": "Wellfound",
-                "listing_text": description or "",
+                "listing_text": listing_text,
                 "company": company or "",
                 "job_title": title,
             }

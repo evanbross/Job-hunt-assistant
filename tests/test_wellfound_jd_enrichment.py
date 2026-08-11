@@ -50,6 +50,8 @@ import config
 from backend.db import open_repositories
 from backend.email_parser import is_email_tracking_url
 from backend.wellfound_scraper import (
+    _extract_listing_id,
+    _fetch_listing_metadata,
     canonical_wellfound_job_url,
     is_wellfound_job_url,
 )
@@ -95,6 +97,66 @@ def test_canonical_wellfound_job_url_rejects_non_listing_pages() -> None:
 
 def test_links_wellfound_is_recognized_as_tracking_domain() -> None:
     assert is_email_tracking_url(_TRACKING_URL)
+
+
+# ─── Listing metadata (salary / location / remote policy) ─────────────────────
+
+
+def test_extract_listing_id_from_canonical_url() -> None:
+    assert _extract_listing_id(_CANONICAL_URL) == "4446105"
+
+
+def test_extract_listing_id_returns_empty_for_non_numeric_slug() -> None:
+    assert _extract_listing_id("https://wellfound.com/jobs/not-numeric") == ""
+
+
+class FakePage:
+    """Stand-in for playwright.sync_api.Page — only .evaluate() is exercised."""
+
+    def __init__(self, result: object) -> None:
+        self._result = result
+
+    def evaluate(self, script: str, arg: object) -> object:
+        return self._result
+
+
+def test_fetch_listing_metadata_formats_salary_location_and_remote_policy() -> None:
+    page = FakePage(
+        {
+            "compensation": "$150k – $210k • 0.75% – 2.0%",
+            "locationNames": ["New York City"],
+            "remote": True,
+            "remoteKind": "ONSITE_OR_REMOTE",
+            "acceptedRemoteLocationNames": ["United States"],
+        }
+    )
+    text = _fetch_listing_metadata(page, "4550881")
+    assert "Compensation: $150k – $210k • 0.75% – 2.0%" in text
+    assert "Location: New York City" in text
+    assert "Remote work policy: Onsite or remote" in text
+    assert "Hires remotely in: United States" in text
+
+
+def test_fetch_listing_metadata_falls_back_to_remote_boolean_when_kind_unknown() -> None:
+    page = FakePage(
+        {
+            "compensation": None,
+            "locationNames": [],
+            "remote": True,
+            "remoteKind": None,
+            "acceptedRemoteLocationNames": [],
+        }
+    )
+    text = _fetch_listing_metadata(page, "123")
+    assert text == "Remote work policy: Remote"
+
+
+def test_fetch_listing_metadata_returns_empty_without_listing_id() -> None:
+    assert _fetch_listing_metadata(FakePage({}), "") == ""
+
+
+def test_fetch_listing_metadata_returns_empty_when_cache_lookup_misses() -> None:
+    assert _fetch_listing_metadata(FakePage(None), "4550881") == ""
 
 
 # ─── Scan integration ─────────────────────────────────────────────────────────

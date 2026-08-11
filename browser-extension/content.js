@@ -538,6 +538,54 @@
     return JSON.stringify({ jobs });
   }
 
+  // ai: claude-sonnet-5 | 2026-08-11
+  const WELLFOUND_REMOTE_KIND_LABELS = {
+    ONSITE_OR_REMOTE: 'Onsite or remote',
+    FULLY_REMOTE: 'Fully remote',
+    REMOTE_FIRST: 'Remote-first',
+    NOT_REMOTE: 'Not remote',
+  };
+
+  // ai: claude-sonnet-5 | 2026-08-11
+  function wellfoundListingIdFromSlug(slug) {
+    const m = (slug || '').match(/^(\d+)/);
+    return m ? m[1] : '';
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-11
+  // Salary, location, and remote-work-policy render in a page sidebar that none of
+  // the description selectors reach, so a description-only capture silently omits
+  // them — the fit-scoring AI then reads the listing as "no salary stated" even when
+  // it's shown right on the page. These fields don't have stable DOM selectors either,
+  // but Wellfound embeds them as structured data in the page's Next.js/Apollo cache.
+  function extractWellfoundListingMetadata(doc, listingId) {
+    if (!listingId) return '';
+    try {
+      const nextDataEl = doc.getElementById('__NEXT_DATA__');
+      if (!nextDataEl) return '';
+      const nd = JSON.parse(nextDataEl.textContent || '{}');
+      const data = nd?.props?.pageProps?.apolloState?.data;
+      const jl = data?.['JobListing:' + listingId];
+      if (!jl) return '';
+      const cfgRef = jl.remoteConfig?.__ref;
+      const cfgKind = cfgRef ? data?.[cfgRef]?.kind : null;
+
+      const lines = [];
+      if (jl.compensation) lines.push('Compensation: ' + jl.compensation);
+      if (jl.locationNames?.length) lines.push('Location: ' + jl.locationNames.join(', '));
+      lines.push(
+        'Remote work policy: ' +
+          (WELLFOUND_REMOTE_KIND_LABELS[cfgKind] || (jl.remote ? 'Remote' : 'Not remote'))
+      );
+      if (jl.acceptedRemoteLocationNames?.length) {
+        lines.push('Hires remotely in: ' + jl.acceptedRemoteLocationNames.join(', '));
+      }
+      return lines.join('\n');
+    } catch {
+      return '';
+    }
+  }
+
   // ai: claude-sonnet-4-6 | 2026-06-27
   async function fetchWellfoundDescription(slug) {
     // Same-origin fetch: content script is on wellfound.com when this runs.
@@ -548,6 +596,9 @@
       if (!res.ok) return '';
       const html = await res.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
+      // ai: claude-sonnet-5 | 2026-08-11
+      const metadata = extractWellfoundListingMetadata(doc, wellfoundListingIdFromSlug(slug));
+      const withMetadata = (text) => (metadata && text ? `${metadata}\n\n${text}` : text || metadata);
 
       const nextDataEl = doc.getElementById('__NEXT_DATA__');
       if (nextDataEl) {
@@ -559,14 +610,16 @@
                   || nd?.props?.pageProps?.jobListingResult?.jobListing
                   || {};
           const raw = jl.description || jl.descriptionSnippet || jl.jobDescription || '';
-          if (raw && raw.length > 100) return raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+          if (raw && raw.length > 100) {
+            return withMetadata(raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim());
+          }
           // Also try React Query / SWR dehydrated state entries
           for (const q of nd?.props?.pageProps?.dehydratedState?.queries || []) {
             const d = q?.state?.data;
             if (!d || typeof d !== 'object') continue;
             const desc = d.description || d.jobDescription || d.descriptionPlainText
                       || d.jobListing?.description || d.listing?.description || '';
-            if (desc && desc.length > 100) return desc.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+            if (desc && desc.length > 100) return withMetadata(desc.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim());
           }
         } catch { /* fall through to DOM selectors */ }
       }
@@ -579,14 +632,14 @@
         'main article',
         'main',
       ]);
-      if (fromDom.length > 100) return fromDom;
+      if (fromDom.length > 100) return withMetadata(fromDom);
 
       // Last resort: the fetched page may render client-side, so DOM selectors find nothing.
       // Take the full body text — noisy but gives the importer enough to work with.
       const bodyText = (doc.body?.textContent || '').replace(/\s+/g, ' ').trim();
-      if (bodyText.length > 200) return bodyText.slice(0, 8000);
+      if (bodyText.length > 200) return withMetadata(bodyText.slice(0, 8000));
 
-      return '';
+      return metadata;
     } catch {
       return '';
     }
@@ -604,11 +657,15 @@
       '[class*="jobDescription"]', '[data-test="JobDescription"]',
       'section article', 'main article',
     ]);
+    // ai: claude-sonnet-5 | 2026-08-11
+    const slug = location.pathname.match(/\/jobs\/([^/?#]+)/)?.[1] || '';
+    const metadata = extractWellfoundListingMetadata(document, wellfoundListingIdFromSlug(slug));
 
     const lines = [];
     if (title) lines.push(title);
     if (company) lines.push('Company: ' + company);
     lines.push('URL: ' + location.href);
+    if (metadata) lines.push('', metadata);
     // ai: claude-sonnet-4-6 | 2026-06-26
     if (description) {
       lines.push('', description);
@@ -629,11 +686,21 @@
     // individual job pages render descriptions client-side so a plain HTML fetch
     // returns no usable content.
     const selectedSlug = new URLSearchParams(location.search).get('job_listing_slug') || '';
-    const selectedDesc = selectedSlug ? longestText([
+    let selectedDesc = selectedSlug ? longestText([
       '[class*="job-description"]', '[class*="description"] .prose',
       '[class*="jobDescription"]', '[data-test="JobDescription"]',
       'section article', 'main article',
     ]) : '';
+    // ai: claude-sonnet-5 | 2026-08-11
+    if (selectedSlug) {
+      const selectedMetadata = extractWellfoundListingMetadata(
+        document,
+        wellfoundListingIdFromSlug(selectedSlug)
+      );
+      if (selectedMetadata) {
+        selectedDesc = selectedDesc ? `${selectedMetadata}\n\n${selectedDesc}` : selectedMetadata;
+      }
+    }
 
     const items = slugs.map(slug => {
       const url = 'https://wellfound.com/jobs?job_listing_slug=' + slug;
