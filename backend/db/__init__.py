@@ -65,6 +65,7 @@ from .interfaces import (
     ICareerScanResultRepository,
     ICareerSiteSourceRepository,
     IContactRepository,
+    ICoverLetterPhraseRepository,
     IEmailSourceRepository,
     IEmailSubjectRuleRepository,
     IImportRepairHistoryRepository,
@@ -94,6 +95,7 @@ from .repositories.career_scan_failures import PostgresCareerScanFailureReposito
 from .repositories.career_scan_results import PostgresCareerScanResultRepository
 from .repositories.career_site_sources import PostgresCareerSiteSourceRepository
 from .repositories.contacts import PostgresContactRepository
+from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseRepository
 from .repositories.email_sources import PostgresEmailSourceRepository
 from .repositories.email_subject_rules import PostgresEmailSubjectRuleRepository
 from .repositories.import_repair_history import PostgresImportRepairHistoryRepository
@@ -116,6 +118,7 @@ __all__ = [
     "ICareerScanResultRepository",
     "ICareerSiteSourceRepository",
     "IContactRepository",
+    "ICoverLetterPhraseRepository",
     "IEmailSourceRepository",
     "IEmailSubjectRuleRepository",
     "IImportRepairHistoryRepository",
@@ -138,6 +141,7 @@ __all__ = [
     "PostgresCareerScanResultRepository",
     "PostgresCareerSiteSourceRepository",
     "PostgresContactRepository",
+    "PostgresCoverLetterPhraseRepository",
     "PostgresEmailSourceRepository",
     "PostgresEmailSubjectRuleRepository",
     "PostgresImportRepairHistoryRepository",
@@ -296,6 +300,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "browser_capture_queue": PostgresBrowserCaptureQueueRepository(conn),
         "import_repair_history": PostgresImportRepairHistoryRepository(conn),
         "contacts": PostgresContactRepository(conn),
+        "cover_letter_phrases": PostgresCoverLetterPhraseRepository(conn),
         "jd_health_targets": PostgresJdHealthCheckTargetRepository(conn),
         "jd_health_results": PostgresJdHealthCheckResultRepository(conn),
     }

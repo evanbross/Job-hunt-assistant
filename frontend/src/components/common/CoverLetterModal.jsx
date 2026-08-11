@@ -8,6 +8,7 @@
 // ai: claude-sonnet-4-6 | 2026-06-27
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal.jsx";
+import PhraseBookModal from "./PhraseBookModal.jsx"; // ai: claude-sonnet-5 | 2026-08-11
 import { pickSaveFolder, promptForSaveFolder } from "../../utils/saveFolderUtils.js"; // ai: claude-fable-5 | 2026-07-13
 import { describeFetchError } from "../../utils/fetchErrorUtils.js"; // ai: claude-fable-5 | 2026-07-15
 
@@ -62,6 +63,8 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState(null);
+  const [phraseBookMode, setPhraseBookMode] = useState(null); // null | "insert" | "save"
+  const [phraseBookSaveText, setPhraseBookSaveText] = useState("");
   const chatMessagesRef = useRef(null);
   const hasLearnedRef = useRef(false);
 
@@ -184,6 +187,13 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
     setSaveStatus(null);
   };
 
+  // ai: claude-sonnet-5 | 2026-08-11
+  const handlePhraseInsert = (phraseText) => {
+    setChatInput(
+      `Please work this into the "why this company" paragraph, adapting it to fit naturally:\n\n${phraseText}`
+    );
+  };
+
   const subtitle = `${job.job_title || "Untitled role"}${job.company ? ` at ${job.company}` : ""}`;
 
   return (
@@ -196,6 +206,9 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
             Draft
           </span>
           <div style={{ display: "flex", gap: "6px" }}>
+            <button className="btn-secondary" onClick={() => setPhraseBookMode("insert")} style={{ fontSize: "11px", padding: "3px 10px" }}>
+              Phrase Book
+            </button>
             <button className="btn-secondary" onClick={handleCopy} style={{ fontSize: "11px", padding: "3px 10px" }}>
               {copied ? "Copied!" : "Copy"}
             </button>
@@ -273,6 +286,12 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
         <p style={{ fontSize: "13px", lineHeight: "1.7", color: "var(--text)", whiteSpace: "pre-wrap", margin: 0 }}>
           {currentLetter}
         </p>
+        <button
+          onClick={() => { setPhraseBookSaveText(currentLetter); setPhraseBookMode("save"); }}
+          style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: "12px", padding: "6px 0 0 0", textDecoration: "underline" }}
+        >
+          Save a paragraph to Phrase Book
+        </button>
 
         {/* AI chat */}
         <div style={{ marginTop: "16px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
@@ -282,22 +301,29 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
           {chatMessages.length > 0 && (
             <div ref={chatMessagesRef} style={{ maxHeight: "300px", overflowY: "auto", marginBottom: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
               {chatMessages.map((msg, i) => (
-                <div
-                  key={i}
-                  style={{
-                    alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
-                    maxWidth: "85%",
-                    background: msg.role === "user" ? "var(--accent)" : "var(--surface)",
-                    color: msg.role === "user" ? "#fff" : "var(--text)",
-                    border: msg.role === "user" ? "none" : "1px solid var(--border)",
-                    borderRadius: "var(--radius)",
-                    padding: "8px 12px",
-                    fontSize: "13px",
-                    lineHeight: "1.5",
-                    whiteSpace: "pre-wrap",
-                  }}
-                >
-                  {msg.content}
+                <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: msg.role === "user" ? "flex-end" : "flex-start", maxWidth: "85%", alignSelf: msg.role === "user" ? "flex-end" : "flex-start" }}>
+                  <div
+                    style={{
+                      background: msg.role === "user" ? "var(--accent)" : "var(--surface)",
+                      color: msg.role === "user" ? "#fff" : "var(--text)",
+                      border: msg.role === "user" ? "none" : "1px solid var(--border)",
+                      borderRadius: "var(--radius)",
+                      padding: "8px 12px",
+                      fontSize: "13px",
+                      lineHeight: "1.5",
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
+                    {msg.content}
+                  </div>
+                  {msg.role === "user" && (
+                    <button
+                      onClick={() => { setPhraseBookSaveText(msg.content); setPhraseBookMode("save"); }}
+                      style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "10px", padding: "2px 2px 0 2px", textDecoration: "underline" }}
+                    >
+                      Save this to Phrase Book
+                    </button>
+                  )}
                 </div>
               ))}
               {chatSending && (
@@ -332,6 +358,13 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
         </div>
 
       </div>
+
+      {phraseBookMode === "insert" && (
+        <PhraseBookModal onClose={() => setPhraseBookMode(null)} onInsert={handlePhraseInsert} />
+      )}
+      {phraseBookMode === "save" && (
+        <PhraseBookModal onClose={() => setPhraseBookMode(null)} initialText={phraseBookSaveText} />
+      )}
     </Modal>
   );
 }

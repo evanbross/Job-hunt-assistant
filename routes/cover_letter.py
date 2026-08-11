@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 import docx
@@ -52,6 +53,7 @@ from backend.cover_letter_learning import CoverLetterStyleLearner
 from backend.resume_tailor import ResumeTailoringGenerator
 from backend.utils import (
     _ai_error_http_status,
+    format_phrase_book_section,
     get_repos,
     safe_error_message,
 )
@@ -89,11 +91,12 @@ def generate_cover_letter(job_id: int) -> ResponseReturnValue:
             return jsonify({"error": "Job not found"}), 404
         resume_row = repos["resume"].get_latest()
         resume_text = resume_row["content"] if resume_row else None
+        phrases = repos["cover_letter_phrases"].get_all()
     # Connection released before AI generation
 
     try:
         generator = CoverLetterGenerator()
-        cover_letter = generator.generate(job, resume_text=resume_text)
+        cover_letter = generator.generate(job, resume_text=resume_text, phrases=phrases)
     except Exception as exc:
         logger.error(
             "Cover letter generation failed for job %d: %s", job_id, exc, exc_info=True
@@ -257,6 +260,9 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(job_id)
         resume_row = repos["resume"].get_latest()
+        phrases = (
+            repos["cover_letter_phrases"].get_all() if pitch_type == "why_company" else []
+        )
     # Connection released before AI generation
 
     if not job:
@@ -275,10 +281,16 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
                 f"\nJOB CONTEXT (from fit analysis):\n{fit_reasoning[:1500]}\n"
             )
 
+    # ai: claude-sonnet-5 | 2026-08-11
+    phrase_book_section = format_phrase_book_section(
+        phrases, company=company, job_title=job_title
+    )
+
     system_prompt = (
         f"You are writing on behalf of a job candidate.\n\n"
         f"CANDIDATE PROFILE:\n{candidate_profile}\n"
         f"{resume_block}"
+        f"{phrase_book_section}\n"
         "Write in first person. Match the candidate's writing style exactly as described "
         "in the Writing Style section of their profile. "
         "2 paragraphs maximum. No bullet points. No headers."
@@ -592,3 +604,79 @@ def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
         ).strip()
 
     return jsonify({"reply": reply_text, "updated_analysis": updated_analysis})
+
+
+# ai: claude-sonnet-5 | 2026-08-11
+@cover_letter_bp.route("/phrase-book")
+def get_phrase_book() -> ResponseReturnValue:
+    """List all saved cover-letter phrase-book entries."""
+    with get_repos() as repos:
+        rows = repos["cover_letter_phrases"].get_all()
+    return jsonify(rows)
+
+
+@cover_letter_bp.route("/phrase-book", methods=["POST"])
+def create_phrase_book_entry() -> ResponseReturnValue:
+    data = request.get_json(silent=True) or {}
+    tag = (data.get("tag") or "").strip()
+    label = (data.get("label") or "").strip()
+    phrase_text = (data.get("phrase_text") or "").strip()
+    if not tag or not label or not phrase_text:
+        return jsonify({"error": "tag, label, and phrase_text are required"}), 400
+
+    with get_repos() as repos:
+        row_id = repos["cover_letter_phrases"].insert(
+            {
+                "tag": tag,
+                "label": label,
+                "phrase_text": phrase_text,
+                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+        )
+        row = repos["cover_letter_phrases"].get_by_id(row_id)
+        repos["conn"].commit()
+    return jsonify(row), 201
+
+
+@cover_letter_bp.route("/phrase-book/<int:phrase_id>", methods=["PUT"])
+def update_phrase_book_entry(phrase_id: int) -> ResponseReturnValue:
+    data = request.get_json(silent=True) or {}
+    fields: dict[str, object] = {}
+
+    if "tag" in data:
+        tag = (data.get("tag") or "").strip()
+        if not tag:
+            return jsonify({"error": "tag cannot be empty"}), 400
+        fields["tag"] = tag
+    if "label" in data:
+        label = (data.get("label") or "").strip()
+        if not label:
+            return jsonify({"error": "label cannot be empty"}), 400
+        fields["label"] = label
+    if "phrase_text" in data:
+        phrase_text = (data.get("phrase_text") or "").strip()
+        if not phrase_text:
+            return jsonify({"error": "phrase_text cannot be empty"}), 400
+        fields["phrase_text"] = phrase_text
+    fields["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+
+    with get_repos() as repos:
+        existing = repos["cover_letter_phrases"].get_by_id(phrase_id)
+        if not existing:
+            return jsonify({"error": "Phrase not found"}), 404
+        repos["cover_letter_phrases"].update(phrase_id, fields)
+        row = repos["cover_letter_phrases"].get_by_id(phrase_id)
+        repos["conn"].commit()
+    return jsonify(row)
+
+
+@cover_letter_bp.route("/phrase-book/<int:phrase_id>", methods=["DELETE"])
+def delete_phrase_book_entry(phrase_id: int) -> ResponseReturnValue:
+    with get_repos() as repos:
+        existing = repos["cover_letter_phrases"].get_by_id(phrase_id)
+        if not existing:
+            return jsonify({"error": "Phrase not found"}), 404
+        repos["cover_letter_phrases"].delete(phrase_id)
+        repos["conn"].commit()
+    return jsonify({"status": "ok"})

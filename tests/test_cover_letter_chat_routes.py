@@ -63,6 +63,12 @@ class FakeResumeRepo:
         return {"id": 1, "filename": "resume.pdf", "content": self._content}
 
 
+# ai: claude-sonnet-5 | 2026-08-11
+class FakeCoverLetterPhraseRepo:
+    def get_all(self) -> list[dict[str, Any]]:
+        return []
+
+
 class FakeAIClient:
     """Captures the prompt kwargs the route sends to the AI provider."""
 
@@ -102,6 +108,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Any:
     repos = {
         "jobs": FakeJobsRepo(job_row),
         "resume": FakeResumeRepo(),
+        "cover_letter_phrases": FakeCoverLetterPhraseRepo(),
         "conn": FakeConnection(),
     }
     monkeypatch.setattr(cover_letter_module, "get_repos", make_fake_get_repos(repos))

@@ -42,13 +42,19 @@ from __future__ import annotations
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.utils import format_phrase_book_section
 
 
 class CoverLetterGenerator:
     def __init__(self) -> None:
         self._client = AIProviderClient()
 
-    def generate(self, job: dict, resume_text: str | None = None) -> str:
+    def generate(
+        self,
+        job: dict,
+        resume_text: str | None = None,
+        phrases: list[dict] | None = None,
+    ) -> str:
         """
         Generate a concise cover letter for *job*.
 
@@ -56,6 +62,9 @@ class CoverLetterGenerator:
         Optional fields used when present: url, job_description, raw_email_snippet,
         fit_reasoning.
         resume_text is the plain-text content of the candidate's uploaded resume.
+        phrases is the candidate's saved phrase-book entries (backend/db table
+        cover_letter_phrases) offered to the model as reusable "why this company"
+        material.
         Returns plain text (no markdown).
         """
         company = job.get("company") or "the company"
@@ -88,6 +97,9 @@ class CoverLetterGenerator:
         )
 
         job_url_line = f"\nJob posting URL: {url}" if url else ""
+        phrase_book_section = format_phrase_book_section(
+            phrases or [], company=company, job_title=job_title
+        )
 
         # ai: claude-sonnet-4-6 | 2026-06-10
         prompt = (
@@ -99,6 +111,7 @@ class CoverLetterGenerator:
             .replace("{{RESUME_SECTION}}", resume_section)
             .replace("{{FIT_SECTION}}", fit_section)
             .replace("{{JOB_DESCRIPTION_SECTION}}", job_description_section)
+            .replace("{{PHRASE_BOOK_SECTION}}", phrase_book_section)
         )
 
         return self._client.complete(

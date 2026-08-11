@@ -5,6 +5,9 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
+// ai: claude-sonnet-5 | 2026-08-11
+import { createPortal } from "react-dom";
+
 /**
  * Standard Modal component for consistent dialogs across the app.
  *
@@ -30,7 +33,10 @@ export default function Modal({
   maxWidth,
   showCloseButton = true,
 }) {
-  return (
+  // Portal to document.body so a modal opened from inside another modal isn't
+  // clipped by the parent's `overflow: hidden` panel or mispositioned by its
+  // `backdrop-filter` (which creates a containing block for fixed descendants).
+  return createPortal(
     <div className="modal-backdrop">
       <div
         className="modal-panel"
@@ -63,6 +69,7 @@ export default function Modal({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

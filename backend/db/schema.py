@@ -725,6 +725,21 @@ def _create_tables(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_contacts_company_normalized
             ON contacts (company_normalized)
         """,
+        # ai: claude-sonnet-5 | 2026-08-11
+        """
+        CREATE TABLE IF NOT EXISTS cover_letter_phrases (
+            id          SERIAL PRIMARY KEY,
+            tag         TEXT NOT NULL,
+            label       TEXT NOT NULL,
+            phrase_text TEXT NOT NULL,
+            created_at  TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+            updated_at  TEXT
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_cover_letter_phrases_tag
+            ON cover_letter_phrases (tag)
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()
