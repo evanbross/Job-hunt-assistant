@@ -1236,9 +1236,14 @@ export default function JobQueue({
     }
   };
 
-  const pollImportStatus = async () => {
+  const pollImportStatus = async (importId) => {
     try {
-      const res = await fetch("/api/import/status");
+      // ai: claude-sonnet-5 | 2026-08-12
+      // Scope the poll to this specific import so it isn't confused with another
+      // import (e.g. a browser-extension capture) that's now allowed to run
+      // concurrently alongside it — see routes/import_.py's per-import tracking.
+      const query = importId ? `?import_id=${encodeURIComponent(importId)}` : "";
+      const res = await fetch(`/api/import/status${query}`);
       const state = await res.json();
       setImportState(state);
       if (!state.running) {
@@ -1582,9 +1587,13 @@ export default function JobQueue({
         return;
       }
       if (res.status === 202) {
-        // Background job started — poll for progress
+        // ai: claude-sonnet-5 | 2026-08-12
+        // Background job started — poll for progress, scoped to this import_id
+        // so it stays accurate even if another import starts concurrently.
+        const importId = data.import_id;
         clearInterval(importPollRef.current);
-        importPollRef.current = setInterval(pollImportStatus, 1200);
+        pollImportStatus(importId);
+        importPollRef.current = setInterval(() => pollImportStatus(importId), 1200);
       } else {
         // Synchronous result (e.g. no URLs found)
         setImportSummary(data);

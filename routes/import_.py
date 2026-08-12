@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -73,15 +74,22 @@ _STUCK_TASK_TIMEOUT_SECONDS = (
 
 
 # ─── Active task tracking ─────────────────────────────────────────────────────
-# Stores the Celery task ID for the most recently dispatched import.
-# The status endpoint reads progress from the Celery result backend (Redis)
-# rather than in-process memory, so the Flask and worker processes are decoupled.
+# Multiple imports (browser-extension captures and UI-triggered pastes) can be
+# in flight at once — each is tracked independently by a server-generated
+# import_id so their progress never gets mixed up. The Celery task itself only
+# exists once analysis + capture-source resolution finish, so import_id (not
+# task_id) is the stable handle a caller polls with from the very first request.
+# The status endpoint reads live progress from the Celery result backend (Redis)
+# once a task_id is attached, rather than in-process memory, so the Flask and
+# worker processes are decoupled.
+#
+# ai: claude-sonnet-5 | 2026-08-12
+# Bounded so a long-running dev process doesn't accumulate finished entries
+# forever — pruned opportunistically whenever a new import starts.
+_MAX_TRACKED_IMPORTS = 50
 
-_current_task_id: str | None = None
-_current_trigger: str = "ui"
-_current_started_at: str = ""
-_current_listener_status: "ImportProgressState | None" = None
-_task_id_lock = threading.Lock()
+_active_imports: dict[str, "ImportProgressState"] = {}
+_imports_lock = threading.Lock()
 
 
 @dataclass
@@ -98,6 +106,7 @@ class ImportProgressState:
     current_platform: str = ""
     capture_source: dict[str, Any] | None = None
     steps: list[dict[str, str]] = field(default_factory=list)
+    task_id: str | None = None  # ai: claude-sonnet-5 | 2026-08-12 — set once the Celery task is dispatched
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +122,7 @@ class ImportProgressState:
             "started_at": self.started_at,
             "capture_source": self.capture_source,
             "steps": self.steps or _import_steps(self.phase, self.running),
+            "task_id": self.task_id,
         }
 
 
@@ -142,10 +152,52 @@ def _import_steps(phase: str, running: bool) -> list[dict[str, str]]:
     return steps
 
 
-def _set_import_progress(state: ImportProgressState) -> None:
-    global _current_listener_status
-    with _task_id_lock:
-        _current_listener_status = state
+# ai: claude-sonnet-5 | 2026-08-12 — keyed by import_id instead of a single global slot
+def _set_import_progress(import_id: str, state: ImportProgressState) -> None:
+    with _imports_lock:
+        _active_imports[import_id] = state
+        _prune_finished_imports_locked()
+
+
+# ai: claude-sonnet-5 | 2026-08-12
+def _prune_finished_imports_locked() -> None:
+    """Drop the oldest entries once tracked imports exceed the cap.
+
+    Must be called while holding _imports_lock. Prunes by age rather than
+    state.running — that flag is only meaningful pre-dispatch (see
+    _lookup_import_locked), so it can't tell a finished import from a running
+    one once a Celery task_id is attached.
+    """
+    overflow = len(_active_imports) - _MAX_TRACKED_IMPORTS
+    if overflow <= 0:
+        return
+    oldest_keys = sorted(
+        _active_imports, key=lambda key: _active_imports[key].started_at
+    )
+    for key in oldest_keys[:overflow]:
+        del _active_imports[key]
+
+
+# ai: claude-sonnet-5 | 2026-08-12
+def _lookup_import_locked(
+    import_id: str,
+) -> tuple[str, ImportProgressState] | None:
+    """Must be called while holding _imports_lock.
+
+    With an explicit import_id, looks up that entry exactly. Without one
+    (older/aggregate pollers, e.g. the listener-import banner in App.jsx),
+    falls back to the most recently started import overall — the same
+    "latest import" semantics the old single-slot tracker had. state.running
+    is only meaningful pre-dispatch (it's never flipped back to False once a
+    Celery task_id is attached — real completion is read from Celery), so it
+    is not a reliable filter here.
+    """
+    if import_id:
+        state = _active_imports.get(import_id)
+        return (import_id, state) if state is not None else None
+    if not _active_imports:
+        return None
+    return max(_active_imports.items(), key=lambda kv: kv[1].started_at)
 
 
 def _capture_source_suggestions(repos: dict[str, object], query: str) -> list[dict]:
@@ -330,44 +382,22 @@ def _resolve_capture_source(
     )
 
 
+# ai: claude-sonnet-5 | 2026-08-12 — removed the single-flight 409 guard; see _active_imports above
 def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
-    """Analyze a captured page payload and dispatch a Celery import task."""
+    """Analyze a captured page payload and dispatch a Celery import task.
+
+    Imports run concurrently — the Celery worker pool (see celery_app.py)
+    processes several at once, so this no longer rejects a capture just
+    because another import is already in flight. Each call gets its own
+    import_id, tracked independently in _active_imports, so a caller polling
+    /api/import/status?import_id=<id> only ever sees its own progress.
+    """
     dump_import_capture(body)
-    global _current_task_id, _current_trigger, _current_started_at
+    import_id = uuid.uuid4().hex
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
 
-    # ai: claude-sonnet-5 | 2026-07-22
-    # Check for an in-flight import BEFORE touching the shared progress state.
-    # A rejected duplicate capture (e.g. several browser-extension captures fired
-    # back-to-back during an email import) must not overwrite the status that the
-    # UI is polling for the import that's actually running — doing so desynced
-    # _current_listener_status.started_at from _current_started_at and made
-    # /api/import/status permanently replay the stale rejection instead of the
-    # real task's live progress.
-    with _task_id_lock:
-        existing_task_id = _current_task_id
-        existing_started_at = _current_started_at
-    if existing_task_id:
-        existing = AsyncResult(existing_task_id, app=celery_app)
-        if existing.state not in ("SUCCESS", "FAILURE", "REVOKED"):
-            if _is_task_stale(existing_started_at):
-                # Stale PENDING/STARTED task — treat as timed out and allow new import
-                logger.warning(
-                    "Clearing stale import task %s (started %s)",
-                    existing_task_id,
-                    existing_started_at,
-                )
-                with _task_id_lock:
-                    _current_task_id = None
-            else:
-                logger.info(
-                    "Rejected import capture (trigger=%s) — import %s already running",
-                    trigger,
-                    existing_task_id,
-                )
-                return {"error": "An import is already running"}, 409
-
     _set_import_progress(
+        import_id,
         ImportProgressState(
             running=True,
             phase="receiving",
@@ -375,7 +405,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
             message="Job description received from browser stream.",
             trigger=trigger,
             started_at=started_at,
-        )
+        ),
     )
 
     raw_content = str(body.get("content") or "")
@@ -389,6 +419,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     # validated URLs and are ready to resolve the capture source.
     try:
         _set_import_progress(
+            import_id,
             ImportProgressState(
                 running=True,
                 phase="filtering",
@@ -396,7 +427,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
                 message="Filtering captured page content for job links.",
                 trigger=trigger,
                 started_at=started_at,
-            )
+            ),
         )
         analysis = CapturedPageImportService().analyze_capture(
             raw_content, content_format, base_url=page_url
@@ -405,6 +436,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     except ValueError as exc:
         _dismiss_capture_queue_item(page_url)
         _set_import_progress(
+            import_id,
             ImportProgressState(
                 running=False,
                 phase="error",
@@ -412,13 +444,14 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
                 message=str(exc),
                 trigger=trigger,
                 started_at=started_at,
-            )
+            ),
         )
-        return {"error": str(exc)}, 400
+        return {"error": str(exc), "import_id": import_id}, 400
     except Exception as exc:
         logger.error("Captured page analysis failed: %s", exc)
         _dismiss_capture_queue_item(page_url)
         _set_import_progress(
+            import_id,
             ImportProgressState(
                 running=False,
                 phase="error",
@@ -426,9 +459,9 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
                 message="Captured page analysis failed.",
                 trigger=trigger,
                 started_at=started_at,
-            )
+            ),
         )
-        return {"error": "Captured page analysis failed"}, 500
+        return {"error": "Captured page analysis failed", "import_id": import_id}, 500
 
     if not extracted:
         # ai: claude-sonnet-4-6 | 2026-06-20
@@ -436,6 +469,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         # a page that consistently yields no jobs (e.g. a login wall or dead ad).
         _dismiss_capture_queue_item(page_url)
         _set_import_progress(
+            import_id,
             ImportProgressState(
                 running=False,
                 phase="done",
@@ -444,11 +478,18 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
                 trigger=trigger,
                 started_at=started_at,
                 result={"queued": 0, "skipped": 0, "failed": 0, "jobs": []},
-            )
+            ),
         )
-        return {"queued": 0, "skipped": 0, "failed": 0, "jobs": []}, 200
+        return {
+            "queued": 0,
+            "skipped": 0,
+            "failed": 0,
+            "jobs": [],
+            "import_id": import_id,
+        }, 200
 
     _set_import_progress(
+        import_id,
         ImportProgressState(
             running=True,
             phase="filtering",
@@ -457,7 +498,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
             trigger=trigger,
             started_at=started_at,
             total=len(extracted),
-        )
+        ),
     )
 
     with get_repos() as repos:
@@ -467,6 +508,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
             )
         except ValueError as exc:
             _set_import_progress(
+                import_id,
                 ImportProgressState(
                     running=False,
                     phase="error",
@@ -474,12 +516,13 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
                     message=str(exc),
                     trigger=trigger,
                     started_at=started_at,
-                )
+                ),
             )
-            return {"error": str(exc)}, 400
+            return {"error": str(exc), "import_id": import_id}, 400
         if source_error:
             payload, status_code = source_error
             _set_import_progress(
+                import_id,
                 ImportProgressState(
                     running=False,
                     phase="error",
@@ -490,12 +533,13 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
                     trigger=trigger,
                     started_at=started_at,
                     total=len(extracted),
-                )
+                ),
             )
-            return payload, status_code
+            return {**payload, "import_id": import_id}, status_code
         repos["conn"].commit()
 
     _set_import_progress(
+        import_id,
         ImportProgressState(
             running=True,
             phase="matching",
@@ -505,13 +549,13 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
             started_at=started_at,
             total=len(extracted),
             capture_source=capture_source,
-        )
+        ),
     )
     task = run_import_task.delay(extracted, capture_source, body)
-    with _task_id_lock:
-        _current_task_id = task.id
-        _current_trigger = trigger
-        _current_started_at = started_at
+    with _imports_lock:
+        state = _active_imports.get(import_id)
+        if state is not None:
+            state.task_id = task.id
     # ai: claude-sonnet-4-6 | 2026-06-26
     _source_label = (
         (capture_source or {}).get("name")
@@ -546,21 +590,29 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     except Exception as exc:
         logger.warning("Failed to mark browser capture queue items done: %s", exc)
 
-    return {"status": "started", "task_id": task.id}, 202
+    return {"status": "started", "task_id": task.id, "import_id": import_id}, 202
 
 
 # ─── Import routes ────────────────────────────────────────────────────────────
 
 
 # ai: claude-sonnet-4-6 | 2026-06-20
+# ai: claude-sonnet-5 | 2026-08-12 — accepts an optional import_id to clear one
+# stuck import without disturbing any other imports currently in flight.
 @import_bp.route("/import/reset", methods=["POST"])
 def reset_import() -> ResponseReturnValue:
-    """Force-clear a stuck import task so a new import can be started."""
-    global _current_task_id, _current_listener_status
-    with _task_id_lock:
-        _current_task_id = None
-        _current_listener_status = None
-    logger.info("Import state force-reset by user request")
+    """Force-clear a stuck import (or, without import_id, all tracked imports)."""
+    body = request.get_json(silent=True) or {}
+    import_id = str(body.get("import_id") or request.args.get("import_id") or "").strip()
+    with _imports_lock:
+        if import_id:
+            _active_imports.pop(import_id, None)
+        else:
+            _active_imports.clear()
+    logger.info(
+        "Import state force-reset by user request%s",
+        f" (import_id={import_id})" if import_id else " (all tracked imports)",
+    )
     return jsonify({"ok": True}), 200
 
 
@@ -641,37 +693,49 @@ def import_and_queue_all_jobs() -> ResponseReturnValue:
     return jsonify(payload), status_code
 
 
+# ai: claude-sonnet-5 | 2026-08-12
+def _idle_status_payload() -> dict[str, Any]:
+    return {
+        "running": False,
+        "phase": "idle",
+        "progress": 0,
+        "message": "Idle",
+        "total": 0,
+        "result": None,
+        "current_job_url": "",
+        "current_platform": "",
+        "trigger": "ui",
+        "started_at": "",
+        "capture_source": None,
+        "steps": _import_steps("idle", False),
+        "import_id": None,
+        "task_id": None,
+    }
+
+
+# ai: claude-sonnet-5 | 2026-08-12
+# Rewritten for concurrent imports: an explicit ?import_id=<id> looks up exactly
+# one tracked import (see _active_imports above); omitting it preserves the old
+# single-import pollers (e.g. App.jsx's listener banner) by falling back to the
+# most relevant import server-side. Each import_id carries its own Celery
+# task_id once dispatched, so two imports polling concurrently never see each
+# other's progress.
 @import_bp.route("/import/status")
 def import_status() -> ResponseReturnValue:
-    global _current_task_id
-    with _task_id_lock:
-        task_id = _current_task_id
-        trigger = _current_trigger
-        started_at = _current_started_at
-        listener_status = _current_listener_status
+    import_id = str(request.args.get("import_id") or "").strip()
+    with _imports_lock:
+        found = _lookup_import_locked(import_id)
+    if found is None:
+        return jsonify(_idle_status_payload())
+    key, tracked = found
+    trigger = tracked.trigger
+    started_at = tracked.started_at
+    task_id = tracked.task_id
 
     if not task_id:
-        if listener_status:
-            return jsonify(listener_status.as_dict())
-        return jsonify(
-            {
-                "running": False,
-                "phase": "idle",
-                "progress": 0,
-                "message": "Idle",
-                "total": 0,
-                "result": None,
-                "current_job_url": "",
-                "current_platform": "",
-                "trigger": trigger,
-                "started_at": started_at,
-                "capture_source": None,
-                "steps": _import_steps("idle", False),
-            }
-        )
-
-    if listener_status and listener_status.started_at != started_at:
-        return jsonify(listener_status.as_dict())
+        # Still in the synchronous receiving/filtering/source-resolution phase
+        # that runs before the Celery task exists.
+        return jsonify(tracked.as_dict())
 
     result = AsyncResult(task_id, app=celery_app)
     state = result.state
@@ -684,8 +748,8 @@ def import_status() -> ResponseReturnValue:
             logger.warning(
                 "Auto-clearing stuck import task %s (started %s)", task_id, started_at
             )
-            with _task_id_lock:
-                _current_task_id = None
+            with _imports_lock:
+                _active_imports.pop(key, None)
             return jsonify(
                 {
                     "running": False,
@@ -700,6 +764,8 @@ def import_status() -> ResponseReturnValue:
                     "started_at": started_at,
                     "capture_source": None,
                     "steps": _import_steps("error", False),
+                    "import_id": key,
+                    "task_id": task_id,
                 }
             )
         # ai: claude-sonnet-4-6 | 2026-06-21
@@ -740,6 +806,8 @@ def import_status() -> ResponseReturnValue:
                 "repaired": meta.get("repaired", 0),
                 "enriched": meta.get("enriched", 0),
                 "failed": meta.get("failed", 0),
+                "import_id": key,
+                "task_id": task_id,
             }
         )
 
@@ -764,6 +832,8 @@ def import_status() -> ResponseReturnValue:
                 "repaired": meta.get("repaired", 0),
                 "enriched": meta.get("enriched", 0),
                 "failed": meta.get("failed", 0),
+                "import_id": key,
+                "task_id": task_id,
             }
         )
 
@@ -783,6 +853,8 @@ def import_status() -> ResponseReturnValue:
                 "started_at": started_at,
                 "capture_source": task_result.get("capture_source"),
                 "steps": _import_steps("done", False),
+                "import_id": key,
+                "task_id": task_id,
             }
         )
 
@@ -802,5 +874,7 @@ def import_status() -> ResponseReturnValue:
             "started_at": started_at,
             "capture_source": None,
             "steps": _import_steps("error", False),
+            "import_id": key,
+            "task_id": task_id,
         }
     )
