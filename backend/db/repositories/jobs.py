@@ -34,11 +34,42 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from urllib.parse import urlparse
 
+import psycopg2
+
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
+
+logger = logging.getLogger(__name__)
+
+# ai: claude-sonnet-5 | 2026-08-12
+# Name of the partial unique index enforcing jobs.url uniqueness for non-empty
+# URLs — created in backend/db/schema.py's _migrate(). Shared here (rather than
+# duplicated as a string literal in both files) so insert() can tell a violation
+# of *this* index apart from the jobs table's other UNIQUE constraint
+# (jobs_email_id_key, on email_id) — a bare `except UniqueViolation` can't
+# distinguish which one fired.
+JOBS_URL_UNIQUE_INDEX = "jobs_url_unique_idx"
+
+
+class DuplicateJobUrlError(Exception):
+    """Raised by insert() when another writer already holds this URL.
+
+    This is the expected outcome of losing a SELECT-then-INSERT race: two
+    imports running concurrently (see routes/import_.py) both check
+    get_by_url() before either has inserted, both find nothing, and both try
+    to insert. The database's partial unique index (JOBS_URL_UNIQUE_INDEX)
+    lets exactly one INSERT through; the loser gets this instead of a raw
+    UniqueViolation, and should treat it the same as if get_by_url() had
+    found the row in the first place.
+    """
+
+    def __init__(self, url: str) -> None:
+        super().__init__(f"A job with url={url!r} already exists")
+        self.url = url
 
 
 class PostgresJobRepository(_BaseRepo):
@@ -237,16 +268,36 @@ class PostgresJobRepository(_BaseRepo):
         row = _row_to_dict(cur.fetchone())
         return {k: int(v or 0) for k, v in row.items()}
 
+    # ai: claude-sonnet-5 | 2026-08-12
     def insert(self, job: dict[str, Any]) -> int:
         unknown = set(job.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(job.keys())
         placeholders = ", ".join(["%s"] * len(job))
-        cur = self._execute(
-            f"INSERT INTO jobs ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(job.values()),
-        )
+        try:
+            cur = self._execute(
+                f"INSERT INTO jobs ({columns}) VALUES ({placeholders}) RETURNING id",
+                list(job.values()),
+            )
+        except psycopg2.errors.UniqueViolation as exc:
+            # A UniqueViolation aborts the current Postgres transaction — every
+            # later statement on this connection would fail with
+            # InFailedSqlTransaction until this rollback runs.
+            self._conn.rollback()
+            constraint = getattr(exc.diag, "constraint_name", "") or ""
+            if constraint == JOBS_URL_UNIQUE_INDEX:
+                logger.info(
+                    "insert(): url=%r already exists (lost a concurrent-insert "
+                    "race) -- raising DuplicateJobUrlError instead of inserting "
+                    "a duplicate row",
+                    job.get("url"),
+                )
+                raise DuplicateJobUrlError(str(job.get("url") or "")) from exc
+            logger.warning(
+                "insert(): unexpected unique violation on constraint=%s", constraint
+            )
+            raise
         return cur.fetchone()["id"]
 
     def update(self, job_id: int, fields: dict[str, Any]) -> None:

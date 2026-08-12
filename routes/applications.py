@@ -52,7 +52,7 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 
-from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
+from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, DuplicateJobUrlError
 from backend.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils import (
     _tracking_payload,
@@ -278,6 +278,14 @@ def add_application_sheet_row() -> ResponseReturnValue:
                 }
             )
             repos["conn"].commit()
+    # ai: claude-sonnet-5 | 2026-08-12
+    # This row's URL can collide with a job a concurrent import just inserted
+    # for the same posting -- report that plainly instead of a generic 500.
+    except DuplicateJobUrlError:
+        return (
+            jsonify({"error": "A job with this URL is already tracked."}),
+            409,
+        )
     except Exception as exc:
         logger.warning("Error inserting tracking row: %s", exc)
         return jsonify({"error": "Failed to save application"}), 500

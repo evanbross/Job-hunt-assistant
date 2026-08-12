@@ -50,6 +50,7 @@ from flask.typing import ResponseReturnValue
 import config
 from backend.career_site_scanner import CareerSiteScanner
 from backend.db import (
+    DuplicateJobUrlError,
     ICareerRejectionRuleRepository,
     ICareerScanResultRepository,
     IJobRepository,
@@ -799,6 +800,17 @@ def _run_career_site_scan(
                                 job_dict["company"],
                                 match_score,
                                 job_dict["status"],
+                            )
+                        except DuplicateJobUrlError:
+                            # ai: claude-sonnet-5 | 2026-08-12
+                            # Another scan/import already inserted this URL between
+                            # our own local_job lookup and this INSERT -- expected
+                            # under concurrent imports, not a real failure.
+                            conn.rollback()
+                            logger.info(
+                                "Auto-promote skipped for %s -- already inserted "
+                                "by a concurrent import",
+                                job.get("job_url"),
                             )
                         except Exception as exc:
                             conn.rollback()

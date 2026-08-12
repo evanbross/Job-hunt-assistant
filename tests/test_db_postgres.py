@@ -36,7 +36,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from backend.db import (
+    DuplicateJobUrlError,
     PostgresAppSettingsRepository,
     PostgresCareerSiteSourceRepository,
     PostgresJobRepository,
@@ -44,6 +47,8 @@ from backend.db import (
     get_connection,
     open_repositories,
 )
+from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
+from backend.db.schema import _migrate
 
 # ai: claude-sonnet-5 | 2026-07-25
 
@@ -258,5 +263,167 @@ def test_relevance_feedback_requires_subject_overlap_for_exact_sender(
             )
             is not None
         )
+    finally:
+        conn.close()
+
+
+# ai: claude-sonnet-5 | 2026-08-12
+def test_jobs_url_unique_index_rejects_concurrent_duplicate_insert(
+    pg_dsn: str,
+) -> None:
+    """Two writers racing to insert a job for the same URL -- e.g. two imports
+    that both ran get_by_url(), both found nothing, and both call insert() --
+    must not both succeed. Concurrent imports are now routine (routes/import_.py
+    no longer serializes them), so the DB itself, not an in-process check, has
+    to be the backstop against a duplicate row."""
+    repos = open_repositories(pg_dsn)
+    try:
+        first_id = repos["jobs"].insert(
+            {
+                "email_id": "email-race-1",
+                "company": "Acme",
+                "job_title": "Engineer",
+                "url": "https://example.com/jobs/race",
+                "source": "manual",
+                "status": "pending_review",
+                "date_found": "2026-08-12",
+            }
+        )
+        repos["conn"].commit()
+
+        with pytest.raises(DuplicateJobUrlError) as exc_info:
+            repos["jobs"].insert(
+                {
+                    "email_id": "email-race-2",
+                    "company": "Acme",
+                    "job_title": "Engineer (second capture of the same posting)",
+                    "url": "https://example.com/jobs/race",
+                    "source": "manual",
+                    "status": "pending_review",
+                    "date_found": "2026-08-12",
+                }
+            )
+        assert exc_info.value.url == "https://example.com/jobs/race"
+
+        # The connection must still be usable after insert()'s internal rollback
+        # -- a UniqueViolation aborts the Postgres transaction until rolled back.
+        assert repos["jobs"].get_by_id(first_id) is not None
+        second_id = repos["jobs"].insert(
+            {
+                "email_id": "email-race-3",
+                "company": "Other Co",
+                "job_title": "Unrelated job, different URL",
+                "url": "https://example.com/jobs/not-a-race",
+                "source": "manual",
+                "status": "pending_review",
+                "date_found": "2026-08-12",
+            }
+        )
+        repos["conn"].commit()
+        assert repos["jobs"].get_by_id(second_id) is not None
+    finally:
+        repos["conn"].close()
+
+
+# ai: claude-sonnet-5 | 2026-08-12
+def test_jobs_url_unique_index_allows_multiple_empty_urls(pg_dsn: str) -> None:
+    """Manually pasted jobs with no source URL store url='' -- the partial
+    index scoped to non-empty URLs must not treat those as colliding with
+    each other (a plain UNIQUE constraint would, since '' = '' in Postgres)."""
+    repos = open_repositories(pg_dsn)
+    try:
+        first_id = repos["jobs"].insert(
+            {
+                "email_id": "email-empty-url-1",
+                "company": "Acme",
+                "job_title": "Engineer",
+                "url": "",
+                "source": "manual",
+                "status": "pending_review",
+                "date_found": "2026-08-12",
+            }
+        )
+        second_id = repos["jobs"].insert(
+            {
+                "email_id": "email-empty-url-2",
+                "company": "Widget Co",
+                "job_title": "Other Engineer",
+                "url": "",
+                "source": "manual",
+                "status": "pending_review",
+                "date_found": "2026-08-12",
+            }
+        )
+        repos["conn"].commit()
+        assert first_id != second_id
+    finally:
+        repos["conn"].close()
+
+
+def _index_exists(conn: object, index_name: str) -> bool:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM pg_indexes"
+        " WHERE tablename = 'jobs' AND indexname = %s AND schemaname = 'public'",
+        (index_name,),
+    )
+    return cur.fetchone() is not None
+
+
+# ai: claude-sonnet-5 | 2026-08-12
+def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
+    pg_dsn: str,
+) -> None:
+    """Onboarding a second user onto a database that predates this constraint
+    (or that already has a duplicate row from before this fix) must not crash
+    the app on startup. _migrate() should skip creating the index and retry on
+    a later startup, once the duplicate is gone."""
+    conn = get_connection(pg_dsn)
+    try:
+        # pg_dsn's init_db() already created the index (there was no legacy dirty
+        # data at that point) -- drop it to simulate a DB that predates the fix.
+        cur = conn.cursor()
+        cur.execute(f"DROP INDEX IF EXISTS {JOBS_URL_UNIQUE_INDEX}")
+        conn.commit()
+        assert not _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
+
+        jobs = PostgresJobRepository(conn)
+        first_id = jobs.insert(
+            {
+                "email_id": "email-legacy-1",
+                "company": "Acme",
+                "job_title": "Engineer",
+                "url": "https://example.com/jobs/legacy-dup",
+                "source": "manual",
+                "status": "pending_review",
+                "date_found": "2026-08-12",
+            }
+        )
+        second_id = jobs.insert(
+            {
+                "email_id": "email-legacy-2",
+                "company": "Acme",
+                "job_title": "Engineer (duplicate capture, predates the fix)",
+                "url": "https://example.com/jobs/legacy-dup",
+                "source": "manual",
+                "status": "pending_review",
+                "date_found": "2026-08-12",
+            }
+        )
+        conn.commit()
+
+        # Startup migration must not crash despite the pre-existing duplicate.
+        _migrate(conn)
+        assert not _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
+        # Both legacy rows are left alone -- _migrate() only skips the index,
+        # it never deletes data on the user's behalf.
+        assert jobs.get_by_id(first_id) is not None
+        assert jobs.get_by_id(second_id) is not None
+
+        # Once the duplicate is resolved, the next startup applies the index.
+        jobs.delete(second_id)
+        conn.commit()
+        _migrate(conn)
+        assert _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
     finally:
         conn.close()

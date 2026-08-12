@@ -38,10 +38,14 @@ split per-table like the repositories."""
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
+from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
 from backend.jd_health_check_targets import LIVE_CANARY_TARGETS
+
+logger = logging.getLogger(__name__)
 
 # ─── Seed data ────────────────────────────────────────────────────────────────
 
@@ -120,6 +124,19 @@ def _has_column(cur: Any, table: str, column: str) -> bool:
     return cur.fetchone() is not None
 
 
+# ai: claude-sonnet-5 | 2026-08-12
+def _has_index(cur: Any, table: str, index_name: str) -> bool:
+    """Partial unique indexes (e.g. jobs_url_unique_idx) aren't table constraints
+    in information_schema.table_constraints, so they need pg_indexes instead of
+    the _has_unique() check above."""
+    cur.execute(
+        "SELECT 1 FROM pg_indexes"
+        " WHERE tablename = %s AND indexname = %s AND schemaname = 'public'",
+        (table, index_name),
+    )
+    return cur.fetchone() is not None
+
+
 def _migrate(conn: Any) -> None:
     """Apply incremental schema changes (ADD COLUMN IF NOT EXISTS is idempotent)."""
     cur = conn.cursor()
@@ -159,6 +176,46 @@ def _migrate(conn: Any) -> None:
             "ALTER TABLE career_scan_results ADD CONSTRAINT career_scan_results_job_url_key UNIQUE (job_url)"
         )
     conn.commit()
+
+    # ai: claude-sonnet-5 | 2026-08-12
+    # Enforce job URL uniqueness at the DB level, not just in application-code
+    # existence checks. Every insert path (bulk import, the manual-paste route,
+    # career-site auto-promotion, the applications-sheet "add row" route) used to
+    # do a SELECT-then-INSERT: check get_by_url(), then insert if nothing was
+    # found. Two callers racing that window (now routine — imports run
+    # concurrently, see routes/import_.py) could both pass the check and both
+    # insert, producing a duplicate job row that no code catches. A plain UNIQUE
+    # constraint won't work here because url is legitimately NULL/'' for manually
+    # pasted jobs with no source URL, and Postgres treats '' = '' as a real
+    # collision under a normal UNIQUE constraint — so this is a partial index
+    # that only applies to non-empty URLs. See repositories/jobs.py's insert(),
+    # which translates the resulting UniqueViolation into DuplicateJobUrlError
+    # so callers can treat "lost the race" the same as "already exists".
+    if not _has_index(cur, "jobs", JOBS_URL_UNIQUE_INDEX):
+        cur.execute(
+            "SELECT url, COUNT(*) AS cnt FROM jobs"
+            " WHERE url IS NOT NULL AND url <> ''"
+            " GROUP BY url HAVING COUNT(*) > 1"
+            " ORDER BY cnt DESC LIMIT 5"
+        )
+        dup_rows = cur.fetchall()
+        if dup_rows:
+            logger.warning(
+                "Skipping jobs.url uniqueness index: %d duplicate URL group(s) "
+                "already exist in the database (e.g. %r used %d times). Merge or "
+                "delete the duplicate rows, then restart the app — the index is "
+                "created automatically on the next successful startup once no "
+                "duplicates remain.",
+                len(dup_rows),
+                dup_rows[0]["url"],
+                dup_rows[0]["cnt"],
+            )
+        else:
+            cur.execute(
+                f"CREATE UNIQUE INDEX {JOBS_URL_UNIQUE_INDEX} ON jobs (url)"
+                " WHERE url IS NOT NULL AND url <> ''"
+            )
+            conn.commit()
 
     for col, defn in [
         ("duplicate_hint", "TEXT"),

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import pytest
 
+from backend.db import DuplicateJobUrlError
 from backend.manual_job_ingest_service import ManualJobIngestService
 
 
@@ -349,3 +350,41 @@ def test_ingest_rejects_empty_text() -> None:
         ValueError, match="Job listing text or a public job URL is required"
     ):
         service.ingest("   ")
+
+
+# ai: claude-sonnet-5 | 2026-08-12
+def test_ingest_propagates_duplicate_job_url_error() -> None:
+    """Two imports racing on the same URL (see routes/import_.py, which now runs
+    imports concurrently) both pass their own get_by_url() check and both call
+    insert() -- the repo's insert() turns the loser's UniqueViolation into
+    DuplicateJobUrlError. ingest() must let that propagate rather than swallow
+    it, so callers (backend/tasks.py, routes/jobs.py) can each decide how to
+    report "lost the race" for their own context."""
+
+    class RaisingJobRepo(StubJobRepo):
+        def insert(self, job: dict) -> int:
+            raise DuplicateJobUrlError(job.get("url") or "")
+
+    service = ManualJobIngestService(
+        RaisingJobRepo(),
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=StubParser(
+            [
+                {
+                    "company": "Acme",
+                    "job_title": "Senior Software Engineer",
+                    "url": "https://example.com/jobs/1",
+                    "source": "Greenhouse",
+                    "confidence": "high",
+                    "confidence_score": 92,
+                    "confidence_reason": "",
+                },
+            ]
+        ),
+        scorer=StubScorer(score=88),
+    )
+
+    with pytest.raises(DuplicateJobUrlError) as exc_info:
+        service.ingest("Pasted listing text")
+    assert exc_info.value.url == "https://example.com/jobs/1"

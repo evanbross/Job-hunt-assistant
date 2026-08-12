@@ -102,7 +102,8 @@ from .repositories.import_repair_history import PostgresImportRepairHistoryRepos
 from .repositories.jd_health_check_results import PostgresJdHealthCheckResultRepository
 from .repositories.jd_health_check_targets import PostgresJdHealthCheckTargetRepository
 from .repositories.job_status_history import PostgresJobStatusHistoryRepository
-from .repositories.jobs import PostgresJobRepository
+# ai: claude-sonnet-5 | 2026-08-12
+from .repositories.jobs import DuplicateJobUrlError, PostgresJobRepository
 from .repositories.penalty_rules import PostgresPenaltyRuleRepository
 from .repositories.relevance_feedback import PostgresRelevanceFeedbackRepository
 from .repositories.resumes import PostgresResumeRepository
@@ -154,6 +155,7 @@ __all__ = [
     "PostgresResumeRepository",
     "PostgresScannedEmailRepository",
     "PostgresStageStatusRepository",
+    "DuplicateJobUrlError",
     "db_startup_error",
     "get_connection",
     "init_db",

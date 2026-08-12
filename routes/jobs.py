@@ -54,6 +54,7 @@ from googleapiclient.errors import HttpError
 
 import config
 from backend.career_site_scanner import CareerSiteScanner
+from backend.db import DuplicateJobUrlError
 from backend.duplicate_checker import DuplicateChecker
 from backend.email_parser import (
     EmailParser,
@@ -221,6 +222,28 @@ def create_manual_job() -> ResponseReturnValue:
             repos["conn"].commit()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    # ai: claude-sonnet-5 | 2026-08-12
+    # A concurrent import (or a second click of this same button) can win the
+    # insert race for this exact URL between our own get_by_url check inside
+    # ingest() and its INSERT. Rather than surfacing that as a 500, look the
+    # job up and hand back what's already there -- it's the same outcome the
+    # user would get by pasting again a moment later.
+    except DuplicateJobUrlError as exc:
+        with get_repos() as repos:
+            existing_job = repos["jobs"].get_by_url(exc.url)
+        if existing_job is None:
+            logger.error("Manual job ingest: DuplicateJobUrlError but no job found for %s", exc.url)
+            return jsonify({"error": "Manual job ingest failed"}), 500
+        return (
+            jsonify(
+                {
+                    "job": existing_job,
+                    "parsed_job_count": 1,
+                    "duplicate": True,
+                }
+            ),
+            200,
+        )
     except Exception as exc:
         logger.error("Manual job ingest failed: %s", exc)
         return (

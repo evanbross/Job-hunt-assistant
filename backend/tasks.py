@@ -69,6 +69,7 @@ from backend.career_site_scanner import (
     validate_extraction,
 )
 from backend.celery_app import celery_app
+from backend.db import DuplicateJobUrlError
 from backend.duplicate_checker import DuplicateChecker
 from backend.gmail_client import GmailClient, NotAuthenticatedError
 from backend.import_repair import (
@@ -622,6 +623,36 @@ def run_import_task(
                     )
                 )
                 repos["conn"].commit()
+            # ai: claude-sonnet-5 | 2026-08-12
+            # Imports run concurrently now (see routes/import_.py), so two batches
+            # can both check get_by_url(), both find nothing, and both try to
+            # insert the same URL. The DB's partial unique index lets exactly one
+            # writer win; this catches the loser's DuplicateJobUrlError and
+            # records it as a skip (the job exists — just not because of this
+            # task) instead of letting it fall into the generic failure branch
+            # below as a scary "unexpected error".
+            except DuplicateJobUrlError as exc:
+                repos["conn"].rollback()
+                logger.info(
+                    "run_import_task [%d/%d]: %s was inserted by a concurrent "
+                    "import; skipping to avoid a duplicate",
+                    i + 1,
+                    total,
+                    url,
+                )
+                dup_existing = repos["jobs"].get_by_url(exc.url) or repos[
+                    "jobs"
+                ].get_by_url(url)
+                skipped += 1
+                skipped_details.append(
+                    _import_outcome_detail(
+                        url_row,
+                        "Another import running at the same time already inserted "
+                        "this job; skipped to avoid a duplicate.",
+                        "skipped",
+                        dup_existing,
+                    )
+                )
             except (
                 ValueError,
                 urllib.error.URLError,
