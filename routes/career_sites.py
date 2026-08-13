@@ -61,20 +61,15 @@ from backend.db.job_columns import JobColumns
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.utils.utils import (
-    _parse_positive_int,
-    configure_career_site_scheduler,
-    db_match_for_job,
-    enrich_job_description,
-    extract_ashby_job_id,
-    get_repos,
-    is_richer_description,
+from backend.scanning.platform_detection import platform_for_site_url
+from backend.scanning.schedulers import configure_career_site_scheduler
+from backend.scoring.auto_reject_rules import (
     jd_blocklist_match,
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
-    parse_bool,
-    platform_for_site_url,
-    safe_error_message,
 )
+from backend.scoring.duplicate_matching import db_match_for_job, extract_ashby_job_id
+from backend.scoring.jd_enrichment import enrich_job_description, is_richer_description
+from backend.utils.utils import get_repos, parse_bool, parse_positive_int, safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -907,7 +902,7 @@ def create_career_site() -> ResponseReturnValue:
     try:
         enabled = 1 if parse_bool(data.get("enabled"), default=True) else 0
         collection_mode = _parse_collection_mode(data.get("collection_mode"))
-        recapture_interval_days = _parse_positive_int(
+        recapture_interval_days = parse_positive_int(
             data.get("recapture_interval_days"),
             default=4,
             field_name="recapture_interval_days",
@@ -970,7 +965,7 @@ def update_career_site(source_id: int) -> ResponseReturnValue:
             return jsonify({"error": str(exc)}), 400
     if "recapture_interval_days" in data:
         try:
-            fields["recapture_interval_days"] = _parse_positive_int(
+            fields["recapture_interval_days"] = parse_positive_int(
                 data.get("recapture_interval_days"),
                 default=4,
                 field_name="recapture_interval_days",

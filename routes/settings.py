@@ -50,7 +50,8 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
-from backend.utils.utils import _rescore_active_queue_jobs, get_repos
+from backend.scoring.jd_enrichment import rescore_active_queue_jobs
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,7 @@ def update_config() -> ResponseReturnValue:
     rescore_summary = {"rescored": 0, "failed": 0}
     if profile_changed:
         with get_repos() as repos:
-            rescore_summary = _rescore_active_queue_jobs(repos)
+            rescore_summary = rescore_active_queue_jobs(repos)
             repos["conn"].commit()
 
     return jsonify(

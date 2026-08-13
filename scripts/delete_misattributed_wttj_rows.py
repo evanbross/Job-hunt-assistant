@@ -39,7 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.utils import get_repos  # noqa: E402
+from backend.utils.utils import get_repos  # noqa: E402
 
 DOOMED: tuple[int, ...] = (735, 2511, 2594)
 

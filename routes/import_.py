@@ -57,13 +57,8 @@ from backend.scanning.import_repair import (
     repair_linkedin_company,
 )
 from backend.tasks import run_import_task
-from backend.utils.utils import (
-    _parse_positive_int,
-    get_repos,
-    platform_for_site_url,
-    platform_label,
-    safe_error_message,
-)
+from backend.scanning.platform_detection import platform_for_site_url, platform_label
+from backend.utils.utils import get_repos, parse_positive_int, safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +263,7 @@ def _resolve_capture_source(
     repos: dict[str, object], body: dict, guessed_source: dict | None
 ) -> tuple[dict | None, dict | None]:
     career_sites_repo = repos["career_sites"]
-    interval_days = _parse_positive_int(
+    interval_days = parse_positive_int(
         body.get("recapture_interval_days"),
         default=4,
         field_name="recapture_interval_days",

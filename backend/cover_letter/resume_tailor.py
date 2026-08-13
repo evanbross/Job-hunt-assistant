@@ -37,7 +37,7 @@
 from __future__ import annotations
 
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.utils.utils import job_description_text
+from backend.scoring.jd_enrichment import job_description_text
 
 
 class ResumeTailoringGenerator:

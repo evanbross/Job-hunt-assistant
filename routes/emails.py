@@ -50,15 +50,10 @@ from backend.email.email_parser import EmailParser
 from backend.scoring.fit_scorer import FitScorer
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.utils.utils import (
-    db_match_for_job,
-    email_date_from_message,
-    expand_board_url_parsed_jobs,
-    get_repos,
-    get_subject_rule_match,
-    is_near_certain_duplicate,
-    safe_error_message,
-)
+from backend.email.classification import email_date_from_message, get_subject_rule_match
+from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
+from backend.scoring.duplicate_matching import db_match_for_job, is_near_certain_duplicate
+from backend.utils.utils import get_repos, safe_error_message
 
 logger = logging.getLogger(__name__)
 

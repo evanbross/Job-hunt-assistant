@@ -44,7 +44,7 @@ from typing import NotRequired, TypedDict
 from urllib.parse import ParseResult, parse_qs, urlencode, urljoin, urlparse
 
 from backend.scanning.career_site_scanner import workday_title_with_req_id
-from backend.utils.utils import company_from_career_domain
+from backend.utils.company_urls import company_from_career_domain
 
 
 class ExtractedJobUrl(TypedDict):

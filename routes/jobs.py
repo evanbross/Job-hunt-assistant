@@ -76,16 +76,17 @@ from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-17
     UnsafeUrlError,
     safe_urlopen,
 )
-from backend.utils.utils import (
-    _ai_error_http_status,
+from backend.email.classification import maybe_mark_source_email_read
+from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
+from backend.scanning.closed_req_scan_helpers import (
     canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17
-    db_match_for_job,
-    expand_board_url_parsed_jobs,
-    get_repos,
-    is_near_certain_duplicate,
-    maybe_mark_source_email_read,
-    normalize_stage_status,
     rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17
+)
+from backend.scoring.duplicate_matching import db_match_for_job, is_near_certain_duplicate
+from backend.utils.utils import (
+    ai_error_http_status,
+    get_repos,
+    normalize_stage_status,
     safe_error_message,
 )
 
@@ -874,7 +875,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
         )
         return jsonify(
             {"error": safe_error_message(exc, "Scoring failed")}
-        ), _ai_error_http_status(exc)
+        ), ai_error_http_status(exc)
 
     fit_score = score_result["score"]
     current_status = job.get("status", "triage")
@@ -958,7 +959,7 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
         logger.warning("description update: scoring failed for job %d: %s", job_id, exc)
         return jsonify(
             {"error": safe_error_message(exc, "Scoring failed")}
-        ), _ai_error_http_status(exc)
+        ), ai_error_http_status(exc)
 
     fit_score = score_result["score"]
     current_status = job.get("status", "triage")

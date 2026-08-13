@@ -50,7 +50,7 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.utils.utils import _ai_error_http_status, safe_error_message
+from backend.utils.utils import ai_error_http_status, safe_error_message
 
 logger = logging.getLogger(__name__)
 toptal_bp = Blueprint("toptal", __name__)
@@ -86,7 +86,7 @@ def generate_toptal_bio() -> ResponseReturnValue:
         logger.error("Toptal Pitch generation failed: %s", exc, exc_info=True)
         return jsonify(
             {"error": safe_error_message(exc, "Bio generation failed")}
-        ), _ai_error_http_status(exc)
+        ), ai_error_http_status(exc)
 
     return jsonify({"bio": bio.strip()})
 
@@ -144,7 +144,7 @@ def toptal_bio_chat() -> ResponseReturnValue:
         logger.error("Toptal Pitch chat failed: %s", exc, exc_info=True)
         return jsonify(
             {"error": safe_error_message(exc, "Bio chat failed")}
-        ), _ai_error_http_status(exc)
+        ), ai_error_http_status(exc)
 
     updated_bio: str | None = None
     tag_match = re.search(r"<UPDATED_BIO>(.*?)</UPDATED_BIO>", reply_text, re.DOTALL)

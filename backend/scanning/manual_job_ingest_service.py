@@ -47,7 +47,7 @@ from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.email.email_parser import EmailParser, ParsedJob
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.utils.utils import company_from_ats_url, company_from_career_domain
+from backend.utils.company_urls import company_from_ats_url, company_from_career_domain
 
 logger = logging.getLogger(__name__)
 

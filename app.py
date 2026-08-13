@@ -72,8 +72,9 @@ import config
 from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
 from backend.scanning.import_listener import start_job_import_listener
+from backend.scanning.schedulers import start_jd_health_check_scheduler
 from backend.queue_websocket import start_queue_websocket_server
-from backend.utils.utils import is_trusted_api_write_origin, start_jd_health_check_scheduler
+from backend.utils.utils import is_trusted_api_write_origin
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
 try:
@@ -363,7 +364,7 @@ def _browser_capture_queue_has_pending() -> bool:
 
 
 # Career-site auto-scheduler intentionally not started — scans are triggered
-# manually from the UI banner (see backend.utils.start_career_site_scheduler).
+# manually from the UI banner (see backend.scanning.schedulers.start_career_site_scheduler).
 # ai: claude-sonnet-4-6 | 2026-07-02
 def _handle_listener_capture(body: dict) -> tuple[dict, int]:
     """Routes captures from the browser extension by purpose.

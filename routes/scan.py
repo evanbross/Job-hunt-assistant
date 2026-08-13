@@ -55,16 +55,13 @@ from backend.email.email_source_filters import email_matches_source_filters
 from backend.scoring.fit_scorer import FitScorer
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.utils.utils import (
-    ACTIVE_JOB_STATUSES,
-    db_match_for_job,
-    email_date_from_message,
-    expand_board_url_parsed_jobs,
-    get_repos,
-    get_subject_rule_match,
-    is_near_certain_duplicate,
+from backend.email.classification import email_date_from_message, get_subject_rule_match
+from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
+from backend.scoring.auto_reject_rules import (
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
 )
+from backend.scoring.duplicate_matching import db_match_for_job, is_near_certain_duplicate
+from backend.utils.utils import ACTIVE_JOB_STATUSES, get_repos
 from backend.scanning.sources.wellfound_scraper import (  # ai: claude-fable-5 | 2026-07-14
     WellfoundJobFetcher,
     canonical_wellfound_job_url,

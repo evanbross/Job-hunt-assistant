@@ -42,7 +42,8 @@ from __future__ import annotations
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.utils.utils import format_phrase_book_section, job_description_text
+from backend.cover_letter.phrase_book import format_phrase_book_section
+from backend.scoring.jd_enrichment import job_description_text
 
 
 class CoverLetterGenerator:

@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 
 from backend.db.job_columns import JobColumns
 from backend.email.email_parser import is_email_tracking_url
-from backend.utils.utils import company_from_ats_url
+from backend.utils.company_urls import company_from_ats_url
 
 logger = logging.getLogger(__name__)
 

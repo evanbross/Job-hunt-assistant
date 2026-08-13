@@ -44,7 +44,7 @@ from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.email.email_parser import (  # ai: claude-fable-5 | 2026-07-17
     looks_like_wttj_misparsed_title,
 )
-from backend.utils.utils import company_from_ats_url
+from backend.utils.company_urls import company_from_ats_url
 
 
 class JobUpdater(Protocol):

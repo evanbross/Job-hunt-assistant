@@ -79,15 +79,16 @@ from backend.scanning.import_repair import (
     repair_linkedin_company,
 )
 from backend.scanning.manual_job_ingest_service import ManualJobIngestService
-from backend.utils.utils import (
-    _parse_positive_int,
-    enrich_job_description,
-    get_repos,
-    is_richer_description,
+from backend.scoring.auto_reject_rules import (
     jd_blocklist_match,
-    job_description_text,
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
 )
+from backend.scoring.jd_enrichment import (
+    enrich_job_description,
+    is_richer_description,
+    job_description_text,
+)
+from backend.utils.utils import get_repos, parse_positive_int
 
 logger = logging.getLogger(__name__)
 
@@ -702,7 +703,7 @@ def _record_capture_source(source: dict | None, repos: dict, body: dict) -> None
     fields: dict = {"last_captured_at": datetime.now(UTC).isoformat(timespec="seconds")}
     interval_value = body.get("recapture_interval_days")
     if interval_value is not None and interval_value != "":
-        fields["recapture_interval_days"] = _parse_positive_int(
+        fields["recapture_interval_days"] = parse_positive_int(
             interval_value,
             default=4,
             field_name="recapture_interval_days",

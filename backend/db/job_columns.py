@@ -62,7 +62,7 @@ class JobColumns:
     SKIP_MISMATCH_REASONS = "skip_mismatch_reasons"
     NOTES = "notes"
     # The enriched/full JD, when a re-scan has found one richer than
-    # RAW_JD_SNIPPET. See backend/utils/utils.py's job_description_text().
+    # RAW_JD_SNIPPET. See backend/scoring/jd_enrichment.py's job_description_text().
     JOB_DESCRIPTION = "job_description"
     IMPORT_WARNINGS = "import_warnings"
     SNOOZED_UNTIL = "snoozed_until"

@@ -37,7 +37,7 @@
 
 from __future__ import annotations
 
-from backend.utils.utils import mongodb_hybrid_rejection_note
+from backend.scoring.auto_reject_rules import mongodb_hybrid_rejection_note
 
 # Verbatim boilerplate from a live MongoDB posting (city varies per role).
 _BASED_IN_BOILERPLATE = (

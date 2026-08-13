@@ -34,7 +34,7 @@
 
 """JD parser health check routes: canary target CRUD, run history, and manual
 trigger. See backend/tasks.py's run_jd_health_check_task for the actual
-scan/validate/notify logic and backend/utils/utils.py for the scheduler that fires
+scan/validate/notify logic and backend/scanning/schedulers.py for the scheduler that fires
 it automatically."""
 
 from __future__ import annotations
@@ -50,12 +50,11 @@ from flask.typing import ResponseReturnValue
 from backend.celery_app import celery_app
 from backend.scanning.jd_health_check_targets import PLATFORM_CHOICES
 from backend.tasks import run_jd_health_check_task
-from backend.utils.utils import (
+from backend.scanning.schedulers import (
     configure_jd_health_check_scheduler,
-    get_repos,
     jd_health_check_should_run_now,
-    parse_bool,
 )
+from backend.utils.utils import get_repos, parse_bool
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +215,7 @@ def jd_health_check_run_status(task_id: str) -> ResponseReturnValue:
 
 
 # ai: claude-sonnet-5 | 2026-08-03
-# Wires the "catch up on next launch" scheduler thread (backend/utils/utils.py) to
+# Wires the "catch up on next launch" scheduler thread (backend/scanning/schedulers.py) to
 # this task, matching the DI pattern already used for the (never-started)
 # career-site scheduler in routes/career_sites.py. Actually starting the
 # thread happens in app.py, after the Celery worker is up. Routed through

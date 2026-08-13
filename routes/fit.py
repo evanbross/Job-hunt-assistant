@@ -49,14 +49,14 @@ import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.duplicate_matching import db_match_for_job
+from backend.scoring.jd_enrichment import scoring_text_for_job
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     FIT_PANEL_STATUSES,
-    _ai_error_http_status,
-    db_match_for_job,
+    ai_error_http_status,
     get_repos,
     safe_error_message,
-    scoring_text_for_job,
 )
 
 logger = logging.getLogger(__name__)
@@ -328,7 +328,7 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
         logger.warning("Fit chat failed for job %d: %s", job_id, exc, exc_info=True)
         return jsonify(
             {"error": safe_error_message(exc, "Fit chat failed")}
-        ), _ai_error_http_status(exc)
+        ), ai_error_http_status(exc)
     reclassification = None
     tag_match = re.search(
         r"<FIT_RECLASSIFICATION>(.*?)</FIT_RECLASSIFICATION>",
@@ -432,7 +432,7 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
         )
         return jsonify(
             {"error": safe_error_message(exc, "Fit re-evaluation failed")}
-        ), _ai_error_http_status(exc)
+        ), ai_error_http_status(exc)
 
     score = int(result["score"])
     current_status = str(job.get("status") or "")
@@ -503,7 +503,7 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
         )
         return jsonify(
             {"error": safe_error_message(exc, "Fit re-evaluation failed")}
-        ), _ai_error_http_status(exc)
+        ), ai_error_http_status(exc)
 
     score = int(result["score"])
     new_status = "pending_review" if score >= 70 else "triage"

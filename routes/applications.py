@@ -53,20 +53,34 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, DuplicateJobUrlError
-from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
-from backend.utils.utils import (
-    _tracking_payload,
-    canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17 — moved to utils, shared with WTTJ repair
-    get_repos,
-    maybe_mark_source_email_read,
-    normalize_stage_status,
-    rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17 — moved to utils, shared with WTTJ repair
+from backend.email.classification import maybe_mark_source_email_read
+from backend.scanning.closed_req_scan_helpers import (
+    canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17 — shared with WTTJ repair
+    rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17 — shared with WTTJ repair
 )
+from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
+from backend.utils.utils import get_repos, normalize_stage_status
 
 logger = logging.getLogger(__name__)
 
 # ai: claude-sonnet-4-6 | 2026-06-28
 applications_bp = Blueprint("applications", __name__)
+
+
+# ai: claude-sonnet-5 | 2026-08-13 — inlined from backend/utils/utils.py: this
+# blueprint is its only consumer (FLASK_STANDARDS.md's shared-helper rule
+# only applies to helpers used by two or more blueprints).
+def _tracking_payload() -> dict[str, str]:
+    data = request.get_json(silent=True) or {}
+    return {
+        "company": str(data.get("company") or "").strip(),
+        "status": str(data.get("status") or "").strip(),
+        "source": str(data.get("source") or "").strip(),
+        "date": str(data.get("date") or "").strip(),
+        "job_title": str(data.get("job_title") or "").strip(),
+        "url": str(data.get("url") or "").strip(),
+        "notes": str(data.get("notes") or "").strip(),
+    }
 
 _CLOSED_REQ_FETCH_TIMEOUT_SECONDS = 15
 _CLOSED_REQ_FETCH_MAX_BYTES = 2_000_000
@@ -77,7 +91,7 @@ _CLOSED_REQ_FETCH_MAX_BYTES = 2_000_000
 # tail of the list. Successive fetches to the same host are therefore spaced at
 # least _HOST_FETCH_MIN_INTERVAL_SECONDS apart, and a 429 that still slips
 # through is retried after the server's Retry-After (or a default backoff, see
-# backend.utils.rate_limit_backoff_seconds) before being reported as transient
+# backend.scanning.closed_req_scan_helpers.rate_limit_backoff_seconds) before being reported as transient
 # ('unreachable' — never 'bad_url').
 _HOST_FETCH_MIN_INTERVAL_SECONDS = 1.0
 _RATE_LIMIT_MAX_RETRIES = 2

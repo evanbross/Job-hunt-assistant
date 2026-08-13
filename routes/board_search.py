@@ -51,7 +51,8 @@ from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.fit_scorer import FitScorer
 from backend.scanning.job_board_searcher import JobBoardSearcher, url_to_dedup_key
 from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.utils.utils import get_repos, jd_blocklist_match
+from backend.scoring.auto_reject_rules import jd_blocklist_match
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 
