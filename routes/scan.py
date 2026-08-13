@@ -47,14 +47,15 @@ from googleapiclient.errors import HttpError
 
 import config
 from backend.ai_provider import AIProviderClient
-from backend.career_site_scanner import CareerSiteScanner
-from backend.duplicate_checker import DuplicateChecker
-from backend.email_parser import EmailParser
-from backend.email_source_filters import email_matches_source_filters
-from backend.fit_scorer import FitScorer
-from backend.gmail_client import GmailClient, NotAuthenticatedError
-from backend.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.utils import (
+from backend.scanning.career_site_scanner import CareerSiteScanner
+from backend.db.job_columns import JobColumns
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.email.email_parser import EmailParser
+from backend.email.email_source_filters import email_matches_source_filters
+from backend.scoring.fit_scorer import FitScorer
+from backend.email.gmail_client import GmailClient, NotAuthenticatedError
+from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
+from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     db_match_for_job,
     email_date_from_message,
@@ -64,7 +65,7 @@ from backend.utils import (
     is_near_certain_duplicate,
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
 )
-from backend.wellfound_scraper import (  # ai: claude-fable-5 | 2026-07-14
+from backend.scanning.sources.wellfound_scraper import (  # ai: claude-fable-5 | 2026-07-14
     WellfoundJobFetcher,
     canonical_wellfound_job_url,
     is_wellfound_job_url,
@@ -603,7 +604,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                     )
 
                     # First job keeps the raw msg_id; subsequent jobs get a suffix so the
-                    # UNIQUE constraint on email_id is satisfied without a schema change.
+                    # UNIQUE constraint on dedup_key is satisfied without a schema change.
                     job_email_id = msg_id if job_idx == 0 else f"{msg_id}:{job_idx}"
 
                     confidence = parsed.get("confidence", "low")
@@ -712,12 +713,12 @@ def _run_scan(rescan_all: bool = False) -> None:
                             status = "skipped"
 
                     job_data: dict = {
-                        "email_id": job_email_id,
+                        JobColumns.DEDUP_KEY: job_email_id,
                         "company": parsed.get("company", ""),
                         "job_title": parsed.get("job_title", ""),
                         "url": parsed.get("url", ""),
                         "source": parsed.get("source", ""),
-                        "raw_email_snippet": raw_snippet,
+                        "raw_jd_snippet": raw_snippet,
                         "job_description": jd_text
                         or None,  # ai: claude-fable-5 | 2026-07-14
                         "fit_score": None,
@@ -729,7 +730,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                         "duplicate_hint": duplicate_hint,
                         "duplicate_of_id": duplicate_of_id,
                         "sender_email": sender,
-                        "email_subject": subject,
+                        JobColumns.CAPTURE_LABEL: subject,
                         "confidence_score": parsed.get("confidence_score", 50),
                     }
 

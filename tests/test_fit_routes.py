@@ -72,10 +72,10 @@ class FakeJobsRepo:
         self.row: dict[str, Any] = {
             "id": 7,
             "company": "Acme",
-            "email_subject": "Platform Engineer",
+            "capture_label": "Platform Engineer",
             "fit_score": None,
             "job_title": "Platform Engineer",
-            "raw_email_snippet": "Full enough platform engineering job description.",
+            "raw_jd_snippet": "Full enough platform engineering job description.",
             "status": "possible_duplicate",
         }
 

@@ -37,7 +37,7 @@ ALLOWED_TABLES: frozenset[str] = frozenset(
 )
 
 # Curated per-table "safe/useful to read aloud" columns -- deliberately
-# narrower than the full schema (e.g. excludes jobs.raw_email_snippet and
+# narrower than the full schema (e.g. excludes jobs.raw_jd_snippet and
 # jobs.job_description: not sensitive, just not useful to speak or count on).
 # Checked as one flat set rather than per-table since a few names (e.g.
 # "status", "created_at") legitimately appear in more than one allowed table.

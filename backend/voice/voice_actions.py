@@ -30,7 +30,7 @@ from routes.career_sites import start_career_scan_now
 
 @dataclass(frozen=True)
 class VoiceAction:
-    description: str  # shown to the LLM in backend/voice_query.py's system prompt
+    description: str  # shown to the LLM in backend/voice/voice_query.py's system prompt
     handler: Callable[[], tuple[dict, int]]
 
 

@@ -47,15 +47,16 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.duplicate_checker import DuplicateChecker
-from backend.fit_scorer import FitScorer
-from backend.utils import (
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.scoring.fit_scorer import FitScorer
+from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     FIT_PANEL_STATUSES,
     _ai_error_http_status,
     db_match_for_job,
     get_repos,
     safe_error_message,
+    scoring_text_for_job,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,14 +158,7 @@ def _run_re_evaluate() -> None:
                     updates["duplicate_of_id"] = None
 
                 try:
-                    scoring_text = job.get("job_description") or "\n".join(
-                        part
-                        for part in [
-                            job.get("email_subject", ""),
-                            job.get("raw_email_snippet", ""),
-                        ]
-                        if part
-                    )
+                    scoring_text = scoring_text_for_job(job)
                     result = scorer.score(
                         job_title=title,
                         company=company,
@@ -318,7 +312,7 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
         f"Company: {job.get('company') or 'Unknown'}\n"
         f"Stored fit percentage: {job.get('fit_score') if job.get('fit_score') is not None else 'Not scored'}\n"
         f"Stored fit reasoning: {job.get('fit_reasoning') or 'No stored reasoning.'}\n\n"
-        f"JOB DESCRIPTION / EMAIL SNIPPET:\n{str(job.get('raw_email_snippet') or '')[:6000]}"
+        f"JOB DESCRIPTION / EMAIL SNIPPET:\n{str(job.get('raw_jd_snippet') or '')[:6000]}"
     )
 
     try:
@@ -422,14 +416,7 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
         fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
     # Connection released before AI scoring
 
-    scoring_text = job.get("job_description") or "\n".join(
-        part
-        for part in [
-            job.get("email_subject", ""),
-            job.get("raw_email_snippet", ""),
-        ]
-        if part
-    )
+    scoring_text = scoring_text_for_job(job)
     try:
         result = FitScorer().score(
             job_title=str(job.get("job_title") or ""),

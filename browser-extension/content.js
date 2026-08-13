@@ -1928,12 +1928,29 @@
       // than sending raw HTML. The HTML import path scans for job links, which
       // yields nothing for individual job pages. Body text gives the importer
       // enough content to extract the description.
-      default:                 payload = buildGenericJobPagePayload(); break;
+      default:                 payload = await buildGenericJobPagePayload(); break;
     }
     return withExtensionVersion(payload);
   }
 
-  function buildGenericJobPagePayload() {
+  // ai: claude-sonnet-5 | 2026-08-12
+  // Job pages built on MUI (and similar) accordions keep "What is the role",
+  // "What you bring", etc. collapsed behind aria-expanded="false" toggles —
+  // <details> works the same way natively. innerText only reflects rendered
+  // (visible) text, so an unexpanded section is silently absent from the
+  // capture even though the DOM node exists. Force everything open first.
+  // Skip nav/header toggles so this doesn't fire mobile menus etc.
+  async function expandCollapsedSections() {
+    document.querySelectorAll('details:not([open])').forEach(el => { el.open = true; });
+    const toggles = [...document.querySelectorAll('[aria-expanded="false"]')]
+      .filter(el => !el.closest('nav, header, [role="navigation"]'));
+    if (toggles.length === 0) return;
+    toggles.forEach(el => el.click());
+    await new Promise(resolve => setTimeout(resolve, 400));
+  }
+
+  async function buildGenericJobPagePayload() {
+    await expandCollapsedSections();
     const title = pick([
       'h1[class*="job"]', 'h1[class*="title"]',
       '[data-testid*="title"]', '[data-testid*="job-title"]',

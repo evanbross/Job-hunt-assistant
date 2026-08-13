@@ -63,7 +63,7 @@ def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> 
         settings.set("cover_letter_folder", "C:/letters")
         job_id = jobs.insert(
             {
-                "email_id": "email-1",
+                "dedup_key": "email-1",
                 "company": "Acme",
                 "job_title": "Senior Engineer",
                 "url": "https://example.com/jobs/1",
@@ -107,7 +107,7 @@ def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None
     try:
         job_id = repos["jobs"].insert(
             {
-                "email_id": "email-2",
+                "dedup_key": "email-2",
                 "company": "Widget Co",
                 "job_title": "Backend Engineer",
                 "url": "https://example.com/jobs/2",
@@ -172,7 +172,7 @@ def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
         )
         first_job_id = repos["jobs"].insert(
             {
-                "email_id": "email-3",
+                "dedup_key": "email-3",
                 "company": "Acme",
                 "job_title": "Backend Engineer",
                 "url": "https://example.com/jobs/3",
@@ -184,7 +184,7 @@ def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
         )
         second_job_id = repos["jobs"].insert(
             {
-                "email_id": "email-3:1",
+                "dedup_key": "email-3:1",
                 "company": "Acme",
                 "job_title": "Frontend Engineer",
                 "url": "https://example.com/jobs/4",
@@ -280,7 +280,7 @@ def test_jobs_url_unique_index_rejects_concurrent_duplicate_insert(
     try:
         first_id = repos["jobs"].insert(
             {
-                "email_id": "email-race-1",
+                "dedup_key": "email-race-1",
                 "company": "Acme",
                 "job_title": "Engineer",
                 "url": "https://example.com/jobs/race",
@@ -294,7 +294,7 @@ def test_jobs_url_unique_index_rejects_concurrent_duplicate_insert(
         with pytest.raises(DuplicateJobUrlError) as exc_info:
             repos["jobs"].insert(
                 {
-                    "email_id": "email-race-2",
+                    "dedup_key": "email-race-2",
                     "company": "Acme",
                     "job_title": "Engineer (second capture of the same posting)",
                     "url": "https://example.com/jobs/race",
@@ -310,7 +310,7 @@ def test_jobs_url_unique_index_rejects_concurrent_duplicate_insert(
         assert repos["jobs"].get_by_id(first_id) is not None
         second_id = repos["jobs"].insert(
             {
-                "email_id": "email-race-3",
+                "dedup_key": "email-race-3",
                 "company": "Other Co",
                 "job_title": "Unrelated job, different URL",
                 "url": "https://example.com/jobs/not-a-race",
@@ -334,7 +334,7 @@ def test_jobs_url_unique_index_allows_multiple_empty_urls(pg_dsn: str) -> None:
     try:
         first_id = repos["jobs"].insert(
             {
-                "email_id": "email-empty-url-1",
+                "dedup_key": "email-empty-url-1",
                 "company": "Acme",
                 "job_title": "Engineer",
                 "url": "",
@@ -345,7 +345,7 @@ def test_jobs_url_unique_index_allows_multiple_empty_urls(pg_dsn: str) -> None:
         )
         second_id = repos["jobs"].insert(
             {
-                "email_id": "email-empty-url-2",
+                "dedup_key": "email-empty-url-2",
                 "company": "Widget Co",
                 "job_title": "Other Engineer",
                 "url": "",
@@ -390,7 +390,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         jobs = PostgresJobRepository(conn)
         first_id = jobs.insert(
             {
-                "email_id": "email-legacy-1",
+                "dedup_key": "email-legacy-1",
                 "company": "Acme",
                 "job_title": "Engineer",
                 "url": "https://example.com/jobs/legacy-dup",
@@ -401,7 +401,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         )
         second_id = jobs.insert(
             {
-                "email_id": "email-legacy-2",
+                "dedup_key": "email-legacy-2",
                 "company": "Acme",
                 "job_title": "Engineer (duplicate capture, predates the fix)",
                 "url": "https://example.com/jobs/legacy-dup",

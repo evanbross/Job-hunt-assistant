@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.utils import format_phrase_book_section
+from backend.utils.utils import format_phrase_book_section, job_description_text
 
 
 class CoverLetterGenerator:
@@ -59,7 +59,7 @@ class CoverLetterGenerator:
         Generate a concise cover letter for *job*.
 
         job should contain at minimum: company, job_title.
-        Optional fields used when present: url, job_description, raw_email_snippet,
+        Optional fields used when present: url, job_description, raw_jd_snippet,
         fit_reasoning.
         resume_text is the plain-text content of the candidate's uploaded resume.
         phrases is the candidate's saved phrase-book entries (backend/db table
@@ -75,9 +75,7 @@ class CoverLetterGenerator:
         # Prefer the full stored job description; fall back to the email snippet used
         # for fit scoring. Without this the prompt only contains the URL which Claude
         # cannot visit, causing "can't access the URL" errors.
-        job_description = (
-            job.get("job_description") or job.get("raw_email_snippet") or ""
-        ).strip()
+        job_description = job_description_text(job)
 
         resume_section = (
             f"\n\nCANDIDATE RESUME:\n{resume_text.strip()}"

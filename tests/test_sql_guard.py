@@ -89,7 +89,7 @@ def test_disallowed_table_is_rejected(table: str) -> None:
 
 def test_disallowed_column_is_rejected() -> None:
     with pytest.raises(SqlGuardError, match="isn't a column"):
-        validate_select("SELECT raw_email_snippet FROM jobs")
+        validate_select("SELECT raw_jd_snippet FROM jobs")
 
 
 @pytest.mark.parametrize(

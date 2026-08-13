@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.duplicate_checker import DuplicateChecker
+from backend.scoring.duplicate_checker import DuplicateChecker
 
 
 def _match(title_a: str, title_b: str) -> bool:

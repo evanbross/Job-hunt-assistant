@@ -42,7 +42,7 @@ from urllib.request import Request
 
 import pytest
 
-from backend.url_safety import (
+from backend.utils.url_safety import (
     UnsafeUrlError,
     _ValidatingRedirectHandler,
     safe_urlopen,

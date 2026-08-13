@@ -36,7 +36,7 @@ Key files:
 - `backend/db.py` — repository implementations (SQLite today, Postgres next)
 - `backend/fit_scorer.py` — Anthropic API job-fit scoring
 - `backend/career_site_scanner.py` — scrapes company career pages
-- `backend/gmail_client.py` — Gmail integration
+- `backend/email/gmail_client.py` — Gmail integration
 - `backend/utils.py` — shared helpers used across blueprints
 - `config.py` — constants and runtime config helpers
 - `frontend/src/App.jsx` — main React shell

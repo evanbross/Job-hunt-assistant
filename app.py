@@ -71,9 +71,9 @@ from flask_cors import CORS
 import config
 from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
-from backend.import_listener import start_job_import_listener
+from backend.scanning.import_listener import start_job_import_listener
 from backend.queue_websocket import start_queue_websocket_server
-from backend.utils import is_trusted_api_write_origin, start_jd_health_check_scheduler
+from backend.utils.utils import is_trusted_api_write_origin, start_jd_health_check_scheduler
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
 try:
@@ -343,7 +343,7 @@ app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /ap
 
 def _claim_browser_capture_queue() -> list[dict]:
     """Called from the import listener thread — opens a short-lived DB connection."""
-    from backend.utils import get_repos
+    from backend.utils.utils import get_repos
 
     with get_repos() as repos:
         items = repos["browser_capture_queue"].claim_pending(
@@ -356,7 +356,7 @@ def _claim_browser_capture_queue() -> list[dict]:
 # ai: claude-sonnet-5 | 2026-07-22
 def _browser_capture_queue_has_pending() -> bool:
     """Called from the queue WebSocket server's watcher thread."""
-    from backend.utils import get_repos
+    from backend.utils.utils import get_repos
 
     with get_repos() as repos:
         return repos["browser_capture_queue"].has_pending()

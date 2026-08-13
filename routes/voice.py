@@ -16,7 +16,7 @@
 
 """Voice-query blueprint: POST /voice/query takes a transcribed utterance and
 returns a validated read-only SQL query's results, a triggered action's
-result, or a chat fallback. See backend/voice_query.py for intent
+result, or a chat fallback. See backend/voice/voice_query.py for intent
 classification, backend/sql_guard.py for SQL validation, and
 backend/db/readonly_role.py for the SELECT-only DB role this executes
 against."""
@@ -32,9 +32,9 @@ from flask.typing import ResponseReturnValue
 
 from backend.db.readonly_role import get_readonly_database_url
 from backend.sql_guard import MAX_ROW_LIMIT, SqlGuardError, validate_select
-from backend.utils import _ai_error_http_status, safe_error_message
-from backend.voice_actions import VOICE_ACTIONS
-from backend.voice_query import VoiceIntentError, classify, format_answer_text
+from backend.utils.utils import _ai_error_http_status, safe_error_message
+from backend.voice.voice_actions import VOICE_ACTIONS
+from backend.voice.voice_query import VoiceIntentError, classify, format_answer_text
 
 logger = logging.getLogger(__name__)
 

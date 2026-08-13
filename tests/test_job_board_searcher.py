@@ -20,8 +20,8 @@ from typing import Any
 
 import pytest
 
-import backend.job_board_searcher as job_board_searcher_module
-from backend.job_board_searcher import JobBoardSearcher, strip_html, url_to_email_id
+import backend.scanning.job_board_searcher as job_board_searcher_module
+from backend.scanning.job_board_searcher import JobBoardSearcher, strip_html, url_to_dedup_key
 
 
 class FakeResponse:
@@ -45,12 +45,12 @@ def test_strip_html_decodes_entities_and_normalizes_whitespace() -> None:
 
 
 # ai: gpt-5 | 2026-07-26
-def test_url_to_email_id_is_stable_and_url_specific() -> None:
+def test_url_to_dedup_key_is_stable_and_url_specific() -> None:
     url = "https://example.com/jobs/123"
 
-    assert url_to_email_id(url) == url_to_email_id(url)
-    assert url_to_email_id(url).startswith("board:")
-    assert url_to_email_id(url) != url_to_email_id("https://example.com/jobs/456")
+    assert url_to_dedup_key(url) == url_to_dedup_key(url)
+    assert url_to_dedup_key(url).startswith("board:")
+    assert url_to_dedup_key(url) != url_to_dedup_key("https://example.com/jobs/456")
 
 
 # ai: gpt-5 | 2026-07-26

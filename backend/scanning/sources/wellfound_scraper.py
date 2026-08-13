@@ -61,7 +61,7 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
-from backend.email_parser import resolve_tracking_url
+from backend.email.email_parser import resolve_tracking_url
 
 logger = logging.getLogger(__name__)
 

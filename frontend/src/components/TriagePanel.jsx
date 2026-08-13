@@ -62,6 +62,7 @@ import {
   formatJobDescription,
   isDescriptionUnavailable,
   isManualPastedJob,
+  jobDescriptionText,
   jobDisplayName,
   negativeReasoningBulletStyleFor,
   normalizeManualJobUrl,
@@ -189,7 +190,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   }, []);
 
   const handleApprove = async (job) => {
-    const senderEmail = extractSender(job.raw_email_snippet, job);
+    const senderEmail = extractSender(job.raw_jd_snippet, job);
     const subjectPattern = extractSubjectWords(job.job_title || "");
 
     const res = await fetch(`/api/jobs/${job.id}/approve`, {
@@ -1037,7 +1038,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
 
           <div style={compactOriginStyle}>
             {isManualPastedJob(job)
-              ? (job.email_subject || "Manual pasted job listing")
+              ? (job.capture_label || "Manual pasted job listing")
               : <SourceText job={job} />}
           </div>
 
@@ -1109,10 +1110,10 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
       </div>
 
       {/* Email origin */}
-      {(job.sender_email || job.email_subject) && !isManualPastedJob(job) && (
+      {(job.sender_email || job.capture_label) && !isManualPastedJob(job) && (
         <div style={emailMetaStyle}>
-          {job.email_subject && (
-            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
+          {job.capture_label && (
+            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.capture_label}</div>
           )}
           {job.sender_email && (
             <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" }}>
@@ -1463,7 +1464,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
   const companyHistory = useCompanyHistoryLookup(job);
   const triageReasoning = triageReasoningForJob(job);
   const penaltiesApplied = penaltiesAppliedForJob(job);
-  const rawJobDescription = String(job.job_description || job.raw_email_snippet || "").trim();
+  const rawJobDescription = jobDescriptionText(job);
   const jobDescription = formatJobDescription(rawJobDescription);
   const descriptionUnavailable = isDescriptionUnavailable(rawJobDescription);
 
@@ -1865,11 +1866,13 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
             return <span className="badge badge-orange">Low Confidence</span>;
           if (String(job.parser_confidence || "").toLowerCase() === "low")
             return <span className="badge badge-orange">Low Confidence</span>;
-          if (!job.job_description && !String(job.raw_email_snippet || "").trim())
+          if (!jobDescriptionText(job))
             return <span className="badge badge-orange">Missing Job Details</span>;
           if (job.fit_score != null && job.fit_score < 50)
             return <span className={`badge ${fitScoreClass(job)}`}>Low Fit</span>;
-          return <span className="badge badge-orange">Low Confidence</span>;
+          // ai: claude-sonnet-5 | 2026-08-12
+          // None of the specific reasons above matched — say so instead of mislabeling as "Low Confidence"
+          return <span className="badge badge-orange">Needs Review</span>;
         })()}
       </div>
       {/* Header row */}
@@ -1938,7 +1941,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           </div>
           <div style={compactOriginStyle}>
             {isManualPastedJob(job)
-              ? (job.email_subject || "Manual pasted job listing")
+              ? (job.capture_label || "Manual pasted job listing")
               : <SourceText job={job} />}
           </div>
           <div style={triageUrlRowStyle}>
@@ -2098,10 +2101,10 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
       </div>
 
       {/* Email origin */}
-      {(job.sender_email || job.email_subject) && !isManualPastedJob(job) && (
+      {(job.sender_email || job.capture_label) && !isManualPastedJob(job) && (
         <div style={emailMetaStyle}>
-          {job.email_subject && (
-            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
+          {job.capture_label && (
+            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.capture_label}</div>
           )}
           {job.sender_email && (
             <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" }}>

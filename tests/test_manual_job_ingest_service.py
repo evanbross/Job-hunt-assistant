@@ -37,7 +37,7 @@ from __future__ import annotations
 import pytest
 
 from backend.db import DuplicateJobUrlError
-from backend.manual_job_ingest_service import ManualJobIngestService
+from backend.scanning.manual_job_ingest_service import ManualJobIngestService
 
 
 class StubJobRepo:
@@ -268,7 +268,7 @@ def test_ingest_enriches_thin_listener_text_from_job_url() -> None:
         trigger="listener",
     )
 
-    assert result.job["raw_email_snippet"] == long_description[:6000]
+    assert result.job["raw_jd_snippet"] == long_description[:6000]
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14
@@ -312,7 +312,7 @@ def test_ingest_keeps_short_text_when_enrichment_returns_too_little() -> None:
 
     result = service.ingest(short_text, trigger="listener")
 
-    assert result.job["raw_email_snippet"] == short_text[:6000]
+    assert result.job["raw_jd_snippet"] == short_text[:6000]
 
 
 def test_ingest_from_public_job_url_without_pasted_text() -> None:

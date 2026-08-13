@@ -33,7 +33,7 @@ import re
 from typing import Any
 
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.voice_actions import VOICE_ACTIONS
+from backend.voice.voice_actions import VOICE_ACTIONS
 
 logger = logging.getLogger(__name__)
 

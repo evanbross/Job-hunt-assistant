@@ -48,7 +48,7 @@ from flask.testing import FlaskClient
 import config
 import routes.applications as applications_module  # ai: claude-fable-5 | 2026-07-17
 from backend.db import open_repositories
-from backend.utils import (  # ai: claude-fable-5 | 2026-07-17
+from backend.utils.utils import (  # ai: claude-fable-5 | 2026-07-17
     RATE_LIMIT_DEFAULT_BACKOFF_SECONDS,
     canonicalize_wttj_url,
     rate_limit_backoff_seconds,

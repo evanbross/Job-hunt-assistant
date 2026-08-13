@@ -46,11 +46,12 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.duplicate_checker import DuplicateChecker
-from backend.fit_scorer import FitScorer
-from backend.job_board_searcher import JobBoardSearcher, url_to_email_id
-from backend.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.utils import get_repos, jd_blocklist_match
+from backend.db.job_columns import JobColumns
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.scoring.fit_scorer import FitScorer
+from backend.scanning.job_board_searcher import JobBoardSearcher, url_to_dedup_key
+from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
+from backend.utils.utils import get_repos, jd_blocklist_match
 
 logger = logging.getLogger(__name__)
 
@@ -308,15 +309,15 @@ def _run_board_search() -> None:
                     continue
 
                 status = "pending_review" if fit_score >= 70 else "triage"
-                email_id = url_to_email_id(url) if url else f"board:nurl:{idx}"
+                dedup_key = url_to_dedup_key(url) if url else f"board:nurl:{idx}"
 
                 job_data: dict = {
-                    "email_id": email_id,
+                    JobColumns.DEDUP_KEY: dedup_key,
                     "company": company,
                     "job_title": title,
                     "url": url,
                     "source": candidate["source"],
-                    "raw_email_snippet": candidate["description"][:300],
+                    "raw_jd_snippet": candidate["description"][:300],
                     "fit_score": fit_score,
                     "fit_reasoning": fit_reasoning,
                     "status": status,
@@ -325,7 +326,7 @@ def _run_board_search() -> None:
                     "date_found": datetime.now(UTC).date().isoformat(),
                     "duplicate_hint": None,
                     "sender_email": None,
-                    "email_subject": None,
+                    JobColumns.CAPTURE_LABEL: None,
                     "confidence_score": 100,
                 }
 

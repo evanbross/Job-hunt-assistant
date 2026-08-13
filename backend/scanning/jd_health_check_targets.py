@@ -61,7 +61,7 @@ All four entries were hand-verified live in-browser on 2026-08-03 (not
 guessed) -- see COMMON_CODING_STANDARDS.md's preference for going to the
 real source of truth over a derived/assumed one. The WTTJ entry doubles as
 an end-to-end check of the WTTJ -> underlying-ATS resolution added the same
-day (backend/career_site_scanner.py's _wttj_ats_url_from_html).
+day (backend/scanning/career_site_scanner.py's _wttj_ats_url_from_html).
 """
 
 from __future__ import annotations

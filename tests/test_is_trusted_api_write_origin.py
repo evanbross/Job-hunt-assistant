@@ -35,7 +35,7 @@
 # ai: claude-sonnet-4-6 | 2026-07-06
 from __future__ import annotations
 
-from backend.utils import is_trusted_api_write_origin
+from backend.utils.utils import is_trusted_api_write_origin
 
 _CORS_ORIGINS = ["http://localhost:5173", "http://localhost:5174"]
 

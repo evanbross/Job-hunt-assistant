@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time
 
-from backend.utils import is_jd_health_check_overdue
+from backend.utils.utils import is_jd_health_check_overdue
 
 _SCHEDULED_3AM = time(3, 0, tzinfo=UTC)
 

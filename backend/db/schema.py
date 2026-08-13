@@ -43,7 +43,7 @@ import re
 from typing import Any
 
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
-from backend.jd_health_check_targets import LIVE_CANARY_TARGETS
+from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
 
 logger = logging.getLogger(__name__)
 
@@ -162,14 +162,30 @@ def _migrate(conn: Any) -> None:
         cur.execute("ALTER TABLE jobs DROP COLUMN date_added_to_sheet")
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-08-12
+    # email_id renamed to dedup_key: it's a real Gmail message ID only for
+    # email-sourced jobs, but a synthetic "source:date:token" dedup key for
+    # every other source (browser extension, manual paste, career-site scan,
+    # board search). Must run before the constraint-repair block right below
+    # (which references the constraint/column by name) and before the
+    # scanned_emails backfill queries later in this function, which read
+    # jobs.email_id directly — both would break against the old name.
+    if _has_column(cur, "jobs", "email_id"):
+        cur.execute("ALTER TABLE jobs RENAME COLUMN email_id TO dedup_key")
+    if _has_unique(cur, "jobs", "jobs_email_id_key"):
+        cur.execute(
+            "ALTER TABLE jobs RENAME CONSTRAINT jobs_email_id_key TO jobs_dedup_key_key"
+        )
+    conn.commit()
+
     # Repair missing constraints (tables may have been pre-created without them)
     if not _has_pk(cur, "scanned_emails"):
         cur.execute("ALTER TABLE scanned_emails ADD PRIMARY KEY (email_id)")
     if not _has_pk(cur, "app_settings"):
         cur.execute("ALTER TABLE app_settings ADD PRIMARY KEY (key)")
-    if not _has_unique(cur, "jobs", "jobs_email_id_key"):
+    if not _has_unique(cur, "jobs", "jobs_dedup_key_key"):
         cur.execute(
-            "ALTER TABLE jobs ADD CONSTRAINT jobs_email_id_key UNIQUE (email_id)"
+            "ALTER TABLE jobs ADD CONSTRAINT jobs_dedup_key_key UNIQUE (dedup_key)"
         )
     if not _has_unique(cur, "career_scan_results", "career_scan_results_job_url_key"):
         cur.execute(
@@ -217,11 +233,24 @@ def _migrate(conn: Any) -> None:
             )
             conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-08-12
+    # email_subject renamed to capture_label: non-email sources (browser
+    # extension, manual paste, career-site scans) stored a synthetic
+    # description here ("Browser Extension streamed job listing"), not a
+    # real email subject. Must run before the ADD COLUMN IF NOT EXISTS loop
+    # below, which now targets the new name — otherwise that loop would
+    # create a second, empty capture_label column while the old
+    # email_subject column (with real data) is still present under the old
+    # name, and this rename would then fail with a naming collision.
+    if _has_column(cur, "jobs", "email_subject"):
+        cur.execute("ALTER TABLE jobs RENAME COLUMN email_subject TO capture_label")
+        conn.commit()
+
     for col, defn in [
         ("duplicate_hint", "TEXT"),
         ("duplicate_of_id", "INTEGER"),
         ("sender_email", "TEXT"),
-        ("email_subject", "TEXT"),
+        ("capture_label", "TEXT"),
         ("confidence_score", "INTEGER"),
         ("confidence_reason", "TEXT"),
         ("skip_reason", "TEXT"),
@@ -275,10 +304,10 @@ def _migrate(conn: Any) -> None:
         UPDATE scanned_emails SET disposition = 'job_created'
         WHERE disposition = 'noise'
           AND (
-            email_id IN (SELECT email_id FROM jobs)
+            email_id IN (SELECT dedup_key FROM jobs)
             OR email_id IN (
-                SELECT SUBSTRING(email_id, 1, STRPOS(email_id, ':') - 1)
-                FROM jobs WHERE STRPOS(email_id, ':') > 0
+                SELECT SUBSTRING(dedup_key, 1, STRPOS(dedup_key, ':') - 1)
+                FROM jobs WHERE STRPOS(dedup_key, ':') > 0
             )
           )
     """)
@@ -316,12 +345,12 @@ def _migrate(conn: Any) -> None:
     # Backfill scanned_emails from jobs so existing records are not re-processed
     cur.execute("""
         INSERT INTO scanned_emails (email_id, sender_email, email_subject, scanned_at)
-        SELECT email_id,
+        SELECT dedup_key,
                COALESCE(sender_email, ''),
-               COALESCE(email_subject, ''),
+               COALESCE(capture_label, ''),
                COALESCE(date_found, NOW()::text)
         FROM jobs
-        WHERE email_id IS NOT NULL
+        WHERE dedup_key IS NOT NULL
         ON CONFLICT (email_id) DO NOTHING
     """)
 
@@ -400,6 +429,14 @@ def _migrate(conn: Any) -> None:
     cur.execute(
         "ALTER TABLE browser_capture_queue" " ADD COLUMN IF NOT EXISTS job_id INTEGER"
     )
+
+    # ai: claude-sonnet-5 | 2026-08-12
+    # raw_email_snippet renamed to raw_jd_snippet: the column holds the
+    # originally captured JD text regardless of ingestion source (email,
+    # browser extension, manual paste, career-site scan) — the old name
+    # predates non-email sources and was misleading.
+    if _has_column(cur, "jobs", "raw_email_snippet"):
+        cur.execute("ALTER TABLE jobs RENAME COLUMN raw_email_snippet TO raw_jd_snippet")
 
     conn.commit()
 
@@ -485,12 +522,12 @@ def _create_tables(conn: Any) -> None:
         """
         CREATE TABLE IF NOT EXISTS jobs (
             id                    SERIAL PRIMARY KEY,
-            email_id              TEXT UNIQUE,
+            dedup_key             TEXT UNIQUE,
             company               TEXT,
             job_title             TEXT,
             url                   TEXT,
             source                TEXT,
-            raw_email_snippet     TEXT,
+            raw_jd_snippet        TEXT,
             fit_score             INTEGER,
             fit_reasoning         TEXT,
             status                TEXT,
@@ -501,7 +538,7 @@ def _create_tables(conn: Any) -> None:
             duplicate_hint        TEXT,
             duplicate_of_id       INTEGER,
             sender_email          TEXT,
-            email_subject         TEXT,
+            capture_label         TEXT,
             confidence_score      INTEGER,
             skip_reason           TEXT,
             skip_feedback         TEXT,

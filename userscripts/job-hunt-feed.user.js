@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-08-07.01
+// @version      2026-08-12.01
 // @match        https://jobs.ashbyhq.com/vanta/*
 // @match        https://discord.com/careehrs*
 // @match        https://job-boards.greenhouse.io/*/jobs/*
@@ -355,7 +355,7 @@
         }
 
         // Send as { jobs: [...] } — the listener's JSON path handles this
-        // and feeds listing_text into raw_email_snippet + the fit scorer.
+        // and feeds listing_text into raw_jd_snippet + the fit scorer.
         return JSON.stringify({
             jobs: [{
                 url: window.location.href,

@@ -50,7 +50,7 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.utils import _ai_error_http_status, safe_error_message
+from backend.utils.utils import _ai_error_http_status, safe_error_message
 
 logger = logging.getLogger(__name__)
 toptal_bp = Blueprint("toptal", __name__)

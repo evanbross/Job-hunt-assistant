@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.utils.utils import job_description_text
 
 
 class ResumeTailoringGenerator:
@@ -55,9 +56,7 @@ class ResumeTailoringGenerator:
 
         company = job.get("company") or "the company"
         job_title = job.get("job_title") or "the position"
-        job_description = (
-            job.get("job_description") or job.get("raw_email_snippet") or ""
-        ).strip()
+        job_description = job_description_text(job)
         fit_reasoning = (job.get("fit_reasoning") or "").strip()
 
         if job_description:

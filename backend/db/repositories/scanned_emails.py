@@ -113,7 +113,7 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 se.parser_error_msg,
                 se.hidden,
                 j.id AS child_job_id,
-                j.email_id AS child_email_id,
+                j.dedup_key AS child_dedup_key,
                 j.company AS child_company,
                 j.job_title AS child_job_title,
                 j.url AS child_url,
@@ -126,8 +126,8 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 j.date_found AS child_date_found
             FROM scanned_emails se
             LEFT JOIN jobs j
-              ON j.email_id = se.email_id
-              OR substr(j.email_id, 1, length(se.email_id) + 1) = se.email_id || ':'
+              ON j.dedup_key = se.email_id
+              OR substr(j.dedup_key, 1, length(se.email_id) + 1) = se.email_id || ':'
             ORDER BY se.scanned_at DESC, j.id
         """)
         rows = [_row_to_dict(row) for row in cur.fetchall()]
@@ -164,7 +164,7 @@ class PostgresScannedEmailRepository(_BaseRepo):
 
             child_job = {
                 "id": child_job_id,
-                "email_id": email_job_row["child_email_id"],
+                "dedup_key": email_job_row["child_dedup_key"],
                 "company": email_job_row["child_company"],
                 "job_title": email_job_row["child_job_title"],
                 "url": email_job_row["child_url"],

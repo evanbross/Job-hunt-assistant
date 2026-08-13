@@ -53,29 +53,30 @@ from flask.typing import ResponseReturnValue
 from googleapiclient.errors import HttpError
 
 import config
-from backend.career_site_scanner import CareerSiteScanner
+from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.db import DuplicateJobUrlError
-from backend.duplicate_checker import DuplicateChecker
-from backend.email_parser import (
+from backend.db.job_columns import JobColumns
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.email.email_parser import (
     EmailParser,
     fallback_job_url,
     normalize_title_company,
     resolve_tracking_url,
 )
-from backend.fit_scorer import FitScorer
-from backend.gmail_client import GmailClient, NotAuthenticatedError
-from backend.import_repair import (  # ai: claude-fable-5 | 2026-07-17
+from backend.scoring.fit_scorer import FitScorer
+from backend.email.gmail_client import GmailClient, NotAuthenticatedError
+from backend.scanning.import_repair import (  # ai: claude-fable-5 | 2026-07-17
     post_repair_duplicate_check,
     wttj_title_repair_updates,
 )
-from backend.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.manual_job_ingest_service import ManualJobIngestService
-from backend.skip_reasons import VALID_SKIP_REASONS  # ai: claude-fable-5 | 2026-07-16
-from backend.url_safety import (  # ai: claude-fable-5 | 2026-07-17
+from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
+from backend.scanning.manual_job_ingest_service import ManualJobIngestService
+from backend.scoring.skip_reasons import VALID_SKIP_REASONS  # ai: claude-fable-5 | 2026-07-16
+from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-17
     UnsafeUrlError,
     safe_urlopen,
 )
-from backend.utils import (
+from backend.utils.utils import (
     _ai_error_http_status,
     canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17
     db_match_for_job,
@@ -737,7 +738,7 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
                 result = scorer.score(
                     job_title=job.get("job_title", ""),
                     company=job.get("company", ""),
-                    email_body=job.get("raw_email_snippet", ""),
+                    email_body=job.get("raw_jd_snippet", ""),
                     resume_text=resume_text,
                     penalty_rules=penalty_rules,
                     fit_feedback=fit_feedback,
@@ -897,7 +898,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
         repos["jobs"].update(
             job_id,
             {
-                "raw_email_snippet": new_text[:6000],
+                "raw_jd_snippet": new_text[:6000],
                 "fit_score": fit_score,
                 "fit_reasoning": score_result["reasoning"],
                 "salary_min": score_result["salary_min"],
@@ -971,7 +972,7 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
         repos["jobs"].update(
             job_id,
             {
-                "raw_email_snippet": description[:6000],
+                "raw_jd_snippet": description[:6000],
                 "fit_score": fit_score,
                 "fit_reasoning": score_result["reasoning"],
                 "salary_min": score_result["salary_min"],
@@ -999,8 +1000,8 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
-        if not job.get("email_id"):
-            return jsonify({"error": "Job has no email_id — cannot reprocess"}), 422
+        if not job.get(JobColumns.DEDUP_KEY):
+            return jsonify({"error": "Job has no dedup_key — cannot reprocess"}), 422
     # Connection released before external Gmail fetch
 
     try:
@@ -1008,14 +1009,14 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
     except NotAuthenticatedError as exc:
         return jsonify({"error": str(exc)}), 401
 
-    # email_id may be suffixed (e.g. "abc123:2") for jobs beyond the first in a digest
-    base_email_id = job["email_id"].split(":")[0]
+    # dedup_key may be suffixed (e.g. "abc123:2") for jobs beyond the first in a digest
+    base_dedup_key = job[JobColumns.DEDUP_KEY].split(":")[0]
     try:
-        full_msg = gmail.get_message(base_email_id)
+        full_msg = gmail.get_message(base_dedup_key)
         subject, sender, email_body = gmail.extract_text(full_msg)
         email_raw_html = gmail.extract_raw_html(full_msg)
     except Exception as exc:
-        logger.error("Reprocess: failed to fetch message %s: %s", base_email_id, exc)
+        logger.error("Reprocess: failed to fetch message %s: %s", base_dedup_key, exc)
         return (
             jsonify(
                 {"error": safe_error_message(exc, "Failed to fetch email from Gmail")}
@@ -1034,9 +1035,10 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
     if not parsed_jobs:
         return jsonify({"error": "Parser found no job postings in this email"}), 422
 
-    # For suffixed email_ids (e.g. "abc123:2"), use the matching index; fall back to first
+    # For suffixed dedup_keys (e.g. "abc123:2"), use the matching index; fall back to first
     try:
-        job_idx = int(job["email_id"].split(":")[1]) if ":" in job["email_id"] else 0
+        dedup_key = job[JobColumns.DEDUP_KEY]
+        job_idx = int(dedup_key.split(":")[1]) if ":" in dedup_key else 0
     except (IndexError, ValueError):
         job_idx = 0
     parsed = parsed_jobs[job_idx] if job_idx < len(parsed_jobs) else parsed_jobs[0]
@@ -1046,8 +1048,8 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
         "parser_confidence": parsed.get("confidence", "low"),
         "confidence_reason": parsed.get("confidence_reason", ""),
         "sender_email": sender,
-        "email_subject": subject,
-        "raw_email_snippet": email_body[:300],
+        JobColumns.CAPTURE_LABEL: subject,
+        "raw_jd_snippet": email_body[:300],
     }
     # Fill in parsed fields only if the stored value is empty
     for fld in ("company", "job_title", "url", "source"):
@@ -1327,7 +1329,7 @@ def _run_wttj_repair() -> None:
 
                 url_updates: dict = {"url": resolved}
                 if jd_text:
-                    url_updates["raw_email_snippet"] = jd_text[:6000]
+                    url_updates["raw_jd_snippet"] = jd_text[:6000]
                     url_updates["job_description"] = jd_text
 
                 with get_repos() as repos:
@@ -1502,8 +1504,8 @@ def _rescan_import_candidates(repos: dict) -> list[dict]:
     for job in repos["jobs"].get_all_ordered():
         if str(job.get("status") or "").lower() in _RESCAN_DECISIVE_TERMINAL_STATUSES:
             continue
-        email_id = str(job.get("email_id") or "").strip()
-        if not email_id:
+        dedup_key = str(job.get(JobColumns.DEDUP_KEY) or "").strip()
+        if not dedup_key:
             continue
         url = str(job.get("url") or "").strip()
         if url.lower().startswith(("http://", "https://")):
@@ -1515,16 +1517,16 @@ def _rescan_import_candidates(repos: dict) -> list[dict]:
 # ai: claude-sonnet-5 | 2026-07-10
 def _group_candidates_by_email(candidates: list[dict]) -> dict[str, list[dict]]:
     """Group broken jobs by their base Gmail message id, in original job_idx order
-    (email_id is "<msg_id>" for the first job extracted from a message, "<msg_id>:N"
+    (dedup_key is "<msg_id>" for the first job extracted from a message, "<msg_id>:N"
     for subsequent ones)."""
     groups: dict[str, list[dict]] = {}
 
-    def _suffix_index(email_id: str) -> int:
+    def _suffix_index(dedup_key: str) -> int:
         # Non-Gmail sources (manual paste, browser-extension capture) can store
         # a non-numeric suffix (e.g. a date) in this field; such jobs group under
         # their own "base id" anyway and fail the Gmail fetch cleanly downstream,
         # so any stable fallback ordering is fine here.
-        parts = email_id.split(":")
+        parts = dedup_key.split(":")
         if len(parts) <= 1:
             return 0
         try:
@@ -1533,10 +1535,10 @@ def _group_candidates_by_email(candidates: list[dict]) -> dict[str, list[dict]]:
             return 0
 
     for job in candidates:
-        base_id = str(job["email_id"]).split(":")[0]
+        base_id = str(job[JobColumns.DEDUP_KEY]).split(":")[0]
         groups.setdefault(base_id, []).append(job)
     for group_rows in groups.values():
-        group_rows.sort(key=lambda r: _suffix_index(str(r["email_id"])))
+        group_rows.sort(key=lambda r: _suffix_index(str(r[JobColumns.DEDUP_KEY])))
     return groups
 
 
@@ -1758,7 +1760,7 @@ def _run_rescan_broken_imports() -> None:
                         updates["fit_reasoning"] = score_result["reasoning"]
                         updates["salary_min"] = score_result["salary_min"]
                         updates["salary_max"] = score_result["salary_max"]
-                        updates["raw_email_snippet"] = (
+                        updates["raw_jd_snippet"] = (
                             jd_text if jd_text else email_body
                         )[:6000]
                         if score_result["score"] < 70:
@@ -1922,8 +1924,8 @@ def _attempt_import_repair(
         before_title, before_company = working.get("job_title"), working.get("company")
         normalize_title_company(
             working,
-            working.get("email_subject") or "",
-            working.get("raw_email_snippet") or "",
+            working.get(JobColumns.CAPTURE_LABEL) or "",
+            working.get("raw_jd_snippet") or "",
         )
         if working.get("job_title") != before_title:
             updates["job_title"] = working["job_title"]
@@ -1931,7 +1933,7 @@ def _attempt_import_repair(
             updates["company"] = working["company"]
 
     if "homepage_url" in warnings:
-        candidate_url = fallback_job_url(working.get("raw_email_snippet") or "")
+        candidate_url = fallback_job_url(working.get("raw_jd_snippet") or "")
         if candidate_url and candidate_url != working.get("url"):
             working["url"] = candidate_url
             updates["url"] = candidate_url

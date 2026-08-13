@@ -35,7 +35,7 @@
 export function salaryRangeForJob(job) {
   const structured = formatSalaryRange(job.salary_min, job.salary_max);
   if (structured) return structured;
-  const sourceText = [job.raw_email_snippet, job.fit_reasoning]
+  const sourceText = [job.raw_jd_snippet, job.fit_reasoning]
     .filter(Boolean)
     .join("\n");
   return extractSalaryRange(sourceText);

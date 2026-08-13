@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.company_matching import normalize_company_name
+from backend.scoring.company_matching import normalize_company_name
 
 # ai: claude-sonnet-5 | 2026-07-25
 

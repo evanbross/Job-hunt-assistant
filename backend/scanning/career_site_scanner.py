@@ -55,7 +55,7 @@ from urllib.error import URLError
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
 from urllib.request import Request
 
-from backend.url_safety import UnsafeUrlError, safe_urlopen
+from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
 

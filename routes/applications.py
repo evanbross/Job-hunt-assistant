@@ -53,8 +53,8 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, DuplicateJobUrlError
-from backend.url_safety import UnsafeUrlError, safe_urlopen
-from backend.utils import (
+from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
+from backend.utils.utils import (
     _tracking_payload,
     canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17 — moved to utils, shared with WTTJ repair
     get_repos,

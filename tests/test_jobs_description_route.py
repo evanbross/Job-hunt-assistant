@@ -69,7 +69,7 @@ class FakeJobsRepo:
             "id": 7,
             "company": "Acme",
             "job_title": "Platform Engineer",
-            "raw_email_snippet": "Brief summary",
+            "raw_jd_snippet": "Brief summary",
             "status": "triage",
         }
 
@@ -202,7 +202,7 @@ def test_update_job_description_replaces_text_and_rescores(
     data = response.get_json()
     assert data["fit_score"] == 86
     assert data["status"] == "pending_review"
-    assert "full job description" in data["raw_email_snippet"]
+    assert "full job description" in data["raw_jd_snippet"]
 
 
 def test_patch_job_rechecks_duplicate_after_company_edit(

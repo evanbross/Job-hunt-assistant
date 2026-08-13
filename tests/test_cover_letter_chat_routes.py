@@ -100,7 +100,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Any:
         "company": "Acme",
         "job_title": "Platform Engineer",
         "job_description": JOB_DESCRIPTION,
-        "raw_email_snippet": EMAIL_SNIPPET,
+        "raw_jd_snippet": EMAIL_SNIPPET,
         "fit_reasoning": "Strong infra background.",
         "url": "https://example.com/job/7",
         "status": "triage",
@@ -180,7 +180,7 @@ def test_generate_pitch_prefers_full_job_description_over_snippet(client: Any) -
 
 def test_prompt_blocks_fall_back_to_snippet_and_omit_missing_sections() -> None:
     job_block, resume_block = job_and_resume_prompt_blocks(
-        {"job_description": "", "raw_email_snippet": EMAIL_SNIPPET}, None
+        {"job_description": "", "raw_jd_snippet": EMAIL_SNIPPET}, None
     )
     assert EMAIL_SNIPPET in job_block
     assert resume_block == ""

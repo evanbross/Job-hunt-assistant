@@ -678,7 +678,7 @@ export default function JobQueue({
   // ── Triage handlers ───────────────────────────────────────────────────────────
 
   const handleTriageApprove = async (job) => {
-    const senderEmail = extractSender(job.raw_email_snippet, job);
+    const senderEmail = extractSender(job.raw_jd_snippet, job);
     const subjectPattern = extractSubjectWords(job.job_title || "");
     const res = await fetch(`/api/jobs/${job.id}/approve`, {
       method: "POST",

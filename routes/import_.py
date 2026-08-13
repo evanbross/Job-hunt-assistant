@@ -48,16 +48,16 @@ from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
-from backend.captured_page_import_service import CapturedPageImportService
+from backend.scanning.captured_page_import_service import CapturedPageImportService
 from backend.celery_app import celery_app
-from backend.import_dump import dump_import_capture
-from backend.import_repair import (
+from backend.scanning.import_dump import dump_import_capture
+from backend.scanning.import_repair import (
     post_repair_duplicate_check,
     repair_ats_url_company,
     repair_linkedin_company,
 )
 from backend.tasks import run_import_task
-from backend.utils import (
+from backend.utils.utils import (
     _parse_positive_int,
     get_repos,
     platform_for_site_url,

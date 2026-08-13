@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from backend.fit_scorer import FitScorer
+from backend.scoring.fit_scorer import FitScorer
 
 
 def test_penalty_rule_matches_complete_word_only() -> None:
@@ -150,7 +150,7 @@ def test_score_extracts_salary_range_from_ai_response() -> None:
         '{"score": 80, "reasoning": "Good fit.", '
         '"salary_min": 110000, "salary_max": 120000}'
     )
-    with patch("backend.fit_scorer.AIProviderClient", return_value=mock_client):
+    with patch("backend.scoring.fit_scorer.AIProviderClient", return_value=mock_client):
         result = FitScorer().score(
             job_title="Sr Software Engineer",
             company="Prometric",
@@ -166,7 +166,7 @@ def test_score_extracts_salary_range_from_ai_response() -> None:
 def test_score_defaults_salary_to_none_when_ai_omits_it() -> None:
     mock_client = MagicMock()
     mock_client.complete.return_value = '{"score": 60, "reasoning": "Okay fit."}'
-    with patch("backend.fit_scorer.AIProviderClient", return_value=mock_client):
+    with patch("backend.scoring.fit_scorer.AIProviderClient", return_value=mock_client):
         result = FitScorer().score(
             job_title="Engineer",
             company="Acme",

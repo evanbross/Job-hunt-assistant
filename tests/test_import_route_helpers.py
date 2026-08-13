@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.import_repair import (  # ai: claude-fable-5 | 2026-07-17
+from backend.scanning.import_repair import (  # ai: claude-fable-5 | 2026-07-17
     repair_existing_job_company,
     wttj_page_title_company,
     wttj_title_repair_updates,

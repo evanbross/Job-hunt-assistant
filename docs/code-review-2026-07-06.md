@@ -186,7 +186,7 @@ adversary — and that's the lens used below to separate "fix now" from
    unattended schedule (`CAREER_SITE_SCAN_INTERVAL_MINUTES`), so a
    mistyped or malicious URL isn't a one-off click — it's an automated,
    repeated fetch. Recommend a focused fix: one small
-   `backend/url_safety.py` helper that resolves the hostname, rejects
+   `../backend/utils/url_safety.py` helper that resolves the hostname, rejects
    loopback/private/link-local/multicast ranges and non-standard ports,
    and gets called both before the initial request and again after every
    redirect hop (the review specifically calls out redirect bypass, and

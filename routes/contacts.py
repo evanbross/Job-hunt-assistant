@@ -42,9 +42,9 @@ from datetime import UTC, datetime
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
-from backend.contacts_import_service import ContactImportService
-from backend.contacts_service import build_company_map
-from backend.utils import get_repos
+from backend.contacts.contacts_import_service import ContactImportService
+from backend.contacts.contacts_service import build_company_map
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 

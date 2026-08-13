@@ -42,7 +42,7 @@ from urllib.parse import urlparse
 from flask import Blueprint, jsonify, request
 
 from backend.db import BROWSER_QUEUE_MAX_RETRIES
-from backend.utils import get_repos
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 

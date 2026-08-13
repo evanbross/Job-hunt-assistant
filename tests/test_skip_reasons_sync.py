@@ -35,7 +35,7 @@
 # ai: claude-fable-5 | 2026-07-16
 """Guards the skip-reason single source of truth (shared/skip_reasons.json).
 
-The backend allowlist (backend/skip_reasons.py) and the frontend skip menu
+The backend allowlist (backend/scoring/skip_reasons.py) and the frontend skip menu
 (frontend/src/utils/triagePanelUtils.js) must both derive from the shared JSON
 file. These tests fail if either side re-introduces a hardcoded copy or the
 shared file loses a key that application code assigns programmatically.
@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 import re
 
-from backend.skip_reasons import SKIP_REASONS, SKIP_REASONS_PATH, VALID_SKIP_REASONS
+from backend.scoring.skip_reasons import SKIP_REASONS, SKIP_REASONS_PATH, VALID_SKIP_REASONS
 
 _PROJECT_ROOT = SKIP_REASONS_PATH.parent.parent
 _FRONTEND_UTILS = _PROJECT_ROOT / "frontend" / "src" / "utils" / "triagePanelUtils.js"

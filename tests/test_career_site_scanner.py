@@ -37,7 +37,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from backend.career_site_scanner import (
+from backend.scanning.career_site_scanner import (
     CareerSiteJob,
     CareerSiteScanner,
     ScanOutcome,
@@ -265,7 +265,7 @@ def test_greenhouse_single_job_from_api_strips_html_content() -> None:
         "updated_at": "2026-06-01T00:00:00Z",
     }
     parsed = urlparse("https://job-boards.greenhouse.io/breezeway/jobs/5222431008")
-    with patch("backend.career_site_scanner._fetch_json", return_value=api_response):
+    with patch("backend.scanning.career_site_scanner._fetch_json", return_value=api_response):
         job = scanner._greenhouse_single_job_from_api(
             "Breezeway", parsed.geturl(), parsed
         )
@@ -344,7 +344,7 @@ def test_linkedin_guest_api_appends_apply_page_text() -> None:
         "takers worldwide across our credentialing and assessment products.</div>"
     )
     with patch(
-        "backend.career_site_scanner._fetch_html",
+        "backend.scanning.career_site_scanner._fetch_html",
         side_effect=[_LINKEDIN_GUEST_HTML, apply_html],
     ):
         job = scanner._linkedin_job_from_guest_api(
@@ -360,7 +360,7 @@ def test_linkedin_guest_api_appends_apply_page_text() -> None:
 def test_linkedin_guest_api_survives_apply_page_fetch_failure() -> None:
     scanner = CareerSiteScanner()
     with patch(
-        "backend.career_site_scanner._fetch_html",
+        "backend.scanning.career_site_scanner._fetch_html",
         side_effect=[_LINKEDIN_GUEST_HTML, OSError("connection refused")],
     ):
         job = scanner._linkedin_job_from_guest_api(
@@ -374,7 +374,7 @@ def test_linkedin_guest_api_survives_apply_page_fetch_failure() -> None:
 def test_linkedin_guest_api_falls_back_to_title_tag_when_h2_absent() -> None:
     scanner = CareerSiteScanner()
     guest_html = "<title>Fallback Title</title><div>Some job text here.</div>"
-    with patch("backend.career_site_scanner._fetch_html", return_value=guest_html):
+    with patch("backend.scanning.career_site_scanner._fetch_html", return_value=guest_html):
         job = scanner._linkedin_job_from_guest_api(
             "LinkedIn", "https://www.linkedin.com/jobs/view/1/", "1"
         )
@@ -385,7 +385,7 @@ def test_linkedin_guest_api_falls_back_to_title_tag_when_h2_absent() -> None:
 def test_linkedin_guest_api_title_untitled_when_neither_present() -> None:
     scanner = CareerSiteScanner()
     guest_html = "<div>Some job text with no title markers at all here.</div>"
-    with patch("backend.career_site_scanner._fetch_html", return_value=guest_html):
+    with patch("backend.scanning.career_site_scanner._fetch_html", return_value=guest_html):
         job = scanner._linkedin_job_from_guest_api(
             "LinkedIn", "https://www.linkedin.com/jobs/view/1/", "1"
         )
@@ -440,7 +440,7 @@ def test_workday_single_job_from_api_strips_html_content() -> None:
     }
     job_url = "https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site/job/Title_JR253369"
     parsed = urlparse(job_url)
-    with patch("backend.career_site_scanner._fetch_json", return_value=api_response):
+    with patch("backend.scanning.career_site_scanner._fetch_json", return_value=api_response):
         job = scanner._workday_single_job_from_api("Salesforce", job_url, parsed)
 
     assert "<p>" not in job["job_text"]
@@ -554,7 +554,7 @@ def test_scan_single_job_url_resolves_wttj_to_underlying_ats() -> None:
         "confidence_score": 88,
     }
     with (
-        patch("backend.career_site_scanner._fetch_html", return_value=wttj_html),
+        patch("backend.scanning.career_site_scanner._fetch_html", return_value=wttj_html),
         patch.object(
             scanner, "_greenhouse_single_job_from_api", return_value=expected_job
         ) as greenhouse_api,
@@ -572,13 +572,13 @@ def test_scan_single_job_url_falls_back_when_wttj_has_no_ats_url() -> None:
     scanner = CareerSiteScanner()
     with (
         patch(
-            "backend.career_site_scanner._fetch_html",
+            "backend.scanning.career_site_scanner._fetch_html",
             return_value="<div>No structured data</div>",
         ),
         patch.object(
             scanner, "_job_from_detail_page", return_value={"job_title": "fallback"}
         ) as generic_parser,
-        patch("backend.career_site_scanner.safe_urlopen") as mock_urlopen,
+        patch("backend.scanning.career_site_scanner.safe_urlopen") as mock_urlopen,
     ):
         mock_resp = mock_urlopen.return_value.__enter__.return_value
         mock_resp.read.return_value = b"<div>No structured data</div>"

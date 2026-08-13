@@ -43,13 +43,14 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 import config
-from backend.duplicate_checker import DuplicateChecker
-from backend.email_cleanup_service import EmailCleanupService
-from backend.email_parser import EmailParser
-from backend.fit_scorer import FitScorer
-from backend.gmail_client import GmailClient, NotAuthenticatedError
-from backend.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.utils import (
+from backend.db.job_columns import JobColumns
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.email.email_cleanup_service import EmailCleanupService
+from backend.email.email_parser import EmailParser
+from backend.scoring.fit_scorer import FitScorer
+from backend.email.gmail_client import GmailClient, NotAuthenticatedError
+from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
+from backend.utils.utils import (
     db_match_for_job,
     email_date_from_message,
     expand_board_url_parsed_jobs,
@@ -294,7 +295,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         existing_jobs = job_repo.get_by_statuses(list(_ACTIVE_RESCAN_STATUSES))
         base_id = email_id.split(":")[0]
         for job in existing_jobs:
-            eid = job.get("email_id") or ""
+            eid = job.get(JobColumns.DEDUP_KEY) or ""
             if eid == email_id or eid.startswith(base_id + ":"):
                 job_repo.delete(job["id"])
 
@@ -382,7 +383,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
 
         created: list[dict] = []
         for job_idx, parsed in enumerate(parsed_jobs):
-            job_email_id = _rescan_job_email_id(job_repo, base_id, job_idx)
+            job_dedup_key = _rescan_job_dedup_key(job_repo, base_id, job_idx)
             confidence = parsed.get("confidence", "low")
             if feedback and feedback["is_relevant"] == 1:
                 confidence = "high"
@@ -416,12 +417,12 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
             else:
                 status = "pending_review" if confidence == "high" else "triage"
             job_data: dict = {
-                "email_id": job_email_id,
+                JobColumns.DEDUP_KEY: job_dedup_key,
                 "company": parsed.get("company", ""),
                 "job_title": parsed.get("job_title", ""),
                 "url": parsed.get("url", ""),
                 "source": parsed.get("source", ""),
-                "raw_email_snippet": snippet,
+                "raw_jd_snippet": snippet,
                 "fit_score": None,
                 "fit_reasoning": "",
                 "status": status,
@@ -431,7 +432,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 "duplicate_hint": duplicate_hint,
                 "duplicate_of_id": duplicate_of_id,
                 "sender_email": sender,
-                "email_subject": subject,
+                JobColumns.CAPTURE_LABEL: subject,
                 "confidence_score": parsed.get("confidence_score", 50),
             }
 
@@ -487,16 +488,16 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         )
 
 
-def _rescan_job_email_id(job_repo: object, base_email_id: str, job_idx: int) -> str:
-    preferred_email_id = base_email_id if job_idx == 0 else f"{base_email_id}:{job_idx}"
-    if job_repo.get_by_email_id(preferred_email_id) is None:
-        return preferred_email_id
+def _rescan_job_dedup_key(job_repo: object, base_dedup_key: str, job_idx: int) -> str:
+    preferred_dedup_key = base_dedup_key if job_idx == 0 else f"{base_dedup_key}:{job_idx}"
+    if job_repo.get_by_dedup_key(preferred_dedup_key) is None:
+        return preferred_dedup_key
 
     candidate_idx = 0
     while True:
-        candidate_email_id = f"{base_email_id}:rescan:{job_idx}:{candidate_idx}"
-        if job_repo.get_by_email_id(candidate_email_id) is None:
-            return candidate_email_id
+        candidate_dedup_key = f"{base_dedup_key}:rescan:{job_idx}:{candidate_idx}"
+        if job_repo.get_by_dedup_key(candidate_dedup_key) is None:
+            return candidate_dedup_key
         candidate_idx += 1
 
 

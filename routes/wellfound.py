@@ -46,7 +46,7 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.tasks import run_import_task
-from backend.wellfound_scraper import WellfoundLoginError, WellfoundScraper
+from backend.scanning.sources.wellfound_scraper import WellfoundLoginError, WellfoundScraper
 
 logger = logging.getLogger(__name__)
 

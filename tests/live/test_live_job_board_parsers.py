@@ -39,7 +39,7 @@ Every other test in this project's suite is a mocked/static fixture and can
 never detect when a real site (WTTJ, Greenhouse, Ashby, LinkedIn, ...)
 changes its page format and silently breaks our scraper -- that gap is
 exactly what caused the "job scored as remote but was hybrid" bug this
-feature exists to catch going forward (see backend/career_site_scanner.py's
+feature exists to catch going forward (see backend/scanning/career_site_scanner.py's
 WTTJ-resolution and hybrid-detection fixes from 2026-08-02/03).
 
 These tests hit the internet. They are never run by a bare `pytest`
@@ -63,13 +63,13 @@ import os
 
 import pytest
 
-from backend.career_site_scanner import (
+from backend.scanning.career_site_scanner import (
     CareerSiteScanner,
     is_job_board_url,
     validate_board_scan,
     validate_extraction,
 )
-from backend.jd_health_check_targets import LIVE_CANARY_TARGETS
+from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
 
 pytestmark = pytest.mark.live
 

@@ -32,47 +32,37 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""Debug helper: persists each incoming import payload to tmp/ for post-mortem inspection."""
+# ai: claude-fable-5 | 2026-07-16
+"""Single source of truth for job skip reasons.
+
+The canonical list lives in shared/skip_reasons.json. The frontend imports the
+same file directly (see frontend/src/utils/triagePanelUtils.js), so the backend
+allowlist and the UI's skip menu can never drift apart. Add or change a reason
+in the JSON file only.
+"""
 
 from __future__ import annotations
 
 import json
-import logging
-import secrets
-from datetime import UTC, datetime
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+SKIP_REASONS_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "shared" / "skip_reasons.json"
+)
 
-_DUMP_DIR: Path = Path(__file__).parent.parent / "tmp" / "import_captures"
 
-
-def dump_import_capture(body: dict) -> None:
-    """Write the raw import payload to a timestamped JSON file in tmp/import_captures/.
-
-    Failures are logged as warnings and never propagate — a dump error must not
-    interrupt the import pipeline.
-    """
-    try:
-        _DUMP_DIR.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        token = secrets.token_hex(4)
-        path = _DUMP_DIR / f"import_capture_{ts}_{token}.json"
-        # ai: claude-sonnet-4-6 | 2026-07-09
-        # Dump the full body rather than a hand-picked subset of fields, so any
-        # field the extension adds (e.g. extension_version, queue_url, purpose)
-        # is always visible in post-mortem inspection without updating this list.
-        payload = {
-            "captured_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            **body,
-        }
-        path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+def load_skip_reasons() -> list[dict]:
+    """Load the canonical skip-reason definitions ({key, label[, color]} dicts)."""
+    with SKIP_REASONS_PATH.open(encoding="utf-8") as fh:
+        reasons = json.load(fh)
+    if not isinstance(reasons, list) or not all(
+        isinstance(r, dict) and r.get("key") and r.get("label") for r in reasons
+    ):
+        raise ValueError(
+            f"{SKIP_REASONS_PATH} must be a JSON array of objects with 'key' and 'label'"
         )
-        logger.info(
-            "Import capture dumped to %s (%d bytes)",
-            path.name,
-            path.stat().st_size,
-        )
-    except Exception as exc:
-        logger.warning("Failed to dump import capture: %s", exc)
+    return reasons
+
+
+SKIP_REASONS: list[dict] = load_skip_reasons()
+VALID_SKIP_REASONS: frozenset[str] = frozenset(str(r["key"]) for r in SKIP_REASONS)

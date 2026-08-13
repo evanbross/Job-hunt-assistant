@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from backend.db import IScannedEmailRepository
-from backend.gmail_client import GmailClient
+from backend.email.gmail_client import GmailClient
 
 
 @dataclass(frozen=True)

@@ -52,7 +52,7 @@ except ImportError:
 
 import config
 from backend.db import db_startup_error
-from backend.utils import get_repos
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 

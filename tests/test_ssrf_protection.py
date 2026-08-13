@@ -30,7 +30,7 @@ from flask.testing import FlaskClient
 
 import config
 from backend.ai_provider import AIProviderClient, AIProviderError
-from backend.jobanni_scanner import scan as jobanni_scan
+from backend.scanning.sources.jobanni_scanner import scan as jobanni_scan
 from routes.jobanni import JobanniScanRequest, jobanni_bp
 from routes.settings import settings_bp
 

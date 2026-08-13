@@ -58,7 +58,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable
 
-from backend.url_safety import (  # ai: claude-fable-5 | 2026-07-15
+from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-15
     UnsafeUrlError,
     safe_urlopen,
 )

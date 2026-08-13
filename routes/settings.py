@@ -49,8 +49,8 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 import config
-from backend.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
-from backend.utils import _rescore_active_queue_jobs, get_repos
+from backend.utils.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
+from backend.utils.utils import _rescore_active_queue_jobs, get_repos
 
 logger = logging.getLogger(__name__)
 

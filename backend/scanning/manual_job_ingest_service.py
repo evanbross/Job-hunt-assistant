@@ -41,12 +41,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
-from backend.career_site_scanner import CareerSiteScanner
-from backend.duplicate_checker import DuplicateChecker
-from backend.email_parser import EmailParser, ParsedJob
-from backend.fit_scorer import FitScorer
-from backend.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.utils import company_from_ats_url, company_from_career_domain
+from backend.scanning.career_site_scanner import CareerSiteScanner
+from backend.db.job_columns import JobColumns
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.email.email_parser import EmailParser, ParsedJob
+from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
+from backend.utils.utils import company_from_ats_url, company_from_career_domain
 
 logger = logging.getLogger(__name__)
 
@@ -263,12 +264,12 @@ class ManualJobIngestService:
             status = "pending_review" if fit_score >= 70 else "triage"
 
         job_dict: dict = {
-            "email_id": f"{email_id_prefix}:{datetime.now(UTC).date().isoformat()}:{secrets.token_hex(8)}",
+            JobColumns.DEDUP_KEY: f"{email_id_prefix}:{datetime.now(UTC).date().isoformat()}:{secrets.token_hex(8)}",
             "company": company,
             "job_title": job_title,
             "url": url,
             "source": source,
-            "raw_email_snippet": score_body[:6000],
+            JobColumns.RAW_JD_SNIPPET: score_body[:6000],
             "fit_score": fit_score,
             "fit_reasoning": score_result["reasoning"],
             "salary_min": score_result["salary_min"],
@@ -280,7 +281,7 @@ class ManualJobIngestService:
             "duplicate_hint": duplicate_hint,
             "duplicate_of_id": duplicate_of_id,
             "sender_email": None,
-            "email_subject": email_subject,
+            JobColumns.CAPTURE_LABEL: email_subject,
             "confidence_score": parsed.get("confidence_score", 50),
         }
         job_dict, import_warnings = normalize_and_validate(job_dict)

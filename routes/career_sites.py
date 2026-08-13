@@ -48,7 +48,7 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 import config
-from backend.career_site_scanner import CareerSiteScanner
+from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.db import (
     DuplicateJobUrlError,
     ICareerRejectionRuleRepository,
@@ -57,10 +57,11 @@ from backend.db import (
     IPenaltyRuleRepository,
     IResumeRepository,
 )
-from backend.duplicate_checker import DuplicateChecker
-from backend.fit_scorer import FitScorer
-from backend.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.utils import (
+from backend.db.job_columns import JobColumns
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
+from backend.utils.utils import (
     _parse_positive_int,
     configure_career_site_scheduler,
     db_match_for_job,
@@ -759,12 +760,12 @@ def _run_career_site_scan(
                             else "triage"
                         )
                         job_dict = {
-                            "email_id": f"career-site:{current_source_id}:{secrets.token_hex(8)}",
+                            JobColumns.DEDUP_KEY: f"career-site:{current_source_id}:{secrets.token_hex(8)}",
                             "company": str(job.get("site_name") or ""),
                             "job_title": str(job.get("job_title") or ""),
                             "url": str(job.get("job_url") or ""),
                             "source": source_name,
-                            "raw_email_snippet": str(job.get("job_text") or "")[:6000],
+                            "raw_jd_snippet": str(job.get("job_text") or "")[:6000],
                             "fit_score": match_score,
                             "fit_reasoning": match_reasoning,
                             "status": queue_status,
@@ -775,7 +776,7 @@ def _run_career_site_scan(
                             "date_found": datetime.now(UTC).date().isoformat(),
                             "duplicate_hint": None,
                             "sender_email": None,
-                            "email_subject": f"Career site: {source_name}",
+                            JobColumns.CAPTURE_LABEL: f"Career site: {source_name}",
                             "confidence_score": int(job.get("confidence_score") or 50),
                         }
                         job_dict, import_warnings = normalize_and_validate(job_dict)

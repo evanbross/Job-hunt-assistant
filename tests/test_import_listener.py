@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 from http import HTTPStatus
 
-from backend.import_listener import ImportListenerRequestParser
+from backend.scanning.import_listener import ImportListenerRequestParser
 
 
 def test_listener_parser_accepts_raw_html() -> None:

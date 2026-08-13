@@ -40,11 +40,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from googleapiclient.errors import HttpError
 
-from backend.email_source_filters import (
+from backend.email.email_source_filters import (
     build_gmail_source_query,
     email_matches_source_filters,
 )
-from backend.gmail_client import GmailClient
+from backend.email.gmail_client import GmailClient
 
 
 def _client_with_mocked_service() -> tuple[GmailClient, MagicMock]:
@@ -90,7 +90,7 @@ def test_source_query_quotes_sender_values_against_operator_injection() -> None:
 
 
 def test_gmail_query_value_escapes_embedded_quotes_and_backslashes() -> None:
-    from backend.email_source_filters import _gmail_query_value
+    from backend.email.email_source_filters import _gmail_query_value
 
     assert _gmail_query_value('say "hi"') == '"say \\"hi\\""'
     assert _gmail_query_value("back\\slash") == '"back\\\\slash"'

@@ -48,13 +48,14 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.cover_letter_generator import CoverLetterGenerator
-from backend.cover_letter_learning import CoverLetterStyleLearner
-from backend.resume_tailor import ResumeTailoringGenerator
-from backend.utils import (
+from backend.cover_letter.cover_letter_generator import CoverLetterGenerator
+from backend.cover_letter.cover_letter_learning import CoverLetterStyleLearner
+from backend.cover_letter.resume_tailor import ResumeTailoringGenerator
+from backend.utils.utils import (
     _ai_error_http_status,
     format_phrase_book_section,
     get_repos,
+    job_description_text,
     safe_error_message,
 )
 
@@ -72,9 +73,7 @@ def job_and_resume_prompt_blocks(job: dict, resume_row: dict | None) -> tuple[st
     fit scoring. Both blocks are truncated to keep chat prompts bounded, and
     each is an empty string when its source data is missing.
     """
-    job_description = (
-        job.get("job_description") or job.get("raw_email_snippet") or ""
-    ).strip()
+    job_description = job_description_text(job)
     resume_text = ((resume_row["content"] if resume_row else "") or "").strip()
     job_block = (
         f"\nJOB DESCRIPTION:\n{job_description[:4000]}\n" if job_description else ""

@@ -36,7 +36,7 @@ import React, { useEffect, useState } from "react";
 import StatusBadge from "./common/StatusBadge.jsx";
 import { scoreTone } from "../utils/fitScoringUtils.js";
 import { statusTone } from "../utils/jobQueueUtils.js";
-import { formatJobDescription } from "../utils/triagePanelUtils.js";
+import { formatJobDescription, jobDescriptionText } from "../utils/triagePanelUtils.js";
 import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
 
 const HISTORY_SEARCH_STORAGE_KEY = "jha.history.search";
@@ -270,7 +270,7 @@ export default function HistoryPanel() {
             const displayStatus = latestStage ? latestStage.status : job.status;
             const isOpen = expanded.has(job.id);
             const hasStages = stages.length > 0;
-            const rawDesc = String(job.job_description || job.raw_email_snippet || "").trim();
+            const rawDesc = jobDescriptionText(job);
             const formattedDesc = rawDesc ? formatJobDescription(rawDesc) : null;
             const isDescOpen = descriptionOpen.has(job.id);
 

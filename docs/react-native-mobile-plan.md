@@ -44,7 +44,7 @@ screens are in vs. out.
   user has open in Chrome and POSTs it to `/api/browser-capture/...` for parsing. This is
   fundamentally a desktop-browser capability — there's no mobile equivalent, so this
   ingestion path stays desktop-only.
-- **CORS/CSRF guard**: `backend/utils.py::is_trusted_api_write_origin`, wired in as a
+- **CORS/CSRF guard**: `backend/utils/utils.py::is_trusted_api_write_origin`, wired in as a
   Flask `before_request` hook per `FLASK_STANDARDS.md`, rejects unsafe-method `/api/*`
   requests whose `Origin`/`Referer` doesn't match the CORS allowlist — but passes through
   requests with **no** Origin/Referer header at all (curl, native `fetch` from a mobile
@@ -108,7 +108,7 @@ Add a single shared-secret bearer token (e.g. `MOBILE_API_TOKEN` in `.env`), che
 prefix, so the existing desktop-browser flow (which relies on same-origin + the CSRF
 guard) is untouched. Store the token in the RN app via `expo-secure-store` (never
 `AsyncStorage` — that's unencrypted). This is a small, additive change to
-`backend/utils.py` / `app.py`, not a rework of the existing auth banner or Google OAuth
+`../backend/utils/utils.py` / `app.py`, not a rework of the existing auth banner or Google OAuth
 routes.
 
 ### 4.3 Real-time updates
@@ -127,7 +127,7 @@ queue, or a triage item waiting for review. Needs:
 - `expo-notifications` in the RN app to register a push token.
 - A `push_tokens` table/repository on the backend (new, small — follows the existing
   repository pattern in `backend/db/repositories/`).
-- A trigger point where jobs are scored (`backend/fit_scorer.py` call site) to fire a
+- A trigger point where jobs are scored (`../backend/scoring/fit_scorer.py` call site) to fire a
   push via Expo's push API when the score crosses the threshold.
 
 Treat this as a Phase 2 item — nice-to-have, not required for the app to be useful.

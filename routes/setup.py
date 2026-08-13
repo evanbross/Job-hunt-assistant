@@ -51,7 +51,7 @@ from dotenv import dotenv_values, set_key
 from flask import Blueprint, jsonify, request
 
 import config
-from backend.url_safety import UnsafeUrlError, safe_urlopen
+from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
 

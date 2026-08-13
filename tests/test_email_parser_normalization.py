@@ -38,9 +38,9 @@ import json
 
 import pytest
 
-import backend.email_parser as email_parser_module
+import backend.email.email_parser as email_parser_module
 from backend.ai_provider import AIMessage
-from backend.email_parser import (
+from backend.email.email_parser import (
     EmailParser,
     _trim_company_tail,
     looks_like_wttj_misparsed_title,  # ai: claude-fable-5 | 2026-07-17

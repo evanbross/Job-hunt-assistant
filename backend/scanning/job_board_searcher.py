@@ -77,8 +77,8 @@ def strip_html(raw: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def url_to_email_id(url: str) -> str:
-    """Derive a stable, unique email_id for a board-sourced job from its URL."""
+def url_to_dedup_key(url: str) -> str:
+    """Derive a stable, unique dedup_key for a board-sourced job from its URL."""
     digest = hashlib.md5(url.encode()).hexdigest()[:16]
     return f"board:{digest}"
 

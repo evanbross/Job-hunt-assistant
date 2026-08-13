@@ -59,17 +59,18 @@ from flask import request
 
 import config
 from backend.ai_provider import AIProviderError
-from backend.career_site_scanner import CareerSiteScanner, is_job_board_url
+from backend.scanning.career_site_scanner import CareerSiteScanner, is_job_board_url
 from backend.db import (
     IJobRepository,
     IPenaltyRuleRepository,
     IResumeRepository,
     open_repositories,
 )
-from backend.duplicate_checker import DuplicateChecker
-from backend.email_parser import ParsedJob
-from backend.fit_scorer import FitScorer
-from backend.gmail_client import GmailClient, NotAuthenticatedError
+from backend.db.job_columns import JobColumns
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.email.email_parser import ParsedJob
+from backend.scoring.fit_scorer import FitScorer
+from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 
 logger = logging.getLogger(__name__)
 
@@ -162,27 +163,27 @@ def maybe_mark_source_email_read(
     scan) per FLASK_STANDARDS.md — any helper used by two or more blueprints
     belongs in this shared module, not in one of the blueprints.
     """
-    email_id = str(job.get("email_id") or "").strip()
+    dedup_key = str(job.get(JobColumns.DEDUP_KEY) or "").strip()
     sender_email = str(job.get("sender_email") or "").strip()
-    if not email_id or not sender_email:
+    if not dedup_key or not sender_email:
         return
 
-    base_email_id = email_id.split(":")[0]
-    remaining_active = job_repo.count_by_base_email_id_and_statuses(
-        base_email_id,
+    base_dedup_key = dedup_key.split(":")[0]
+    remaining_active = job_repo.count_by_base_dedup_key_and_statuses(
+        base_dedup_key,
         list(ACTIVE_JOB_STATUSES),
     )
     if remaining_active > 0:
         return
 
     try:
-        GmailClient().mark_as_read(base_email_id)
+        GmailClient().mark_as_read(base_dedup_key)
     except NotAuthenticatedError:
         logger.warning(
-            "Could not mark email %s as read: Gmail is not authenticated", base_email_id
+            "Could not mark email %s as read: Gmail is not authenticated", base_dedup_key
         )
     except Exception as exc:
-        logger.warning("Could not mark email %s as read: %s", base_email_id, exc)
+        logger.warning("Could not mark email %s as read: %s", base_dedup_key, exc)
 
 
 def parse_bool(value: object, *, default: bool) -> bool:
@@ -1025,15 +1026,47 @@ _ENRICH_MIN_CHARS = 300
 _ENRICH_ADVANTAGE_CHARS = 300
 
 
+# ai: claude-sonnet-5 | 2026-08-12
+def job_description_text(job: dict[str, Any]) -> str:
+    """Return the best available JD text for *job*.
+
+    job_description holds the enriched/full text when a re-scan has found one;
+    raw_jd_snippet holds whatever was captured on initial ingest. Prefer
+    job_description when present, else fall back to the snippet.
+    """
+    return str(
+        job.get(JobColumns.JOB_DESCRIPTION) or job.get(JobColumns.RAW_JD_SNIPPET) or ""
+    ).strip()
+
+
+# ai: claude-sonnet-5 | 2026-08-12
+def scoring_text_for_job(job: dict[str, Any]) -> str:
+    """Return the text to feed the fit scorer for *job*.
+
+    Prefers the enriched job_description when present (it's the fullest
+    text available). Otherwise falls back to the captured snippet joined
+    with the capture label (a real email subject line for email-sourced
+    jobs, a synthetic description otherwise), since that label alone
+    carries useful title/context signal the scorer shouldn't lose.
+    """
+    description = job.get(JobColumns.JOB_DESCRIPTION)
+    if description:
+        return str(description)
+    return "\n".join(
+        part
+        for part in [
+            job.get(JobColumns.CAPTURE_LABEL, ""),
+            job.get(JobColumns.RAW_JD_SNIPPET, ""),
+        ]
+        if part
+    )
+
+
 def is_richer_description(incoming_text: str, existing_job: dict[str, Any]) -> bool:
     """Return True if incoming_text is substantially richer than the stored description."""
     if len(incoming_text) < _ENRICH_MIN_CHARS:
         return False
-    existing = str(
-        existing_job.get("job_description")
-        or existing_job.get("raw_email_snippet")
-        or ""
-    )
+    existing = job_description_text(existing_job)
     return len(incoming_text) > len(existing) + _ENRICH_ADVANTAGE_CHARS
 
 
@@ -1052,8 +1085,8 @@ def enrich_job_description(
     """
     job_id = int(job["id"])
     update_fields: dict[str, Any] = {
-        "job_description": description,
-        "raw_email_snippet": description[:6000],
+        JobColumns.JOB_DESCRIPTION: description,
+        JobColumns.RAW_JD_SNIPPET: description[:6000],
     }
     # ai: claude-sonnet-4-6 | 2026-07-20
     # A real description means the "jd_body_is_tracking_link" warning (raised
@@ -1114,14 +1147,9 @@ def _rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
 
     for job in queue_jobs:
         try:
-            scoring_text = "\n".join(
-                part
-                for part in [
-                    job.get("email_subject", ""),
-                    job.get("raw_email_snippet", ""),
-                ]
-                if part
-            )
+            # ai: claude-sonnet-5 | 2026-08-12 — was raw_jd_snippet-only, silently
+            # ignoring any enriched job_description; now matches re_evaluate_job_fit.
+            scoring_text = scoring_text_for_job(job)
             result = scorer.score(
                 job_title=job.get("job_title", ""),
                 company=job.get("company", ""),

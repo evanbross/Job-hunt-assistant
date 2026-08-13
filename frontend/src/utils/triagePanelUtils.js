@@ -85,7 +85,7 @@ export function isManualSource(source) {
 }
 
 export function isManualPastedJob(job) {
-  const subject = String(job.email_subject || "").trim().toLowerCase();
+  const subject = String(job.capture_label || "").trim().toLowerCase();
   return (
     subject === "manual pasted job listing"
     || subject === "browser extension streamed job listing"
@@ -252,6 +252,14 @@ export function fitScoreClass(job) {
   if (score >= 70) return "badge-green";
   if (score >= 40) return "badge-yellow";
   return "badge-red";
+}
+
+// ai: claude-sonnet-5 | 2026-08-12
+// job_description holds the enriched/full text when a re-scan has found one;
+// raw_jd_snippet holds whatever was captured on initial ingest. Prefer
+// job_description when present, else fall back to the snippet.
+export function jobDescriptionText(job) {
+  return String(job.job_description || job.raw_jd_snippet || "").trim();
 }
 
 export function formatJobDescription(text) {

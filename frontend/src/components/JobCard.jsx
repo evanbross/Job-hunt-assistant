@@ -53,6 +53,7 @@ import {
   SKIP_REASONS,
   isDescriptionUnavailable,
   isNegativeReasoningBullet,
+  jobDescriptionText,
   negativeReasoningBulletStyleFor,
   normalizeManualJobUrl,
   penaltiesAppliedForJob,
@@ -169,7 +170,7 @@ function JobCard({
   const unmatchedPenalties = penaltiesApplied.filter((_, i) => !usedPenaltyIndices.has(i));
 
   const showEmailOrigin = shouldShowEmailOrigin(job);
-  const jobDescription = String(job.job_description || job.raw_email_snippet || "").trim();
+  const jobDescription = jobDescriptionText(job);
   // ai: claude-sonnet-4-6 | 2026-06-16
   const descriptionUnavailable = isDescriptionUnavailable(jobDescription);
 
@@ -927,8 +928,8 @@ function JobCard({
       {/* Email origin */}
       {showEmailOrigin && (
         <div style={emailMetaStyle}>
-          {job.email_subject && (
-            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.email_subject}</div>
+          {job.capture_label && (
+            <div style={{ fontWeight: "500", marginBottom: "2px" }}>{job.capture_label}</div>
           )}
           {job.sender_email && (
             <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" }}>
@@ -1618,16 +1619,16 @@ function sourceSummaryForJob(job) {
 }
 
 function isManualJob(job) {
-  const emailSubject = String(job.email_subject || "").toLowerCase();
-  const emailId = String(job.email_id || "").toLowerCase();
+  const emailSubject = String(job.capture_label || "").toLowerCase();
+  const dedupKey = String(job.dedup_key || "").toLowerCase();
   const source = String(job.source || "").toLowerCase();
   return (
     emailSubject.includes("manual pasted job listing") ||
     emailSubject.includes("browser extension streamed job listing") ||
     emailSubject.includes("tampermonkey streamed job listing") || // backward compat
-    emailId.startsWith("manual:") ||
-    emailId.startsWith("browser_ext:") ||
-    emailId.startsWith("tampermonkey:") || // backward compat
+    dedupKey.startsWith("manual:") ||
+    dedupKey.startsWith("browser_ext:") ||
+    dedupKey.startsWith("tampermonkey:") || // backward compat
     source.includes("manual paste") ||
     source.includes("browser extension") ||
     source.includes("tampermonkey") // backward compat
@@ -1635,7 +1636,7 @@ function isManualJob(job) {
 }
 
 function shouldShowEmailOrigin(job) {
-  if (!job.sender_email && !job.email_subject) return false;
+  if (!job.sender_email && !job.capture_label) return false;
   return !isManualJob(job);
 }
 

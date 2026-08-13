@@ -51,7 +51,7 @@ from typing import Protocol, TypedDict
 from urllib.parse import unquote, urlparse
 
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.url_safety import UnsafeUrlError, safe_urlopen
+from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
 

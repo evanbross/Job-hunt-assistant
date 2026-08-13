@@ -62,7 +62,7 @@ from googleapiclient.errors import HttpError
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.career_site_scanner import (
+from backend.scanning.career_site_scanner import (
     CareerSiteScanner,
     is_job_board_url,
     validate_board_scan,
@@ -70,21 +70,22 @@ from backend.career_site_scanner import (
 )
 from backend.celery_app import celery_app
 from backend.db import DuplicateJobUrlError
-from backend.duplicate_checker import DuplicateChecker
-from backend.gmail_client import GmailClient, NotAuthenticatedError
-from backend.import_repair import (
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.email.gmail_client import GmailClient, NotAuthenticatedError
+from backend.scanning.import_repair import (
     post_repair_duplicate_check,
     repair_ats_url_company,
     repair_existing_job_company,
     repair_linkedin_company,
 )
-from backend.manual_job_ingest_service import ManualJobIngestService
-from backend.utils import (
+from backend.scanning.manual_job_ingest_service import ManualJobIngestService
+from backend.utils.utils import (
     _parse_positive_int,
     enrich_job_description,
     get_repos,
     is_richer_description,
     jd_blocklist_match,
+    job_description_text,
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
 )
 
@@ -432,13 +433,7 @@ def run_import_task(
                         repos["conn"].commit()
                 # ai: claude-sonnet-4-6 | 2026-06-22
                 incoming_len = len(incoming_text)
-                existing_desc_len = len(
-                    str(
-                        existing_job.get("job_description")
-                        or existing_job.get("raw_email_snippet")
-                        or ""
-                    )
-                )
+                existing_desc_len = len(job_description_text(existing_job))
                 richer_text = (
                     incoming_text
                     if is_richer_description(incoming_text, existing_job)
@@ -770,7 +765,7 @@ def run_jd_health_check_task(self, triggered_by: str = "scheduled") -> dict:
     anything failed.
 
     Uses the same validate_extraction/validate_board_scan functions the
-    opt-in live pytest suite uses (backend/career_site_scanner.py) so what
+    opt-in live pytest suite uses (backend/scanning/career_site_scanner.py) so what
     counts as "the parser broke" is defined exactly once.
     """
     t0 = time.monotonic()

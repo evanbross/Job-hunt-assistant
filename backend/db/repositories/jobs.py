@@ -42,6 +42,7 @@ import psycopg2
 
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
+from ..job_columns import JobColumns
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ logger = logging.getLogger(__name__)
 # URLs — created in backend/db/schema.py's _migrate(). Shared here (rather than
 # duplicated as a string literal in both files) so insert() can tell a violation
 # of *this* index apart from the jobs table's other UNIQUE constraint
-# (jobs_email_id_key, on email_id) — a bare `except UniqueViolation` can't
+# (jobs_dedup_key_key, on dedup_key) — a bare `except UniqueViolation` can't
 # distinguish which one fired.
 JOBS_URL_UNIQUE_INDEX = "jobs_url_unique_idx"
 
@@ -73,40 +74,7 @@ class DuplicateJobUrlError(Exception):
 
 
 class PostgresJobRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
-        {
-            "id",
-            "email_id",
-            "company",
-            "job_title",
-            "url",
-            "source",
-            "raw_email_snippet",
-            "fit_score",
-            "fit_reasoning",
-            "status",
-            "parser_confidence",
-            "confidence_reason",
-            "date_found",
-            "on_sheet",
-            "duplicate_hint",
-            "duplicate_of_id",
-            "sender_email",
-            "email_subject",
-            "confidence_score",
-            "skip_reason",
-            "skip_feedback",
-            "skip_mismatch_reasons",
-            "notes",
-            "job_description",
-            "import_warnings",
-            "snoozed_until",
-            "dismissed_duplicate_ids",
-            "salary_min",
-            "salary_max",
-            "unreachable_since",
-        }
-    )
+    _ALLOWED_COLUMNS: frozenset[str] = JobColumns.all()
 
     def get_all_by_status(self, status: str) -> list[dict[str, Any]]:
         cur = self._execute(
@@ -130,23 +98,23 @@ class PostgresJobRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def get_by_email_id(self, email_id: str) -> dict[str, Any] | None:
-        cur = self._execute("SELECT * FROM jobs WHERE email_id = %s", (email_id,))
+    def get_by_dedup_key(self, dedup_key: str) -> dict[str, Any] | None:
+        cur = self._execute("SELECT * FROM jobs WHERE dedup_key = %s", (dedup_key,))
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def count_by_base_email_id_and_statuses(
-        self, base_email_id: str, statuses: list[str]
+    def count_by_base_dedup_key_and_statuses(
+        self, base_dedup_key: str, statuses: list[str]
     ) -> int:
         placeholders = ", ".join(["%s"] * len(statuses))
         cur = self._execute(
             f"""
             SELECT COUNT(*) AS cnt
             FROM jobs
-            WHERE (email_id = %s OR email_id LIKE %s)
+            WHERE (dedup_key = %s OR dedup_key LIKE %s)
               AND status IN ({placeholders})
             """,
-            [base_email_id, f"{base_email_id}:%", *statuses],
+            [base_dedup_key, f"{base_dedup_key}:%", *statuses],
         )
         return int(cur.fetchone()["cnt"])
 

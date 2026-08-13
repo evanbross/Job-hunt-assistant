@@ -58,7 +58,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from backend.email_source_filters import build_gmail_source_query
+from backend.email.email_source_filters import build_gmail_source_query
 from config import GMAIL_SCOPES, GOOGLE_TOKEN_FILE, READ_ONLY_MODE
 
 logger = logging.getLogger(__name__)

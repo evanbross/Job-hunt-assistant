@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.contacts_import_service import ContactImportService
+from backend.contacts.contacts_import_service import ContactImportService
 
 # ai: claude-sonnet-5 | 2026-07-25
 _PREAMBLE = (

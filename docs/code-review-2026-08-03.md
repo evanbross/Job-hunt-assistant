@@ -34,7 +34,7 @@ However, the desktop GUI launcher (`launcher.py:58-67`, `launcher.py:194-207`) i
 `uv run ruff check .` reports 1 fixable `I001` import-order violation in `scripts/resolve_tracking_urls.py:43-44`:
 
 ```python
-from backend.email_parser import is_email_tracking_url, resolve_tracking_url  # noqa: E402
+from backend.email.email_parser import is_email_tracking_url, resolve_tracking_url  # noqa: E402
 from backend.utils import get_repos  # noqa: E402
 ```
 

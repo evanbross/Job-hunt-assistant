@@ -24,9 +24,9 @@ whole scan run before this function could apply its fallback behavior.
 
 from unittest.mock import patch
 
-from backend.career_site_scanner import CareerSiteJob, ScanOutcome
-from backend.email_parser import ParsedJob
-from backend.utils import expand_board_url_parsed_jobs
+from backend.scanning.career_site_scanner import CareerSiteJob, ScanOutcome
+from backend.email.email_parser import ParsedJob
+from backend.utils.utils import expand_board_url_parsed_jobs
 
 
 def _parsed_job(url: str, company: str = "Acme", source: str = "email") -> ParsedJob:
@@ -76,7 +76,7 @@ class _FakeScanner:
 def test_non_board_url_passes_through_unchanged() -> None:
     original = _parsed_job("https://www.linkedin.com/jobs/view/999")
     fake = _FakeScanner()
-    with patch("backend.utils.CareerSiteScanner", return_value=fake):
+    with patch("backend.utils.utils.CareerSiteScanner", return_value=fake):
         result = expand_board_url_parsed_jobs([original])
 
     assert result == [original]
@@ -88,7 +88,7 @@ def test_greenhouse_single_job_url_passes_through_without_crashing() -> None:
     is_job_board_url check, before any fallback could apply."""
     original = _parsed_job("https://job-boards.greenhouse.io/acme/jobs/12345")
     fake = _FakeScanner()
-    with patch("backend.utils.CareerSiteScanner", return_value=fake):
+    with patch("backend.utils.utils.CareerSiteScanner", return_value=fake):
         result = expand_board_url_parsed_jobs([original])
 
     assert result == [original]
@@ -108,7 +108,7 @@ def test_board_url_expands_into_individual_jobs() -> None:
             detected_platform="greenhouse",
         )
     )
-    with patch("backend.utils.CareerSiteScanner", return_value=fake):
+    with patch("backend.utils.utils.CareerSiteScanner", return_value=fake):
         result = expand_board_url_parsed_jobs([board])
 
     assert fake.calls == [("Acme", "https://boards.greenhouse.io/acme")]
@@ -123,7 +123,7 @@ def test_board_url_expands_into_individual_jobs() -> None:
 def test_scan_failure_falls_back_to_original_entry() -> None:
     board = _parsed_job("https://boards.greenhouse.io/acme")
     fake = _FakeScanner(error=RuntimeError("network down"))
-    with patch("backend.utils.CareerSiteScanner", return_value=fake):
+    with patch("backend.utils.utils.CareerSiteScanner", return_value=fake):
         result = expand_board_url_parsed_jobs([board])
 
     assert result == [board]
@@ -132,7 +132,7 @@ def test_scan_failure_falls_back_to_original_entry() -> None:
 def test_empty_scan_result_falls_back_to_original_entry() -> None:
     board = _parsed_job("https://boards.greenhouse.io/acme")
     fake = _FakeScanner(outcome=ScanOutcome(jobs=[], detected_platform="greenhouse"))
-    with patch("backend.utils.CareerSiteScanner", return_value=fake):
+    with patch("backend.utils.utils.CareerSiteScanner", return_value=fake):
         result = expand_board_url_parsed_jobs([board])
 
     assert result == [board]
@@ -142,7 +142,7 @@ def test_blank_and_non_https_urls_pass_through() -> None:
     blank = _parsed_job("")
     plain_http = _parsed_job("http://boards.greenhouse.io/acme")
     fake = _FakeScanner()
-    with patch("backend.utils.CareerSiteScanner", return_value=fake):
+    with patch("backend.utils.utils.CareerSiteScanner", return_value=fake):
         result = expand_board_url_parsed_jobs([blank, plain_http])
 
     assert result == [blank, plain_http]

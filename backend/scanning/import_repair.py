@@ -39,12 +39,12 @@ import re
 from collections.abc import Iterator  # ai: claude-fable-5 | 2026-07-17
 from typing import Any, Protocol
 
-from backend.career_site_scanner import CareerSiteScanner
-from backend.duplicate_checker import DuplicateChecker
-from backend.email_parser import (  # ai: claude-fable-5 | 2026-07-17
+from backend.scanning.career_site_scanner import CareerSiteScanner
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.email.email_parser import (  # ai: claude-fable-5 | 2026-07-17
     looks_like_wttj_misparsed_title,
 )
-from backend.utils import company_from_ats_url
+from backend.utils.utils import company_from_ats_url
 
 
 class JobUpdater(Protocol):

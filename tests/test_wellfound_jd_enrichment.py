@@ -48,8 +48,8 @@ import pytest
 
 import config
 from backend.db import open_repositories
-from backend.email_parser import is_email_tracking_url
-from backend.wellfound_scraper import (
+from backend.email.email_parser import is_email_tracking_url
+from backend.scanning.sources.wellfound_scraper import (
     _extract_listing_id,
     _fetch_listing_metadata,
     canonical_wellfound_job_url,
@@ -277,6 +277,6 @@ def test_scan_enriches_wellfound_job_via_fetcher(
     # The fetched JD is stored as the real description and as the snippet,
     # instead of the first 300 chars of the email body (a tracking URL).
     assert job["job_description"] == _FAKE_JD
-    assert job["raw_email_snippet"] == _FAKE_JD[:6000]
+    assert job["raw_jd_snippet"] == _FAKE_JD[:6000]
     # The stored URL is canonicalized for stable duplicate detection.
     assert job["url"] == _CANONICAL_URL

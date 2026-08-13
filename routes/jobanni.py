@@ -47,9 +47,9 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 
 import config
-from backend.jobanni_scanner import scan as jobanni_scan
+from backend.scanning.sources.jobanni_scanner import scan as jobanni_scan
 from backend.tasks import run_import_task
-from backend.url_safety import UnsafeUrlError, validate_outbound_url
+from backend.utils.url_safety import UnsafeUrlError, validate_outbound_url
 
 logger = logging.getLogger(__name__)
 

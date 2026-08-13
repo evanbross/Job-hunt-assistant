@@ -45,7 +45,7 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 import config
-from backend.job_scanners.greenhouse_searcher import (
+from backend.scanning.sources.greenhouse_searcher import (
     GreenhouseLoginError,
     GreenhouseSearcher,
 )

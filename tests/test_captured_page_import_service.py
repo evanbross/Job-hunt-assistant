@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.captured_page_import_service import CapturedPageImportService
+from backend.scanning.captured_page_import_service import CapturedPageImportService
 
 
 def test_extracts_public_supported_urls_from_html() -> None:

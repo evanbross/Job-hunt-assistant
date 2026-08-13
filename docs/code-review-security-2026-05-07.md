@@ -32,7 +32,7 @@ Primary concerns include:
 *   **Remediation:** Remove GUI-dependent routes for server-side execution. Implement robust authentication (e.g., JWT or Session-based) for all `/api/*` routes.
 
 ### V3: Gmail Search Operator Injection
-*   **Location:** `backend/gmail_client.py`, function `list_unread_messages`.
+*   **Location:** `../backend/email/gmail_client.py`, function `list_unread_messages`.
 *   **Description:** The Gmail query string is built by concatenating user-provided filter values (match values) directly into the query string: `f"from:{sf['match_value']}"`.
 *   **Impact:** An attacker with access to the settings can inject Gmail search operators. For example, setting a filter to `example.com) OR (is:anywhere` can bypass the "inbox" and "unread" constraints to search across the entire account.
 *   **Remediation:** Sanitize user input for Gmail queries, escaping parentheses and known search operators.
@@ -54,7 +54,7 @@ Primary concerns include:
 ## 3. Loopholes & Logic Flaws
 
 ### L1: Optional Import Listener Authentication
-*   **Location:** `backend/import_listener.py`.
+*   **Location:** `../backend/scanning/import_listener.py`.
 *   **Description:** The token-based authentication for the job import listener is only active if a token is configured. If left empty, the listener accepts job imports from any source.
 *   **Impact:** Potential for unauthorized data ingestion.
 *   **Remediation:** Make the token mandatory or generate a random one by default on first run.

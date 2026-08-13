@@ -33,7 +33,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ValidationError, model_validator
 
-from backend.company_matching import normalize_company_name
+from backend.scoring.company_matching import normalize_company_name
 
 logger = logging.getLogger(__name__)
 

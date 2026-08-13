@@ -35,9 +35,9 @@
 """SSRF-safe outbound HTTP fetch helpers.
 
 Leaf module with no dependencies on other ``backend.*`` modules — it is imported
-by both ``backend/career_site_scanner.py`` and ``backend/email_parser.py``, which
-are themselves imported by ``backend/utils.py``, so importing this helper from
-``utils.py`` would create a circular import.
+by both ``backend/scanning/career_site_scanner.py`` and ``backend/email/email_parser.py``,
+which are themselves imported by ``backend/utils/utils.py``, so importing this
+helper from ``utils.py`` would create a circular import.
 """
 
 from __future__ import annotations

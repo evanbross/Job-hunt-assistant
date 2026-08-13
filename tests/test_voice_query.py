@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.voice_query import (
+from backend.voice.voice_query import (
     VoiceIntentError,
     _parse_tagged_block,
     format_answer_text,

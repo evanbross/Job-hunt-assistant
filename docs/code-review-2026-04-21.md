@@ -18,8 +18,8 @@ Scope: Backend Flask app, backend modules, frontend React app, config and repo h
   - Backend imports files that are not tracked: [app.py](F:/Evan-F/Projects/JobHuntAssistant/app.py:36), [app.py](F:/Evan-F/Projects/JobHuntAssistant/app.py:41)
   - Frontend imports files that are not tracked: [App.jsx](F:/Evan-F/Projects/JobHuntAssistant/frontend/src/App.jsx:5), [App.jsx](F:/Evan-F/Projects/JobHuntAssistant/frontend/src/App.jsx:6)
   - `git status --short` shows untracked:
-    - `backend/cover_letter_generator.py`
-    - `backend/job_board_searcher.py`
+    - `../backend/cover_letter/cover_letter_generator.py`
+    - `../backend/scanning/job_board_searcher.py`
     - `frontend/src/components/EmailsPanel.jsx`
     - `frontend/src/components/HistoryPanel.jsx`
   - `git ls-files` returned no entries for those files.
