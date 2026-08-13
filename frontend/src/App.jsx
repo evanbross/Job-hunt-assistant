@@ -38,6 +38,7 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 import EmailsPanel from "./components/EmailsPanel.jsx";
 import HistoryPanel from "./components/HistoryPanel.jsx";
 import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
+import PhraseBookPanel from "./components/PhraseBookPanel.jsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
 import StatsBar from "./components/StatsBar.jsx";
 import Modal from "./components/common/Modal.jsx";
@@ -50,10 +51,12 @@ import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 
 // ai: claude-fable-5 | 2026-07-14 — Career Sites tab removed; sites are managed in Settings
 // ai: claude-sonnet-5 | 2026-07-26 — Setup tab removed; the wizard now lives in Settings
+// ai: claude-sonnet-5 | 2026-08-13 — Phrase Book tab added
 const TABS = [
   { key: "queue", label: "Job Queue" },
   { key: "applications", label: "Applications" },
   { key: "emails", label: "Email History" },
+  { key: "phrasebook", label: "Phrase Book" },
   { key: "settings", label: "Settings" },
 ];
 const LEGACY_TAB_KEYS = ["queue", "triage", "history", "applications", "emails", "career", "settings"];
@@ -531,6 +534,7 @@ export default function App() {
             focusEmailId={emailFocusId}
           />
         )}
+        {activeTab === "phrasebook" && <PhraseBookPanel />}
         {activeTab === "settings" && (
           <SettingsPanel initialSection={settingsInitialSection} onSetupComplete={handleSetupComplete} />
         )}
