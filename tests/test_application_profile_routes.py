@@ -1,0 +1,169 @@
+# =============================================================================
+# Copyright (c) 2026 ZombieTech LLC. All rights reserved.
+#
+# LICENSE: Personal Use Only
+# This source code is made available for personal, non-commercial use only.
+# You may read, study, and run this code for personal purposes.
+# You may NOT:
+#   - Use this code, in whole or in part, in any commercial product or service
+#   - Sell, sublicense, or otherwise monetize this code or derivatives of it
+#   - Redistribute this code without explicit written permission from ZombieTech LLC
+#
+# No warranty is provided, express or implied. Use at your own risk.
+#
+# Licensing inquiries: license@zombietech.biz
+# =============================================================================
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any
+
+import pytest
+from flask import Flask
+
+from routes.application_profile import application_profile_bp
+
+# ai: claude-sonnet-5 | 2026-08-13
+
+
+def make_fake_get_repos(repos: dict) -> Any:
+    @contextmanager
+    def fake() -> Iterator[dict[str, Any]]:
+        try:
+            yield repos
+        finally:
+            repos["conn"].close()
+
+    return fake
+
+
+class FakeConnection:
+    def commit(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class FakeApplicationProfileRepo:
+    def __init__(self, row: dict[str, Any] | None = None) -> None:
+        self.row = row
+
+    def get(self) -> dict[str, Any] | None:
+        return self.row
+
+    def upsert(self, fields: dict[str, Any]) -> dict[str, Any]:
+        self.row = {**(self.row or {"id": 1}), **fields}
+        return self.row
+
+
+class FakeApplicationAnswerRepo:
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+        self.rows = rows or []
+        self._next_id = len(self.rows) + 1
+
+    def get_all(self) -> list[dict[str, Any]]:
+        return list(self.rows)
+
+    def upsert(self, *, question_text: str, answer_text: str, platform: str | None = None) -> dict[str, Any]:
+        row = {
+            "id": self._next_id,
+            "question_text": question_text,
+            "answer_text": answer_text,
+            "platform": platform,
+        }
+        self._next_id += 1
+        self.rows.append(row)
+        return row
+
+    def delete(self, answer_id: int) -> None:
+        self.rows = [r for r in self.rows if r["id"] != answer_id]
+
+
+def _make_app(repos: dict, monkeypatch: pytest.MonkeyPatch) -> Flask:
+    app = Flask(__name__)
+    app.register_blueprint(application_profile_bp, url_prefix="/api")
+    monkeypatch.setattr("routes.application_profile.get_repos", make_fake_get_repos(repos))
+    return app
+
+
+def test_get_application_profile_returns_none_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"conn": FakeConnection(), "application_profile": FakeApplicationProfileRepo()}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.get("/api/application-profile")
+    assert response.status_code == 200
+    assert response.get_json() is None
+
+
+def test_update_application_profile_upserts_and_returns_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"conn": FakeConnection(), "application_profile": FakeApplicationProfileRepo()}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.put(
+        "/api/application-profile",
+        json={"legal_name": "Evan Ross", "work_authorized": True, "requires_visa_sponsorship": False},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["legal_name"] == "Evan Ross"
+    assert data["work_authorized"] is True
+    assert data["requires_visa_sponsorship"] is False
+
+
+def test_update_application_profile_rejects_invalid_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"conn": FakeConnection(), "application_profile": FakeApplicationProfileRepo()}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.put("/api/application-profile", json={"work_authorized": "not-a-bool"})
+    assert response.status_code == 400
+
+
+def test_list_application_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {
+        "conn": FakeConnection(),
+        "application_answers": FakeApplicationAnswerRepo(
+            [{"id": 1, "question_text": "Security clearance?", "answer_text": "No", "platform": None}]
+        ),
+    }
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.get("/api/application-answers")
+    assert response.status_code == 200
+    assert response.get_json()[0]["question_text"] == "Security clearance?"
+
+
+def test_upsert_application_answer_requires_both_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"conn": FakeConnection(), "application_answers": FakeApplicationAnswerRepo()}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.post("/api/application-answers", json={"question_text": "Only a question?"})
+    assert response.status_code == 400
+
+
+def test_upsert_application_answer_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"conn": FakeConnection(), "application_answers": FakeApplicationAnswerRepo()}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.post(
+        "/api/application-answers",
+        json={"question_text": "Do you need sponsorship?", "answer_text": "No", "platform": "Ashby"},
+    )
+    assert response.status_code == 201
+    data = response.get_json()
+    assert data["question_text"] == "Do you need sponsorship?"
+    assert data["platform"] == "Ashby"
+
+
+def test_delete_application_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {
+        "conn": FakeConnection(),
+        "application_answers": FakeApplicationAnswerRepo([{"id": 5, "question_text": "x", "answer_text": "y", "platform": None}]),
+    }
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.delete("/api/application-answers/5")
+    assert response.status_code == 200
+    assert repos["application_answers"].get_all() == []

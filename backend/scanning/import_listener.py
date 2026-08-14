@@ -32,13 +32,18 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""Small localhost HTTP listener for captured job-board HTML imports."""
+"""Small localhost HTTP listener for browser-extension I/O: captured
+job-board HTML imports, the browser-capture queue, and — since the extension
+already talks to this token-authed channel rather than the CORS-gated
+/api/* used by the frontend — application-autofill data (profile, resume
+file, answer bank) as well."""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -53,6 +58,10 @@ logger = logging.getLogger(__name__)
 
 SubmitCapture = Callable[[dict[str, Any]], tuple[dict[str, Any], int]]
 ClaimQueue = Callable[[], list[dict[str, Any]]]
+GetProfile = Callable[[], dict[str, Any] | None]
+GetResumeFile = Callable[[], tuple[bytes, str] | None]
+GetAnswers = Callable[[], list[dict[str, Any]]]
+LearnAnswer = Callable[[str, str, str | None], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -191,6 +200,10 @@ class JobImportListener:
         max_bytes: int,
         submit_capture: SubmitCapture,
         claim_queue: ClaimQueue | None = None,
+        get_profile: GetProfile | None = None,
+        get_resume_file: GetResumeFile | None = None,
+        get_answers: GetAnswers | None = None,
+        learn_answer: LearnAnswer | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -198,6 +211,10 @@ class JobImportListener:
         self._max_bytes = max_bytes
         self._submit_capture = submit_capture
         self._claim_queue = claim_queue
+        self._get_profile = get_profile
+        self._get_resume_file = get_resume_file
+        self._get_answers = get_answers
+        self._learn_answer = learn_answer
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -216,6 +233,10 @@ class JobImportListener:
         max_bytes = self._max_bytes
         submit_capture = self._submit_capture
         claim_queue = self._claim_queue
+        get_profile = self._get_profile
+        get_resume_file = self._get_resume_file
+        get_answers = self._get_answers
+        learn_answer = self._learn_answer
         listener_token = self._token
 
         class ImportRequestHandler(BaseHTTPRequestHandler):
@@ -256,28 +277,133 @@ class JobImportListener:
                             HTTPStatus.INTERNAL_SERVER_ERROR,
                         )
                     return
+                if path == "/application-profile":
+                    if not self._check_token():
+                        self._send_json(
+                            {"error": "Invalid import listener token."},
+                            HTTPStatus.UNAUTHORIZED,
+                        )
+                        return
+                    if get_profile is None:
+                        self._send_json({"profile": None})
+                        return
+                    try:
+                        self._send_json({"profile": get_profile()})
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Application profile fetch failed: %s", exc)
+                        self._send_json(
+                            {"error": "Profile unavailable."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                    return
+                if path == "/application-answers":
+                    if not self._check_token():
+                        self._send_json(
+                            {"error": "Invalid import listener token."},
+                            HTTPStatus.UNAUTHORIZED,
+                        )
+                        return
+                    if get_answers is None:
+                        self._send_json({"answers": []})
+                        return
+                    try:
+                        self._send_json({"answers": get_answers()})
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Application answer bank fetch failed: %s", exc)
+                        self._send_json(
+                            {"error": "Answer bank unavailable."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                    return
+                if path == "/resume-file":
+                    if not self._check_token():
+                        self._send_json(
+                            {"error": "Invalid import listener token."},
+                            HTTPStatus.UNAUTHORIZED,
+                        )
+                        return
+                    if get_resume_file is None:
+                        self._send_json(
+                            {"error": "No resume uploaded."}, HTTPStatus.NOT_FOUND
+                        )
+                        return
+                    try:
+                        result = get_resume_file()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Resume file fetch failed: %s", exc)
+                        self._send_json(
+                            {"error": "Resume file unavailable."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                        return
+                    if result is None:
+                        self._send_json(
+                            {"error": "No resume uploaded."}, HTTPStatus.NOT_FOUND
+                        )
+                        return
+                    content, filename = result
+                    self._send_bytes(content, "application/pdf", filename)
+                    return
                 self._send_json(
                     {"error": "Use POST /import to submit captured job-board HTML."},
                     HTTPStatus.NOT_FOUND,
                 )
 
             def do_POST(self) -> None:
-                try:
-                    content_length = int(self.headers.get("Content-Length") or "0")
-                except ValueError:
-                    self._send_json(
-                        {"error": "Invalid Content-Length header."},
-                        HTTPStatus.BAD_REQUEST,
-                    )
-                    return
-                if content_length > max_bytes:
-                    self._send_json(
-                        {"error": "Request body is too large."},
-                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                    )
+                path = urlparse(self.path).path
+                if path == "/application-answers":
+                    if not self._check_token():
+                        self._send_json(
+                            {"error": "Invalid import listener token."},
+                            HTTPStatus.UNAUTHORIZED,
+                        )
+                        return
+                    raw_body = self._read_body()
+                    if raw_body is None:
+                        return
+                    try:
+                        payload = json.loads(raw_body.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        self._send_json(
+                            {"error": "Request JSON could not be parsed."},
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    if not isinstance(payload, dict):
+                        self._send_json(
+                            {"error": "Request JSON must be an object."},
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    question_text = str(payload.get("question_text") or "").strip()
+                    answer_text = str(payload.get("answer_text") or "").strip()
+                    platform = payload.get("platform")
+                    if not question_text or not answer_text:
+                        self._send_json(
+                            {"error": "question_text and answer_text are required."},
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    if learn_answer is None:
+                        self._send_json(
+                            {"error": "Answer bank unavailable."},
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                        )
+                        return
+                    try:
+                        answer = learn_answer(question_text, answer_text, platform)
+                        self._send_json({"answer": answer}, HTTPStatus.CREATED)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Learning application answer failed: %s", exc)
+                        self._send_json(
+                            {"error": "Could not save answer."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
                     return
 
-                raw_body = self.rfile.read(content_length)
+                raw_body = self._read_body()
+                if raw_body is None:
+                    return
                 parsed_request = parser.parse(
                     path=self.path,
                     headers=self.headers,
@@ -292,6 +418,25 @@ class JobImportListener:
                 payload, status_code = submit_capture(parsed_request.body)
                 self._send_json(payload, status_code)
 
+            def _read_body(self) -> bytes | None:
+                """Reads the request body honoring Content-Length/max_bytes; sends
+                an error response and returns None on failure."""
+                try:
+                    content_length = int(self.headers.get("Content-Length") or "0")
+                except ValueError:
+                    self._send_json(
+                        {"error": "Invalid Content-Length header."},
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return None
+                if content_length > max_bytes:
+                    self._send_json(
+                        {"error": "Request body is too large."},
+                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    )
+                    return None
+                return self.rfile.read(content_length)
+
             def _send_json(
                 self,
                 payload: dict[str, Any],
@@ -303,6 +448,21 @@ class JobImportListener:
                 self.send_header("Content-Length", str(len(response_body)))
                 self.end_headers()
                 self.wfile.write(response_body)
+
+            def _send_bytes(
+                self, content: bytes, content_type: str, filename: str
+            ) -> None:
+                # Strip anything but a conservative filename charset so a
+                # maliciously-named uploaded resume can't inject extra headers.
+                safe_filename = re.sub(r'[^\w.\- ]', "_", filename) or "resume.pdf"
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header(
+                    "Content-Disposition", f'attachment; filename="{safe_filename}"'
+                )
+                self.end_headers()
+                self.wfile.write(content)
 
         try:
             self._server = ThreadingHTTPServer(
@@ -345,6 +505,10 @@ _listener: JobImportListener | None = None
 def start_job_import_listener(
     submit_capture: SubmitCapture,
     claim_queue: ClaimQueue | None = None,
+    get_profile: GetProfile | None = None,
+    get_resume_file: GetResumeFile | None = None,
+    get_answers: GetAnswers | None = None,
+    learn_answer: LearnAnswer | None = None,
 ) -> JobImportListener | None:
     """Start the optional captured-page import listener once per process.
 
@@ -373,6 +537,10 @@ def start_job_import_listener(
             max_bytes=int(listener_config["max_bytes"]),
             submit_capture=submit_capture,
             claim_queue=claim_queue,
+            get_profile=get_profile,
+            get_resume_file=get_resume_file,
+            get_answers=get_answers,
+            learn_answer=learn_answer,
         )
         try:
             _listener.start()

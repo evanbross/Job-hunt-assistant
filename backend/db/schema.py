@@ -587,6 +587,37 @@ def _create_tables(conn: Any) -> None:
             uploaded_at TEXT
         )
         """,
+        # ai: claude-sonnet-5 | 2026-08-13
+        # Single-row settings table (id fixed at 1, upserted in place) backing the
+        # browser extension's application-form autofill and the Application Profile tab.
+        """
+        CREATE TABLE IF NOT EXISTS application_profile (
+            id                       INTEGER PRIMARY KEY DEFAULT 1,
+            legal_name               TEXT,
+            email                    TEXT,
+            phone                    TEXT,
+            city                     TEXT,
+            work_authorized          BOOLEAN,
+            requires_visa_sponsorship BOOLEAN,
+            linkedin_url             TEXT,
+            portfolio_url            TEXT,
+            updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT application_profile_single_row CHECK (id = 1)
+        )
+        """,
+        # ai: claude-sonnet-5 | 2026-08-13
+        # Reusable answer bank for free-text application questions the extension can't
+        # classify into a structured application_profile field (varies per ATS/posting).
+        """
+        CREATE TABLE IF NOT EXISTS application_answers (
+            id                  SERIAL PRIMARY KEY,
+            question_text       TEXT NOT NULL,
+            question_normalized TEXT NOT NULL UNIQUE,
+            answer_text         TEXT NOT NULL,
+            platform            TEXT,
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
         """
         CREATE TABLE IF NOT EXISTS scanned_emails (
             email_id         TEXT PRIMARY KEY,

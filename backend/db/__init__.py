@@ -57,6 +57,8 @@ import psycopg2
 
 from .connection import get_connection
 from .interfaces import (
+    IApplicationAnswerRepository,
+    IApplicationProfileRepository,
     IApplicationStageRepository,
     IAppSettingsRepository,
     IBrowserCaptureQueueRepository,
@@ -81,6 +83,8 @@ from .interfaces import (
 )
 from .readonly_role import ensure_readonly_role
 from .repositories.app_settings import PostgresAppSettingsRepository
+from .repositories.application_answers import PostgresApplicationAnswerRepository
+from .repositories.application_profile import PostgresApplicationProfileRepository
 from .repositories.application_stages import (
     PostgresApplicationStageRepository,
     PostgresStageStatusRepository,
@@ -111,6 +115,8 @@ from .repositories.scanned_emails import PostgresScannedEmailRepository
 from .schema import _create_tables, _migrate, _seed_data
 
 __all__ = [
+    "IApplicationAnswerRepository",
+    "IApplicationProfileRepository",
     "IApplicationStageRepository",
     "IAppSettingsRepository",
     "IBrowserCaptureQueueRepository",
@@ -135,6 +141,8 @@ __all__ = [
     "BROWSER_QUEUE_CLAIM_BATCH_SIZE",
     "BROWSER_QUEUE_MAX_RETRIES",
     "PostgresAppSettingsRepository",
+    "PostgresApplicationAnswerRepository",
+    "PostgresApplicationProfileRepository",
     "PostgresApplicationStageRepository",
     "PostgresBrowserCaptureQueueRepository",
     "PostgresCareerRejectionRuleRepository",
@@ -290,6 +298,8 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "feedback": PostgresRelevanceFeedbackRepository(conn),
         "scanned_emails": PostgresScannedEmailRepository(conn),
         "resume": PostgresResumeRepository(conn),
+        "application_profile": PostgresApplicationProfileRepository(conn),
+        "application_answers": PostgresApplicationAnswerRepository(conn),
         "stages": PostgresApplicationStageRepository(conn),
         "settings": PostgresAppSettingsRepository(conn),
         "career_sites": PostgresCareerSiteSourceRepository(conn),

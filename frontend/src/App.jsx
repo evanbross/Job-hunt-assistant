@@ -39,6 +39,7 @@ import EmailsPanel from "./components/EmailsPanel.jsx";
 import HistoryPanel from "./components/HistoryPanel.jsx";
 import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
 import PhraseBookPanel from "./components/PhraseBookPanel.jsx";
+import ApplicationProfilePanel from "./components/ApplicationProfilePanel.jsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
 import StatsBar from "./components/StatsBar.jsx";
 import Modal from "./components/common/Modal.jsx";
@@ -57,6 +58,7 @@ const TABS = [
   { key: "applications", label: "Applications" },
   { key: "emails", label: "Email History" },
   { key: "phrasebook", label: "Phrase Book" },
+  { key: "applicationprofile", label: "Application Profile" },
   { key: "settings", label: "Settings" },
 ];
 const LEGACY_TAB_KEYS = ["queue", "triage", "history", "applications", "emails", "career", "settings"];
@@ -535,6 +537,7 @@ export default function App() {
           />
         )}
         {activeTab === "phrasebook" && <PhraseBookPanel />}
+        {activeTab === "applicationprofile" && <ApplicationProfilePanel />}
         {activeTab === "settings" && (
           <SettingsPanel initialSection={settingsInitialSection} onSetupComplete={handleSetupComplete} />
         )}

@@ -89,6 +89,8 @@ _ALL_TABLES = (
     "stage_statuses",
     "app_settings",
     "resume",
+    "application_profile",
+    "application_answers",
 )
 
 

@@ -60,6 +60,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.runtime.openOptionsPage();
   });
   document.getElementById('send-btn').addEventListener('click', handleSend);
+  document.getElementById('fill-app-btn').addEventListener('click', handleFillApplication);
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab.id;
@@ -70,6 +71,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyScanResult(scanResult);
   } catch {
     showNoAccess();
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-13
+  // Separate content script/detector from the capture flow above — an
+  // application-form page (e.g. Ashby's /application sub-path) isn't a job
+  // listing, so it never matches detectPage(), but still needs its own
+  // "Fill Application" affordance.
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: activeTabId }, files: ['autofill.js'] });
+    const detectResult = await sendToTab({ action: 'detectApplicationPage' });
+    if (detectResult?.isApplicationPage) {
+      document.getElementById('fill-app-btn').style.display = 'flex';
+    }
+  } catch {
+    // No autofill affordance on pages the content script can't run on — fine,
+    // the capture flow above already handled (or reported) that case.
   }
 });
 
@@ -143,6 +160,32 @@ async function handleSend() {
   }
 
   isSending = false;
+}
+
+// ai: claude-sonnet-5 | 2026-08-13
+async function handleFillApplication() {
+  const btn = document.getElementById('fill-app-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div>Filling…';
+  hideStatus();
+
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'startAutofill', tabId: activeTabId });
+    if (!response?.ok) {
+      showStatus(`Autofill failed: ${response?.error || 'unknown error'}`, 'error');
+    } else {
+      const { filled = [], unresolved = [] } = response.results || {};
+      const summary = unresolved.length > 0
+        ? `✓ Filled ${filled.length}, ${unresolved.length} need your review (outlined in orange).`
+        : `✓ Filled ${filled.length} field${filled.length !== 1 ? 's' : ''}.`;
+      showStatus(summary, unresolved.length > 0 ? 'info' : 'success');
+    }
+  } catch (err) {
+    showStatus(err.message || 'An unexpected error occurred.', 'error');
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Fill Application';
 }
 
 // ─── UI Helpers ───────────────────────────────────────────────────────────────

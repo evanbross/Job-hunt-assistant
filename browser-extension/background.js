@@ -503,3 +503,84 @@ async function loadSettings() {
     return defaults;
   }
 }
+
+// ─── Application autofill ──────────────────────────────────────────────────
+// ai: claude-sonnet-5 | 2026-08-13
+// The extension's only network channel to the backend is the token-authed
+// listener (same one /queue and /import already use) — see loadSettings()
+// above and backend/scanning/import_listener.py's extension-facing endpoints.
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000; // avoid call-stack limits from spreading a huge array
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function fetchAutofillData(settings) {
+  const headers = {};
+  if (settings.token) headers['X-Job-Import-Token'] = settings.token;
+
+  const [profileRes, answersRes, resumeRes] = await Promise.all([
+    fetch(`${settings.listenerUrl}/application-profile`, { headers }),
+    fetch(`${settings.listenerUrl}/application-answers`, { headers }),
+    fetch(`${settings.listenerUrl}/resume-file`, { headers }),
+  ]);
+
+  const profileData = profileRes.ok ? await profileRes.json().catch(() => ({})) : {};
+  const answersData = answersRes.ok ? await answersRes.json().catch(() => ({})) : {};
+
+  let resumeFile = null;
+  if (resumeRes.ok) {
+    const buffer = await resumeRes.arrayBuffer();
+    const disposition = resumeRes.headers.get('Content-Disposition') || '';
+    const filenameMatch = disposition.match(/filename="([^"]+)"/);
+    resumeFile = {
+      base64: arrayBufferToBase64(buffer),
+      filename: filenameMatch ? filenameMatch[1] : 'resume.pdf',
+    };
+  }
+
+  return { profile: profileData.profile || null, answers: answersData.answers || [], resumeFile };
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.action === 'startAutofill') {
+    (async () => {
+      try {
+        const settings = await loadSettings();
+        const data = await fetchAutofillData(settings);
+        const result = await chrome.tabs.sendMessage(message.tabId, { action: 'runAutofill', data });
+        sendResponse(result);
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
+    })();
+    return true; // keep channel open for the async response
+  }
+
+  if (message.action === 'learnAnswer') {
+    (async () => {
+      try {
+        const settings = await loadSettings();
+        const headers = { 'Content-Type': 'application/json' };
+        if (settings.token) headers['X-Job-Import-Token'] = settings.token;
+        await fetch(`${settings.listenerUrl}/application-answers`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            question_text: message.question_text,
+            answer_text: message.answer_text,
+            platform: message.platform || null,
+          }),
+        });
+      } catch (err) {
+        console.error('[JHA] learnAnswer failed:', err?.message || err);
+      }
+    })();
+    return false;
+  }
+});

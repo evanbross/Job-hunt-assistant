@@ -297,6 +297,7 @@ def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
 
 # ─── Blueprint registration ───────────────────────────────────────────────────
 
+from routes.application_profile import application_profile_bp
 from routes.applications import applications_bp, submit_closed_req_capture
 from routes.auth import auth_bp
 from routes.board_search import board_search_bp
@@ -319,6 +320,7 @@ from routes.toptal import toptal_bp
 from routes.voice import voice_bp
 from routes.wellfound import wellfound_bp
 
+app.register_blueprint(application_profile_bp, url_prefix="/api")
 app.register_blueprint(auth_bp, url_prefix="/api")
 app.register_blueprint(board_search_bp, url_prefix="/api")
 app.register_blueprint(browser_capture_bp, url_prefix="/api")
@@ -378,11 +380,67 @@ def _handle_listener_capture(body: dict) -> tuple[dict, int]:
     return queue_import_capture(body, trigger="listener")
 
 
+# ai: claude-sonnet-5 | 2026-08-13
+def _get_application_profile_for_listener() -> dict | None:
+    """Called from the import listener thread — opens a short-lived DB connection."""
+    from backend.utils.utils import get_repos
+
+    with get_repos() as repos:
+        return repos["application_profile"].get()
+
+
+# ai: claude-sonnet-5 | 2026-08-13
+def _get_resume_file_bytes() -> tuple[bytes, str] | None:
+    """Called from the import listener thread. Reads the resume PDF already
+    saved to disk by routes.settings.upload_resume — the DB row only holds
+    extracted text, not the file bytes (see backend/db/repositories/resumes.py)."""
+    from backend.utils.utils import get_repos
+
+    with get_repos() as repos:
+        resume = repos["resume"].get_latest()
+    if resume is None:
+        return None
+    resume_path = config.UPLOADS_DIR / "resume.pdf"
+    if not resume_path.is_file():
+        return None
+    return resume_path.read_bytes(), str(resume.get("filename") or "resume.pdf")
+
+
+# ai: claude-sonnet-5 | 2026-08-13
+def _get_application_answers_for_listener() -> list[dict]:
+    """Called from the import listener thread — opens a short-lived DB connection."""
+    from backend.utils.utils import get_repos
+
+    with get_repos() as repos:
+        return repos["application_answers"].get_all()
+
+
+# ai: claude-sonnet-5 | 2026-08-13
+def _learn_application_answer(
+    question_text: str, answer_text: str, platform: str | None
+) -> dict:
+    """Called from the import listener thread when the extension's autofill
+    content script learns a new free-text answer from the user."""
+    from backend.utils.utils import get_repos
+
+    with get_repos() as repos:
+        answer = repos["application_answers"].upsert(
+            question_text=question_text, answer_text=answer_text, platform=platform
+        )
+        repos["conn"].commit()
+    return answer
+
+
 # ai: claude-sonnet-4-6 | 2026-06-16
 # ai: claude-sonnet-5 | 2026-08-07 — capture return values for Caddy registration below
+# ai: claude-sonnet-5 | 2026-08-13 — added application-autofill callables
 _import_listener = start_job_import_listener(
     _handle_listener_capture,
     claim_queue=_claim_browser_capture_queue,
+    get_profile=_get_application_profile_for_listener,
+    get_resume_file=_get_resume_file_bytes,
+    get_answers=_get_application_answers_for_listener,
+    learn_answer=_learn_application_answer,
 )
 _queue_ws_server = start_queue_websocket_server(_browser_capture_queue_has_pending)
 

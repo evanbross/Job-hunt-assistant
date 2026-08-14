@@ -35,9 +35,15 @@
 from __future__ import annotations
 
 import json
+import urllib.error
+import urllib.request
+from collections.abc import Iterator
 from http import HTTPStatus
+from typing import Any
 
-from backend.scanning.import_listener import ImportListenerRequestParser
+import pytest
+
+from backend.scanning.import_listener import ImportListenerRequestParser, JobImportListener
 
 
 def test_listener_parser_accepts_raw_html() -> None:
@@ -112,3 +118,129 @@ def test_listener_parser_rejects_large_body() -> None:
 
     assert result.status_code == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     assert result.error == "Request body is too large."
+
+
+# ai: claude-sonnet-5 | 2026-08-13
+# The application-autofill endpoints below dispatch directly in do_GET/do_POST
+# rather than through ImportListenerRequestParser (they don't share its
+# job-capture-shaped body assumptions), so they need their own HTTP-level
+# coverage rather than parser-level tests like the ones above.
+
+
+@pytest.fixture
+def running_listener() -> Iterator[tuple[JobImportListener, dict[str, Any]]]:
+    learned: dict[str, Any] = {}
+
+    def fake_learn_answer(question_text: str, answer_text: str, platform: str | None) -> dict[str, Any]:
+        learned["call"] = (question_text, answer_text, platform)
+        return {"id": 99, "question_text": question_text, "answer_text": answer_text, "platform": platform}
+
+    listener = JobImportListener(
+        host="127.0.0.1",
+        port=0,
+        token="test-token",
+        max_bytes=1_000_000,
+        submit_capture=lambda body: ({"received": body}, 200),
+        claim_queue=lambda: [],
+        get_profile=lambda: {"legal_name": "Evan Ross", "city": "Mebane, NC"},
+        get_resume_file=lambda: (b"%PDF-1.4 fake", "My Resume.pdf"),
+        get_answers=lambda: [{"id": 1, "question_text": "Security clearance?", "answer_text": "No"}],
+        learn_answer=fake_learn_answer,
+    )
+    listener.start()
+    try:
+        yield listener, learned
+    finally:
+        listener.stop()
+
+
+def _get(base: str, path: str, token: str | None = "test-token") -> tuple[int, bytes, dict[str, str]]:
+    headers = {"X-Job-Import-Token": token} if token else {}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers), timeout=3) as r:
+            return r.status, r.read(), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), dict(e.headers)
+
+
+def test_listener_serves_application_profile(running_listener: tuple[JobImportListener, dict]) -> None:
+    listener, _ = running_listener
+    status, body, _ = _get(f"http://127.0.0.1:{listener.port}", "/application-profile")
+    assert status == HTTPStatus.OK
+    assert json.loads(body)["profile"]["legal_name"] == "Evan Ross"
+
+
+def test_listener_serves_application_answers(running_listener: tuple[JobImportListener, dict]) -> None:
+    listener, _ = running_listener
+    status, body, _ = _get(f"http://127.0.0.1:{listener.port}", "/application-answers")
+    assert status == HTTPStatus.OK
+    assert json.loads(body)["answers"][0]["question_text"] == "Security clearance?"
+
+
+def test_listener_serves_resume_file_as_pdf_attachment(running_listener: tuple[JobImportListener, dict]) -> None:
+    listener, _ = running_listener
+    status, body, headers = _get(f"http://127.0.0.1:{listener.port}", "/resume-file")
+    assert status == HTTPStatus.OK
+    assert body == b"%PDF-1.4 fake"
+    assert headers["Content-Type"] == "application/pdf"
+    assert 'filename="My Resume.pdf"' in headers["Content-Disposition"]
+
+
+def test_listener_rejects_autofill_requests_without_token(running_listener: tuple[JobImportListener, dict]) -> None:
+    listener, _ = running_listener
+    status, _, _ = _get(f"http://127.0.0.1:{listener.port}", "/application-profile", token=None)
+    assert status == HTTPStatus.UNAUTHORIZED
+
+
+def test_listener_learn_answer_upserts_via_post(running_listener: tuple[JobImportListener, dict]) -> None:
+    listener, learned = running_listener
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{listener.port}/application-answers",
+        data=json.dumps(
+            {"question_text": "Do you need sponsorship?", "answer_text": "No", "platform": "Ashby"}
+        ).encode("utf-8"),
+        headers={"X-Job-Import-Token": "test-token", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=3) as r:
+        assert r.status == HTTPStatus.CREATED
+        data = json.loads(r.read())
+    assert data["answer"]["question_text"] == "Do you need sponsorship?"
+    assert learned["call"] == ("Do you need sponsorship?", "No", "Ashby")
+
+
+def test_listener_learn_answer_rejects_blank_fields(running_listener: tuple[JobImportListener, dict]) -> None:
+    listener, _ = running_listener
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{listener.port}/application-answers",
+        data=json.dumps({"question_text": "  ", "answer_text": ""}).encode("utf-8"),
+        headers={"X-Job-Import-Token": "test-token", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=3)
+        assert False, "expected HTTPError"
+    except urllib.error.HTTPError as e:
+        assert e.code == HTTPStatus.BAD_REQUEST
+
+
+def test_listener_existing_queue_and_import_still_work(running_listener: tuple[JobImportListener, dict]) -> None:
+    """Regression check — the new dispatch branches in do_GET/do_POST must not
+    break the pre-existing job-capture endpoints they sit alongside."""
+    listener, _ = running_listener
+    base = f"http://127.0.0.1:{listener.port}"
+
+    status, body, _ = _get(base, "/queue")
+    assert status == HTTPStatus.OK
+    assert json.loads(body) == {"items": []}
+
+    req = urllib.request.Request(
+        base + "/import",
+        data=json.dumps({"content": "hi", "format": "html"}).encode("utf-8"),
+        headers={"X-Job-Import-Token": "test-token", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=3) as r:
+        assert r.status == HTTPStatus.OK
+        data = json.loads(r.read())
+    assert data["received"]["content"] == "hi"
