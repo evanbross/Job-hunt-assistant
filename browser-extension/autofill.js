@@ -54,6 +54,14 @@
     if (host === 'jobs.ashbyhq.com' && /\/application(\/|$)/.test(path)) {
       return { isApplicationPage: true, platform: 'Ashby' };
     }
+    // ai: claude-sonnet-5 | 2026-08-14
+    // Greenhouse embeds the application form directly on the job posting page
+    // (job-boards.greenhouse.io and the legacy boards.greenhouse.io/my.greenhouse.io
+    // hosts) — there's no separate /application route to match like Ashby, so
+    // detect by the form's own id instead of a URL pattern.
+    if (/\.greenhouse\.io$/.test(host) && document.getElementById('application-form')) {
+      return { isApplicationPage: true, platform: 'Greenhouse' };
+    }
     return { isApplicationPage: false, platform: null };
   }
 
@@ -141,11 +149,26 @@
   // ─── Classification ─────────────────────────────────────────────────────────
 
   const CATEGORY_PATTERNS = [
+    // ai: claude-sonnet-5 | 2026-08-14
+    // First/Last checked before the generic \bname\b pattern below — Greenhouse
+    // splits the name field in two (confirmed on job-boards.greenhouse.io),
+    // vs. Ashby's single bare "Name" field.
+    { category: 'first_name', re: /first name/i },
+    { category: 'last_name', re: /last name/i },
     { category: 'email', re: /\be-?mail\b/i },
     { category: 'phone', re: /\bphone\b/i },
     { category: 'resume', re: /\bresume\b|\bcv\b/i },
     { category: 'linkedin', re: /linkedin/i },
     { category: 'portfolio', re: /portfolio|personal (site|website)|\bwebsite\b/i },
+    // ai: claude-sonnet-5 | 2026-08-14
+    // Checked before the two single-concept patterns below — confirmed on
+    // Greenhouse (Addepar posting): "authorized to work ... without Visa
+    // Sponsorship or EAD?" asks both in one question. Answering it needs both
+    // profile booleans at once (see boolValueForCategory), not just one.
+    {
+      category: 'work_auth_and_sponsorship',
+      re: /authorized to work.*(visa|sponsorship)|(visa|sponsorship).*authorized to work/i,
+    },
     { category: 'visa_sponsorship', re: /visa|sponsorship/i },
     {
       category: 'work_authorized',
@@ -167,14 +190,43 @@
     return null;
   }
 
+  // Categories filled from structured text-like profile fields (name, email,
+  // location, links). Boolean categories (work auth / visa sponsorship) are
+  // handled separately by boolValueForCategory below since they can render as
+  // a button pair, a plain text field, or a Select — not just plain text.
+  function splitName(fullName) {
+    const parts = (fullName || '').trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return { first: '', last: '' };
+    if (parts.length === 1) return { first: parts[0], last: '' };
+    return { first: parts[0], last: parts.slice(1).join(' ') };
+  }
+
   function profileValueForCategory(profile, category) {
     switch (category) {
       case 'name': return profile.legal_name;
+      case 'first_name': return splitName(profile.legal_name).first;
+      case 'last_name': return splitName(profile.legal_name).last;
       case 'email': return profile.email;
       case 'phone': return profile.phone;
       case 'city': return profile.city;
       case 'linkedin': return profile.linkedin_url;
       case 'portfolio': return profile.portfolio_url;
+      default: return null;
+    }
+  }
+
+  const BOOLEAN_CATEGORIES = new Set(['work_authorized', 'visa_sponsorship', 'work_auth_and_sponsorship']);
+
+  function boolValueForCategory(profile, category) {
+    switch (category) {
+      case 'work_authorized': return profile.work_authorized ?? null;
+      case 'visa_sponsorship': return profile.requires_visa_sponsorship ?? null;
+      case 'work_auth_and_sponsorship':
+        if (profile.work_authorized === true && profile.requires_visa_sponsorship === false) return true;
+        if (profile.work_authorized === false || profile.requires_visa_sponsorship === true) return false;
+        // One or both unset — a guessed "No" here is worse than leaving it for
+        // the user, since this compound question conflates two concepts.
+        return null;
       default: return null;
     }
   }
@@ -252,38 +304,67 @@
     return /active/i.test(target.className);
   }
 
-  // Location-style combobox (confirmed on Ashby: role="combobox",
-  // aria-haspopup="listbox", async suggestion list). Best-effort: type the
-  // value and pick the top suggestion if one loads in time; otherwise leave
-  // the typed text and let markUnresolved flag it for the user to confirm.
+  // Location/Select-style combobox — covers two confirmed-different widget
+  // families, both role="combobox" inputs with an async/filtered option list:
   //
-  // Confirmed live against Ashby: a synthetic .click() on the option, and a
-  // plain keydown Enter on the input, both leave the combobox's internal
-  // state uncommitted (value reverts to empty on blur) even though the click
-  // "succeeds" in the DOM sense. Only a full mousedown+mouseup+click sequence
-  // reliably commits the selection — this mirrors how the widget's real
-  // pointer-event handlers are wired (mousedown fires before the input's
-  // blur, which a bare click doesn't guarantee). Prefer [aria-selected=true]
-  // over the first [role=option] — Ashby marks its actual top match that
-  // way, and ArrowDown-then-Enter (tested and rejected) would otherwise skip
-  // past it to the second, wrong suggestion.
+  // - Ashby (custom-built): focus + set the full value at once triggers its
+  //   suggestions; options carry aria-selected="true" on the top match; the
+  //   input keeps the chosen text as its own .value after selection.
+  // - Greenhouse (react-select, confirmed on job-boards.greenhouse.io): needs
+  //   an actual click to open the menu (focus alone does not), and setting
+  //   the full value in one shot never fires the debounced geocode fetch —
+  //   only real character-by-character keydown/input/keyup events do. The
+  //   top match is marked via a `*--is-focused` class, not aria-selected, and
+  //   after selection react-select clears the visible input and shows the
+  //   chosen value in a sibling `*single-value*` element instead — .value
+  //   alone can't be used to verify success there.
+  //
+  // In both cases a synthetic single .click() on the option does not reliably
+  // commit the selection (confirmed on Ashby); only a full
+  // mousedown+mouseup+click sequence does — mirrors how these widgets' real
+  // pointer handlers are wired (mousedown fires before the input's blur,
+  // which a bare click doesn't guarantee).
   async function fillCombobox(el, value) {
+    const rect0 = el.getBoundingClientRect();
+    const openEventInit = { bubbles: true, cancelable: true, view: window, clientX: rect0.x + 5, clientY: rect0.y + 5 };
+    el.dispatchEvent(new MouseEvent('mousedown', openEventInit));
+    el.dispatchEvent(new MouseEvent('mouseup', openEventInit));
+    el.dispatchEvent(new MouseEvent('click', openEventInit));
     el.focus();
-    setNativeValue(el, value);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    setNativeValue(el, '');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    for (const ch of value) {
+      setNativeValue(el, el.value + ch);
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
     await new Promise((resolve) => setTimeout(resolve, 900));
+
     const listboxId = el.getAttribute('aria-controls');
-    const listbox = listboxId ? document.getElementById(listboxId) : null;
+    const shell = el.closest('[class*="select-shell"], [class*="select"]');
+    const listbox = (listboxId && document.getElementById(listboxId)) || shell?.querySelector('[role="listbox"]');
     const option = listbox?.querySelector('[role="option"][aria-selected="true"]')
+      || listbox?.querySelector('[role="option"][class*="focused"]')
       || listbox?.querySelector('[role="option"]')
-      || document.querySelector('[role="option"]');
+      || document.querySelector('[role="option"][aria-selected="true"]');
     if (!option) return false;
     const rect = option.getBoundingClientRect();
     const eventInit = { bubbles: true, cancelable: true, view: window, clientX: rect.x + 5, clientY: rect.y + 5 };
     option.dispatchEvent(new MouseEvent('mousedown', eventInit));
     option.dispatchEvent(new MouseEvent('mouseup', eventInit));
     option.dispatchEvent(new MouseEvent('click', eventInit));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    return el.getAttribute('aria-expanded') === 'false';
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    if (el.getAttribute('aria-expanded') !== 'false') return false;
+    if (el.value) return true;
+    // react-select clears .value on selection and shows the choice in a
+    // separate element instead — confirmed via `.select__single-value`.
+    const singleValue = shell?.querySelector('[class*="single-value"]');
+    return Boolean(singleValue && singleValue.textContent.trim());
   }
 
   function fillFileInput(el, bytes, filename) {
@@ -371,11 +452,15 @@
 
       try {
         if (control.type === 'file') {
-          // Confirmed on Ashby: a second, unrelated file input backs its own
-          // "Autofill from resume" shortcut (drop a resume there to have Ashby
-          // parse it into other fields) and its label also contains "resume" —
-          // exclude it explicitly so only the real upload target gets the file.
-          const isRealResumeField = /resume|\bcv\b/i.test(label) && !/autofill/i.test(label);
+          // Prefer the element's own id when present — confirmed more reliable
+          // than the resolved label across platforms: Ashby's real resume input
+          // is id="_systemfield_resume" (its decoy "Autofill from resume"
+          // shortcut has no id at all), and Greenhouse's is plainly id="resume"
+          // while its label resolves to the unhelpful "Attach" (both the resume
+          // and cover-letter upload widgets share that same "Attach" wording,
+          // so label text alone can't tell them apart there).
+          const isRealResumeField = /resume|\bcv\b/i.test(control.el.id || '')
+            || (/resume|\bcv\b/i.test(label) && !/autofill/i.test(label));
           if (isRealResumeField && resumeFile) {
             const bytes = base64ToUint8Array(resumeFile.base64);
             fillFileInput(control.el, bytes, resumeFile.filename);
@@ -390,23 +475,34 @@
 
         const category = classify(label);
 
-        if (control.type === 'yesno') {
-          const boolValue = category === 'visa_sponsorship'
-            ? safeProfile.requires_visa_sponsorship
-            : category === 'work_authorized'
-              ? safeProfile.work_authorized
-              : null;
+        // Boolean categories (work authorization / visa sponsorship) can render
+        // as an Ashby-style button pair, a plain text field (confirmed on
+        // Greenhouse — the candidate types "Yes"/"No" themselves), or a Select
+        // — handle all three from one resolved true/false rather than only the
+        // button-pair shape the original Ashby-only version supported.
+        if (BOOLEAN_CATEGORIES.has(category)) {
+          const boolValue = boolValueForCategory(safeProfile, category);
           if (boolValue === null || boolValue === undefined) {
             markUnresolved(control.el);
             unresolved.push(label);
             continue;
           }
-          if (await clickYesNo(control.buttons, boolValue)) {
+          if (control.type === 'yesno') {
+            if (await clickYesNo(control.buttons, boolValue)) {
+              markFilled(control.el);
+              filled.push(label);
+            } else {
+              markUnresolved(control.el);
+              unresolved.push(label);
+            }
+          } else if (control.type === 'combobox') {
+            const picked = await fillCombobox(control.el, boolValue ? 'Yes' : 'No');
+            if (picked) { markFilled(control.el); filled.push(label); }
+            else { markUnresolved(control.el); unresolved.push(label); }
+          } else {
+            setNativeValue(control.el, boolValue ? 'Yes' : 'No');
             markFilled(control.el);
             filled.push(label);
-          } else {
-            markUnresolved(control.el);
-            unresolved.push(label);
           }
           continue;
         }
