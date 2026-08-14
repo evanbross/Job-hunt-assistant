@@ -62,6 +62,11 @@
     if (/\.greenhouse\.io$/.test(host) && document.getElementById('application-form')) {
       return { isApplicationPage: true, platform: 'Greenhouse' };
     }
+    // ai: claude-sonnet-5 | 2026-08-14
+    // Lever's apply page is a separate /apply route, like Ashby's /application.
+    if (host === 'jobs.lever.co' && /\/apply(\/|$)/.test(path)) {
+      return { isApplicationPage: true, platform: 'Lever' };
+    }
     return { isApplicationPage: false, platform: null };
   }
 
@@ -179,7 +184,16 @@
     // whose location field is bare-labeled "Location" (a plain text input there,
     // vs. the first posting's verbose combobox question) rather than the fuller
     // "where do you currently reside" wording the original regex assumed.
-    { category: 'city', re: /where do you (currently )?(reside|live)|current(ly)? location|\blocation\b|\bcity\b/i },
+    // "where.*located" confirmed necessary on Lever (jobs.lever.co): a required
+    // custom question phrased "Where in the United States are you located?" —
+    // "located" doesn't match \blocation\b (different word), and the built-in
+    // Lever "Current location" field (which \blocation\b does catch) was
+    // optional on that posting, so without this the one required city-shaped
+    // field on the page would have gone unfilled.
+    {
+      category: 'city',
+      re: /where do you (currently )?(reside|live)|current(ly)? location|\blocation\b|where.*located|\bcity\b/i,
+    },
     { category: 'name', re: /\bname\b/i },
   ];
 
@@ -188,6 +202,24 @@
       if (re.test(label)) return category;
     }
     return null;
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-14
+  // Confirmed on Lever: the voluntary disability self-ID section's electronic
+  // "signature" field resolves to the bare label "Name" (a nearby heading in
+  // its ancestor-text walk) and would otherwise be classified and filled just
+  // like the real name field — auto-signing a legally voluntary disability
+  // disclosure the user never actually chose to complete. Label text alone
+  // isn't reliable enough to rule this out (Greenhouse's/Ashby's own EEO
+  // fields happen not to collide with any category by luck of wording, not
+  // design), so this checks the field's own name/id instead — ATS platforms
+  // consistently namespace these (Lever: `eeo[...]`; Greenhouse: bare
+  // `gender`/`hispanic_ethnicity`/`veteran_status`/`disability_status` ids) —
+  // and skips ALL category/answer-bank filling for a match, regardless of
+  // what the resolved label says.
+  function isVoluntaryDisclosureField(el) {
+    const identifier = `${el.name || ''} ${el.id || ''}`;
+    return /\beeo\b|disability|veteran|hispanic|ethnicity|\brace\b|\bgender\b/i.test(identifier);
   }
 
   // Categories filled from structured text-like profile fields (name, email,
@@ -470,6 +502,12 @@
             markUnresolved(control.el);
             unresolved.push(label);
           }
+          continue;
+        }
+
+        if (isVoluntaryDisclosureField(control.el)) {
+          markUnresolved(control.el);
+          unresolved.push(label);
           continue;
         }
 
