@@ -197,8 +197,13 @@
       });
     });
 
+    // ai: claude-sonnet-5 | 2026-08-14
+    // input[type="url"] confirmed missing here on a third Ashby posting
+    // (Headway): its LinkedIn Profile URL and Personal Website/Portfolio
+    // fields both use type="url", not "text" — they were completely invisible
+    // to discovery (and so unfillable regardless of profile data) before this.
     document
-      .querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], textarea')
+      .querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="url"], textarea')
       .forEach((el) => {
         if (seen.has(el)) return;
         if (el.name === 'g-recaptcha-response') return;
@@ -230,7 +235,12 @@
     { category: 'linkedin', re: /linkedin/i },
     { category: 'portfolio', re: /portfolio|personal (site|website)|\bwebsite\b/i },
     { category: 'pronouns', re: /\bpronouns?\b/i },
-    { category: 'current_company', re: /current (company|employer)/i },
+    // ai: claude-sonnet-5 | 2026-08-14
+    // Confirmed on Ashby (Headway posting): phrased "current or previous
+    // employer" — the old exact "current (company|employer)" pattern required
+    // "current" immediately before the noun and missed this. Allow up to 20
+    // chars of connecting words ("or previous ", "/previous ", etc.) between.
+    { category: 'current_company', re: /current[\w\s/]{0,20}(company|employer)/i },
     // ai: claude-sonnet-5 | 2026-08-14
     // Checked before the two single-concept patterns below — confirmed on
     // Greenhouse (Addepar posting): "authorized to work ... without Visa
