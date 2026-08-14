@@ -99,6 +99,34 @@
     return '';
   }
 
+  function commonAncestor(elements) {
+    let ancestor = elements[0];
+    for (let i = 1; i < elements.length; i++) {
+      while (!ancestor.contains(elements[i])) {
+        ancestor = ancestor.parentElement;
+        if (!ancestor) return elements[0];
+      }
+    }
+    return ancestor;
+  }
+
+  // Confirmed on Lever: a checkbox-group's own wrapper (and its immediate
+  // parent) just repeats the concatenated option text ("He/him\nShe/her\n...")
+  // — the real question heading ("Pronouns") sits one level further up. Using
+  // the plain resolveFieldLabel ancestor-walk from an individual checkbox
+  // would incorrectly return that checkbox's own value as the "label" (e.g.
+  // "He/him"), since it isn't excluded by isControlText. Filter out anything
+  // matching one of the group's own option values instead.
+  function resolveGroupLabel(container, checkboxes) {
+    const optionValues = new Set(checkboxes.map((cb) => (cb.value || '').trim()).filter(Boolean));
+    let node = container.parentElement;
+    for (let depth = 0; depth < 8 && node; depth++, node = node.parentElement) {
+      const text = firstTextLine(node.innerText);
+      if (text && text.length < 300 && !isControlText(text) && !optionValues.has(text)) return text;
+    }
+    return '';
+  }
+
   // ─── Control discovery ─────────────────────────────────────────────────────
   // Groups related DOM nodes (e.g. Ashby's Yes/No button pair + its hidden
   // mirror checkbox) into one logical control so each question is classified
@@ -133,6 +161,42 @@
       controls.push({ type: 'combobox', el, label: resolveFieldLabel(el) });
     });
 
+    // Multi-option checkbox groups sharing one `name` (confirmed on Lever:
+    // pronoun selection — He/him, She/her, ... plus a "Custom" checkbox paired
+    // with a free-text fallback input). Excludes Ashby's yesno tabindex=-1
+    // pattern, already claimed above. The custom-option's text input (when
+    // present) is claimed here too so the generic text-field query below
+    // doesn't also discover it as an unrelated bare "Custom"-labeled field.
+    const checkboxGroups = new Map();
+    document.querySelectorAll('input[type="checkbox"]').forEach((el) => {
+      if (seen.has(el) || !el.name) return;
+      if (!checkboxGroups.has(el.name)) checkboxGroups.set(el.name, []);
+      checkboxGroups.get(el.name).push(el);
+    });
+    checkboxGroups.forEach((checkboxes) => {
+      if (checkboxes.length < 2) return;
+      const container = commonAncestor(checkboxes);
+      checkboxes.forEach((cb) => seen.add(cb));
+      // Confirmed on Lever: the "Custom" option checkbox has no `name`
+      // attribute at all (unlike its siblings, which all share name="pronouns")
+      // — it wouldn't be in `checkboxes` above, so search the container
+      // directly rather than the name-grouped array.
+      const customCheckbox = [...container.querySelectorAll('input[type="checkbox"]')].find(
+        (cb) => /^custom$/i.test((cb.value || '').trim())
+      );
+      if (customCheckbox) seen.add(customCheckbox);
+      const customTextInput = customCheckbox ? container.querySelector('input[type="text"]') : null;
+      if (customTextInput) seen.add(customTextInput);
+      controls.push({
+        type: 'checkbox-group',
+        el: container,
+        checkboxes,
+        customCheckbox,
+        customTextInput,
+        label: resolveGroupLabel(container, checkboxes),
+      });
+    });
+
     document
       .querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], textarea')
       .forEach((el) => {
@@ -165,6 +229,8 @@
     { category: 'resume', re: /\bresume\b|\bcv\b/i },
     { category: 'linkedin', re: /linkedin/i },
     { category: 'portfolio', re: /portfolio|personal (site|website)|\bwebsite\b/i },
+    { category: 'pronouns', re: /\bpronouns?\b/i },
+    { category: 'current_company', re: /current (company|employer)/i },
     // ai: claude-sonnet-5 | 2026-08-14
     // Checked before the two single-concept patterns below — confirmed on
     // Greenhouse (Addepar posting): "authorized to work ... without Visa
@@ -243,6 +309,8 @@
       case 'city': return profile.city;
       case 'linkedin': return profile.linkedin_url;
       case 'portfolio': return profile.portfolio_url;
+      case 'pronouns': return profile.pronouns;
+      case 'current_company': return profile.current_company;
       default: return null;
     }
   }
@@ -541,6 +609,30 @@
             setNativeValue(control.el, boolValue ? 'Yes' : 'No');
             markFilled(control.el);
             filled.push(label);
+          }
+          continue;
+        }
+
+        // Confirmed on Lever: pronoun selection is a checkbox group (He/him,
+        // She/her, ... plus a "Custom" checkbox + free-text fallback), not a
+        // plain field the generic structuredValue path below can fill.
+        if (control.type === 'checkbox-group') {
+          const wanted = category === 'pronouns' ? (safeProfile.pronouns || '').trim() : '';
+          const exactMatch = wanted
+            ? control.checkboxes.find((cb) => (cb.value || '').trim().toLowerCase() === wanted.toLowerCase())
+            : null;
+          if (exactMatch) {
+            exactMatch.click();
+            markFilled(control.el);
+            filled.push(label);
+          } else if (wanted && control.customCheckbox && control.customTextInput) {
+            control.customCheckbox.click();
+            setNativeValue(control.customTextInput, wanted);
+            markFilled(control.el);
+            filled.push(label);
+          } else {
+            markUnresolved(control.el);
+            unresolved.push(label);
           }
           continue;
         }

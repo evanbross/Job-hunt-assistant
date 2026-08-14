@@ -61,6 +61,8 @@ class ApplicationProfileUpdate(BaseModel):
     requires_visa_sponsorship: bool | None = None
     linkedin_url: str | None = None
     portfolio_url: str | None = None
+    pronouns: str | None = None
+    current_company: str | None = None
 
 
 class ApplicationAnswerCreate(BaseModel):
@@ -91,8 +93,13 @@ def update_application_profile() -> ResponseReturnValue:
     except ValidationError:
         return jsonify({"error": "Invalid application profile fields"}), 400
 
+    # exclude_unset=True is required for correct partial-update semantics: a
+    # caller sending only {"current_company": "..."} must not silently null
+    # out every other saved field. model_dump() without it fills in every
+    # field's default (None), which upsert() would then write as an explicit
+    # overwrite — confirmed to actually wipe a live profile via a partial PUT.
     with get_repos() as repos:
-        profile = repos["application_profile"].upsert(body.model_dump())
+        profile = repos["application_profile"].upsert(body.model_dump(exclude_unset=True))
         repos["conn"].commit()
     return jsonify(profile)
 

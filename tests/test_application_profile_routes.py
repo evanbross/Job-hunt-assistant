@@ -113,6 +113,42 @@ def test_update_application_profile_upserts_and_returns_row(monkeypatch: pytest.
     assert data["requires_visa_sponsorship"] is False
 
 
+def test_update_application_profile_partial_update_preserves_other_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: a PUT sending only one field must not null out the rest
+    of the profile. Confirmed live — model_dump() without exclude_unset=True
+    fills in every field's default (None), which the repo then writes as an
+    explicit overwrite, wiping a real saved profile down to just the one
+    field sent."""
+    repos = {"conn": FakeConnection(), "application_profile": FakeApplicationProfileRepo()}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    client.put(
+        "/api/application-profile",
+        json={
+            "legal_name": "Evan Ross",
+            "email": "evan@eross.com",
+            "city": "Mebane, NC",
+            "work_authorized": True,
+            "requires_visa_sponsorship": False,
+        },
+    )
+
+    response = client.put(
+        "/api/application-profile",
+        json={"current_company": "ZombieTech LLC, Self-employed"},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["current_company"] == "ZombieTech LLC, Self-employed"
+    assert data["legal_name"] == "Evan Ross"
+    assert data["email"] == "evan@eross.com"
+    assert data["city"] == "Mebane, NC"
+    assert data["work_authorized"] is True
+    assert data["requires_visa_sponsorship"] is False
+
+
 def test_update_application_profile_rejects_invalid_body(monkeypatch: pytest.MonkeyPatch) -> None:
     repos = {"conn": FakeConnection(), "application_profile": FakeApplicationProfileRepo()}
     client = _make_app(repos, monkeypatch).test_client()

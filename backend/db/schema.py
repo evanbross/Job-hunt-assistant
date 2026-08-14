@@ -438,6 +438,10 @@ def _migrate(conn: Any) -> None:
     if _has_column(cur, "jobs", "raw_email_snippet"):
         cur.execute("ALTER TABLE jobs RENAME COLUMN raw_email_snippet TO raw_jd_snippet")
 
+    # ai: claude-sonnet-5 | 2026-08-14
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS pronouns TEXT")
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS current_company TEXT")
+
     conn.commit()
 
     _backfill_duplicate_of_id(conn)  # ai: claude-sonnet-5 | 2026-07-25
@@ -601,6 +605,8 @@ def _create_tables(conn: Any) -> None:
             requires_visa_sponsorship BOOLEAN,
             linkedin_url             TEXT,
             portfolio_url            TEXT,
+            pronouns                 TEXT,
+            current_company          TEXT,
             updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             CONSTRAINT application_profile_single_row CHECK (id = 1)
         )

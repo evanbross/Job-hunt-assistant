@@ -74,6 +74,8 @@ const emptyProfile = {
   requires_visa_sponsorship: null,
   linkedin_url: "",
   portfolio_url: "",
+  pronouns: "",
+  current_company: "",
 };
 
 const emptyAnswerForm = { question_text: "", answer_text: "", platform: "" };
@@ -167,6 +169,8 @@ export default function ApplicationProfilePanel() {
           requires_visa_sponsorship: profile.requires_visa_sponsorship,
           linkedin_url: profile.linkedin_url.trim() || null,
           portfolio_url: profile.portfolio_url.trim() || null,
+          pronouns: profile.pronouns.trim() || null,
+          current_company: profile.current_company.trim() || null,
         }),
       });
       if (!res.ok) {
@@ -349,6 +353,25 @@ export default function ApplicationProfilePanel() {
                 type="text"
                 value={profile.portfolio_url || ""}
                 onChange={(e) => setProfile((p) => ({ ...p, portfolio_url: e.target.value }))}
+                style={fieldStyle}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Pronouns</label>
+              <input
+                type="text"
+                value={profile.pronouns || ""}
+                onChange={(e) => setProfile((p) => ({ ...p, pronouns: e.target.value }))}
+                placeholder="e.g. She/her, He/him, They/them"
+                style={fieldStyle}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Current company</label>
+              <input
+                type="text"
+                value={profile.current_company || ""}
+                onChange={(e) => setProfile((p) => ({ ...p, current_company: e.target.value }))}
                 style={fieldStyle}
               />
             </div>

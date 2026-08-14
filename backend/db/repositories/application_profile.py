@@ -55,6 +55,8 @@ class PostgresApplicationProfileRepository(_BaseRepo):
             "requires_visa_sponsorship",
             "linkedin_url",
             "portfolio_url",
+            "pronouns",
+            "current_company",
         }
     )
 
