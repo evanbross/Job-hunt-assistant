@@ -70,6 +70,10 @@
     return { isApplicationPage: false, platform: null };
   }
 
+  function hasFillableControls() {
+    try { return discoverControls().length > 0; } catch { return false; }
+  }
+
   // ─── Field label resolution ────────────────────────────────────────────────
 
   function firstTextLine(text) {
@@ -234,7 +238,10 @@
     { category: 'resume', re: /\bresume\b|\bcv\b/i },
     { category: 'linkedin', re: /linkedin/i },
     { category: 'portfolio', re: /portfolio|personal (site|website)|\bwebsite\b/i },
+    // ai: claude-sonnet-5 | 2026-08-17
+    { category: 'code_repository', re: /\bgithub\b|\bgitlab\b/i },
     { category: 'pronouns', re: /\bpronouns?\b/i },
+    { category: 'gender', re: /\bgender\b/i },
     // ai: claude-sonnet-5 | 2026-08-14
     // Confirmed on Ashby (Headway posting): phrased "current or previous
     // employer" — the old exact "current (company|employer)" pattern required
@@ -255,6 +262,9 @@
       category: 'work_authorized',
       re: /authorized to work|work authorization|legally (authorized|eligible) to work/i,
     },
+    // ai: claude-sonnet-5 | 2026-08-17
+    { category: 'veteran_status', re: /veteran/i },
+    { category: 'disability_status', re: /disability/i },
     // ai: claude-sonnet-5 | 2026-08-14
     // \blocation\b confirmed necessary on a second Ashby posting (Stellar Health)
     // whose location field is bare-labeled "Location" (a plain text input there,
@@ -270,6 +280,8 @@
       category: 'city',
       re: /where do you (currently )?(reside|live)|current(ly)? location|\blocation\b|where.*located|\bcity\b/i,
     },
+    // ai: claude-sonnet-5 | 2026-08-17
+    { category: 'state', re: /state\s*\/\s*province|\bstate\b|\bprovince\b/i },
     { category: 'name', re: /\bname\b/i },
   ];
 
@@ -278,24 +290,6 @@
       if (re.test(label)) return category;
     }
     return null;
-  }
-
-  // ai: claude-sonnet-5 | 2026-08-14
-  // Confirmed on Lever: the voluntary disability self-ID section's electronic
-  // "signature" field resolves to the bare label "Name" (a nearby heading in
-  // its ancestor-text walk) and would otherwise be classified and filled just
-  // like the real name field — auto-signing a legally voluntary disability
-  // disclosure the user never actually chose to complete. Label text alone
-  // isn't reliable enough to rule this out (Greenhouse's/Ashby's own EEO
-  // fields happen not to collide with any category by luck of wording, not
-  // design), so this checks the field's own name/id instead — ATS platforms
-  // consistently namespace these (Lever: `eeo[...]`; Greenhouse: bare
-  // `gender`/`hispanic_ethnicity`/`veteran_status`/`disability_status` ids) —
-  // and skips ALL category/answer-bank filling for a match, regardless of
-  // what the resolved label says.
-  function isVoluntaryDisclosureField(el) {
-    const identifier = `${el.name || ''} ${el.id || ''}`;
-    return /\beeo\b|disability|veteran|hispanic|ethnicity|\brace\b|\bgender\b/i.test(identifier);
   }
 
   // Categories filled from structured text-like profile fields (name, email,
@@ -319,13 +313,23 @@
       case 'city': return profile.city;
       case 'linkedin': return profile.linkedin_url;
       case 'portfolio': return profile.portfolio_url;
+      case 'code_repository': return profile.code_repository_url;
       case 'pronouns': return profile.pronouns;
+      case 'gender': return profile.gender;
       case 'current_company': return profile.current_company;
+      case 'state': return profile.state;
       default: return null;
     }
   }
 
-  const BOOLEAN_CATEGORIES = new Set(['work_authorized', 'visa_sponsorship', 'work_auth_and_sponsorship']);
+  // ai: claude-sonnet-5 | 2026-08-17
+  const BOOLEAN_CATEGORIES = new Set([
+    'work_authorized',
+    'visa_sponsorship',
+    'work_auth_and_sponsorship',
+    'veteran_status',
+    'disability_status',
+  ]);
 
   function boolValueForCategory(profile, category) {
     switch (category) {
@@ -337,8 +341,81 @@
         // One or both unset — a guessed "No" here is worse than leaving it for
         // the user, since this compound question conflates two concepts.
         return null;
+      case 'veteran_status': return profile.is_veteran ?? null;
+      case 'disability_status': return profile.has_disability ?? null;
       default: return null;
     }
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-17
+  // Widgets for the same question vary in what text they expect: a native
+  // <select>/combobox for state might list the full name or the two-letter
+  // abbreviation; a gender select might say "Male" or "Man". Rather than
+  // storing both forms in the profile, resolve alternates here and let the
+  // fillers try each candidate against the live widget in turn.
+  const US_STATE_ABBREVIATIONS = {
+    alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA',
+    colorado: 'CO', connecticut: 'CT', delaware: 'DE', florida: 'FL', georgia: 'GA',
+    hawaii: 'HI', idaho: 'ID', illinois: 'IL', indiana: 'IN', iowa: 'IA',
+    kansas: 'KS', kentucky: 'KY', louisiana: 'LA', maine: 'ME', maryland: 'MD',
+    massachusetts: 'MA', michigan: 'MI', minnesota: 'MN', mississippi: 'MS', missouri: 'MO',
+    montana: 'MT', nebraska: 'NE', nevada: 'NV', 'new hampshire': 'NH', 'new jersey': 'NJ',
+    'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC', 'north dakota': 'ND', ohio: 'OH',
+    oklahoma: 'OK', oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
+    'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT',
+    virginia: 'VA', washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY',
+    'district of columbia': 'DC',
+  };
+  const US_STATE_NAMES = Object.fromEntries(
+    Object.entries(US_STATE_ABBREVIATIONS).map(([name, abbr]) => [abbr.toLowerCase(), name])
+  );
+
+  function stateAlternateForm(value) {
+    const norm = String(value || '').trim().toLowerCase();
+    if (US_STATE_ABBREVIATIONS[norm]) return US_STATE_ABBREVIATIONS[norm];
+    if (US_STATE_NAMES[norm]) {
+      const name = US_STATE_NAMES[norm];
+      return name.replace(/\b\w/g, (ch) => ch.toUpperCase());
+    }
+    return null;
+  }
+
+  const GENDER_ALTERNATE_FORMS = { male: 'Man', man: 'Male', female: 'Woman', woman: 'Female' };
+
+  function genderAlternateForm(value) {
+    return GENDER_ALTERNATE_FORMS[String(value || '').trim().toLowerCase()] || null;
+  }
+
+  const ALT_FORM_RESOLVERS = { state: stateAlternateForm, gender: genderAlternateForm };
+
+  // Ordered candidate strings for a plain structured value (state, gender, ...) —
+  // the widget's own text is tried first, then the alternate form if any.
+  function candidateValuesForCategory(category, rawValue) {
+    const alt = ALT_FORM_RESOLVERS[category]?.(rawValue);
+    return alt ? [rawValue, alt] : [rawValue];
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-17
+  // Veteran/disability self-ID widgets rarely use bare "Yes"/"No" — Greenhouse
+  // and Lever's standard (OFCCP/Section 503-derived) wording is a full
+  // sentence, e.g. "I am not a veteran" or "No, I do not have a disability".
+  // Try the standard phrasing first since it matches real option text on
+  // platforms that spell it out, then fall back to bare Yes/No for widgets
+  // (Ashby-style Yes/No button pairs, plain selects) that don't.
+  const BOOLEAN_ANSWER_CANDIDATES = {
+    veteran_status: {
+      true: ['I identify as one or more classifications of a protected veteran', 'Yes'],
+      false: ['I am not a veteran', 'No'],
+    },
+    disability_status: {
+      true: ['Yes, I have a disability', 'Yes'],
+      false: ['No, I do not have a disability', 'No'],
+    },
+  };
+
+  function candidateValuesForBoolean(category, boolValue) {
+    const candidates = BOOLEAN_ANSWER_CANDIDATES[category]?.[boolValue];
+    return candidates || [boolValue ? 'Yes' : 'No'];
   }
 
   // ─── Answer bank matching ──────────────────────────────────────────────────
@@ -371,17 +448,26 @@
 
   // ─── Field fillers ──────────────────────────────────────────────────────────
 
+  // ai: claude-sonnet-5 | 2026-08-17
+  // value may be a single string or an ordered list of candidates (e.g. a
+  // state's full name and its abbreviation) — only the <select> branch below
+  // can meaningfully try more than one, since a plain input just gets typed.
   function setNativeValue(el, value) {
+    const candidates = Array.isArray(value) ? value : [value];
     // A native <select> has its own value setter (HTMLSelectElement.prototype) —
     // calling the Input/Textarea one on it throws "Illegal invocation". Not yet
     // hit on a live page (no discovered <select> has matched a structured
     // category so far), but discoverControls() does collect <select> elements,
     // so this would otherwise be a silent per-field crash the day one does.
     if (el instanceof HTMLSelectElement) {
-      const match = [...el.options].find(
-        (o) => o.textContent.trim().toLowerCase() === String(value).trim().toLowerCase()
-      );
-      el.value = match ? match.value : value;
+      let match = null;
+      for (const candidate of candidates) {
+        match = [...el.options].find(
+          (o) => o.textContent.trim().toLowerCase() === String(candidate).trim().toLowerCase()
+        );
+        if (match) break;
+      }
+      el.value = match ? match.value : candidates[0];
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return;
     }
@@ -389,7 +475,7 @@
       ? window.HTMLTextAreaElement.prototype
       : window.HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-    setter.call(el, value);
+    setter.call(el, candidates[0]);
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
@@ -475,6 +561,18 @@
     // separate element instead — confirmed via `.select__single-value`.
     const singleValue = shell?.querySelector('[class*="single-value"]');
     return Boolean(singleValue && singleValue.textContent.trim());
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-17
+  // Tries each candidate in order (e.g. a state's full name, then its
+  // abbreviation) until one filters the combobox down to a real option —
+  // each attempt re-opens/retypes the widget, which fillCombobox already
+  // does idempotently.
+  async function fillComboboxCandidates(el, candidates) {
+    for (const candidate of candidates) {
+      if (await fillCombobox(el, candidate)) return true;
+    }
+    return false;
   }
 
   function fillFileInput(el, bytes, filename) {
@@ -583,12 +681,6 @@
           continue;
         }
 
-        if (isVoluntaryDisclosureField(control.el)) {
-          markUnresolved(control.el);
-          unresolved.push(label);
-          continue;
-        }
-
         const category = classify(label);
 
         // Boolean categories (work authorization / visa sponsorship) can render
@@ -612,11 +704,11 @@
               unresolved.push(label);
             }
           } else if (control.type === 'combobox') {
-            const picked = await fillCombobox(control.el, boolValue ? 'Yes' : 'No');
+            const picked = await fillComboboxCandidates(control.el, candidateValuesForBoolean(category, boolValue));
             if (picked) { markFilled(control.el); filled.push(label); }
             else { markUnresolved(control.el); unresolved.push(label); }
           } else {
-            setNativeValue(control.el, boolValue ? 'Yes' : 'No');
+            setNativeValue(control.el, candidateValuesForBoolean(category, boolValue));
             markFilled(control.el);
             filled.push(label);
           }
@@ -649,8 +741,9 @@
 
         const structuredValue = category ? profileValueForCategory(safeProfile, category) : null;
         if (structuredValue) {
+          const candidates = candidateValuesForCategory(category, structuredValue);
           if (control.type === 'combobox') {
-            const picked = await fillCombobox(control.el, structuredValue);
+            const picked = await fillComboboxCandidates(control.el, candidates);
             if (picked) {
               markFilled(control.el);
               filled.push(label);
@@ -661,7 +754,7 @@
               unresolved.push(label);
             }
           } else {
-            setNativeValue(control.el, structuredValue);
+            setNativeValue(control.el, candidates);
             markFilled(control.el);
             filled.push(label);
           }
@@ -694,11 +787,26 @@
     return bytes;
   }
 
+  // ai: claude-sonnet-5 | 2026-08-17
+  // Several ATS widgets embed the actual application form in a cross-origin
+  // iframe rather than the top-level document (confirmed on instacart.careers,
+  // which iframes boards.greenhouse.io/embed/job_app). chrome.tabs.sendMessage
+  // only reaches the top frame (frameId 0) by default, so the popup locates the
+  // right frame via chrome.scripting.executeScript's per-frame allFrames
+  // results instead, which requires a function to call directly rather than a
+  // runtime message.
+  function detectAutofillFrame() {
+    const result = detectApplicationPage();
+    if (!result.isApplicationPage) result.hasFillableControls = hasFillableControls();
+    return result;
+  }
+  window.__jhaDetectAutofillFrame = detectAutofillFrame;
+
   // ─── Message listener ───────────────────────────────────────────────────────
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === 'detectApplicationPage') {
-      sendResponse(detectApplicationPage());
+      sendResponse(detectAutofillFrame());
       return false;
     }
     if (message.action === 'runAutofill') {

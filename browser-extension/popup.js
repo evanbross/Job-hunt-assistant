@@ -37,6 +37,7 @@
 let activeTabId = null;
 let currentJobCount = 0;
 let isSending = false;
+let applicationFrameId = 0; // default: top frame
 
 // Receives progress messages from content script during long builds (e.g. Wellfound).
 chrome.runtime.onMessage.addListener(msg => {
@@ -73,17 +74,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     showNoAccess();
   }
 
-  // ai: claude-sonnet-5 | 2026-08-13
+  // ai: claude-sonnet-5 | 2026-08-17
   // Separate content script/detector from the capture flow above — an
   // application-form page (e.g. Ashby's /application sub-path) isn't a job
   // listing, so it never matches detectPage(), but still needs its own
-  // "Fill Application" affordance.
+  // "Fill Application" affordance. Injected into every frame (allFrames):
+  // several ATS widgets (confirmed: Greenhouse via instacart.careers) embed
+  // the actual form in a cross-origin iframe, not the top document, and
+  // chrome.tabs.sendMessage alone only reaches frame 0 — per-frame results
+  // come back through executeScript's return value instead. The button is
+  // always shown (not gated on detection succeeding) so the user has an
+  // explicit manual override for pages the heuristics don't recognize,
+  // rather than being stuck with only the JD-capture flow.
   try {
-    await chrome.scripting.executeScript({ target: { tabId: activeTabId }, files: ['autofill.js'] });
-    const detectResult = await sendToTab({ action: 'detectApplicationPage' });
-    if (detectResult?.isApplicationPage) {
-      document.getElementById('fill-app-btn').style.display = 'flex';
-    }
+    await chrome.scripting.executeScript({ target: { tabId: activeTabId, allFrames: true }, files: ['autofill.js'] });
+    const frameResults = await chrome.scripting.executeScript({
+      target: { tabId: activeTabId, allFrames: true },
+      func: () => (window.__jhaDetectAutofillFrame ? window.__jhaDetectAutofillFrame() : null),
+    });
+    const appFrame = frameResults.find(r => r.result?.isApplicationPage);
+    const fillableFrame = frameResults.find(r => r.result?.hasFillableControls);
+    const winner = appFrame || fillableFrame;
+    if (winner) applicationFrameId = winner.frameId;
+
+    const fillBtn = document.getElementById('fill-app-btn');
+    fillBtn.style.display = 'flex';
+    fillBtn.title = winner
+      ? ''
+      : 'No application form auto-detected on this page — click to try anyway.';
   } catch {
     // No autofill affordance on pages the content script can't run on — fine,
     // the capture flow above already handled (or reported) that case.
@@ -170,15 +188,24 @@ async function handleFillApplication() {
   hideStatus();
 
   try {
-    const response = await chrome.runtime.sendMessage({ action: 'startAutofill', tabId: activeTabId });
+    const response = await chrome.runtime.sendMessage({ action: 'startAutofill', tabId: activeTabId, frameId: applicationFrameId });
     if (!response?.ok) {
       showStatus(`Autofill failed: ${response?.error || 'unknown error'}`, 'error');
     } else {
       const { filled = [], unresolved = [] } = response.results || {};
-      const summary = unresolved.length > 0
-        ? `✓ Filled ${filled.length}, ${unresolved.length} need your review (outlined in orange).`
-        : `✓ Filled ${filled.length} field${filled.length !== 1 ? 's' : ''}.`;
-      showStatus(summary, unresolved.length > 0 ? 'info' : 'success');
+      let summary;
+      let type;
+      if (filled.length === 0 && unresolved.length === 0) {
+        summary = 'No form fields found on this page (including any embedded frames).';
+        type = 'error';
+      } else if (unresolved.length > 0) {
+        summary = `✓ Filled ${filled.length}, ${unresolved.length} need your review (outlined in orange).`;
+        type = 'info';
+      } else {
+        summary = `✓ Filled ${filled.length} field${filled.length !== 1 ? 's' : ''}.`;
+        type = 'success';
+      }
+      showStatus(summary, type);
     }
   } catch (err) {
     showStatus(err.message || 'An unexpected error occurred.', 'error');

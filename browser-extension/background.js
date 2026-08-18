@@ -553,7 +553,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       try {
         const settings = await loadSettings();
         const data = await fetchAutofillData(settings);
-        const result = await chrome.tabs.sendMessage(message.tabId, { action: 'runAutofill', data });
+        // ai: claude-sonnet-5 | 2026-08-17
+        // frameId targets the specific frame the popup identified as holding
+        // the form (may be a cross-origin ATS iframe, e.g. Greenhouse embeds
+        // on instacart.careers) — chrome.tabs.sendMessage defaults to frame 0
+        // otherwise, which would silently miss it.
+        const result = await chrome.tabs.sendMessage(
+          message.tabId,
+          { action: 'runAutofill', data },
+          { frameId: message.frameId ?? 0 }
+        );
         sendResponse(result);
       } catch (err) {
         sendResponse({ ok: false, error: String(err?.message || err) });
