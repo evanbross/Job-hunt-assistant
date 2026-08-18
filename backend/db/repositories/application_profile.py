@@ -51,11 +51,16 @@ class PostgresApplicationProfileRepository(_BaseRepo):
             "email",
             "phone",
             "city",
+            "state",
             "work_authorized",
             "requires_visa_sponsorship",
             "linkedin_url",
             "portfolio_url",
+            "code_repository_url",
             "pronouns",
+            "gender",
+            "is_veteran",
+            "has_disability",
             "current_company",
         }
     )

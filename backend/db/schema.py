@@ -442,6 +442,13 @@ def _migrate(conn: Any) -> None:
     cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS pronouns TEXT")
     cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS current_company TEXT")
 
+    # ai: claude-sonnet-5 | 2026-08-17
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS state TEXT")
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS code_repository_url TEXT")
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS gender TEXT")
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS is_veteran BOOLEAN")
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS has_disability BOOLEAN")
+
     conn.commit()
 
     _backfill_duplicate_of_id(conn)  # ai: claude-sonnet-5 | 2026-07-25
@@ -601,11 +608,16 @@ def _create_tables(conn: Any) -> None:
             email                    TEXT,
             phone                    TEXT,
             city                     TEXT,
+            state                    TEXT,
             work_authorized          BOOLEAN,
             requires_visa_sponsorship BOOLEAN,
             linkedin_url             TEXT,
             portfolio_url            TEXT,
+            code_repository_url      TEXT,
             pronouns                 TEXT,
+            gender                   TEXT,
+            is_veteran               BOOLEAN,
+            has_disability           BOOLEAN,
             current_company          TEXT,
             updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             CONSTRAINT application_profile_single_row CHECK (id = 1)

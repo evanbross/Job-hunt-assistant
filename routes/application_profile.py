@@ -57,11 +57,16 @@ class ApplicationProfileUpdate(BaseModel):
     email: str | None = None
     phone: str | None = None
     city: str | None = None
+    state: str | None = None
     work_authorized: bool | None = None
     requires_visa_sponsorship: bool | None = None
     linkedin_url: str | None = None
     portfolio_url: str | None = None
+    code_repository_url: str | None = None
     pronouns: str | None = None
+    gender: str | None = None
+    is_veteran: bool | None = None
+    has_disability: bool | None = None
     current_company: str | None = None
 
 
