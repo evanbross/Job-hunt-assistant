@@ -34,6 +34,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { collectionModeLabel } from "../utils/careerSiteUtils.js";
+import ApplicationProfilePanel from "./ApplicationProfilePanel.jsx";
 import Modal from "./common/Modal.jsx";
 import ContactsImport from "./ContactsImport.jsx";
 import ResumeUpload from "./ResumeUpload.jsx";
@@ -45,6 +46,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
 
   const sections = [
     { id: "resume", label: "Resume" },
+    { id: "application_profile", label: "Application Profile" },
     { id: "contacts", label: "LinkedIn Contacts" },
     { id: "sources", label: "Email" },
     { id: "email_subject_rules", label: "Email Subject Rules" },
@@ -77,6 +79,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
       {/* Content */}
       <div style={{ flex: 1 }}>
         {activeSection === "resume" && <ResumeUpload />}
+        {activeSection === "application_profile" && <ApplicationProfilePanel />}
         {activeSection === "contacts" && <ContactsImport />}
         {activeSection === "sources" && <EmailSourcesSection />}
         {activeSection === "email_subject_rules" && <EmailSubjectRulesSection />}

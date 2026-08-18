@@ -70,11 +70,16 @@ const emptyProfile = {
   email: "",
   phone: "",
   city: "",
+  state: "",
   work_authorized: null,
   requires_visa_sponsorship: null,
   linkedin_url: "",
   portfolio_url: "",
+  code_repository_url: "",
   pronouns: "",
+  gender: "",
+  is_veteran: null,
+  has_disability: null,
   current_company: "",
 };
 
@@ -126,7 +131,17 @@ export default function ApplicationProfilePanel() {
       const res = await fetch("/api/application-profile");
       if (!res.ok) throw new Error(`Failed to load (${res.status})`);
       const data = await res.json();
-      setProfile(data ? { ...emptyProfile, ...data } : emptyProfile);
+      // ai: claude-sonnet-5 | 2026-08-17
+      // A plain {...emptyProfile, ...data} spread lets an explicit `null` from
+      // the DB (any unset text column) clobber emptyProfile's "" default —
+      // handleSaveProfile's unconditional .trim() calls then throw a TypeError
+      // on the next save, which describeFetchError misreports as the backend
+      // being unreachable. Coalesce per-field instead so state/boolean fields
+      // alike only ever hold their emptyProfile-shaped default or a real value.
+      const merged = data
+        ? Object.fromEntries(Object.keys(emptyProfile).map((key) => [key, data[key] ?? emptyProfile[key]]))
+        : emptyProfile;
+      setProfile(merged);
     } catch (e) {
       setProfileError(describeFetchError(e));
     } finally {
@@ -165,11 +180,16 @@ export default function ApplicationProfilePanel() {
           email: profile.email.trim() || null,
           phone: profile.phone.trim() || null,
           city: profile.city.trim() || null,
+          state: profile.state.trim() || null,
           work_authorized: profile.work_authorized,
           requires_visa_sponsorship: profile.requires_visa_sponsorship,
           linkedin_url: profile.linkedin_url.trim() || null,
           portfolio_url: profile.portfolio_url.trim() || null,
+          code_repository_url: profile.code_repository_url.trim() || null,
           pronouns: profile.pronouns.trim() || null,
+          gender: profile.gender.trim() || null,
+          is_veteran: profile.is_veteran,
+          has_disability: profile.has_disability,
           current_company: profile.current_company.trim() || null,
         }),
       });
@@ -321,6 +341,19 @@ export default function ApplicationProfilePanel() {
               />
             </div>
             <div>
+              <label style={labelStyle}>State / Province</label>
+              <input
+                type="text"
+                value={profile.state || ""}
+                onChange={(e) => setProfile((p) => ({ ...p, state: e.target.value }))}
+                placeholder="e.g. North Carolina"
+                style={fieldStyle}
+              />
+              <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                Full name preferred — the extension also tries the two-letter abbreviation on dropdowns that use one.
+              </span>
+            </div>
+            <div>
               <label style={labelStyle}>Authorized to work in the US?</label>
               <TriStateSelect
                 value={profile.work_authorized}
@@ -357,6 +390,16 @@ export default function ApplicationProfilePanel() {
               />
             </div>
             <div>
+              <label style={labelStyle}>GitHub / GitLab URL</label>
+              <input
+                type="text"
+                value={profile.code_repository_url || ""}
+                onChange={(e) => setProfile((p) => ({ ...p, code_repository_url: e.target.value }))}
+                placeholder="https://gitlab.com/dashboard/..."
+                style={fieldStyle}
+              />
+            </div>
+            <div>
               <label style={labelStyle}>Pronouns</label>
               <input
                 type="text"
@@ -364,6 +407,37 @@ export default function ApplicationProfilePanel() {
                 onChange={(e) => setProfile((p) => ({ ...p, pronouns: e.target.value }))}
                 placeholder="e.g. She/her, He/him, They/them"
                 style={fieldStyle}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Gender</label>
+              <input
+                type="text"
+                value={profile.gender || ""}
+                onChange={(e) => setProfile((p) => ({ ...p, gender: e.target.value }))}
+                placeholder="e.g. Male, Man"
+                style={fieldStyle}
+              />
+              <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                The extension also tries Male/Man or Female/Woman interchangeably on dropdowns that use the other wording.
+              </span>
+            </div>
+            <div>
+              <label style={labelStyle}>Veteran status</label>
+              <TriStateSelect
+                value={profile.is_veteran}
+                onChange={(v) => setProfile((p) => ({ ...p, is_veteran: v }))}
+                yesLabel="I am a protected veteran"
+                noLabel="I am not a veteran"
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Disability status</label>
+              <TriStateSelect
+                value={profile.has_disability}
+                onChange={(v) => setProfile((p) => ({ ...p, has_disability: v }))}
+                yesLabel="Yes, I have a disability"
+                noLabel="No, I do not have a disability"
               />
             </div>
             <div>
