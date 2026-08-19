@@ -156,7 +156,7 @@
       if (buttons.length < 2) return;
       seen.add(container);
       buttons.forEach((b) => seen.add(b));
-      controls.push({ type: 'yesno', el: container, buttons, label: resolveFieldLabel(container) });
+      controls.push({ type: 'yesno', el: container, buttons, checkbox, label: resolveFieldLabel(container) });
     });
 
     document.querySelectorAll('input[role="combobox"]').forEach((el) => {
@@ -484,20 +484,38 @@
   // .click() left the button visually unselected (no "active" class, no style
   // change) even though it "succeeded" in the DOM sense — the same
   // mousedown+mouseup+click issue as fillCombobox below, just on a different
-  // widget. Verify the result via the CSS-module "active" class Ashby adds to
-  // the selected option (confirmed: `_active_<hash>`) rather than assuming
-  // success just because a matching button existed.
-  async function clickYesNo(buttons, wantYes) {
+  // widget.
+  //
+  // ai: claude-sonnet-5 | 2026-08-19
+  // The CSS-module "active" class alone is not a trustworthy success signal —
+  // confirmed live on a third Ashby posting (Arketa): a button can pick up a
+  // plain `:focus` outline that reads as "selected" to a class-substring check
+  // without the click having actually registered, and conversely a dispatched
+  // click can flip the class without the paired hidden checkbox (the field's
+  // real answer, tabindex=-1, which Ashby's own required-field validation
+  // reads) ever becoming checked — exactly reproducing "the extension says
+  // filled but the ATS says missing" on submit. Verify against the checkbox
+  // instead; fall back to the class check only when no checkbox was captured.
+  // Also confirmed live: the very first click dispatched against a
+  // freshly-mounted question can be silently dropped (a hydration race), so
+  // retry once before giving up.
+  async function clickYesNo(buttons, checkbox, wantYes) {
     const re = new RegExp(`^${wantYes ? 'yes' : 'no'}$`, 'i');
     const target = buttons.find((b) => re.test(b.textContent.trim()));
     if (!target) return false;
-    const rect = target.getBoundingClientRect();
-    const eventInit = { bubbles: true, cancelable: true, view: window, clientX: rect.x + 5, clientY: rect.y + 5 };
-    target.dispatchEvent(new MouseEvent('mousedown', eventInit));
-    target.dispatchEvent(new MouseEvent('mouseup', eventInit));
-    target.dispatchEvent(new MouseEvent('click', eventInit));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    return /active/i.test(target.className);
+
+    const attemptClick = async () => {
+      const rect = target.getBoundingClientRect();
+      const eventInit = { bubbles: true, cancelable: true, view: window, clientX: rect.x + 5, clientY: rect.y + 5 };
+      target.dispatchEvent(new MouseEvent('mousedown', eventInit));
+      target.dispatchEvent(new MouseEvent('mouseup', eventInit));
+      target.dispatchEvent(new MouseEvent('click', eventInit));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return checkbox ? checkbox.checked : /active/i.test(target.className);
+    };
+
+    if (await attemptClick()) return true;
+    return attemptClick();
   }
 
   // Location/Select-style combobox — covers two confirmed-different widget
@@ -520,7 +538,18 @@
   // mousedown+mouseup+click sequence does — mirrors how these widgets' real
   // pointer handlers are wired (mousedown fires before the input's blur,
   // which a bare click doesn't guarantee).
-  async function fillCombobox(el, value) {
+  //
+  // ai: claude-sonnet-5 | 2026-08-19
+  // The character-by-character typing loop below was written for
+  // Greenhouse's react-select and applied unconditionally to every platform —
+  // silently breaking Ashby. Confirmed live on a third Ashby posting (Arketa):
+  // typing "Chicago" one character at a time raced Ashby's own input
+  // handling and committed as "Chicgaogo" (extra, out-of-order characters),
+  // leaving the widget stuck open on an unmatched query — exactly matching a
+  // user report of fields that "don't look like they're being typed." Ashby's
+  // own widget only needs the value set once (per the comment above); only
+  // react-select needs the per-character replay to fire its debounced fetch.
+  async function fillCombobox(el, value, platform) {
     const rect0 = el.getBoundingClientRect();
     const openEventInit = { bubbles: true, cancelable: true, view: window, clientX: rect0.x + 5, clientY: rect0.y + 5 };
     el.dispatchEvent(new MouseEvent('mousedown', openEventInit));
@@ -529,16 +558,26 @@
     el.focus();
     await new Promise((resolve) => setTimeout(resolve, 150));
 
-    setNativeValue(el, '');
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    for (const ch of value) {
-      setNativeValue(el, el.value + ch);
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+    if (platform === 'Ashby') {
+      setNativeValue(el, value);
       el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 60));
+    } else {
+      setNativeValue(el, '');
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      for (const ch of value) {
+        setNativeValue(el, el.value + ch);
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      }
     }
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // ai: claude-sonnet-5 | 2026-08-19
+    // Ashby needs longer to settle before the commit step below than
+    // Greenhouse's react-select does — confirmed live on Ashby (Arketa): 900ms
+    // left the listbox open on Enter despite the top option already carrying
+    // aria-selected="true"; 1500ms committed reliably on every attempt.
+    await new Promise((resolve) => setTimeout(resolve, platform === 'Ashby' ? 1500 : 900));
 
     const listboxId = el.getAttribute('aria-controls');
     const shell = el.closest('[class*="select-shell"], [class*="select"]');
@@ -548,19 +587,42 @@
       || listbox?.querySelector('[role="option"]')
       || document.querySelector('[role="option"][aria-selected="true"]');
     if (!option) return false;
-    const rect = option.getBoundingClientRect();
-    const eventInit = { bubbles: true, cancelable: true, view: window, clientX: rect.x + 5, clientY: rect.y + 5 };
-    option.dispatchEvent(new MouseEvent('mousedown', eventInit));
-    option.dispatchEvent(new MouseEvent('mouseup', eventInit));
-    option.dispatchEvent(new MouseEvent('click', eventInit));
-    await new Promise((resolve) => setTimeout(resolve, 250));
 
-    if (el.getAttribute('aria-expanded') !== 'false') return false;
-    if (el.value) return true;
+    // ai: claude-sonnet-5 | 2026-08-19
+    // A synthesized Enter keypress — committing the already-highlighted top
+    // option, the same as a sighted user pressing Enter after typing — is far
+    // more reliable than a synthetic mousedown+mouseup+click on the option
+    // node. Confirmed live on Ashby (Arketa): the click sequence intermittently
+    // left the listbox open with the top option still merely
+    // aria-selected="true" (a freshly-mounted-node click race, the same
+    // family of bug as clickYesNo above), while Enter closed it and committed
+    // the full value on the first attempt every time. Try Enter first; fall
+    // back to the click sequence (with a retry, for the same race) for
+    // widgets where Enter doesn't confirm a selection.
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const shellSingleValue = () => shell?.querySelector('[class*="single-value"]');
     // react-select clears .value on selection and shows the choice in a
     // separate element instead — confirmed via `.select__single-value`.
-    const singleValue = shell?.querySelector('[class*="single-value"]');
-    return Boolean(singleValue && singleValue.textContent.trim());
+    if (el.getAttribute('aria-expanded') === 'false' && (el.value || shellSingleValue()?.textContent.trim())) {
+      return true;
+    }
+
+    const attemptSelect = async () => {
+      const rect = option.getBoundingClientRect();
+      const eventInit = { bubbles: true, cancelable: true, view: window, clientX: rect.x + 5, clientY: rect.y + 5 };
+      option.dispatchEvent(new MouseEvent('mousedown', eventInit));
+      option.dispatchEvent(new MouseEvent('mouseup', eventInit));
+      option.dispatchEvent(new MouseEvent('click', eventInit));
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return el.getAttribute('aria-expanded') === 'false';
+    };
+
+    if (!(await attemptSelect()) && !(await attemptSelect())) return false;
+    if (el.value) return true;
+    return Boolean(shellSingleValue()?.textContent.trim());
   }
 
   // ai: claude-sonnet-5 | 2026-08-17
@@ -568,9 +630,9 @@
   // abbreviation) until one filters the combobox down to a real option —
   // each attempt re-opens/retypes the widget, which fillCombobox already
   // does idempotently.
-  async function fillComboboxCandidates(el, candidates) {
+  async function fillComboboxCandidates(el, candidates, platform) {
     for (const candidate of candidates) {
-      if (await fillCombobox(el, candidate)) return true;
+      if (await fillCombobox(el, candidate, platform)) return true;
     }
     return false;
   }
@@ -696,7 +758,7 @@
             continue;
           }
           if (control.type === 'yesno') {
-            if (await clickYesNo(control.buttons, boolValue)) {
+            if (await clickYesNo(control.buttons, control.checkbox, boolValue)) {
               markFilled(control.el);
               filled.push(label);
             } else {
@@ -704,7 +766,7 @@
               unresolved.push(label);
             }
           } else if (control.type === 'combobox') {
-            const picked = await fillComboboxCandidates(control.el, candidateValuesForBoolean(category, boolValue));
+            const picked = await fillComboboxCandidates(control.el, candidateValuesForBoolean(category, boolValue), platform);
             if (picked) { markFilled(control.el); filled.push(label); }
             else { markUnresolved(control.el); unresolved.push(label); }
           } else {
@@ -743,7 +805,7 @@
         if (structuredValue) {
           const candidates = candidateValuesForCategory(category, structuredValue);
           if (control.type === 'combobox') {
-            const picked = await fillComboboxCandidates(control.el, candidates);
+            const picked = await fillComboboxCandidates(control.el, candidates, platform);
             if (picked) {
               markFilled(control.el);
               filled.push(label);
