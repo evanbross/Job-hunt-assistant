@@ -136,16 +136,19 @@ def update_config() -> ResponseReturnValue:
             value = str(data.get(key) or "").strip()
             if not value:
                 return jsonify({"error": f"{key} cannot be empty"}), 400
-            # ai: claude-fable-5 | 2026-07-15 — reject unsafe Ollama URLs at
-            # save time; the AI client later fetches this URL server-side.
-            # allow_loopback matches the local-Ollama policy used by the
-            # connection-test endpoint below.
+            # ai: claude-sonnet-5 | 2026-08-18 — reject unsafe Ollama URLs, but
+            # only when the value is actually changing. ConfigSection submits
+            # the whole cfg blob on every save (it owns all AI-provider
+            # fields), so an unmodified ollama_base_url that happens to be
+            # unreachable right now (e.g. a home-network hostname while away)
+            # must not block saving an unrelated field like anthropic_model.
             if key == "ollama_base_url":
-                try:
-                    validate_outbound_url(value, allow_loopback=True)
-                except UnsafeUrlError as exc:
-                    return jsonify({"error": f"ollama_base_url rejected: {exc}"}), 400
                 value = value.rstrip("/")
+                if value != str(cfg.get("ollama_base_url") or "").strip().rstrip("/"):
+                    try:
+                        validate_outbound_url(value, allow_loopback=True)
+                    except UnsafeUrlError as exc:
+                        return jsonify({"error": f"ollama_base_url rejected: {exc}"}), 400
             cfg[key] = value
 
     if "job_import_listener_enabled" in data:
