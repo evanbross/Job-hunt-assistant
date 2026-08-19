@@ -76,9 +76,13 @@ vars, with sensible defaults and files that self-create with a starter
 template on first run rather than requiring the user to hand-author them
 before the app will boot. Group vars like this:
 
-- **AI provider**: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AI_PROVIDER`
-  (`anthropic` / `openai` / `ollama`), `OPENAI_MODEL`, `OLLAMA_BASE_URL`,
-  `OLLAMA_MODEL`. Also expose separate model-name vars for the
+- **AI provider**: only `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are secrets
+  and belong in `.env`. The provider choice and non-secret preferences
+  (`ai_provider`: `anthropic` / `openai` / `ollama`, `openai_model`,
+  `ollama_base_url`, `ollama_model`) are user-editable settings, not env
+  vars — give them a single source of truth in a mutable runtime-config file
+  edited through a Settings UI, so they can't drift out of sync with a
+  parallel `.env` copy. Also expose separate model-name vars for the
   parsing/extraction task vs. the scoring task, since you may want a
   cheaper/faster model for one and a stronger model for the other.
 - **Flask runtime**: `FLASK_SECRET_KEY`, `FLASK_PORT` (pick one fixed

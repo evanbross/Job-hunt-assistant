@@ -59,14 +59,14 @@ setup_bp = Blueprint("setup", __name__)
 
 _ENV_PATH: Path = config.BASE_DIR / ".env"
 
+# ai: claude-sonnet-5 | 2026-08-19 — only secrets belong in .env; ollama/openai
+# model + URL preferences live solely in data/runtime_config.json (PUT
+# /api/config) to avoid the two files drifting out of sync.
 _ALLOWED_ENV_KEYS: frozenset[str] = frozenset(
     {
         "ANTHROPIC_API_KEY",
         "FLASK_SECRET_KEY",
-        "OLLAMA_BASE_URL",
-        "OLLAMA_MODEL",
         "OPENAI_API_KEY",
-        "OPENAI_MODEL",
     }
 )
 
@@ -135,11 +135,7 @@ def _check_ai_provider_done(
         key = env_vals.get("OPENAI_API_KEY") or config.OPENAI_API_KEY
         return bool(key and key.strip())
     if provider == "ollama":
-        base_url = (
-            runtime.get("ollama_base_url")
-            or env_vals.get("OLLAMA_BASE_URL")
-            or config.OLLAMA_BASE_URL
-        )
+        base_url = runtime.get("ollama_base_url") or config.OLLAMA_BASE_URL
         return bool(base_url and base_url.strip())
     return False
 

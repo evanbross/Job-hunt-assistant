@@ -211,32 +211,41 @@ export default function SetupWizardPanel({ onSetupComplete }) {
   const handleSaveAI = async () => {
     setAiSaving(true);
     try {
+      // ai: claude-sonnet-5 | 2026-08-19
+      // Only secrets (API keys) go to .env via /api/setup/save-env. The
+      // model/URL preferences are not secrets, so they're saved directly to
+      // runtime config (PUT /api/config) -- the same single source of truth
+      // the Settings page's ConfigSection edits later. Writing them to both
+      // files let the two copies drift apart (see routes/settings.py's
+      // ollama_base_url validation fix).
       const envPayload = {};
       if (aiProvider === "anthropic") envPayload.ANTHROPIC_API_KEY = apiKey;
-      else if (aiProvider === "openai") {
-        envPayload.OPENAI_API_KEY = apiKey;
-        envPayload.OPENAI_MODEL = openaiModel;
-      } else if (aiProvider === "ollama") {
-        envPayload.OLLAMA_BASE_URL = ollamaUrl;
-        envPayload.OLLAMA_MODEL = ollamaModel;
+      else if (aiProvider === "openai") envPayload.OPENAI_API_KEY = apiKey;
+
+      if (Object.keys(envPayload).length > 0) {
+        const envRes = await fetch("/api/setup/save-env", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(envPayload),
+        });
+        if (!envRes.ok) {
+          const err = await envRes.json();
+          window.alert("Failed to save: " + (err.error || envRes.status));
+          return;
+        }
       }
 
-      const envRes = await fetch("/api/setup/save-env", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(envPayload),
-      });
-      if (!envRes.ok) {
-        const err = await envRes.json();
-        window.alert("Failed to save: " + (err.error || envRes.status));
-        return;
+      const cfgPayload = { ai_provider: aiProvider };
+      if (aiProvider === "openai") cfgPayload.openai_model = openaiModel;
+      else if (aiProvider === "ollama") {
+        cfgPayload.ollama_base_url = ollamaUrl;
+        cfgPayload.ollama_model = ollamaModel;
       }
 
-      // Also save provider choice to runtime config
       const cfgRes = await fetch("/api/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ai_provider: aiProvider }),
+        body: JSON.stringify(cfgPayload),
       });
       if (!cfgRes.ok) {
         window.alert("Saved API key but could not update AI provider setting.");

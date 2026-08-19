@@ -146,13 +146,22 @@ GMAIL_SCOPES: list[str] = (
 GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:5004/api/auth/google/callback"
 
 # ─── AI Models ────────────────────────────────────────────────────────────────
-AI_PROVIDER: str = os.getenv("AI_PROVIDER", "anthropic")
+# ai: claude-sonnet-5 | 2026-08-19
+# ai_provider/openai_model/ollama_base_url/ollama_model are user preferences,
+# not secrets. Their single source of truth is data/runtime_config.json (see
+# load_runtime_config below), edited via the Settings UI / setup wizard's
+# PUT /api/config. These constants are only the bootstrap defaults used the
+# first time that file is created -- they are intentionally NOT read from
+# .env, to avoid two copies of the same setting drifting apart (see
+# routes/setup.py's _ALLOWED_ENV_KEYS, which accepts only secrets:
+# ANTHROPIC_API_KEY, OPENAI_API_KEY, FLASK_SECRET_KEY).
+AI_PROVIDER: str = "anthropic"
 # ai: claude-sonnet-4-6 | 2026-06-16
 PARSER_MODEL: str = "claude-sonnet-4-6"
 SCORER_MODEL: str = "claude-sonnet-4-6"
-OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1")
-OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5:32b")
+OPENAI_MODEL: str = "gpt-4.1"
+OLLAMA_BASE_URL: str = "http://localhost:11434"
+OLLAMA_MODEL: str = "qwen2.5:32b"
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 DEFAULT_EMAIL_LOOKBACK_DAYS: int = int(os.getenv("EMAIL_LOOKBACK_DAYS", "10"))
