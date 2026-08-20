@@ -50,14 +50,19 @@ is faster and does not require the authenticated session.
 from __future__ import annotations
 
 import html as _html
+import json
 import logging
 import re
+import socket
 import time
 from collections.abc import Callable
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request
 
-import requests
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+
+from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -244,20 +249,29 @@ class GreenhouseSearcher:
         logger.info("Greenhouse: fetched %d job records", len(results))
         return results
 
+    # ai: claude-sonnet-5 | 2026-08-20
     def _fetch_jd_from_api(
         self, source_url: str, board_token: str, job_id: str
     ) -> dict | None:
         """Fetch a full job description from the Greenhouse public Job Board API."""
         api_url = f"{_API_BASE}/{board_token}/jobs/{job_id}"
+        req = Request(
+            api_url,
+            headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+        )
         try:
-            resp = requests.get(
-                api_url,
-                headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
-                timeout=_REQUEST_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except (requests.RequestException, ValueError) as exc:
+            with safe_urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
+                raw = resp.read()
+                charset = resp.headers.get_content_charset() or "utf-8"
+            data = json.loads(raw.decode(charset, errors="replace"))
+        except (
+            UnsafeUrlError,
+            URLError,
+            socket.timeout,
+            OSError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as exc:
             logger.warning("Greenhouse API fetch failed for %s: %s", api_url, exc)
             return None
 

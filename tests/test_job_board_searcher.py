@@ -16,25 +16,44 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
+from urllib.error import URLError
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 import backend.scanning.job_board_searcher as job_board_searcher_module
-from backend.scanning.job_board_searcher import JobBoardSearcher, strip_html, url_to_dedup_key
+from backend.scanning.job_board_searcher import (
+    JobBoardSearcher,
+    strip_html,
+    url_to_dedup_key,
+)
+
+
+class _FakeHeaders:
+    def get_content_charset(self) -> str:
+        return "utf-8"
 
 
 class FakeResponse:
-    def __init__(self, payload: dict[str, Any], *, should_fail: bool = False) -> None:
-        self._payload = payload
-        self._should_fail = should_fail
+    """Stand-in for the addinfourl safe_urlopen() returns (a context manager)."""
 
-    def raise_for_status(self) -> None:
-        if self._should_fail:
-            raise RuntimeError("request failed")
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._body = json.dumps(payload).encode("utf-8")
 
-    def json(self) -> dict[str, Any]:
-        return self._payload
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+    @property
+    def headers(self) -> _FakeHeaders:
+        return _FakeHeaders()
 
 
 # ai: gpt-5 | 2026-07-26
@@ -57,19 +76,13 @@ def test_url_to_dedup_key_is_stable_and_url_specific() -> None:
 def test_search_all_normalizes_sources_and_deduplicates_urls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, dict[str, object]]] = []
+    calls: list[str] = []
 
-    def fake_get(
-        url: str,
-        *,
-        params: dict[str, object],
-        headers: dict[str, str],
-        timeout: int,
-    ) -> FakeResponse:
-        calls.append((url, params))
-        assert headers["Accept"] == "application/json"
+    def fake_safe_urlopen(req: Any, *, timeout: int, **_kwargs: object) -> FakeResponse:
+        calls.append(req.full_url)
+        assert req.get_header("Accept") == "application/json"
         assert timeout == 15
-        if "remotive.com" in url:
+        if "remotive.com" in req.full_url:
             return FakeResponse(
                 {
                     "jobs": [
@@ -89,7 +102,8 @@ def test_search_all_normalizes_sources_and_deduplicates_urls(
                     ]
                 }
             )
-        page = int(params["page"])
+        query = parse_qs(urlparse(req.full_url).query)
+        page = int(query["page"][0])
         if page == 0:
             return FakeResponse(
                 {
@@ -115,7 +129,7 @@ def test_search_all_normalizes_sources_and_deduplicates_urls(
             )
         return FakeResponse({"results": []})
 
-    monkeypatch.setattr(job_board_searcher_module.requests, "get", fake_get)
+    monkeypatch.setattr(job_board_searcher_module, "safe_urlopen", fake_safe_urlopen)
     monkeypatch.setattr(job_board_searcher_module.time, "sleep", lambda _seconds: None)
 
     results = JobBoardSearcher().search_all(["python"])
@@ -138,35 +152,29 @@ def test_search_all_normalizes_sources_and_deduplicates_urls(
             "date_posted": None,
         },
     ]
-    assert calls == [
-        (
-            "https://remotive.com/api/remote-jobs",
-            {"category": "software-dev", "search": "python", "limit": 50},
-        ),
-        (
-            "https://www.themuse.com/api/public/jobs",
-            {"category": "Software Engineering", "level": "Senior Level", "page": 0},
-        ),
-        (
-            "https://www.themuse.com/api/public/jobs",
-            {"category": "Software Engineering", "level": "Senior Level", "page": 1},
-        ),
-    ]
+    assert len(calls) == 3
+    assert calls[0].startswith("https://remotive.com/api/remote-jobs?")
+    assert parse_qs(urlparse(calls[0]).query) == {
+        "category": ["software-dev"],
+        "search": ["python"],
+        "limit": ["50"],
+    }
+    assert calls[1].startswith("https://www.themuse.com/api/public/jobs?")
+    assert parse_qs(urlparse(calls[1]).query) == {
+        "category": ["Software Engineering"],
+        "level": ["Senior Level"],
+        "page": ["0"],
+    }
+    assert parse_qs(urlparse(calls[2]).query)["page"] == ["1"]
 
 
 # ai: gpt-5 | 2026-07-26
 def test_search_all_keeps_other_sources_when_one_source_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_get(
-        url: str,
-        *,
-        params: dict[str, object],
-        headers: dict[str, str],
-        timeout: int,
-    ) -> FakeResponse:
-        if "remotive.com" in url:
-            return FakeResponse({}, should_fail=True)
+    def fake_safe_urlopen(req: Any, *, timeout: int, **_kwargs: object) -> FakeResponse:
+        if "remotive.com" in req.full_url:
+            raise URLError("request failed")
         return FakeResponse(
             {
                 "results": [
@@ -181,7 +189,7 @@ def test_search_all_keeps_other_sources_when_one_source_fails(
             }
         )
 
-    monkeypatch.setattr(job_board_searcher_module.requests, "get", fake_get)
+    monkeypatch.setattr(job_board_searcher_module, "safe_urlopen", fake_safe_urlopen)
     monkeypatch.setattr(job_board_searcher_module.time, "sleep", lambda _seconds: None)
 
     results = JobBoardSearcher().search_all(["python"])

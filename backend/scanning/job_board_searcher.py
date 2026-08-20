@@ -48,12 +48,17 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import logging
 import re
+import socket
 import time
 from typing import TypedDict
+from urllib.error import URLError
+from urllib.parse import urlencode
+from urllib.request import Request
 
-import requests
+from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -115,29 +120,44 @@ class JobBoardSearcher:
                 for r in self._search_remotive(query):
                     _add(r)
                 time.sleep(_INTER_REQUEST_DELAY)
-            except Exception as exc:
+            except (
+                UnsafeUrlError,
+                URLError,
+                socket.timeout,
+                OSError,
+                json.JSONDecodeError,
+                ValueError,
+            ) as exc:
                 logger.warning("Remotive search '%s' failed: %s", query, exc)
 
         # The Muse — category + level filter, first 3 pages
         try:
             for r in self._search_muse():
                 _add(r)
-        except Exception as exc:
+        except (
+            UnsafeUrlError,
+            URLError,
+            socket.timeout,
+            OSError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as exc:
             logger.warning("The Muse search failed: %s", exc)
 
         return results
 
     # ── Remotive ──────────────────────────────────────────────────────────────
 
+    # ai: claude-sonnet-5 | 2026-08-20
     def _search_remotive(self, query: str) -> list[JobBoardResult]:
-        resp = requests.get(
-            "https://remotive.com/api/remote-jobs",
-            params={"category": "software-dev", "search": query, "limit": 50},
-            headers=self._HEADERS,
-            timeout=_REQUEST_TIMEOUT,
+        url = "https://remotive.com/api/remote-jobs?" + urlencode(
+            {"category": "software-dev", "search": query, "limit": 50}
         )
-        resp.raise_for_status()
-        data = resp.json()
+        req = Request(url, headers=self._HEADERS)
+        with safe_urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
+            raw = resp.read()
+            charset = resp.headers.get_content_charset() or "utf-8"
+        data = json.loads(raw.decode(charset, errors="replace"))
 
         out: list[JobBoardResult] = []
         for job in data.get("jobs", []):
@@ -166,21 +186,22 @@ class JobBoardSearcher:
 
     # ── The Muse ──────────────────────────────────────────────────────────────
 
+    # ai: claude-sonnet-5 | 2026-08-20
     def _search_muse(self) -> list[JobBoardResult]:
         out: list[JobBoardResult] = []
         for page in range(3):
-            resp = requests.get(
-                "https://www.themuse.com/api/public/jobs",
-                params={
+            url = "https://www.themuse.com/api/public/jobs?" + urlencode(
+                {
                     "category": "Software Engineering",
                     "level": "Senior Level",
                     "page": page,
-                },
-                headers=self._HEADERS,
-                timeout=_REQUEST_TIMEOUT,
+                }
             )
-            resp.raise_for_status()
-            data = resp.json()
+            req = Request(url, headers=self._HEADERS)
+            with safe_urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
+                raw = resp.read()
+                charset = resp.headers.get_content_charset() or "utf-8"
+            data = json.loads(raw.decode(charset, errors="replace"))
 
             page_results = data.get("results", [])
             if not page_results:

@@ -71,9 +71,12 @@ from flask_cors import CORS
 import config
 from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
-from backend.scanning.import_listener import start_job_import_listener
+from backend.queue_websocket import QueueWebSocketServer, start_queue_websocket_server
+from backend.scanning.import_listener import (
+    JobImportListener,
+    start_job_import_listener,
+)
 from backend.scanning.schedulers import start_jd_health_check_scheduler
-from backend.queue_websocket import start_queue_websocket_server
 from backend.utils.utils import is_trusted_api_write_origin
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
@@ -163,17 +166,6 @@ def _reject_cross_origin_api_writes() -> tuple[flask.Response, int] | None:
         )
         return jsonify({"error": "Cross-origin request rejected"}), 403
     return None
-
-
-# Ensure directories exist
-config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
-config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-
-# Initialize DB on startup. Retries with backoff; if the database is still
-# unreachable the app starts in degraded mode (so /api/system/health can report
-# the outage to the frontend) and keeps retrying in the background.
-# ai: claude-fable-5 | 2026-07-14
-init_db_with_retry(config.DATABASE_URL)
 
 
 # ─── Swagger / OpenAPI docs ──────────────────────────────────────────────────
@@ -431,21 +423,10 @@ def _learn_application_answer(
     return answer
 
 
-# ai: claude-sonnet-4-6 | 2026-06-16
-# ai: claude-sonnet-5 | 2026-08-07 — capture return values for Caddy registration below
-# ai: claude-sonnet-5 | 2026-08-13 — added application-autofill callables
-_import_listener = start_job_import_listener(
-    _handle_listener_capture,
-    claim_queue=_claim_browser_capture_queue,
-    get_profile=_get_application_profile_for_listener,
-    get_resume_file=_get_resume_file_bytes,
-    get_answers=_get_application_answers_for_listener,
-    learn_answer=_learn_application_answer,
-)
-_queue_ws_server = start_queue_websocket_server(_browser_capture_queue_has_pending)
-
 # Register generated Swagger docs after API routes are loaded and before the SPA
 # catch-all. The UI is available at /apidocs/ and the JSON spec at /apispec_1.json.
+# Building this only introspects app.url_map (already populated by the blueprint
+# registration above) — no I/O, so it stays import-safe alongside route registration.
 app.config["SWAGGER"] = {
     "title": "Job Hunt Assistant API",
     "uiversion": 3,
@@ -472,9 +453,6 @@ def _check_redis() -> None:
         )
 
 
-_check_redis()
-
-
 def _check_import_listener_token() -> None:
     if not config.DEFAULT_JOB_IMPORT_LISTENER_ENABLED:
         return
@@ -489,7 +467,43 @@ def _check_import_listener_token() -> None:
     )
 
 
-_check_import_listener_token()
+_import_listener: JobImportListener | None = None
+_queue_ws_server: QueueWebSocketServer | None = None
+
+
+# ai: claude-sonnet-5 | 2026-08-20
+def _init_runtime_state() -> None:
+    """Perform every import-time side effect the app used to run at module load.
+
+    Creates data directories, initializes the DB, runs startup diagnostics, and
+    starts the import listener and queue WebSocket server. Must be called
+    explicitly by the runtime entry point below — never at module import — so
+    importing app.py (from tests, a future WSGI server, or tooling) stays free
+    of directory writes, DB connections, and listener ports. Route registration
+    above has no such side effects and stays import-safe as-is.
+    """
+    global _import_listener, _queue_ws_server
+
+    config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+    config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Retries with backoff; if the database is still unreachable the app starts
+    # in degraded mode (so /api/system/health can report the outage to the
+    # frontend) and keeps retrying in the background.
+    init_db_with_retry(config.DATABASE_URL)
+
+    _import_listener = start_job_import_listener(
+        _handle_listener_capture,
+        claim_queue=_claim_browser_capture_queue,
+        get_profile=_get_application_profile_for_listener,
+        get_resume_file=_get_resume_file_bytes,
+        get_answers=_get_application_answers_for_listener,
+        learn_answer=_learn_application_answer,
+    )
+    _queue_ws_server = start_queue_websocket_server(_browser_capture_queue_has_pending)
+
+    _check_redis()
+    _check_import_listener_token()
 
 
 # ─── Dev-server launcher ──────────────────────────────────────────────────────
@@ -661,6 +675,7 @@ def _stop_celery_worker() -> None:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _init_runtime_state()
     _maybe_rebuild_frontend()
     _start_vite()
     _start_celery_worker()
