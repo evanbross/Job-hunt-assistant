@@ -53,6 +53,7 @@ import socket
 import subprocess as _subprocess
 import sys
 import urllib.parse
+from datetime import timedelta
 from pathlib import Path
 
 import flask
@@ -65,7 +66,7 @@ if not hasattr(flask_json, "JSONEncoder"):
     flask_json.JSONEncoder = json.JSONEncoder
 
 from flasgger import Swagger
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 
 import config
@@ -125,6 +126,20 @@ app = Flask(
     static_url_path="",
 )
 app.secret_key = config.FLASK_SECRET_KEY
+
+# ai: claude-sonnet-5 | 2026-08-20
+# Session cookie config for the app-login gate (routes/session_auth.py).
+# SESSION_COOKIE_SECURE is intentionally left at its default (False): this app
+# is served over plain HTTP on a local machine (see the port fail-fast check
+# below and the "development server" warning app.run() prints) — a Secure
+# cookie would silently fail to be set at all under that deployment. HttpOnly
+# is on by default; SameSite=Lax plus the existing Origin/Referer CSRF guard
+# below cover the realistic threat model for a localhost personal tool.
+app.config["SESSION_COOKIE_SAMESITE"] = config.SESSION_COOKIE_SAMESITE
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
+    days=config.PERMANENT_SESSION_LIFETIME_DAYS
+)
+
 _cors_origins_env = os.environ.get("CORS_ORIGINS", "")
 _cors_origins = (
     [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
@@ -136,9 +151,31 @@ _cors_origins = (
         "http://127.0.0.1:5174",
     ]
 )
-CORS(app, resources={r"/api/*": {"origins": _cors_origins}})
+# supports_credentials=True: the session cookie must be sent/received when the
+# frontend is served from Vite's dev origin (:5173/:5174) directly rather than
+# through its /api proxy to :5004 — see frontend/src/utils/apiClient.js, which
+# always sends credentials: "include".
+CORS(app, resources={r"/api/*": {"origins": _cors_origins, "supports_credentials": True}})
 
 _API_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_APP_LOGIN_ALLOWLIST = frozenset({"/api/login", "/api/session", "/api/system/health"})
+
+
+@app.before_request
+def _require_app_login() -> tuple[flask.Response, int] | None:
+    """Reject any /api/* request without an active app-login session.
+
+    Single-owner login gate — see routes/session_auth.py. Everything under
+    /api/* requires a prior POST /api/login except the narrow allowlist
+    above. This deliberately includes the existing Google OAuth routes
+    (/api/auth/*): granting Gmail access should only be reachable once
+    already logged into the app, not a second anonymous entry point.
+    """
+    if not request.path.startswith("/api/") or request.path in _APP_LOGIN_ALLOWLIST:
+        return None
+    if session.get("authenticated"):
+        return None
+    return jsonify({"error": "Not authenticated"}), 401
 
 
 @app.before_request
@@ -305,6 +342,7 @@ from routes.jd_health_check import jd_health_check_bp
 from routes.jobanni import jobanni_bp
 from routes.jobs import jobs_bp
 from routes.scan import scan_bp
+from routes.session_auth import session_auth_bp
 from routes.settings import settings_bp
 from routes.setup import setup_bp
 from routes.system import system_bp
@@ -326,6 +364,7 @@ app.register_blueprint(import_bp, url_prefix="/api")
 app.register_blueprint(jd_health_check_bp, url_prefix="/api")
 app.register_blueprint(jobs_bp, url_prefix="/api")
 app.register_blueprint(scan_bp, url_prefix="/api")
+app.register_blueprint(session_auth_bp, url_prefix="/api")
 app.register_blueprint(settings_bp, url_prefix="/api")
 app.register_blueprint(setup_bp, url_prefix="/api")
 app.register_blueprint(applications_bp, url_prefix="/api")
@@ -467,6 +506,17 @@ def _check_import_listener_token() -> None:
     )
 
 
+# ai: claude-sonnet-5 | 2026-08-20
+def _check_login_credentials_configured() -> None:
+    if config.APP_LOGIN_EMAIL and config.APP_LOGIN_PASSWORD_HASH:
+        return
+    logger.warning(
+        "APP_LOGIN_EMAIL / APP_LOGIN_PASSWORD_HASH are not set — no one will be "
+        "able to log in. Run scripts/set_login_password.py and add the printed "
+        "lines to .env."
+    )
+
+
 _import_listener: JobImportListener | None = None
 _queue_ws_server: QueueWebSocketServer | None = None
 
@@ -504,6 +554,7 @@ def _init_runtime_state() -> None:
 
     _check_redis()
     _check_import_listener_token()
+    _check_login_credentials_configured()
 
 
 # ─── Dev-server launcher ──────────────────────────────────────────────────────

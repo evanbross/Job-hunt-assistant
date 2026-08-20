@@ -33,6 +33,8 @@
  */
 
 import { useEffect, useState } from "react";
+import LoginPage from "./components/LoginPage.jsx";
+import { apiFetch, UNAUTHENTICATED_EVENT } from "./utils/apiClient.js";
 import JobQueue from "./components/JobQueue/index.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import EmailsPanel from "./components/EmailsPanel.jsx";
@@ -194,6 +196,7 @@ export default function App() {
     return "queue";
   });
   const [, setTriageCount] = useState(0);
+  const [appAuthenticated, setAppAuthenticated] = useState(null); // null | true | false — app login gate, distinct from Google authStatus below
   const [authStatus, setAuthStatus] = useState(null); // null | true | false
   const [emailFocusId, setEmailFocusId] = useState(null);
   const [focusedJobCard, setFocusedJobCard] = useState(null);
@@ -245,6 +248,38 @@ export default function App() {
       fetchAuthStatus();
     }
   }, []);
+
+  // ai: claude-sonnet-5 | 2026-08-20 — app-login gate: check once on mount,
+  // and drop back to the login screen if any apiFetch() call gets a 401
+  // (e.g. the session cookie expired mid-use).
+  useEffect(() => {
+    let cancelled = false;
+    const checkSession = async () => {
+      try {
+        const res = await fetch("/api/session", { credentials: "include" });
+        const data = await res.json();
+        if (!cancelled) setAppAuthenticated(!!data.authenticated);
+      } catch {
+        if (!cancelled) setAppAuthenticated(false);
+      }
+    };
+    checkSession();
+
+    const onUnauthenticated = () => setAppAuthenticated(false);
+    window.addEventListener(UNAUTHENTICATED_EVENT, onUnauthenticated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(UNAUTHENTICATED_EVENT, onUnauthenticated);
+    };
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      await apiFetch("/api/logout", { method: "POST" });
+    } finally {
+      setAppAuthenticated(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -394,6 +429,11 @@ export default function App() {
     }
   };
 
+  if (appAuthenticated === null) return null; // session check in flight
+  if (appAuthenticated === false) {
+    return <LoginPage onLoginSuccess={() => setAppAuthenticated(true)} />;
+  }
+
   return (
     <div style={styles.app}>
       <div style={styles.headerWrap}>
@@ -457,6 +497,13 @@ export default function App() {
                 Connect Google
               </button>
             )}
+            <button
+              onClick={handleLogout}
+              style={{ fontSize: "12px", padding: "5px 12px", background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "var(--radius)", cursor: "pointer" }}
+              title="Log out of Job Hunt Assistant"
+            >
+              Log out
+            </button>
           </div>
         </header>
         <StatsBar />

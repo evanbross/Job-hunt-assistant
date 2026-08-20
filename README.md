@@ -85,6 +85,25 @@ FLASK_SECRET_KEY=<random 32+ char string>
 GOOGLE_SHEETS_ID=<from your sheet URL>
 ```
 
+### App login
+
+The whole app sits behind a single-owner login screen — there's no registration
+flow, so set your own credentials once:
+
+```bash
+uv run python scripts/set_login_password.py
+```
+
+This prompts for an email and password and prints two lines to paste into
+`.env`:
+```
+APP_LOGIN_EMAIL=you@example.com
+APP_LOGIN_PASSWORD_HASH=<generated hash>
+```
+
+Without these set, the app starts (with a startup-log warning) but no one can
+log in. Re-run the script any time to change the password.
+
 ### Frontend
 
 ```bash

@@ -53,6 +53,18 @@ load_dotenv()
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY", "change-this-in-production")
+
+# ─── App login (single-owner session gate) ────────────────────────────────────
+# ai: claude-sonnet-5 | 2026-08-20
+# Gates the whole /api/* surface (see app.py's _require_app_login). No DB table:
+# this is a single, static credential for the one owner of this instance, not a
+# multi-tenant user model — generate APP_LOGIN_PASSWORD_HASH once via
+# scripts/set_login_password.py and paste both values into .env.
+APP_LOGIN_EMAIL: str = os.getenv("APP_LOGIN_EMAIL", "")
+APP_LOGIN_PASSWORD_HASH: str = os.getenv("APP_LOGIN_PASSWORD_HASH", "")
+SESSION_COOKIE_SAMESITE: str = "Lax"
+PERMANENT_SESSION_LIFETIME_DAYS: int = 30
+
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR: Path = Path(__file__).parent
 CREDENTIALS_DIR: Path = BASE_DIR / "credentials"
