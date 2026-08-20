@@ -325,15 +325,23 @@ def _run_career_site_scan(
         _career_state.errors.clear()
         _career_state.last_trigger = trigger
 
+    # ai: claude-sonnet-5 | 2026-08-19
+    # Restructured per Dev-Standards PYTHON_STANDARDS.md "Connection Lifetime vs.
+    # Slow External Work" -- the connection used to stay open for the entire scan:
+    # every site fetch (network) and every AI scoring call happened inside one
+    # `with get_repos()` block. Now, per site: read -> release -> network scan
+    # (no DB) -> release -> dedup/blocklist/AI scoring (no DB) -> reopen briefly
+    # just to write that site's results. Auto-promotion decisions are still made
+    # during the scoring phase (not deferred to the write phase) and reflected
+    # into `known_jobs` immediately, so later jobs in the same site's batch still
+    # dedup against them -- preserving the original single-pass ordering even
+    # though the actual DB insert now happens later.
     try:
         with get_repos() as repos:
-            conn = repos["conn"]
             source_repo = repos["career_sites"]
-            results_repo = repos["career_scan_results"]
-            failures_repo = repos["career_scan_failures"]
-            rejection_rules_repo = repos["career_rejection_rules"]
             resume_repo = repos["resume"]
             penalties_repo = repos["penalties"]
+            rejection_rules_repo = repos["career_rejection_rules"]
             jobs_repo = repos["jobs"]
 
             if source_id is not None:
@@ -357,28 +365,31 @@ def _run_career_site_scan(
                 )
                 return
 
-            logger.info(
-                "Career-site scan started: %d site(s), trigger=%s",
-                len(target_sources),
-                trigger,
-            )
-            _update_career_scan(
-                progress=10,
-                message=f"Scanning {len(target_sources)} career site(s)...",
-                sites_total=len(target_sources),
-            )
-
             resume_row = resume_repo.get_latest()
             resume_text = resume_row["content"] if resume_row else ""
             penalty_rules = penalties_repo.get_enabled()
             fit_feedback = jobs_repo.get_not_a_fit_with_feedback()
             rejection_rules = rejection_rules_repo.get_enabled()
-            try:
-                scorer = FitScorer()
-            except Exception as exc:
-                msg = "Career-site scan skipped: Anthropic scoring unavailable."
-                logger.warning("%s %s", msg, exc)
-                failures_repo.insert(
+            known_jobs: list[dict] = jobs_repo.get_all_ordered()
+
+        logger.info(
+            "Career-site scan started: %d site(s), trigger=%s",
+            len(target_sources),
+            trigger,
+        )
+        _update_career_scan(
+            progress=10,
+            message=f"Scanning {len(target_sources)} career site(s)...",
+            sites_total=len(target_sources),
+        )
+
+        try:
+            scorer = FitScorer()
+        except Exception as exc:
+            msg = "Career-site scan skipped: Anthropic scoring unavailable."
+            logger.warning("%s %s", msg, exc)
+            with get_repos() as repos:
+                repos["career_scan_failures"].insert(
                     {
                         "site_source_id": None,
                         "site_name": None,
@@ -389,99 +400,99 @@ def _run_career_site_scan(
                         "occurred_at": datetime.now(UTC).isoformat(timespec="seconds"),
                     }
                 )
-                conn.commit()
-                _update_career_scan(
-                    progress=100,
-                    message=msg,
-                    last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
-                    error=str(exc),
-                )
-                return
-            scanner = CareerSiteScanner()
-            dedup_checker = DuplicateChecker()
-            known_jobs: list[dict] = jobs_repo.get_all_ordered()
+                repos["conn"].commit()
+            _update_career_scan(
+                progress=100,
+                message=msg,
+                last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
+                error=str(exc),
+            )
+            return
+        scanner = CareerSiteScanner()
+        dedup_checker = DuplicateChecker()
 
-            scanned_sites = 0
-            jobs_found_total = 0
-            jobs_added_total = 0
-            jobs_promoted_total = 0
-            listings_filtered_total = 0
-            listings_evaluated_total = 0
-            source_count = len(target_sources)
+        scanned_sites = 0
+        jobs_found_total = 0
+        jobs_added_total = 0
+        jobs_promoted_total = 0
+        listings_filtered_total = 0
+        listings_evaluated_total = 0
+        source_count = len(target_sources)
 
-            # Sites that require a real browser — handled by dedicated Playwright scrapers.
-            _PLAYWRIGHT_ONLY_HOSTS = frozenset({"wellfound.com", "www.wellfound.com"})
+        # Sites that require a real browser — handled by dedicated Playwright scrapers.
+        _PLAYWRIGHT_ONLY_HOSTS = frozenset({"wellfound.com", "www.wellfound.com"})
 
-            for idx, source in enumerate(target_sources):
-                current_source_id = source["id"]
-                source_name = source["name"]
-                source_url = source["url"]
-                detected_platform = "generic"
+        for idx, source in enumerate(target_sources):
+            current_source_id = source["id"]
+            source_name = source["name"]
+            source_url = source["url"]
+            detected_platform = "generic"
+            logger.info(
+                "Career-site scan [%d/%d]: %s (%s)",
+                idx + 1,
+                source_count,
+                source_name,
+                source_url,
+            )
+            _update_career_scan(
+                message=f"Scanning {source_name}...",
+                sites_scanned=scanned_sites,
+                jobs_found=jobs_found_total,
+                jobs_added=jobs_added_total,
+                listings_filtered=listings_filtered_total,
+                listings_evaluated=listings_evaluated_total,
+            )
+
+            try:
+                _host = urlparse(source_url).hostname or ""
+            except Exception:
+                _host = ""
+            if _host in _PLAYWRIGHT_ONLY_HOSTS:
                 logger.info(
-                    "Career-site scan [%d/%d]: %s (%s)",
-                    idx + 1,
-                    source_count,
+                    "Skipping %s (%s) — Playwright-only host; use the Wellfound Scan panel",
                     source_name,
                     source_url,
                 )
                 _update_career_scan(
-                    message=f"Scanning {source_name}...",
-                    sites_scanned=scanned_sites,
-                    jobs_found=jobs_found_total,
-                    jobs_added=jobs_added_total,
-                    listings_filtered=listings_filtered_total,
-                    listings_evaluated=listings_evaluated_total,
+                    error=(
+                        f"{source_name}: requires the Wellfound Playwright scanner "
+                        f"— use the Wellfound Scan panel in the Career Sites tab"
+                    )
                 )
+                scanned_sites += 1
+                progress = 20 + int((scanned_sites / source_count) * 75)
+                _update_career_scan(progress=progress, sites_scanned=scanned_sites)
+                continue
 
-                try:
-                    _host = urlparse(source_url).hostname or ""
-                except Exception:
-                    _host = ""
-                if _host in _PLAYWRIGHT_ONLY_HOSTS:
-                    logger.info(
-                        "Skipping %s (%s) — Playwright-only host; use the Wellfound Scan panel",
-                        source_name,
-                        source_url,
+            if source_id is not None:
+                with get_repos() as repos:
+                    repos["career_scan_results"].delete_by_site_source_id(
+                        current_source_id
                     )
-                    _update_career_scan(
-                        error=(
-                            f"{source_name}: requires the Wellfound Playwright scanner "
-                            f"— use the Wellfound Scan panel in the Career Sites tab"
-                        )
-                    )
-                    scanned_sites += 1
-                    progress = 20 + int((scanned_sites / source_count) * 75)
-                    _update_career_scan(progress=progress, sites_scanned=scanned_sites)
-                    continue
+                    repos["conn"].commit()
 
-                if source_id is not None:
-                    results_repo.delete_by_site_source_id(current_source_id)
-                    conn.commit()
-
-                try:
-                    outcome = scanner.scan_site(
-                        site_name=source_name, site_url=source_url
-                    )
-                    jobs = outcome["jobs"]
-                    detected_platform = outcome["detected_platform"]
-                    logger.info(
-                        "Scanned %s: %d job(s) found (platform=%s)",
-                        source_name,
-                        len(jobs),
-                        detected_platform,
-                    )
-                    source_repo.update(
-                        current_source_id, {"detected_platform": detected_platform}
-                    )
-                    conn.commit()
-                except Exception as exc:
-                    logger.warning(
-                        "Career-site scan failed for %s: %s", source_url, exc
-                    )
-                    _update_career_scan(
-                        error=f"{source_name}: {exc.__class__.__name__}: {exc}"
-                    )
-                    failures_repo.insert(
+            # ── Scan this site (network only — no DB connection held) ────────────
+            try:
+                outcome = scanner.scan_site(
+                    site_name=source_name, site_url=source_url
+                )
+                jobs = outcome["jobs"]
+                detected_platform = outcome["detected_platform"]
+                logger.info(
+                    "Scanned %s: %d job(s) found (platform=%s)",
+                    source_name,
+                    len(jobs),
+                    detected_platform,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Career-site scan failed for %s: %s", source_url, exc
+                )
+                _update_career_scan(
+                    error=f"{source_name}: {exc.__class__.__name__}: {exc}"
+                )
+                with get_repos() as repos:
+                    repos["career_scan_failures"].insert(
                         {
                             "site_source_id": current_source_id,
                             "site_name": source_name,
@@ -494,31 +505,41 @@ def _run_career_site_scan(
                             ),
                         }
                     )
-                    conn.commit()
-                    scanned_sites += 1
-                    progress = 20 + int((scanned_sites / source_count) * 75)
-                    _update_career_scan(progress=progress, sites_scanned=scanned_sites)
-                    continue
+                    repos["conn"].commit()
+                scanned_sites += 1
+                progress = 20 + int((scanned_sites / source_count) * 75)
+                _update_career_scan(progress=progress, sites_scanned=scanned_sites)
+                continue
 
-                adapter_failures = scanner.pop_failures()
+            # ── Persist scan-only metadata (fast DB writes, nothing slow) ─────────
+            with get_repos() as repos:
+                repos["career_sites"].update(
+                    current_source_id, {"detected_platform": detected_platform}
+                )
+                repos["conn"].commit()
+
+            adapter_failures = scanner.pop_failures()
+            if adapter_failures:
+                with get_repos() as repos:
+                    for failure in adapter_failures:
+                        repos["career_scan_failures"].insert(
+                            {
+                                "site_source_id": current_source_id,
+                                "site_name": source_name,
+                                "site_url": source_url,
+                                "platform": failure["platform"],
+                                "error_message": (
+                                    f"[{failure['stage']}] "
+                                    f"{failure['error_type']}: {failure['error_message']}"
+                                ),
+                                "trigger": trigger,
+                                "occurred_at": datetime.now(UTC).isoformat(
+                                    timespec="seconds"
+                                ),
+                            }
+                        )
+                        repos["conn"].commit()
                 for failure in adapter_failures:
-                    failures_repo.insert(
-                        {
-                            "site_source_id": current_source_id,
-                            "site_name": source_name,
-                            "site_url": source_url,
-                            "platform": failure["platform"],
-                            "error_message": (
-                                f"[{failure['stage']}] "
-                                f"{failure['error_type']}: {failure['error_message']}"
-                            ),
-                            "trigger": trigger,
-                            "occurred_at": datetime.now(UTC).isoformat(
-                                timespec="seconds"
-                            ),
-                        }
-                    )
-                    conn.commit()
                     _update_career_scan(
                         error=(
                             f"{source_name} ({failure['platform']}): "
@@ -526,181 +547,270 @@ def _run_career_site_scan(
                         )
                     )
 
-                jobs_found_total += len(jobs)
+            jobs_found_total += len(jobs)
+            _update_career_scan(
+                message=f"Evaluating {len(jobs)} job listing(s) from {source_name}...",
+                jobs_found=jobs_found_total,
+                listings_filtered=listings_filtered_total,
+                listings_evaluated=listings_evaluated_total,
+            )
+
+            # ── Batched local-job lookups (DB reads only, nothing slow) ───────────
+            with get_repos() as repos:
+                site_jobs_repo = repos["jobs"]
+                local_job_by_url: dict[str, dict | None] = {}
+                for job in jobs:
+                    job_url_stripped = (job.get("job_url") or "").strip()
+                    if job_url_stripped:
+                        local_job_by_url[job_url_stripped] = (
+                            site_jobs_repo.get_by_url(job["job_url"])
+                        )
+
+            # ── Dedup, blocklist, and AI scoring (no DB connection held) ──────────
+            site_results: list[dict] = []
+            for job in jobs:
+                sheet_status: str | None = None
+                tracking_source: str | None = None
+                current_job_url = (job.get("job_url") or "").strip()
+                current_ashby_job_id = extract_ashby_job_id(current_job_url)
+
+                exact_match = next(
+                    (
+                        row
+                        for row in known_jobs
+                        if (row.get("url") or "").strip()
+                        and (
+                            (row.get("url") or "").strip().lower()
+                            == current_job_url.lower()
+                            or (
+                                current_ashby_job_id is not None
+                                and extract_ashby_job_id(
+                                    (row.get("url") or "").strip()
+                                )
+                                == current_ashby_job_id
+                            )
+                        )
+                    ),
+                    None,
+                )
+                if exact_match is not None:
+                    sheet_status = (
+                        exact_match.get("status") or ""
+                    ).strip() or "Tracked"
+                    tracking_source = "db_url"
+                elif (
+                    (job.get("site_name") or "").strip()
+                    and (job.get("job_title") or "").strip()
+                    and known_jobs
+                ):
+                    dup = dedup_checker.check(
+                        job_title=job["job_title"],
+                        company=job["site_name"],
+                        sheet_jobs=known_jobs,
+                    )
+                    if dup is not None:
+                        matched = next(
+                            (
+                                row
+                                for row in known_jobs
+                                if (row.get("company") or "")
+                                == dup["sheet_company"]
+                                and (row.get("job_title") or "")
+                                == dup["sheet_title"]
+                            ),
+                            None,
+                        )
+                        sheet_status = (
+                            (matched or {}).get("status") or "Tracked"
+                        ).strip()
+                        tracking_source = "db_fuzzy"
+
+                local_job = local_job_by_url.get(current_job_url)
+                local_status = (local_job or {}).get("status")
+
+                _dismissed = {"rejected", "skipped"}
+                listing_filtered = False
+                if (sheet_status and sheet_status.lower() in _dismissed) or (
+                    local_status and local_status.lower() in _dismissed
+                ):
+                    tracking_status = (
+                        f"Tracked: {sheet_status}"
+                        if sheet_status
+                        else f"Inbox: {local_status}"
+                    )
+                    tracking_source = "db_rejected"
+                    listing_filtered = True
+                elif sheet_status and local_status:
+                    tracking_status = (
+                        f"Tracked: {sheet_status} · Inbox: {local_status}"
+                    )
+                elif sheet_status:
+                    tracking_status = f"Tracked: {sheet_status}"
+                elif local_status:
+                    tracking_status = f"Inbox: {local_status}"
+                else:
+                    tracking_status = "New"
+                rejection_reason = None
+                rejection_source = None
+                _haystack = " ".join(
+                    str(job.get(f) or "")
+                    for f in (
+                        "job_title",
+                        "job_text",
+                        "site_name",
+                        "job_url",
+                        "site_url",
+                    )
+                )
+                matched_rejection_rule = jd_blocklist_match(
+                    _haystack, rejection_rules
+                )
+                if matched_rejection_rule is not None:
+                    tracking_status = "Filtered"
+                    tracking_source = "career_rule"
+                    rejection_reason = matched_rejection_rule["rule_text"]
+                    rejection_source = "career_rule"
+                    listing_filtered = True
+                if not listing_filtered:
+                    # ai: claude-fable-5 | 2026-07-16
+                    hybrid_note = mongodb_hybrid_rejection_note(
+                        str(job.get("site_name") or ""),
+                        str(job.get("job_text") or ""),
+                    )
+                    if hybrid_note:
+                        tracking_status = "Filtered"
+                        tracking_source = "career_rule"
+                        rejection_reason = hybrid_note
+                        rejection_source = "mongodb_hybrid"
+                        listing_filtered = True
+                if listing_filtered:
+                    listings_filtered_total += 1
+
+                if listing_filtered:
+                    match_score = None
+                    match_reasoning = "Filtered before scoring."
+                    listings_evaluated_total += 1
+                else:
+                    try:
+                        score_result = scorer.score(
+                            job_title=job["job_title"],
+                            company=job["site_name"],
+                            email_body=job["job_text"],
+                            resume_text=resume_text,
+                            penalty_rules=penalty_rules,
+                            fit_feedback=fit_feedback,
+                        )
+                        match_score = score_result["score"]
+                        match_reasoning = score_result["reasoning"]
+                        listings_evaluated_total += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "Fit scoring failed for career job %s: %s",
+                            job["job_url"],
+                            exc,
+                        )
+                        match_score = None
+                        match_reasoning = f"Scoring failed: {exc}"
+                        listings_evaluated_total += 1
+
+                row_data = {
+                    "site_source_id": current_source_id,
+                    "site_name": job["site_name"],
+                    "site_url": job["site_url"],
+                    "job_title": job["job_title"],
+                    "job_url": job["job_url"],
+                    "job_text": job["job_text"],
+                    "confidence_level": job["confidence_level"],
+                    "confidence_score": job["confidence_score"],
+                    "match_score": match_score,
+                    "match_reasoning": match_reasoning,
+                    "tracking_status": tracking_status,
+                    "tracking_source": tracking_source,
+                    "rejection_reason": rejection_reason,
+                    "rejection_source": rejection_source,
+                    "scanned_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "posted_at": job["posted_at"],
+                }
+
+                # Auto-promote genuinely new jobs (not filtered, not already in queue,
+                # no fuzzy duplicate match) into the main job queue so they appear in
+                # triage/pending_review without requiring a separate export/import step.
+                # The actual INSERT happens in the write phase below, but the decision
+                # and job_dict are built here, and appended to known_jobs immediately,
+                # so later jobs in this same site's batch still dedup against it --
+                # matching the original single-pass loop's ordering.
+                promote_job_dict = None
+                if (
+                    local_job is None
+                    and not listing_filtered
+                    and tracking_source is None
+                ):
+                    queue_status = (
+                        "pending_review"
+                        if (match_score is not None and match_score >= 70)
+                        else "triage"
+                    )
+                    promote_job_dict = {
+                        JobColumns.DEDUP_KEY: f"career-site:{current_source_id}:{secrets.token_hex(8)}",
+                        "company": str(job.get("site_name") or ""),
+                        "job_title": str(job.get("job_title") or ""),
+                        "url": str(job.get("job_url") or ""),
+                        "source": source_name,
+                        "raw_jd_snippet": str(job.get("job_text") or "")[:6000],
+                        "fit_score": match_score,
+                        "fit_reasoning": match_reasoning,
+                        "status": queue_status,
+                        "parser_confidence": str(
+                            job.get("confidence_level") or "low"
+                        ),
+                        "confidence_reason": "",
+                        "date_found": datetime.now(UTC).date().isoformat(),
+                        "duplicate_hint": None,
+                        "sender_email": None,
+                        JobColumns.CAPTURE_LABEL: f"Career site: {source_name}",
+                        "confidence_score": int(job.get("confidence_score") or 50),
+                    }
+                    promote_job_dict, import_warnings = normalize_and_validate(
+                        promote_job_dict
+                    )
+                    promote_job_dict["import_warnings"] = import_warnings_to_json(
+                        import_warnings
+                    )
+                    if (
+                        import_warnings
+                        and promote_job_dict["status"] != "possible_duplicate"
+                    ):
+                        promote_job_dict["status"] = "triage"
+                    known_jobs.append(promote_job_dict)
+
+                site_results.append(
+                    {
+                        "job": job,
+                        "row_data": row_data,
+                        "local_job": local_job,
+                        "listing_filtered": listing_filtered,
+                        "promote_job_dict": promote_job_dict,
+                    }
+                )
+
                 _update_career_scan(
-                    message=f"Evaluating {len(jobs)} job listing(s) from {source_name}...",
                     jobs_found=jobs_found_total,
                     listings_filtered=listings_filtered_total,
                     listings_evaluated=listings_evaluated_total,
                 )
 
-                for job in jobs:
-                    sheet_status: str | None = None
-                    tracking_source: str | None = None
-                    current_job_url = (job.get("job_url") or "").strip()
-                    current_ashby_job_id = extract_ashby_job_id(current_job_url)
+            # ── Write this site's results (DB reopened only for this fast phase) ──
+            with get_repos() as repos:
+                site_jobs_repo = repos["jobs"]
+                results_repo = repos["career_scan_results"]
+                conn = repos["conn"]
+                for item in site_results:
+                    job = item["job"]
+                    row_data = item["row_data"]
+                    local_job = item["local_job"]
+                    listing_filtered = item["listing_filtered"]
+                    promote_job_dict = item["promote_job_dict"]
 
-                    exact_match = next(
-                        (
-                            row
-                            for row in known_jobs
-                            if (row.get("url") or "").strip()
-                            and (
-                                (row.get("url") or "").strip().lower()
-                                == current_job_url.lower()
-                                or (
-                                    current_ashby_job_id is not None
-                                    and extract_ashby_job_id(
-                                        (row.get("url") or "").strip()
-                                    )
-                                    == current_ashby_job_id
-                                )
-                            )
-                        ),
-                        None,
-                    )
-                    if exact_match is not None:
-                        sheet_status = (
-                            exact_match.get("status") or ""
-                        ).strip() or "Tracked"
-                        tracking_source = "db_url"
-                    elif (
-                        (job.get("site_name") or "").strip()
-                        and (job.get("job_title") or "").strip()
-                        and known_jobs
-                    ):
-                        dup = dedup_checker.check(
-                            job_title=job["job_title"],
-                            company=job["site_name"],
-                            sheet_jobs=known_jobs,
-                        )
-                        if dup is not None:
-                            matched = next(
-                                (
-                                    row
-                                    for row in known_jobs
-                                    if (row.get("company") or "")
-                                    == dup["sheet_company"]
-                                    and (row.get("job_title") or "")
-                                    == dup["sheet_title"]
-                                ),
-                                None,
-                            )
-                            sheet_status = (
-                                (matched or {}).get("status") or "Tracked"
-                            ).strip()
-                            tracking_source = "db_fuzzy"
-
-                    local_job = (
-                        jobs_repo.get_by_url(job["job_url"])
-                        if (job.get("job_url") or "").strip()
-                        else None
-                    )
-                    local_status = (local_job or {}).get("status")
-
-                    _dismissed = {"rejected", "skipped"}
-                    listing_filtered = False
-                    if (sheet_status and sheet_status.lower() in _dismissed) or (
-                        local_status and local_status.lower() in _dismissed
-                    ):
-                        tracking_status = (
-                            f"Tracked: {sheet_status}"
-                            if sheet_status
-                            else f"Inbox: {local_status}"
-                        )
-                        tracking_source = "db_rejected"
-                        listing_filtered = True
-                    elif sheet_status and local_status:
-                        tracking_status = (
-                            f"Tracked: {sheet_status} · Inbox: {local_status}"
-                        )
-                    elif sheet_status:
-                        tracking_status = f"Tracked: {sheet_status}"
-                    elif local_status:
-                        tracking_status = f"Inbox: {local_status}"
-                    else:
-                        tracking_status = "New"
-                    rejection_reason = None
-                    rejection_source = None
-                    _haystack = " ".join(
-                        str(job.get(f) or "")
-                        for f in (
-                            "job_title",
-                            "job_text",
-                            "site_name",
-                            "job_url",
-                            "site_url",
-                        )
-                    )
-                    matched_rejection_rule = jd_blocklist_match(
-                        _haystack, rejection_rules
-                    )
-                    if matched_rejection_rule is not None:
-                        tracking_status = "Filtered"
-                        tracking_source = "career_rule"
-                        rejection_reason = matched_rejection_rule["rule_text"]
-                        rejection_source = "career_rule"
-                        listing_filtered = True
-                    if not listing_filtered:
-                        # ai: claude-fable-5 | 2026-07-16
-                        hybrid_note = mongodb_hybrid_rejection_note(
-                            str(job.get("site_name") or ""),
-                            str(job.get("job_text") or ""),
-                        )
-                        if hybrid_note:
-                            tracking_status = "Filtered"
-                            tracking_source = "career_rule"
-                            rejection_reason = hybrid_note
-                            rejection_source = "mongodb_hybrid"
-                            listing_filtered = True
-                    if listing_filtered:
-                        listings_filtered_total += 1
-
-                    if listing_filtered:
-                        match_score = None
-                        match_reasoning = "Filtered before scoring."
-                        listings_evaluated_total += 1
-                    else:
-                        try:
-                            score_result = scorer.score(
-                                job_title=job["job_title"],
-                                company=job["site_name"],
-                                email_body=job["job_text"],
-                                resume_text=resume_text,
-                                penalty_rules=penalty_rules,
-                                fit_feedback=fit_feedback,
-                            )
-                            match_score = score_result["score"]
-                            match_reasoning = score_result["reasoning"]
-                            listings_evaluated_total += 1
-                        except Exception as exc:
-                            logger.warning(
-                                "Fit scoring failed for career job %s: %s",
-                                job["job_url"],
-                                exc,
-                            )
-                            match_score = None
-                            match_reasoning = f"Scoring failed: {exc}"
-                            listings_evaluated_total += 1
-
-                    row_data = {
-                        "site_source_id": current_source_id,
-                        "site_name": job["site_name"],
-                        "site_url": job["site_url"],
-                        "job_title": job["job_title"],
-                        "job_url": job["job_url"],
-                        "job_text": job["job_text"],
-                        "confidence_level": job["confidence_level"],
-                        "confidence_score": job["confidence_score"],
-                        "match_score": match_score,
-                        "match_reasoning": match_reasoning,
-                        "tracking_status": tracking_status,
-                        "tracking_source": tracking_source,
-                        "rejection_reason": rejection_reason,
-                        "rejection_source": rejection_source,
-                        "scanned_at": datetime.now(UTC).isoformat(timespec="seconds"),
-                        "posted_at": job["posted_at"],
-                    }
                     existing_result = results_repo.get_by_job_url(job["job_url"])
                     try:
                         if existing_result:
@@ -718,6 +828,13 @@ def _run_career_site_scan(
                     if local_job is not None and not listing_filtered:
                         incoming_text = str(job.get("job_text") or "").strip()
                         if is_richer_description(incoming_text, local_job):
+                            # ai: claude-sonnet-5 | 2026-08-19
+                            # enrich_job_description() makes its own AI scoring call
+                            # while this connection is open -- a smaller, separate
+                            # instance of the same connection-holding pattern, and
+                            # shared with backend/tasks.py. Not split out here: doing
+                            # so needs a signature change to a helper used by both
+                            # callers, which is out of scope for this fix.
                             try:
                                 enrich_job_description(
                                     repos,
@@ -741,61 +858,17 @@ def _run_career_site_scan(
                                     exc,
                                 )
 
-                    # Auto-promote genuinely new jobs (not filtered, not already in queue,
-                    # no fuzzy duplicate match) into the main job queue so they appear in
-                    # triage/pending_review without requiring a separate export/import step.
-                    if (
-                        local_job is None
-                        and not listing_filtered
-                        and tracking_source is None
-                    ):
-                        queue_status = (
-                            "pending_review"
-                            if (match_score is not None and match_score >= 70)
-                            else "triage"
-                        )
-                        job_dict = {
-                            JobColumns.DEDUP_KEY: f"career-site:{current_source_id}:{secrets.token_hex(8)}",
-                            "company": str(job.get("site_name") or ""),
-                            "job_title": str(job.get("job_title") or ""),
-                            "url": str(job.get("job_url") or ""),
-                            "source": source_name,
-                            "raw_jd_snippet": str(job.get("job_text") or "")[:6000],
-                            "fit_score": match_score,
-                            "fit_reasoning": match_reasoning,
-                            "status": queue_status,
-                            "parser_confidence": str(
-                                job.get("confidence_level") or "low"
-                            ),
-                            "confidence_reason": "",
-                            "date_found": datetime.now(UTC).date().isoformat(),
-                            "duplicate_hint": None,
-                            "sender_email": None,
-                            JobColumns.CAPTURE_LABEL: f"Career site: {source_name}",
-                            "confidence_score": int(job.get("confidence_score") or 50),
-                        }
-                        job_dict, import_warnings = normalize_and_validate(job_dict)
-                        job_dict["import_warnings"] = import_warnings_to_json(
-                            import_warnings
-                        )
-                        if (
-                            import_warnings
-                            and job_dict["status"] != "possible_duplicate"
-                        ):
-                            job_dict["status"] = "triage"
+                    if promote_job_dict is not None:
                         try:
-                            new_job_id = jobs_repo.insert(job_dict)
+                            site_jobs_repo.insert(promote_job_dict)
                             conn.commit()
-                            new_job = jobs_repo.get_by_id(new_job_id)
-                            if new_job:
-                                known_jobs.append(new_job)
                             jobs_promoted_total += 1
                             logger.info(
                                 "Auto-promoted to queue: %s @ %s (score=%s, status=%s)",
-                                job_dict["job_title"],
-                                job_dict["company"],
-                                match_score,
-                                job_dict["status"],
+                                promote_job_dict["job_title"],
+                                promote_job_dict["company"],
+                                promote_job_dict["fit_score"],
+                                promote_job_dict["status"],
                             )
                         except DuplicateJobUrlError:
                             # ai: claude-sonnet-5 | 2026-08-12
@@ -817,50 +890,47 @@ def _run_career_site_scan(
                             )
 
                     _update_career_scan(
-                        jobs_found=jobs_found_total,
                         jobs_added=jobs_added_total,
                         jobs_promoted=jobs_promoted_total,
-                        listings_filtered=listings_filtered_total,
-                        listings_evaluated=listings_evaluated_total,
                     )
 
-                scanned_sites += 1
-                progress = 20 + int((scanned_sites / source_count) * 75)
-                _update_career_scan(
-                    progress=progress,
-                    sites_scanned=scanned_sites,
-                    jobs_found=jobs_found_total,
-                    jobs_added=jobs_added_total,
-                    jobs_promoted=jobs_promoted_total,
-                    listings_filtered=listings_filtered_total,
-                    listings_evaluated=listings_evaluated_total,
-                )
-
-            logger.info(
-                "Career-site scan complete: %d site(s) scanned, %d job(s) found, %d added, %d promoted",
-                scanned_sites,
-                jobs_found_total,
-                jobs_added_total,
-                jobs_promoted_total,
-            )
+            scanned_sites += 1
+            progress = 20 + int((scanned_sites / source_count) * 75)
             _update_career_scan(
-                progress=100,
-                message=(
-                    f"Career-site scan complete. {jobs_added_total} new listing(s) added"
-                    + (
-                        f", {jobs_promoted_total} promoted to queue."
-                        if jobs_promoted_total
-                        else "."
-                    )
-                ),
+                progress=progress,
                 sites_scanned=scanned_sites,
                 jobs_found=jobs_found_total,
                 jobs_added=jobs_added_total,
                 jobs_promoted=jobs_promoted_total,
                 listings_filtered=listings_filtered_total,
                 listings_evaluated=listings_evaluated_total,
-                last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
             )
+
+        logger.info(
+            "Career-site scan complete: %d site(s) scanned, %d job(s) found, %d added, %d promoted",
+            scanned_sites,
+            jobs_found_total,
+            jobs_added_total,
+            jobs_promoted_total,
+        )
+        _update_career_scan(
+            progress=100,
+            message=(
+                f"Career-site scan complete. {jobs_added_total} new listing(s) added"
+                + (
+                    f", {jobs_promoted_total} promoted to queue."
+                    if jobs_promoted_total
+                    else "."
+                )
+            ),
+            sites_scanned=scanned_sites,
+            jobs_found=jobs_found_total,
+            jobs_added=jobs_added_total,
+            jobs_promoted=jobs_promoted_total,
+            listings_filtered=listings_filtered_total,
+            listings_evaluated=listings_evaluated_total,
+            last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
     except Exception as exc:
         logger.exception("Career-site scan failed with unexpected error")
         _update_career_scan(

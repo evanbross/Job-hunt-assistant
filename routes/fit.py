@@ -86,6 +86,11 @@ def _run_re_evaluate() -> None:
         _re_eval_state.result = None
         _re_eval_state.message = "Loading queue…"
 
+    # ai: claude-sonnet-5 | 2026-08-19
+    # Split per Dev-Standards PYTHON_STANDARDS.md "Connection Lifetime vs. Slow
+    # External Work" -- the connection used to stay open across every AI scoring
+    # call for the whole queue. Now: read phase (below) -> release -> AI scoring
+    # with no DB connection -> reopen only to write the batched updates.
     try:
         with get_repos() as repos:
             jobs_repo = repos["jobs"]
@@ -94,11 +99,6 @@ def _run_re_evaluate() -> None:
 
             queue_jobs = jobs_repo.get_by_statuses(list(ACTIVE_JOB_STATUSES))
             total = len(queue_jobs)
-
-            with _re_eval_lock:
-                _re_eval_state.message = (
-                    f"Re-evaluating {total} job{'s' if total != 1 else ''}…"
-                )
 
             known_jobs = [
                 j
@@ -109,113 +109,127 @@ def _run_re_evaluate() -> None:
             resume_text: str = resume_row["content"] if resume_row else ""
             penalty_rules: list[dict] = penalties_repo.get_enabled()
             fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback()
-            scorer = FitScorer()
-            dedup_checker = DuplicateChecker()
 
-            rescored = 0
-            failed = 0
-            db_matches = 0
-            status_changed = 0
+        with _re_eval_lock:
+            _re_eval_state.message = (
+                f"Re-evaluating {total} job{'s' if total != 1 else ''}…"
+            )
 
-            for i, job in enumerate(queue_jobs):
-                company = str(job.get("company") or "")
-                title = str(job.get("job_title") or "")
-                label = (
-                    f"{company} — {title}"
-                    if company and title
-                    else (company or title or f"job {job.get('id')}")
-                )
-                with _re_eval_lock:
-                    _re_eval_state.progress = round((i / total) * 100) if total else 0
-                    _re_eval_state.message = f"Job {i + 1} of {total}: {label}"
+        scorer = FitScorer()
+        dedup_checker = DuplicateChecker()
 
-                previous_status = str(job.get("status") or "")
-                updates: dict[str, object] = {}
-                score: int | None = None
+        rescored = 0
+        failed = 0
+        db_matches = 0
+        status_changed = 0
 
-                # ai: claude-sonnet-4-6 | 2026-06-09
-                (
-                    tracked_status,
-                    _tracking_source,
-                    duplicate_hint,
-                    duplicate_of_id,
-                    _match_scores,
-                ) = db_match_for_job(
+        # ── Score every job (AI/dedup only — no DB connection held) ──────────────
+        pending_updates: list[tuple[int, dict[str, object]]] = []
+        for i, job in enumerate(queue_jobs):
+            company = str(job.get("company") or "")
+            title = str(job.get("job_title") or "")
+            label = (
+                f"{company} — {title}"
+                if company and title
+                else (company or title or f"job {job.get('id')}")
+            )
+            with _re_eval_lock:
+                _re_eval_state.progress = round((i / total) * 100) if total else 0
+                _re_eval_state.message = f"Job {i + 1} of {total}: {label}"
+
+            previous_status = str(job.get("status") or "")
+            updates: dict[str, object] = {}
+            score: int | None = None
+
+            # ai: claude-sonnet-4-6 | 2026-06-09
+            (
+                tracked_status,
+                _tracking_source,
+                duplicate_hint,
+                duplicate_of_id,
+                _match_scores,
+            ) = db_match_for_job(
+                job_title=title,
+                company=company,
+                job_url=str(job.get("url") or ""),
+                known_jobs=known_jobs,
+                dedup_checker=dedup_checker,
+                exclude_id=job.get("id"),
+            )
+            if duplicate_hint:
+                updates["duplicate_hint"] = duplicate_hint
+                updates["duplicate_of_id"] = duplicate_of_id
+                updates["status"] = "possible_duplicate"
+                db_matches += 1
+            else:
+                updates["duplicate_hint"] = None
+                updates["duplicate_of_id"] = None
+
+            try:
+                scoring_text = scoring_text_for_job(job)
+                result = scorer.score(
                     job_title=title,
                     company=company,
-                    job_url=str(job.get("url") or ""),
-                    known_jobs=known_jobs,
-                    dedup_checker=dedup_checker,
-                    exclude_id=job.get("id"),
+                    email_body=scoring_text,
+                    resume_text=resume_text,
+                    penalty_rules=penalty_rules,
+                    fit_feedback=fit_feedback,
                 )
-                if duplicate_hint:
-                    updates["duplicate_hint"] = duplicate_hint
-                    updates["duplicate_of_id"] = duplicate_of_id
-                    updates["status"] = "possible_duplicate"
-                    db_matches += 1
-                else:
-                    updates["duplicate_hint"] = None
-                    updates["duplicate_of_id"] = None
+                score = result["score"]
+                updates["fit_score"] = score
+                updates["fit_reasoning"] = result["reasoning"]
+                updates["salary_min"] = result["salary_min"]
+                updates["salary_max"] = result["salary_max"]
+                rescored += 1
+            except Exception as exc:
+                logger.warning(
+                    "Re-evaluation failed for job %s: %s", job.get("id"), exc
+                )
+                failed += 1
 
+            score_for_status = score
+            if score_for_status is None and job.get("fit_score") is not None:
                 try:
-                    scoring_text = scoring_text_for_job(job)
-                    result = scorer.score(
-                        job_title=title,
-                        company=company,
-                        email_body=scoring_text,
-                        resume_text=resume_text,
-                        penalty_rules=penalty_rules,
-                        fit_feedback=fit_feedback,
-                    )
-                    score = result["score"]
-                    updates["fit_score"] = score
-                    updates["fit_reasoning"] = result["reasoning"]
-                    updates["salary_min"] = result["salary_min"]
-                    updates["salary_max"] = result["salary_max"]
-                    rescored += 1
-                except Exception as exc:
-                    logger.warning(
-                        "Re-evaluation failed for job %s: %s", job.get("id"), exc
-                    )
-                    failed += 1
+                    score_for_status = int(job["fit_score"])
+                except (TypeError, ValueError):
+                    score_for_status = None
 
-                score_for_status = score
-                if score_for_status is None and job.get("fit_score") is not None:
-                    try:
-                        score_for_status = int(job["fit_score"])
-                    except (TypeError, ValueError):
-                        score_for_status = None
-
-                if tracked_status is None and score_for_status is not None:
-                    updates["status"] = (
-                        "pending_review" if score_for_status >= 70 else "triage"
-                    )
-
-                if updates.get("status") and updates["status"] != previous_status:
-                    status_changed += 1
-
-                jobs_repo.update(job["id"], updates)
-
-            repos["conn"].commit()
-            with _re_eval_lock:
-                _re_eval_state.progress = 100
-                _re_eval_state.message = (
-                    f"Done — {rescored} rescored"
-                    + (
-                        f", {db_matches} duplicate{'s' if db_matches != 1 else ''} flagged"
-                        if db_matches
-                        else ""
-                    )
-                    + (f", {status_changed} moved" if status_changed else "")
-                    + (f", {failed} failed" if failed else "")
+            if tracked_status is None and score_for_status is not None:
+                updates["status"] = (
+                    "pending_review" if score_for_status >= 70 else "triage"
                 )
-                _re_eval_state.result = {
-                    "evaluated": total,
-                    "rescored": rescored,
-                    "failed": failed,
-                    "db_matches": db_matches,
-                    "status_changed": status_changed,
-                }
+
+            if updates.get("status") and updates["status"] != previous_status:
+                status_changed += 1
+
+            pending_updates.append((job["id"], updates))
+
+        # ── Write all updates in one transaction (DB reopened, no slow work) ─────
+        with get_repos() as repos:
+            jobs_repo = repos["jobs"]
+            for job_id, updates in pending_updates:
+                jobs_repo.update(job_id, updates)
+            repos["conn"].commit()
+
+        with _re_eval_lock:
+            _re_eval_state.progress = 100
+            _re_eval_state.message = (
+                f"Done — {rescored} rescored"
+                + (
+                    f", {db_matches} duplicate{'s' if db_matches != 1 else ''} flagged"
+                    if db_matches
+                    else ""
+                )
+                + (f", {status_changed} moved" if status_changed else "")
+                + (f", {failed} failed" if failed else "")
+            )
+            _re_eval_state.result = {
+                "evaluated": total,
+                "rescored": rescored,
+                "failed": failed,
+                "db_matches": db_matches,
+                "status_changed": status_changed,
+            }
     except Exception as exc:
         logger.error("Re-evaluation thread failed: %s", exc)
         with _re_eval_lock:
