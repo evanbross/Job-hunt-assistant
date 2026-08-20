@@ -29,14 +29,30 @@ import getpass
 from werkzeug.security import generate_password_hash
 
 
+# ai: claude-sonnet-5 | 2026-08-20
+def _read_password(prompt: str) -> str:
+    """getpass hides input completely — no dots, no cursor movement, nothing
+    printed as you type. That's expected, not a hang. Some terminals (seen
+    on Git Bash / certain integrated terminals on Windows) can't suppress
+    echo at all, in which case getpass itself already falls back to visible
+    input; if it still can't read the terminal, fall back here too rather
+    than raising an unhandled traceback."""
+    print(f"{prompt}(input is hidden — nothing will appear as you type)")
+    try:
+        return getpass.getpass("")
+    except (OSError, EOFError):
+        print("(hidden input isn't supported in this terminal — typing will be visible)")
+        return input()
+
+
 def main() -> None:
     email = input("Login email: ").strip()
     if not email:
         print("Email cannot be empty.")
         return
 
-    password = getpass.getpass("Login password: ")
-    confirm = getpass.getpass("Confirm password: ")
+    password = _read_password("Login password: ")
+    confirm = _read_password("Confirm password: ")
     if not password:
         print("Password cannot be empty.")
         return
