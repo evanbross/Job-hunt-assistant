@@ -51,11 +51,27 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# ai: claude-sonnet-5 | 2026-08-20
+# Each routes.* module here defines its own @celery_app.task(bind=True)
+# function (run_board_search_task, run_re_evaluate_task,
+# run_career_site_scan_task, run_scan_task, run_req_closed_scan_task,
+# run_wellfound_scan_task, run_greenhouse_scan_task) -- listed here so the
+# worker process imports and registers them at startup, same as
+# backend.tasks's existing two tasks.
 celery_app = Celery(
     "job_hunt_assistant",
     broker=config.REDIS_URL,
     backend=config.REDIS_URL,
-    include=["backend.tasks"],
+    include=[
+        "backend.tasks",
+        "routes.board_search",
+        "routes.fit",
+        "routes.career_sites",
+        "routes.scan",
+        "routes.applications",
+        "routes.wellfound",
+        "routes.greenhouse",
+    ],
 )
 
 celery_app.conf.update(

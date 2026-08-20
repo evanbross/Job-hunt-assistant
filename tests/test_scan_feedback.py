@@ -136,7 +136,12 @@ def test_noise_feedback_does_not_skip_entire_email(
     monkeypatch.setattr(scan, "GmailClient", FakeGmailClient)
     monkeypatch.setattr(scan, "EmailParser", FakeEmailParser)
 
-    scan._run_scan()
+    # run_scan_task is a @celery_app.task(bind=True) function. Calling it bare
+    # leaves self.request.id unset, which breaks self.update_state() inside
+    # the task (it needs a real task_id to store to the Redis backend) --
+    # .apply() runs it synchronously with a proper bound task context, no
+    # broker/worker required.
+    result = scan.run_scan_task.apply().result
 
     repos = open_repositories(dsn)
     try:
@@ -150,5 +155,5 @@ def test_noise_feedback_does_not_skip_entire_email(
         "Staff Software Engineer",
     ]
     assert scanned is not None
-    assert scan._scan_state.summary["feedback_filtered_emails"] == 0
-    assert scan._scan_state.summary["new_jobs"] == 2
+    assert result["summary"]["feedback_filtered_emails"] == 0
+    assert result["summary"]["new_jobs"] == 2

@@ -37,7 +37,6 @@
 
 from __future__ import annotations
 
-import threading
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -65,13 +64,21 @@ from routes.applications import (
     _closed_req_candidates,
     _detect_closed_req_platform,  # ai: claude-fable-5 | 2026-07-16
     _record_closed_req,
-    _req_closed_lock,
-    _req_closed_state,
-    _run_req_closed_scan,
     _throttle_host_fetch,  # ai: claude-fable-5 | 2026-07-17
     applications_bp,  # ai: claude-fable-5 | 2026-07-16
+    run_req_closed_scan_task,  # ai: claude-sonnet-5 | 2026-08-20
     submit_closed_req_capture,
 )
+
+
+# ai: claude-sonnet-5 | 2026-08-20
+# run_req_closed_scan_task is a @celery_app.task(bind=True) function.
+# .apply() runs it synchronously with a proper bound task context (needed for
+# self.update_state() inside the task), no broker/worker required, and
+# returns an EagerResult whose .result is the task's returned dict --
+# replaces reading the old module-level _req_closed_state directly.
+def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> dict:
+    return run_req_closed_scan_task.apply(kwargs={"platforms": platforms}).result
 
 
 # ai: claude-fable-5 | 2026-07-17
@@ -600,11 +607,10 @@ def test_run_req_closed_scan_scans_only_selected_platforms(
     with patch(
         "routes.applications._check_closed_req", return_value="open"
     ) as mock_check:
-        _run_req_closed_scan(frozenset({"wellfound"}))
+        result = _run_req_closed_scan(frozenset({"wellfound"}))
 
     assert [call.args[0] for call in mock_check.call_args_list] == [wellfound_url]
-    with _req_closed_lock:
-        assert _req_closed_state.total == 1
+    assert result["total"] == 1
 
 
 def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
@@ -629,7 +635,7 @@ def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
         repos["conn"].commit()
 
         with patch("routes.applications._check_closed_req", return_value="bad_url"):
-            _run_req_closed_scan()
+            result = _run_req_closed_scan()
 
         rows = [
             r
@@ -642,8 +648,7 @@ def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
         matching = next(r for r in rows if r["job_id"] == job_id)
         assert matching["site_name"] == "Wellfound (closed-req check)"
 
-        with _req_closed_lock:
-            assert _req_closed_state.bad_url_count == 0
+        assert result["bad_url_count"] == 0
     finally:
         repos["conn"].close()
 
@@ -697,7 +702,7 @@ def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
 
     monkeypatch.setattr(applications_module.time, "sleep", _extension_drains_queue)
     with patch("routes.applications._check_closed_req", return_value="open"):
-        _run_req_closed_scan()
+        result = _run_req_closed_scan()
 
     check_repos = open_repositories(config.DATABASE_URL)
     try:
@@ -712,14 +717,12 @@ def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
 
     assert {r["job_id"] for r in rows} == set(job_ids)
     assert closed_job["skip_reason"] == "req_closed"
-    with _req_closed_lock:
-        assert _req_closed_state.running is False
-        assert _req_closed_state.browser_checks_total == total
-        assert _req_closed_state.browser_checks_done == total
-        assert _req_closed_state.closed_count == 1
-        assert _req_closed_state.kept_count == total - 1
-        assert any(m["id"] == closed_job_id for m in _req_closed_state.marked)
-        assert _req_closed_state.message.startswith("Done")
+    assert result["browser_checks_total"] == total
+    assert result["browser_checks_done"] == total
+    assert result["closed_count"] == 1
+    assert result["kept_count"] == total - 1
+    assert any(m["id"] == closed_job_id for m in result["marked"])
+    assert result["message"].startswith("Done")
 
 
 # ai: claude-sonnet-5 | 2026-08-09
@@ -826,7 +829,7 @@ def test_run_req_closed_scan_sets_unreachable_since_when_browser_recheck_fails(
 
     monkeypatch.setattr(applications_module.time, "sleep", _extension_exhausts_retries)
     with patch("routes.applications._check_closed_req", return_value="bad_url"):
-        _run_req_closed_scan()
+        result = _run_req_closed_scan()
 
     check_repos = open_repositories(config.DATABASE_URL)
     try:
@@ -835,8 +838,7 @@ def test_run_req_closed_scan_sets_unreachable_since_when_browser_recheck_fails(
         check_repos["conn"].close()
 
     assert updated_job["unreachable_since"] is not None
-    with _req_closed_lock:
-        assert _req_closed_state.unreachable_count == 1
+    assert result["unreachable_count"] == 1
 
 
 # ai: claude-fable-5 | 2026-07-17
@@ -862,7 +864,7 @@ def test_run_req_closed_scan_stops_batching_when_extension_offline(
         repos["conn"].commit()
 
         with patch("routes.applications._check_closed_req", return_value="open"):
-            _run_req_closed_scan()
+            result = _run_req_closed_scan()
 
         rows = [
             r
@@ -873,11 +875,9 @@ def test_run_req_closed_scan_stops_batching_when_extension_offline(
         repos["conn"].close()
 
     assert len(rows) == _CLOSED_REQ_BROWSER_CHECK_CAP
-    with _req_closed_lock:
-        assert _req_closed_state.running is False
-        assert _req_closed_state.browser_checks_total == total
-        assert _req_closed_state.browser_checks_done == 0
-        assert "extension" in _req_closed_state.message
+    assert result["browser_checks_total"] == total
+    assert result["browser_checks_done"] == 0
+    assert "extension" in result["message"]
 
 
 # ─── _classify_closed_req_page ─────────────────────────────────────────────────
@@ -1250,16 +1250,22 @@ def test_start_closed_req_scan_rejects_empty_platform_list() -> None:
     assert res.status_code == 400
 
 
-def test_start_closed_req_scan_passes_selection_to_scan_thread() -> None:
+# ai: claude-sonnet-5 | 2026-08-20
+# Dispatch is now a synchronous call to _submit_closed_req_scan (which itself
+# calls run_req_closed_scan_task.delay()) rather than a spawned thread, so
+# these no longer need to wait on a threading.Event -- the fake runs inline
+# during the request.
+def test_start_closed_req_scan_passes_selection_to_scan_dispatch() -> None:
     client = _scan_routes_client()
-    scan_ran = threading.Event()
     received: list[frozenset[str] | None] = []
 
-    def fake_scan(platforms: frozenset[str] | None = None) -> None:
+    def fake_submit(platforms: frozenset[str] | None = None) -> str:
         received.append(platforms)
-        scan_ran.set()
+        return "fake-task-id"
 
-    with patch("routes.applications._run_req_closed_scan", side_effect=fake_scan):
+    with patch(
+        "routes.applications._submit_closed_req_scan", side_effect=fake_submit
+    ):
         res = client.post(
             "/api/applications/scan-closed-reqs",
             json={"platforms": ["wellfound", "mongodb"]},
@@ -1268,24 +1274,24 @@ def test_start_closed_req_scan_passes_selection_to_scan_thread() -> None:
     assert res.get_json() == {
         "status": "started",
         "platforms": ["mongodb", "wellfound"],
+        "task_id": "fake-task-id",
     }
-    assert scan_ran.wait(timeout=5), "scan thread never ran"
     assert received == [frozenset({"wellfound", "mongodb"})]
 
 
 def test_start_closed_req_scan_defaults_to_all_platforms() -> None:
     """A bodyless POST (the pre-checkbox behavior) must still scan everything."""
     client = _scan_routes_client()
-    scan_ran = threading.Event()
     received: list[frozenset[str] | None] = []
 
-    def fake_scan(platforms: frozenset[str] | None = None) -> None:
+    def fake_submit(platforms: frozenset[str] | None = None) -> str:
         received.append(platforms)
-        scan_ran.set()
+        return "fake-task-id"
 
-    with patch("routes.applications._run_req_closed_scan", side_effect=fake_scan):
+    with patch(
+        "routes.applications._submit_closed_req_scan", side_effect=fake_submit
+    ):
         res = client.post("/api/applications/scan-closed-reqs")
     assert res.status_code == 200
     assert res.get_json()["platforms"] == sorted(_PLATFORM_LABELS)
-    assert scan_ran.wait(timeout=5), "scan thread never ran"
     assert received == [frozenset(_PLATFORM_LABELS)]

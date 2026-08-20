@@ -41,10 +41,12 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 import config
+from backend.celery_app import celery_app
 from backend.tasks import run_import_task
 from backend.scanning.sources.wellfound_scraper import WellfoundLoginError, WellfoundScraper
 
@@ -53,46 +55,87 @@ logger = logging.getLogger(__name__)
 wellfound_bp = Blueprint("wellfound", __name__)
 
 
-# ── Scan state (in-memory, protected by a lock) ───────────────────────────────
+# ai: claude-sonnet-5 | 2026-08-20
+# ── Manual-login state (in-memory, protected by a lock) ───────────────────────
+# The scrape itself (run_wellfound_scan_task, below) is now a Celery task and
+# tracked via _wellfound_scan_last_task_id, same pattern as the other scans in
+# this app. The manual browser-login flow stays a plain thread -- it's a
+# synchronous "open a visible window, wait for the user" UX with no durable
+# progress worth tracking across a restart -- so it keeps its own small,
+# in-memory state here.
 
 
 @dataclass
-class WellfoundScanState:
+class WellfoundLoginState:
     running: bool = False
-    progress: int = 0
-    total: int = 0
     message: str = "Idle"
-    found: int = 0
-    task_id: str | None = None
-    last_run_at: str | None = None
-    last_found: int = 0
     error: str | None = None
-    phase_deadline: str | None = None
+    last_run_at: str | None = None
 
 
-_state = WellfoundScanState()
-_lock = threading.Lock()
+_login_state = WellfoundLoginState()
+_login_lock = threading.Lock()
 
 
-def _update(**kwargs: object) -> None:
-    with _lock:
+def _update_login(**kwargs: object) -> None:
+    with _login_lock:
         for key, value in kwargs.items():
-            setattr(_state, key, value)
+            setattr(_login_state, key, value)
 
 
-# ── Background scan thread ────────────────────────────────────────────────────
+# ai: claude-sonnet-5 | 2026-08-20
+# ── Scan task tracking (in-memory pointer only) ────────────────────────────────
+_wellfound_scan_last_task_id: str | None = None
+_wellfound_scan_lock = threading.Lock()
+_WELLFOUND_SCAN_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-def _run_scan(search_url: str, max_jobs: int) -> None:
-    _update(
-        running=True,
-        progress=0,
-        total=0,
-        message="Launching browser…",
-        error=None,
-        found=0,
-        task_id=None,
-    )
+def _wellfound_scan_is_active() -> bool:
+    with _wellfound_scan_lock:
+        task_id = _wellfound_scan_last_task_id
+    if task_id is None:
+        return False
+    return AsyncResult(task_id, app=celery_app).state in _WELLFOUND_SCAN_ACTIVE_STATES
+
+
+def _submit_wellfound_scan(search_url: str, max_jobs: int) -> str | None:
+    """Dispatch a Wellfound scrape unless one is already active. Returns the
+    new task id, or None if a scan was already running."""
+    global _wellfound_scan_last_task_id
+    with _wellfound_scan_lock:
+        if (
+            _wellfound_scan_last_task_id is not None
+            and AsyncResult(_wellfound_scan_last_task_id, app=celery_app).state
+            in _WELLFOUND_SCAN_ACTIVE_STATES
+        ):
+            return None
+        task = run_wellfound_scan_task.delay(search_url, max_jobs)
+        _wellfound_scan_last_task_id = task.id
+        return task.id
+
+
+# ai: claude-sonnet-5 | 2026-08-20
+@celery_app.task(bind=True)
+def run_wellfound_scan_task(self, search_url: str, max_jobs: int) -> dict:
+    """Scrape Wellfound and hand off results to the import task, run as a
+    Celery task so progress survives a restart. Progress is published via
+    self.update_state."""
+    state: dict[str, object] = {
+        "progress": 0,
+        "total": 0,
+        "message": "Launching browser…",
+        "found": 0,
+        "import_task_id": None,
+        "last_run_at": None,
+        "last_found": 0,
+        "error": None,
+        "phase_deadline": None,
+    }
+
+    def _publish(**kwargs: object) -> None:
+        state.update(kwargs)
+        self.update_state(state="PROGRESS", meta=dict(state))
+
     try:
         scraper = WellfoundScraper(
             email=config.WELLFOUND_EMAIL,
@@ -101,13 +144,15 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
         )
 
         def on_progress(current: int, total: int, message: str) -> None:
-            _update(progress=current, total=total, message=message, phase_deadline=None)
+            _publish(
+                progress=current, total=total, message=message, phase_deadline=None
+            )
 
         def on_status(message: str, timeout_seconds: int) -> None:
             deadline = (
                 datetime.now(UTC) + timedelta(seconds=timeout_seconds)
             ).isoformat(timespec="seconds")
-            _update(message=message, phase_deadline=deadline)
+            _publish(message=message, phase_deadline=deadline)
 
         jobs = scraper.scrape(
             search_url=search_url,
@@ -117,14 +162,13 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
         )
 
         if not jobs:
-            _update(
-                running=False,
+            _publish(
                 message="Scan complete — no new jobs found",
                 last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
             )
-            return
+            return dict(state)
 
-        _update(found=len(jobs), message=f"Queueing {len(jobs)} jobs for import…")
+        _publish(found=len(jobs), message=f"Queueing {len(jobs)} jobs for import…")
 
         task = run_import_task.delay(
             jobs,
@@ -132,41 +176,36 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
             {"import_trigger": "wellfound_scrape"},
         )
 
-        _update(
-            running=False,
-            task_id=task.id,
+        _publish(
+            import_task_id=task.id,
             last_found=len(jobs),
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
             message=f"Queued {len(jobs)} jobs (task {task.id[:8]}…)",
         )
+        return dict(state)
 
     except WellfoundLoginError as exc:
         logger.error("Wellfound login failed: %s", exc)
-        _update(
-            running=False,
-            error=str(exc),
-            message="Login failed — check credentials in .env",
-        )
+        _publish(error=str(exc), message="Login failed — check credentials in .env")
+        return dict(state)
     except (TimeoutError, ConnectionError, OSError) as exc:
         logger.error("Wellfound scan network error: %s", exc)
-        _update(running=False, error=str(exc), message="Network error during scan")
+        _publish(error=str(exc), message="Network error during scan")
+        return dict(state)
     except Exception as exc:
         logger.error("Wellfound scan failed: %s", exc, exc_info=True)
-        _update(running=False, error=str(exc), message="Scan failed — see server logs")
+        _publish(error=str(exc), message="Scan failed — see server logs")
+        return dict(state)
 
 
 # ── Background helpers ────────────────────────────────────────────────────────
 
 
 def _run_manual_login() -> None:
-    _update(
+    _update_login(
         running=True,
-        progress=0,
-        total=0,
         message="Browser open — please log in to Wellfound (you have 3 minutes)",
         error=None,
-        found=0,
-        task_id=None,
     )
     try:
         scraper = WellfoundScraper(
@@ -175,17 +214,19 @@ def _run_manual_login() -> None:
             session_file=config.WELLFOUND_SESSION_FILE,
         )
         scraper.manual_login(timeout_seconds=180)
-        _update(
+        _update_login(
             running=False,
             message="Login successful — session saved. You can now run a scan.",
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
     except WellfoundLoginError as exc:
         logger.error("Manual Wellfound login failed: %s", exc)
-        _update(running=False, error=str(exc), message="Login failed or timed out")
+        _update_login(running=False, error=str(exc), message="Login failed or timed out")
     except Exception as exc:
         logger.error("Manual login error: %s", exc, exc_info=True)
-        _update(running=False, error=str(exc), message="Login failed — see server logs")
+        _update_login(
+            running=False, error=str(exc), message="Login failed — see server logs"
+        )
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -194,8 +235,8 @@ def _run_manual_login() -> None:
 @wellfound_bp.route("/wellfound/scan", methods=["POST"])
 def start_scan() -> ResponseReturnValue:
     """Trigger a Wellfound scrape and enqueue results for import."""
-    with _lock:
-        if _state.running:
+    with _login_lock:
+        if _login_state.running:
             return jsonify({"error": "Scan already running"}), 409
 
     if not config.WELLFOUND_EMAIL or not config.WELLFOUND_PASSWORD:
@@ -214,42 +255,119 @@ def start_scan() -> ResponseReturnValue:
     )
     max_jobs = min(max(int(body.get("max_jobs") or 30), 1), 200)
 
-    threading.Thread(
-        target=_run_scan,
-        args=(search_url, max_jobs),
-        daemon=True,
-        name="wellfound-scan",
-    ).start()
+    task_id = _submit_wellfound_scan(search_url, max_jobs)
+    if task_id is None:
+        return jsonify({"error": "Scan already running"}), 409
 
     return jsonify({"status": "started"})
 
 
 @wellfound_bp.route("/wellfound/status", methods=["GET"])
 def scan_status() -> ResponseReturnValue:
-    """Return the current Wellfound scan state."""
-    with _lock:
+    """Return the current Wellfound scan or login state."""
+    with _login_lock:
+        login_running = _login_state.running
+        login_message = _login_state.message
+        login_error = _login_state.error
+        login_last_run_at = _login_state.last_run_at
+
+    if login_running:
         return jsonify(
             {
-                "running": _state.running,
-                "progress": _state.progress,
-                "total": _state.total,
-                "message": _state.message,
-                "found": _state.found,
-                "task_id": _state.task_id,
-                "last_run_at": _state.last_run_at,
-                "last_found": _state.last_found,
-                "error": _state.error,
-                "phase_deadline": _state.phase_deadline,
+                "running": True,
+                "progress": 0,
+                "total": 0,
+                "message": login_message,
+                "found": 0,
+                "task_id": None,
+                "last_run_at": login_last_run_at,
+                "last_found": 0,
+                "error": login_error,
+                "phase_deadline": None,
             }
         )
+
+    with _wellfound_scan_lock:
+        task_id = _wellfound_scan_last_task_id
+
+    # ai: claude-sonnet-5 | 2026-08-20
+    # No scan has ever run yet: fall back to reporting the login flow's last
+    # result. Once a scan task exists, it takes over reporting -- same
+    # "whichever ran most recently wins" idea the old shared dataclass gave
+    # for free, approximated here since scan and login are now two different
+    # state sources.
+    _idle = {
+        "running": False,
+        "progress": 0,
+        "total": 0,
+        "message": login_message,
+        "found": 0,
+        "task_id": None,
+        "last_run_at": login_last_run_at,
+        "last_found": 0,
+        "error": login_error,
+        "phase_deadline": None,
+    }
+    if task_id is None:
+        return jsonify(_idle)
+
+    result = AsyncResult(task_id, app=celery_app)
+    result_state = result.state
+
+    if result_state in _WELLFOUND_SCAN_ACTIVE_STATES:
+        meta = result.info if isinstance(result.info, dict) else {}
+        return jsonify(
+            {
+                "running": True,
+                "progress": meta.get("progress", 0),
+                "total": meta.get("total", 0),
+                "message": meta.get("message", "Starting…"),
+                "found": meta.get("found", 0),
+                "task_id": meta.get("import_task_id"),
+                "last_run_at": meta.get("last_run_at"),
+                "last_found": meta.get("last_found", 0),
+                "error": meta.get("error"),
+                "phase_deadline": meta.get("phase_deadline"),
+            }
+        )
+
+    if result_state == "SUCCESS":
+        final = result.result if isinstance(result.result, dict) else {}
+        return jsonify(
+            {
+                "running": False,
+                "progress": final.get("progress", 0),
+                "total": final.get("total", 0),
+                "message": final.get("message", "Done."),
+                "found": final.get("found", 0),
+                "task_id": final.get("import_task_id"),
+                "last_run_at": final.get("last_run_at"),
+                "last_found": final.get("last_found", 0),
+                "error": final.get("error"),
+                "phase_deadline": None,
+            }
+        )
+
+    # FAILURE or REVOKED -- the task body catches its own exceptions and
+    # returns normally, so reaching this branch means something escaped that
+    # (e.g. the worker process itself died).
+    return jsonify(
+        {
+            **_idle,
+            "message": f"Scan failed unexpectedly: {result.result or 'unknown error'}",
+            "error": str(result.result or "unknown error"),
+        }
+    )
 
 
 @wellfound_bp.route("/wellfound/browser-login", methods=["POST"])
 def browser_login() -> ResponseReturnValue:
     """Open a visible browser window for manual login and save the session."""
-    with _lock:
-        if _state.running:
+    with _login_lock:
+        if _login_state.running:
             return jsonify({"error": "A scan or login is already running"}), 409
+    if _wellfound_scan_is_active():
+        return jsonify({"error": "A scan or login is already running"}), 409
 
     threading.Thread(
         target=_run_manual_login,

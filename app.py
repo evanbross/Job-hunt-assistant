@@ -371,8 +371,8 @@ def _browser_capture_queue_has_pending() -> bool:
 def _handle_listener_capture(body: dict) -> tuple[dict, int]:
     """Routes captures from the browser extension by purpose.
 
-    Closed-req checks (see routes.applications._run_req_closed_scan) post the raw
-    captured HTML for classification rather than going through the job-import
+    Closed-req checks (see routes.applications.run_req_closed_scan_task) post the
+    raw captured HTML for classification rather than going through the job-import
     pipeline, which expects structured job listings.
     """
     if body.get("purpose") == "closed_req":

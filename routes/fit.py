@@ -40,13 +40,14 @@ import json
 import logging
 import re
 import threading
-from dataclasses import dataclass
 
+from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.celery_app import celery_app
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.duplicate_matching import db_match_for_job
@@ -64,27 +65,46 @@ logger = logging.getLogger(__name__)
 fit_bp = Blueprint("fit", __name__)
 
 
-# ─── Re-evaluate state (in-memory, protected by a lock) ───────────────────────
-
-
-@dataclass
-class ReEvalState:
-    running: bool = False
-    progress: int = 0
-    message: str = "Idle"
-    result: dict | None = None
-
-
-_re_eval_state = ReEvalState()
+# ai: claude-sonnet-5 | 2026-08-20
+# ─── Re-evaluate task tracking (in-memory pointer only) ───────────────────────
+# Progress lives in Celery's Redis result backend; this just remembers which
+# task_id to poll, mirroring routes/jd_health_check.py's
+# _submit_jd_health_check_run.
+_re_eval_last_task_id: str | None = None
 _re_eval_lock = threading.Lock()
+_RE_EVAL_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-def _run_re_evaluate() -> None:
+def _submit_re_evaluate() -> str | None:
+    """Dispatch a re-evaluate run unless one is already active. Returns the
+    new task id, or None if a run was already active."""
+    global _re_eval_last_task_id
     with _re_eval_lock:
-        _re_eval_state.running = True
-        _re_eval_state.progress = 0
-        _re_eval_state.result = None
-        _re_eval_state.message = "Loading queue…"
+        if (
+            _re_eval_last_task_id is not None
+            and AsyncResult(_re_eval_last_task_id, app=celery_app).state
+            in _RE_EVAL_ACTIVE_STATES
+        ):
+            return None
+        task = run_re_evaluate_task.delay()
+        _re_eval_last_task_id = task.id
+        return task.id
+
+
+# ai: claude-sonnet-5 | 2026-08-20
+@celery_app.task(bind=True)
+def run_re_evaluate_task(self) -> dict:
+    """Re-score every active queue job, run as a Celery task so progress
+    survives a restart. Progress is published via self.update_state."""
+    state: dict[str, object] = {
+        "progress": 0,
+        "message": "Loading queue…",
+        "result": None,
+    }
+
+    def _publish(**kwargs: object) -> None:
+        state.update(kwargs)
+        self.update_state(state="PROGRESS", meta=dict(state))
 
     # ai: claude-sonnet-5 | 2026-08-19
     # Split per Dev-Standards PYTHON_STANDARDS.md "Connection Lifetime vs. Slow
@@ -110,10 +130,7 @@ def _run_re_evaluate() -> None:
             penalty_rules: list[dict] = penalties_repo.get_enabled()
             fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback()
 
-        with _re_eval_lock:
-            _re_eval_state.message = (
-                f"Re-evaluating {total} job{'s' if total != 1 else ''}…"
-            )
+        _publish(message=f"Re-evaluating {total} job{'s' if total != 1 else ''}…")
 
         scorer = FitScorer()
         dedup_checker = DuplicateChecker()
@@ -133,9 +150,10 @@ def _run_re_evaluate() -> None:
                 if company and title
                 else (company or title or f"job {job.get('id')}")
             )
-            with _re_eval_lock:
-                _re_eval_state.progress = round((i / total) * 100) if total else 0
-                _re_eval_state.message = f"Job {i + 1} of {total}: {label}"
+            _publish(
+                progress=round((i / total) * 100) if total else 0,
+                message=f"Job {i + 1} of {total}: {label}",
+            )
 
             previous_status = str(job.get("status") or "")
             updates: dict[str, object] = {}
@@ -211,9 +229,16 @@ def _run_re_evaluate() -> None:
                 jobs_repo.update(job_id, updates)
             repos["conn"].commit()
 
-        with _re_eval_lock:
-            _re_eval_state.progress = 100
-            _re_eval_state.message = (
+        result_summary = {
+            "evaluated": total,
+            "rescored": rescored,
+            "failed": failed,
+            "db_matches": db_matches,
+            "status_changed": status_changed,
+        }
+        _publish(
+            progress=100,
+            message=(
                 f"Done — {rescored} rescored"
                 + (
                     f", {db_matches} duplicate{'s' if db_matches != 1 else ''} flagged"
@@ -222,21 +247,17 @@ def _run_re_evaluate() -> None:
                 )
                 + (f", {status_changed} moved" if status_changed else "")
                 + (f", {failed} failed" if failed else "")
-            )
-            _re_eval_state.result = {
-                "evaluated": total,
-                "rescored": rescored,
-                "failed": failed,
-                "db_matches": db_matches,
-                "status_changed": status_changed,
-            }
+            ),
+            result=result_summary,
+        )
+        return dict(state)
     except Exception as exc:
-        logger.error("Re-evaluation thread failed: %s", exc)
-        with _re_eval_lock:
-            _re_eval_state.message = f"Re-evaluation failed: {exc}"
-    finally:
-        with _re_eval_lock:
-            _re_eval_state.running = False
+        # ai: claude-sonnet-5 | 2026-08-20
+        # Matches the original thread's behavior: a crash is recorded as a
+        # finished run with a message, not a hard task failure.
+        logger.error("Re-evaluation task failed: %s", exc)
+        _publish(message=f"Re-evaluation failed: {exc}")
+        return dict(state)
 
 
 # ─── Fit routes ───────────────────────────────────────────────────────────────
@@ -244,25 +265,56 @@ def _run_re_evaluate() -> None:
 
 @fit_bp.route("/jobs/re-evaluate", methods=["POST"])
 def re_evaluate_queue_jobs() -> ResponseReturnValue:
-    with _re_eval_lock:
-        if _re_eval_state.running:
-            return jsonify({"error": "Re-evaluation already running"}), 409
-    thread = threading.Thread(target=_run_re_evaluate, daemon=True)
-    thread.start()
-    return jsonify({"status": "started"}), 202
+    task_id = _submit_re_evaluate()
+    if task_id is None:
+        return jsonify({"error": "Re-evaluation already running"}), 409
+    return jsonify({"status": "started", "task_id": task_id}), 202
 
 
 @fit_bp.route("/jobs/re-evaluate/status")
 def re_evaluate_status() -> ResponseReturnValue:
     with _re_eval_lock:
+        task_id = _re_eval_last_task_id
+
+    if task_id is None:
+        return jsonify({"running": False, "progress": 0, "message": "Idle", "result": None})
+
+    result = AsyncResult(task_id, app=celery_app)
+    state = result.state
+
+    if state in _RE_EVAL_ACTIVE_STATES:
+        meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
-                "running": _re_eval_state.running,
-                "progress": _re_eval_state.progress,
-                "message": _re_eval_state.message,
-                "result": _re_eval_state.result,
+                "running": True,
+                "progress": meta.get("progress", 0),
+                "message": meta.get("message", "Starting…"),
+                "result": meta.get("result"),
             }
         )
+
+    if state == "SUCCESS":
+        final = result.result if isinstance(result.result, dict) else {}
+        return jsonify(
+            {
+                "running": False,
+                "progress": final.get("progress", 100),
+                "message": final.get("message", "Done."),
+                "result": final.get("result"),
+            }
+        )
+
+    # FAILURE or REVOKED -- the task body catches its own exceptions and
+    # returns normally, so reaching this branch means something escaped that
+    # (e.g. the worker process itself died).
+    return jsonify(
+        {
+            "running": False,
+            "progress": 0,
+            "message": f"Re-evaluation failed unexpectedly: {result.result or 'unknown error'}",
+            "result": None,
+        }
+    )
 
 
 @fit_bp.route("/jobs/triage")

@@ -32,21 +32,22 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""Email scan routes and background scan thread."""
+"""Email scan routes and background scan Celery task."""
 
 from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from celery.result import AsyncResult
 from flask import Blueprint, jsonify
 from flask.typing import ResponseReturnValue
 from googleapiclient.errors import HttpError
 
 import config
 from backend.ai_provider import AIProviderClient
+from backend.celery_app import celery_app
 from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.db.job_columns import JobColumns
 from backend.scoring.duplicate_checker import DuplicateChecker
@@ -74,28 +75,30 @@ logger = logging.getLogger(__name__)
 
 scan_bp = Blueprint("scan", __name__)
 
-# ─── Scan state (in-memory, protected by a lock) ──────────────────────────────
-
-
-@dataclass
-class ScanState:
-    running: bool = False
-    progress: int = 0
-    message: str = "Idle"
-    jobs_found: int = 0
-    jobs_processed: int = 0
-    errors: list[dict] = field(default_factory=list)
-    summary: dict | None = None
-    connection_warning: str = ""
-    failed: bool = False
-    current_email_sender: str = ""
-    current_email_subject: str = ""
-    current_email_id: str = ""
-    current_job_title: str = ""
-
-
-_scan_state = ScanState()
+# ai: claude-sonnet-5 | 2026-08-20
+# ─── Scan task tracking (in-memory pointer only) ───────────────────────────────
+# Progress lives in Celery's Redis result backend; this just remembers which
+# task_id to poll, mirroring routes/jd_health_check.py's
+# _submit_jd_health_check_run.
+_scan_last_task_id: str | None = None
 _scan_lock = threading.Lock()
+_SCAN_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
+
+
+def _submit_scan(rescan_all: bool = False) -> str | None:
+    """Dispatch an email scan unless one is already active. Returns the new
+    task id, or None if a scan was already running."""
+    global _scan_last_task_id
+    with _scan_lock:
+        if (
+            _scan_last_task_id is not None
+            and AsyncResult(_scan_last_task_id, app=celery_app).state
+            in _SCAN_ACTIVE_STATES
+        ):
+            return None
+        task = run_scan_task.delay(rescan_all=rescan_all)
+        _scan_last_task_id = task.id
+        return task.id
 
 
 def _email_report_row(
@@ -123,49 +126,6 @@ def _email_report_row(
         "job_details": job_details or [],
         "reason": reason,
     }
-
-
-def _update_scan(
-    *,
-    progress: int | None = None,
-    message: str | None = None,
-    jobs_found: int | None = None,
-    jobs_processed: int | None = None,
-    error: str | None = None,
-    error_email_id: str | None = None,
-    summary: dict | None = None,
-    connection_warning: str | None = None,
-    failed: bool | None = None,
-    current_email_sender: str | None = None,
-    current_email_subject: str | None = None,
-    current_email_id: str | None = None,
-    current_job_title: str | None = None,
-) -> None:
-    with _scan_lock:
-        if progress is not None:
-            _scan_state.progress = progress
-        if message is not None:
-            _scan_state.message = message
-        if jobs_found is not None:
-            _scan_state.jobs_found = jobs_found
-        if jobs_processed is not None:
-            _scan_state.jobs_processed = jobs_processed
-        if error is not None:
-            _scan_state.errors.append({"message": error, "email_id": error_email_id})
-        if summary is not None:
-            _scan_state.summary = summary
-        if connection_warning is not None:
-            _scan_state.connection_warning = connection_warning
-        if failed is not None:
-            _scan_state.failed = failed
-        if current_email_sender is not None:
-            _scan_state.current_email_sender = current_email_sender
-        if current_email_subject is not None:
-            _scan_state.current_email_subject = current_email_subject
-        if current_email_id is not None:
-            _scan_state.current_email_id = current_email_id
-        if current_job_title is not None:
-            _scan_state.current_job_title = current_job_title
 
 
 # ─── Gmail helpers ────────────────────────────────────────────────────────────
@@ -204,27 +164,75 @@ def _finalize_scanned_email(
 # ─── Background scan thread ───────────────────────────────────────────────────
 
 
-def _run_scan(rescan_all: bool = False) -> None:
+# ai: claude-sonnet-5 | 2026-08-20
+@celery_app.task(bind=True)
+def run_scan_task(self, rescan_all: bool = False) -> dict:
     """
-    Full email scan pipeline. Runs in a background thread so the POST /api/scan
-    endpoint returns immediately. Progress is tracked via _scan_state.
+    Full email scan pipeline, run as a Celery task so progress survives a
+    restart and POST /api/scan returns immediately. Progress is published via
+    self.update_state.
 
     rescan_all: when True, fetches all messages (not just unread) so that
         previously-read emails are re-processed after a rescan-all wipe.
     """
-    with _scan_lock:
-        _scan_state.running = True
-        _scan_state.progress = 0
-        _scan_state.message = "Starting scan..."
-        _scan_state.jobs_found = 0
-        _scan_state.jobs_processed = 0
-        _scan_state.errors.clear()
-        _scan_state.summary = None
-        _scan_state.failed = False
-        _scan_state.current_email_sender = ""
-        _scan_state.current_email_subject = ""
-        _scan_state.current_email_id = ""
-        _scan_state.current_job_title = ""
+    state: dict[str, object] = {
+        "progress": 0,
+        "message": "Starting scan...",
+        "jobs_found": 0,
+        "jobs_processed": 0,
+        "errors": [],
+        "summary": None,
+        "connection_warning": "",
+        "failed": False,
+        "current_email_sender": "",
+        "current_email_subject": "",
+        "current_email_id": "",
+        "current_job_title": "",
+    }
+
+    def _update_scan(
+        *,
+        progress: int | None = None,
+        message: str | None = None,
+        jobs_found: int | None = None,
+        jobs_processed: int | None = None,
+        error: str | None = None,
+        error_email_id: str | None = None,
+        summary: dict | None = None,
+        connection_warning: str | None = None,
+        failed: bool | None = None,
+        current_email_sender: str | None = None,
+        current_email_subject: str | None = None,
+        current_email_id: str | None = None,
+        current_job_title: str | None = None,
+    ) -> None:
+        if progress is not None:
+            state["progress"] = progress
+        if message is not None:
+            state["message"] = message
+        if jobs_found is not None:
+            state["jobs_found"] = jobs_found
+        if jobs_processed is not None:
+            state["jobs_processed"] = jobs_processed
+        if error is not None:
+            state["errors"].append(  # type: ignore[union-attr]
+                {"message": error, "email_id": error_email_id}
+            )
+        if summary is not None:
+            state["summary"] = summary
+        if connection_warning is not None:
+            state["connection_warning"] = connection_warning
+        if failed is not None:
+            state["failed"] = failed
+        if current_email_sender is not None:
+            state["current_email_sender"] = current_email_sender
+        if current_email_subject is not None:
+            state["current_email_subject"] = current_email_subject
+        if current_email_id is not None:
+            state["current_email_id"] = current_email_id
+        if current_job_title is not None:
+            state["current_job_title"] = current_job_title
+        self.update_state(state="PROGRESS", meta=dict(state))
 
     # ai: claude-fable-5 | 2026-07-14
     # Lazy: no browser is launched unless a Wellfound job URL is encountered.
@@ -237,7 +245,7 @@ def _run_scan(rescan_all: bool = False) -> None:
             gmail = GmailClient()
         except NotAuthenticatedError as exc:
             _update_scan(error=str(exc), message="Not authenticated with Google.")
-            return
+            return dict(state)
 
         # Load config (no DB needed for these)
         runtime_cfg = config.load_runtime_config()
@@ -266,7 +274,7 @@ def _run_scan(rescan_all: bool = False) -> None:
                 _update_scan(
                     progress=100, message="No email sources enabled — nothing to scan."
                 )
-                return
+                return dict(state)
 
             resume_row = repos["resume"].get_latest()
             resume_text = resume_row["content"] if resume_row else ""
@@ -291,7 +299,7 @@ def _run_scan(rescan_all: bool = False) -> None:
 
         if total == 0:
             _update_scan(progress=100, message="No new unread emails found.")
-            return
+            return dict(state)
 
         parser = EmailParser(
             client=AIProviderClient(
@@ -977,8 +985,12 @@ def _run_scan(rescan_all: bool = False) -> None:
                 ),
             },
         )
+        return dict(state)
 
     except Exception as exc:
+        # ai: claude-sonnet-5 | 2026-08-20
+        # Matches the original thread's behavior: a crash is recorded as a
+        # finished run with failed=True, not a hard task failure.
         logger.exception("Scan failed with unexpected error")
         _update_scan(
             progress=100,
@@ -986,10 +998,9 @@ def _run_scan(rescan_all: bool = False) -> None:
             error=f"Scan failed: {exc}",
             message=f"Scan stopped unexpectedly: {exc}",
         )
+        return dict(state)
     finally:
         wellfound_fetcher.close()  # ai: claude-fable-5 | 2026-07-14
-        with _scan_lock:
-            _scan_state.running = False
 
 
 # ─── Scan routes ──────────────────────────────────────────────────────────────
@@ -997,35 +1008,91 @@ def _run_scan(rescan_all: bool = False) -> None:
 
 @scan_bp.route("/scan", methods=["POST"])
 def scan_emails() -> ResponseReturnValue:
-    with _scan_lock:
-        if _scan_state.running:
-            return jsonify({"error": "A scan is already running"}), 409
-
-    thread = threading.Thread(target=_run_scan, daemon=True)
-    thread.start()
-    return jsonify({"status": "started"}), 202
+    task_id = _submit_scan()
+    if task_id is None:
+        return jsonify({"error": "A scan is already running"}), 409
+    return jsonify({"status": "started", "task_id": task_id}), 202
 
 
 @scan_bp.route("/scan/status")
 def scan_status() -> ResponseReturnValue:
     with _scan_lock:
+        task_id = _scan_last_task_id
+
+    _idle = {
+        "running": False,
+        "progress": 0,
+        "message": "Idle",
+        "jobs_found": 0,
+        "jobs_processed": 0,
+        "errors": [],
+        "summary": None,
+        "connection_warning": "",
+        "failed": False,
+        "current_email_sender": "",
+        "current_email_subject": "",
+        "current_email_id": "",
+        "current_job_title": "",
+    }
+    if task_id is None:
+        return jsonify(_idle)
+
+    result = AsyncResult(task_id, app=celery_app)
+    result_state = result.state
+
+    if result_state in _SCAN_ACTIVE_STATES:
+        meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
-                "running": _scan_state.running,
-                "progress": _scan_state.progress,
-                "message": _scan_state.message,
-                "jobs_found": _scan_state.jobs_found,
-                "jobs_processed": _scan_state.jobs_processed,
-                "errors": list(_scan_state.errors),
-                "summary": _scan_state.summary,
-                "connection_warning": _scan_state.connection_warning,
-                "failed": _scan_state.failed,
-                "current_email_sender": _scan_state.current_email_sender,
-                "current_email_subject": _scan_state.current_email_subject,
-                "current_email_id": _scan_state.current_email_id,
-                "current_job_title": _scan_state.current_job_title,
+                "running": True,
+                "progress": meta.get("progress", 0),
+                "message": meta.get("message", "Starting…"),
+                "jobs_found": meta.get("jobs_found", 0),
+                "jobs_processed": meta.get("jobs_processed", 0),
+                "errors": meta.get("errors", []),
+                "summary": meta.get("summary"),
+                "connection_warning": meta.get("connection_warning", ""),
+                "failed": meta.get("failed", False),
+                "current_email_sender": meta.get("current_email_sender", ""),
+                "current_email_subject": meta.get("current_email_subject", ""),
+                "current_email_id": meta.get("current_email_id", ""),
+                "current_job_title": meta.get("current_job_title", ""),
             }
         )
+
+    if result_state == "SUCCESS":
+        final = result.result if isinstance(result.result, dict) else {}
+        return jsonify(
+            {
+                "running": False,
+                "progress": final.get("progress", 100),
+                "message": final.get("message", "Done."),
+                "jobs_found": final.get("jobs_found", 0),
+                "jobs_processed": final.get("jobs_processed", 0),
+                "errors": final.get("errors", []),
+                "summary": final.get("summary"),
+                "connection_warning": final.get("connection_warning", ""),
+                "failed": final.get("failed", False),
+                "current_email_sender": "",
+                "current_email_subject": "",
+                "current_email_id": "",
+                "current_job_title": "",
+            }
+        )
+
+    # FAILURE or REVOKED -- the task body catches its own exceptions and
+    # returns normally (see run_scan_task), so reaching this branch means
+    # something escaped that (e.g. the worker process itself died).
+    return jsonify(
+        {
+            **_idle,
+            "failed": True,
+            "message": f"Scan failed unexpectedly: {result.result or 'unknown error'}",
+            "errors": [
+                {"message": str(result.result or "unknown error"), "email_id": None}
+            ],
+        }
+    )
 
 
 @scan_bp.route("/emails/rescan-all", methods=["POST"])
@@ -1038,7 +1105,11 @@ def rescan_all_emails() -> ResponseReturnValue:
     are left intact.
     """
     with _scan_lock:
-        if _scan_state.running:
+        if (
+            _scan_last_task_id is not None
+            and AsyncResult(_scan_last_task_id, app=celery_app).state
+            in _SCAN_ACTIVE_STATES
+        ):
             return jsonify({"error": "A scan is already running"}), 409
 
     with get_repos() as repos:
@@ -1055,8 +1126,7 @@ def rescan_all_emails() -> ResponseReturnValue:
         repos["conn"].commit()
 
     # Kick off a fresh scan with unread_only=False so already-read emails are re-fetched
-    thread = threading.Thread(
-        target=_run_scan, kwargs={"rescan_all": True}, daemon=True
-    )
-    thread.start()
-    return jsonify({"status": "started"}), 202
+    task_id = _submit_scan(rescan_all=True)
+    if task_id is None:
+        return jsonify({"error": "A scan is already running"}), 409
+    return jsonify({"status": "started", "task_id": task_id}), 202

@@ -32,7 +32,7 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""Career site scanner routes and background scan thread."""
+"""Career site scanner routes and background scan Celery task."""
 
 from __future__ import annotations
 
@@ -40,15 +40,16 @@ import logging
 import re
 import secrets
 import threading
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
+from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 import config
 from backend.scanning.career_site_scanner import CareerSiteScanner
+from backend.celery_app import celery_app
 from backend.db import (
     DuplicateJobUrlError,
     ICareerRejectionRuleRepository,
@@ -78,28 +79,32 @@ career_sites_bp = Blueprint("career_sites", __name__)
 _CAREER_SITE_COLLECTION_MODES = frozenset({"automatic", "manual"})
 
 
-# ─── Career-site scan state (in-memory, protected by a lock) ──────────────────
+# ai: claude-sonnet-5 | 2026-08-20
+# ─── Career-site scan task tracking (in-memory pointer only) ──────────────────
+# Progress lives in Celery's Redis result backend; this just remembers which
+# task_id to poll, mirroring routes/jd_health_check.py's
+# _submit_jd_health_check_run.
+_career_scan_last_task_id: str | None = None
+_career_scan_lock = threading.Lock()
+_CAREER_SCAN_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-@dataclass
-class CareerSiteScanState:
-    running: bool = False
-    progress: int = 0
-    message: str = "Idle"
-    sites_total: int = 0
-    sites_scanned: int = 0
-    jobs_found: int = 0
-    jobs_added: int = 0
-    jobs_promoted: int = 0
-    listings_filtered: int = 0
-    listings_evaluated: int = 0
-    last_run_at: str | None = None
-    last_trigger: str | None = None
-    errors: list[str] = field(default_factory=list)
-
-
-_career_state = CareerSiteScanState()
-_career_lock = threading.Lock()
+def _submit_career_scan(
+    trigger: str, source_id: int | None = None
+) -> str | None:
+    """Dispatch a career-site scan unless one is already active. Returns the
+    new task id, or None if a scan was already running."""
+    global _career_scan_last_task_id
+    with _career_scan_lock:
+        if (
+            _career_scan_last_task_id is not None
+            and AsyncResult(_career_scan_last_task_id, app=celery_app).state
+            in _CAREER_SCAN_ACTIVE_STATES
+        ):
+            return None
+        task = run_career_site_scan_task.delay(trigger=trigger, source_id=source_id)
+        _career_scan_last_task_id = task.id
+        return task.id
 
 
 # ─── Career-site helpers ──────────────────────────────────────────────────────
@@ -140,48 +145,6 @@ def _tracking_status_for_career_job(
     if local_status:
         return f"Inbox: {local_status}", None
     return "New", None
-
-
-def _update_career_scan(
-    *,
-    progress: int | None = None,
-    message: str | None = None,
-    sites_total: int | None = None,
-    sites_scanned: int | None = None,
-    jobs_found: int | None = None,
-    jobs_added: int | None = None,
-    jobs_promoted: int | None = None,
-    listings_filtered: int | None = None,
-    listings_evaluated: int | None = None,
-    last_run_at: str | None = None,
-    last_trigger: str | None = None,
-    error: str | None = None,
-) -> None:
-    with _career_lock:
-        if progress is not None:
-            _career_state.progress = progress
-        if message is not None:
-            _career_state.message = message
-        if sites_total is not None:
-            _career_state.sites_total = sites_total
-        if sites_scanned is not None:
-            _career_state.sites_scanned = sites_scanned
-        if jobs_found is not None:
-            _career_state.jobs_found = jobs_found
-        if jobs_added is not None:
-            _career_state.jobs_added = jobs_added
-        if jobs_promoted is not None:
-            _career_state.jobs_promoted = jobs_promoted
-        if listings_filtered is not None:
-            _career_state.listings_filtered = listings_filtered
-        if listings_evaluated is not None:
-            _career_state.listings_evaluated = listings_evaluated
-        if last_run_at is not None:
-            _career_state.last_run_at = last_run_at
-        if last_trigger is not None:
-            _career_state.last_trigger = last_trigger
-        if error is not None:
-            _career_state.errors.append(error)
 
 
 def _parse_collection_mode(value: object, *, default: str = "automatic") -> str:
@@ -308,22 +271,70 @@ def _re_evaluate_career_scan_results(
     }
 
 
-def _run_career_site_scan(
-    trigger: str = "manual", source_id: int | None = None
-) -> None:
-    with _career_lock:
-        _career_state.running = True
-        _career_state.progress = 0
-        _career_state.message = "Starting career-site scan..."
-        _career_state.sites_total = 0
-        _career_state.sites_scanned = 0
-        _career_state.jobs_found = 0
-        _career_state.jobs_added = 0
-        _career_state.jobs_promoted = 0
-        _career_state.listings_filtered = 0
-        _career_state.listings_evaluated = 0
-        _career_state.errors.clear()
-        _career_state.last_trigger = trigger
+# ai: claude-sonnet-5 | 2026-08-20
+@celery_app.task(bind=True)
+def run_career_site_scan_task(
+    self, trigger: str = "manual", source_id: int | None = None
+) -> dict:
+    """Career-site scan pipeline, run as a Celery task so progress survives a
+    restart. Progress is published via self.update_state; see the
+    module-level note on _career_scan_last_task_id for how the status route
+    and scheduler find/dispatch it."""
+    state: dict[str, object] = {
+        "progress": 0,
+        "message": "Starting career-site scan...",
+        "sites_total": 0,
+        "sites_scanned": 0,
+        "jobs_found": 0,
+        "jobs_added": 0,
+        "jobs_promoted": 0,
+        "listings_filtered": 0,
+        "listings_evaluated": 0,
+        "last_run_at": None,
+        "last_trigger": trigger,
+        "errors": [],
+    }
+
+    def _update_career_scan(
+        *,
+        progress: int | None = None,
+        message: str | None = None,
+        sites_total: int | None = None,
+        sites_scanned: int | None = None,
+        jobs_found: int | None = None,
+        jobs_added: int | None = None,
+        jobs_promoted: int | None = None,
+        listings_filtered: int | None = None,
+        listings_evaluated: int | None = None,
+        last_run_at: str | None = None,
+        last_trigger: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        if progress is not None:
+            state["progress"] = progress
+        if message is not None:
+            state["message"] = message
+        if sites_total is not None:
+            state["sites_total"] = sites_total
+        if sites_scanned is not None:
+            state["sites_scanned"] = sites_scanned
+        if jobs_found is not None:
+            state["jobs_found"] = jobs_found
+        if jobs_added is not None:
+            state["jobs_added"] = jobs_added
+        if jobs_promoted is not None:
+            state["jobs_promoted"] = jobs_promoted
+        if listings_filtered is not None:
+            state["listings_filtered"] = listings_filtered
+        if listings_evaluated is not None:
+            state["listings_evaluated"] = listings_evaluated
+        if last_run_at is not None:
+            state["last_run_at"] = last_run_at
+        if last_trigger is not None:
+            state["last_trigger"] = last_trigger
+        if error is not None:
+            state["errors"].append(error)  # type: ignore[union-attr]
+        self.update_state(state="PROGRESS", meta=dict(state))
 
     # ai: claude-sonnet-5 | 2026-08-19
     # Restructured per Dev-Standards PYTHON_STANDARDS.md "Connection Lifetime vs.
@@ -353,7 +364,7 @@ def _run_career_site_scan(
                         message="Selected career site was not found.",
                         last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
                     )
-                    return
+                    return dict(state)
             else:
                 target_sources = source_repo.get_enabled()
 
@@ -363,7 +374,7 @@ def _run_career_site_scan(
                     message="No career-site URLs are enabled.",
                     last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
                 )
-                return
+                return dict(state)
 
             resume_row = resume_repo.get_latest()
             resume_text = resume_row["content"] if resume_row else ""
@@ -407,7 +418,7 @@ def _run_career_site_scan(
                 last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
                 error=str(exc),
             )
-            return
+            return dict(state)
         scanner = CareerSiteScanner()
         dedup_checker = DuplicateChecker()
 
@@ -931,27 +942,21 @@ def _run_career_site_scan(
             listings_evaluated=listings_evaluated_total,
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
+        return dict(state)
     except Exception as exc:
+        # ai: claude-sonnet-5 | 2026-08-20
+        # Matches the original thread's behavior: a crash is recorded as a
+        # finished run with an error, not a hard task failure.
         logger.exception("Career-site scan failed with unexpected error")
         _update_career_scan(
             error=f"Career-site scan failed: {exc}",
             message="Career-site scan failed with an error.",
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
-    finally:
-        with _career_lock:
-            _career_state.running = False
+        return dict(state)
 
 
-def is_career_site_scan_running() -> bool:
-    with _career_lock:
-        return _career_state.running
-
-
-configure_career_site_scheduler(
-    is_running=is_career_site_scan_running,
-    run_scan=_run_career_site_scan,
-)
+configure_career_site_scheduler(submit_run=_submit_career_scan)
 
 
 # ─── Career-site scanner routes ───────────────────────────────────────────────
@@ -1099,17 +1104,10 @@ def run_career_scan_for_site(source_id: int) -> ResponseReturnValue:
             400,
         )
 
-    with _career_lock:
-        if _career_state.running:
-            return jsonify({"error": "Career-site scan is already running"}), 409
-
-    thread = threading.Thread(
-        target=_run_career_site_scan,
-        kwargs={"trigger": "manual_site", "source_id": source_id},
-        daemon=True,
-    )
-    thread.start()
-    return jsonify({"status": "started"}), 202
+    task_id = _submit_career_scan(trigger="manual_site", source_id=source_id)
+    if task_id is None:
+        return jsonify({"error": "Career-site scan is already running"}), 409
+    return jsonify({"status": "started", "task_id": task_id}), 202
 
 
 # ai: claude-sonnet-5 | 2026-08-03
@@ -1117,13 +1115,10 @@ def run_career_scan_for_site(source_id: int) -> ResponseReturnValue:
 # start_career_scan voice action can reuse the same lock-guarded start
 # instead of duplicating it or making an HTTP call back into this process.
 def start_career_scan_now() -> tuple[dict, int]:
-    with _career_lock:
-        if _career_state.running:
-            return {"error": "Career-site scan is already running"}, 409
-
-    thread = threading.Thread(target=_run_career_site_scan, daemon=True)
-    thread.start()
-    return {"status": "started"}, 202
+    task_id = _submit_career_scan(trigger="manual")
+    if task_id is None:
+        return {"error": "Career-site scan is already running"}, 409
+    return {"status": "started", "task_id": task_id}, 202
 
 
 @career_sites_bp.route("/career-scan/run", methods=["POST"])
@@ -1134,26 +1129,86 @@ def run_career_scan_now() -> ResponseReturnValue:
 
 @career_sites_bp.route("/career-scan/status")
 def career_scan_status() -> ResponseReturnValue:
-    with _career_lock:
+    with _career_scan_lock:
+        task_id = _career_scan_last_task_id
+
+    _idle = {
+        "running": False,
+        "progress": 0,
+        "message": "Idle",
+        "sites_scanned": 0,
+        "sites_total": 0,
+        "jobs_found": 0,
+        "jobs_added": 0,
+        "jobs_promoted": 0,
+        "job_listings": 0,
+        "listings_filtered": 0,
+        "listings_evaluated": 0,
+        "last_run_at": None,
+        "last_trigger": None,
+        "errors": [],
+        "interval_minutes": max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES),
+    }
+    if task_id is None:
+        return jsonify(_idle)
+
+    result = AsyncResult(task_id, app=celery_app)
+    result_state = result.state
+
+    if result_state in _CAREER_SCAN_ACTIVE_STATES:
+        meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
-                "running": _career_state.running,
-                "progress": _career_state.progress,
-                "message": _career_state.message,
-                "sites_scanned": _career_state.sites_scanned,
-                "sites_total": _career_state.sites_total,
-                "jobs_found": _career_state.jobs_found,
-                "jobs_added": _career_state.jobs_added,
-                "jobs_promoted": _career_state.jobs_promoted,
-                "job_listings": _career_state.jobs_found,
-                "listings_filtered": _career_state.listings_filtered,
-                "listings_evaluated": _career_state.listings_evaluated,
-                "last_run_at": _career_state.last_run_at,
-                "last_trigger": _career_state.last_trigger,
-                "errors": list(_career_state.errors),
+                "running": True,
+                "progress": meta.get("progress", 0),
+                "message": meta.get("message", "Starting…"),
+                "sites_scanned": meta.get("sites_scanned", 0),
+                "sites_total": meta.get("sites_total", 0),
+                "jobs_found": meta.get("jobs_found", 0),
+                "jobs_added": meta.get("jobs_added", 0),
+                "jobs_promoted": meta.get("jobs_promoted", 0),
+                "job_listings": meta.get("jobs_found", 0),
+                "listings_filtered": meta.get("listings_filtered", 0),
+                "listings_evaluated": meta.get("listings_evaluated", 0),
+                "last_run_at": meta.get("last_run_at"),
+                "last_trigger": meta.get("last_trigger"),
+                "errors": meta.get("errors", []),
                 "interval_minutes": max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES),
             }
         )
+
+    if result_state == "SUCCESS":
+        final = result.result if isinstance(result.result, dict) else {}
+        return jsonify(
+            {
+                "running": False,
+                "progress": final.get("progress", 100),
+                "message": final.get("message", "Done."),
+                "sites_scanned": final.get("sites_scanned", 0),
+                "sites_total": final.get("sites_total", 0),
+                "jobs_found": final.get("jobs_found", 0),
+                "jobs_added": final.get("jobs_added", 0),
+                "jobs_promoted": final.get("jobs_promoted", 0),
+                "job_listings": final.get("jobs_found", 0),
+                "listings_filtered": final.get("listings_filtered", 0),
+                "listings_evaluated": final.get("listings_evaluated", 0),
+                "last_run_at": final.get("last_run_at"),
+                "last_trigger": final.get("last_trigger"),
+                "errors": final.get("errors", []),
+                "interval_minutes": max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES),
+            }
+        )
+
+    # FAILURE or REVOKED -- the task body catches its own exceptions and
+    # returns normally, so reaching this branch means something escaped that
+    # (e.g. the worker process itself died).
+    return jsonify(
+        {
+            **_idle,
+            "message": f"Career-site scan failed unexpectedly: {result.result or 'unknown error'}",
+            "errors": [str(result.result or "unknown error")],
+        }
+    )
 
 
 @career_sites_bp.route("/career-scan/results")

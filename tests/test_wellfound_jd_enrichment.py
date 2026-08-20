@@ -262,7 +262,10 @@ def test_scan_enriches_wellfound_job_via_fetcher(
     monkeypatch.setattr(scan, "WellfoundJobFetcher", FakeWellfoundJobFetcher)
     monkeypatch.setattr(scan, "CareerSiteScanner", ExplodingCareerSiteScanner)
 
-    scan._run_scan()
+    # run_scan_task is a @celery_app.task(bind=True) function -- .apply()
+    # runs it synchronously with a proper bound task context (needed for
+    # self.update_state() inside the task), no broker/worker required.
+    scan.run_scan_task.apply()
 
     repos = open_repositories(dsn)
     try:

@@ -32,20 +32,21 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""Job-board search routes and background search thread."""
+"""Job-board search routes and background search Celery task."""
 
 from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from celery.result import AsyncResult
 from flask import Blueprint, jsonify
 from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.celery_app import celery_app
 from backend.db.job_columns import JobColumns
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.fit_scorer import FitScorer
@@ -59,66 +60,30 @@ logger = logging.getLogger(__name__)
 board_search_bp = Blueprint("board_search", __name__)
 
 
-# ─── Board-search state (in-memory, protected by its own lock) ─────────────────
+# ai: claude-sonnet-5 | 2026-08-20
+# ─── Board-search task tracking (in-memory pointer only) ───────────────────────
+# Progress itself lives in Celery's Redis result backend (durable, readable from
+# any process); this just remembers which task_id to poll, mirroring
+# routes/jd_health_check.py's _submit_jd_health_check_run.
+_board_search_last_task_id: str | None = None
+_board_search_lock = threading.Lock()
+_BOARD_SEARCH_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-@dataclass
-class BoardSearchState:
-    running: bool = False
-    progress: int = 0
-    message: str = "Idle"
-    candidates_found: int = 0
-    candidates_processed: int = 0
-    jobs_added: int = 0
-    duplicates_skipped: int = 0
-    fuzzy_duplicates_skipped: int = 0
-    blocklist_filtered: int = 0
-    scoring_failed: int = 0
-    below_min_score: int = 0
-    errors: list[str] = field(default_factory=list)
-
-
-_board_state = BoardSearchState()
-_board_lock = threading.Lock()
-
-
-def _update_board(
-    *,
-    progress: int | None = None,
-    message: str | None = None,
-    candidates_found: int | None = None,
-    candidates_processed: int | None = None,
-    jobs_added: int | None = None,
-    duplicates_skipped: int | None = None,
-    fuzzy_duplicates_skipped: int | None = None,
-    blocklist_filtered: int | None = None,
-    scoring_failed: int | None = None,
-    below_min_score: int | None = None,
-    error: str | None = None,
-) -> None:
-    with _board_lock:
-        if progress is not None:
-            _board_state.progress = progress
-        if message is not None:
-            _board_state.message = message
-        if candidates_found is not None:
-            _board_state.candidates_found = candidates_found
-        if candidates_processed is not None:
-            _board_state.candidates_processed = candidates_processed
-        if jobs_added is not None:
-            _board_state.jobs_added = jobs_added
-        if duplicates_skipped is not None:
-            _board_state.duplicates_skipped = duplicates_skipped
-        if fuzzy_duplicates_skipped is not None:
-            _board_state.fuzzy_duplicates_skipped = fuzzy_duplicates_skipped
-        if blocklist_filtered is not None:
-            _board_state.blocklist_filtered = blocklist_filtered
-        if scoring_failed is not None:
-            _board_state.scoring_failed = scoring_failed
-        if below_min_score is not None:
-            _board_state.below_min_score = below_min_score
-        if error is not None:
-            _board_state.errors.append(error)
+def _submit_board_search() -> str | None:
+    """Dispatch a board search unless one is already active. Returns the new
+    task id, or None if a search was already running."""
+    global _board_search_last_task_id
+    with _board_search_lock:
+        if (
+            _board_search_last_task_id is not None
+            and AsyncResult(_board_search_last_task_id, app=celery_app).state
+            in _BOARD_SEARCH_ACTIVE_STATES
+        ):
+            return None
+        task = run_board_search_task.delay()
+        _board_search_last_task_id = task.id
+        return task.id
 
 
 _FALLBACK_QUERIES: list[str] = [
@@ -151,25 +116,64 @@ def _generate_board_search_queries() -> list[str]:
     return lines[:6] if lines else _FALLBACK_QUERIES
 
 
-def _run_board_search() -> None:
-    """
-    Proactive job-board search pipeline.  Runs in a background thread so
-    POST /api/board-search returns immediately.  Progress is tracked via
-    _board_state.
-    """
-    with _board_lock:
-        _board_state.running = True
-        _board_state.progress = 0
-        _board_state.message = "Generating search queries…"
-        _board_state.candidates_found = 0
-        _board_state.candidates_processed = 0
-        _board_state.jobs_added = 0
-        _board_state.duplicates_skipped = 0
-        _board_state.fuzzy_duplicates_skipped = 0
-        _board_state.blocklist_filtered = 0
-        _board_state.scoring_failed = 0
-        _board_state.below_min_score = 0
-        _board_state.errors.clear()
+# ai: claude-sonnet-5 | 2026-08-20
+@celery_app.task(bind=True)
+def run_board_search_task(self) -> dict:
+    """Proactive job-board search pipeline, run as a Celery task so progress
+    survives a restart and POST /api/board-search returns immediately.
+    Progress is published via self.update_state; see the module-level note
+    on _board_search_last_task_id for how the status route finds it."""
+    state: dict[str, object] = {
+        "progress": 0,
+        "message": "Generating search queries…",
+        "candidates_found": 0,
+        "candidates_processed": 0,
+        "jobs_added": 0,
+        "duplicates_skipped": 0,
+        "fuzzy_duplicates_skipped": 0,
+        "blocklist_filtered": 0,
+        "scoring_failed": 0,
+        "below_min_score": 0,
+        "errors": [],
+    }
+
+    def _update_board(
+        *,
+        progress: int | None = None,
+        message: str | None = None,
+        candidates_found: int | None = None,
+        candidates_processed: int | None = None,
+        jobs_added: int | None = None,
+        duplicates_skipped: int | None = None,
+        fuzzy_duplicates_skipped: int | None = None,
+        blocklist_filtered: int | None = None,
+        scoring_failed: int | None = None,
+        below_min_score: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        if progress is not None:
+            state["progress"] = progress
+        if message is not None:
+            state["message"] = message
+        if candidates_found is not None:
+            state["candidates_found"] = candidates_found
+        if candidates_processed is not None:
+            state["candidates_processed"] = candidates_processed
+        if jobs_added is not None:
+            state["jobs_added"] = jobs_added
+        if duplicates_skipped is not None:
+            state["duplicates_skipped"] = duplicates_skipped
+        if fuzzy_duplicates_skipped is not None:
+            state["fuzzy_duplicates_skipped"] = fuzzy_duplicates_skipped
+        if blocklist_filtered is not None:
+            state["blocklist_filtered"] = blocklist_filtered
+        if scoring_failed is not None:
+            state["scoring_failed"] = scoring_failed
+        if below_min_score is not None:
+            state["below_min_score"] = below_min_score
+        if error is not None:
+            state["errors"].append(error)  # type: ignore[union-attr]
+        self.update_state(state="PROGRESS", meta=dict(state))
 
     try:
         # ── 1. Build search queries ──────────────────────────────────────────
@@ -225,7 +229,7 @@ def _run_board_search() -> None:
             _update_board(
                 error=f"Board search failed: {exc}", message="Board search failed."
             )
-            return
+            return dict(state)
 
         total = len(candidates)
         _update_board(
@@ -236,7 +240,7 @@ def _run_board_search() -> None:
 
         if total == 0:
             _update_board(progress=100, message="No listings found from boards.")
-            return
+            return dict(state)
 
         # ── 4. Score, dedup, and filter (network/AI only — no DB connection held) ──
         to_insert: list[dict] = []
@@ -381,16 +385,20 @@ def _run_board_search() -> None:
             ),
             jobs_added=jobs_added,
         )
+        return dict(state)
 
     except Exception as exc:
+        # ai: claude-sonnet-5 | 2026-08-20
+        # Matches the original thread's behavior: a full-pipeline crash is
+        # recorded as a finished run with an error, not a hard task failure --
+        # the route/UI has always read this from "errors"/"message", never
+        # from a distinct failed state.
         logger.exception("Board search failed with unexpected error")
         _update_board(
             error=f"Board search failed: {exc}",
             message="Board search failed with an error.",
         )
-    finally:
-        with _board_lock:
-            _board_state.running = False
+        return dict(state)
 
 
 # ─── Board search routes ──────────────────────────────────────────────────────
@@ -398,31 +406,82 @@ def _run_board_search() -> None:
 
 @board_search_bp.route("/board-search", methods=["POST"])
 def start_board_search() -> ResponseReturnValue:
-    with _board_lock:
-        if _board_state.running:
-            return jsonify({"error": "A board search is already running"}), 409
-
-    thread = threading.Thread(target=_run_board_search, daemon=True)
-    thread.start()
-    return jsonify({"status": "started"}), 202
+    task_id = _submit_board_search()
+    if task_id is None:
+        return jsonify({"error": "A board search is already running"}), 409
+    return jsonify({"status": "started", "task_id": task_id}), 202
 
 
 @board_search_bp.route("/board-search/status")
 def board_search_status() -> ResponseReturnValue:
-    with _board_lock:
+    with _board_search_lock:
+        task_id = _board_search_last_task_id
+
+    _idle = {
+        "running": False,
+        "progress": 0,
+        "message": "Idle",
+        "candidates_found": 0,
+        "candidates_processed": 0,
+        "jobs_added": 0,
+        "duplicates_skipped": 0,
+        "fuzzy_duplicates_skipped": 0,
+        "blocklist_filtered": 0,
+        "scoring_failed": 0,
+        "below_min_score": 0,
+        "errors": [],
+    }
+    if task_id is None:
+        return jsonify(_idle)
+
+    result = AsyncResult(task_id, app=celery_app)
+    state = result.state
+
+    if state in _BOARD_SEARCH_ACTIVE_STATES:
+        meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
-                "running": _board_state.running,
-                "progress": _board_state.progress,
-                "message": _board_state.message,
-                "candidates_found": _board_state.candidates_found,
-                "candidates_processed": _board_state.candidates_processed,
-                "jobs_added": _board_state.jobs_added,
-                "duplicates_skipped": _board_state.duplicates_skipped,
-                "fuzzy_duplicates_skipped": _board_state.fuzzy_duplicates_skipped,
-                "blocklist_filtered": _board_state.blocklist_filtered,
-                "scoring_failed": _board_state.scoring_failed,
-                "below_min_score": _board_state.below_min_score,
-                "errors": list(_board_state.errors),
+                "running": True,
+                "progress": meta.get("progress", 0),
+                "message": meta.get("message", "Starting…"),
+                "candidates_found": meta.get("candidates_found", 0),
+                "candidates_processed": meta.get("candidates_processed", 0),
+                "jobs_added": meta.get("jobs_added", 0),
+                "duplicates_skipped": meta.get("duplicates_skipped", 0),
+                "fuzzy_duplicates_skipped": meta.get("fuzzy_duplicates_skipped", 0),
+                "blocklist_filtered": meta.get("blocklist_filtered", 0),
+                "scoring_failed": meta.get("scoring_failed", 0),
+                "below_min_score": meta.get("below_min_score", 0),
+                "errors": meta.get("errors", []),
             }
         )
+
+    if state == "SUCCESS":
+        final = result.result if isinstance(result.result, dict) else {}
+        return jsonify(
+            {
+                "running": False,
+                "progress": final.get("progress", 100),
+                "message": final.get("message", "Done."),
+                "candidates_found": final.get("candidates_found", 0),
+                "candidates_processed": final.get("candidates_processed", 0),
+                "jobs_added": final.get("jobs_added", 0),
+                "duplicates_skipped": final.get("duplicates_skipped", 0),
+                "fuzzy_duplicates_skipped": final.get("fuzzy_duplicates_skipped", 0),
+                "blocklist_filtered": final.get("blocklist_filtered", 0),
+                "scoring_failed": final.get("scoring_failed", 0),
+                "below_min_score": final.get("below_min_score", 0),
+                "errors": final.get("errors", []),
+            }
+        )
+
+    # FAILURE or REVOKED -- the task body catches its own exceptions and
+    # returns normally (see run_board_search_task), so reaching this branch
+    # means something escaped that (e.g. the worker process itself died).
+    return jsonify(
+        {
+            **_idle,
+            "message": f"Board search failed unexpectedly: {result.result or 'unknown error'}",
+            "errors": [str(result.result or "unknown error")],
+        }
+    )

@@ -36,18 +36,21 @@ logger = logging.getLogger(__name__)
 
 _career_scheduler_lock = threading.Lock()
 _career_scheduler_started = False
-_career_scheduler_is_running: Callable[[], bool] | None = None
-_career_scheduler_run_scan: Callable[..., None] | None = None
+_career_scheduler_submit_run: Callable[..., str | None] | None = None
 
 
+# ai: claude-sonnet-5 | 2026-08-20
+# Simplified from the old is_running/run_scan pair to a single submit_run,
+# mirroring configure_jd_health_check_scheduler below -- career-site scanning
+# is now a Celery task, and its own dispatch helper (routes/career_sites.py's
+# _submit_career_scan) already no-ops if one is active, so this loop doesn't
+# need a separate "is one running" check of its own.
 def configure_career_site_scheduler(
     *,
-    is_running: Callable[[], bool],
-    run_scan: Callable[..., None],
+    submit_run: Callable[..., str | None],
 ) -> None:
-    global _career_scheduler_is_running, _career_scheduler_run_scan
-    _career_scheduler_is_running = is_running
-    _career_scheduler_run_scan = run_scan
+    global _career_scheduler_submit_run
+    _career_scheduler_submit_run = submit_run
 
 
 def start_career_site_scheduler() -> None:
@@ -60,15 +63,17 @@ def start_career_site_scheduler() -> None:
     with _career_scheduler_lock:
         if _career_scheduler_started:
             return
-        if _career_scheduler_is_running is None or _career_scheduler_run_scan is None:
+        if _career_scheduler_submit_run is None:
             raise RuntimeError("Career-site scheduler has not been configured.")
 
         def career_scheduler_loop() -> None:
             while True:
                 interval_seconds = max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES) * 60
                 time.sleep(interval_seconds)
-                if not _career_scheduler_is_running():
-                    _career_scheduler_run_scan(trigger="scheduled")
+                try:
+                    _career_scheduler_submit_run(trigger="scheduled")
+                except Exception:
+                    logger.exception("Career-site scheduler tick failed")
 
         thread = threading.Thread(target=career_scheduler_loop, daemon=True)
         thread.start()
