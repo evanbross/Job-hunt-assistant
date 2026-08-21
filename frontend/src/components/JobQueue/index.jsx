@@ -237,6 +237,8 @@ export default function JobQueue({
   const [allSheetRows, setAllSheetRows] = useState(null);
   // ai: claude-sonnet-5 | 2026-07-25
   const [contactsByCompany, setContactsByCompany] = useState({});
+  // ai: claude-sonnet-5 | 2026-08-19
+  const [companyJobCounts, setCompanyJobCounts] = useState(null);
   // ai: claude-sonnet-5 | 2026-08-11
   const [defaultSnoozeDays, setDefaultSnoozeDays] = useState(4);
   const [triageReEvaluatePopup, setTriageReEvaluatePopup] = useState(null);
@@ -401,6 +403,14 @@ export default function JobQueue({
       .then((res) => res.json())
       .then((data) => setContactsByCompany(data && typeof data === "object" ? data : {}))
       .catch(() => setContactsByCompany({}));
+  }, []);
+
+  // ai: claude-sonnet-5 | 2026-08-19
+  useEffect(() => {
+    fetch("/api/jobs/company-counts")
+      .then((res) => res.json())
+      .then((data) => setCompanyJobCounts(data && typeof data === "object" ? data : {}))
+      .catch(() => setCompanyJobCounts({}));
   }, []);
 
   // ai: claude-sonnet-5 | 2026-08-11
@@ -2454,7 +2464,7 @@ export default function JobQueue({
         sortedTriageJobs.length === 0 ? (
           <div className="empty-state"><p>No triage jobs match your search.</p></div>
         ) : (
-          sortedTriageJobs.map((job) => renderJobOrTriageCard(job, null, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays))
+          sortedTriageJobs.map((job) => renderJobOrTriageCard(job, null, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))
         )
       ) : viewMode === "company" ? (
         companiesList.length === 0 ? (
@@ -2469,6 +2479,7 @@ export default function JobQueue({
               defaultSnoozeDays={defaultSnoozeDays}
               allSheetRows={allSheetRows}
               contactsByCompany={contactsByCompany}
+              companyJobCounts={companyJobCounts}
               onNavigateToJobCard={onNavigateToJobCard}
               onQueueApprove={handleApprove}
               onQueueReEvaluate={handleJobReEvaluate}
@@ -2537,7 +2548,7 @@ export default function JobQueue({
               setJobs((prev) => prev.filter((j) => j.id !== jobId));
               updateTriageCount();
             },
-          }, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays))
+          }, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))
         )
       ) : (
         /* viewMode === "queue" */
@@ -2555,6 +2566,7 @@ export default function JobQueue({
               defaultSnoozeDays={defaultSnoozeDays}
               onNavigateToJobCard={onNavigateToJobCard}
               contactsByCompany={contactsByCompany}
+              companyJobCounts={companyJobCounts}
               onUpdate={(jobId, updatedJob) => {
                 captureScrollAnchor(jobId);
                 if (updatedJob.fit_score !== job.fit_score || updatedJob.fit_reasoning !== job.fit_reasoning) {

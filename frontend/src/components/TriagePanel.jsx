@@ -73,7 +73,7 @@ import {
   sourceLabel,
   triageReasoningForJob,
 } from "../utils/triagePanelUtils.js";
-import { parseImportWarnings, importWarningTooltip, possibleDuplicateLabel } from "../utils/jobQueueUtils.js";
+import { parseImportWarnings, importWarningTooltip, possibleDuplicateLabel, hasCompanyHistoryAvailable } from "../utils/jobQueueUtils.js";
 import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
 import { runBatchRefreshFromUrls } from "../utils/batchRefreshFromUrls.js";
 
@@ -638,8 +638,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   );
 }
 
-function CardContextMenu({ contextMenu, company, onShowCompanyHistory }) {
-  const hasCompany = String(company || "").trim().length > 0;
+function CardContextMenu({ contextMenu, historyAvailable, onShowCompanyHistory }) {
   return (
     <div
       style={{
@@ -654,11 +653,12 @@ function CardContextMenu({ contextMenu, company, onShowCompanyHistory }) {
         type="button"
         style={{
           ...contextMenuItemStyle,
-          cursor: hasCompany ? "pointer" : "not-allowed",
-          opacity: hasCompany ? 1 : 0.5,
+          cursor: historyAvailable ? "pointer" : "not-allowed",
+          opacity: historyAvailable ? 1 : 0.5,
         }}
         onClick={onShowCompanyHistory}
-        disabled={!hasCompany}
+        disabled={!historyAvailable}
+        title={historyAvailable ? undefined : "No other jobs on record for this company"}
       >
         Show Company History
       </button>
@@ -715,7 +715,8 @@ function CompanyNameEditor({ jobId, company, onSave, onError }) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard, contactsByCompany }) {
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }) {
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
@@ -953,7 +954,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
       {contextMenu && (
         <CardContextMenu
           contextMenu={contextMenu}
-          company={job.company}
+          historyAvailable={companyHistoryAvailable}
           onShowCompanyHistory={() => runContextAction(companyHistory.open)}
         />
       )}
@@ -1082,8 +1083,9 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
             type="button"
             className="btn-secondary"
             onClick={companyHistory.open}
+            disabled={!companyHistoryAvailable}
             style={{ fontSize: "12px", padding: "3px 9px" }}
-            title="Show application tracking rows for this company"
+            title={companyHistoryAvailable ? "Show application tracking rows for this company" : "No other jobs on record for this company"}
           >
             Company History
           </button>
@@ -1421,7 +1423,8 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
 export const DuplicateCard = memo(DuplicateCardImpl, arePropsEqualIgnoringFunctions);
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard, contactsByCompany }) {
+function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }) {
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
@@ -1852,7 +1855,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
       {contextMenu && (
         <CardContextMenu
           contextMenu={contextMenu}
-          company={job.company}
+          historyAvailable={companyHistoryAvailable}
           onShowCompanyHistory={() => runContextAction(companyHistory.open)}
         />
       )}
@@ -2049,8 +2052,9 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
             type="button"
             className="btn-secondary"
             onClick={companyHistory.open}
+            disabled={!companyHistoryAvailable}
             style={{ fontSize: "12px", padding: "3px 9px" }}
-            title="Show application tracking rows for this company"
+            title={companyHistoryAvailable ? "Show application tracking rows for this company" : "No other jobs on record for this company"}
           >
             Company History
           </button>

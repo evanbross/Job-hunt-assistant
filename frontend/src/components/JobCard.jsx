@@ -39,13 +39,14 @@ import PitchModal from "./common/PitchModal.jsx";
 import ResumeTailorModal from "./common/ResumeTailorModal.jsx";
 import TailorProgressModal from "./common/TailorProgressModal.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
+import SnoozeModal from "./common/SnoozeModal.jsx";
 import ContactsBadge from "./common/ContactsBadge.jsx";
 import SalaryBadge from "./common/SalaryBadge.jsx";
 import UndoEditNotice from "./common/UndoEditNotice.jsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
 import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
-import { parseImportWarnings, importWarningTooltip } from "../utils/jobQueueUtils.js";
+import { parseImportWarnings, importWarningTooltip, hasCompanyHistoryAvailable } from "../utils/jobQueueUtils.js";
 import { describeFetchError } from "../utils/fetchErrorUtils.js"; // ai: claude-fable-5 | 2026-07-15
 import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.js";
 import {
@@ -76,6 +77,7 @@ function JobCard({
   onUpdate,
   onNavigateToJobCard,
   contactsByCompany,
+  companyJobCounts,
   defaultSnoozeDays,
 }) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
@@ -116,6 +118,7 @@ function JobCard({
   const [coverLetter, setCoverLetter] = useState(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   const companyHistory = useCompanyHistoryLookup(job);
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const { contextMenu, setContextMenu, runContextAction } = useCardContextMenu();
 
   const descriptionTextareaRef = useRef(null);
@@ -677,7 +680,8 @@ function JobCard({
             type="button"
             style={contextMenuItemStyle}
             onClick={() => runContextAction(companyHistory.open)}
-            disabled={!String(job.company || "").trim()}
+            disabled={!companyHistoryAvailable}
+            title={companyHistoryAvailable ? undefined : "No other jobs on record for this company"}
           >
             Show Company History
           </button>
@@ -913,8 +917,9 @@ function JobCard({
             type="button"
             className="btn-secondary"
             onClick={companyHistory.open}
+            disabled={!companyHistoryAvailable}
             style={{ fontSize: "12px", padding: "3px 9px" }}
-            title="Show application tracking rows for this company"
+            title={companyHistoryAvailable ? "Show application tracking rows for this company" : "No other jobs on record for this company"}
           >
             Company History
           </button>
@@ -1289,47 +1294,6 @@ function JobCard({
         </div>
       )}
 
-      {/* Snooze panel */}
-      {snoozeOpen && (
-        <div style={{ marginTop: "12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 14px" }}>
-          <p style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "8px" }}>
-            Hide this job for how many days?
-          </p>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <input
-              type="number"
-              min="1"
-              max="365"
-              value={snoozeDays}
-              onChange={(e) => setSnoozeDays(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleSnoozeConfirm(); if (e.key === "Escape") setSnoozeOpen(false); }}
-              autoFocus
-              style={{
-                width: "72px",
-                fontSize: "13px",
-                padding: "7px 10px",
-                borderRadius: "var(--radius)",
-                border: "1px solid var(--border)",
-                background: "var(--surface)",
-                color: "var(--text)",
-                fontFamily: "inherit",
-              }}
-            />
-            <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>days</span>
-            <button className="btn-secondary btn-sm" onClick={handleSnoozeConfirm} disabled={busy}>
-              Snooze
-            </button>
-            <button
-              className="btn-secondary btn-sm"
-              onClick={() => setSnoozeOpen(false)}
-              style={{ color: "var(--text-muted)" }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Skip confirmation panel */}
       {skipConfirm && (
         <div style={{ marginTop: "12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "12px 14px" }}>
@@ -1427,6 +1391,17 @@ function JobCard({
           onSend={handleFitChatSend}
           onSaveDescriptionAndSend={() => handleFitChatSend({ saveAsDescription: true })}
           pendingReclassification={pendingReclassification}
+        />
+      )}
+
+      {/* Snooze modal */}
+      {snoozeOpen && (
+        <SnoozeModal
+          days={snoozeDays}
+          onDaysChange={setSnoozeDays}
+          onConfirm={handleSnoozeConfirm}
+          onClose={() => setSnoozeOpen(false)}
+          busy={loading === "snooze"}
         />
       )}
 

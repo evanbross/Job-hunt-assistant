@@ -136,3 +136,23 @@ export function importWarningTooltip(warnings) {
   if (!warnings || warnings.length === 0) return "";
   return warnings.map((code) => IMPORT_WARNING_LABELS[code] || code).join("\n");
 }
+
+// ai: claude-sonnet-5 | 2026-08-19
+// Mirrors the LOWER(TRIM(company)) grouping used by get_company_counts() /
+// get_by_company() in backend/db/repositories/jobs.py — keep both in sync.
+export function companyCountKey(company) {
+  return String(company || "").trim().toLowerCase();
+}
+
+// True only once there is at least one OTHER job on record for this company —
+// i.e. the Company History dialog would actually show something beyond the
+// current card. `companyJobCounts` is the bulk map from /api/jobs/company-counts;
+// null means it hasn't loaded yet, in which case the button stays enabled
+// rather than flashing disabled-then-enabled once counts arrive.
+export function hasCompanyHistoryAvailable(job, companyJobCounts) {
+  const company = String(job?.company || "").trim();
+  if (!company) return false;
+  if (!companyJobCounts) return true;
+  const count = companyJobCounts[companyCountKey(company)] ?? 0;
+  return count > 1;
+}

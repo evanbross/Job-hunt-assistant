@@ -53,7 +53,7 @@ const companyGroupHeaderStyle = {
 };
 
 export default function CompanyGroup({
-  company, jobs, triageHandlers, allSheetRows, contactsByCompany, onNavigateToJobCard,
+  company, jobs, triageHandlers, allSheetRows, contactsByCompany, companyJobCounts, onNavigateToJobCard,
   onQueueApprove, onQueueReEvaluate, onQueueSkip, onQueueSnooze, onQueueUpdate, defaultSnoozeDays,
 }) {
   const [open, setOpen] = useState(false);
@@ -93,7 +93,7 @@ export default function CompanyGroup({
       </div>
       {open && (
         <div style={{ borderTop: "1px solid var(--border)", padding: "12px 18px" }}>
-          {jobs.map((job) => renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays))}
+          {jobs.map((job) => renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))}
         </div>
       )}
     </div>
