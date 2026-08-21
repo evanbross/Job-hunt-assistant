@@ -174,6 +174,8 @@ _APP_LOGIN_ALLOWLIST = frozenset(
         ("POST", "/api/account"),
         ("POST", "/api/account/complete-registration"),
         ("POST", "/api/account/confirm-email-change"),
+        ("POST", "/api/account/forgot-password"),
+        ("POST", "/api/account/reset-password"),
         ("GET", "/api/session"),
         ("GET", "/api/system/health"),
     }
@@ -195,6 +197,10 @@ def _require_app_login() -> tuple[flask.Response, int] | None:
       not an existing session (the same shape as routes/auth.py's OAuth
       state dance) — it can be followed from a different browser/device than
       the one that requested the change.
+    - POST /api/account/forgot-password and .../reset-password are the
+      locked-out recovery path — by definition there's no session yet, and
+      forgot-password must respond identically whether or not the email is
+      registered (an enumeration oracle otherwise).
     - GET /api/session and GET /api/system/health are read-only status
       checks the login page itself needs before anyone is authenticated.
     This deliberately excludes the existing Google OAuth routes

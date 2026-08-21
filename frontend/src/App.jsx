@@ -36,6 +36,7 @@ import { useEffect, useState } from "react";
 import LoginPage from "./components/LoginPage.jsx";
 import VerifyAccountPage from "./components/VerifyAccountPage.jsx";
 import VerifyEmailChangePage from "./components/VerifyEmailChangePage.jsx";
+import ResetPasswordPage from "./components/ResetPasswordPage.jsx";
 import { apiFetch, UNAUTHENTICATED_EVENT } from "./utils/apiClient.js";
 import JobQueue from "./components/JobQueue/index.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
@@ -444,6 +445,10 @@ export default function App() {
   if (pathname === "/confirm-email-change") {
     const token = new URLSearchParams(window.location.search).get("token");
     return <VerifyEmailChangePage token={token} />;
+  }
+  if (pathname === "/reset-password") {
+    const token = new URLSearchParams(window.location.search).get("token");
+    return <ResetPasswordPage token={token} onLoginSuccess={() => setAppAuthenticated(true)} />;
   }
 
   if (appAuthenticated === null) return null; // session check in flight

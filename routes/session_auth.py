@@ -73,51 +73,56 @@ logger = logging.getLogger(__name__)
 
 session_auth_bp = Blueprint("session_auth", __name__)
 
-# In-memory login-attempt rate limiting, mirroring the _pending_auths pattern
-# in routes/auth.py: single-process, ephemeral state is an accepted trade-off
+# In-memory rate limiting, mirroring the _pending_auths pattern in
+# routes/auth.py: single-process, ephemeral state is an accepted trade-off
 # already used elsewhere in this codebase for exactly this kind of short-lived
 # counter (a restart just resets the window, nothing durable is lost).
-_LOGIN_ATTEMPT_WINDOW_SECONDS = 900  # 15 minutes
-_LOGIN_ATTEMPT_MAX = 5
+# Keyed by (bucket, ip) so login attempts and password-reset requests don't
+# share a budget — a user requesting a reset shouldn't burn down the attempt
+# count they need to actually log back in once they have a new password.
+_RATE_LIMIT_WINDOW_SECONDS = 900  # 15 minutes
+_RATE_LIMIT_MAX_ATTEMPTS = 5
 
-_login_attempts: dict[str, list[float]] = {}
-_login_attempts_lock = threading.Lock()
+_rate_limit_attempts: dict[tuple[str, str], list[float]] = {}
+_rate_limit_lock = threading.Lock()
 
 _REGISTRATION_TOKEN_LIFETIME = timedelta(hours=24)
 _EMAIL_CHANGE_TOKEN_LIFETIME = timedelta(hours=1)
+_PASSWORD_RESET_TOKEN_LIFETIME = timedelta(hours=1)
 
 
 def _client_ip() -> str:
     return request.remote_addr or "unknown"
 
 
-def _prune_login_attempts(ip: str, now: float) -> list[float]:
-    cutoff = now - _LOGIN_ATTEMPT_WINDOW_SECONDS
-    attempts = [t for t in _login_attempts.get(ip, []) if t >= cutoff]
+def _prune_attempts(bucket: str, ip: str, now: float) -> list[float]:
+    key = (bucket, ip)
+    cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
+    attempts = [t for t in _rate_limit_attempts.get(key, []) if t >= cutoff]
     if attempts:
-        _login_attempts[ip] = attempts
+        _rate_limit_attempts[key] = attempts
     else:
-        _login_attempts.pop(ip, None)
+        _rate_limit_attempts.pop(key, None)
     return attempts
 
 
-def _login_rate_limited(ip: str) -> bool:
-    with _login_attempts_lock:
-        attempts = _prune_login_attempts(ip, time.monotonic())
-    return len(attempts) >= _LOGIN_ATTEMPT_MAX
+def _rate_limited(bucket: str, ip: str) -> bool:
+    with _rate_limit_lock:
+        attempts = _prune_attempts(bucket, ip, time.monotonic())
+    return len(attempts) >= _RATE_LIMIT_MAX_ATTEMPTS
 
 
-def _record_login_failure(ip: str) -> None:
-    with _login_attempts_lock:
+def _record_attempt(bucket: str, ip: str) -> None:
+    with _rate_limit_lock:
         now = time.monotonic()
-        attempts = _prune_login_attempts(ip, now)
+        attempts = _prune_attempts(bucket, ip, now)
         attempts.append(now)
-        _login_attempts[ip] = attempts
+        _rate_limit_attempts[(bucket, ip)] = attempts
 
 
-def _clear_login_attempts(ip: str) -> None:
-    with _login_attempts_lock:
-        _login_attempts.pop(ip, None)
+def _clear_attempts(bucket: str, ip: str) -> None:
+    with _rate_limit_lock:
+        _rate_limit_attempts.pop((bucket, ip), None)
 
 
 class _NotBlankModel(BaseModel):
@@ -149,6 +154,15 @@ class RequestEmailChangeRequest(_NotBlankModel):
 
 class ConfirmEmailChangeRequest(_NotBlankModel):
     token: str
+
+
+class ForgotPasswordRequest(_NotBlankModel):
+    email: str
+
+
+class ResetPasswordRequest(_NotBlankModel):
+    token: str
+    password: str
 
 
 class ChangePasswordRequest(_NotBlankModel):
@@ -187,7 +201,7 @@ def _new_token(lifetime: timedelta) -> tuple[str, str]:
 @session_auth_bp.route("/account", methods=["POST"])
 def create_account() -> ResponseReturnValue:
     ip = _client_ip()
-    if _login_rate_limited(ip):
+    if _rate_limited("login", ip):
         return jsonify({"error": "Too many attempts — try again later"}), 429
 
     try:
@@ -208,7 +222,7 @@ def create_account() -> ResponseReturnValue:
             repos["conn"].commit()
 
     if account is None:
-        _record_login_failure(ip)
+        _record_attempt("login", ip)
         return jsonify({"error": "That email is already registered"}), 409
 
     link = f"{config.APP_BASE_URL}/verify-account?token={token}"
@@ -218,7 +232,7 @@ def create_account() -> ResponseReturnValue:
         logger.error("Could not send registration verification email to %s: %s", email, exc)
         return jsonify({"error": "Could not send the verification email — try again later"}), 502
 
-    _clear_login_attempts(ip)
+    _clear_attempts("login", ip)
     return jsonify({"status": "check_email", "email": email}), 202
 
 
@@ -248,10 +262,78 @@ def complete_registration() -> ResponseReturnValue:
     return jsonify({"authenticated": True})
 
 
+@session_auth_bp.route("/account/forgot-password", methods=["POST"])
+def forgot_password() -> ResponseReturnValue:
+    # Deliberately not session-gated (see app.py's allowlist) — this is how
+    # you get back in when you're locked out. Also deliberately returns the
+    # exact same response whether or not the email is registered: a
+    # password-reset endpoint is the classic account-enumeration oracle, so
+    # nothing here (status code, body, timing-sensitive branching) may vary
+    # on that.
+    ip = _client_ip()
+    if _rate_limited("password_reset", ip):
+        return jsonify({"error": "Too many attempts — try again later"}), 429
+
+    try:
+        body = ForgotPasswordRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return jsonify({"error": "Email is required"}), 400
+
+    email = body.email.strip().casefold()
+    token, expires_at = _new_token(_PASSWORD_RESET_TOKEN_LIFETIME)
+    with get_repos() as repos:
+        account = repos["app_account"].request_password_reset(email, token, expires_at)
+        if account is not None:
+            repos["conn"].commit()
+
+    if account is not None:
+        link = f"{config.APP_BASE_URL}/reset-password?token={token}"
+        try:
+            send_verification_email(email, link, "password_reset")
+        except OSError as exc:
+            logger.error("Could not send password-reset email to %s: %s", email, exc)
+            # Still fall through to the generic response below -- an SMTP
+            # failure here must not be distinguishable from "no such account"
+            # by an unauthenticated caller.
+
+    _record_attempt("password_reset", ip)
+    return jsonify({"status": "check_email"}), 202
+
+
+@session_auth_bp.route("/account/reset-password", methods=["POST"])
+def reset_password() -> ResponseReturnValue:
+    # Deliberately not session-gated, same shape as complete_registration():
+    # possession of the emailed token is the proof. Unlike change-password,
+    # there's no "current password" to check -- that's the whole point of a
+    # forgot-password flow.
+    try:
+        body = ResetPasswordRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return jsonify({"error": "A token and password are required"}), 400
+    if len(body.password) < _MIN_PASSWORD_LENGTH:
+        return (
+            jsonify({"error": f"Password must be at least {_MIN_PASSWORD_LENGTH} characters"}),
+            400,
+        )
+
+    with get_repos() as repos:
+        account = repos["app_account"].reset_password(
+            body.token, generate_password_hash(body.password)
+        )
+        if account is not None:
+            repos["conn"].commit()
+
+    if account is None:
+        return jsonify({"error": "This link is invalid or has expired"}), 400
+
+    _start_session(account["id"])
+    return jsonify({"authenticated": True})
+
+
 @session_auth_bp.route("/login", methods=["POST"])
 def login() -> ResponseReturnValue:
     ip = _client_ip()
-    if _login_rate_limited(ip):
+    if _rate_limited("login", ip):
         return jsonify({"error": "Too many login attempts — try again later"}), 429
 
     try:
@@ -273,11 +355,11 @@ def login() -> ResponseReturnValue:
         and check_password_hash(account["password_hash"], body.password)
     )
     if not valid:
-        _record_login_failure(ip)
+        _record_attempt("login", ip)
         logger.warning("Failed login attempt from %s", ip)
         return jsonify({"error": "Invalid email or password"}), 401
 
-    _clear_login_attempts(ip)
+    _clear_attempts("login", ip)
     _start_session(account["id"])
     return jsonify({"authenticated": True})
 

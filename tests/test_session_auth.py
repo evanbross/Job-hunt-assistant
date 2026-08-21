@@ -70,9 +70,9 @@ _TEST_PASSWORD = "correct horse battery staple"  # noqa: S105
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
-    session_auth_module._login_attempts.clear()
+    session_auth_module._rate_limit_attempts.clear()
     yield
-    session_auth_module._login_attempts.clear()
+    session_auth_module._rate_limit_attempts.clear()
 
 
 @pytest.fixture
@@ -199,7 +199,7 @@ def test_start_registration_rejects_blank_email(client, sent_emails) -> None:
 
 def test_start_registration_rate_limited(client, sent_emails) -> None:
     _seed_active_account()
-    for _ in range(session_auth_module._LOGIN_ATTEMPT_MAX):
+    for _ in range(session_auth_module._RATE_LIMIT_MAX_ATTEMPTS):
         resp = _start_registration(client, sent_emails)  # duplicate -> 409 each time
         assert resp.status_code == 409
 
@@ -289,7 +289,7 @@ def test_login_email_is_case_insensitive(client) -> None:
 
 def test_login_rate_limit_locks_out_after_max_attempts(client) -> None:
     _seed_active_account()
-    for _ in range(session_auth_module._LOGIN_ATTEMPT_MAX):
+    for _ in range(session_auth_module._RATE_LIMIT_MAX_ATTEMPTS):
         assert _login(client, password="wrong").status_code == 401
     assert _login(client).status_code == 429
 
@@ -298,9 +298,9 @@ def test_login_rate_limit_resets_after_window(client, monkeypatch: pytest.Monkey
     _seed_active_account()
     fake_now = [1_000.0]
     monkeypatch.setattr(session_auth_module.time, "monotonic", lambda: fake_now[0])
-    for _ in range(session_auth_module._LOGIN_ATTEMPT_MAX):
+    for _ in range(session_auth_module._RATE_LIMIT_MAX_ATTEMPTS):
         _login(client, password="wrong")
-    fake_now[0] += session_auth_module._LOGIN_ATTEMPT_WINDOW_SECONDS + 1
+    fake_now[0] += session_auth_module._RATE_LIMIT_WINDOW_SECONDS + 1
     assert _login(client).status_code == 200
 
 
@@ -385,6 +385,134 @@ def test_confirm_email_change_does_not_require_a_session(client, sent_emails) ->
 
 def test_confirm_email_change_with_invalid_token_is_rejected(client, sent_emails) -> None:
     resp = client.post("/api/account/confirm-email-change", json={"token": "not-real"})
+    assert resp.status_code == 400
+
+
+# ─── forgot / reset password ───────────────────────────────────────────────
+
+
+def test_forgot_password_for_active_account_sends_reset_email(client, sent_emails) -> None:
+    _seed_active_account()
+    resp = client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    assert resp.status_code == 202
+    assert resp.get_json() == {"status": "check_email"}
+
+    assert sent_emails[-1]["to"] == _TEST_EMAIL
+    assert sent_emails[-1]["purpose"] == "password_reset"
+    assert "/reset-password?token=" in sent_emails[-1]["link"]
+
+
+def test_forgot_password_for_unknown_email_responds_identically_and_sends_nothing(
+    client, sent_emails
+) -> None:
+    resp = client.post("/api/account/forgot-password", json={"email": "nobody@example.com"})
+    assert resp.status_code == 202
+    assert resp.get_json() == {"status": "check_email"}
+    assert sent_emails == []
+
+
+def test_forgot_password_for_account_mid_registration_sends_nothing(client, sent_emails) -> None:
+    # password_hash is still NULL -- there's no password to reset, and this
+    # must not be distinguishable from "unknown email" in the response.
+    _start_registration(client, sent_emails)
+    sent_emails.clear()
+
+    resp = client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    assert resp.status_code == 202
+    assert resp.get_json() == {"status": "check_email"}
+    assert sent_emails == []
+
+
+def test_forgot_password_rate_limited_independently_of_login(client, sent_emails) -> None:
+    _seed_active_account()
+    for _ in range(session_auth_module._RATE_LIMIT_MAX_ATTEMPTS):
+        resp = client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+        assert resp.status_code == 202
+    locked = client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    assert locked.status_code == 429
+
+    # a maxed-out forgot-password bucket must not block actual login attempts
+    assert _login(client).status_code == 200
+
+
+def test_reset_password_with_valid_token_grants_session_and_replaces_password(
+    client, sent_emails
+) -> None:
+    _seed_active_account()
+    client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    token = _token_from_link(sent_emails[-1]["link"])
+
+    resp = client.post(
+        "/api/account/reset-password", json={"token": token, "password": "new-password-123"}
+    )
+    assert resp.status_code == 200
+    assert resp.get_json() == {"authenticated": True}
+    assert client.get("/api/session").get_json() == {"authenticated": True}
+
+    client.post("/api/logout")
+    assert _login(client).status_code == 401  # old password no longer works
+    assert _login(client, password="new-password-123").status_code == 200
+
+
+def test_reset_password_does_not_require_a_session(client, sent_emails) -> None:
+    # follows the same shape as confirm-email-change: the emailed token is
+    # the proof, not an existing session
+    _seed_active_account()
+    client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    token = _token_from_link(sent_emails[-1]["link"])
+
+    resp = client.post(
+        "/api/account/reset-password", json={"token": token, "password": "new-password-123"}
+    )
+    assert resp.status_code == 200
+
+
+def test_reset_password_with_invalid_token_is_rejected(client, sent_emails) -> None:
+    resp = client.post(
+        "/api/account/reset-password", json={"token": "not-a-real-token", "password": "new-password-123"}
+    )
+    assert resp.status_code == 400
+
+
+def test_reset_password_with_expired_token_is_rejected(client, sent_emails) -> None:
+    _seed_active_account()
+    client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    token = _token_from_link(sent_emails[-1]["link"])
+    with get_repos() as repos:
+        repos["conn"].cursor().execute(
+            "UPDATE app_account SET verification_expires_at = NOW() - INTERVAL '1 hour'"
+            " WHERE verification_token = %s",
+            [token],
+        )
+        repos["conn"].commit()
+
+    resp = client.post(
+        "/api/account/reset-password", json={"token": token, "password": "new-password-123"}
+    )
+    assert resp.status_code == 400
+    # old password still works -- a failed reset must not disturb it
+    assert _login(client).status_code == 200
+
+
+def test_reset_password_rejects_short_password(client, sent_emails) -> None:
+    _seed_active_account()
+    client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    token = _token_from_link(sent_emails[-1]["link"])
+
+    resp = client.post("/api/account/reset-password", json={"token": token, "password": "short"})
+    assert resp.status_code == 400
+
+
+def test_reset_password_token_cannot_be_used_for_login_only_reset(client, sent_emails) -> None:
+    # a password-reset token must not double as a registration-completion
+    # token even though both flows share the same columns
+    _seed_active_account()
+    client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    token = _token_from_link(sent_emails[-1]["link"])
+
+    resp = client.post(
+        "/api/account/complete-registration", json={"token": token, "password": "new-password-123"}
+    )
     assert resp.status_code == 400
 
 

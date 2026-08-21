@@ -189,6 +189,51 @@ class PostgresAppAccountRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    # ai: claude-sonnet-5 | 2026-08-21
+    def request_password_reset(
+        self, email: str, token: str, expires_at: str
+    ) -> dict[str, Any] | None:
+        """Stage a password-reset token. Only matches accounts that already
+        have a password (password_hash IS NOT NULL) — an account still mid
+        registration has no password to reset, and directing it through this
+        flow instead of the registration link it already has would just be
+        confusing. Returns None if no such account exists; callers must not
+        vary their HTTP response on that, since this is the classic
+        account-enumeration oracle for a password-reset endpoint."""
+        cur = self._execute(
+            """
+            UPDATE app_account
+            SET verification_token = %s, verification_purpose = 'password_reset',
+                verification_expires_at = %s, updated_at = NOW()
+            WHERE email = %s AND password_hash IS NOT NULL
+            RETURNING *
+            """,
+            [token, expires_at, email],
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def reset_password(self, token: str, password_hash: str) -> dict[str, Any] | None:
+        """Set a new password from a password-reset token and clear it.
+        Returns None if the token doesn't exist, is for a different purpose,
+        or has expired — same atomic check-and-write shape as
+        complete_registration()."""
+        cur = self._execute(
+            """
+            UPDATE app_account
+            SET password_hash = %s, verification_token = NULL,
+                verification_purpose = NULL, verification_expires_at = NULL,
+                updated_at = NOW()
+            WHERE verification_token = %s
+              AND verification_purpose = 'password_reset'
+              AND verification_expires_at > NOW()
+            RETURNING *
+            """,
+            [password_hash, token],
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
     def update_name(self, user_id: int, name: str) -> dict[str, Any]:
         cur = self._execute(
             "UPDATE app_account SET name = %s, updated_at = NOW() WHERE id = %s RETURNING *",

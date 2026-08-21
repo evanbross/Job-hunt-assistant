@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 _SUBJECTS: dict[str, str] = {
     "registration": "Verify your email — Job Hunt Assistant",
     "email_change": "Confirm your new email — Job Hunt Assistant",
+    "password_reset": "Reset your password — Job Hunt Assistant",
 }
 
 _BODIES: dict[str, str] = {
@@ -76,6 +77,13 @@ _BODIES: dict[str, str] = {
         "This link expires in 1 hour. Your password is unchanged. If you "
         "didn't request this, you can ignore this email — your account's "
         "email will stay as it is."
+    ),
+    "password_reset": (
+        "Someone (hopefully you) requested a password reset for this Job "
+        "Hunt Assistant account.\n\n"
+        "Click the link below to choose a new password:\n\n{link}\n\n"
+        "This link expires in 1 hour. If you didn't request this, you can "
+        "ignore this email — your password will stay as it is."
     ),
 }
 

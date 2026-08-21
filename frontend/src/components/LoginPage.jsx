@@ -107,13 +107,14 @@ const styles = {
 };
 
 export default function LoginPage({ onLoginSuccess }) {
-  const [mode, setMode] = useState("login"); // "login" | "create" | "check_email"
+  const [mode, setMode] = useState("login"); // "login" | "create" | "check_email" | "forgot" | "forgot_sent"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const isCreate = mode === "create";
+  const isForgot = mode === "forgot";
 
   const switchMode = (nextMode) => {
     setMode(nextMode);
@@ -127,10 +128,15 @@ export default function LoginPage({ onLoginSuccess }) {
     setSubmitting(true);
     setError("");
     try {
-      const res = await apiFetch(isCreate ? "/api/account" : "/api/login", {
+      const url = isCreate
+        ? "/api/account"
+        : isForgot
+        ? "/api/account/forgot-password"
+        : "/api/login";
+      const res = await apiFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(isCreate ? { email } : { email, password }),
+        body: JSON.stringify(isCreate || isForgot ? { email } : { email, password }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -139,6 +145,8 @@ export default function LoginPage({ onLoginSuccess }) {
       }
       if (isCreate) {
         setMode("check_email");
+      } else if (isForgot) {
+        setMode("forgot_sent");
       } else {
         onLoginSuccess();
       }
@@ -168,12 +176,35 @@ export default function LoginPage({ onLoginSuccess }) {
     );
   }
 
+  if (mode === "forgot_sent") {
+    return (
+      <div style={styles.wrap}>
+        <div style={styles.card}>
+          <div style={styles.logo}>💼 Job Hunt Assistant</div>
+          <div style={styles.success}>
+            If <strong>{email}</strong> is a registered account, we sent a
+            link to reset its password.
+          </div>
+          <div style={styles.toggle}>
+            <span style={styles.toggleLink} onClick={() => switchMode("login")}>
+              Back to sign in
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.wrap}>
       <div style={styles.card}>
         <div style={styles.logo}>💼 Job Hunt Assistant</div>
         <div style={styles.sub}>
-          {isCreate ? "Create your account to get started" : "Sign in to continue"}
+          {isCreate
+            ? "Create your account to get started"
+            : isForgot
+            ? "Enter your email to reset your password"
+            : "Sign in to continue"}
         </div>
         <form onSubmit={handleSubmit}>
           {error && <div style={styles.error}>{error}</div>}
@@ -189,7 +220,7 @@ export default function LoginPage({ onLoginSuccess }) {
               required
             />
           </div>
-          {!isCreate && (
+          {!isCreate && !isForgot && (
             <div style={styles.field}>
               <label style={styles.label} htmlFor="login-password">Password</label>
               <input
@@ -205,16 +236,25 @@ export default function LoginPage({ onLoginSuccess }) {
           )}
           <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={submitting}>
             {submitting
-              ? (isCreate ? "Sending…" : "Signing in…")
-              : (isCreate ? "Send verification email" : "Sign in")}
+              ? (isCreate ? "Sending…" : isForgot ? "Sending…" : "Signing in…")
+              : (isCreate ? "Send verification email" : isForgot ? "Send reset link" : "Sign in")}
           </button>
         </form>
+        {mode === "login" && (
+          <div style={{ ...styles.toggle, marginTop: "10px" }}>
+            <span style={styles.toggleLink} onClick={() => switchMode("forgot")}>
+              Forgot password?
+            </span>
+          </div>
+        )}
         <div style={styles.toggle}>
           {isCreate ? (
             <>
               Already have an account?{" "}
               <span style={styles.toggleLink} onClick={() => switchMode("login")}>Sign in</span>
             </>
+          ) : isForgot ? (
+            <span style={styles.toggleLink} onClick={() => switchMode("login")}>Back to sign in</span>
           ) : (
             <>
               Need an account?{" "}
