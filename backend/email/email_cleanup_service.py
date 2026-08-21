@@ -27,6 +27,7 @@ class EmailCleanupService:
 
     def hide_stale_or_read_emails(
         self,
+        user_id: int,
         displayed_emails: list[dict[str, Any]],
     ) -> EmailCleanupResult:
         email_ids_to_hide: list[str] = []
@@ -47,7 +48,7 @@ class EmailCleanupService:
                 email_ids_to_hide.append(email_id_value)
 
         unique_email_ids_to_hide = list(dict.fromkeys(email_ids_to_hide))
-        self._scanned_repo.set_hidden_many(unique_email_ids_to_hide, True)
+        self._scanned_repo.set_hidden_many(user_id, unique_email_ids_to_hide, True)
         return EmailCleanupResult(
             checked_count=len(displayed_emails),
             hidden_count=len(unique_email_ids_to_hide),

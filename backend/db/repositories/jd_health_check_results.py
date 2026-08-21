@@ -40,6 +40,8 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-21 — every method below gained a leading
+# user_id parameter (multi-tenancy migration).
 class PostgresJdHealthCheckResultRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -59,34 +61,39 @@ class PostgresJdHealthCheckResultRepository(_BaseRepo):
         }
     )
 
-    def get_recent(self, limit: int = 200) -> list[dict[str, Any]]:
+    def get_recent(self, user_id: int, limit: int = 200) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM jd_health_check_results ORDER BY run_at DESC, id DESC LIMIT %s",
-            (limit,),
+            "SELECT * FROM jd_health_check_results WHERE user_id = %s"
+            " ORDER BY run_at DESC, id DESC LIMIT %s",
+            (user_id, limit),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_by_target(self, target_id: int, limit: int = 50) -> list[dict[str, Any]]:
+    def get_by_target(self, user_id: int, target_id: int, limit: int = 50) -> list[dict[str, Any]]:
         cur = self._execute(
             "SELECT * FROM jd_health_check_results"
-            " WHERE target_id = %s ORDER BY run_at DESC, id DESC LIMIT %s",
-            (target_id, limit),
+            " WHERE user_id = %s AND target_id = %s ORDER BY run_at DESC, id DESC LIMIT %s",
+            (user_id, target_id, limit),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_last_run_at(self) -> str | None:
-        cur = self._execute("SELECT MAX(run_at) AS last_run_at FROM jd_health_check_results")
+    def get_last_run_at(self, user_id: int) -> str | None:
+        cur = self._execute(
+            "SELECT MAX(run_at) AS last_run_at FROM jd_health_check_results WHERE user_id = %s",
+            (user_id,),
+        )
         row = cur.fetchone()
         return row["last_run_at"] if row else None
 
-    def insert(self, row: dict[str, Any]) -> int:
+    def insert(self, user_id: int, row: dict[str, Any]) -> int:
         unknown = set(row.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
-        columns = ", ".join(row.keys())
-        placeholders = ", ".join(["%s"] * len(row))
+        columns = ["user_id", *row.keys()]
+        placeholders = ", ".join(["%s"] * len(columns))
         cur = self._execute(
-            f"INSERT INTO jd_health_check_results ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(row.values()),
+            f"INSERT INTO jd_health_check_results ({', '.join(columns)})"
+            f" VALUES ({placeholders}) RETURNING id",
+            [user_id, *row.values()],
         )
         return cur.fetchone()["id"]

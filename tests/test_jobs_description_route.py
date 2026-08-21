@@ -63,6 +63,9 @@ class FakeConnection:
         pass
 
 
+_TEST_USER_ID = 1
+
+
 class FakeJobsRepo:
     def __init__(self) -> None:
         self.row: dict[str, Any] = {
@@ -73,29 +76,35 @@ class FakeJobsRepo:
             "status": "triage",
         }
 
-    def get_by_id(self, job_id: int) -> dict[str, Any] | None:
+    def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
+        assert user_id == _TEST_USER_ID
         if job_id != self.row["id"]:
             return None
         return dict(self.row)
 
-    def update(self, job_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, job_id: int, fields: dict[str, Any]) -> None:
+        assert user_id == _TEST_USER_ID
         assert job_id == self.row["id"]
         self.row.update(fields)
 
-    def get_all_ordered(self) -> list[dict[str, Any]]:
+    def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _TEST_USER_ID
         return [dict(self.row)]
 
-    def get_not_a_fit_with_feedback(self) -> list[dict[str, Any]]:
+    def get_not_a_fit_with_feedback(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _TEST_USER_ID
         return []
 
 
 class FakeResumeRepo:
-    def get_latest(self) -> dict[str, str]:
+    def get_latest(self, user_id: int) -> dict[str, str]:
+        assert user_id == _TEST_USER_ID
         return {"content": "Senior backend engineer"}
 
 
 class FakePenaltyRepo:
-    def get_enabled(self) -> list[dict[str, Any]]:
+    def get_enabled(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _TEST_USER_ID
         return []
 
 
@@ -118,10 +127,12 @@ class FakeStagesRepo:
             },
         ]
 
-    def get_by_job_id(self, job_id: int) -> list[dict[str, Any]]:
+    def get_by_job_id(self, user_id: int, job_id: int) -> list[dict[str, Any]]:
+        assert user_id == _TEST_USER_ID
         return [dict(row) for row in self.rows if row["job_id"] == job_id]
 
-    def delete(self, stage_id: int) -> None:
+    def delete(self, user_id: int, stage_id: int) -> None:
+        assert user_id == _TEST_USER_ID
         self.rows = [row for row in self.rows if row["id"] != stage_id]
 
 
@@ -130,7 +141,8 @@ class FakeJobStatusHistoryRepo:
     def __init__(self) -> None:
         self.rows: list[dict[str, Any]] = []
 
-    def insert(self, row: dict[str, Any]) -> None:
+    def insert(self, user_id: int, row: dict[str, Any]) -> None:
+        assert user_id == _TEST_USER_ID
         self.rows.append(row)
 
 
@@ -181,6 +193,7 @@ def test_update_job_description_replaces_text_and_rescores(
     }
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
     monkeypatch.setattr("routes.jobs.FitScorer", FakeFitScorer)
 
     app = Flask(__name__)
@@ -226,6 +239,7 @@ def test_patch_job_rechecks_duplicate_after_company_edit(
         )
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
     monkeypatch.setattr("routes.jobs.db_match_for_job", fake_db_match_for_job)
 
     app = Flask(__name__)
@@ -251,6 +265,7 @@ def test_patch_job_accepts_manual_url(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
     monkeypatch.setattr(
         "routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None, None, None)
     )
@@ -275,6 +290,7 @@ def test_patch_job_rejects_invalid_manual_url(monkeypatch: pytest.MonkeyPatch) -
     }
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
 
     app = Flask(__name__)
     app.register_blueprint(jobs_bp, url_prefix="/api")
@@ -308,6 +324,7 @@ def test_patch_job_clears_stale_duplicate_when_no_match(
         return None, None, None, None, None
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
     monkeypatch.setattr("routes.jobs.db_match_for_job", fake_db_match_for_job)
 
     app = Flask(__name__)
@@ -343,6 +360,7 @@ def test_patch_job_clears_stale_parser_confidence_on_company_edit(
     }
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
     monkeypatch.setattr(
         "routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None, None, None)
     )
@@ -381,6 +399,7 @@ def test_patch_job_leaves_parser_confidence_untouched_on_url_only_edit(
     }
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
     monkeypatch.setattr(
         "routes.jobs.db_match_for_job", lambda **_kwargs: (None, None, None, None, None)
     )
@@ -420,6 +439,7 @@ def test_return_to_queue_restores_added_job_and_removes_auto_applied_stage(
     }
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
 
     app = Flask(__name__)
     app.register_blueprint(jobs_bp, url_prefix="/api")
@@ -474,6 +494,7 @@ def test_return_to_queue_blocks_job_with_terminal_latest_stage(
     }
 
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
 
     app = Flask(__name__)
     app.register_blueprint(jobs_bp, url_prefix="/api")

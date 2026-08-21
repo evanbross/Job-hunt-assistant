@@ -50,6 +50,9 @@ class FakeConnection:
         pass
 
 
+_TEST_USER_ID = 1
+
+
 class FakeMultiJobsRepo:
     """Keyed by id, unlike FakeJobsRepo in test_jobs_description_route.py, so the
     real db_match_for_job / DuplicateChecker can run against multiple known jobs."""
@@ -57,14 +60,17 @@ class FakeMultiJobsRepo:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows: dict[int, dict[str, Any]] = {row["id"]: dict(row) for row in rows}
 
-    def get_by_id(self, job_id: int) -> dict[str, Any] | None:
+    def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
+        assert user_id == _TEST_USER_ID
         row = self.rows.get(job_id)
         return dict(row) if row else None
 
-    def update(self, job_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, job_id: int, fields: dict[str, Any]) -> None:
+        assert user_id == _TEST_USER_ID
         self.rows[job_id].update(fields)
 
-    def get_all_ordered(self) -> list[dict[str, Any]]:
+    def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _TEST_USER_ID
         return [dict(row) for row in self.rows.values()]
 
 
@@ -116,6 +122,7 @@ def test_dismiss_duplicate_resolves_when_two_jobs_fuzzy_match(
     )
     repos = {"conn": FakeConnection(), "jobs": jobs_repo}
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
 
     app = Flask(__name__)
     app.register_blueprint(jobs_bp, url_prefix="/api")

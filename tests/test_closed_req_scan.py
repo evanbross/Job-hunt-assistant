@@ -77,8 +77,10 @@ from routes.applications import (
 # self.update_state() inside the task), no broker/worker required, and
 # returns an EagerResult whose .result is the task's returned dict --
 # replaces reading the old module-level _req_closed_state directly.
-def _run_req_closed_scan(platforms: frozenset[str] | None = None) -> dict:
-    return run_req_closed_scan_task.apply(kwargs={"platforms": platforms}).result
+def _run_req_closed_scan(user_id: int, platforms: frozenset[str] | None = None) -> dict:
+    return run_req_closed_scan_task.apply(
+        args=(user_id,), kwargs={"platforms": platforms}
+    ).result
 
 
 # ai: claude-fable-5 | 2026-07-17
@@ -399,18 +401,30 @@ def test_throttle_host_fetch_spaces_same_host_only(
         assert mock_sleep.call_args[0][0] == pytest.approx(0.8)
 
 
-def _fresh_repos(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> dict:
+# ai: claude-sonnet-5 | 2026-08-20
+# multi-tenancy: every table these tests touch now has a user_id column, and
+# submit_closed_req_capture (the listener-thread path, no session) resolves
+# its actor via first_account_user_id() -- "whichever account has the lowest
+# id" (see backend/utils/utils.py's STOPGAP docstring). pg_dsn's init_db()
+# always leaves exactly one placeholder account behind (id 1, guaranteed by
+# TRUNCATE...RESTART IDENTITY), so using that same account's id everywhere in
+# this file keeps directly-parameterized calls and the STOPGAP-resolved path
+# pointed at the same owner.
+def _fresh_repos(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, int]:
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
-    return open_repositories(pg_dsn)
+    repos = open_repositories(pg_dsn)
+    account = repos["app_account"].get_by_email("unclaimed@localhost")
+    return repos, account["id"]
 
 
 def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A job already on the Applications Sheet gets a req_closed stage, jobs.status untouched."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
+            user_id,
             {
                 "company": "Acme",
                 "job_title": "Engineer",
@@ -418,18 +432,18 @@ def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(
                 "source": "LinkedIn",
                 "status": "pending_review",
                 "on_sheet": 1,  # ai: claude-fable-5 | 2026-07-14
-            }
+            },
         )
         repos["conn"].commit()
     finally:
         repos["conn"].close()
 
-    _record_closed_req({"id": job_id, "on_sheet": 1}, "LinkedIn", "2026-07-02")
+    _record_closed_req(user_id, {"id": job_id, "on_sheet": 1}, "LinkedIn", "2026-07-02")
 
     repos = open_repositories(config.DATABASE_URL)
     try:
-        stages = [s for s in repos["stages"].get_all() if s["job_id"] == job_id]
-        updated_job = repos["jobs"].get_by_id(job_id)
+        stages = [s for s in repos["stages"].get_all(user_id) if s["job_id"] == job_id]
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
     finally:
         repos["conn"].close()
 
@@ -441,30 +455,31 @@ def test_record_closed_req_skips_queue_job_out_of_job_queue(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A job still in the pre-triage queue must actually leave GET /jobs, not just get a stage."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
+            user_id,
             {
                 "company": "Acme",
                 "job_title": "Engineer",
                 "url": "https://www.linkedin.com/jobs/view/2/",
                 "source": "LinkedIn",
                 "status": "pending_review",
-            }
+            },
         )
         repos["conn"].commit()
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
     finally:
         repos["conn"].close()
 
-    _record_closed_req(job, "LinkedIn", "2026-07-02")
+    _record_closed_req(user_id, job, "LinkedIn", "2026-07-02")
 
     repos = open_repositories(config.DATABASE_URL)
     try:
-        updated_job = repos["jobs"].get_by_id(job_id)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         history = [
             h
-            for h in repos["job_status_history"].get_recent(50)
+            for h in repos["job_status_history"].get_recent(user_id, 50)
             if h["job_id"] == job_id
         ]
     finally:
@@ -481,9 +496,10 @@ def test_closed_req_candidates_excludes_already_skipped_queue_jobs(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A queue job already skipped for another reason must not be re-flagged as req_closed."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         repos["jobs"].insert(
+            user_id,
             {
                 "company": "Acme",
                 "job_title": "Not A Fit",
@@ -491,19 +507,20 @@ def test_closed_req_candidates_excludes_already_skipped_queue_jobs(
                 "source": "LinkedIn",
                 "status": "skipped",
                 "skip_reason": "not_a_fit",
-            }
+            },
         )
         active_job_id = repos["jobs"].insert(
+            user_id,
             {
                 "company": "Acme",
                 "job_title": "Still Active",
                 "url": "https://www.linkedin.com/jobs/view/4/",
                 "source": "LinkedIn",
                 "status": "pending_review",
-            }
+            },
         )
         repos["conn"].commit()
-        candidates = _closed_req_candidates(repos)
+        candidates = _closed_req_candidates(repos, user_id)
     finally:
         repos["conn"].close()
 
@@ -520,13 +537,14 @@ def test_run_req_closed_scan_prioritizes_never_checked_job_over_cap(
     Job Queue jobs. Without prioritizing jobs that haven't been rechecked yet, a large
     pool of already-checked sheet jobs would permanently consume every cap slot on
     every run, starving queue jobs of ever reaching an authenticated recheck."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
         # Fill the cap with sheet-tracked jobs that already went through one
         # authenticated recheck (they'll re-classify as 'open' again this run).
         for i in range(_CLOSED_REQ_BROWSER_CHECK_CAP):
             job_id = repos["jobs"].insert(
+                user_id,
                 {
                     "company": "Acme",
                     "job_title": f"Sheet Job {i}",
@@ -534,38 +552,41 @@ def test_run_req_closed_scan_prioritizes_never_checked_job_over_cap(
                     "source": "LinkedIn",
                     "status": "applied",
                     "on_sheet": 1,  # ai: claude-fable-5 | 2026-07-14
-                }
+                },
             )
             queue_repo.enqueue_once_for_purpose(
+                user_id,
                 f"https://www.linkedin.com/jobs/view/{100 + i}/",
                 "LinkedIn (closed-req check)",
                 "closed_req",
                 job_id,
             )
-        queue_repo.claim_pending(limit=100)
+        queue_repo.claim_pending(user_id, limit=100)
         queue_repo.mark_done_by_urls(
+            user_id,
             [
                 f"https://www.linkedin.com/jobs/view/{100 + i}/"
                 for i in range(_CLOSED_REQ_BROWSER_CHECK_CAP)
-            ]
+            ],
         )
         # A pre-triage Job Queue job that has never been rechecked — sorts last in
         # _closed_req_candidates but must still win a slot over the cap.
         queue_job_id = repos["jobs"].insert(
+            user_id,
             {
                 "company": "CivicPlus",
                 "job_title": "Principal Software Engineer",
                 "url": "https://www.linkedin.com/jobs/view/1279/",
                 "source": "LinkedIn",
                 "status": "pending_review",
-            }
+            },
         )
         repos["conn"].commit()
 
         with patch("routes.applications._check_closed_req", return_value="open"):
-            _run_req_closed_scan()
+            _run_req_closed_scan(user_id)
 
-        rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
+        rows = [r for r in queue_repo.get_all(user_id) if r["purpose"] == "closed_req"]
         assert any(
             r["job_id"] == queue_job_id for r in rows
         ), "pre-triage queue job never got a browser-check slot"
@@ -579,26 +600,28 @@ def test_run_req_closed_scan_scans_only_selected_platforms(
 ) -> None:
     """A platform selection must limit the scan to jobs on those platforms —
     the point of the setup dialog's per-site checkboxes."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     wellfound_url = "https://wellfound.com/jobs?job_listing_slug=1-engineer"
     try:
         repos["jobs"].insert(
+            user_id,
             {
                 "company": "Acme",
                 "job_title": "LinkedIn Job",
                 "url": "https://www.linkedin.com/jobs/view/9001/",
                 "source": "LinkedIn",
                 "status": "pending_review",
-            }
+            },
         )
         repos["jobs"].insert(
+            user_id,
             {
                 "company": "Astra",
                 "job_title": "Wellfound Job",
                 "url": wellfound_url,
                 "source": "Tampermonkey - Wellfound",
                 "status": "pending_review",
-            }
+            },
         )
         repos["conn"].commit()
     finally:
@@ -607,7 +630,7 @@ def test_run_req_closed_scan_scans_only_selected_platforms(
     with patch(
         "routes.applications._check_closed_req", return_value="open"
     ) as mock_check:
-        result = _run_req_closed_scan(frozenset({"wellfound"}))
+        result = _run_req_closed_scan(user_id, frozenset({"wellfound"}))
 
     assert [call.args[0] for call in mock_check.call_args_list] == [wellfound_url]
     assert result["total"] == 1
@@ -620,9 +643,10 @@ def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
     _check_closed_req always reports 'bad_url' there regardless of the job's real
     status. That must be escalated to an authenticated browser-extension capture
     rather than reported as a broken-URL error."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
+            user_id,
             {
                 "company": "Astra",
                 "job_title": "Staff Backend Engineer",
@@ -630,16 +654,16 @@ def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
                 "source": "Tampermonkey - Wellfound",
                 "status": "applied",
                 "on_sheet": 1,  # ai: claude-fable-5 | 2026-07-14
-            }
+            },
         )
         repos["conn"].commit()
 
         with patch("routes.applications._check_closed_req", return_value="bad_url"):
-            result = _run_req_closed_scan()
+            result = _run_req_closed_scan(user_id)
 
         rows = [
             r
-            for r in repos["browser_capture_queue"].get_all()
+            for r in repos["browser_capture_queue"].get_all(user_id)
             if r["purpose"] == "closed_req"
         ]
         assert any(
@@ -661,20 +685,21 @@ def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
     scan must keep queueing batches and waiting for the extension to drain each
     one until every job got an authenticated recheck — not stop after the first
     batch and starve the rest of the pool for runs on end."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     total = _CLOSED_REQ_BROWSER_CHECK_CAP + 3
     job_ids: list[int] = []
     try:
         for i in range(total):
             job_ids.append(
                 repos["jobs"].insert(
+                    user_id,
                     {
                         "company": "Acme",
                         "job_title": f"Engineer {i}",
                         "url": f"https://www.linkedin.com/jobs/view/{500 + i}/",
                         "source": "LinkedIn",
                         "status": "pending_review",
-                    }
+                    },
                 )
             )
         repos["conn"].commit()
@@ -689,29 +714,30 @@ def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
         drain_repos = open_repositories(config.DATABASE_URL)
         try:
             queue_repo = drain_repos["browser_capture_queue"]
-            claimed = queue_repo.claim_pending(limit=100)
+            claimed = queue_repo.claim_pending(user_id, limit=100)
             if any(item["job_id"] == closed_job_id for item in claimed):
                 drain_repos["jobs"].update(
+                    user_id,
                     closed_job_id,
                     {"status": "skipped", "skip_reason": "req_closed"},
                 )
-            queue_repo.mark_done_by_urls([item["url"] for item in claimed])
+            queue_repo.mark_done_by_urls(user_id, [item["url"] for item in claimed])
             drain_repos["conn"].commit()
         finally:
             drain_repos["conn"].close()
 
     monkeypatch.setattr(applications_module.time, "sleep", _extension_drains_queue)
     with patch("routes.applications._check_closed_req", return_value="open"):
-        result = _run_req_closed_scan()
+        result = _run_req_closed_scan(user_id)
 
     check_repos = open_repositories(config.DATABASE_URL)
     try:
         rows = [
             r
-            for r in check_repos["browser_capture_queue"].get_all()
+            for r in check_repos["browser_capture_queue"].get_all(user_id)
             if r["purpose"] == "closed_req"
         ]
-        closed_job = check_repos["jobs"].get_by_id(closed_job_id)
+        closed_job = check_repos["jobs"].get_by_id(user_id, closed_job_id)
     finally:
         check_repos["conn"].close()
 
@@ -732,23 +758,24 @@ def test_run_req_closed_scan_sets_unreachable_since_on_direct_unreachable_result
     """A job whose fetch fails outright (not escalated to a browser recheck) must
     get jobs.unreachable_since set so it surfaces in the Unreachable tab, without
     its pipeline status changing."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
+            user_id,
             {
                 "company": "Category Labs",
                 "job_title": "Formal Verification Engineer",
                 "url": "https://jobgether.com/offer/unreachable-example",
                 "source": "Jobgether",
                 "status": "triage",
-            }
+            },
         )
         repos["conn"].commit()
 
         with patch("routes.applications._check_closed_req", return_value="unreachable"):
-            _run_req_closed_scan()
+            _run_req_closed_scan(user_id)
 
-        updated_job = repos["jobs"].get_by_id(job_id)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
     finally:
         repos["conn"].close()
 
@@ -757,7 +784,7 @@ def test_run_req_closed_scan_sets_unreachable_since_on_direct_unreachable_result
 
     check_repos = open_repositories(config.DATABASE_URL)
     try:
-        unreachable_ids = {j["id"] for j in check_repos["jobs"].get_unreachable()}
+        unreachable_ids = {j["id"] for j in check_repos["jobs"].get_unreachable(user_id)}
     finally:
         check_repos["conn"].close()
     assert job_id in unreachable_ids
@@ -769,9 +796,10 @@ def test_run_req_closed_scan_clears_unreachable_since_once_reachable_again(
 ) -> None:
     """A job previously flagged unreachable must have the flag cleared the next
     time a scan actually gets a response from it."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
+            user_id,
             {
                 "company": "Category Labs",
                 "job_title": "Formal Verification Engineer",
@@ -779,14 +807,14 @@ def test_run_req_closed_scan_clears_unreachable_since_once_reachable_again(
                 "source": "Jobgether",
                 "status": "triage",
                 "unreachable_since": "2026-08-01",
-            }
+            },
         )
         repos["conn"].commit()
 
         with patch("routes.applications._check_closed_req", return_value="open"):
-            _run_req_closed_scan()
+            _run_req_closed_scan(user_id)
 
-        updated_job = repos["jobs"].get_by_id(job_id)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
     finally:
         repos["conn"].close()
 
@@ -802,16 +830,17 @@ def test_run_req_closed_scan_sets_unreachable_since_when_browser_recheck_fails(
     this is the actual path that produced the four unreachable Wellfound jobs
     the user hit in production, since Wellfound bot-blocks the unauthenticated
     fetch on every job and only the browser recheck gives a real verdict."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
+            user_id,
             {
                 "company": "kolo",
                 "job_title": "Founding AI Software Engineer",
                 "url": "https://wellfound.com/jobs?job_listing_slug=example-failed",
                 "source": "Wellfound",
                 "status": "possible_duplicate",
-            }
+            },
         )
         repos["conn"].commit()
     finally:
@@ -821,19 +850,19 @@ def test_run_req_closed_scan_sets_unreachable_since_when_browser_recheck_fails(
         drain_repos = open_repositories(config.DATABASE_URL)
         try:
             queue_repo = drain_repos["browser_capture_queue"]
-            for item in queue_repo.claim_pending(limit=100):
-                queue_repo.mark_failed(item["id"], "extension gave up")
+            for item in queue_repo.claim_pending(user_id, limit=100):
+                queue_repo.mark_failed(user_id, item["id"], "extension gave up")
             drain_repos["conn"].commit()
         finally:
             drain_repos["conn"].close()
 
     monkeypatch.setattr(applications_module.time, "sleep", _extension_exhausts_retries)
     with patch("routes.applications._check_closed_req", return_value="bad_url"):
-        result = _run_req_closed_scan()
+        result = _run_req_closed_scan(user_id)
 
     check_repos = open_repositories(config.DATABASE_URL)
     try:
-        updated_job = check_repos["jobs"].get_by_id(job_id)
+        updated_job = check_repos["jobs"].get_by_id(user_id, job_id)
     finally:
         check_repos["conn"].close()
 
@@ -848,27 +877,28 @@ def test_run_req_closed_scan_stops_batching_when_extension_offline(
     """With nothing draining the capture queue, the scan must give up after the
     first batch with an explanatory message instead of waiting forever or
     flooding the queue with every remaining batch."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     total = _CLOSED_REQ_BROWSER_CHECK_CAP + 5
     try:
         for i in range(total):
             repos["jobs"].insert(
+                user_id,
                 {
                     "company": "Acme",
                     "job_title": f"Engineer {i}",
                     "url": f"https://www.linkedin.com/jobs/view/{700 + i}/",
                     "source": "LinkedIn",
                     "status": "pending_review",
-                }
+                },
             )
         repos["conn"].commit()
 
         with patch("routes.applications._check_closed_req", return_value="open"):
-            result = _run_req_closed_scan()
+            result = _run_req_closed_scan(user_id)
 
         rows = [
             r
-            for r in repos["browser_capture_queue"].get_all()
+            for r in repos["browser_capture_queue"].get_all(user_id)
             if r["purpose"] == "closed_req"
         ]
     finally:
@@ -942,10 +972,11 @@ def test_enqueue_once_for_purpose_skips_duplicate_while_in_flight(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A URL+purpose already pending/processing is not re-enqueued."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
         first_id = queue_repo.enqueue_once_for_purpose(
+            user_id,
             "https://www.linkedin.com/jobs/view/5/",
             "LinkedIn (closed-req check)",
             "closed_req",
@@ -955,6 +986,7 @@ def test_enqueue_once_for_purpose_skips_duplicate_while_in_flight(
         repos["conn"].commit()
 
         second_id = queue_repo.enqueue_once_for_purpose(
+            user_id,
             "https://www.linkedin.com/jobs/view/5/",
             "LinkedIn (closed-req check)",
             "closed_req",
@@ -962,7 +994,7 @@ def test_enqueue_once_for_purpose_skips_duplicate_while_in_flight(
         )
         assert second_id is None
 
-        rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
+        rows = [r for r in queue_repo.get_all(user_id) if r["purpose"] == "closed_req"]
         assert len(rows) == 1
     finally:
         repos["conn"].close()
@@ -976,10 +1008,11 @@ def test_enqueue_once_for_purpose_queues_distinct_query_form_urls(
     so two different jobs sharing the same base URL must both be enqueueable.
     Regression: base-URL dedupe collapsed every query-form Wellfound job to one
     key, letting only a single Wellfound job per scan reach the browser check."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
         first_id = queue_repo.enqueue_once_for_purpose(
+            user_id,
             "https://wellfound.com/jobs?job_listing_slug=111-backend-engineer",
             "Wellfound (closed-req check)",
             "closed_req",
@@ -989,6 +1022,7 @@ def test_enqueue_once_for_purpose_queues_distinct_query_form_urls(
         repos["conn"].commit()
 
         second_id = queue_repo.enqueue_once_for_purpose(
+            user_id,
             "https://wellfound.com/jobs?job_listing_slug=222-staff-engineer",
             "Wellfound (closed-req check)",
             "closed_req",
@@ -996,7 +1030,7 @@ def test_enqueue_once_for_purpose_queues_distinct_query_form_urls(
         )
         assert second_id is not None
 
-        rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
+        rows = [r for r in queue_repo.get_all(user_id) if r["purpose"] == "closed_req"]
         assert len(rows) == 2
     finally:
         repos["conn"].close()
@@ -1007,26 +1041,28 @@ def test_enqueue_once_for_purpose_reenqueues_after_done(
 ) -> None:
     """A job classified 'open' on a prior scan run must be re-escalated on a later run,
     otherwise a posting that closes after the first check is never rechecked."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
         first_id = queue_repo.enqueue_once_for_purpose(
+            user_id,
             "https://www.linkedin.com/jobs/view/5/",
             "LinkedIn (closed-req check)",
             "closed_req",
             5,
         )
         assert first_id is not None
-        queue_repo.claim_pending(limit=10)  # pending -> processing
+        queue_repo.claim_pending(user_id, limit=10)  # pending -> processing
         queue_repo.mark_done_by_urls(
-            ["https://www.linkedin.com/jobs/view/5/"]
+            user_id, ["https://www.linkedin.com/jobs/view/5/"]
         )  # processing -> done
         repos["conn"].commit()
 
-        rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
+        rows = [r for r in queue_repo.get_all(user_id) if r["purpose"] == "closed_req"]
         assert rows[0]["status"] == "done"
 
         second_id = queue_repo.enqueue_once_for_purpose(
+            user_id,
             "https://www.linkedin.com/jobs/view/5/",
             "LinkedIn (closed-req check)",
             "closed_req",
@@ -1034,7 +1070,7 @@ def test_enqueue_once_for_purpose_reenqueues_after_done(
         )
         assert second_id is not None
 
-        rows = [r for r in queue_repo.get_all() if r["purpose"] == "closed_req"]
+        rows = [r for r in queue_repo.get_all(user_id) if r["purpose"] == "closed_req"]
         assert len(rows) == 2
     finally:
         repos["conn"].close()
@@ -1046,36 +1082,39 @@ def test_enqueue_once_for_purpose_reenqueues_after_done(
 def test_closed_req_browser_queue_snapshot_counts_by_status(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         queue_repo = repos["browser_capture_queue"]
         queue_repo.enqueue_once_for_purpose(
+            user_id,
             "https://www.linkedin.com/jobs/view/1/",
             "LinkedIn (closed-req check)",
             "closed_req",
             1,
         )
         queue_repo.enqueue_once_for_purpose(
+            user_id,
             "https://www.linkedin.com/jobs/view/2/",
             "LinkedIn (closed-req check)",
             "closed_req",
             2,
         )
         queue_repo.enqueue_once_for_purpose(
+            user_id,
             "https://www.linkedin.com/jobs/view/3/",
             "LinkedIn (closed-req check)",
             "closed_req",
             3,
         )
-        queue_repo.claim_pending(limit=10)  # all three: pending -> processing
+        queue_repo.claim_pending(user_id, limit=10)  # all three: pending -> processing
         queue_repo.mark_done_by_urls(
-            ["https://www.linkedin.com/jobs/view/1/"]
+            user_id, ["https://www.linkedin.com/jobs/view/1/"]
         )  # 1: processing -> done
         # An unrelated import-purpose row must not be counted.
-        queue_repo.enqueue("https://boards.greenhouse.io/foo/jobs/1", "Greenhouse")
+        queue_repo.enqueue(user_id, "https://boards.greenhouse.io/foo/jobs/1", "Greenhouse")
         repos["conn"].commit()
 
-        snapshot = _closed_req_browser_queue_snapshot(repos)
+        snapshot = _closed_req_browser_queue_snapshot(repos, user_id)
         assert snapshot["done"] == 1
         assert snapshot["processing"] == 2
         assert snapshot["pending"] == 0
@@ -1088,9 +1127,9 @@ def test_closed_req_browser_queue_snapshot_counts_by_status(
 def test_closed_req_browser_queue_snapshot_empty_queue(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
-        snapshot = _closed_req_browser_queue_snapshot(repos)
+        snapshot = _closed_req_browser_queue_snapshot(repos, user_id)
         assert snapshot == {
             "pending": 0,
             "processing": 0,
@@ -1111,26 +1150,32 @@ def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(
 ) -> None:
     """An authenticated capture showing the closure banner records the job as closed,
     even though the earlier unauthenticated fetch reported it as open."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    # submit_closed_req_capture has no session (the real caller is the
+    # standalone import-listener thread) and resolves its actor via the
+    # first_account_user_id() STOPGAP -- the placeholder account _fresh_repos
+    # returns is exactly that account, so the job must belong to it too.
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
+            user_id,
             {
                 "company": "CivicPlus",
                 "job_title": "Principal Software Engineer",
                 "url": "https://www.linkedin.com/jobs/view/6/",
                 "source": "LinkedIn",
                 "status": "pending_review",
-            }
+            },
         )
         repos["conn"].commit()
         repos["browser_capture_queue"].enqueue_once_for_purpose(
+            user_id,
             "https://www.linkedin.com/jobs/view/6/",
             "LinkedIn (closed-req check)",
             "closed_req",
             job_id,
         )
         repos["browser_capture_queue"].claim_pending(
-            limit=10
+            user_id, limit=10
         )  # pending -> processing, as the listener would
         repos["conn"].commit()
     finally:
@@ -1150,9 +1195,11 @@ def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(
 
     repos = open_repositories(config.DATABASE_URL)
     try:
-        updated_job = repos["jobs"].get_by_id(job_id)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         queue_rows = [
-            r for r in repos["browser_capture_queue"].get_all() if r["job_id"] == job_id
+            r
+            for r in repos["browser_capture_queue"].get_all(user_id)
+            if r["job_id"] == job_id
         ]
     finally:
         repos["conn"].close()
@@ -1166,26 +1213,28 @@ def test_submit_closed_req_capture_leaves_open_job_untouched(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A capture with no closure signal marks the queue item done but doesn't touch the job."""
-    repos = _fresh_repos(pg_dsn, monkeypatch)
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
+            user_id,
             {
                 "company": "Acme",
                 "job_title": "Engineer",
                 "url": "https://www.linkedin.com/jobs/view/7/",
                 "source": "LinkedIn",
                 "status": "pending_review",
-            }
+            },
         )
         repos["conn"].commit()
         repos["browser_capture_queue"].enqueue_once_for_purpose(
+            user_id,
             "https://www.linkedin.com/jobs/view/7/",
             "LinkedIn (closed-req check)",
             "closed_req",
             job_id,
         )
         repos["browser_capture_queue"].claim_pending(
-            limit=10
+            user_id, limit=10
         )  # pending -> processing, as the listener would
         repos["conn"].commit()
     finally:
@@ -1205,9 +1254,11 @@ def test_submit_closed_req_capture_leaves_open_job_untouched(
 
     repos = open_repositories(config.DATABASE_URL)
     try:
-        updated_job = repos["jobs"].get_by_id(job_id)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         queue_rows = [
-            r for r in repos["browser_capture_queue"].get_all() if r["job_id"] == job_id
+            r
+            for r in repos["browser_capture_queue"].get_all(user_id)
+            if r["job_id"] == job_id
         ]
     finally:
         repos["conn"].close()
@@ -1257,14 +1308,15 @@ def test_start_closed_req_scan_rejects_empty_platform_list() -> None:
 # during the request.
 def test_start_closed_req_scan_passes_selection_to_scan_dispatch() -> None:
     client = _scan_routes_client()
-    received: list[frozenset[str] | None] = []
+    received: list[tuple[int, frozenset[str] | None]] = []
 
-    def fake_submit(platforms: frozenset[str] | None = None) -> str:
-        received.append(platforms)
+    def fake_submit(user_id: int, platforms: frozenset[str] | None = None) -> str:
+        received.append((user_id, platforms))
         return "fake-task-id"
 
-    with patch(
-        "routes.applications._submit_closed_req_scan", side_effect=fake_submit
+    with (
+        patch("routes.applications.current_user_id", return_value=1),
+        patch("routes.applications._submit_closed_req_scan", side_effect=fake_submit),
     ):
         res = client.post(
             "/api/applications/scan-closed-reqs",
@@ -1276,22 +1328,23 @@ def test_start_closed_req_scan_passes_selection_to_scan_dispatch() -> None:
         "platforms": ["mongodb", "wellfound"],
         "task_id": "fake-task-id",
     }
-    assert received == [frozenset({"wellfound", "mongodb"})]
+    assert received == [(1, frozenset({"wellfound", "mongodb"}))]
 
 
 def test_start_closed_req_scan_defaults_to_all_platforms() -> None:
     """A bodyless POST (the pre-checkbox behavior) must still scan everything."""
     client = _scan_routes_client()
-    received: list[frozenset[str] | None] = []
+    received: list[tuple[int, frozenset[str] | None]] = []
 
-    def fake_submit(platforms: frozenset[str] | None = None) -> str:
-        received.append(platforms)
+    def fake_submit(user_id: int, platforms: frozenset[str] | None = None) -> str:
+        received.append((user_id, platforms))
         return "fake-task-id"
 
-    with patch(
-        "routes.applications._submit_closed_req_scan", side_effect=fake_submit
+    with (
+        patch("routes.applications.current_user_id", return_value=1),
+        patch("routes.applications._submit_closed_req_scan", side_effect=fake_submit),
     ):
         res = client.post("/api/applications/scan-closed-reqs")
     assert res.status_code == 200
     assert res.get_json()["platforms"] == sorted(_PLATFORM_LABELS)
-    assert received == [frozenset(_PLATFORM_LABELS)]
+    assert received == [(1, frozenset(_PLATFORM_LABELS))]

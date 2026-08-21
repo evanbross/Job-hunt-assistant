@@ -39,16 +39,17 @@ import re
 from collections.abc import Iterator  # ai: claude-fable-5 | 2026-07-17
 from typing import Any, Protocol
 
-from backend.scanning.career_site_scanner import CareerSiteScanner
-from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.email.email_parser import (  # ai: claude-fable-5 | 2026-07-17
     looks_like_wttj_misparsed_title,
 )
+from backend.scanning.career_site_scanner import CareerSiteScanner
+from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.utils.company_urls import company_from_ats_url
 
 
+# ai: claude-sonnet-5 | 2026-08-20
 class JobUpdater(Protocol):
-    def update(self, job_id: int, fields: dict[str, Any]) -> None: ...
+    def update(self, user_id: int, job_id: int, fields: dict[str, Any]) -> None: ...
 
 
 def is_missing_company(value: object) -> bool:
@@ -57,6 +58,7 @@ def is_missing_company(value: object) -> bool:
 
 
 def repair_linkedin_company(
+    user_id: int,
     jobs_repo: JobUpdater,
     existing_job: dict[str, Any],
     url: str,
@@ -75,7 +77,7 @@ def repair_linkedin_company(
     if at_match:
         company = at_match.group(1).strip()
         if company:
-            jobs_repo.update(int(existing_job["id"]), {"company": company})
+            jobs_repo.update(user_id, int(existing_job["id"]), {"company": company})
             return True
 
     # Format B: "Company Name hiring Job Title in Location"
@@ -88,13 +90,14 @@ def repair_linkedin_company(
             updates: dict[str, Any] = {"company": company}
             if job_title:
                 updates["job_title"] = job_title
-            jobs_repo.update(int(existing_job["id"]), updates)
+            jobs_repo.update(user_id, int(existing_job["id"]), updates)
             return True
 
     return False
 
 
 def post_repair_duplicate_check(
+    user_id: int,
     jobs_repo: JobUpdater,
     fixed_job: dict[str, Any],
     all_jobs: list[dict[str, Any]],
@@ -132,6 +135,7 @@ def post_repair_duplicate_check(
         else None
     )
     jobs_repo.update(
+        user_id,
         job_id,
         {
             "duplicate_hint": hint,
@@ -144,6 +148,7 @@ def post_repair_duplicate_check(
 
 # ai: claude-sonnet-4-6 | 2026-06-18
 def repair_ats_url_company(
+    user_id: int,
     jobs_repo: JobUpdater,
     existing_job: dict[str, Any],
 ) -> bool:
@@ -157,11 +162,12 @@ def repair_ats_url_company(
     company = company_from_ats_url(url)
     if not company:
         return False
-    jobs_repo.update(int(existing_job["id"]), {"company": company})
+    jobs_repo.update(user_id, int(existing_job["id"]), {"company": company})
     return True
 
 
 def repair_existing_job_company(
+    user_id: int,
     jobs_repo: JobUpdater,
     existing_job: dict[str, Any],
     url_row: dict[str, Any],
@@ -169,7 +175,7 @@ def repair_existing_job_company(
     captured_company = str(url_row.get("company") or "").strip()
     if not captured_company or not is_missing_company(existing_job.get("company")):
         return False
-    jobs_repo.update(int(existing_job["id"]), {"company": captured_company})
+    jobs_repo.update(user_id, int(existing_job["id"]), {"company": captured_company})
     return True
 
 

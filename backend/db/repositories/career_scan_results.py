@@ -40,6 +40,8 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-21 — every method below gained a leading
+# user_id parameter (multi-tenancy migration).
 class PostgresCareerScanResultRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -63,51 +65,57 @@ class PostgresCareerScanResultRepository(_BaseRepo):
         }
     )
 
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM career_scan_results ORDER BY scanned_at DESC, id DESC"
+            "SELECT * FROM career_scan_results WHERE user_id = %s"
+            " ORDER BY scanned_at DESC, id DESC",
+            (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def exists_by_job_url(self, job_url: str) -> bool:
+    def exists_by_job_url(self, user_id: int, job_url: str) -> bool:
         cur = self._execute(
-            "SELECT 1 FROM career_scan_results WHERE job_url = %s", (job_url,)
+            "SELECT 1 FROM career_scan_results WHERE user_id = %s AND job_url = %s",
+            (user_id, job_url),
         )
         return cur.fetchone() is not None
 
-    def get_by_id(self, row_id: int) -> dict[str, Any] | None:
+    def get_by_id(self, user_id: int, row_id: int) -> dict[str, Any] | None:
         cur = self._execute(
-            "SELECT * FROM career_scan_results WHERE id = %s", (row_id,)
+            "SELECT * FROM career_scan_results WHERE id = %s AND user_id = %s",
+            (row_id, user_id),
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def get_by_job_url(self, job_url: str) -> dict[str, Any] | None:
+    def get_by_job_url(self, user_id: int, job_url: str) -> dict[str, Any] | None:
         cur = self._execute(
-            "SELECT * FROM career_scan_results WHERE job_url = %s", (job_url,)
+            "SELECT * FROM career_scan_results WHERE user_id = %s AND job_url = %s",
+            (user_id, job_url),
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def delete_by_site_source_id(self, site_source_id: int) -> None:
+    def delete_by_site_source_id(self, user_id: int, site_source_id: int) -> None:
         self._execute(
-            "DELETE FROM career_scan_results WHERE site_source_id = %s",
-            (site_source_id,),
+            "DELETE FROM career_scan_results WHERE site_source_id = %s AND user_id = %s",
+            (site_source_id, user_id),
         )
 
-    def insert(self, row: dict[str, Any]) -> int:
+    def insert(self, user_id: int, row: dict[str, Any]) -> int:
         unknown = set(row.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
-        columns = ", ".join(row.keys())
-        placeholders = ", ".join(["%s"] * len(row))
+        columns = ["user_id", *row.keys()]
+        placeholders = ", ".join(["%s"] * len(columns))
         cur = self._execute(
-            f"INSERT INTO career_scan_results ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(row.values()),
+            f"INSERT INTO career_scan_results ({', '.join(columns)})"
+            f" VALUES ({placeholders}) RETURNING id",
+            [user_id, *row.values()],
         )
         return cur.fetchone()["id"]
 
-    def update(self, row_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, row_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
         unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
@@ -115,9 +123,9 @@ class PostgresCareerScanResultRepository(_BaseRepo):
             raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = %s" for k in fields)
         self._execute(
-            f"UPDATE career_scan_results SET {set_clause} WHERE id = %s",
-            [*fields.values(), row_id],
+            f"UPDATE career_scan_results SET {set_clause} WHERE id = %s AND user_id = %s",
+            [*fields.values(), row_id, user_id],
         )
 
-    def delete_all(self) -> None:
-        self._execute("DELETE FROM career_scan_results")
+    def delete_all(self, user_id: int) -> None:
+        self._execute("DELETE FROM career_scan_results WHERE user_id = %s", (user_id,))

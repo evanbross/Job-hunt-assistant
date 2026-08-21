@@ -104,22 +104,26 @@ def test_noise_feedback_does_not_skip_entire_email(
     dsn = pg_dsn
     repos = open_repositories(dsn)
     try:
+        account = repos["app_account"].create("owner@example.com", "hash")
+        user_id = account["id"]
         repos["sources"].insert(
+            user_id,
             {
                 "name": "LinkedIn",
                 "match_type": "sender_email",
                 "match_value": "jobalerts-noreply@linkedin.com",
                 "enabled": 1,
-            }
+            },
         )
         repos["feedback"].insert(
+            user_id,
             {
                 "sender_email": "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
                 "subject_pattern": "staff software engineer",
                 "is_relevant": 0,
                 "source_name": "LinkedIn",
                 "created_at": "2026-05-09T12:00:00+00:00",
-            }
+            },
         )
         repos["conn"].commit()
     finally:
@@ -141,12 +145,12 @@ def test_noise_feedback_does_not_skip_entire_email(
     # the task (it needs a real task_id to store to the Redis backend) --
     # .apply() runs it synchronously with a proper bound task context, no
     # broker/worker required.
-    result = scan.run_scan_task.apply().result
+    result = scan.run_scan_task.apply(args=(user_id,)).result
 
     repos = open_repositories(dsn)
     try:
-        jobs = repos["jobs"].get_all_ordered()
-        scanned = repos["scanned_emails"].get_scanned_metadata("linkedin-msg-1")
+        jobs = repos["jobs"].get_all_ordered(user_id)
+        scanned = repos["scanned_emails"].get_scanned_metadata(user_id, "linkedin-msg-1")
     finally:
         repos["conn"].close()
 

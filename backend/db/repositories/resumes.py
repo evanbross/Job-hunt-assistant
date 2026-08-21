@@ -40,6 +40,8 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
+# user_id parameter (multi-tenancy migration).
 class PostgresResumeRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -47,25 +49,29 @@ class PostgresResumeRepository(_BaseRepo):
             "filename",
             "content",
             "uploaded_at",
+            "user_id",
         }
     )
 
-    def get_latest(self) -> dict[str, Any] | None:
-        cur = self._execute("SELECT * FROM resume ORDER BY uploaded_at DESC LIMIT 1")
+    def get_latest(self, user_id: int) -> dict[str, Any] | None:
+        cur = self._execute(
+            "SELECT * FROM resume WHERE user_id = %s ORDER BY uploaded_at DESC LIMIT 1",
+            [user_id],
+        )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def insert(self, resume: dict[str, Any]) -> int:
+    def insert(self, user_id: int, resume: dict[str, Any]) -> int:
         unknown = set(resume.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
-        columns = ", ".join(resume.keys())
-        placeholders = ", ".join(["%s"] * len(resume))
+        columns = ["user_id", *resume.keys()]
+        placeholders = ", ".join(["%s"] * len(columns))
         cur = self._execute(
-            f"INSERT INTO resume ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(resume.values()),
+            f"INSERT INTO resume ({', '.join(columns)}) VALUES ({placeholders}) RETURNING id",
+            [user_id, *resume.values()],
         )
         return cur.fetchone()["id"]
 
-    def delete_all(self) -> None:
-        self._execute("DELETE FROM resume")
+    def delete_all(self, user_id: int) -> None:
+        self._execute("DELETE FROM resume WHERE user_id = %s", [user_id])

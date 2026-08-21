@@ -39,9 +39,10 @@ logger = logging.getLogger(__name__)
 
 
 # ai: claude-sonnet-5 | 2026-07-25
+# ai: claude-sonnet-5 | 2026-08-21 — replace_all gained a leading user_id
 @runtime_checkable
 class IContactRepository(Protocol):
-    def replace_all(self, rows: list[dict[str, Any]]) -> None: ...
+    def replace_all(self, user_id: int, rows: list[dict[str, Any]]) -> None: ...
 
 
 class LinkedInConnectionRow(BaseModel):
@@ -71,7 +72,7 @@ class ContactImportService:
     def __init__(self, contacts_repo: IContactRepository) -> None:
         self._contacts_repo = contacts_repo
 
-    def import_csv(self, raw_bytes: bytes) -> ContactImportResult:
+    def import_csv(self, user_id: int, raw_bytes: bytes) -> ContactImportResult:
         rows = self._parse_rows(raw_bytes)
         skipped_reasons: dict[str, int] = {}
         seen_keys: set[str] = set()
@@ -116,7 +117,7 @@ class ContactImportService:
                 }
             )
 
-        self._contacts_repo.replace_all(to_insert)
+        self._contacts_repo.replace_all(user_id, to_insert)
 
         skipped = sum(skipped_reasons.values())
         return ContactImportResult(

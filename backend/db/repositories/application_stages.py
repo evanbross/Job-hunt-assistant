@@ -40,6 +40,10 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
+# user_id parameter (multi-tenancy migration; see backend/db/schema.py's
+# _migrate() for the user_id column this scopes against). PostgresStageStatusRepository
+# below is untouched — stage_statuses is global reference data, not per-user.
 class PostgresApplicationStageRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -52,39 +56,44 @@ class PostgresApplicationStageRepository(_BaseRepo):
         }
     )
 
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM application_stages ORDER BY job_id ASC, date ASC, created_at ASC, id ASC",
+            "SELECT * FROM application_stages WHERE user_id = %s"
+            " ORDER BY job_id ASC, date ASC, created_at ASC, id ASC",
+            (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_by_job_id(self, job_id: int) -> list[dict[str, Any]]:
+    def get_by_job_id(self, user_id: int, job_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM application_stages WHERE job_id = %s ORDER BY date ASC, created_at ASC, id ASC",
-            (job_id,),
+            "SELECT * FROM application_stages WHERE job_id = %s AND user_id = %s"
+            " ORDER BY date ASC, created_at ASC, id ASC",
+            (job_id, user_id),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_by_id(self, stage_id: int) -> dict[str, Any] | None:
+    def get_by_id(self, user_id: int, stage_id: int) -> dict[str, Any] | None:
         cur = self._execute(
-            "SELECT * FROM application_stages WHERE id = %s", (stage_id,)
+            "SELECT * FROM application_stages WHERE id = %s AND user_id = %s",
+            (stage_id, user_id),
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def insert(self, stage: dict[str, Any]) -> int:
+    def insert(self, user_id: int, stage: dict[str, Any]) -> int:
         unknown = set(stage.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
-        columns = ", ".join(stage.keys())
-        placeholders = ", ".join(["%s"] * len(stage))
+        columns = ["user_id", *stage.keys()]
+        placeholders = ", ".join(["%s"] * len(columns))
         cur = self._execute(
-            f"INSERT INTO application_stages ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(stage.values()),
+            f"INSERT INTO application_stages ({', '.join(columns)})"
+            f" VALUES ({placeholders}) RETURNING id",
+            [user_id, *stage.values()],
         )
         return cur.fetchone()["id"]
 
-    def update(self, stage_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, stage_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
         unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
@@ -92,12 +101,15 @@ class PostgresApplicationStageRepository(_BaseRepo):
             raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{col} = %s" for col in fields)
         self._execute(
-            f"UPDATE application_stages SET {set_clause} WHERE id = %s",
-            [*fields.values(), stage_id],
+            f"UPDATE application_stages SET {set_clause} WHERE id = %s AND user_id = %s",
+            [*fields.values(), stage_id, user_id],
         )
 
-    def delete(self, stage_id: int) -> None:
-        self._execute("DELETE FROM application_stages WHERE id = %s", (stage_id,))
+    def delete(self, user_id: int, stage_id: int) -> None:
+        self._execute(
+            "DELETE FROM application_stages WHERE id = %s AND user_id = %s",
+            (stage_id, user_id),
+        )
 
 
 class PostgresStageStatusRepository(_BaseRepo):

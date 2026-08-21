@@ -45,7 +45,7 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 
-from backend.utils.utils import get_repos
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class ApplicationAnswerCreate(BaseModel):
 @application_profile_bp.route("/application-profile", methods=["GET"])
 def get_application_profile() -> ResponseReturnValue:
     with get_repos() as repos:
-        profile = repos["application_profile"].get()
+        profile = repos["application_profile"].get(current_user_id())
     return jsonify(profile)
 
 
@@ -104,7 +104,9 @@ def update_application_profile() -> ResponseReturnValue:
     # field's default (None), which upsert() would then write as an explicit
     # overwrite — confirmed to actually wipe a live profile via a partial PUT.
     with get_repos() as repos:
-        profile = repos["application_profile"].upsert(body.model_dump(exclude_unset=True))
+        profile = repos["application_profile"].upsert(
+            current_user_id(), body.model_dump(exclude_unset=True)
+        )
         repos["conn"].commit()
     return jsonify(profile)
 
@@ -112,7 +114,7 @@ def update_application_profile() -> ResponseReturnValue:
 @application_profile_bp.route("/application-answers", methods=["GET"])
 def list_application_answers() -> ResponseReturnValue:
     with get_repos() as repos:
-        answers = repos["application_answers"].get_all()
+        answers = repos["application_answers"].get_all(current_user_id())
     return jsonify(answers)
 
 
@@ -125,6 +127,7 @@ def upsert_application_answer() -> ResponseReturnValue:
 
     with get_repos() as repos:
         answer = repos["application_answers"].upsert(
+            current_user_id(),
             question_text=body.question_text,
             answer_text=body.answer_text,
             platform=body.platform,
@@ -136,6 +139,6 @@ def upsert_application_answer() -> ResponseReturnValue:
 @application_profile_bp.route("/application-answers/<int:answer_id>", methods=["DELETE"])
 def delete_application_answer(answer_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
-        repos["application_answers"].delete(answer_id)
+        repos["application_answers"].delete(current_user_id(), answer_id)
         repos["conn"].commit()
     return jsonify({"deleted": answer_id})

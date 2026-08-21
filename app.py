@@ -158,7 +158,9 @@ _cors_origins = (
 CORS(app, resources={r"/api/*": {"origins": _cors_origins, "supports_credentials": True}})
 
 _API_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-_APP_LOGIN_ALLOWLIST = frozenset({"/api/login", "/api/session", "/api/system/health"})
+_APP_LOGIN_ALLOWLIST = frozenset(
+    {"/api/login", "/api/account", "/api/session", "/api/system/health"}
+)
 
 
 @app.before_request
@@ -167,9 +169,12 @@ def _require_app_login() -> tuple[flask.Response, int] | None:
 
     Single-owner login gate — see routes/session_auth.py. Everything under
     /api/* requires a prior POST /api/login except the narrow allowlist
-    above. This deliberately includes the existing Google OAuth routes
-    (/api/auth/*): granting Gmail access should only be reachable once
-    already logged into the app, not a second anonymous entry point.
+    above (POST /api/account is the bootstrap "create my one account" route
+    — it can only ever succeed once, see app_account's schema constraint, so
+    leaving it unauthenticated doesn't weaken the gate). This deliberately
+    includes the existing Google OAuth routes (/api/auth/*): granting Gmail
+    access should only be reachable once already logged into the app, not a
+    second anonymous entry point.
     """
     if not request.path.startswith("/api/") or request.path in _APP_LOGIN_ALLOWLIST:
         return None
@@ -376,12 +381,19 @@ app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /ap
 
 
 def _claim_browser_capture_queue() -> list[dict]:
-    """Called from the import listener thread — opens a short-lived DB connection."""
-    from backend.utils.utils import get_repos
+    """Called from the import listener thread — opens a short-lived DB connection.
+
+    STOPGAP: no Flask session exists on this thread, so user_id is resolved
+    via first_account_user_id() (the first-ever registered account) rather
+    than a real per-user identity — see that helper's docstring in
+    backend/utils/utils.py.
+    """
+    from backend.utils.utils import first_account_user_id, get_repos
 
     with get_repos() as repos:
+        user_id = first_account_user_id(repos)
         items = repos["browser_capture_queue"].claim_pending(
-            limit=BROWSER_QUEUE_CLAIM_BATCH_SIZE
+            user_id, limit=BROWSER_QUEUE_CLAIM_BATCH_SIZE
         )
         repos["conn"].commit()
     return items
@@ -389,11 +401,12 @@ def _claim_browser_capture_queue() -> list[dict]:
 
 # ai: claude-sonnet-5 | 2026-07-22
 def _browser_capture_queue_has_pending() -> bool:
-    """Called from the queue WebSocket server's watcher thread."""
-    from backend.utils.utils import get_repos
+    """Called from the queue WebSocket server's watcher thread. STOPGAP: see
+    _claim_browser_capture_queue's docstring above."""
+    from backend.utils.utils import first_account_user_id, get_repos
 
     with get_repos() as repos:
-        return repos["browser_capture_queue"].has_pending()
+        return repos["browser_capture_queue"].has_pending(first_account_user_id(repos))
 
 
 # Career-site auto-scheduler intentionally not started — scans are triggered
@@ -405,30 +418,45 @@ def _handle_listener_capture(body: dict) -> tuple[dict, int]:
     Closed-req checks (see routes.applications.run_req_closed_scan_task) post the
     raw captured HTML for classification rather than going through the job-import
     pipeline, which expects structured job listings.
+
+    STOPGAP: no Flask session exists on this thread, so both branches resolve
+    user_id via first_account_user_id() rather than a real per-user identity
+    — see that helper's docstring in backend/utils/utils.py.
     """
     if body.get("purpose") == "closed_req":
         return submit_closed_req_capture(body)
-    return queue_import_capture(body, trigger="listener")
-
-
-# ai: claude-sonnet-5 | 2026-08-13
-def _get_application_profile_for_listener() -> dict | None:
-    """Called from the import listener thread — opens a short-lived DB connection."""
-    from backend.utils.utils import get_repos
+    from backend.utils.utils import first_account_user_id, get_repos
 
     with get_repos() as repos:
-        return repos["application_profile"].get()
+        user_id = first_account_user_id(repos)
+    return queue_import_capture(body, trigger="listener", user_id=user_id)
 
 
 # ai: claude-sonnet-5 | 2026-08-13
+# ai: claude-sonnet-5 | 2026-08-20 — STOPGAP: no Flask session on this thread,
+# see first_account_user_id()'s docstring in backend/utils/utils.py.
+def _get_application_profile_for_listener() -> dict | None:
+    """Called from the import listener thread — opens a short-lived DB connection."""
+    from backend.utils.utils import first_account_user_id, get_repos
+
+    with get_repos() as repos:
+        return repos["application_profile"].get(first_account_user_id(repos))
+
+
+# ai: claude-sonnet-5 | 2026-08-13
+# ai: claude-sonnet-5 | 2026-08-20 — STOPGAP, same as above. Also note: the
+# resume PDF on disk (resume_path below) isn't per-user yet — only the DB
+# row is — so this reads the right DB row for the stopgap user but the
+# wrong file once a second real account exists. Same gap as
+# routes/settings.py's upload_resume; not fixed in this pass.
 def _get_resume_file_bytes() -> tuple[bytes, str] | None:
     """Called from the import listener thread. Reads the resume PDF already
     saved to disk by routes.settings.upload_resume — the DB row only holds
     extracted text, not the file bytes (see backend/db/repositories/resumes.py)."""
-    from backend.utils.utils import get_repos
+    from backend.utils.utils import first_account_user_id, get_repos
 
     with get_repos() as repos:
-        resume = repos["resume"].get_latest()
+        resume = repos["resume"].get_latest(first_account_user_id(repos))
     if resume is None:
         return None
     resume_path = config.UPLOADS_DIR / "resume.pdf"
@@ -438,25 +466,30 @@ def _get_resume_file_bytes() -> tuple[bytes, str] | None:
 
 
 # ai: claude-sonnet-5 | 2026-08-13
+# ai: claude-sonnet-5 | 2026-08-20 — STOPGAP, see first_account_user_id()'s docstring.
 def _get_application_answers_for_listener() -> list[dict]:
     """Called from the import listener thread — opens a short-lived DB connection."""
-    from backend.utils.utils import get_repos
+    from backend.utils.utils import first_account_user_id, get_repos
 
     with get_repos() as repos:
-        return repos["application_answers"].get_all()
+        return repos["application_answers"].get_all(first_account_user_id(repos))
 
 
 # ai: claude-sonnet-5 | 2026-08-13
+# ai: claude-sonnet-5 | 2026-08-20 — STOPGAP, see first_account_user_id()'s docstring.
 def _learn_application_answer(
     question_text: str, answer_text: str, platform: str | None
 ) -> dict:
     """Called from the import listener thread when the extension's autofill
     content script learns a new free-text answer from the user."""
-    from backend.utils.utils import get_repos
+    from backend.utils.utils import first_account_user_id, get_repos
 
     with get_repos() as repos:
         answer = repos["application_answers"].upsert(
-            question_text=question_text, answer_text=answer_text, platform=platform
+            first_account_user_id(repos),
+            question_text=question_text,
+            answer_text=answer_text,
+            platform=platform,
         )
         repos["conn"].commit()
     return answer
@@ -506,17 +539,6 @@ def _check_import_listener_token() -> None:
     )
 
 
-# ai: claude-sonnet-5 | 2026-08-20
-def _check_login_credentials_configured() -> None:
-    if config.APP_LOGIN_EMAIL and config.APP_LOGIN_PASSWORD_HASH:
-        return
-    logger.warning(
-        "APP_LOGIN_EMAIL / APP_LOGIN_PASSWORD_HASH are not set — no one will be "
-        "able to log in. Run scripts/set_login_password.py and add the printed "
-        "lines to .env."
-    )
-
-
 _import_listener: JobImportListener | None = None
 _queue_ws_server: QueueWebSocketServer | None = None
 
@@ -554,7 +576,6 @@ def _init_runtime_state() -> None:
 
     _check_redis()
     _check_import_listener_token()
-    _check_login_credentials_configured()
 
 
 # ─── Dev-server launcher ──────────────────────────────────────────────────────

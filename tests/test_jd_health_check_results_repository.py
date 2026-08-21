@@ -21,10 +21,20 @@ from datetime import UTC, datetime
 import pytest
 
 from backend.db import (
+    PostgresAppAccountRepository,
     PostgresJdHealthCheckResultRepository,
     PostgresJdHealthCheckTargetRepository,
     get_connection,
 )
+
+# ai: claude-sonnet-5 | 2026-08-21 — every repo call below now takes a
+# leading user_id (multi-tenancy migration); each test creates its own account.
+
+
+def _make_user_id(conn) -> int:
+    account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+    conn.commit()
+    return account["id"]
 
 
 def _result_row(**overrides: object) -> dict[str, object]:
@@ -49,8 +59,9 @@ def _result_row(**overrides: object) -> dict[str, object]:
 def test_get_last_run_at_returns_none_on_empty_table(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        user_id = _make_user_id(conn)
         repo = PostgresJdHealthCheckResultRepository(conn)
-        assert repo.get_last_run_at() is None
+        assert repo.get_last_run_at(user_id) is None
     finally:
         conn.close()
 
@@ -58,14 +69,18 @@ def test_get_last_run_at_returns_none_on_empty_table(pg_dsn: str) -> None:
 def test_insert_and_get_recent_and_last_run_at(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        user_id = _make_user_id(conn)
         repo = PostgresJdHealthCheckResultRepository(conn)
-        repo.insert(_result_row(run_at="2026-08-01 03:00:00"))
-        repo.insert(_result_row(run_at="2026-08-02 03:00:00", success=0, error_message="boom"))
+        repo.insert(user_id, _result_row(run_at="2026-08-01 03:00:00"))
+        repo.insert(
+            user_id,
+            _result_row(run_at="2026-08-02 03:00:00", success=0, error_message="boom"),
+        )
         conn.commit()
 
-        assert repo.get_last_run_at() == "2026-08-02 03:00:00"
+        assert repo.get_last_run_at(user_id) == "2026-08-02 03:00:00"
 
-        recent = repo.get_recent(limit=10)
+        recent = repo.get_recent(user_id, limit=10)
         assert len(recent) == 2
         assert recent[0]["run_at"] == "2026-08-02 03:00:00"  # most recent first
         assert recent[0]["success"] == 0
@@ -79,39 +94,46 @@ def test_get_by_target_scopes_to_one_target_and_sets_null_on_target_delete(
 ) -> None:
     conn = get_connection(pg_dsn)
     try:
+        user_id = _make_user_id(conn)
         target_repo = PostgresJdHealthCheckTargetRepository(conn)
         result_repo = PostgresJdHealthCheckResultRepository(conn)
 
         target_id = target_repo.insert(
+            user_id,
             {
                 "platform": "ashby",
                 "label": "Test Co (Ashby board)",
                 "url": "https://jobs.ashbyhq.com/testco",
-            }
+            },
         )
         other_target_id = target_repo.insert(
+            user_id,
             {
                 "platform": "ashby",
                 "label": "Other Co (Ashby board)",
                 "url": "https://jobs.ashbyhq.com/otherco",
-            }
+            },
         )
         conn.commit()
 
-        result_repo.insert(_result_row(target_id=target_id, run_at="2026-08-01 03:00:00"))
-        result_repo.insert(_result_row(target_id=other_target_id, run_at="2026-08-01 03:00:00"))
+        result_repo.insert(
+            user_id, _result_row(target_id=target_id, run_at="2026-08-01 03:00:00")
+        )
+        result_repo.insert(
+            user_id, _result_row(target_id=other_target_id, run_at="2026-08-01 03:00:00")
+        )
         conn.commit()
 
-        scoped = result_repo.get_by_target(target_id)
+        scoped = result_repo.get_by_target(user_id, target_id)
         assert len(scoped) == 1
         assert scoped[0]["target_id"] == target_id
 
-        target_repo.delete(target_id)
+        target_repo.delete(user_id, target_id)
         conn.commit()
 
         # ON DELETE SET NULL: the result row survives with target_id cleared,
         # not cascaded away — history should outlive a removed target.
-        surviving = result_repo.get_recent(limit=10)
+        surviving = result_repo.get_recent(user_id, limit=10)
         assert any(row["target_id"] is None for row in surviving)
     finally:
         conn.close()
@@ -120,8 +142,9 @@ def test_get_by_target_scopes_to_one_target_and_sets_null_on_target_delete(
 def test_insert_rejects_unknown_column(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        user_id = _make_user_id(conn)
         repo = PostgresJdHealthCheckResultRepository(conn)
         with pytest.raises(ValueError):
-            repo.insert(_result_row(not_a_real_column="oops"))
+            repo.insert(user_id, _result_row(not_a_real_column="oops"))
     finally:
         conn.close()

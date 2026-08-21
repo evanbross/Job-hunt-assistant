@@ -40,6 +40,11 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
+# user_id parameter (multi-tenancy migration). user_id is never accepted via
+# the generic _ALLOWED_COLUMNS dict path (insert/update) — it must come from
+# the authenticated session, not caller-supplied fields, or a user could
+# write rows under another account's id.
 class PostgresEmailSourceRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -54,34 +59,41 @@ class PostgresEmailSourceRepository(_BaseRepo):
         }
     )
 
-    def get_all(self) -> list[dict[str, Any]]:
-        cur = self._execute("SELECT * FROM email_sources ORDER BY name")
-        return [_row_to_dict(r) for r in cur.fetchall()]
-
-    def get_enabled(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM email_sources WHERE enabled = 1 ORDER BY name"
+            "SELECT * FROM email_sources WHERE user_id = %s ORDER BY name", (user_id,)
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_by_id(self, source_id: int) -> dict[str, Any] | None:
-        cur = self._execute("SELECT * FROM email_sources WHERE id = %s", (source_id,))
+    def get_enabled(self, user_id: int) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM email_sources WHERE user_id = %s AND enabled = 1 ORDER BY name",
+            (user_id,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_by_id(self, user_id: int, source_id: int) -> dict[str, Any] | None:
+        cur = self._execute(
+            "SELECT * FROM email_sources WHERE id = %s AND user_id = %s",
+            (source_id, user_id),
+        )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def insert(self, source: dict[str, Any]) -> int:
+    def insert(self, user_id: int, source: dict[str, Any]) -> int:
         unknown = set(source.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(source.keys())
         placeholders = ", ".join(["%s"] * len(source))
         cur = self._execute(
-            f"INSERT INTO email_sources ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(source.values()),
+            f"INSERT INTO email_sources (user_id, {columns})"
+            f" VALUES (%s, {placeholders}) RETURNING id",
+            [user_id, *source.values()],
         )
         return cur.fetchone()["id"]
 
-    def update(self, source_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, source_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
         unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
@@ -89,9 +101,12 @@ class PostgresEmailSourceRepository(_BaseRepo):
             raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = %s" for k in fields)
         self._execute(
-            f"UPDATE email_sources SET {set_clause} WHERE id = %s",
-            [*fields.values(), source_id],
+            f"UPDATE email_sources SET {set_clause} WHERE id = %s AND user_id = %s",
+            [*fields.values(), source_id, user_id],
         )
 
-    def delete(self, source_id: int) -> None:
-        self._execute("DELETE FROM email_sources WHERE id = %s", (source_id,))
+    def delete(self, user_id: int, source_id: int) -> None:
+        self._execute(
+            "DELETE FROM email_sources WHERE id = %s AND user_id = %s",
+            (source_id, user_id),
+        )

@@ -42,14 +42,17 @@ class FakeConnection:
         pass
 
 
+_TEST_USER_ID = 1
+
+
 class FakeSettingsRepo:
     def __init__(self, values: dict[str, str] | None = None) -> None:
         self.values = dict(values or {})
 
-    def get(self, key: str) -> str | None:
+    def get(self, user_id: int, key: str) -> str | None:
         return self.values.get(key)
 
-    def set(self, key: str, value: str) -> None:
+    def set(self, user_id: int, key: str, value: str) -> None:
         self.values[key] = value
 
 
@@ -73,6 +76,7 @@ def settings_repo() -> FakeSettingsRepo:
 def client(monkeypatch: pytest.MonkeyPatch, settings_repo: FakeSettingsRepo) -> Any:
     repos = {"settings": settings_repo, "conn": FakeConnection()}
     monkeypatch.setattr(cover_letter_module, "get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr(cover_letter_module, "current_user_id", lambda: _TEST_USER_ID)
 
     app = Flask(__name__)
     app.register_blueprint(cover_letter_bp, url_prefix="/api")

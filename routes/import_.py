@@ -48,17 +48,22 @@ from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
-from backend.scanning.captured_page_import_service import CapturedPageImportService
 from backend.celery_app import celery_app
+from backend.scanning.captured_page_import_service import CapturedPageImportService
 from backend.scanning.import_dump import dump_import_capture
 from backend.scanning.import_repair import (
     post_repair_duplicate_check,
     repair_ats_url_company,
     repair_linkedin_company,
 )
-from backend.tasks import run_import_task
 from backend.scanning.platform_detection import platform_for_site_url, platform_label
-from backend.utils.utils import get_repos, parse_positive_int, safe_error_message
+from backend.tasks import run_import_task
+from backend.utils.utils import (
+    current_user_id,
+    get_repos,
+    parse_positive_int,
+    safe_error_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -245,13 +250,13 @@ def _is_task_stale(started_at: str) -> bool:
         return False
 
 
-def _dismiss_capture_queue_item(page_url: str | None) -> None:
+def _dismiss_capture_queue_item(user_id: int, page_url: str | None) -> None:
     """Mark the browser capture queue item for page_url done so the extension won't retry it."""
     if not page_url:
         return
     try:
         with get_repos() as repos:
-            repos["browser_capture_queue"].mark_done_by_urls([page_url])
+            repos["browser_capture_queue"].mark_done_by_urls(user_id, [page_url])
             repos["conn"].commit()
     except Exception as exc:
         logger.warning(
@@ -378,7 +383,7 @@ def _resolve_capture_source(
 
 
 # ai: claude-sonnet-5 | 2026-08-12 — removed the single-flight 409 guard; see _active_imports above
-def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
+def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tuple[dict, int]:
     """Analyze a captured page payload and dispatch a Celery import task.
 
     Imports run concurrently — the Celery worker pool (see celery_app.py)
@@ -386,6 +391,11 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     because another import is already in flight. Each call gets its own
     import_id, tracked independently in _active_imports, so a caller polling
     /api/import/status?import_id=<id> only ever sees its own progress.
+
+    user_id is required explicitly rather than derived internally: this is
+    called both from a normal (session-backed) route and from the listener
+    thread (app.py's _handle_listener_capture, no session) — see
+    backend/utils/utils.py's current_user_id()/first_account_user_id().
     """
     dump_import_capture(body)
     import_id = uuid.uuid4().hex
@@ -429,7 +439,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         )
         extracted = analysis["urls"]
     except ValueError as exc:
-        _dismiss_capture_queue_item(page_url)
+        _dismiss_capture_queue_item(user_id, page_url)
         _set_import_progress(
             import_id,
             ImportProgressState(
@@ -444,7 +454,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         return {"error": str(exc), "import_id": import_id}, 400
     except Exception as exc:
         logger.error("Captured page analysis failed: %s", exc)
-        _dismiss_capture_queue_item(page_url)
+        _dismiss_capture_queue_item(user_id, page_url)
         _set_import_progress(
             import_id,
             ImportProgressState(
@@ -462,7 +472,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
         # ai: claude-sonnet-4-6 | 2026-06-20
         # Mark the queue item done so the extension doesn't open another tab for
         # a page that consistently yields no jobs (e.g. a login wall or dead ad).
-        _dismiss_capture_queue_item(page_url)
+        _dismiss_capture_queue_item(user_id, page_url)
         _set_import_progress(
             import_id,
             ImportProgressState(
@@ -546,7 +556,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
             capture_source=capture_source,
         ),
     )
-    task = run_import_task.delay(extracted, capture_source, body)
+    task = run_import_task.delay(user_id, extracted, capture_source, body)
     with _imports_lock:
         state = _active_imports.get(import_id)
         if state is not None:
@@ -580,7 +590,7 @@ def queue_import_capture(body: dict, trigger: str = "ui") -> tuple[dict, int]:
     )
     try:
         with get_repos() as repos:
-            repos["browser_capture_queue"].mark_done_by_urls(urls_to_mark_done)
+            repos["browser_capture_queue"].mark_done_by_urls(user_id, urls_to_mark_done)
             repos["conn"].commit()
     except Exception as exc:
         logger.warning("Failed to mark browser capture queue items done: %s", exc)
@@ -613,26 +623,27 @@ def reset_import() -> ResponseReturnValue:
 
 @import_bp.route("/repair/fix-unknown-companies", methods=["POST"])
 def fix_unknown_companies() -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
         try:
-            all_jobs = repos["jobs"].get_all_ordered()
-            batch = repos["jobs"].get_with_missing_company(limit=15)
+            all_jobs = repos["jobs"].get_all_ordered(user_id)
+            batch = repos["jobs"].get_with_missing_company(user_id, limit=15)
             fixed = 0
             for job in batch:
                 url = str(job.get("url") or "")
-                repaired = repair_ats_url_company(repos["jobs"], job)
+                repaired = repair_ats_url_company(user_id, repos["jobs"], job)
                 if not repaired and "linkedin.com" in url.lower():
-                    repaired = repair_linkedin_company(repos["jobs"], job, url)
+                    repaired = repair_linkedin_company(user_id, repos["jobs"], job, url)
                 if repaired:
                     fixed += 1
                     repos["conn"].commit()
-                    updated_job = repos["jobs"].get_by_id(int(job["id"]))
+                    updated_job = repos["jobs"].get_by_id(user_id, int(job["id"]))
                     if updated_job:
                         post_repair_duplicate_check(
-                            repos["jobs"], updated_job, all_jobs
+                            user_id, repos["jobs"], updated_job, all_jobs
                         )
                         repos["conn"].commit()
-            remaining = repos["jobs"].count_with_missing_company()
+            remaining = repos["jobs"].count_with_missing_company(user_id)
             return jsonify({"fixed": fixed, "remaining": remaining})
         except Exception as exc:
             repos["conn"].rollback()
@@ -642,12 +653,13 @@ def fix_unknown_companies() -> ResponseReturnValue:
 
 @import_bp.route("/repair/delete-unknown-companies", methods=["POST"])
 def delete_unknown_companies() -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
         try:
-            batch = repos["jobs"].get_with_missing_company(limit=10_000)
+            batch = repos["jobs"].get_with_missing_company(user_id, limit=10_000)
             deleted = 0
             for job in batch:
-                repos["jobs"].delete(int(job["id"]))
+                repos["jobs"].delete(user_id, int(job["id"]))
                 deleted += 1
             repos["conn"].commit()
             return jsonify({"deleted": deleted})
@@ -684,7 +696,7 @@ def extract_imported_job_urls() -> ResponseReturnValue:
 @import_bp.route("/import/queue-all", methods=["POST"])
 def import_and_queue_all_jobs() -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
-    payload, status_code = queue_import_capture(body)
+    payload, status_code = queue_import_capture(body, user_id=current_user_id())
     return jsonify(payload), status_code
 
 

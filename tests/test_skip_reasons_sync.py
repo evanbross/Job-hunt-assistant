@@ -46,7 +46,11 @@ from __future__ import annotations
 import json
 import re
 
-from backend.scoring.skip_reasons import SKIP_REASONS, SKIP_REASONS_PATH, VALID_SKIP_REASONS
+from backend.scoring.skip_reasons import (
+    SKIP_REASONS,
+    SKIP_REASONS_PATH,
+    VALID_SKIP_REASONS,
+)
 
 _PROJECT_ROOT = SKIP_REASONS_PATH.parent.parent
 _FRONTEND_UTILS = _PROJECT_ROOT / "frontend" / "src" / "utils" / "triagePanelUtils.js"

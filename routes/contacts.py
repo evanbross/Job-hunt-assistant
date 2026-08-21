@@ -44,7 +44,7 @@ from flask.typing import ResponseReturnValue
 
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.contacts_service import build_company_map
-from backend.utils.utils import get_repos
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +63,11 @@ def import_contacts() -> ResponseReturnValue:
 
     raw_bytes = file.stream.read()
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        result = ContactImportService(repos["contacts"]).import_csv(raw_bytes)
+        result = ContactImportService(repos["contacts"]).import_csv(user_id, raw_bytes)
         imported_at = datetime.now(UTC).isoformat(timespec="seconds")
-        repos["settings"].set("contacts_last_imported_at", imported_at)
+        repos["settings"].set(user_id, "contacts_last_imported_at", imported_at)
         repos["conn"].commit()
 
     return jsonify(
@@ -82,14 +83,15 @@ def import_contacts() -> ResponseReturnValue:
 
 @contacts_bp.route("/contacts/status")
 def get_contacts_status() -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        count = repos["contacts"].count()
-        last_imported_at = repos["settings"].get("contacts_last_imported_at")
+        count = repos["contacts"].count(user_id)
+        last_imported_at = repos["settings"].get(user_id, "contacts_last_imported_at")
     return jsonify({"count": count, "last_imported_at": last_imported_at})
 
 
 @contacts_bp.route("/contacts/company-map")
 def get_contacts_company_map() -> ResponseReturnValue:
     with get_repos() as repos:
-        contacts = repos["contacts"].get_all()
+        contacts = repos["contacts"].get_all(current_user_id())
     return jsonify(build_company_map(contacts))

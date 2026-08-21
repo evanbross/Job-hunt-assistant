@@ -32,7 +32,9 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-// ai: claude-sonnet-5 | 2026-08-20
+// ai: claude-sonnet-5 | 2026-08-21 — registration is open (multi-tenancy),
+// so this is a normal Sign In / Create Account toggle now, not a one-time
+// bootstrap gate. GET /api/session no longer reports has_account.
 import { useState } from "react";
 import { apiFetch } from "../utils/apiClient.js";
 import { describeFetchError } from "../utils/fetchErrorUtils.js";
@@ -85,28 +87,54 @@ const styles = {
     fontSize: "13px",
     marginBottom: "14px",
   },
+  toggle: {
+    marginTop: "16px",
+    fontSize: "13px",
+    textAlign: "center",
+    color: "var(--text-muted, #777)",
+  },
+  toggleLink: {
+    color: "var(--accent, #4a5cf7)",
+    cursor: "pointer",
+    fontWeight: "600",
+  },
 };
 
 export default function LoginPage({ onLoginSuccess }) {
+  const [mode, setMode] = useState("login"); // "login" | "create"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  const isCreate = mode === "create";
+
+  const switchMode = (nextMode) => {
+    setMode(nextMode);
+    setError("");
+    setPassword("");
+    setConfirmPassword("");
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (submitting) return;
+    if (isCreate && password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
     setSubmitting(true);
     setError("");
     try {
-      const res = await apiFetch("/api/login", {
+      const res = await apiFetch(isCreate ? "/api/account" : "/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data.error || `Login failed (HTTP ${res.status})`);
+        setError(data.error || `Request failed (HTTP ${res.status})`);
         return;
       }
       onLoginSuccess();
@@ -121,7 +149,9 @@ export default function LoginPage({ onLoginSuccess }) {
     <div style={styles.wrap}>
       <div style={styles.card}>
         <div style={styles.logo}>💼 Job Hunt Assistant</div>
-        <div style={styles.sub}>Sign in to continue</div>
+        <div style={styles.sub}>
+          {isCreate ? "Create your account to get started" : "Sign in to continue"}
+        </div>
         <form onSubmit={handleSubmit}>
           {error && <div style={styles.error}>{error}</div>}
           <div style={styles.field}>
@@ -141,17 +171,46 @@ export default function LoginPage({ onLoginSuccess }) {
             <input
               id="login-password"
               type="password"
-              autoComplete="current-password"
+              autoComplete={isCreate ? "new-password" : "current-password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               style={styles.input}
               required
             />
           </div>
+          {isCreate && (
+            <div style={styles.field}>
+              <label style={styles.label} htmlFor="login-confirm-password">Confirm password</label>
+              <input
+                id="login-confirm-password"
+                type="password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                style={styles.input}
+                required
+              />
+            </div>
+          )}
           <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={submitting}>
-            {submitting ? "Signing in…" : "Sign in"}
+            {submitting
+              ? (isCreate ? "Creating account…" : "Signing in…")
+              : (isCreate ? "Create account" : "Sign in")}
           </button>
         </form>
+        <div style={styles.toggle}>
+          {isCreate ? (
+            <>
+              Already have an account?{" "}
+              <span style={styles.toggleLink} onClick={() => switchMode("login")}>Sign in</span>
+            </>
+          ) : (
+            <>
+              Need an account?{" "}
+              <span style={styles.toggleLink} onClick={() => switchMode("create")}>Create one</span>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

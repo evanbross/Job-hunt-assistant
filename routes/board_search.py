@@ -48,12 +48,15 @@ import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
 from backend.db.job_columns import JobColumns
+from backend.scanning.job_board_searcher import JobBoardSearcher, url_to_dedup_key
+from backend.scoring.auto_reject_rules import jd_blocklist_match
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.fit_scorer import FitScorer
-from backend.scanning.job_board_searcher import JobBoardSearcher, url_to_dedup_key
-from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.scoring.auto_reject_rules import jd_blocklist_match
-from backend.utils.utils import get_repos
+from backend.scoring.job_validator import (
+    import_warnings_to_json,
+    normalize_and_validate,
+)
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -61,28 +64,29 @@ board_search_bp = Blueprint("board_search", __name__)
 
 
 # ai: claude-sonnet-5 | 2026-08-20
+# ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
 # ─── Board-search task tracking (in-memory pointer only) ───────────────────────
 # Progress itself lives in Celery's Redis result backend (durable, readable from
 # any process); this just remembers which task_id to poll, mirroring
 # routes/jd_health_check.py's _submit_jd_health_check_run.
-_board_search_last_task_id: str | None = None
+_board_search_last_task_id_by_user: dict[int, str] = {}
 _board_search_lock = threading.Lock()
 _BOARD_SEARCH_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-def _submit_board_search() -> str | None:
-    """Dispatch a board search unless one is already active. Returns the new
-    task id, or None if a search was already running."""
-    global _board_search_last_task_id
+def _submit_board_search(user_id: int) -> str | None:
+    """Dispatch a board search for user_id unless one is already active for
+    that user. Returns the new task id, or None if a search was already
+    running for this user."""
     with _board_search_lock:
+        existing = _board_search_last_task_id_by_user.get(user_id)
         if (
-            _board_search_last_task_id is not None
-            and AsyncResult(_board_search_last_task_id, app=celery_app).state
-            in _BOARD_SEARCH_ACTIVE_STATES
+            existing is not None
+            and AsyncResult(existing, app=celery_app).state in _BOARD_SEARCH_ACTIVE_STATES
         ):
             return None
-        task = run_board_search_task.delay()
-        _board_search_last_task_id = task.id
+        task = run_board_search_task.delay(user_id)
+        _board_search_last_task_id_by_user[user_id] = task.id
         return task.id
 
 
@@ -118,11 +122,11 @@ def _generate_board_search_queries() -> list[str]:
 
 # ai: claude-sonnet-5 | 2026-08-20
 @celery_app.task(bind=True)
-def run_board_search_task(self) -> dict:
+def run_board_search_task(self, user_id: int) -> dict:
     """Proactive job-board search pipeline, run as a Celery task so progress
     survives a restart and POST /api/board-search returns immediately.
     Progress is published via self.update_state; see the module-level note
-    on _board_search_last_task_id for how the status route finds it."""
+    on _board_search_last_task_id_by_user for how the status route finds it."""
     state: dict[str, object] = {
         "progress": 0,
         "message": "Generating search queries…",
@@ -200,12 +204,12 @@ def run_board_search_task(self) -> dict:
             resume_repo = repos["resume"]
             penalty_repo = repos["penalties"]
 
-            resume_row = resume_repo.get_latest()
+            resume_row = resume_repo.get_latest(user_id)
             resume_text = resume_row["content"] if resume_row else ""
-            penalty_rules = penalty_repo.get_enabled()
-            blocklist_rules = repos["career_rejection_rules"].get_enabled()
-            fit_feedback = job_repo.get_not_a_fit_with_feedback()
-            all_known_jobs: list[dict] = job_repo.get_all_ordered()
+            penalty_rules = penalty_repo.get_enabled(user_id)
+            blocklist_rules = repos["career_rejection_rules"].get_enabled(user_id)
+            fit_feedback = job_repo.get_not_a_fit_with_feedback(user_id)
+            all_known_jobs: list[dict] = job_repo.get_all_ordered(user_id)
 
         # ai: claude-sonnet-5 | 2026-08-19
         # Exact-URL early-out against the in-memory snapshot above. This is not a
@@ -367,7 +371,7 @@ def run_board_search_task(self) -> dict:
             conn = repos["conn"]
             for job_data in to_insert:
                 try:
-                    job_repo.insert(job_data)
+                    job_repo.insert(user_id, job_data)
                     conn.commit()
                     jobs_added += 1
                 except Exception as exc:
@@ -406,7 +410,7 @@ def run_board_search_task(self) -> dict:
 
 @board_search_bp.route("/board-search", methods=["POST"])
 def start_board_search() -> ResponseReturnValue:
-    task_id = _submit_board_search()
+    task_id = _submit_board_search(current_user_id())
     if task_id is None:
         return jsonify({"error": "A board search is already running"}), 409
     return jsonify({"status": "started", "task_id": task_id}), 202
@@ -415,7 +419,7 @@ def start_board_search() -> ResponseReturnValue:
 @board_search_bp.route("/board-search/status")
 def board_search_status() -> ResponseReturnValue:
     with _board_search_lock:
-        task_id = _board_search_last_task_id
+        task_id = _board_search_last_task_id_by_user.get(current_user_id())
 
     _idle = {
         "running": False,

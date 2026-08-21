@@ -18,7 +18,20 @@ from __future__ import annotations
 
 import pytest
 
-from backend.db import PostgresJdHealthCheckTargetRepository, get_connection
+from backend.db import (
+    PostgresAppAccountRepository,
+    PostgresJdHealthCheckTargetRepository,
+    get_connection,
+)
+
+# ai: claude-sonnet-5 | 2026-08-21 — every repo call below now takes a
+# leading user_id (multi-tenancy migration); each test creates its own account.
+
+
+def _make_user_id(conn) -> int:
+    account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+    conn.commit()
+    return account["id"]
 
 
 def _target_row(**overrides: object) -> dict[str, object]:
@@ -35,30 +48,31 @@ def _target_row(**overrides: object) -> dict[str, object]:
 def test_insert_get_update_delete_round_trip(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        user_id = _make_user_id(conn)
         repo = PostgresJdHealthCheckTargetRepository(conn)
-        seeded_count = len(repo.get_all())  # 4 canary rows from _seed_data
+        seeded_count = len(repo.get_all(user_id))  # 4 canary rows from _seed_data
 
-        target_id = repo.insert(_target_row())
+        target_id = repo.insert(user_id, _target_row())
         conn.commit()
 
-        assert len(repo.get_all()) == seeded_count + 1
-        fetched = repo.get_by_id(target_id)
+        assert len(repo.get_all(user_id)) == seeded_count + 1
+        fetched = repo.get_by_id(user_id, target_id)
         assert fetched is not None
         assert fetched["label"] == "Test Co (Greenhouse board)"
         assert fetched["enabled"] == 1
 
-        repo.update(target_id, {"enabled": 0, "label": "Renamed"})
+        repo.update(user_id, target_id, {"enabled": 0, "label": "Renamed"})
         conn.commit()
-        updated = repo.get_by_id(target_id)
+        updated = repo.get_by_id(user_id, target_id)
         assert updated is not None
         assert updated["enabled"] == 0
         assert updated["label"] == "Renamed"
-        assert all(row["id"] != target_id for row in repo.get_enabled())
+        assert all(row["id"] != target_id for row in repo.get_enabled(user_id))
 
-        repo.delete(target_id)
+        repo.delete(user_id, target_id)
         conn.commit()
-        assert repo.get_by_id(target_id) is None
-        assert len(repo.get_all()) == seeded_count
+        assert repo.get_by_id(user_id, target_id) is None
+        assert len(repo.get_all(user_id)) == seeded_count
     finally:
         conn.close()
 
@@ -66,12 +80,13 @@ def test_insert_get_update_delete_round_trip(pg_dsn: str) -> None:
 def test_get_enabled_excludes_disabled_targets(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        user_id = _make_user_id(conn)
         repo = PostgresJdHealthCheckTargetRepository(conn)
-        enabled_id = repo.insert(_target_row(label="Enabled", enabled=1))
-        disabled_id = repo.insert(_target_row(label="Disabled", enabled=0))
+        enabled_id = repo.insert(user_id, _target_row(label="Enabled", enabled=1))
+        disabled_id = repo.insert(user_id, _target_row(label="Disabled", enabled=0))
         conn.commit()
 
-        enabled_ids = {row["id"] for row in repo.get_enabled()}
+        enabled_ids = {row["id"] for row in repo.get_enabled(user_id)}
         assert enabled_id in enabled_ids
         assert disabled_id not in enabled_ids
     finally:
@@ -81,9 +96,10 @@ def test_get_enabled_excludes_disabled_targets(pg_dsn: str) -> None:
 def test_insert_rejects_unknown_column(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        user_id = _make_user_id(conn)
         repo = PostgresJdHealthCheckTargetRepository(conn)
         with pytest.raises(ValueError):
-            repo.insert(_target_row(not_a_real_column="oops"))
+            repo.insert(user_id, _target_row(not_a_real_column="oops"))
     finally:
         conn.close()
 
@@ -91,10 +107,11 @@ def test_insert_rejects_unknown_column(pg_dsn: str) -> None:
 def test_update_rejects_unknown_column(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        user_id = _make_user_id(conn)
         repo = PostgresJdHealthCheckTargetRepository(conn)
-        target_id = repo.insert(_target_row())
+        target_id = repo.insert(user_id, _target_row())
         conn.commit()
         with pytest.raises(ValueError):
-            repo.update(target_id, {"not_a_real_column": "oops"})
+            repo.update(user_id, target_id, {"not_a_real_column": "oops"})
     finally:
         conn.close()

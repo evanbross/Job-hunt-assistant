@@ -41,6 +41,8 @@ from ..connection import _row_to_dict
 
 
 # ai: claude-opus-4-8 | 2026-07-01
+# ai: claude-sonnet-5 | 2026-08-20 — every method gained a leading user_id
+# parameter (multi-tenancy migration).
 class PostgresImportRepairHistoryRepository(_BaseRepo):
     """Append-only log of import-repair sweep findings, one row per
     (source, warning_code) observed on a given run — lets trend over time be
@@ -57,34 +59,37 @@ class PostgresImportRepairHistoryRepository(_BaseRepo):
         }
     )
 
-    def insert(self, row: dict[str, Any]) -> int:
+    def insert(self, user_id: int, row: dict[str, Any]) -> int:
         unknown = set(row.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
-        columns = ", ".join(row.keys())
-        placeholders = ", ".join(["%s"] * len(row))
+        columns = ["user_id", *row.keys()]
+        placeholders = ", ".join(["%s"] * len(columns))
         cur = self._execute(
-            f"INSERT INTO import_repair_history ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(row.values()),
+            f"INSERT INTO import_repair_history ({', '.join(columns)})"
+            f" VALUES ({placeholders}) RETURNING id",
+            [user_id, *row.values()],
         )
         return cur.fetchone()["id"]
 
-    def get_recent(self, limit: int = 500) -> list[dict[str, Any]]:
+    def get_recent(self, user_id: int, limit: int = 500) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM import_repair_history ORDER BY run_at DESC, id DESC LIMIT %s",
-            (limit,),
+            "SELECT * FROM import_repair_history WHERE user_id = %s"
+            " ORDER BY run_at DESC, id DESC LIMIT %s",
+            (user_id, limit),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def get_for_source(
-        self, source: str, warning_code: str, limit: int = 100
+        self, user_id: int, source: str, warning_code: str, limit: int = 100
     ) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM import_repair_history WHERE source = %s AND warning_code = %s"
+            "SELECT * FROM import_repair_history"
+            " WHERE user_id = %s AND source = %s AND warning_code = %s"
             " ORDER BY run_at DESC, id DESC LIMIT %s",
-            (source, warning_code, limit),
+            (user_id, source, warning_code, limit),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def delete_all(self) -> None:
-        self._execute("DELETE FROM import_repair_history")
+    def delete_all(self, user_id: int) -> None:
+        self._execute("DELETE FROM import_repair_history WHERE user_id = %s", (user_id,))

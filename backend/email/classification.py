@@ -61,8 +61,9 @@ def email_date_from_message(full_msg: dict) -> str | None:
 
 
 # ai: claude-sonnet-4-6 | 2026-07-02
+# ai: claude-sonnet-5 | 2026-08-20 — added user_id (multi-tenancy migration)
 def maybe_mark_source_email_read(
-    job: dict[str, object], job_repo: IJobRepository
+    user_id: int, job: dict[str, object], job_repo: IJobRepository
 ) -> None:
     """Mark the source Gmail message read once no active queue jobs remain for it.
 
@@ -77,6 +78,7 @@ def maybe_mark_source_email_read(
 
     base_dedup_key = dedup_key.split(":")[0]
     remaining_active = job_repo.count_by_base_dedup_key_and_statuses(
+        user_id,
         base_dedup_key,
         list(ACTIVE_JOB_STATUSES),
     )

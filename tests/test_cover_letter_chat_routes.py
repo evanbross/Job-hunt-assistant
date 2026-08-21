@@ -45,11 +45,15 @@ class FakeConnection:
         pass
 
 
+_FAKE_USER_ID = 1
+
+
 class FakeJobsRepo:
     def __init__(self, row: dict[str, Any]) -> None:
         self.row = row
 
-    def get_by_id(self, job_id: int) -> dict[str, Any] | None:
+    def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
+        assert user_id == _FAKE_USER_ID
         return dict(self.row) if job_id == self.row["id"] else None
 
 
@@ -57,7 +61,8 @@ class FakeResumeRepo:
     def __init__(self, content: str | None = RESUME_TEXT) -> None:
         self._content = content
 
-    def get_latest(self) -> dict[str, Any] | None:
+    def get_latest(self, user_id: int) -> dict[str, Any] | None:
+        assert user_id == _FAKE_USER_ID
         if self._content is None:
             return None
         return {"id": 1, "filename": "resume.pdf", "content": self._content}
@@ -65,7 +70,7 @@ class FakeResumeRepo:
 
 # ai: claude-sonnet-5 | 2026-08-11
 class FakeCoverLetterPhraseRepo:
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
         return []
 
 
@@ -113,6 +118,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Any:
     }
     monkeypatch.setattr(cover_letter_module, "get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr(cover_letter_module, "AIProviderClient", FakeAIClient)
+    monkeypatch.setattr(cover_letter_module, "current_user_id", lambda: _FAKE_USER_ID)
     monkeypatch.setattr(config, "load_candidate_profile", lambda: PROFILE_TEXT)
     FakeAIClient.captured = {}
 

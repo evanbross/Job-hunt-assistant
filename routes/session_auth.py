@@ -33,14 +33,21 @@
 # =============================================================================
 
 # ai: claude-sonnet-5 | 2026-08-20
-"""App login routes — the single-owner session gate.
+"""App login routes — the account/session layer for multi-tenancy.
 
 Unrelated to routes/auth.py, which handles Google OAuth for Gmail scope
-access. This blueprint gates the app itself: the whole /api/* surface
-requires an active session (see app.py's _require_app_login), and this is
-where that session is created/destroyed. There is exactly one owner and no
-registration flow — credentials are a static email/password-hash pair set via
-scripts/set_login_password.py, not a users table.
+access (per-user, once backend/email/gmail_client.py is migrated). This
+blueprint is the identity boundary: the whole /api/* surface requires an
+active session (see app.py's _require_app_login), and this is where that
+session is created/destroyed and where user_id first enters it.
+
+Registration is open — POST /account never requires a prior session, by
+design (there is no other way to get a first credential in). If a
+placeholder account exists (backend/db/schema.py's _migrate() creates one so
+pre-existing/seeded data has an owner before anyone has signed up), the
+first real registration claims it in place rather than leaving that data
+orphaned under an account nobody can log into; every registration after
+that is a normal insert.
 """
 
 from __future__ import annotations
@@ -52,9 +59,9 @@ import time
 from flask import Blueprint, jsonify, request, session
 from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
-import config
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -104,16 +111,71 @@ def _clear_login_attempts(ip: str) -> None:
         _login_attempts.pop(ip, None)
 
 
-class LoginRequest(BaseModel):
+class _NotBlankModel(BaseModel):
+    @field_validator("*", mode="before")
+    @classmethod
+    def _not_blank(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+
+class LoginRequest(_NotBlankModel):
     email: str
     password: str
 
-    @field_validator("email", "password")
-    @classmethod
-    def _not_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("must not be blank")
-        return value
+
+class CreateAccountRequest(_NotBlankModel):
+    email: str
+    password: str
+
+
+class ChangePasswordRequest(_NotBlankModel):
+    current_password: str
+    new_password: str
+
+
+_MIN_PASSWORD_LENGTH = 8
+
+
+def _start_session(user_id: int) -> None:
+    session.clear()
+    session["authenticated"] = True
+    session["user_id"] = user_id
+    session.permanent = True
+
+
+@session_auth_bp.route("/account", methods=["POST"])
+def create_account() -> ResponseReturnValue:
+    ip = _client_ip()
+    if _login_rate_limited(ip):
+        return jsonify({"error": "Too many attempts — try again later"}), 429
+
+    try:
+        body = CreateAccountRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return jsonify({"error": "Email and password are required"}), 400
+    if len(body.password) < _MIN_PASSWORD_LENGTH:
+        return (
+            jsonify({"error": f"Password must be at least {_MIN_PASSWORD_LENGTH} characters"}),
+            400,
+        )
+
+    email = body.email.strip().casefold()
+    password_hash = generate_password_hash(body.password)
+    with get_repos() as repos:
+        account = repos["app_account"].claim_placeholder(email, password_hash)
+        if account is None:
+            account = repos["app_account"].create(email, password_hash)
+        repos["conn"].commit()
+
+    if account is None:
+        _record_login_failure(ip)
+        return jsonify({"error": "That email is already registered"}), 409
+
+    _clear_login_attempts(ip)
+    _start_session(account["id"])
+    return jsonify({"authenticated": True}), 201
 
 
 @session_auth_bp.route("/login", methods=["POST"])
@@ -127,22 +189,16 @@ def login() -> ResponseReturnValue:
     except ValidationError:
         return jsonify({"error": "Email and password are required"}), 400
 
-    if not config.APP_LOGIN_PASSWORD_HASH:
-        logger.error("Login attempted but APP_LOGIN_PASSWORD_HASH is not configured.")
-        return jsonify({"error": "Login is not configured on this server"}), 500
+    with get_repos() as repos:
+        account = repos["app_account"].get_by_email(body.email.strip().casefold())
 
-    valid = body.email.strip().casefold() == config.APP_LOGIN_EMAIL.strip().casefold() and (
-        check_password_hash(config.APP_LOGIN_PASSWORD_HASH, body.password)
-    )
-    if not valid:
+    if account is None or not check_password_hash(account["password_hash"], body.password):
         _record_login_failure(ip)
         logger.warning("Failed login attempt from %s", ip)
         return jsonify({"error": "Invalid email or password"}), 401
 
     _clear_login_attempts(ip)
-    session.clear()
-    session["authenticated"] = True
-    session.permanent = True
+    _start_session(account["id"])
     return jsonify({"authenticated": True})
 
 
@@ -155,3 +211,32 @@ def logout() -> ResponseReturnValue:
 @session_auth_bp.route("/session", methods=["GET"])
 def session_status() -> ResponseReturnValue:
     return jsonify({"authenticated": bool(session.get("authenticated"))})
+
+
+@session_auth_bp.route("/account/change-password", methods=["POST"])
+def change_password() -> ResponseReturnValue:
+    # Reaching this route at all already requires an active session — see
+    # app.py's _require_app_login, which covers everything not on its
+    # allowlist (login/account/session/health), and this path isn't on it.
+    user_id = session["user_id"]
+
+    try:
+        body = ChangePasswordRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return jsonify({"error": "Current and new password are required"}), 400
+    if len(body.new_password) < _MIN_PASSWORD_LENGTH:
+        return (
+            jsonify({"error": f"New password must be at least {_MIN_PASSWORD_LENGTH} characters"}),
+            400,
+        )
+
+    with get_repos() as repos:
+        account = repos["app_account"].get(user_id)
+        if account is None or not check_password_hash(
+            account["password_hash"], body.current_password
+        ):
+            return jsonify({"error": "Current password is incorrect"}), 401
+        repos["app_account"].update_password(user_id, generate_password_hash(body.new_password))
+        repos["conn"].commit()
+
+    return jsonify({"status": "password_changed"})

@@ -62,16 +62,15 @@ from googleapiclient.errors import HttpError
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.celery_app import celery_app
+from backend.db import DuplicateJobUrlError
+from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.scanning.career_site_scanner import (
     CareerSiteScanner,
     is_job_board_url,
     validate_board_scan,
     validate_extraction,
 )
-from backend.celery_app import celery_app
-from backend.db import DuplicateJobUrlError
-from backend.scoring.duplicate_checker import DuplicateChecker
-from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.scanning.import_repair import (
     post_repair_duplicate_check,
     repair_ats_url_company,
@@ -83,6 +82,7 @@ from backend.scoring.auto_reject_rules import (
     jd_blocklist_match,
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
 )
+from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.jd_enrichment import (
     enrich_job_description,
     is_richer_description,
@@ -228,7 +228,7 @@ def _llm_enrich_batch(url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _enrich_job_description(
-    repos: dict[str, Any], job: dict[str, Any], description: str
+    user_id: int, repos: dict[str, Any], job: dict[str, Any], description: str
 ) -> None:
     # ai: claude-sonnet-4-6 | 2026-06-21
     job_id = job.get("id")
@@ -238,15 +238,15 @@ def _enrich_job_description(
         job_id,
         len(description),
     )
-    resume_row = repos["resume"].get_latest()
+    resume_row = repos["resume"].get_latest(user_id)
     resume_text = str(resume_row.get("content") or "") if resume_row else ""
     enrich_job_description(
         repos,
         job,
         description,
         resume_text=resume_text,
-        penalty_rules=repos["penalties"].get_enabled(),
-        fit_feedback=repos["jobs"].get_not_a_fit_with_feedback(),
+        penalty_rules=repos["penalties"].get_enabled(user_id),
+        fit_feedback=repos["jobs"].get_not_a_fit_with_feedback(user_id),
     )
     logger.info(
         "_enrich_job_description: FitScorer done in %.1fs for job=%s",
@@ -283,6 +283,7 @@ def _find_duplicate_original(
 @celery_app.task(bind=True)
 def run_import_task(
     self,
+    user_id: int,
     extracted: list[dict],
     capture_source: dict | None,
     body: dict,
@@ -352,10 +353,10 @@ def run_import_task(
     body_queue_url = str(body.get("queue_url") or "").strip() or None
 
     with get_repos() as repos:
-        known_jobs: list[dict] = repos["jobs"].get_all_ordered()
-        blocklist_rules: list[dict] = repos["career_rejection_rules"].get_enabled()
+        known_jobs: list[dict] = repos["jobs"].get_all_ordered(user_id)
+        blocklist_rules: list[dict] = repos["career_rejection_rules"].get_enabled(user_id)
         service = ManualJobIngestService(
-            repos["jobs"], repos["resume"], repos["penalties"]
+            user_id, repos["jobs"], repos["resume"], repos["penalties"]
         )
         queued = 0
         skipped = 0
@@ -393,13 +394,13 @@ def run_import_task(
                 },
             )
 
-            existing_job = repos["jobs"].get_by_url(url)
+            existing_job = repos["jobs"].get_by_url(user_id, url)
             # ai: claude-sonnet-4-6 | 2026-06-21
             # Fallback: WTTJ email links store a URL with a JWT token in the DB, but
             # _normalize_public_job_url strips query params before lookup. If the
             # normalized URL misses, try the original queue URL (still has the token).
             if existing_job is None and body_queue_url and body_queue_url != url:
-                existing_job = repos["jobs"].get_by_url(body_queue_url)
+                existing_job = repos["jobs"].get_by_url(user_id, body_queue_url)
                 if existing_job is not None:
                     logger.info(
                         "queue_url fallback matched job %d (captured url=%s, queue_url=%s)",
@@ -409,13 +410,15 @@ def run_import_task(
                     )
             if existing_job is not None:
                 repaired_ok = repair_existing_job_company(
-                    repos["jobs"], existing_job, url_row
+                    user_id, repos["jobs"], existing_job, url_row
                 )
                 if not repaired_ok:
-                    repaired_ok = repair_ats_url_company(repos["jobs"], existing_job)
+                    repaired_ok = repair_ats_url_company(
+                        user_id, repos["jobs"], existing_job
+                    )
                 if not repaired_ok and platform == "LinkedIn":
                     repaired_ok = repair_linkedin_company(
-                        repos["jobs"], existing_job, url
+                        user_id, repos["jobs"], existing_job, url
                     )
                 if repaired_ok:
                     repaired += 1
@@ -428,9 +431,11 @@ def run_import_task(
                         )
                     )
                     repos["conn"].commit()
-                    updated = repos["jobs"].get_by_id(int(existing_job["id"]))
+                    updated = repos["jobs"].get_by_id(user_id, int(existing_job["id"]))
                     if updated:
-                        post_repair_duplicate_check(repos["jobs"], updated, known_jobs)
+                        post_repair_duplicate_check(
+                            user_id, repos["jobs"], updated, known_jobs
+                        )
                         repos["conn"].commit()
                 # ai: claude-sonnet-4-6 | 2026-06-22
                 incoming_len = len(incoming_text)
@@ -458,7 +463,7 @@ def run_import_task(
                             incoming_len = len(fetched_text)
 
                 if richer_text is not None:
-                    _enrich_job_description(repos, existing_job, richer_text)
+                    _enrich_job_description(user_id, repos, existing_job, richer_text)
                     repos["conn"].commit()
                     enriched += 1
                     enriched_details.append(
@@ -590,8 +595,8 @@ def run_import_task(
                             total,
                             original.get("id"),
                         )
-                        _enrich_job_description(repos, original, incoming_text)
-                        repos["jobs"].delete(int(new_job["id"]))
+                        _enrich_job_description(user_id, repos, original, incoming_text)
+                        repos["jobs"].delete(user_id, int(new_job["id"]))
                         repos["conn"].commit()
                         enriched += 1
                         enriched_details.append(
@@ -636,9 +641,9 @@ def run_import_task(
                     total,
                     url,
                 )
-                dup_existing = repos["jobs"].get_by_url(exc.url) or repos[
-                    "jobs"
-                ].get_by_url(url)
+                dup_existing = repos["jobs"].get_by_url(
+                    user_id, exc.url
+                ) or repos["jobs"].get_by_url(user_id, url)
                 skipped += 1
                 skipped_details.append(
                     _import_outcome_detail(
@@ -760,7 +765,9 @@ def _send_jd_health_check_failure_email(failure_details: list[dict[str, str]]) -
 
 
 @celery_app.task(bind=True)
-def run_jd_health_check_task(self, triggered_by: str = "scheduled") -> dict:
+def run_jd_health_check_task(
+    self, user_id: int, triggered_by: str = "scheduled"
+) -> dict:
     """Run every enabled JD health check target through the real scanner,
     record one result row per target, and email a failure notification if
     anything failed.
@@ -773,7 +780,7 @@ def run_jd_health_check_task(self, triggered_by: str = "scheduled") -> dict:
     run_at = datetime.now(UTC).isoformat(timespec="seconds")
 
     with get_repos() as repos:
-        targets = repos["jd_health_targets"].get_enabled()
+        targets = repos["jd_health_targets"].get_enabled(user_id)
 
     total = len(targets)
     logger.info(
@@ -836,7 +843,7 @@ def run_jd_health_check_task(self, triggered_by: str = "scheduled") -> dict:
         )
 
         with get_repos() as repos:
-            repos["jd_health_results"].insert(result_row)
+            repos["jd_health_results"].insert(user_id, result_row)
             repos["conn"].commit()
 
         if ok:

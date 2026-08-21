@@ -42,7 +42,7 @@ from urllib.parse import urlparse
 from flask import Blueprint, jsonify, request
 
 from backend.db import BROWSER_QUEUE_MAX_RETRIES
-from backend.utils.utils import get_repos
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ browser_capture_bp = Blueprint("browser_capture", __name__)
 def list_queue() -> tuple:
     try:
         with get_repos() as repos:
-            items = repos["browser_capture_queue"].get_all()
+            items = repos["browser_capture_queue"].get_all(current_user_id())
         return jsonify({"items": items, "max_retries": BROWSER_QUEUE_MAX_RETRIES}), 200
     except Exception as exc:
         logger.warning("Failed to list browser capture queue: %s", exc)
@@ -79,7 +79,9 @@ def enqueue_url() -> tuple:
 
     try:
         with get_repos() as repos:
-            item_id = repos["browser_capture_queue"].enqueue(raw_url, site_name)
+            item_id = repos["browser_capture_queue"].enqueue(
+                current_user_id(), raw_url, site_name
+            )
             repos["conn"].commit()
         return jsonify({"id": item_id, "url": raw_url, "site_name": site_name}), 201
     except Exception as exc:
@@ -91,7 +93,7 @@ def enqueue_url() -> tuple:
 def delete_queue_item(item_id: int) -> tuple:
     try:
         with get_repos() as repos:
-            repos["browser_capture_queue"].delete(item_id)
+            repos["browser_capture_queue"].delete(current_user_id(), item_id)
             repos["conn"].commit()
         return jsonify({"deleted": item_id}), 200
     except Exception as exc:
@@ -105,7 +107,7 @@ def delete_queue_item(item_id: int) -> tuple:
 def clear_done() -> tuple:
     try:
         with get_repos() as repos:
-            repos["browser_capture_queue"].delete_done()
+            repos["browser_capture_queue"].delete_done(current_user_id())
             repos["conn"].commit()
         return jsonify({"ok": True}), 200
     except Exception as exc:
@@ -119,7 +121,7 @@ def clear_all_queue_items() -> tuple:
     """Delete every item in the queue regardless of status — nuclear reset."""
     try:
         with get_repos() as repos:
-            repos["browser_capture_queue"].delete_all()
+            repos["browser_capture_queue"].delete_all(current_user_id())
             repos["conn"].commit()
         return jsonify({"ok": True}), 200
     except Exception as exc:

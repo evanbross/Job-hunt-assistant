@@ -45,6 +45,10 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-21 — every method below gained a leading
+# user_id parameter (multi-tenancy migration); get_by_id/update/delete filter
+# on user_id too so one user can't read/modify another's phrase by guessing
+# an id.
 class PostgresCoverLetterPhraseRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -57,32 +61,35 @@ class PostgresCoverLetterPhraseRepository(_BaseRepo):
         }
     )
 
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM cover_letter_phrases ORDER BY tag ASC, updated_at DESC, id DESC"
+            "SELECT * FROM cover_letter_phrases WHERE user_id = %s"
+            " ORDER BY tag ASC, updated_at DESC, id DESC",
+            (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_by_id(self, phrase_id: int) -> dict[str, Any] | None:
+    def get_by_id(self, user_id: int, phrase_id: int) -> dict[str, Any] | None:
         cur = self._execute(
-            "SELECT * FROM cover_letter_phrases WHERE id = %s", (phrase_id,)
+            "SELECT * FROM cover_letter_phrases WHERE id = %s AND user_id = %s",
+            (phrase_id, user_id),
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def insert(self, row: dict[str, Any]) -> int:
+    def insert(self, user_id: int, row: dict[str, Any]) -> int:
         unknown = set(row.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
-        columns = ", ".join(row.keys())
-        placeholders = ", ".join(["%s"] * len(row))
+        columns = ", ".join(["user_id", *row.keys()])
+        placeholders = ", ".join(["%s"] * (len(row) + 1))
         cur = self._execute(
             f"INSERT INTO cover_letter_phrases ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(row.values()),
+            [user_id, *row.values()],
         )
         return cur.fetchone()["id"]
 
-    def update(self, phrase_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, phrase_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
         unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
@@ -90,9 +97,12 @@ class PostgresCoverLetterPhraseRepository(_BaseRepo):
             raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = %s" for k in fields)
         self._execute(
-            f"UPDATE cover_letter_phrases SET {set_clause} WHERE id = %s",
-            [*fields.values(), phrase_id],
+            f"UPDATE cover_letter_phrases SET {set_clause} WHERE id = %s AND user_id = %s",
+            [*fields.values(), phrase_id, user_id],
         )
 
-    def delete(self, phrase_id: int) -> None:
-        self._execute("DELETE FROM cover_letter_phrases WHERE id = %s", (phrase_id,))
+    def delete(self, user_id: int, phrase_id: int) -> None:
+        self._execute(
+            "DELETE FROM cover_letter_phrases WHERE id = %s AND user_id = %s",
+            (phrase_id, user_id),
+        )

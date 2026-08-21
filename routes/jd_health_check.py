@@ -49,12 +49,12 @@ from flask.typing import ResponseReturnValue
 
 from backend.celery_app import celery_app
 from backend.scanning.jd_health_check_targets import PLATFORM_CHOICES
-from backend.tasks import run_jd_health_check_task
 from backend.scanning.schedulers import (
     configure_jd_health_check_scheduler,
     jd_health_check_should_run_now,
 )
-from backend.utils.utils import get_repos, parse_bool
+from backend.tasks import run_jd_health_check_task
+from backend.utils.utils import current_user_id, get_repos, parse_bool
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,7 @@ jd_health_check_bp = Blueprint("jd_health_check", __name__)
 
 
 # ai: claude-sonnet-5 | 2026-08-03
+# ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
 # ─── JD health-check run state (in-memory, protected by a lock) ───────────────
 # Tracks the most recently dispatched Celery task id so manual triggers (from
 # any browser tab) and the scheduled "catch up on next launch" run never
@@ -69,33 +70,33 @@ jd_health_check_bp = Blueprint("jd_health_check", __name__)
 # backend, not here — this just remembers which task id to check.
 
 _jd_health_run_lock = threading.Lock()
-_jd_health_last_task_id: str | None = None
+_jd_health_last_task_id_by_user: dict[int, str] = {}
 _JD_HEALTH_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-def _submit_jd_health_check_run(triggered_by: str) -> str | None:
-    """Submit a JD health check run unless one is already in progress.
+def _submit_jd_health_check_run(user_id: int, triggered_by: str) -> str | None:
+    """Submit a JD health check run for user_id unless one is already in
+    progress for that user.
 
     Returns the new task id, or None if a run was already active (the
     caller should treat None as "rejected, one is already running").
     """
-    global _jd_health_last_task_id
     with _jd_health_run_lock:
+        existing = _jd_health_last_task_id_by_user.get(user_id)
         if (
-            _jd_health_last_task_id is not None
-            and AsyncResult(_jd_health_last_task_id, app=celery_app).state
-            in _JD_HEALTH_ACTIVE_STATES
+            existing is not None
+            and AsyncResult(existing, app=celery_app).state in _JD_HEALTH_ACTIVE_STATES
         ):
             return None
-        task = run_jd_health_check_task.delay(triggered_by=triggered_by)
-        _jd_health_last_task_id = task.id
+        task = run_jd_health_check_task.delay(user_id, triggered_by=triggered_by)
+        _jd_health_last_task_id_by_user[user_id] = task.id
         return task.id
 
 
 @jd_health_check_bp.route("/jd-health-check/targets")
 def get_jd_health_check_targets() -> ResponseReturnValue:
     with get_repos() as repos:
-        rows = repos["jd_health_targets"].get_all()
+        rows = repos["jd_health_targets"].get_all(current_user_id())
     return jsonify(rows)
 
 
@@ -120,11 +121,12 @@ def create_jd_health_check_target() -> ResponseReturnValue:
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
+    user_id = current_user_id()
     with get_repos() as repos:
         target_id = repos["jd_health_targets"].insert(
-            {"platform": platform, "label": label, "url": url, "enabled": enabled}
+            user_id, {"platform": platform, "label": label, "url": url, "enabled": enabled}
         )
-        row = repos["jd_health_targets"].get_by_id(target_id)
+        row = repos["jd_health_targets"].get_by_id(user_id, target_id)
         repos["conn"].commit()
     return jsonify(row), 201
 
@@ -159,23 +161,25 @@ def update_jd_health_check_target(target_id: int) -> ResponseReturnValue:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        existing = repos["jd_health_targets"].get_by_id(target_id)
+        existing = repos["jd_health_targets"].get_by_id(user_id, target_id)
         if not existing:
             return jsonify({"error": "Target not found"}), 404
-        repos["jd_health_targets"].update(target_id, fields)
-        row = repos["jd_health_targets"].get_by_id(target_id)
+        repos["jd_health_targets"].update(user_id, target_id, fields)
+        row = repos["jd_health_targets"].get_by_id(user_id, target_id)
         repos["conn"].commit()
     return jsonify(row)
 
 
 @jd_health_check_bp.route("/jd-health-check/targets/<int:target_id>", methods=["DELETE"])
 def delete_jd_health_check_target(target_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        existing = repos["jd_health_targets"].get_by_id(target_id)
+        existing = repos["jd_health_targets"].get_by_id(user_id, target_id)
         if not existing:
             return jsonify({"error": "Target not found"}), 404
-        repos["jd_health_targets"].delete(target_id)
+        repos["jd_health_targets"].delete(user_id, target_id)
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -184,18 +188,19 @@ def delete_jd_health_check_target(target_id: int) -> ResponseReturnValue:
 def get_jd_health_check_results() -> ResponseReturnValue:
     limit = request.args.get("limit", default=50, type=int) or 50
     target_id = request.args.get("target_id", type=int)
+    user_id = current_user_id()
     with get_repos() as repos:
         if target_id:
-            rows = repos["jd_health_results"].get_by_target(target_id, limit=limit)
+            rows = repos["jd_health_results"].get_by_target(user_id, target_id, limit=limit)
         else:
-            rows = repos["jd_health_results"].get_recent(limit=limit)
+            rows = repos["jd_health_results"].get_recent(user_id, limit=limit)
     return jsonify(rows)
 
 
 @jd_health_check_bp.route("/jd-health-check/run", methods=["POST"])
 def trigger_jd_health_check_run() -> ResponseReturnValue:
     # ai: claude-sonnet-5 | 2026-08-03
-    task_id = _submit_jd_health_check_run("manual")
+    task_id = _submit_jd_health_check_run(current_user_id(), "manual")
     if task_id is None:
         return jsonify({"error": "A JD health check run is already in progress"}), 409
     return jsonify({"status": "started", "task_id": task_id}), 202

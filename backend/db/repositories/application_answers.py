@@ -52,33 +52,47 @@ def normalize_question(question_text: str) -> str:
     return re.sub(r"\s+", " ", question_text.strip().lower())
 
 
+# ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
+# user_id parameter (multi-tenancy migration). question_normalized's
+# uniqueness is now composite (user_id, question_normalized) — see
+# application_answers_user_question_normalized_key in backend/db/schema.py.
 class PostgresApplicationAnswerRepository(_BaseRepo):
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM application_answers ORDER BY updated_at DESC, id DESC"
+            "SELECT * FROM application_answers WHERE user_id = %s"
+            " ORDER BY updated_at DESC, id DESC",
+            [user_id],
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def upsert(
-        self, *, question_text: str, answer_text: str, platform: str | None = None
+        self,
+        user_id: int,
+        *,
+        question_text: str,
+        answer_text: str,
+        platform: str | None = None,
     ) -> dict[str, Any]:
         question_text = question_text.strip()
         question_normalized = normalize_question(question_text)
         cur = self._execute(
             """
             INSERT INTO application_answers
-                (question_text, question_normalized, answer_text, platform)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (question_normalized) DO UPDATE SET
+                (user_id, question_text, question_normalized, answer_text, platform)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (user_id, question_normalized) DO UPDATE SET
                 question_text = EXCLUDED.question_text,
                 answer_text   = EXCLUDED.answer_text,
                 platform      = EXCLUDED.platform,
                 updated_at    = NOW()
             RETURNING *
             """,
-            (question_text, question_normalized, answer_text, platform),
+            (user_id, question_text, question_normalized, answer_text, platform),
         )
         return _row_to_dict(cur.fetchone())
 
-    def delete(self, answer_id: int) -> None:
-        self._execute("DELETE FROM application_answers WHERE id = %s", (answer_id,))
+    def delete(self, user_id: int, answer_id: int) -> None:
+        self._execute(
+            "DELETE FROM application_answers WHERE id = %s AND user_id = %s",
+            (answer_id, user_id),
+        )

@@ -53,38 +53,47 @@ from flask.typing import ResponseReturnValue
 from googleapiclient.errors import HttpError
 
 import config
-from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.db import DuplicateJobUrlError
 from backend.db.job_columns import JobColumns
-from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.email.classification import maybe_mark_source_email_read
 from backend.email.email_parser import (
     EmailParser,
     fallback_job_url,
     normalize_title_company,
     resolve_tracking_url,
 )
-from backend.scoring.fit_scorer import FitScorer
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
-from backend.scanning.import_repair import (  # ai: claude-fable-5 | 2026-07-17
-    post_repair_duplicate_check,
-    wttj_title_repair_updates,
-)
-from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.scanning.manual_job_ingest_service import ManualJobIngestService
-from backend.scoring.skip_reasons import VALID_SKIP_REASONS  # ai: claude-fable-5 | 2026-07-16
-from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-17
-    UnsafeUrlError,
-    safe_urlopen,
-)
-from backend.email.classification import maybe_mark_source_email_read
 from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
+from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.scanning.closed_req_scan_helpers import (
     canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17
     rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17
 )
-from backend.scoring.duplicate_matching import db_match_for_job, is_near_certain_duplicate
+from backend.scanning.import_repair import (  # ai: claude-fable-5 | 2026-07-17
+    post_repair_duplicate_check,
+    wttj_title_repair_updates,
+)
+from backend.scanning.manual_job_ingest_service import ManualJobIngestService
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.scoring.duplicate_matching import (
+    db_match_for_job,
+    is_near_certain_duplicate,
+)
+from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.job_validator import (
+    import_warnings_to_json,
+    normalize_and_validate,
+)
+from backend.scoring.skip_reasons import (
+    VALID_SKIP_REASONS,  # ai: claude-fable-5 | 2026-07-16
+)
+from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-17
+    UnsafeUrlError,
+    safe_urlopen,
+)
 from backend.utils.utils import (
     ai_error_http_status,
+    current_user_id,
     get_repos,
     normalize_stage_status,
     safe_error_message,
@@ -132,14 +141,14 @@ def _validated_job_patch_fields(
 @jobs_bp.route("/jobs/stats")
 def get_job_stats() -> ResponseReturnValue:
     with get_repos() as repos:
-        stats = repos["jobs"].get_stats()
+        stats = repos["jobs"].get_stats(current_user_id())
     return jsonify(stats)
 
 
 @jobs_bp.route("/jobs")
 def get_jobs() -> ResponseReturnValue:
     with get_repos() as repos:
-        jobs = repos["jobs"].get_all_by_status("pending_review")
+        jobs = repos["jobs"].get_all_by_status(current_user_id(), "pending_review")
     return jsonify(jobs)
 
 
@@ -150,7 +159,7 @@ def get_unreachable_jobs() -> ResponseReturnValue:
     check (see routes/applications.py's _persist_unreachable_flag), across every
     pipeline status — the queue/triage tabs each only show one status slice."""
     with get_repos() as repos:
-        jobs = repos["jobs"].get_unreachable()
+        jobs = repos["jobs"].get_unreachable(current_user_id())
     return jsonify(jobs)
 
 
@@ -159,12 +168,13 @@ def get_unreachable_jobs() -> ResponseReturnValue:
 def clear_unreachable_job(job_id: int) -> ResponseReturnValue:
     """Dismiss a job's unreachable flag after manual review, without touching its
     pipeline status — the scan will re-flag it if a future check fails again."""
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
-        repos["jobs"].update(job_id, {"unreachable_since": None})
-        updated_job = repos["jobs"].get_by_id(job_id)
+        repos["jobs"].update(user_id, job_id, {"unreachable_since": None})
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     return jsonify(updated_job)
 
@@ -176,15 +186,26 @@ def get_jobs_by_company() -> ResponseReturnValue:
     if not company:
         return jsonify({"error": "company parameter is required"}), 400
     with get_repos() as repos:
-        jobs = repos["jobs"].get_by_company(company)
+        jobs = repos["jobs"].get_by_company(current_user_id(), company)
     return jsonify(jobs)
+
+
+# ai: claude-sonnet-5 | 2026-08-19
+@jobs_bp.route("/jobs/company-counts")
+def get_jobs_company_counts() -> ResponseReturnValue:
+    """Bulk per-company job counts (keyed by lower/trimmed company name), so the
+    frontend can decide whether a job's Company History button has anything to
+    show without an extra fetch per card."""
+    with get_repos() as repos:
+        counts = repos["jobs"].get_company_counts(current_user_id())
+    return jsonify(counts)
 
 
 # ai: claude-sonnet-4-6 | 2026-06-08
 @jobs_bp.route("/jobs/<int:job_id>", methods=["GET"])
 def get_job(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(current_user_id(), job_id)
     if job is None:
         return jsonify({"error": "Job not found"}), 404
     return jsonify(job)
@@ -192,6 +213,7 @@ def get_job(job_id: int) -> ResponseReturnValue:
 
 @jobs_bp.route("/jobs/manual", methods=["POST"])
 def create_manual_job() -> ResponseReturnValue:
+    user_id = current_user_id()
     body = request.get_json(silent=True) or {}
     listing_text = str(body.get("listing_text") or "").strip()
     source_url = str(body.get("source_url") or "").strip()
@@ -207,8 +229,9 @@ def create_manual_job() -> ResponseReturnValue:
 
     try:
         with get_repos() as repos:
-            known_jobs: list[dict] = repos["jobs"].get_all_ordered()
+            known_jobs: list[dict] = repos["jobs"].get_all_ordered(user_id)
             service = ManualJobIngestService(
+                user_id,
                 repos["jobs"],
                 repos["resume"],
                 repos["penalties"],
@@ -232,7 +255,7 @@ def create_manual_job() -> ResponseReturnValue:
     # user would get by pasting again a moment later.
     except DuplicateJobUrlError as exc:
         with get_repos() as repos:
-            existing_job = repos["jobs"].get_by_url(exc.url)
+            existing_job = repos["jobs"].get_by_url(user_id, exc.url)
         if existing_job is None:
             logger.error("Manual job ingest: DuplicateJobUrlError but no job found for %s", exc.url)
             return jsonify({"error": "Manual job ingest failed"}), 500
@@ -261,6 +284,7 @@ def create_manual_job() -> ResponseReturnValue:
 
 @jobs_bp.route("/jobs/<int:job_id>", methods=["PATCH"])
 def patch_job(job_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     body = request.get_json(silent=True) or {}
     fields, validation_error = _validated_job_patch_fields(body)
     if validation_error:
@@ -269,12 +293,12 @@ def patch_job(job_id: int) -> ResponseReturnValue:
         return jsonify({"error": "No valid fields to update"}), 400
     try:
         with get_repos() as repos:
-            job = repos["jobs"].get_by_id(job_id)
+            job = repos["jobs"].get_by_id(user_id, job_id)
             if not job:
                 return jsonify({"error": "Job not found"}), 404
 
             old_status = str(job.get("status") or "")
-            repos["jobs"].update(job_id, fields)
+            repos["jobs"].update(user_id, job_id, fields)
 
             # ai: claude-sonnet-5 | 2026-07-29
             # Clear parser-confidence fields when the user edits company or
@@ -288,6 +312,7 @@ def patch_job(job_id: int) -> ResponseReturnValue:
                 or job.get("confidence_reason") is not None
             ):
                 repos["jobs"].update(
+                    user_id,
                     job_id,
                     {
                         "parser_confidence": None,
@@ -296,7 +321,7 @@ def patch_job(job_id: int) -> ResponseReturnValue:
                     },
                 )
 
-            updated_job = repos["jobs"].get_by_id(job_id)
+            updated_job = repos["jobs"].get_by_id(user_id, job_id)
             if updated_job is None:
                 return jsonify({"error": "Job not found"}), 404
 
@@ -308,6 +333,7 @@ def patch_job(job_id: int) -> ResponseReturnValue:
                 and new_status != old_status
             ):
                 repos["job_status_history"].insert(
+                    user_id,
                     {
                         "job_id": job_id,
                         "from_status": old_status,
@@ -315,7 +341,7 @@ def patch_job(job_id: int) -> ResponseReturnValue:
                         "changed_at": datetime.now(UTC).isoformat(timespec="seconds"),
                         "trigger": "patch",
                         "extra_data": None,
-                    }
+                    },
                 )
 
             # ai: claude-sonnet-4-6 | 2026-06-29
@@ -325,7 +351,7 @@ def patch_job(job_id: int) -> ResponseReturnValue:
             # already dismissed via dismiss_duplicate.
             dedup_fields = {"job_title", "company", "url"}
             if dedup_fields & fields.keys():
-                known_jobs: list[dict] = repos["jobs"].get_all_ordered()
+                known_jobs: list[dict] = repos["jobs"].get_all_ordered(user_id)
                 (
                     _tracked_status,
                     _tracking_source,
@@ -358,8 +384,8 @@ def patch_job(job_id: int) -> ResponseReturnValue:
                     )
 
                 if duplicate_updates:
-                    repos["jobs"].update(job_id, duplicate_updates)
-                    updated_job = repos["jobs"].get_by_id(job_id)
+                    repos["jobs"].update(user_id, job_id, duplicate_updates)
+                    updated_job = repos["jobs"].get_by_id(user_id, job_id)
 
             repos["conn"].commit()
     except Exception as exc:
@@ -370,6 +396,7 @@ def patch_job(job_id: int) -> ResponseReturnValue:
 
 @jobs_bp.route("/jobs/<int:job_id>/skip", methods=["POST"])
 def skip_job(job_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     body = request.get_json(silent=True) or {}
     reason = body.get("reason", "other")
     if reason not in VALID_SKIP_REASONS:  # ai: claude-fable-5 | 2026-07-16
@@ -383,7 +410,7 @@ def skip_job(job_id: int) -> ResponseReturnValue:
     ]
 
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -393,9 +420,10 @@ def skip_job(job_id: int) -> ResponseReturnValue:
             updates["skip_feedback"] = feedback
         if reason == "not_a_fit" and mismatch_reasons:
             updates["skip_mismatch_reasons"] = "|".join(mismatch_reasons)
-        repos["jobs"].update(job_id, updates)
-        maybe_mark_source_email_read(job, repos["jobs"])
+        repos["jobs"].update(user_id, job_id, updates)
+        maybe_mark_source_email_read(user_id, job, repos["jobs"])
         repos["job_status_history"].insert(
+            user_id,
             {
                 "job_id": job_id,
                 "from_status": from_status,
@@ -409,7 +437,7 @@ def skip_job(job_id: int) -> ResponseReturnValue:
                         "prev_skip_mismatch_reasons": job.get("skip_mismatch_reasons"),
                     }
                 ),
-            }
+            },
         )
         repos["conn"].commit()
     return jsonify({"status": "ok"})
@@ -420,19 +448,22 @@ def get_job_status_history() -> ResponseReturnValue:
     limit = min(int(request.args.get("limit", 30)), 100)
     trigger = request.args.get("trigger") or None
     with get_repos() as repos:
-        history = repos["job_status_history"].get_recent(limit, trigger=trigger)
+        history = repos["job_status_history"].get_recent(
+            current_user_id(), limit, trigger=trigger
+        )
     return jsonify(history)
 
 
 @jobs_bp.route("/jobs/status-history/<int:history_id>/undo", methods=["POST"])
 def undo_status_change(history_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        history_row = repos["job_status_history"].get_by_id(history_id)
+        history_row = repos["job_status_history"].get_by_id(user_id, history_id)
         if not history_row:
             return jsonify({"error": "History entry not found"}), 404
 
         job_id = history_row["job_id"]
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -451,9 +482,9 @@ def undo_status_change(history_id: int) -> ResponseReturnValue:
                 restore["on_sheet"] = int(extra.get("prev_on_sheet") or 0)
             else:
                 restore["on_sheet"] = 1 if extra.get("prev_date_added_to_sheet") else 0
-            for stage in repos["stages"].get_by_job_id(job_id):
+            for stage in repos["stages"].get_by_job_id(user_id, job_id):
                 if stage.get("status") == "applied" and not stage.get("notes"):
-                    repos["stages"].delete(stage["id"])
+                    repos["stages"].delete(user_id, stage["id"])
                     break
 
         elif trigger == "skip":
@@ -473,35 +504,38 @@ def undo_status_change(history_id: int) -> ResponseReturnValue:
             )
             restore["on_sheet"] = 1
             repos["stages"].insert(
+                user_id,
                 {
                     "job_id": job_id,
                     "status": "applied",
                     "date": prev_date or datetime.now(UTC).date().isoformat(),
                     "notes": None,
-                }
+                },
             )
 
-        repos["jobs"].update(job_id, restore)
-        repos["job_status_history"].delete(history_id)
+        repos["jobs"].update(user_id, job_id, restore)
+        repos["job_status_history"].delete(user_id, history_id)
         repos["conn"].commit()
-        updated_job = repos["jobs"].get_by_id(job_id)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
     return jsonify(updated_job)
 
 
 @jobs_bp.route("/jobs/history")
 def get_history_jobs() -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        jobs = repos["jobs"].get_by_statuses(["applied", "skipped"])
+        jobs = repos["jobs"].get_by_statuses(user_id, ["applied", "skipped"])
         for job in jobs:
-            job["stages"] = repos["stages"].get_by_job_id(job["id"])
+            job["stages"] = repos["stages"].get_by_job_id(user_id, job["id"])
     return jsonify(jobs)
 
 
 # ai: claude-sonnet-4-6 | 2026-06-28
 @jobs_bp.route("/jobs/<int:job_id>/apply", methods=["POST"])
 def apply_job(job_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -509,12 +543,13 @@ def apply_job(job_id: int) -> ResponseReturnValue:
         today = datetime.now(UTC).date().isoformat()
         # ai: claude-fable-5 | 2026-07-14
         # The applied date lives on the stage row; date_found keeps the discovery date.
-        repos["jobs"].update(job_id, {"status": "applied", "on_sheet": 1})
+        repos["jobs"].update(user_id, job_id, {"status": "applied", "on_sheet": 1})
         repos["stages"].insert(
-            {"job_id": job_id, "status": "applied", "date": today, "notes": None}
+            user_id, {"job_id": job_id, "status": "applied", "date": today, "notes": None}
         )
-        maybe_mark_source_email_read(job, repos["jobs"])
+        maybe_mark_source_email_read(user_id, job, repos["jobs"])
         repos["job_status_history"].insert(
+            user_id,
             {
                 "job_id": job_id,
                 "from_status": from_status,
@@ -526,7 +561,7 @@ def apply_job(job_id: int) -> ResponseReturnValue:
                         "prev_on_sheet": int(job.get("on_sheet") or 0),
                     }
                 ),
-            }
+            },
         )
         repos["conn"].commit()
     return jsonify({"status": "ok"})
@@ -534,8 +569,9 @@ def apply_job(job_id: int) -> ResponseReturnValue:
 
 @jobs_bp.route("/jobs/<int:job_id>/return-to-queue", methods=["POST"])
 def return_job_to_queue(job_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -555,7 +591,7 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
         # the job from _closed_req_candidates (terminal stages are treated as
         # already resolved), so a genuinely closed/rejected/ghosted job silently
         # reappears in the Job Queue looking untriaged and never gets rechecked.
-        stages = repos["stages"].get_by_job_id(job_id)
+        stages = repos["stages"].get_by_job_id(user_id, job_id)
         terminal_keys = {
             s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")
         }
@@ -579,12 +615,13 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
             if stage.get("status") == "applied" and not stage.get("notes"):
                 if deleted_applied_date is None:
                     deleted_applied_date = stage.get("date")
-                repos["stages"].delete(stage["id"])
+                repos["stages"].delete(user_id, stage["id"])
 
         fit_score = int(job.get("fit_score") or 0)
         new_status = "pending_review" if fit_score >= 70 else "triage"
         # ai: claude-fable-5 | 2026-07-14
         repos["jobs"].update(
+            user_id,
             job_id,
             {
                 "status": new_status,
@@ -592,6 +629,7 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
             },
         )
         repos["job_status_history"].insert(
+            user_id,
             {
                 "job_id": job_id,
                 "from_status": "applied",
@@ -605,7 +643,7 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
                         or job.get("date_found"),
                     }
                 ),
-            }
+            },
         )
         repos["conn"].commit()
     return jsonify({"status": "ok"})
@@ -614,8 +652,9 @@ def return_job_to_queue(job_id: int) -> ResponseReturnValue:
 # ai: claude-sonnet-5 | 2026-07-13
 @jobs_bp.route("/jobs/<int:job_id>/dismiss-duplicate", methods=["POST"])
 def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -638,7 +677,7 @@ def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
         dismissed_ids = sorted(set(dismissed_ids))
 
         excluded = {job_id, *dismissed_ids}
-        all_jobs = repos["jobs"].get_all_ordered()
+        all_jobs = repos["jobs"].get_all_ordered(user_id)
         check_pool = [j for j in all_jobs if j.get("id") not in excluded]
 
         (
@@ -671,8 +710,8 @@ def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
                 "dismissed_duplicate_ids": json.dumps(dismissed_ids),
             }
 
-        repos["jobs"].update(job_id, updates)
-        updated_job = repos["jobs"].get_by_id(job_id)
+        repos["jobs"].update(user_id, job_id, updates)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     return jsonify(updated_job)
 
@@ -691,12 +730,13 @@ def snooze_job(job_id: int) -> ResponseReturnValue:
 
     snoozed_until = (datetime.now(UTC).date() + timedelta(days=days)).isoformat()
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
-        repos["jobs"].update(job_id, {"snoozed_until": snoozed_until})
+        repos["jobs"].update(user_id, job_id, {"snoozed_until": snoozed_until})
         repos["conn"].commit()
 
     return jsonify({"status": "ok", "snoozed_until": snoozed_until})
@@ -705,8 +745,9 @@ def snooze_job(job_id: int) -> ResponseReturnValue:
 @jobs_bp.route("/jobs/<int:job_id>/approve", methods=["POST"])
 def approve_triage_job(job_id: int) -> ResponseReturnValue:
     """Move a triage job to pending_review; score it if not already scored."""
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -715,13 +756,14 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
         subject_pattern = body.get("subject_pattern", "")
         if sender:
             repos["feedback"].insert(
+                user_id,
                 {
                     "sender_email": sender,
                     "subject_pattern": subject_pattern,
                     "is_relevant": 1,
                     "source_name": job.get("source", ""),
                     "created_at": datetime.now(UTC).isoformat(),
-                }
+                },
             )
 
         from_status = str(job.get("status") or "")
@@ -731,10 +773,10 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
 
         if job.get("fit_score") is None:
             try:
-                resume_row = repos["resume"].get_latest()
+                resume_row = repos["resume"].get_latest(user_id)
                 resume_text = resume_row["content"] if resume_row else ""
-                penalty_rules = repos["penalties"].get_enabled()
-                fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+                penalty_rules = repos["penalties"].get_enabled(user_id)
+                fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
                 scorer = FitScorer()
                 result = scorer.score(
                     job_title=job.get("job_title", ""),
@@ -751,8 +793,9 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
             except Exception as exc:
                 logger.warning("Scoring failed during approval: %s", exc)
 
-        repos["jobs"].update(job_id, updates)
+        repos["jobs"].update(user_id, job_id, updates)
         repos["job_status_history"].insert(
+            user_id,
             {
                 "job_id": job_id,
                 "from_status": from_status,
@@ -765,7 +808,7 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
                         "prev_fit_reasoning": prev_fit_reasoning,
                     }
                 ),
-            }
+            },
         )
         repos["conn"].commit()
     return jsonify({"status": "ok"})
@@ -779,8 +822,9 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
     missing from a Greenhouse page that renders via JavaScript).
     """
     logger.info("refresh_job_from_url for job_id %d", job_id)
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -788,10 +832,10 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
         if not url:
             return jsonify({"error": "Job has no URL — cannot re-fetch"}), 422
 
-        resume_row = repos["resume"].get_latest()
+        resume_row = repos["resume"].get_latest(user_id)
         resume_text = str(resume_row.get("content") or "") if resume_row else ""
-        penalty_rules = repos["penalties"].get_enabled()
-        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+        penalty_rules = repos["penalties"].get_enabled(user_id)
+        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
     # Connection released before external fetch and AI scoring
 
     # ai: claude-sonnet-4-6 | 2026-06-21
@@ -826,7 +870,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
         site_name = urlparse(url).netloc
         try:
             with get_repos() as repos:
-                repos["browser_capture_queue"].enqueue(url, site_name)
+                repos["browser_capture_queue"].enqueue(user_id, url, site_name)
                 repos["conn"].commit()
             logger.info(
                 "refresh-from-url: queued job %d (%s) for browser extension capture",
@@ -897,6 +941,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
         # triage panel to show "Parser certainty score: 45% / company name missing"
         # even after a successful re-fetch with a complete description.
         repos["jobs"].update(
+            user_id,
             job_id,
             {
                 "raw_jd_snippet": new_text[:6000],
@@ -910,7 +955,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
                 "confidence_reason": None,
             },
         )
-        updated_job = repos["jobs"].get_by_id(job_id)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     logger.info(
         "refresh-from-url: completed for job %d in %.1fs total",
@@ -923,6 +968,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
 @jobs_bp.route("/jobs/<int:job_id>/description", methods=["POST"])
 def update_job_description(job_id: int) -> ResponseReturnValue:
     """Replace a job's description with pasted text and re-score the job."""
+    user_id = current_user_id()
     body = request.get_json(silent=True) or {}
     description = str(body.get("description") or "").strip()
     if not description:
@@ -936,14 +982,14 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
         )
 
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
-        resume_row = repos["resume"].get_latest()
+        resume_row = repos["resume"].get_latest(user_id)
         resume_text = str(resume_row.get("content") or "") if resume_row else ""
-        penalty_rules = repos["penalties"].get_enabled()
-        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+        penalty_rules = repos["penalties"].get_enabled(user_id)
+        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
     # Connection released before AI scoring
 
     try:
@@ -971,6 +1017,7 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
         # Clear parser-confidence fields: they describe email-parse quality and are
         # stale once the user supplies a complete description directly.
         repos["jobs"].update(
+            user_id,
             job_id,
             {
                 "raw_jd_snippet": description[:6000],
@@ -984,7 +1031,7 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
                 "confidence_reason": None,
             },
         )
-        updated_job = repos["jobs"].get_by_id(job_id)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     return jsonify(updated_job)
 
@@ -996,8 +1043,9 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
     Used when a triage entry is missing a confidence score (e.g. older rows
     inserted before confidence_score was tracked).
     """
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -1058,8 +1106,8 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
             updates[fld] = parsed[fld]
 
     with get_repos() as repos:
-        repos["jobs"].update(job_id, updates)
-        updated = repos["jobs"].get_by_id(job_id)
+        repos["jobs"].update(user_id, job_id, updates)
+        updated = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     return jsonify(updated)
 
@@ -1067,8 +1115,9 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
 @jobs_bp.route("/jobs/<int:job_id>/reject", methods=["POST"])
 def reject_triage_job(job_id: int) -> ResponseReturnValue:
     """Mark as irrelevant, save feedback pattern, and delete the job record."""
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -1077,17 +1126,18 @@ def reject_triage_job(job_id: int) -> ResponseReturnValue:
         subject_pattern = body.get("subject_pattern", "")
         if sender:
             repos["feedback"].insert(
+                user_id,
                 {
                     "sender_email": sender,
                     "subject_pattern": subject_pattern,
                     "is_relevant": 0,
                     "source_name": job.get("source", ""),
                     "created_at": datetime.now(UTC).isoformat(),
-                }
+                },
             )
 
-        repos["jobs"].delete(job_id)
-        maybe_mark_source_email_read(job, repos["jobs"])
+        repos["jobs"].delete(user_id, job_id)
+        maybe_mark_source_email_read(user_id, job, repos["jobs"])
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -1099,6 +1149,7 @@ def add_application_stage(job_id: int) -> ResponseReturnValue:
     stage_date = data.get("date") or datetime.now(UTC).date().isoformat()
     notes = data.get("notes") or None
 
+    user_id = current_user_id()
     with get_repos() as repos:
         valid_keys = {s["key"] for s in repos["stage_statuses"].get_all()}
         if status not in valid_keys:
@@ -1110,25 +1161,26 @@ def add_application_stage(job_id: int) -> ResponseReturnValue:
                 ),
                 400,
             )
-        if not repos["jobs"].get_by_id(job_id):
+        if not repos["jobs"].get_by_id(user_id, job_id):
             return jsonify({"error": "Job not found"}), 404
 
         stage_id = repos["stages"].insert(
-            {"job_id": job_id, "status": status, "date": stage_date, "notes": notes}
+            user_id, {"job_id": job_id, "status": status, "date": stage_date, "notes": notes}
         )
-        stage = repos["stages"].get_by_id(stage_id)
+        stage = repos["stages"].get_by_id(user_id, stage_id)
         repos["conn"].commit()
     return jsonify(stage), 201
 
 
 @jobs_bp.route("/jobs/<int:job_id>/stages/<int:stage_id>", methods=["DELETE"])
 def delete_application_stage(job_id: int, stage_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        stage = repos["stages"].get_by_id(stage_id)
+        stage = repos["stages"].get_by_id(user_id, stage_id)
         if not stage or stage["job_id"] != job_id:
             return jsonify({"error": "Stage not found"}), 404
 
-        repos["stages"].delete(stage_id)
+        repos["stages"].delete(user_id, stage_id)
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -1156,13 +1208,13 @@ _wttj_repair_state = WttjRepairState()
 _wttj_repair_lock = threading.Lock()
 
 
-def _non_terminal_jobs(repos: dict) -> list[dict]:
+def _non_terminal_jobs(user_id: int, repos: dict) -> list[dict]:
     """All jobs whose current stage/status is not a terminal one (rejected, ghosted, etc.)."""
-    jobs = repos["jobs"].get_all_ordered()
+    jobs = repos["jobs"].get_all_ordered(user_id)
     terminal_keys = {
         s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")
     }
-    all_stages = repos["stages"].get_all()
+    all_stages = repos["stages"].get_all(user_id)
     stages_by_job: dict[int, list] = {}
     for stage in all_stages:
         stages_by_job.setdefault(stage["job_id"], []).append(stage)
@@ -1180,7 +1232,7 @@ def _non_terminal_jobs(repos: dict) -> list[dict]:
 
 
 # ai: claude-fable-5 | 2026-07-17
-def _wttj_repair_candidates(repos: dict) -> list[dict]:
+def _wttj_repair_candidates(user_id: int, repos: dict) -> list[dict]:
     """All non-terminal WTTJ jobs.
 
     Every row is a candidate — not just sendgrid/tracking URLs — because the
@@ -1189,7 +1241,7 @@ def _wttj_repair_candidates(repos: dict) -> list[dict]:
     salary-line/CTA titles and URLs mis-attributed to a different job's row.
     """
     candidates: list[dict] = []
-    for job in _non_terminal_jobs(repos):
+    for job in _non_terminal_jobs(user_id, repos):
         source = (job.get("source") or "").lower()
         if "welcome to the jungle" not in source and "wttj" not in source:
             continue
@@ -1243,7 +1295,10 @@ def _fetch_wttj_page_html(url: str) -> str:
 
 
 # ai: claude-sonnet-4-6 | 2026-06-25
-def _run_wttj_repair() -> None:
+# ai: claude-sonnet-5 | 2026-08-20 — user_id captured by start_wttj_repair()
+# (a real session exists there) and passed as a thread arg, since this thread
+# itself has no session.
+def _run_wttj_repair(user_id: int) -> None:
     """Background thread: follow sendgrid redirects → real WTTJ URL → fetch JD → patch in-place."""
     with _wttj_repair_lock:
         _wttj_repair_state.running = True
@@ -1261,10 +1316,10 @@ def _run_wttj_repair() -> None:
 
     try:
         with get_repos() as repos:
-            candidates = _wttj_repair_candidates(repos)
+            candidates = _wttj_repair_candidates(user_id, repos)
             # ai: claude-fable-5 | 2026-07-17 — snapshot for post-repair duplicate
             # checks; taken once here rather than per repaired row.
-            all_jobs_snapshot = repos["jobs"].get_all_ordered()
+            all_jobs_snapshot = repos["jobs"].get_all_ordered(user_id)
 
         total = len(candidates)
         with _wttj_repair_lock:
@@ -1334,7 +1389,7 @@ def _run_wttj_repair() -> None:
                     url_updates["job_description"] = jd_text
 
                 with get_repos() as repos:
-                    repos["jobs"].update(job["id"], url_updates)
+                    repos["jobs"].update(user_id, job["id"], url_updates)
                     repos["conn"].commit()
 
                 if jd_text:
@@ -1384,17 +1439,17 @@ def _run_wttj_repair() -> None:
                 continue  # title and company already match the page
 
             with get_repos() as repos:
-                repos["jobs"].update(job["id"], fix_updates)
+                repos["jobs"].update(user_id, job["id"], fix_updates)
                 repos["conn"].commit()
                 # A repaired title can reveal the row as a duplicate of an
                 # already-tracked job (e.g. a retitled "See all top matches"
                 # CTA row). Only re-flag rows still awaiting triage — don't
                 # resurface rows the user already skipped or is tracking.
                 if job.get("status") in ("pending_review", "triage"):
-                    updated_job = repos["jobs"].get_by_id(int(job["id"]))
+                    updated_job = repos["jobs"].get_by_id(user_id, int(job["id"]))
                     if updated_job:
                         post_repair_duplicate_check(
-                            repos["jobs"], updated_job, all_jobs_snapshot
+                            user_id, repos["jobs"], updated_job, all_jobs_snapshot
                         )
                         repos["conn"].commit()
 
@@ -1428,7 +1483,10 @@ def start_wttj_repair() -> ResponseReturnValue:
         if _wttj_repair_state.running:
             return jsonify({"error": "Repair already running"}), 409
     threading.Thread(
-        target=_run_wttj_repair, daemon=True, name="wttj-url-repair"
+        target=_run_wttj_repair,
+        args=(current_user_id(),),
+        daemon=True,
+        name="wttj-url-repair",
     ).start()
     return jsonify({"status": "started"})
 
@@ -1498,11 +1556,11 @@ _RESCAN_DECISIVE_TERMINAL_STATUSES = frozenset(
 
 
 # ai: claude-sonnet-5 | 2026-07-10
-def _rescan_import_candidates(repos: dict) -> list[dict]:
+def _rescan_import_candidates(user_id: int, repos: dict) -> list[dict]:
     """Jobs whose url isn't a real http(s) link and whose source email is known,
     excluding only jobs with a decisive terminal outcome unrelated to url recovery."""
     candidates: list[dict] = []
-    for job in repos["jobs"].get_all_ordered():
+    for job in repos["jobs"].get_all_ordered(user_id):
         if str(job.get("status") or "").lower() in _RESCAN_DECISIVE_TERMINAL_STATUSES:
             continue
         dedup_key = str(job.get(JobColumns.DEDUP_KEY) or "").strip()
@@ -1544,7 +1602,10 @@ def _group_candidates_by_email(candidates: list[dict]) -> dict[str, list[dict]]:
 
 
 # ai: claude-sonnet-5 | 2026-07-10
-def _run_rescan_broken_imports() -> None:
+# ai: claude-sonnet-5 | 2026-08-20 — user_id captured by start_rescan_broken_imports()
+# (a real session exists there) and passed as a thread arg, since this thread
+# itself has no session.
+def _run_rescan_broken_imports(user_id: int) -> None:
     """Background thread: re-fetch each broken job's source email, re-parse it
     with the current EmailParser, and recover the real URL + duplicate status."""
     with _rescan_import_lock:
@@ -1564,12 +1625,12 @@ def _run_rescan_broken_imports() -> None:
 
     try:
         with get_repos() as repos:
-            candidates = _rescan_import_candidates(repos)
-            known_jobs = repos["jobs"].get_all_ordered()
-            resume_row = repos["resume"].get_latest()
+            candidates = _rescan_import_candidates(user_id, repos)
+            known_jobs = repos["jobs"].get_all_ordered(user_id)
+            resume_row = repos["resume"].get_latest(user_id)
             resume_text = str(resume_row.get("content") or "") if resume_row else ""
-            penalty_rules = repos["penalties"].get_enabled()
-            fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+            penalty_rules = repos["penalties"].get_enabled(user_id)
+            fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
 
         groups = _group_candidates_by_email(candidates)
         total = len(candidates)
@@ -1672,7 +1733,7 @@ def _run_rescan_broken_imports() -> None:
 
                 if row.get("status") == "applied":
                     with get_repos() as write_repos:
-                        write_repos["jobs"].update(job_id, updates)
+                        write_repos["jobs"].update(user_id, job_id, updates)
                         write_repos["conn"].commit()
                     applied_fixed.append(
                         {
@@ -1778,9 +1839,9 @@ def _run_rescan_broken_imports() -> None:
                         )
 
                 with get_repos() as write_repos:
-                    write_repos["jobs"].update(job_id, updates)
+                    write_repos["jobs"].update(user_id, job_id, updates)
                     write_repos["conn"].commit()
-                    updated = write_repos["jobs"].get_by_id(job_id)
+                    updated = write_repos["jobs"].get_by_id(user_id, job_id)
                 if updated:
                     known_jobs = [j for j in known_jobs if j.get("id") != job_id] + [
                         updated
@@ -1844,7 +1905,10 @@ def start_rescan_broken_imports() -> ResponseReturnValue:
         if _rescan_import_state.running:
             return jsonify({"error": "Rescan already running"}), 409
     threading.Thread(
-        target=_run_rescan_broken_imports, daemon=True, name="broken-import-rescan"
+        target=_run_rescan_broken_imports,
+        args=(current_user_id(),),
+        daemon=True,
+        name="broken-import-rescan",
     ).start()
     return jsonify({"status": "started"})
 
@@ -1911,7 +1975,7 @@ _PATTERN_MIN_PERCENT = 15.0
 
 
 def _attempt_import_repair(
-    repos: dict, job: dict, warnings: list[str]
+    user_id: int, repos: dict, job: dict, warnings: list[str]
 ) -> tuple[dict, list[str]]:
     """Try to auto-fix a job's missing title/company or unusable URL in place.
 
@@ -1950,7 +2014,7 @@ def _attempt_import_repair(
                 str(working.get("source") or "").strip() or urlparse(capture_url).netloc
             )
             try:
-                repos["browser_capture_queue"].enqueue(capture_url, site_name)
+                repos["browser_capture_queue"].enqueue(user_id, capture_url, site_name)
             except Exception as exc:
                 logger.warning(
                     "Import repair: failed to enqueue browser capture for job %s: %s",
@@ -1992,6 +2056,7 @@ def _compute_repair_patterns(
 
 
 def _record_repair_history(
+    user_id: int,
     repos: dict,
     run_at: str,
     totals_by_source: dict[str, int],
@@ -2004,7 +2069,7 @@ def _record_repair_history(
     previous: dict[tuple[str, str], dict] = {}
     for source, code in warning_counts:
         prior_rows = repos["import_repair_history"].get_for_source(
-            source, code, limit=1
+            user_id, source, code, limit=1
         )
         if prior_rows:
             previous[(source, code)] = prior_rows[0]
@@ -2013,6 +2078,7 @@ def _record_repair_history(
         total = totals_by_source.get(source, 0)
         percent = round((count / total) * 100, 1) if total else 0.0
         repos["import_repair_history"].insert(
+            user_id,
             {
                 "run_at": run_at,
                 "source": source,
@@ -2020,7 +2086,7 @@ def _record_repair_history(
                 "count": count,
                 "total": total,
                 "percent": percent,
-            }
+            },
         )
     return previous
 
@@ -2075,7 +2141,10 @@ def _write_repair_findings_doc(
     )
 
 
-def _run_import_repair() -> None:
+# ai: claude-sonnet-5 | 2026-08-20 — user_id captured by start_import_repair()
+# (a real session exists there) and passed as a thread arg, since this thread
+# itself has no session.
+def _run_import_repair(user_id: int) -> None:
     """Background thread: sweep non-terminal jobs for fixable import defects
     (missing title/company, homepage-only URL, JD body that's just a tracking
     link) and repair what can be fixed automatically. Also tallies recurring
@@ -2096,7 +2165,7 @@ def _run_import_repair() -> None:
 
     try:
         with get_repos() as repos:
-            candidates = _non_terminal_jobs(repos)
+            candidates = _non_terminal_jobs(user_id, repos)
 
         total = len(candidates)
         with _import_repair_lock:
@@ -2132,9 +2201,9 @@ def _run_import_repair() -> None:
                 continue
 
             with get_repos() as repos:
-                updates, remaining = _attempt_import_repair(repos, job, warnings)
+                updates, remaining = _attempt_import_repair(user_id, repos, job, warnings)
                 if updates:
-                    repos["jobs"].update(job["id"], updates)
+                    repos["jobs"].update(user_id, job["id"], updates)
                     repos["conn"].commit()
 
             if "job_title" in updates or "company" in updates:
@@ -2178,7 +2247,7 @@ def _run_import_repair() -> None:
         run_at = datetime.now(UTC).isoformat(timespec="seconds")
         with get_repos() as repos:
             previous = _record_repair_history(
-                repos, run_at, totals_by_source, warning_counts
+                user_id, repos, run_at, totals_by_source, warning_counts
             )
             repos["conn"].commit()
 
@@ -2213,7 +2282,10 @@ def start_import_repair() -> ResponseReturnValue:
         if _import_repair_state.running:
             return jsonify({"error": "Repair already running"}), 409
     threading.Thread(
-        target=_run_import_repair, daemon=True, name="import-issue-repair"
+        target=_run_import_repair,
+        args=(current_user_id(),),
+        daemon=True,
+        name="import-issue-repair",
     ).start()
     return jsonify({"status": "started"})
 

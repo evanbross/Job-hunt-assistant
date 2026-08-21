@@ -42,12 +42,15 @@ from backend.scanning.import_repair import (  # ai: claude-fable-5 | 2026-07-17
     wttj_title_repair_updates,
 )
 
+_TEST_USER_ID = 1
+
 
 class FakeJobsRepo:
     def __init__(self) -> None:
         self.updated: tuple[int, dict[str, Any]] | None = None
 
-    def update(self, job_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, job_id: int, fields: dict[str, Any]) -> None:
+        assert user_id == _TEST_USER_ID
         self.updated = (job_id, fields)
 
 
@@ -55,6 +58,7 @@ def test_repairs_existing_job_with_unknown_company() -> None:
     repo = FakeJobsRepo()
 
     repaired = repair_existing_job_company(
+        _TEST_USER_ID,
         repo,
         {"id": 42, "company": "Unknown Company"},
         {"company": "Softrip"},
@@ -68,6 +72,7 @@ def test_does_not_overwrite_existing_company() -> None:
     repo = FakeJobsRepo()
 
     repaired = repair_existing_job_company(
+        _TEST_USER_ID,
         repo,
         {"id": 42, "company": "Existing Co"},
         {"company": "Softrip"},

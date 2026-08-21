@@ -41,6 +41,9 @@ from ..connection import _row_to_dict
 
 
 # ai: claude-sonnet-5 | 2026-07-25
+# ai: claude-sonnet-5 | 2026-08-21 — every method below gained a leading
+# user_id parameter (multi-tenancy migration); profile_url uniqueness is now
+# scoped (user_id, profile_url) — see contacts_user_profile_url_key.
 class PostgresContactRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -54,16 +57,19 @@ class PostgresContactRepository(_BaseRepo):
         }
     )
 
-    def get_all(self) -> list[dict[str, Any]]:
-        cur = self._execute("SELECT * FROM contacts ORDER BY company_normalized")
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM contacts WHERE user_id = %s ORDER BY company_normalized",
+            (user_id,),
+        )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def replace_all(self, rows: list[dict[str, Any]]) -> None:
-        self._execute("DELETE FROM contacts")
+    def replace_all(self, user_id: int, rows: list[dict[str, Any]]) -> None:
+        self._execute("DELETE FROM contacts WHERE user_id = %s", (user_id,))
         if not rows:
             return
 
-        columns = sorted(self._ALLOWED_COLUMNS)
+        columns = ["user_id", *sorted(self._ALLOWED_COLUMNS)]
         for row in rows:
             unknown = set(row.keys()) - self._ALLOWED_COLUMNS
             if unknown:
@@ -73,9 +79,12 @@ class PostgresContactRepository(_BaseRepo):
         cur = self._conn.cursor()
         cur.executemany(
             f"INSERT INTO contacts ({', '.join(columns)}) VALUES ({placeholders})",
-            [tuple(row.get(col) for col in columns) for row in rows],
+            [
+                (user_id, *(row.get(col) for col in sorted(self._ALLOWED_COLUMNS)))
+                for row in rows
+            ],
         )
 
-    def count(self) -> int:
-        cur = self._execute("SELECT COUNT(*) AS cnt FROM contacts")
+    def count(self, user_id: int) -> int:
+        cur = self._execute("SELECT COUNT(*) AS cnt FROM contacts WHERE user_id = %s", (user_id,))
         return int(cur.fetchone()["cnt"])

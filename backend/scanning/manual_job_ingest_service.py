@@ -41,12 +41,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
-from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.db.job_columns import JobColumns
-from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.email.email_parser import EmailParser, ParsedJob
+from backend.scanning.career_site_scanner import CareerSiteScanner
+from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.fit_scorer import FitScorer
-from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
+from backend.scoring.job_validator import (
+    import_warnings_to_json,
+    normalize_and_validate,
+)
 from backend.utils.company_urls import company_from_ats_url, company_from_career_domain
 
 logger = logging.getLogger(__name__)
@@ -57,21 +60,25 @@ logger = logging.getLogger(__name__)
 _MIN_DESCRIPTION_CHARS = 400
 
 
+# ai: claude-sonnet-5 | 2026-08-20 — every method gained a leading user_id
+# parameter (multi-tenancy migration).
 @runtime_checkable
 class IJobRepository(Protocol):
-    def insert(self, job: dict[str, Any]) -> int: ...
-    def get_by_id(self, job_id: int) -> dict[str, Any] | None: ...
-    def get_not_a_fit_with_feedback(self, limit: int = 20) -> list[dict[str, Any]]: ...
+    def insert(self, user_id: int, job: dict[str, Any]) -> int: ...
+    def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None: ...
+    def get_not_a_fit_with_feedback(
+        self, user_id: int, limit: int = 20
+    ) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable
 class IResumeRepository(Protocol):
-    def get_latest(self) -> dict[str, Any] | None: ...
+    def get_latest(self, user_id: int) -> dict[str, Any] | None: ...
 
 
 @runtime_checkable
 class IPenaltyRuleRepository(Protocol):
-    def get_enabled(self) -> list[dict[str, Any]]: ...
+    def get_enabled(self, user_id: int) -> list[dict[str, Any]]: ...
 
 
 @dataclass(frozen=True)
@@ -85,6 +92,7 @@ class ManualJobIngestService:
 
     def __init__(
         self,
+        user_id: int,
         jobs_repo: IJobRepository,
         resume_repo: IResumeRepository,
         penalty_repo: IPenaltyRuleRepository,
@@ -94,6 +102,7 @@ class ManualJobIngestService:
         duplicate_checker: DuplicateChecker | None = None,
         career_site_scanner: CareerSiteScanner | None = None,
     ) -> None:
+        self._user_id = user_id
         self._jobs_repo = jobs_repo
         self._resume_repo = resume_repo
         self._penalty_repo = penalty_repo
@@ -254,8 +263,8 @@ class ManualJobIngestService:
             company=company,
             email_body=score_body,
             resume_text=self._resume_text(),
-            penalty_rules=self._penalty_repo.get_enabled(),
-            fit_feedback=self._jobs_repo.get_not_a_fit_with_feedback(),
+            penalty_rules=self._penalty_repo.get_enabled(self._user_id),
+            fit_feedback=self._jobs_repo.get_not_a_fit_with_feedback(self._user_id),
         )
         fit_score = score_result["score"]
 
@@ -289,9 +298,9 @@ class ManualJobIngestService:
         if import_warnings and job_dict["status"] != "possible_duplicate":
             job_dict["status"] = "triage"
 
-        job_id = self._jobs_repo.insert(job_dict)
+        job_id = self._jobs_repo.insert(self._user_id, job_dict)
 
-        created_job = self._jobs_repo.get_by_id(job_id)
+        created_job = self._jobs_repo.get_by_id(self._user_id, job_id)
         if created_job is None:
             raise ValueError("Job was created but could not be loaded.")
 
@@ -300,7 +309,7 @@ class ManualJobIngestService:
         )
 
     def _resume_text(self) -> str:
-        resume_row = self._resume_repo.get_latest()
+        resume_row = self._resume_repo.get_latest(self._user_id)
         return str(resume_row.get("content") or "") if resume_row else ""
 
     @staticmethod

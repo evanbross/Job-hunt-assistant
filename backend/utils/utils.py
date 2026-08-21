@@ -37,6 +37,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from urllib.parse import urlparse
 
+from flask import session
+
 import config
 from backend.ai_provider import AIProviderError
 from backend.db import open_repositories
@@ -66,6 +68,50 @@ def get_repos() -> Generator[dict, None, None]:
         yield repos
     finally:
         repos["conn"].close()
+
+
+# ai: claude-sonnet-5 | 2026-08-20
+def current_user_id() -> int:
+    """The logged-in user's app_account.id, read from the session.
+
+    Only call this from a route already covered by app.py's
+    _require_app_login before_request guard — every route not on that
+    guard's allowlist is, so any handler that reaches get_repos() for a
+    per-user table can call this safely. Raises if called with no session,
+    which means the guard isn't actually covering this route — a bug to
+    surface loudly, not paper over with a default.
+    """
+    user_id = session.get("user_id")
+    if user_id is None:
+        raise RuntimeError(
+            "current_user_id() called with no user_id in session — this "
+            "route is not behind app.py's _require_app_login guard"
+        )
+    return user_id
+
+
+# ai: claude-sonnet-5 | 2026-08-20
+def first_account_user_id(repos: dict) -> int:
+    """STOPGAP for contexts with no Flask session: the standalone import
+    listener HTTP server (backend/scanning/import_listener.py, a separate
+    background thread/process) and Celery task bodies both need a user_id to
+    scope per-user repo calls, but have no request/session to read one from.
+
+    This resolves to "whichever account was created first" (lowest id) —
+    correct for today's single-real-user deployment, but NOT genuine
+    multi-tenant behavior: a second registered account's data would never
+    reach the listener or these tasks. Making the listener/tasks actually
+    per-user needs the browser extension to authenticate itself and each
+    Celery submit call to carry the submitting user's id — out of scope for
+    this pass; call sites using this helper are marked with a matching
+    STOPGAP comment so they're easy to find later.
+    """
+    cur = repos["conn"].cursor()
+    cur.execute("SELECT id FROM app_account ORDER BY id LIMIT 1")
+    row = cur.fetchone()
+    if row is None:
+        raise RuntimeError("first_account_user_id() called with no app_account rows")
+    return row["id"]
 
 
 def parse_bool(value: object, *, default: bool) -> bool:

@@ -40,41 +40,50 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
+# user_id parameter (multi-tenancy migration; table name is ack_patterns).
 class PostgresEmailSubjectRuleRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {"id", "pattern", "enabled", "rule_type"}
     )
 
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM ack_patterns ORDER BY rule_type DESC, pattern"
+            "SELECT * FROM ack_patterns WHERE user_id = %s ORDER BY rule_type DESC, pattern",
+            (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_enabled(self) -> list[dict[str, Any]]:
+    def get_enabled(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM ack_patterns WHERE enabled = 1 ORDER BY rule_type DESC, pattern"
+            "SELECT * FROM ack_patterns WHERE user_id = %s AND enabled = 1"
+            " ORDER BY rule_type DESC, pattern",
+            (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_by_id(self, rule_id: int) -> dict[str, Any] | None:
-        cur = self._execute("SELECT * FROM ack_patterns WHERE id = %s", (rule_id,))
+    def get_by_id(self, user_id: int, rule_id: int) -> dict[str, Any] | None:
+        cur = self._execute(
+            "SELECT * FROM ack_patterns WHERE id = %s AND user_id = %s",
+            (rule_id, user_id),
+        )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def insert(self, row: dict[str, Any]) -> int:
+    def insert(self, user_id: int, row: dict[str, Any]) -> int:
         unknown = set(row.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
         columns = ", ".join(row.keys())
         placeholders = ", ".join(["%s"] * len(row))
         cur = self._execute(
-            f"INSERT INTO ack_patterns ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(row.values()),
+            f"INSERT INTO ack_patterns (user_id, {columns})"
+            f" VALUES (%s, {placeholders}) RETURNING id",
+            [user_id, *row.values()],
         )
         return cur.fetchone()["id"]
 
-    def update(self, rule_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, rule_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
         unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
@@ -82,9 +91,11 @@ class PostgresEmailSubjectRuleRepository(_BaseRepo):
             raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = %s" for k in fields)
         self._execute(
-            f"UPDATE ack_patterns SET {set_clause} WHERE id = %s",
-            [*fields.values(), rule_id],
+            f"UPDATE ack_patterns SET {set_clause} WHERE id = %s AND user_id = %s",
+            [*fields.values(), rule_id, user_id],
         )
 
-    def delete(self, rule_id: int) -> None:
-        self._execute("DELETE FROM ack_patterns WHERE id = %s", (rule_id,))
+    def delete(self, user_id: int, rule_id: int) -> None:
+        self._execute(
+            "DELETE FROM ack_patterns WHERE id = %s AND user_id = %s", (rule_id, user_id)
+        )

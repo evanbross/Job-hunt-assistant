@@ -49,13 +49,14 @@ import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
 from backend.scoring.duplicate_checker import DuplicateChecker
-from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.duplicate_matching import db_match_for_job
+from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_enrichment import scoring_text_for_job
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     FIT_PANEL_STATUSES,
     ai_error_http_status,
+    current_user_id,
     get_repos,
     safe_error_message,
 )
@@ -66,34 +67,35 @@ fit_bp = Blueprint("fit", __name__)
 
 
 # ai: claude-sonnet-5 | 2026-08-20
+# ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
 # ─── Re-evaluate task tracking (in-memory pointer only) ───────────────────────
 # Progress lives in Celery's Redis result backend; this just remembers which
 # task_id to poll, mirroring routes/jd_health_check.py's
 # _submit_jd_health_check_run.
-_re_eval_last_task_id: str | None = None
+_re_eval_last_task_id_by_user: dict[int, str] = {}
 _re_eval_lock = threading.Lock()
 _RE_EVAL_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-def _submit_re_evaluate() -> str | None:
-    """Dispatch a re-evaluate run unless one is already active. Returns the
-    new task id, or None if a run was already active."""
-    global _re_eval_last_task_id
+def _submit_re_evaluate(user_id: int) -> str | None:
+    """Dispatch a re-evaluate run for user_id unless one is already active
+    for that user. Returns the new task id, or None if a run was already
+    active for this user."""
     with _re_eval_lock:
+        existing = _re_eval_last_task_id_by_user.get(user_id)
         if (
-            _re_eval_last_task_id is not None
-            and AsyncResult(_re_eval_last_task_id, app=celery_app).state
-            in _RE_EVAL_ACTIVE_STATES
+            existing is not None
+            and AsyncResult(existing, app=celery_app).state in _RE_EVAL_ACTIVE_STATES
         ):
             return None
-        task = run_re_evaluate_task.delay()
-        _re_eval_last_task_id = task.id
+        task = run_re_evaluate_task.delay(user_id)
+        _re_eval_last_task_id_by_user[user_id] = task.id
         return task.id
 
 
 # ai: claude-sonnet-5 | 2026-08-20
 @celery_app.task(bind=True)
-def run_re_evaluate_task(self) -> dict:
+def run_re_evaluate_task(self, user_id: int) -> dict:
     """Re-score every active queue job, run as a Celery task so progress
     survives a restart. Progress is published via self.update_state."""
     state: dict[str, object] = {
@@ -117,18 +119,18 @@ def run_re_evaluate_task(self) -> dict:
             resume_repo = repos["resume"]
             penalties_repo = repos["penalties"]
 
-            queue_jobs = jobs_repo.get_by_statuses(list(ACTIVE_JOB_STATUSES))
+            queue_jobs = jobs_repo.get_by_statuses(user_id, list(ACTIVE_JOB_STATUSES))
             total = len(queue_jobs)
 
             known_jobs = [
                 j
-                for j in jobs_repo.get_all_ordered()
+                for j in jobs_repo.get_all_ordered(user_id)
                 if j.get("status") not in ACTIVE_JOB_STATUSES
             ]
-            resume_row = resume_repo.get_latest()
+            resume_row = resume_repo.get_latest(user_id)
             resume_text: str = resume_row["content"] if resume_row else ""
-            penalty_rules: list[dict] = penalties_repo.get_enabled()
-            fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback()
+            penalty_rules: list[dict] = penalties_repo.get_enabled(user_id)
+            fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback(user_id)
 
         _publish(message=f"Re-evaluating {total} job{'s' if total != 1 else ''}…")
 
@@ -226,7 +228,7 @@ def run_re_evaluate_task(self) -> dict:
         with get_repos() as repos:
             jobs_repo = repos["jobs"]
             for job_id, updates in pending_updates:
-                jobs_repo.update(job_id, updates)
+                jobs_repo.update(user_id, job_id, updates)
             repos["conn"].commit()
 
         result_summary = {
@@ -265,7 +267,7 @@ def run_re_evaluate_task(self) -> dict:
 
 @fit_bp.route("/jobs/re-evaluate", methods=["POST"])
 def re_evaluate_queue_jobs() -> ResponseReturnValue:
-    task_id = _submit_re_evaluate()
+    task_id = _submit_re_evaluate(current_user_id())
     if task_id is None:
         return jsonify({"error": "Re-evaluation already running"}), 409
     return jsonify({"status": "started", "task_id": task_id}), 202
@@ -274,7 +276,7 @@ def re_evaluate_queue_jobs() -> ResponseReturnValue:
 @fit_bp.route("/jobs/re-evaluate/status")
 def re_evaluate_status() -> ResponseReturnValue:
     with _re_eval_lock:
-        task_id = _re_eval_last_task_id
+        task_id = _re_eval_last_task_id_by_user.get(current_user_id())
 
     if task_id is None:
         return jsonify({"running": False, "progress": 0, "message": "Idle", "result": None})
@@ -320,15 +322,16 @@ def re_evaluate_status() -> ResponseReturnValue:
 @fit_bp.route("/jobs/triage")
 def get_triage_jobs() -> ResponseReturnValue:
     with get_repos() as repos:
-        jobs = repos["jobs"].get_by_statuses(["triage", "possible_duplicate"])
+        jobs = repos["jobs"].get_by_statuses(current_user_id(), ["triage", "possible_duplicate"])
     return jsonify(jobs)
 
 
 @fit_bp.route("/jobs/<int:job_id>/fit-chat", methods=["POST"])
 def fit_chat(job_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
-        resume = repos["resume"].get_latest()
+        job = repos["jobs"].get_by_id(user_id, job_id)
+        resume = repos["resume"].get_latest(user_id)
     # Connection released before AI call
 
     if not job:
@@ -451,8 +454,9 @@ def update_fit_classification(job_id: int) -> ResponseReturnValue:
     if not fit_reasoning:
         return jsonify({"error": "fit_reasoning is required"}), 400
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -463,23 +467,24 @@ def update_fit_classification(job_id: int) -> ResponseReturnValue:
         }
         if status == "skipped":
             updates["skip_reason"] = "not_a_fit"
-        repos["jobs"].update(job_id, updates)
-        updated_job = repos["jobs"].get_by_id(job_id)
+        repos["jobs"].update(user_id, job_id, updates)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     return jsonify(updated_job)
 
 
 @fit_bp.route("/jobs/<int:job_id>/re-evaluate-fit", methods=["POST"])
 def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
-        resume_row = repos["resume"].get_latest()
+        resume_row = repos["resume"].get_latest(user_id)
         resume_text = resume_row["content"] if resume_row else ""
-        penalty_rules = repos["penalties"].get_enabled()
-        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+        penalty_rules = repos["penalties"].get_enabled(user_id)
+        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
     # Connection released before AI scoring
 
     scoring_text = scoring_text_for_job(job)
@@ -509,6 +514,7 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
 
     with get_repos() as repos:
         repos["jobs"].update(
+            user_id,
             job_id,
             {
                 "fit_score": score,
@@ -518,7 +524,7 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
                 "status": new_status,
             },
         )
-        updated_job = repos["jobs"].get_by_id(job_id)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     return jsonify(updated_job)
 
@@ -537,18 +543,19 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
             400,
         )
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
-        repos["jobs"].update(job_id, {"job_description": description})
+        repos["jobs"].update(user_id, job_id, {"job_description": description})
         repos["conn"].commit()
 
-        resume_row = repos["resume"].get_latest()
+        resume_row = repos["resume"].get_latest(user_id)
         resume_text = resume_row["content"] if resume_row else ""
-        penalty_rules = repos["penalties"].get_enabled()
-        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+        penalty_rules = repos["penalties"].get_enabled(user_id)
+        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
     # Connection released before AI scoring
 
     try:
@@ -576,6 +583,7 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
 
     with get_repos() as repos:
         repos["jobs"].update(
+            user_id,
             job_id,
             {
                 "fit_score": score,
@@ -585,6 +593,6 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
                 "status": new_status,
             },
         )
-        updated_job = repos["jobs"].get_by_id(job_id)
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     return jsonify(updated_job)

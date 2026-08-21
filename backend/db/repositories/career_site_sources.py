@@ -40,6 +40,9 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-21 — every method below gained a leading
+# user_id parameter (multi-tenancy migration; see backend/db/schema.py's
+# _migrate() for the user_id column this scopes against).
 class PostgresCareerSiteSourceRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -55,50 +58,60 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
         }
     )
 
-    def get_all(self) -> list[dict[str, Any]]:
-        cur = self._execute("SELECT * FROM career_site_sources ORDER BY name")
-        return [_row_to_dict(r) for r in cur.fetchall()]
-
-    def get_enabled(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM career_site_sources"
-            " WHERE enabled = 1"
-            " AND COALESCE(collection_mode, 'automatic') = 'automatic'"
-            " ORDER BY name"
+            "SELECT * FROM career_site_sources WHERE user_id = %s ORDER BY name",
+            (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_due_recapture(self) -> list[dict[str, Any]]:
-        cur = self._execute("""
+    def get_enabled(self, user_id: int) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM career_site_sources"
+            " WHERE user_id = %s AND enabled = 1"
+            " AND COALESCE(collection_mode, 'automatic') = 'automatic'"
+            " ORDER BY name",
+            (user_id,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_due_recapture(self, user_id: int) -> list[dict[str, Any]]:
+        cur = self._execute(
+            """
             SELECT *,
                    (last_captured_at::timestamptz
                        + (recapture_interval_days || ' days')::interval)::text AS next_capture_due_at
             FROM career_site_sources
-            WHERE last_captured_at IS NOT NULL
+            WHERE user_id = %s
+              AND last_captured_at IS NOT NULL
               AND recapture_interval_days IS NOT NULL
               AND recapture_interval_days > 0
               AND last_captured_at::timestamptz
                   + (recapture_interval_days || ' days')::interval <= NOW()
             ORDER BY next_capture_due_at ASC, name ASC
-            """)
+            """,
+            (user_id,),
+        )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_by_id(self, source_id: int) -> dict[str, Any] | None:
+    def get_by_id(self, user_id: int, source_id: int) -> dict[str, Any] | None:
         cur = self._execute(
-            "SELECT * FROM career_site_sources WHERE id = %s", (source_id,)
+            "SELECT * FROM career_site_sources WHERE id = %s AND user_id = %s",
+            (source_id, user_id),
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def get_by_url(self, url: str) -> dict[str, Any] | None:
+    def get_by_url(self, user_id: int, url: str) -> dict[str, Any] | None:
         cur = self._execute(
-            "SELECT * FROM career_site_sources WHERE lower(url) = lower(%s) LIMIT 1",
-            (url,),
+            "SELECT * FROM career_site_sources"
+            " WHERE user_id = %s AND lower(url) = lower(%s) LIMIT 1",
+            (user_id, url),
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def find_matches(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    def find_matches(self, user_id: int, query: str, limit: int = 5) -> list[dict[str, Any]]:
         normalized = query.strip().lower()
         if not normalized:
             return []
@@ -107,9 +120,10 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             """
             SELECT *
             FROM career_site_sources
-            WHERE lower(name) LIKE %s
+            WHERE user_id = %s
+              AND (lower(name) LIKE %s
                OR lower(url) LIKE %s
-               OR lower(COALESCE(detected_platform, '')) LIKE %s
+               OR lower(COALESCE(detected_platform, '')) LIKE %s)
             ORDER BY
               CASE
                 WHEN lower(name) = %s THEN 0
@@ -121,6 +135,7 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             LIMIT %s
             """,
             (
+                user_id,
                 like_query,
                 like_query,
                 like_query,
@@ -132,19 +147,20 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def insert(self, source: dict[str, Any]) -> int:
+    def insert(self, user_id: int, source: dict[str, Any]) -> int:
         unknown = set(source.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
-        columns = ", ".join(source.keys())
-        placeholders = ", ".join(["%s"] * len(source))
+        columns = ["user_id", *source.keys()]
+        placeholders = ", ".join(["%s"] * len(columns))
         cur = self._execute(
-            f"INSERT INTO career_site_sources ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(source.values()),
+            f"INSERT INTO career_site_sources ({', '.join(columns)})"
+            f" VALUES ({placeholders}) RETURNING id",
+            [user_id, *source.values()],
         )
         return cur.fetchone()["id"]
 
-    def update(self, source_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, source_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
         unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
@@ -152,9 +168,12 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = %s" for k in fields)
         self._execute(
-            f"UPDATE career_site_sources SET {set_clause} WHERE id = %s",
-            [*fields.values(), source_id],
+            f"UPDATE career_site_sources SET {set_clause} WHERE id = %s AND user_id = %s",
+            [*fields.values(), source_id, user_id],
         )
 
-    def delete(self, source_id: int) -> None:
-        self._execute("DELETE FROM career_site_sources WHERE id = %s", (source_id,))
+    def delete(self, user_id: int, source_id: int) -> None:
+        self._execute(
+            "DELETE FROM career_site_sources WHERE id = %s AND user_id = %s",
+            (source_id, user_id),
+        )

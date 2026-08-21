@@ -70,6 +70,9 @@ class FakeConnection:
         pass
 
 
+_TEST_USER_ID = 1
+
+
 class FakeJobsRepo:
     """Enough of IJobRepository for create_manual_job(): get_all_ordered() is
     read before ingest() runs, get_by_url() is read in the duplicate-recovery
@@ -78,10 +81,12 @@ class FakeJobsRepo:
     def __init__(self, existing_job: dict[str, Any]) -> None:
         self._existing_job = existing_job
 
-    def get_all_ordered(self) -> list[dict[str, Any]]:
+    def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _TEST_USER_ID
         return []
 
-    def get_by_url(self, url: str) -> dict[str, Any] | None:
+    def get_by_url(self, user_id: int, url: str) -> dict[str, Any] | None:
+        assert user_id == _TEST_USER_ID
         return dict(self._existing_job) if url == self._existing_job["url"] else None
 
 
@@ -115,6 +120,7 @@ def test_manual_job_returns_existing_job_on_duplicate_url_race(
     }
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.jobs.ManualJobIngestService", _RaisingIngestService)
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
 
     app = Flask(__name__)
     app.register_blueprint(jobs_bp, url_prefix="/api")

@@ -18,7 +18,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from backend.db import PostgresContactRepository, get_connection
+from backend.db import (
+    PostgresAppAccountRepository,
+    PostgresContactRepository,
+    get_connection,
+)
 
 # ai: claude-sonnet-5 | 2026-07-25
 
@@ -40,20 +44,24 @@ def _contact_row(**overrides: object) -> dict[str, object]:
 def test_replace_all_round_trips_and_fully_replaces(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+        user_id = account["id"]
         repo = PostgresContactRepository(conn)
 
-        repo.replace_all([_contact_row(), _contact_row(full_name="John Smith", profile_url=None)])
+        repo.replace_all(
+            user_id, [_contact_row(), _contact_row(full_name="John Smith", profile_url=None)]
+        )
         conn.commit()
 
-        all_contacts = repo.get_all()
-        assert repo.count() == 2
+        all_contacts = repo.get_all(user_id)
+        assert repo.count(user_id) == 2
         assert {c["full_name"] for c in all_contacts} == {"Jane Doe", "John Smith"}
 
-        repo.replace_all([_contact_row(full_name="Only Contact")])
+        repo.replace_all(user_id, [_contact_row(full_name="Only Contact")])
         conn.commit()
 
-        remaining = repo.get_all()
-        assert repo.count() == 1
+        remaining = repo.get_all(user_id)
+        assert repo.count(user_id) == 1
         assert remaining[0]["full_name"] == "Only Contact"
     finally:
         conn.close()
@@ -62,13 +70,15 @@ def test_replace_all_round_trips_and_fully_replaces(pg_dsn: str) -> None:
 def test_replace_all_with_empty_list_clears_table(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+        user_id = account["id"]
         repo = PostgresContactRepository(conn)
-        repo.replace_all([_contact_row()])
+        repo.replace_all(user_id, [_contact_row()])
         conn.commit()
-        assert repo.count() == 1
+        assert repo.count(user_id) == 1
 
-        repo.replace_all([])
+        repo.replace_all(user_id, [])
         conn.commit()
-        assert repo.count() == 0
+        assert repo.count(user_id) == 0
     finally:
         conn.close()

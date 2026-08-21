@@ -82,6 +82,7 @@ from .interfaces import (
     IStageStatusRepository,
 )
 from .readonly_role import ensure_readonly_role
+from .repositories.app_account import PostgresAppAccountRepository
 from .repositories.app_settings import PostgresAppSettingsRepository
 from .repositories.application_answers import PostgresApplicationAnswerRepository
 from .repositories.application_profile import PostgresApplicationProfileRepository
@@ -106,6 +107,7 @@ from .repositories.import_repair_history import PostgresImportRepairHistoryRepos
 from .repositories.jd_health_check_results import PostgresJdHealthCheckResultRepository
 from .repositories.jd_health_check_targets import PostgresJdHealthCheckTargetRepository
 from .repositories.job_status_history import PostgresJobStatusHistoryRepository
+
 # ai: claude-sonnet-5 | 2026-08-12
 from .repositories.jobs import DuplicateJobUrlError, PostgresJobRepository
 from .repositories.penalty_rules import PostgresPenaltyRuleRepository
@@ -140,6 +142,7 @@ __all__ = [
     "IStageStatusRepository",
     "BROWSER_QUEUE_CLAIM_BATCH_SIZE",
     "BROWSER_QUEUE_MAX_RETRIES",
+    "PostgresAppAccountRepository",
     "PostgresAppSettingsRepository",
     "PostgresApplicationAnswerRepository",
     "PostgresApplicationProfileRepository",
@@ -298,6 +301,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "feedback": PostgresRelevanceFeedbackRepository(conn),
         "scanned_emails": PostgresScannedEmailRepository(conn),
         "resume": PostgresResumeRepository(conn),
+        "app_account": PostgresAppAccountRepository(conn),
         "application_profile": PostgresApplicationProfileRepository(conn),
         "application_answers": PostgresApplicationAnswerRepository(conn),
         "stages": PostgresApplicationStageRepository(conn),

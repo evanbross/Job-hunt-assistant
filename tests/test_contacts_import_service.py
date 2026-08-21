@@ -31,11 +31,16 @@ _PREAMBLE = (
 _HEADER = "First Name,Last Name,URL,Email Address,Company,Position,Connected On\n"
 
 
+_TEST_USER_ID = 1
+
+
 class FakeContactsRepo:
     def __init__(self) -> None:
         self.replaced_with: list[dict[str, Any]] | None = None
+        self.replaced_for_user_id: int | None = None
 
-    def replace_all(self, rows: list[dict[str, Any]]) -> None:
+    def replace_all(self, user_id: int, rows: list[dict[str, Any]]) -> None:
+        self.replaced_for_user_id = user_id
         self.replaced_with = rows
 
 
@@ -45,7 +50,7 @@ def test_import_csv_skips_preamble_and_imports_valid_rows() -> None:
         "Acme Inc,Engineer,15 Jan 2024\n"
     )
     repo = FakeContactsRepo()
-    result = ContactImportService(repo).import_csv(csv_text.encode("utf-8"))
+    result = ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
 
     assert result.imported == 1
     assert result.skipped == 0
@@ -63,7 +68,7 @@ def test_import_csv_handles_utf8_bom() -> None:
     csv_text = _PREAMBLE + _HEADER + "Jane,Doe,,,\n"
     repo = FakeContactsRepo()
     result = ContactImportService(repo).import_csv(
-        b"\xef\xbb\xbf" + csv_text.encode("utf-8")
+        _TEST_USER_ID, b"\xef\xbb\xbf" + csv_text.encode("utf-8")
     )
     assert result.imported == 1
 
@@ -71,7 +76,7 @@ def test_import_csv_handles_utf8_bom() -> None:
 def test_import_csv_skips_row_with_no_name() -> None:
     csv_text = _PREAMBLE + _HEADER + ",,https://linkedin.com/in/noname,,Acme,,\n"
     repo = FakeContactsRepo()
-    result = ContactImportService(repo).import_csv(csv_text.encode("utf-8"))
+    result = ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
 
     assert result.imported == 0
     assert result.skipped == 1
@@ -83,7 +88,7 @@ def test_import_csv_row_with_unparseable_date_still_imports() -> None:
         _PREAMBLE + _HEADER + "Jane,Doe,,,,Engineer,not-a-real-date\n"
     )
     repo = FakeContactsRepo()
-    result = ContactImportService(repo).import_csv(csv_text.encode("utf-8"))
+    result = ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
 
     assert result.imported == 1
     assert repo.replaced_with[0]["connected_on"] is None
@@ -97,7 +102,7 @@ def test_import_csv_dedupes_duplicate_profile_url_within_file() -> None:
         + "Jane,Doe2,https://linkedin.com/in/janedoe,,Acme,Manager,\n"
     )
     repo = FakeContactsRepo()
-    result = ContactImportService(repo).import_csv(csv_text.encode("utf-8"))
+    result = ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
 
     assert result.imported == 1
     assert result.skipped == 1
@@ -108,7 +113,7 @@ def test_import_csv_dedupes_duplicate_profile_url_within_file() -> None:
 def test_import_csv_row_with_no_profile_url_is_imported() -> None:
     csv_text = _PREAMBLE + _HEADER + "Jane,Doe,,,Acme,Engineer,\n"
     repo = FakeContactsRepo()
-    result = ContactImportService(repo).import_csv(csv_text.encode("utf-8"))
+    result = ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
 
     assert result.imported == 1
     assert repo.replaced_with[0]["profile_url"] is None
@@ -117,7 +122,7 @@ def test_import_csv_row_with_no_profile_url_is_imported() -> None:
 def test_import_csv_no_header_row_found_returns_empty() -> None:
     csv_text = "just some garbage,not a real export\n"
     repo = FakeContactsRepo()
-    result = ContactImportService(repo).import_csv(csv_text.encode("utf-8"))
+    result = ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
 
     assert result.imported == 0
     assert result.total_rows == 0

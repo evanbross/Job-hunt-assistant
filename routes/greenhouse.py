@@ -52,6 +52,7 @@ from backend.scanning.sources.greenhouse_searcher import (
     GreenhouseSearcher,
 )
 from backend.tasks import run_import_task
+from backend.utils.utils import current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -87,15 +88,16 @@ def _update_login(**kwargs: object) -> None:
 
 
 # ai: claude-sonnet-5 | 2026-08-20
+# ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
 # ── Scan task tracking (in-memory pointer only) ────────────────────────────────
-_greenhouse_scan_last_task_id: str | None = None
+_greenhouse_scan_last_task_id_by_user: dict[int, str] = {}
 _greenhouse_scan_lock = threading.Lock()
 _GREENHOUSE_SCAN_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-def _greenhouse_scan_is_active() -> bool:
+def _greenhouse_scan_is_active(user_id: int) -> bool:
     with _greenhouse_scan_lock:
-        task_id = _greenhouse_scan_last_task_id
+        task_id = _greenhouse_scan_last_task_id_by_user.get(user_id)
     if task_id is None:
         return False
     return (
@@ -103,25 +105,25 @@ def _greenhouse_scan_is_active() -> bool:
     )
 
 
-def _submit_greenhouse_scan(search_url: str, max_jobs: int) -> str | None:
-    """Dispatch a Greenhouse scrape unless one is already active. Returns the
-    new task id, or None if a scan was already running."""
-    global _greenhouse_scan_last_task_id
+def _submit_greenhouse_scan(user_id: int, search_url: str, max_jobs: int) -> str | None:
+    """Dispatch a Greenhouse scrape for user_id unless one is already active
+    for that user. Returns the new task id, or None if a scan was already
+    running for this user."""
     with _greenhouse_scan_lock:
+        existing = _greenhouse_scan_last_task_id_by_user.get(user_id)
         if (
-            _greenhouse_scan_last_task_id is not None
-            and AsyncResult(_greenhouse_scan_last_task_id, app=celery_app).state
-            in _GREENHOUSE_SCAN_ACTIVE_STATES
+            existing is not None
+            and AsyncResult(existing, app=celery_app).state in _GREENHOUSE_SCAN_ACTIVE_STATES
         ):
             return None
-        task = run_greenhouse_scan_task.delay(search_url, max_jobs)
-        _greenhouse_scan_last_task_id = task.id
+        task = run_greenhouse_scan_task.delay(user_id, search_url, max_jobs)
+        _greenhouse_scan_last_task_id_by_user[user_id] = task.id
         return task.id
 
 
 # ai: claude-sonnet-5 | 2026-08-20
 @celery_app.task(bind=True)
-def run_greenhouse_scan_task(self, search_url: str, max_jobs: int) -> dict:
+def run_greenhouse_scan_task(self, user_id: int, search_url: str, max_jobs: int) -> dict:
     """Scrape Greenhouse and hand off results to the import task, run as a
     Celery task so progress survives a restart. Progress is published via
     self.update_state."""
@@ -169,6 +171,7 @@ def run_greenhouse_scan_task(self, search_url: str, max_jobs: int) -> dict:
         _publish(found=len(jobs), message=f"Queueing {len(jobs)} jobs for import…")
 
         task = run_import_task.delay(
+            user_id,
             jobs,
             None,
             {"import_trigger": "greenhouse_scrape"},
@@ -246,7 +249,7 @@ def start_scan() -> ResponseReturnValue:
     )
     max_jobs = min(max(int(body.get("max_jobs") or 50), 1), 200)
 
-    task_id = _submit_greenhouse_scan(search_url, max_jobs)
+    task_id = _submit_greenhouse_scan(current_user_id(), search_url, max_jobs)
     if task_id is None:
         return jsonify({"error": "Scan already running"}), 409
 
@@ -278,7 +281,7 @@ def scan_status() -> ResponseReturnValue:
         )
 
     with _greenhouse_scan_lock:
-        task_id = _greenhouse_scan_last_task_id
+        task_id = _greenhouse_scan_last_task_id_by_user.get(current_user_id())
 
     # ai: claude-sonnet-5 | 2026-08-20
     # No scan has ever run yet: fall back to reporting the login flow's last
@@ -353,7 +356,7 @@ def browser_login() -> ResponseReturnValue:
     with _login_lock:
         if _login_state.running:
             return jsonify({"error": "A scan or login is already running"}), 409
-    if _greenhouse_scan_is_active():
+    if _greenhouse_scan_is_active(current_user_id()):
         return jsonify({"error": "A scan or login is already running"}), 409
 
     threading.Thread(

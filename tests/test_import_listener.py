@@ -43,7 +43,10 @@ from typing import Any
 
 import pytest
 
-from backend.scanning.import_listener import ImportListenerRequestParser, JobImportListener
+from backend.scanning.import_listener import (
+    ImportListenerRequestParser,
+    JobImportListener,
+)
 
 
 def test_listener_parser_accepts_raw_html() -> None:

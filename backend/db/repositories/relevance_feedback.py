@@ -59,6 +59,8 @@ def _sender_domain(sender_email: str) -> str:
     return match.group(1).lower() if match else ""
 
 
+# ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
+# user_id parameter (multi-tenancy migration).
 class PostgresRelevanceFeedbackRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -71,15 +73,18 @@ class PostgresRelevanceFeedbackRepository(_BaseRepo):
         }
     )
 
-    def get_all(self) -> list[dict[str, Any]]:
-        cur = self._execute("SELECT * FROM relevance_feedback ORDER BY created_at DESC")
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM relevance_feedback WHERE user_id = %s ORDER BY created_at DESC",
+            (user_id,),
+        )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def find_match(self, sender_email: str, subject: str) -> dict[str, Any] | None:
+    def find_match(self, user_id: int, sender_email: str, subject: str) -> dict[str, Any] | None:
         cur = self._execute(
-            "SELECT * FROM relevance_feedback WHERE sender_email = %s"
+            "SELECT * FROM relevance_feedback WHERE user_id = %s AND sender_email = %s"
             " ORDER BY created_at DESC",
-            (sender_email,),
+            (user_id, sender_email),
         )
         for row in cur.fetchall():
             feedback_row = _row_to_dict(row)
@@ -91,8 +96,8 @@ class PostgresRelevanceFeedbackRepository(_BaseRepo):
             return None
 
         cur = self._execute(
-            "SELECT * FROM relevance_feedback WHERE sender_email LIKE %s",
-            (f"%@{domain}",),
+            "SELECT * FROM relevance_feedback WHERE user_id = %s AND sender_email LIKE %s",
+            (user_id, f"%@{domain}"),
         )
         for row in cur.fetchall():
             feedback_row = _row_to_dict(row)
@@ -101,17 +106,21 @@ class PostgresRelevanceFeedbackRepository(_BaseRepo):
 
         return None
 
-    def insert(self, feedback: dict[str, Any]) -> int:
+    def insert(self, user_id: int, feedback: dict[str, Any]) -> int:
         unknown = set(feedback.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
-        columns = ", ".join(feedback.keys())
-        placeholders = ", ".join(["%s"] * len(feedback))
+        columns = ["user_id", *feedback.keys()]
+        placeholders = ", ".join(["%s"] * len(columns))
         cur = self._execute(
-            f"INSERT INTO relevance_feedback ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(feedback.values()),
+            f"INSERT INTO relevance_feedback ({', '.join(columns)})"
+            f" VALUES ({placeholders}) RETURNING id",
+            [user_id, *feedback.values()],
         )
         return cur.fetchone()["id"]
 
-    def delete(self, feedback_id: int) -> None:
-        self._execute("DELETE FROM relevance_feedback WHERE id = %s", (feedback_id,))
+    def delete(self, user_id: int, feedback_id: int) -> None:
+        self._execute(
+            "DELETE FROM relevance_feedback WHERE id = %s AND user_id = %s",
+            (feedback_id, user_id),
+        )

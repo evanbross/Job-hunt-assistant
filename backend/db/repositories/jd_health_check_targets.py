@@ -40,6 +40,8 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-21 — every method below gained a leading
+# user_id parameter (multi-tenancy migration).
 class PostgresJdHealthCheckTargetRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -52,38 +54,44 @@ class PostgresJdHealthCheckTargetRepository(_BaseRepo):
         }
     )
 
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM jd_health_check_targets ORDER BY platform, label"
+            "SELECT * FROM jd_health_check_targets WHERE user_id = %s"
+            " ORDER BY platform, label",
+            (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_enabled(self) -> list[dict[str, Any]]:
+    def get_enabled(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM jd_health_check_targets WHERE enabled = 1 ORDER BY platform, label"
+            "SELECT * FROM jd_health_check_targets"
+            " WHERE user_id = %s AND enabled = 1 ORDER BY platform, label",
+            (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_by_id(self, target_id: int) -> dict[str, Any] | None:
+    def get_by_id(self, user_id: int, target_id: int) -> dict[str, Any] | None:
         cur = self._execute(
-            "SELECT * FROM jd_health_check_targets WHERE id = %s", (target_id,)
+            "SELECT * FROM jd_health_check_targets WHERE id = %s AND user_id = %s",
+            (target_id, user_id),
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def insert(self, target: dict[str, Any]) -> int:
+    def insert(self, user_id: int, target: dict[str, Any]) -> int:
         unknown = set(target.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
-        columns = ", ".join(target.keys())
-        placeholders = ", ".join(["%s"] * len(target))
+        columns = ["user_id", *target.keys()]
+        placeholders = ", ".join(["%s"] * len(columns))
         cur = self._execute(
-            f"INSERT INTO jd_health_check_targets ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(target.values()),
+            f"INSERT INTO jd_health_check_targets ({', '.join(columns)})"
+            f" VALUES ({placeholders}) RETURNING id",
+            [user_id, *target.values()],
         )
         return cur.fetchone()["id"]
 
-    def update(self, target_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, target_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
         unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
@@ -91,9 +99,12 @@ class PostgresJdHealthCheckTargetRepository(_BaseRepo):
             raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = %s" for k in fields)
         self._execute(
-            f"UPDATE jd_health_check_targets SET {set_clause} WHERE id = %s",
-            [*fields.values(), target_id],
+            f"UPDATE jd_health_check_targets SET {set_clause} WHERE id = %s AND user_id = %s",
+            [*fields.values(), target_id, user_id],
         )
 
-    def delete(self, target_id: int) -> None:
-        self._execute("DELETE FROM jd_health_check_targets WHERE id = %s", (target_id,))
+    def delete(self, user_id: int, target_id: int) -> None:
+        self._execute(
+            "DELETE FROM jd_health_check_targets WHERE id = %s AND user_id = %s",
+            (target_id, user_id),
+        )

@@ -67,6 +67,9 @@ class FakeConnection:
         self.closed = True
 
 
+_FAKE_USER_ID = 1
+
+
 class FakeJobsRepo:
     def __init__(self) -> None:
         self.row: dict[str, Any] = {
@@ -79,26 +82,31 @@ class FakeJobsRepo:
             "status": "possible_duplicate",
         }
 
-    def get_by_id(self, job_id: int) -> dict[str, Any] | None:
+    def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
+        assert user_id == _FAKE_USER_ID
         if job_id != self.row["id"]:
             return None
         return dict(self.row)
 
-    def update(self, job_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, job_id: int, fields: dict[str, Any]) -> None:
+        assert user_id == _FAKE_USER_ID
         assert job_id == self.row["id"]
         self.row.update(fields)
 
-    def get_not_a_fit_with_feedback(self) -> list[dict[str, Any]]:
+    def get_not_a_fit_with_feedback(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _FAKE_USER_ID
         return []
 
 
 class FakeResumeRepo:
-    def get_latest(self) -> dict[str, str]:
+    def get_latest(self, user_id: int) -> dict[str, str]:
+        assert user_id == _FAKE_USER_ID
         return {"content": "Senior backend engineer"}
 
 
 class FakePenaltyRepo:
-    def get_enabled(self) -> list[dict[str, Any]]:
+    def get_enabled(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _FAKE_USER_ID
         return []
 
 
@@ -137,6 +145,7 @@ def test_re_evaluate_fit_preserves_possible_duplicate_status(
 
     monkeypatch.setattr("routes.fit.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.fit.FitScorer", FakeFitScorer)
+    monkeypatch.setattr("routes.fit.current_user_id", lambda: _FAKE_USER_ID)
 
     app = Flask(__name__)
     app.register_blueprint(fit_bp, url_prefix="/api")

@@ -40,6 +40,8 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
+# user_id parameter (multi-tenancy migration).
 class PostgresPenaltyRuleRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -51,34 +53,39 @@ class PostgresPenaltyRuleRepository(_BaseRepo):
         }
     )
 
-    def get_all(self) -> list[dict[str, Any]]:
-        cur = self._execute("SELECT * FROM penalty_rules ORDER BY rule_text")
-        return [_row_to_dict(r) for r in cur.fetchall()]
-
-    def get_enabled(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM penalty_rules WHERE enabled = 1 ORDER BY rule_text"
+            "SELECT * FROM penalty_rules WHERE user_id = %s ORDER BY rule_text", (user_id,)
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_by_id(self, rule_id: int) -> dict[str, Any] | None:
-        cur = self._execute("SELECT * FROM penalty_rules WHERE id = %s", (rule_id,))
+    def get_enabled(self, user_id: int) -> list[dict[str, Any]]:
+        cur = self._execute(
+            "SELECT * FROM penalty_rules WHERE user_id = %s AND enabled = 1 ORDER BY rule_text",
+            (user_id,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def get_by_id(self, user_id: int, rule_id: int) -> dict[str, Any] | None:
+        cur = self._execute(
+            "SELECT * FROM penalty_rules WHERE id = %s AND user_id = %s", (rule_id, user_id)
+        )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def insert(self, rule: dict[str, Any]) -> int:
+    def insert(self, user_id: int, rule: dict[str, Any]) -> int:
         unknown = set(rule.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
-        columns = ", ".join(rule.keys())
-        placeholders = ", ".join(["%s"] * len(rule))
+        columns = ["user_id", *rule.keys()]
+        placeholders = ", ".join(["%s"] * len(columns))
         cur = self._execute(
-            f"INSERT INTO penalty_rules ({columns}) VALUES ({placeholders}) RETURNING id",
-            list(rule.values()),
+            f"INSERT INTO penalty_rules ({', '.join(columns)}) VALUES ({placeholders}) RETURNING id",
+            [user_id, *rule.values()],
         )
         return cur.fetchone()["id"]
 
-    def update(self, rule_id: int, fields: dict[str, Any]) -> None:
+    def update(self, user_id: int, rule_id: int, fields: dict[str, Any]) -> None:
         if not fields:
             return
         unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
@@ -86,9 +93,11 @@ class PostgresPenaltyRuleRepository(_BaseRepo):
             raise ValueError(f"Attempt to update unknown columns: {unknown}")
         set_clause = ", ".join(f"{k} = %s" for k in fields)
         self._execute(
-            f"UPDATE penalty_rules SET {set_clause} WHERE id = %s",
-            [*fields.values(), rule_id],
+            f"UPDATE penalty_rules SET {set_clause} WHERE id = %s AND user_id = %s",
+            [*fields.values(), rule_id, user_id],
         )
 
-    def delete(self, rule_id: int) -> None:
-        self._execute("DELETE FROM penalty_rules WHERE id = %s", (rule_id,))
+    def delete(self, user_id: int, rule_id: int) -> None:
+        self._execute(
+            "DELETE FROM penalty_rules WHERE id = %s AND user_id = %s", (rule_id, user_id)
+        )

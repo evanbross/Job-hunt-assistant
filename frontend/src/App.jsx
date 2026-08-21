@@ -50,6 +50,7 @@ import MetricGrid, { MetricItem } from "./components/common/MetricGrid.jsx";
 import { ImportBreakdownDetails } from "./components/JobQueue/ImportSummaryPopup.jsx";
 import VoiceQuery from "./components/VoiceQuery/index.jsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
+import { describeFetchError } from "./utils/fetchErrorUtils.js";
 
 // ai: claude-fable-5 | 2026-07-14 — Career Sites tab removed; sites are managed in Settings
 // ai: claude-sonnet-5 | 2026-07-26 — Setup tab removed; the wizard now lives in Settings
@@ -197,6 +198,7 @@ export default function App() {
   });
   const [, setTriageCount] = useState(0);
   const [appAuthenticated, setAppAuthenticated] = useState(null); // null | true | false — app login gate, distinct from Google authStatus below
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const [authStatus, setAuthStatus] = useState(null); // null | true | false
   const [emailFocusId, setEmailFocusId] = useState(null);
   const [focusedJobCard, setFocusedJobCard] = useState(null);
@@ -498,6 +500,13 @@ export default function App() {
               </button>
             )}
             <button
+              onClick={() => setShowChangePassword(true)}
+              style={{ fontSize: "12px", padding: "5px 12px", background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "var(--radius)", cursor: "pointer" }}
+              title="Change your login password"
+            >
+              Change Password
+            </button>
+            <button
               onClick={handleLogout}
               style={{ fontSize: "12px", padding: "5px 12px", background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "var(--radius)", cursor: "pointer" }}
               title="Log out of Job Hunt Assistant"
@@ -603,7 +612,106 @@ export default function App() {
       {showToptalPitch && (
         <ToptalPitchModal onClose={() => setShowToptalPitch(false)} />
       )}
+
+      {showChangePassword && (
+        <ChangePasswordModal onClose={() => setShowChangePassword(false)} />
+      )}
     </div>
+  );
+}
+
+// ai: claude-sonnet-5 | 2026-08-20
+function ChangePasswordModal({ onClose }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState(""); // "" | "saving" | "done"
+
+  const fieldStyle = { marginBottom: "12px" };
+  const labelStyle = { display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "5px" };
+  const inputStyle = { width: "100%", padding: "8px 10px", boxSizing: "border-box", fontSize: "14px", border: "1px solid var(--border, #ccc)", borderRadius: "var(--radius)" };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (status === "saving") return;
+    if (newPassword !== confirmPassword) {
+      setError("New passwords do not match.");
+      return;
+    }
+    setStatus("saving");
+    setError("");
+    try {
+      const res = await apiFetch("/api/account/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || `Request failed (HTTP ${res.status})`);
+        setStatus("");
+        return;
+      }
+      setStatus("done");
+    } catch (err) {
+      setError(describeFetchError(err));
+      setStatus("");
+    }
+  };
+
+  return (
+    <Modal title="Change password" onClose={onClose}>
+      {status === "done" ? (
+        <div>
+          <p>Password changed.</p>
+          <button className="btn-primary" onClick={onClose}>Close</button>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit}>
+          {error && <div style={{ color: "var(--red)", fontSize: "13px", marginBottom: "12px" }}>{error}</div>}
+          <div style={fieldStyle}>
+            <label style={labelStyle} htmlFor="change-pw-current">Current password</label>
+            <input
+              id="change-pw-current"
+              type="password"
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              style={inputStyle}
+              required
+            />
+          </div>
+          <div style={fieldStyle}>
+            <label style={labelStyle} htmlFor="change-pw-new">New password</label>
+            <input
+              id="change-pw-new"
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              style={inputStyle}
+              required
+            />
+          </div>
+          <div style={{ ...fieldStyle, marginBottom: "16px" }}>
+            <label style={labelStyle} htmlFor="change-pw-confirm">Confirm new password</label>
+            <input
+              id="change-pw-confirm"
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              style={inputStyle}
+              required
+            />
+          </div>
+          <button type="submit" className="btn-primary" disabled={status === "saving"}>
+            {status === "saving" ? "Saving…" : "Change password"}
+          </button>
+        </form>
+      )}
+    </Modal>
   );
 }
 

@@ -40,6 +40,7 @@ import pytest
 
 from backend.db import (
     DuplicateJobUrlError,
+    PostgresAppAccountRepository,
     PostgresAppSettingsRepository,
     PostgresCareerSiteSourceRepository,
     PostgresJobRepository,
@@ -56,12 +57,15 @@ from backend.db.schema import _migrate
 def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+        user_id = account["id"]
         jobs = PostgresJobRepository(conn)
         settings = PostgresAppSettingsRepository(conn)
         career_sites = PostgresCareerSiteSourceRepository(conn)
 
-        settings.set("cover_letter_folder", "C:/letters")
+        settings.set(user_id, "cover_letter_folder", "C:/letters")
         job_id = jobs.insert(
+            user_id,
             {
                 "dedup_key": "email-1",
                 "company": "Acme",
@@ -70,9 +74,10 @@ def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> 
                 "source": "manual",
                 "status": "pending_review",
                 "date_found": "2026-05-01",
-            }
+            },
         )
         source_id = career_sites.insert(
+            user_id,
             {
                 "name": "Acme Careers",
                 "url": "https://jobs.example.com/acme",
@@ -83,20 +88,20 @@ def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> 
                 ),
                 "recapture_interval_days": 4,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            }
+            },
         )
         conn.commit()
 
-        assert settings.get("cover_letter_folder") == "C:/letters"
-        assert jobs.get_by_id(job_id)["company"] == "Acme"
+        assert settings.get(user_id, "cover_letter_folder") == "C:/letters"
+        assert jobs.get_by_id(user_id, job_id)["company"] == "Acme"
         assert (
-            jobs.get_by_url("https://example.com/jobs/1")["job_title"]
+            jobs.get_by_url(user_id, "https://example.com/jobs/1")["job_title"]
             == "Senior Engineer"
         )
-        assert career_sites.get_by_id(source_id)["collection_mode"] == "automatic"
-        assert [site["id"] for site in career_sites.get_enabled()] == [source_id]
+        assert career_sites.get_by_id(user_id, source_id)["collection_mode"] == "automatic"
+        assert [site["id"] for site in career_sites.get_enabled(user_id)] == [source_id]
 
-        due_sites = career_sites.get_due_recapture()
+        due_sites = career_sites.get_due_recapture(user_id)
         assert [site["id"] for site in due_sites] == [source_id]
     finally:
         conn.close()
@@ -105,7 +110,10 @@ def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> 
 def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:
+        account = repos["app_account"].create("owner@example.com", "hash")
+        user_id = account["id"]
         job_id = repos["jobs"].insert(
+            user_id,
             {
                 "dedup_key": "email-2",
                 "company": "Widget Co",
@@ -115,9 +123,10 @@ def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None
                 "status": "pending_review",
                 "date_found": "2026-05-01",
                 "sender_email": "jobs@example.com",
-            }
+            },
         )
         source_id = repos["career_sites"].insert(
+            user_id,
             {
                 "name": "Widget Careers",
                 "url": "https://jobs.example.com/widget",
@@ -128,9 +137,10 @@ def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None
                 ),
                 "recapture_interval_days": 4,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            }
+            },
         )
         email_source_id = repos["sources"].insert(
+            user_id,
             {
                 "name": "Welcome to the Jungle",
                 "match_type": "sender_domain",
@@ -138,24 +148,24 @@ def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None
                 "subject_filter_mode": "starts_with",
                 "subject_filter_value": "new match",
                 "enabled": 1,
-            }
+            },
         )
         repos["conn"].commit()
 
-        assert repos["jobs"].get_by_id(job_id)["company"] == "Widget Co"
-        assert [site["id"] for site in repos["career_sites"].get_due_recapture()] == [
-            source_id
-        ]
-        repos["career_sites"].update(source_id, {"collection_mode": "manual"})
+        assert repos["jobs"].get_by_id(user_id, job_id)["company"] == "Widget Co"
+        assert [
+            site["id"] for site in repos["career_sites"].get_due_recapture(user_id)
+        ] == [source_id]
+        repos["career_sites"].update(user_id, source_id, {"collection_mode": "manual"})
         repos["conn"].commit()
-        assert repos["career_sites"].get_enabled() == []
-        email_source = repos["sources"].get_by_id(email_source_id)
+        assert repos["career_sites"].get_enabled(user_id) == []
+        email_source = repos["sources"].get_by_id(user_id, email_source_id)
         assert email_source["subject_filter_mode"] == "starts_with"
         assert email_source["subject_filter_value"] == "new match"
 
-        repos["jobs"].delete_email_sourced()
+        repos["jobs"].delete_email_sourced(user_id)
         repos["conn"].commit()
-        assert repos["jobs"].get_by_id(job_id) is None
+        assert repos["jobs"].get_by_id(user_id, job_id) is None
     finally:
         repos["conn"].close()
 
@@ -163,7 +173,10 @@ def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None
 def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:
+        account = repos["app_account"].create("owner@example.com", "hash")
+        user_id = account["id"]
         repos["scanned_emails"].mark_scanned(
+            user_id,
             "email-3",
             "jobs@example.com",
             "Two roles",
@@ -171,6 +184,7 @@ def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
             email_date="2026-05-01",
         )
         first_job_id = repos["jobs"].insert(
+            user_id,
             {
                 "dedup_key": "email-3",
                 "company": "Acme",
@@ -180,9 +194,10 @@ def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
                 "status": "applied",
                 "date_found": "2026-05-01",
                 "fit_score": 82,
-            }
+            },
         )
         second_job_id = repos["jobs"].insert(
+            user_id,
             {
                 "dedup_key": "email-3:1",
                 "company": "Acme",
@@ -192,11 +207,11 @@ def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
                 "status": "skipped",
                 "date_found": "2026-05-01",
                 "skip_reason": "duplicate",
-            }
+            },
         )
         repos["conn"].commit()
 
-        emails = repos["scanned_emails"].get_all_with_job_status()
+        emails = repos["scanned_emails"].get_all_with_job_status(user_id)
 
         assert len(emails) == 1
         assert emails[0]["job_count"] == 2
@@ -211,7 +226,10 @@ def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
 def test_scanned_email_get_by_id_returns_disposition(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:
+        account = repos["app_account"].create("owner@example.com", "hash")
+        user_id = account["id"]
         repos["scanned_emails"].mark_scanned(
+            user_id,
             "email-noise-1",
             "noise@example.com",
             "Newsletter",
@@ -221,13 +239,13 @@ def test_scanned_email_get_by_id_returns_disposition(pg_dsn: str) -> None:
         )
         repos["conn"].commit()
 
-        scanned_email = repos["scanned_emails"].get_by_id("email-noise-1")
+        scanned_email = repos["scanned_emails"].get_by_id(user_id, "email-noise-1")
 
         assert scanned_email is not None
         assert scanned_email["email_id"] == "email-noise-1"
         assert scanned_email["disposition"] == "noise"
         assert scanned_email["email_date"] == "2026-05-11"
-        assert repos["scanned_emails"].get_by_id("missing-email") is None
+        assert repos["scanned_emails"].get_by_id(user_id, "missing-email") is None
     finally:
         repos["conn"].close()
 
@@ -237,20 +255,24 @@ def test_relevance_feedback_requires_subject_overlap_for_exact_sender(
 ) -> None:
     conn = get_connection(pg_dsn)
     try:
+        account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+        user_id = account["id"]
         feedback = PostgresRelevanceFeedbackRepository(conn)
         feedback.insert(
+            user_id,
             {
                 "sender_email": "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
                 "subject_pattern": "staff software engineer",
                 "is_relevant": 0,
                 "source_name": "LinkedIn",
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            }
+            },
         )
         conn.commit()
 
         assert (
             feedback.find_match(
+                user_id,
                 "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
                 "Principal Product Manager posted on 5/9/26",
             )
@@ -258,6 +280,7 @@ def test_relevance_feedback_requires_subject_overlap_for_exact_sender(
         )
         assert (
             feedback.find_match(
+                user_id,
                 "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
                 "Staff Software Engineer posted on 5/9/26",
             )
@@ -278,7 +301,10 @@ def test_jobs_url_unique_index_rejects_concurrent_duplicate_insert(
     to be the backstop against a duplicate row."""
     repos = open_repositories(pg_dsn)
     try:
+        account = repos["app_account"].create("owner@example.com", "hash")
+        user_id = account["id"]
         first_id = repos["jobs"].insert(
+            user_id,
             {
                 "dedup_key": "email-race-1",
                 "company": "Acme",
@@ -287,12 +313,13 @@ def test_jobs_url_unique_index_rejects_concurrent_duplicate_insert(
                 "source": "manual",
                 "status": "pending_review",
                 "date_found": "2026-08-12",
-            }
+            },
         )
         repos["conn"].commit()
 
         with pytest.raises(DuplicateJobUrlError) as exc_info:
             repos["jobs"].insert(
+                user_id,
                 {
                     "dedup_key": "email-race-2",
                     "company": "Acme",
@@ -301,14 +328,15 @@ def test_jobs_url_unique_index_rejects_concurrent_duplicate_insert(
                     "source": "manual",
                     "status": "pending_review",
                     "date_found": "2026-08-12",
-                }
+                },
             )
         assert exc_info.value.url == "https://example.com/jobs/race"
 
         # The connection must still be usable after insert()'s internal rollback
         # -- a UniqueViolation aborts the Postgres transaction until rolled back.
-        assert repos["jobs"].get_by_id(first_id) is not None
+        assert repos["jobs"].get_by_id(user_id, first_id) is not None
         second_id = repos["jobs"].insert(
+            user_id,
             {
                 "dedup_key": "email-race-3",
                 "company": "Other Co",
@@ -317,10 +345,10 @@ def test_jobs_url_unique_index_rejects_concurrent_duplicate_insert(
                 "source": "manual",
                 "status": "pending_review",
                 "date_found": "2026-08-12",
-            }
+            },
         )
         repos["conn"].commit()
-        assert repos["jobs"].get_by_id(second_id) is not None
+        assert repos["jobs"].get_by_id(user_id, second_id) is not None
     finally:
         repos["conn"].close()
 
@@ -332,7 +360,10 @@ def test_jobs_url_unique_index_allows_multiple_empty_urls(pg_dsn: str) -> None:
     each other (a plain UNIQUE constraint would, since '' = '' in Postgres)."""
     repos = open_repositories(pg_dsn)
     try:
+        account = repos["app_account"].create("owner@example.com", "hash")
+        user_id = account["id"]
         first_id = repos["jobs"].insert(
+            user_id,
             {
                 "dedup_key": "email-empty-url-1",
                 "company": "Acme",
@@ -341,9 +372,10 @@ def test_jobs_url_unique_index_allows_multiple_empty_urls(pg_dsn: str) -> None:
                 "source": "manual",
                 "status": "pending_review",
                 "date_found": "2026-08-12",
-            }
+            },
         )
         second_id = repos["jobs"].insert(
+            user_id,
             {
                 "dedup_key": "email-empty-url-2",
                 "company": "Widget Co",
@@ -352,7 +384,7 @@ def test_jobs_url_unique_index_allows_multiple_empty_urls(pg_dsn: str) -> None:
                 "source": "manual",
                 "status": "pending_review",
                 "date_found": "2026-08-12",
-            }
+            },
         )
         repos["conn"].commit()
         assert first_id != second_id
@@ -387,8 +419,11 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         conn.commit()
         assert not _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
 
+        account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+        user_id = account["id"]
         jobs = PostgresJobRepository(conn)
         first_id = jobs.insert(
+            user_id,
             {
                 "dedup_key": "email-legacy-1",
                 "company": "Acme",
@@ -397,9 +432,10 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
                 "source": "manual",
                 "status": "pending_review",
                 "date_found": "2026-08-12",
-            }
+            },
         )
         second_id = jobs.insert(
+            user_id,
             {
                 "dedup_key": "email-legacy-2",
                 "company": "Acme",
@@ -408,7 +444,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
                 "source": "manual",
                 "status": "pending_review",
                 "date_found": "2026-08-12",
-            }
+            },
         )
         conn.commit()
 
@@ -417,11 +453,11 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         assert not _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
         # Both legacy rows are left alone -- _migrate() only skips the index,
         # it never deletes data on the user's behalf.
-        assert jobs.get_by_id(first_id) is not None
-        assert jobs.get_by_id(second_id) is not None
+        assert jobs.get_by_id(user_id, first_id) is not None
+        assert jobs.get_by_id(user_id, second_id) is not None
 
         # Once the duplicate is resolved, the next startup applies the index.
-        jobs.delete(second_id)
+        jobs.delete(user_id, second_id)
         conn.commit()
         _migrate(conn)
         assert _index_exists(conn, JOBS_URL_UNIQUE_INDEX)

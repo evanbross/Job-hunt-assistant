@@ -48,26 +48,32 @@ from googleapiclient.errors import HttpError
 import config
 from backend.ai_provider import AIProviderClient
 from backend.celery_app import celery_app
-from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.db.job_columns import JobColumns
-from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.email.classification import email_date_from_message, get_subject_rule_match
 from backend.email.email_parser import EmailParser
 from backend.email.email_source_filters import email_matches_source_filters
-from backend.scoring.fit_scorer import FitScorer
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
-from backend.scoring.job_validator import import_warnings_to_json, normalize_and_validate
-from backend.email.classification import email_date_from_message, get_subject_rule_match
 from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
-from backend.scoring.auto_reject_rules import (
-    mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
-)
-from backend.scoring.duplicate_matching import db_match_for_job, is_near_certain_duplicate
-from backend.utils.utils import ACTIVE_JOB_STATUSES, get_repos
+from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.scanning.sources.wellfound_scraper import (  # ai: claude-fable-5 | 2026-07-14
     WellfoundJobFetcher,
     canonical_wellfound_job_url,
     is_wellfound_job_url,
 )
+from backend.scoring.auto_reject_rules import (
+    mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
+)
+from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.scoring.duplicate_matching import (
+    db_match_for_job,
+    is_near_certain_duplicate,
+)
+from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.job_validator import (
+    import_warnings_to_json,
+    normalize_and_validate,
+)
+from backend.utils.utils import ACTIVE_JOB_STATUSES, current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -79,25 +85,26 @@ scan_bp = Blueprint("scan", __name__)
 # ─── Scan task tracking (in-memory pointer only) ───────────────────────────────
 # Progress lives in Celery's Redis result backend; this just remembers which
 # task_id to poll, mirroring routes/jd_health_check.py's
-# _submit_jd_health_check_run.
-_scan_last_task_id: str | None = None
+# _submit_jd_health_check_run. Keyed by user_id (multi-tenancy migration) so
+# two different users' scans never collide or show each other's progress.
+_scan_last_task_id_by_user: dict[int, str] = {}
 _scan_lock = threading.Lock()
 _SCAN_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-def _submit_scan(rescan_all: bool = False) -> str | None:
-    """Dispatch an email scan unless one is already active. Returns the new
-    task id, or None if a scan was already running."""
-    global _scan_last_task_id
+def _submit_scan(user_id: int, rescan_all: bool = False) -> str | None:
+    """Dispatch an email scan for user_id unless one is already active for
+    that user. Returns the new task id, or None if a scan was already
+    running for this user."""
     with _scan_lock:
+        existing = _scan_last_task_id_by_user.get(user_id)
         if (
-            _scan_last_task_id is not None
-            and AsyncResult(_scan_last_task_id, app=celery_app).state
-            in _SCAN_ACTIVE_STATES
+            existing is not None
+            and AsyncResult(existing, app=celery_app).state in _SCAN_ACTIVE_STATES
         ):
             return None
-        task = run_scan_task.delay(rescan_all=rescan_all)
-        _scan_last_task_id = task.id
+        task = run_scan_task.delay(user_id, rescan_all=rescan_all)
+        _scan_last_task_id_by_user[user_id] = task.id
         return task.id
 
 
@@ -166,11 +173,14 @@ def _finalize_scanned_email(
 
 # ai: claude-sonnet-5 | 2026-08-20
 @celery_app.task(bind=True)
-def run_scan_task(self, rescan_all: bool = False) -> dict:
+def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
     """
     Full email scan pipeline, run as a Celery task so progress survives a
     restart and POST /api/scan returns immediately. Progress is published via
     self.update_state.
+
+    user_id: explicit task argument, not read from a Flask session — Celery
+    task bodies run in a worker process with no request context.
 
     rescan_all: when True, fetches all messages (not just unread) so that
         previously-read emails are re-processed after a rescan-all wipe.
@@ -268,20 +278,20 @@ def run_scan_task(self, rescan_all: bool = False) -> dict:
         # the whole scan (never appended to mid-run, even in the original code),
         # so unlike career_sites.py there's no in-run dedup ordering to preserve.
         with get_repos() as repos:
-            subject_rules = repos["email_subject_rules"].get_enabled()
-            enabled_sources = repos["sources"].get_enabled()
+            subject_rules = repos["email_subject_rules"].get_enabled(user_id)
+            enabled_sources = repos["sources"].get_enabled(user_id)
             if not enabled_sources:
                 _update_scan(
                     progress=100, message="No email sources enabled — nothing to scan."
                 )
                 return dict(state)
 
-            resume_row = repos["resume"].get_latest()
+            resume_row = repos["resume"].get_latest(user_id)
             resume_text = resume_row["content"] if resume_row else ""
-            penalty_rules = repos["penalties"].get_enabled()
-            fit_feedback = repos["jobs"].get_not_a_fit_with_feedback()
+            penalty_rules = repos["penalties"].get_enabled(user_id)
+            fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
             # Load all known jobs once for duplicate detection.
-            known_jobs: list[dict] = repos["jobs"].get_all_ordered()
+            known_jobs: list[dict] = repos["jobs"].get_all_ordered(user_id)
 
         _update_scan(
             progress=10, message=f"Fetching emails (last {lookback_days} days)..."
@@ -338,9 +348,9 @@ def run_scan_task(self, rescan_all: bool = False) -> dict:
             # Primary dedup: skip if this exact Gmail message ID was already processed.
             # Uses scanned_emails table so rejected/deleted jobs are still remembered.
             with get_repos() as repos:
-                already_scanned = repos["scanned_emails"].has_been_scanned(msg_id)
+                already_scanned = repos["scanned_emails"].has_been_scanned(user_id, msg_id)
                 stored = (
-                    repos["scanned_emails"].get_scanned_metadata(msg_id)
+                    repos["scanned_emails"].get_scanned_metadata(user_id, msg_id)
                     if already_scanned
                     else None
                 )
@@ -411,6 +421,7 @@ def run_scan_task(self, rescan_all: bool = False) -> dict:
                 source_filtered_emails += 1
                 with get_repos() as repos:
                     repos["scanned_emails"].mark_scanned(
+                        user_id,
                         msg_id,
                         sender,
                         subject,
@@ -456,6 +467,7 @@ def run_scan_task(self, rescan_all: bool = False) -> dict:
                 gmail.mark_as_read(msg_id)
                 with get_repos() as repos:
                     repos["scanned_emails"].mark_scanned(
+                        user_id,
                         msg_id,
                         sender,
                         subject,
@@ -506,7 +518,7 @@ def run_scan_task(self, rescan_all: bool = False) -> dict:
             # It must not discard an entire message because digest emails can
             # contain several valid jobs even when one subject pattern looks noisy.
             with get_repos() as repos:
-                feedback = repos["feedback"].find_match(sender, subject)
+                feedback = repos["feedback"].find_match(user_id, sender, subject)
 
             # Parse the email — returns a list (empty if not a job email)
             _update_scan(message=f"AI evaluation underway for {email_label}...")
@@ -519,6 +531,7 @@ def run_scan_task(self, rescan_all: bool = False) -> dict:
                 parser_error_emails += 1
                 with get_repos() as repos:
                     repos["scanned_emails"].mark_scanned(
+                        user_id,
                         msg_id,
                         sender,
                         subject,
@@ -565,6 +578,7 @@ def run_scan_task(self, rescan_all: bool = False) -> dict:
                 non_job_emails += 1
                 with get_repos() as repos:
                     repos["scanned_emails"].mark_scanned(
+                        user_id,
                         msg_id,
                         sender,
                         subject,
@@ -881,11 +895,11 @@ def run_scan_task(self, rescan_all: bool = False) -> dict:
             with get_repos() as repos:
                 job_repo = repos["jobs"]
                 for item in jobs_to_insert:
-                    job_repo.insert(item["job_data"])
+                    job_repo.insert(user_id, item["job_data"])
                     if item["capture_url"]:
                         try:
                             repos["browser_capture_queue"].enqueue(
-                                item["capture_url"], item["capture_source"]
+                                user_id, item["capture_url"], item["capture_source"]
                             )
                         except Exception as exc:
                             logger.warning(
@@ -894,6 +908,7 @@ def run_scan_task(self, rescan_all: bool = False) -> dict:
                                 exc,
                             )
                 repos["scanned_emails"].mark_scanned(
+                    user_id,
                     msg_id,
                     sender,
                     subject,
@@ -1008,7 +1023,7 @@ def run_scan_task(self, rescan_all: bool = False) -> dict:
 
 @scan_bp.route("/scan", methods=["POST"])
 def scan_emails() -> ResponseReturnValue:
-    task_id = _submit_scan()
+    task_id = _submit_scan(current_user_id())
     if task_id is None:
         return jsonify({"error": "A scan is already running"}), 409
     return jsonify({"status": "started", "task_id": task_id}), 202
@@ -1017,7 +1032,7 @@ def scan_emails() -> ResponseReturnValue:
 @scan_bp.route("/scan/status")
 def scan_status() -> ResponseReturnValue:
     with _scan_lock:
-        task_id = _scan_last_task_id
+        task_id = _scan_last_task_id_by_user.get(current_user_id())
 
     _idle = {
         "running": False,
@@ -1104,11 +1119,12 @@ def rescan_all_emails() -> ResponseReturnValue:
     Board-search jobs (sender_email IS NULL) and terminal application history
     are left intact.
     """
+    user_id = current_user_id()
     with _scan_lock:
+        existing = _scan_last_task_id_by_user.get(user_id)
         if (
-            _scan_last_task_id is not None
-            and AsyncResult(_scan_last_task_id, app=celery_app).state
-            in _SCAN_ACTIVE_STATES
+            existing is not None
+            and AsyncResult(existing, app=celery_app).state in _SCAN_ACTIVE_STATES
         ):
             return jsonify({"error": "A scan is already running"}), 409
 
@@ -1118,15 +1134,15 @@ def rescan_all_emails() -> ResponseReturnValue:
 
         # Remove only active email-sourced jobs so applied/skipped history remains
         # available for duplicate detection after the retry.
-        for job in job_repo.get_by_statuses(list(ACTIVE_JOB_STATUSES)):
+        for job in job_repo.get_by_statuses(user_id, list(ACTIVE_JOB_STATUSES)):
             if job.get("sender_email"):
-                job_repo.delete(job["id"])
+                job_repo.delete(user_id, job["id"])
         repos["conn"].commit()
-        scanned_repo.delete_all()
+        scanned_repo.delete_all(user_id)
         repos["conn"].commit()
 
     # Kick off a fresh scan with unread_only=False so already-read emails are re-fetched
-    task_id = _submit_scan(rescan_all=True)
+    task_id = _submit_scan(user_id, rescan_all=True)
     if task_id is None:
         return jsonify({"error": "A scan is already running"}), 409
     return jsonify({"status": "started", "task_id": task_id}), 202

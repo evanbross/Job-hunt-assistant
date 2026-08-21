@@ -79,6 +79,7 @@ def is_richer_description(incoming_text: str, existing_job: dict[str, Any]) -> b
 
 
 def enrich_job_description(
+    user_id: int,
     repos: dict[str, Any],
     job: dict[str, Any],
     description: str,
@@ -112,7 +113,7 @@ def enrich_job_description(
         update_fields["import_warnings"] = (
             json.dumps(remaining_warnings) if remaining_warnings else None
         )
-    repos["jobs"].update(job_id, update_fields)
+    repos["jobs"].update(user_id, job_id, update_fields)
     try:
         result = FitScorer().score(
             job_title=str(job.get("job_title") or ""),
@@ -132,22 +133,22 @@ def enrich_job_description(
         }
         if current_status not in {"skipped", "applied"}:
             score_updates["status"] = "pending_review" if score >= 70 else "triage"
-        repos["jobs"].update(job_id, score_updates)
+        repos["jobs"].update(user_id, job_id, score_updates)
     except Exception as exc:
         logger.warning("Re-scoring failed for enriched job %d: %s", job_id, exc)
 
 
-def rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
+def rescore_active_queue_jobs(user_id: int, repos: dict[str, object]) -> dict[str, int]:
     """Re-score active queue jobs after candidate profile changes."""
     jobs_repo: IJobRepository = repos["jobs"]  # type: ignore[assignment]
     resume_repo: IResumeRepository = repos["resume"]  # type: ignore[assignment]
     penalties_repo: IPenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
 
-    queue_jobs = jobs_repo.get_by_statuses(list(ACTIVE_JOB_STATUSES))
-    resume_row = resume_repo.get_latest()
+    queue_jobs = jobs_repo.get_by_statuses(user_id, list(ACTIVE_JOB_STATUSES))
+    resume_row = resume_repo.get_latest(user_id)
     resume_text: str = resume_row["content"] if resume_row else ""
-    penalty_rules: list[dict] = penalties_repo.get_enabled()
-    fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback()
+    penalty_rules: list[dict] = penalties_repo.get_enabled(user_id)
+    fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback(user_id)
     scorer = FitScorer()
 
     rescored = 0
@@ -167,6 +168,7 @@ def rescore_active_queue_jobs(repos: dict[str, object]) -> dict[str, int]:
                 fit_feedback=fit_feedback,
             )
             jobs_repo.update(
+                user_id,
                 job["id"],
                 {
                     "fit_score": result["score"],

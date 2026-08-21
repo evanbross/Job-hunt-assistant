@@ -50,10 +50,15 @@ import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.cover_letter.cover_letter_generator import CoverLetterGenerator
 from backend.cover_letter.cover_letter_learning import CoverLetterStyleLearner
-from backend.cover_letter.resume_tailor import ResumeTailoringGenerator
 from backend.cover_letter.phrase_book import format_phrase_book_section
+from backend.cover_letter.resume_tailor import ResumeTailoringGenerator
 from backend.scoring.jd_enrichment import job_description_text
-from backend.utils.utils import ai_error_http_status, get_repos, safe_error_message
+from backend.utils.utils import (
+    ai_error_http_status,
+    current_user_id,
+    get_repos,
+    safe_error_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +86,12 @@ def job_and_resume_prompt_blocks(job: dict, resume_row: dict | None) -> tuple[st
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter", methods=["POST"])
 def generate_cover_letter(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(current_user_id(), job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
-        resume_row = repos["resume"].get_latest()
+        resume_row = repos["resume"].get_latest(current_user_id())
         resume_text = resume_row["content"] if resume_row else None
-        phrases = repos["cover_letter_phrases"].get_all()
+        phrases = repos["cover_letter_phrases"].get_all(current_user_id())
     # Connection released before AI generation
 
     try:
@@ -148,7 +153,7 @@ def save_cover_letter() -> ResponseReturnValue:
         folder = Path(folder_override)
     else:
         with get_repos() as repos:
-            saved = repos["settings"].get("cover_letter_folder")
+            saved = repos["settings"].get(current_user_id(), "cover_letter_folder")
         folder = Path(saved) if saved else Path.home() / "Documents" / "Cover Letters"
 
     try:
@@ -238,7 +243,7 @@ def save_cover_letter() -> ResponseReturnValue:
     # folder never becomes the remembered default.
     if folder_override:
         with get_repos() as repos:
-            repos["settings"].set("cover_letter_folder", str(folder))
+            repos["settings"].set(current_user_id(), "cover_letter_folder", str(folder))
             repos["conn"].commit()
 
     return jsonify({"path": str(path), "filename": filename, "folder": str(folder)})
@@ -253,10 +258,12 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
         return jsonify({"error": "type must be 'why_company' or 'why_fit'"}), 400
 
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
-        resume_row = repos["resume"].get_latest()
+        job = repos["jobs"].get_by_id(current_user_id(), job_id)
+        resume_row = repos["resume"].get_latest(current_user_id())
         phrases = (
-            repos["cover_letter_phrases"].get_all() if pitch_type == "why_company" else []
+            repos["cover_letter_phrases"].get_all(current_user_id())
+            if pitch_type == "why_company"
+            else []
         )
     # Connection released before AI generation
 
@@ -330,8 +337,8 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
 def pitch_chat(job_id: int) -> ResponseReturnValue:
     """AI chat for refining a why-company or why-fit pitch."""
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
-        resume_row = repos["resume"].get_latest()  # ai: claude-fable-5 | 2026-07-13
+        job = repos["jobs"].get_by_id(current_user_id(), job_id)
+        resume_row = repos["resume"].get_latest(current_user_id())  # ai: claude-fable-5 | 2026-07-13
     # Connection released before AI call
 
     if not job:
@@ -417,8 +424,8 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter/chat", methods=["POST"])
 def cover_letter_chat(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
-        resume_row = repos["resume"].get_latest()  # ai: claude-fable-5 | 2026-07-13
+        job = repos["jobs"].get_by_id(current_user_id(), job_id)
+        resume_row = repos["resume"].get_latest(current_user_id())  # ai: claude-fable-5 | 2026-07-13
     # Connection released before AI call
 
     if not job:
@@ -497,10 +504,10 @@ def cover_letter_chat(job_id: int) -> ResponseReturnValue:
 @cover_letter_bp.route("/jobs/<int:job_id>/resume-tailor", methods=["POST"])
 def generate_resume_tailor(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
+        job = repos["jobs"].get_by_id(current_user_id(), job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
-        resume_row = repos["resume"].get_latest()
+        resume_row = repos["resume"].get_latest(current_user_id())
         resume_text = resume_row["content"] if resume_row else None
     # Connection released before AI generation
 
@@ -521,8 +528,8 @@ def generate_resume_tailor(job_id: int) -> ResponseReturnValue:
 @cover_letter_bp.route("/jobs/<int:job_id>/resume-tailor/chat", methods=["POST"])
 def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(job_id)
-        resume_row = repos["resume"].get_latest()  # ai: claude-fable-5 | 2026-07-13
+        job = repos["jobs"].get_by_id(current_user_id(), job_id)
+        resume_row = repos["resume"].get_latest(current_user_id())  # ai: claude-fable-5 | 2026-07-13
     # Connection released before AI call
 
     if not job:
@@ -606,7 +613,7 @@ def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
 def get_phrase_book() -> ResponseReturnValue:
     """List all saved cover-letter phrase-book entries."""
     with get_repos() as repos:
-        rows = repos["cover_letter_phrases"].get_all()
+        rows = repos["cover_letter_phrases"].get_all(current_user_id())
     return jsonify(rows)
 
 
@@ -619,17 +626,19 @@ def create_phrase_book_entry() -> ResponseReturnValue:
     if not tag or not label or not phrase_text:
         return jsonify({"error": "tag, label, and phrase_text are required"}), 400
 
+    user_id = current_user_id()
     with get_repos() as repos:
         row_id = repos["cover_letter_phrases"].insert(
+            user_id,
             {
                 "tag": tag,
                 "label": label,
                 "phrase_text": phrase_text,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            }
+            },
         )
-        row = repos["cover_letter_phrases"].get_by_id(row_id)
+        row = repos["cover_letter_phrases"].get_by_id(user_id, row_id)
         repos["conn"].commit()
     return jsonify(row), 201
 
@@ -656,22 +665,24 @@ def update_phrase_book_entry(phrase_id: int) -> ResponseReturnValue:
         fields["phrase_text"] = phrase_text
     fields["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        existing = repos["cover_letter_phrases"].get_by_id(phrase_id)
+        existing = repos["cover_letter_phrases"].get_by_id(user_id, phrase_id)
         if not existing:
             return jsonify({"error": "Phrase not found"}), 404
-        repos["cover_letter_phrases"].update(phrase_id, fields)
-        row = repos["cover_letter_phrases"].get_by_id(phrase_id)
+        repos["cover_letter_phrases"].update(user_id, phrase_id, fields)
+        row = repos["cover_letter_phrases"].get_by_id(user_id, phrase_id)
         repos["conn"].commit()
     return jsonify(row)
 
 
 @cover_letter_bp.route("/phrase-book/<int:phrase_id>", methods=["DELETE"])
 def delete_phrase_book_entry(phrase_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        existing = repos["cover_letter_phrases"].get_by_id(phrase_id)
+        existing = repos["cover_letter_phrases"].get_by_id(user_id, phrase_id)
         if not existing:
             return jsonify({"error": "Phrase not found"}), 404
-        repos["cover_letter_phrases"].delete(phrase_id)
+        repos["cover_letter_phrases"].delete(user_id, phrase_id)
         repos["conn"].commit()
     return jsonify({"status": "ok"})

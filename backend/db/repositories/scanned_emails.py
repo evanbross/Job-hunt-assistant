@@ -40,24 +40,32 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 
+# ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
+# user_id parameter (multi-tenancy migration). scanned_emails' PK is now
+# composite (user_id, email_id) — see backend/db/schema.py's _migrate().
 class PostgresScannedEmailRepository(_BaseRepo):
-    def has_been_scanned(self, email_id: str) -> bool:
+    def has_been_scanned(self, user_id: int, email_id: str) -> bool:
         cur = self._execute(
-            "SELECT 1 FROM scanned_emails WHERE email_id = %s", (email_id,)
+            "SELECT 1 FROM scanned_emails WHERE user_id = %s AND email_id = %s",
+            (user_id, email_id),
         )
         return cur.fetchone() is not None
 
-    def get_by_id(self, email_id: str) -> dict[str, Any] | None:
+    def get_by_id(self, user_id: int, email_id: str) -> dict[str, Any] | None:
         cur = self._execute(
-            "SELECT * FROM scanned_emails WHERE email_id = %s", (email_id,)
+            "SELECT * FROM scanned_emails WHERE user_id = %s AND email_id = %s",
+            (user_id, email_id),
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row is not None else None
 
-    def get_scanned_metadata(self, email_id: str) -> dict[str, str | None] | None:
+    def get_scanned_metadata(
+        self, user_id: int, email_id: str
+    ) -> dict[str, str | None] | None:
         cur = self._execute(
-            "SELECT sender_email, email_subject, email_date FROM scanned_emails WHERE email_id = %s",
-            (email_id,),
+            "SELECT sender_email, email_subject, email_date FROM scanned_emails"
+            " WHERE user_id = %s AND email_id = %s",
+            (user_id, email_id),
         )
         row = cur.fetchone()
         if row is None:
@@ -70,6 +78,7 @@ class PostgresScannedEmailRepository(_BaseRepo):
 
     def mark_scanned(
         self,
+        user_id: int,
         email_id: str,
         sender_email: str,
         subject: str,
@@ -81,15 +90,16 @@ class PostgresScannedEmailRepository(_BaseRepo):
         self._execute(
             """
             INSERT INTO scanned_emails
-                (email_id, sender_email, email_subject, scanned_at, disposition, email_date, raw_body, parser_error_msg)
-            VALUES (%s, %s, %s, NOW()::text, %s, %s, %s, %s)
-            ON CONFLICT(email_id) DO UPDATE SET
+                (user_id, email_id, sender_email, email_subject, scanned_at, disposition, email_date, raw_body, parser_error_msg)
+            VALUES (%s, %s, %s, %s, NOW()::text, %s, %s, %s, %s)
+            ON CONFLICT(user_id, email_id) DO UPDATE SET
                 disposition       = EXCLUDED.disposition,
                 email_date        = COALESCE(EXCLUDED.email_date, scanned_emails.email_date),
                 raw_body          = COALESCE(EXCLUDED.raw_body, scanned_emails.raw_body),
                 parser_error_msg  = COALESCE(EXCLUDED.parser_error_msg, scanned_emails.parser_error_msg)
             """,
             (
+                user_id,
                 email_id,
                 sender_email,
                 subject,
@@ -100,8 +110,9 @@ class PostgresScannedEmailRepository(_BaseRepo):
             ),
         )
 
-    def get_all_with_job_status(self) -> list[dict[str, Any]]:
-        cur = self._execute("""
+    def get_all_with_job_status(self, user_id: int) -> list[dict[str, Any]]:
+        cur = self._execute(
+            """
             SELECT
                 se.email_id,
                 se.sender_email,
@@ -126,10 +137,16 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 j.date_found AS child_date_found
             FROM scanned_emails se
             LEFT JOIN jobs j
-              ON j.dedup_key = se.email_id
-              OR substr(j.dedup_key, 1, length(se.email_id) + 1) = se.email_id || ':'
+              ON j.user_id = se.user_id
+              AND (
+                j.dedup_key = se.email_id
+                OR substr(j.dedup_key, 1, length(se.email_id) + 1) = se.email_id || ':'
+              )
+            WHERE se.user_id = %s
             ORDER BY se.scanned_at DESC, j.id
-        """)
+            """,
+            (user_id,),
+        )
         rows = [_row_to_dict(row) for row in cur.fetchall()]
         emails_by_id: dict[str, dict[str, Any]] = {}
         ordered_email_ids: list[str] = []
@@ -190,23 +207,27 @@ class PostgresScannedEmailRepository(_BaseRepo):
 
         return [emails_by_id[email_id] for email_id in ordered_email_ids]
 
-    def set_hidden(self, email_id: str, hidden: bool) -> None:
+    def set_hidden(self, user_id: int, email_id: str, hidden: bool) -> None:
         self._execute(
-            "UPDATE scanned_emails SET hidden = %s WHERE email_id = %s",
-            (1 if hidden else 0, email_id),
+            "UPDATE scanned_emails SET hidden = %s WHERE user_id = %s AND email_id = %s",
+            (1 if hidden else 0, user_id, email_id),
         )
 
-    def set_hidden_many(self, email_ids: list[str], hidden: bool) -> None:
+    def set_hidden_many(self, user_id: int, email_ids: list[str], hidden: bool) -> None:
         if not email_ids:
             return
         placeholders = ", ".join("%s" for _ in email_ids)
         self._execute(
-            f"UPDATE scanned_emails SET hidden = %s WHERE email_id IN ({placeholders})",
-            (1 if hidden else 0, *email_ids),
+            f"UPDATE scanned_emails SET hidden = %s"
+            f" WHERE user_id = %s AND email_id IN ({placeholders})",
+            (1 if hidden else 0, user_id, *email_ids),
         )
 
-    def delete(self, email_id: str) -> None:
-        self._execute("DELETE FROM scanned_emails WHERE email_id = %s", (email_id,))
+    def delete(self, user_id: int, email_id: str) -> None:
+        self._execute(
+            "DELETE FROM scanned_emails WHERE user_id = %s AND email_id = %s",
+            (user_id, email_id),
+        )
 
-    def delete_all(self) -> None:
-        self._execute("DELETE FROM scanned_emails")
+    def delete_all(self, user_id: int) -> None:
+        self._execute("DELETE FROM scanned_emails WHERE user_id = %s", (user_id,))

@@ -47,14 +47,19 @@ class FakeConnection:
         pass
 
 
+_FAKE_USER_ID = 1
+
+
 class FakeApplicationProfileRepo:
     def __init__(self, row: dict[str, Any] | None = None) -> None:
         self.row = row
 
-    def get(self) -> dict[str, Any] | None:
+    def get(self, user_id: int) -> dict[str, Any] | None:
+        assert user_id == _FAKE_USER_ID
         return self.row
 
-    def upsert(self, fields: dict[str, Any]) -> dict[str, Any]:
+    def upsert(self, user_id: int, fields: dict[str, Any]) -> dict[str, Any]:
+        assert user_id == _FAKE_USER_ID
         self.row = {**(self.row or {"id": 1}), **fields}
         return self.row
 
@@ -64,10 +69,14 @@ class FakeApplicationAnswerRepo:
         self.rows = rows or []
         self._next_id = len(self.rows) + 1
 
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _FAKE_USER_ID
         return list(self.rows)
 
-    def upsert(self, *, question_text: str, answer_text: str, platform: str | None = None) -> dict[str, Any]:
+    def upsert(
+        self, user_id: int, *, question_text: str, answer_text: str, platform: str | None = None
+    ) -> dict[str, Any]:
+        assert user_id == _FAKE_USER_ID
         row = {
             "id": self._next_id,
             "question_text": question_text,
@@ -78,7 +87,8 @@ class FakeApplicationAnswerRepo:
         self.rows.append(row)
         return row
 
-    def delete(self, answer_id: int) -> None:
+    def delete(self, user_id: int, answer_id: int) -> None:
+        assert user_id == _FAKE_USER_ID
         self.rows = [r for r in self.rows if r["id"] != answer_id]
 
 
@@ -86,6 +96,9 @@ def _make_app(repos: dict, monkeypatch: pytest.MonkeyPatch) -> Flask:
     app = Flask(__name__)
     app.register_blueprint(application_profile_bp, url_prefix="/api")
     monkeypatch.setattr("routes.application_profile.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr(
+        "routes.application_profile.current_user_id", lambda: _FAKE_USER_ID
+    )
     return app
 
 
@@ -202,4 +215,4 @@ def test_delete_application_answer(monkeypatch: pytest.MonkeyPatch) -> None:
 
     response = client.delete("/api/application-answers/5")
     assert response.status_code == 200
-    assert repos["application_answers"].get_all() == []
+    assert repos["application_answers"].get_all(_FAKE_USER_ID) == []

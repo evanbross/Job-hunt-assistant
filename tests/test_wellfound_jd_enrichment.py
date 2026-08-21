@@ -236,13 +236,16 @@ def test_scan_enriches_wellfound_job_via_fetcher(
     dsn = pg_dsn
     repos = open_repositories(dsn)
     try:
+        account = repos["app_account"].create("owner@example.com", "hash")
+        user_id = account["id"]
         repos["sources"].insert(
+            user_id,
             {
                 "name": "Wellfound",
                 "match_type": "sender_email",
                 "match_value": "team@hi.wellfound.com",
                 "enabled": 1,
-            }
+            },
         )
         repos["conn"].commit()
     finally:
@@ -265,11 +268,11 @@ def test_scan_enriches_wellfound_job_via_fetcher(
     # run_scan_task is a @celery_app.task(bind=True) function -- .apply()
     # runs it synchronously with a proper bound task context (needed for
     # self.update_state() inside the task), no broker/worker required.
-    scan.run_scan_task.apply()
+    scan.run_scan_task.apply(args=(user_id,))
 
     repos = open_repositories(dsn)
     try:
-        jobs = repos["jobs"].get_all_ordered()
+        jobs = repos["jobs"].get_all_ordered(user_id)
     finally:
         repos["conn"].close()
 

@@ -49,9 +49,9 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 import config
-from backend.utils.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
 from backend.scoring.jd_enrichment import rescore_active_queue_jobs
-from backend.utils.utils import get_repos
+from backend.utils.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +255,7 @@ def update_config() -> ResponseReturnValue:
     rescore_summary = {"rescored": 0, "failed": 0}
     if profile_changed:
         with get_repos() as repos:
-            rescore_summary = rescore_active_queue_jobs(repos)
+            rescore_summary = rescore_active_queue_jobs(current_user_id(), repos)
             repos["conn"].commit()
 
     return jsonify(
@@ -334,7 +334,7 @@ def test_ollama_connection() -> ResponseReturnValue:
 @settings_bp.route("/penalties")
 def get_penalties() -> ResponseReturnValue:
     with get_repos() as repos:
-        rules = repos["penalties"].get_all()
+        rules = repos["penalties"].get_all(current_user_id())
     return jsonify(rules)
 
 
@@ -355,16 +355,18 @@ def create_penalty() -> ResponseReturnValue:
             400,
         )
 
+    user_id = current_user_id()
     with get_repos() as repos:
         rule_id = repos["penalties"].insert(
+            user_id,
             {
                 "rule_text": data["rule_text"],
                 "penalty_points": int(data["penalty_points"]),
                 "enabled": data.get("enabled", 1),
                 "scope": scope,
-            }
+            },
         )
-        rule = repos["penalties"].get_by_id(rule_id)
+        rule = repos["penalties"].get_by_id(user_id, rule_id)
         repos["conn"].commit()
     return jsonify(rule), 201
 
@@ -391,23 +393,25 @@ def update_penalty(rule_id: int) -> ResponseReturnValue:
                 400,
             )
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        if not repos["penalties"].get_by_id(rule_id):
+        if not repos["penalties"].get_by_id(user_id, rule_id):
             return jsonify({"error": "Rule not found"}), 404
 
-        repos["penalties"].update(rule_id, updates)
-        rule = repos["penalties"].get_by_id(rule_id)
+        repos["penalties"].update(user_id, rule_id, updates)
+        rule = repos["penalties"].get_by_id(user_id, rule_id)
         repos["conn"].commit()
     return jsonify(rule)
 
 
 @settings_bp.route("/penalties/<int:rule_id>", methods=["DELETE"])
 def delete_penalty(rule_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        if not repos["penalties"].get_by_id(rule_id):
+        if not repos["penalties"].get_by_id(user_id, rule_id):
             return jsonify({"error": "Rule not found"}), 404
 
-        repos["penalties"].delete(rule_id)
+        repos["penalties"].delete(user_id, rule_id)
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -418,14 +422,14 @@ def delete_penalty(rule_id: int) -> ResponseReturnValue:
 @settings_bp.route("/feedback")
 def get_feedback() -> ResponseReturnValue:
     with get_repos() as repos:
-        feedback = repos["feedback"].get_all()
+        feedback = repos["feedback"].get_all(current_user_id())
     return jsonify(feedback)
 
 
 @settings_bp.route("/feedback/<int:feedback_id>", methods=["DELETE"])
 def delete_feedback(feedback_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
-        repos["feedback"].delete(feedback_id)
+        repos["feedback"].delete(current_user_id(), feedback_id)
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -436,7 +440,7 @@ def delete_feedback(feedback_id: int) -> ResponseReturnValue:
 @settings_bp.route("/email-subject-rules")
 def get_email_subject_rules() -> ResponseReturnValue:
     with get_repos() as repos:
-        rules = repos["email_subject_rules"].get_all()
+        rules = repos["email_subject_rules"].get_all(current_user_id())
     return jsonify(rules)
 
 
@@ -451,11 +455,12 @@ def create_email_subject_rule() -> ResponseReturnValue:
     if rule_type not in {"blacklist", "whitelist"}:
         return jsonify({"error": "rule_type must be blacklist or whitelist"}), 400
 
+    user_id = current_user_id()
     with get_repos() as repos:
         rule_id = repos["email_subject_rules"].insert(
-            {"pattern": pattern, "enabled": 1, "rule_type": rule_type}
+            user_id, {"pattern": pattern, "enabled": 1, "rule_type": rule_type}
         )
-        row = repos["email_subject_rules"].get_by_id(rule_id)
+        row = repos["email_subject_rules"].get_by_id(user_id, rule_id)
         repos["conn"].commit()
     return jsonify(row), 201
 
@@ -477,23 +482,25 @@ def update_email_subject_rule(rule_id: int) -> ResponseReturnValue:
         if updates["rule_type"] not in {"blacklist", "whitelist"}:
             return jsonify({"error": "rule_type must be blacklist or whitelist"}), 400
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        if not repos["email_subject_rules"].get_by_id(rule_id):
+        if not repos["email_subject_rules"].get_by_id(user_id, rule_id):
             return jsonify({"error": "Rule not found"}), 404
 
-        repos["email_subject_rules"].update(rule_id, updates)
-        row = repos["email_subject_rules"].get_by_id(rule_id)
+        repos["email_subject_rules"].update(user_id, rule_id, updates)
+        row = repos["email_subject_rules"].get_by_id(user_id, rule_id)
         repos["conn"].commit()
     return jsonify(row)
 
 
 @settings_bp.route("/email-subject-rules/<int:rule_id>", methods=["DELETE"])
 def delete_email_subject_rule(rule_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        if not repos["email_subject_rules"].get_by_id(rule_id):
+        if not repos["email_subject_rules"].get_by_id(user_id, rule_id):
             return jsonify({"error": "Rule not found"}), 404
 
-        repos["email_subject_rules"].delete(rule_id)
+        repos["email_subject_rules"].delete(user_id, rule_id)
         repos["conn"].commit()
     return jsonify({"status": "ok"})
 
@@ -522,15 +529,17 @@ def upload_resume() -> ResponseReturnValue:
         return jsonify({"error": f"PDF text extraction failed: {exc}"}), 500
 
     with get_repos() as repos:
-        repos["resume"].delete_all()
+        user_id = current_user_id()
+        repos["resume"].delete_all(user_id)
         repos["resume"].insert(
+            user_id,
             {
                 "filename": file.filename,
                 "content": text,
                 "uploaded_at": datetime.now(UTC).isoformat(),
-            }
+            },
         )
-        resume = repos["resume"].get_latest()
+        resume = repos["resume"].get_latest(user_id)
         repos["conn"].commit()
 
     return (
@@ -549,7 +558,7 @@ def upload_resume() -> ResponseReturnValue:
 @settings_bp.route("/resume")
 def get_resume() -> ResponseReturnValue:
     with get_repos() as repos:
-        resume = repos["resume"].get_latest()
+        resume = repos["resume"].get_latest(current_user_id())
     if not resume:
         return jsonify(None)
     return jsonify(

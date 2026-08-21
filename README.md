@@ -87,22 +87,20 @@ GOOGLE_SHEETS_ID=<from your sheet URL>
 
 ### App login
 
-The whole app sits behind a single-owner login screen — there's no registration
-flow, so set your own credentials once:
+The whole app sits behind a login screen backed by the database (an
+`app_account` table, not an env var). Registration is open — the first time
+you load the app, use the "Create account" link on the login page to set
+your email and password; there's nothing to configure in `.env` for this.
+
+If you're locked out (forgot a password and can't reach "Change password"
+because you can't log in), run:
 
 ```bash
-uv run python scripts/set_login_password.py
+uv run python scripts/reset_login_account.py <email>
 ```
 
-This prompts for an email and password and prints two lines to paste into
-`.env`:
-```
-APP_LOGIN_EMAIL=you@example.com
-APP_LOGIN_PASSWORD_HASH=<generated hash>
-```
-
-Without these set, the app starts (with a startup-log warning) but no one can
-log in. Re-run the script any time to change the password.
+This deletes that one account so you can register again with the same
+email. It doesn't touch any other accounts on the instance.
 
 ### Frontend
 

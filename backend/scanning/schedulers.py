@@ -30,7 +30,7 @@ from datetime import UTC, datetime, timedelta
 from datetime import time as time_of_day
 
 import config
-from backend.utils.utils import get_repos
+from backend.utils.utils import first_account_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,12 @@ def start_career_site_scheduler() -> None:
                 interval_seconds = max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES) * 60
                 time.sleep(interval_seconds)
                 try:
-                    _career_scheduler_submit_run(trigger="scheduled")
+                    # STOPGAP: a scheduled tick has no acting user — resolves
+                    # to whichever account was created first. See
+                    # first_account_user_id()'s docstring in backend/utils/utils.py.
+                    with get_repos() as repos:
+                        user_id = first_account_user_id(repos)
+                    _career_scheduler_submit_run(user_id, trigger="scheduled")
                 except Exception:
                     logger.exception("Career-site scheduler tick failed")
 
@@ -109,7 +114,7 @@ def is_jd_health_check_overdue(
     return now >= next_due
 
 
-def jd_health_check_should_run_now() -> bool:
+def jd_health_check_should_run_now(user_id: int) -> bool:
     """Read config + last-run state and decide if a scheduled run is due now."""
     cfg = config.load_runtime_config()
     if not cfg.get("jd_health_check_enabled"):
@@ -131,9 +136,9 @@ def jd_health_check_should_run_now() -> bool:
         # (see run_jd_health_check_task), so last_run_at would stay None forever
         # and this function would keep reporting "overdue" on every poll --
         # submitting a new no-op Celery task every 15 minutes indefinitely.
-        if not repos["jd_health_targets"].get_enabled():
+        if not repos["jd_health_targets"].get_enabled(user_id):
             return False
-        last_run_at_raw = repos["jd_health_results"].get_last_run_at()
+        last_run_at_raw = repos["jd_health_results"].get_last_run_at(user_id)
 
     last_run_at = None
     if last_run_at_raw:
@@ -152,15 +157,15 @@ def jd_health_check_should_run_now() -> bool:
 
 _jd_health_scheduler_lock = threading.Lock()
 _jd_health_scheduler_started = False
-_jd_health_scheduler_should_run_now: Callable[[], bool] | None = None
-_jd_health_scheduler_submit_run: Callable[[str], str | None] | None = None
+_jd_health_scheduler_should_run_now: Callable[[int], bool] | None = None
+_jd_health_scheduler_submit_run: Callable[[int, str], str | None] | None = None
 _JD_HEALTH_CHECK_POLL_SECONDS = 15 * 60
 
 
 def configure_jd_health_check_scheduler(
     *,
-    should_run_now: Callable[[], bool],
-    submit_run: Callable[[str], str | None],
+    should_run_now: Callable[[int], bool],
+    submit_run: Callable[[int, str], str | None],
 ) -> None:
     global _jd_health_scheduler_should_run_now, _jd_health_scheduler_submit_run
     _jd_health_scheduler_should_run_now = should_run_now
@@ -197,8 +202,13 @@ def start_jd_health_check_scheduler() -> None:
         def jd_health_scheduler_loop() -> None:
             while True:
                 try:
-                    if _jd_health_scheduler_should_run_now():
-                        _jd_health_scheduler_submit_run("scheduled")
+                    # STOPGAP: a scheduled tick has no acting user — resolves
+                    # to whichever account was created first. See
+                    # first_account_user_id()'s docstring in backend/utils/utils.py.
+                    with get_repos() as repos:
+                        user_id = first_account_user_id(repos)
+                    if _jd_health_scheduler_should_run_now(user_id):
+                        _jd_health_scheduler_submit_run(user_id, "scheduled")
                 except Exception:
                     logger.exception("JD health check scheduler tick failed")
                 time.sleep(_JD_HEALTH_CHECK_POLL_SECONDS)

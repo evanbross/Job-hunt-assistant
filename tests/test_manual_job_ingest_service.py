@@ -39,34 +39,41 @@ import pytest
 from backend.db import DuplicateJobUrlError
 from backend.scanning.manual_job_ingest_service import ManualJobIngestService
 
+_TEST_USER_ID = 1
+
 
 class StubJobRepo:
     def __init__(self) -> None:
         self.inserted: list[dict] = []
 
-    def insert(self, job: dict) -> int:
+    def insert(self, user_id: int, job: dict) -> int:
+        assert user_id == _TEST_USER_ID
         stored = dict(job)
         stored["id"] = len(self.inserted) + 1
         self.inserted.append(stored)
         return stored["id"]
 
-    def get_by_id(self, job_id: int) -> dict | None:
+    def get_by_id(self, user_id: int, job_id: int) -> dict | None:
+        assert user_id == _TEST_USER_ID
         for row in self.inserted:
             if row["id"] == job_id:
                 return dict(row)
         return None
 
-    def get_not_a_fit_with_feedback(self, limit: int = 20) -> list[dict]:
+    def get_not_a_fit_with_feedback(self, user_id: int, limit: int = 20) -> list[dict]:
+        assert user_id == _TEST_USER_ID
         return []
 
 
 class StubResumeRepo:
-    def get_latest(self) -> dict | None:
+    def get_latest(self, user_id: int) -> dict | None:
+        assert user_id == _TEST_USER_ID
         return {"content": "Python backend engineer"}
 
 
 class StubPenaltyRepo:
-    def get_enabled(self) -> list[dict]:
+    def get_enabled(self, user_id: int) -> list[dict]:
+        assert user_id == _TEST_USER_ID
         return []
 
 
@@ -141,6 +148,7 @@ def test_ingest_creates_pending_review_job_from_best_match() -> None:
         ]
     )
     service = ManualJobIngestService(
+        _TEST_USER_ID,
         job_repo,
         StubResumeRepo(),
         StubPenaltyRepo(),
@@ -161,6 +169,7 @@ def test_ingest_creates_pending_review_job_from_best_match() -> None:
 def test_ingest_uses_manual_overrides_when_parser_is_incomplete() -> None:
     job_repo = StubJobRepo()
     service = ManualJobIngestService(
+        _TEST_USER_ID,
         job_repo,
         StubResumeRepo(),
         StubPenaltyRepo(),
@@ -207,6 +216,7 @@ def test_ingest_marks_possible_duplicate_when_sheet_match_exists() -> None:
         ]
     )
     service = ManualJobIngestService(
+        _TEST_USER_ID,
         job_repo,
         StubResumeRepo(),
         StubPenaltyRepo(),
@@ -255,6 +265,7 @@ def test_ingest_enriches_thin_listener_text_from_job_url() -> None:
         }
     )
     service = ManualJobIngestService(
+        _TEST_USER_ID,
         job_repo,
         StubResumeRepo(),
         StubPenaltyRepo(),
@@ -302,6 +313,7 @@ def test_ingest_keeps_short_text_when_enrichment_returns_too_little() -> None:
     )
     short_text = "Senior Software Engineer\nURL: https://job-boards.greenhouse.io/breezeway/jobs/5222431008"
     service = ManualJobIngestService(
+        _TEST_USER_ID,
         job_repo,
         StubResumeRepo(),
         StubPenaltyRepo(),
@@ -318,6 +330,7 @@ def test_ingest_keeps_short_text_when_enrichment_returns_too_little() -> None:
 def test_ingest_from_public_job_url_without_pasted_text() -> None:
     job_repo = StubJobRepo()
     service = ManualJobIngestService(
+        _TEST_USER_ID,
         job_repo,
         StubResumeRepo(),
         StubPenaltyRepo(),
@@ -339,6 +352,7 @@ def test_ingest_from_public_job_url_without_pasted_text() -> None:
 
 def test_ingest_rejects_empty_text() -> None:
     service = ManualJobIngestService(
+        _TEST_USER_ID,
         StubJobRepo(),
         StubResumeRepo(),
         StubPenaltyRepo(),
@@ -362,10 +376,12 @@ def test_ingest_propagates_duplicate_job_url_error() -> None:
     report "lost the race" for their own context."""
 
     class RaisingJobRepo(StubJobRepo):
-        def insert(self, job: dict) -> int:
+        def insert(self, user_id: int, job: dict) -> int:
+            assert user_id == _TEST_USER_ID
             raise DuplicateJobUrlError(job.get("url") or "")
 
     service = ManualJobIngestService(
+        _TEST_USER_ID,
         RaisingJobRepo(),
         StubResumeRepo(),
         StubPenaltyRepo(),

@@ -56,12 +56,11 @@ FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY", "change-this-in-production
 
 # ─── App login (single-owner session gate) ────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-08-20
-# Gates the whole /api/* surface (see app.py's _require_app_login). No DB table:
-# this is a single, static credential for the one owner of this instance, not a
-# multi-tenant user model — generate APP_LOGIN_PASSWORD_HASH once via
-# scripts/set_login_password.py and paste both values into .env.
-APP_LOGIN_EMAIL: str = os.getenv("APP_LOGIN_EMAIL", "")
-APP_LOGIN_PASSWORD_HASH: str = os.getenv("APP_LOGIN_PASSWORD_HASH", "")
+# Gates the whole /api/* surface (see app.py's _require_app_login). The
+# credential itself lives in the DB (single-row app_account table, see
+# backend/db/repositories/app_account.py) — created via the web UI's "Create
+# your account" form, not an env var. These two constants are just session
+# cookie behavior, not credential storage.
 SESSION_COOKIE_SAMESITE: str = "Lax"
 PERMANENT_SESSION_LIFETIME_DAYS: int = 30
 

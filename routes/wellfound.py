@@ -47,8 +47,12 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.celery_app import celery_app
+from backend.scanning.sources.wellfound_scraper import (
+    WellfoundLoginError,
+    WellfoundScraper,
+)
 from backend.tasks import run_import_task
-from backend.scanning.sources.wellfound_scraper import WellfoundLoginError, WellfoundScraper
+from backend.utils.utils import current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -84,39 +88,40 @@ def _update_login(**kwargs: object) -> None:
 
 
 # ai: claude-sonnet-5 | 2026-08-20
+# ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
 # ── Scan task tracking (in-memory pointer only) ────────────────────────────────
-_wellfound_scan_last_task_id: str | None = None
+_wellfound_scan_last_task_id_by_user: dict[int, str] = {}
 _wellfound_scan_lock = threading.Lock()
 _WELLFOUND_SCAN_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-def _wellfound_scan_is_active() -> bool:
+def _wellfound_scan_is_active(user_id: int) -> bool:
     with _wellfound_scan_lock:
-        task_id = _wellfound_scan_last_task_id
+        task_id = _wellfound_scan_last_task_id_by_user.get(user_id)
     if task_id is None:
         return False
     return AsyncResult(task_id, app=celery_app).state in _WELLFOUND_SCAN_ACTIVE_STATES
 
 
-def _submit_wellfound_scan(search_url: str, max_jobs: int) -> str | None:
-    """Dispatch a Wellfound scrape unless one is already active. Returns the
-    new task id, or None if a scan was already running."""
-    global _wellfound_scan_last_task_id
+def _submit_wellfound_scan(user_id: int, search_url: str, max_jobs: int) -> str | None:
+    """Dispatch a Wellfound scrape for user_id unless one is already active
+    for that user. Returns the new task id, or None if a scan was already
+    running for this user."""
     with _wellfound_scan_lock:
+        existing = _wellfound_scan_last_task_id_by_user.get(user_id)
         if (
-            _wellfound_scan_last_task_id is not None
-            and AsyncResult(_wellfound_scan_last_task_id, app=celery_app).state
-            in _WELLFOUND_SCAN_ACTIVE_STATES
+            existing is not None
+            and AsyncResult(existing, app=celery_app).state in _WELLFOUND_SCAN_ACTIVE_STATES
         ):
             return None
-        task = run_wellfound_scan_task.delay(search_url, max_jobs)
-        _wellfound_scan_last_task_id = task.id
+        task = run_wellfound_scan_task.delay(user_id, search_url, max_jobs)
+        _wellfound_scan_last_task_id_by_user[user_id] = task.id
         return task.id
 
 
 # ai: claude-sonnet-5 | 2026-08-20
 @celery_app.task(bind=True)
-def run_wellfound_scan_task(self, search_url: str, max_jobs: int) -> dict:
+def run_wellfound_scan_task(self, user_id: int, search_url: str, max_jobs: int) -> dict:
     """Scrape Wellfound and hand off results to the import task, run as a
     Celery task so progress survives a restart. Progress is published via
     self.update_state."""
@@ -171,6 +176,7 @@ def run_wellfound_scan_task(self, search_url: str, max_jobs: int) -> dict:
         _publish(found=len(jobs), message=f"Queueing {len(jobs)} jobs for import…")
 
         task = run_import_task.delay(
+            user_id,
             jobs,
             None,
             {"import_trigger": "wellfound_scrape"},
@@ -255,7 +261,7 @@ def start_scan() -> ResponseReturnValue:
     )
     max_jobs = min(max(int(body.get("max_jobs") or 30), 1), 200)
 
-    task_id = _submit_wellfound_scan(search_url, max_jobs)
+    task_id = _submit_wellfound_scan(current_user_id(), search_url, max_jobs)
     if task_id is None:
         return jsonify({"error": "Scan already running"}), 409
 
@@ -288,7 +294,7 @@ def scan_status() -> ResponseReturnValue:
         )
 
     with _wellfound_scan_lock:
-        task_id = _wellfound_scan_last_task_id
+        task_id = _wellfound_scan_last_task_id_by_user.get(current_user_id())
 
     # ai: claude-sonnet-5 | 2026-08-20
     # No scan has ever run yet: fall back to reporting the login flow's last
@@ -366,7 +372,7 @@ def browser_login() -> ResponseReturnValue:
     with _login_lock:
         if _login_state.running:
             return jsonify({"error": "A scan or login is already running"}), 409
-    if _wellfound_scan_is_active():
+    if _wellfound_scan_is_active(current_user_id()):
         return jsonify({"error": "A scan or login is already running"}), 409
 
     threading.Thread(

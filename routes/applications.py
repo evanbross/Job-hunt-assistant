@@ -60,7 +60,12 @@ from backend.scanning.closed_req_scan_helpers import (
     rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17 — shared with WTTJ repair
 )
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
-from backend.utils.utils import get_repos, normalize_stage_status
+from backend.utils.utils import (
+    current_user_id,
+    first_account_user_id,
+    get_repos,
+    normalize_stage_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -220,9 +225,10 @@ _TRACKING_COLUMNS: list[dict] = [
 def get_application_sheet() -> ResponseReturnValue:
     """Return all tracked job applications as a grid for the Sheet panel."""
     # ai: claude-sonnet-4-6 | 2026-06-25
+    user_id = current_user_id()
     with get_repos() as repos:
-        jobs = repos["jobs"].get_sheet_entries()
-        all_stages = repos["stages"].get_all()
+        jobs = repos["jobs"].get_sheet_entries(user_id)
+        all_stages = repos["stages"].get_all(user_id)
         stages_by_job_id: dict[int, list] = {}
         for stage in all_stages:
             stages_by_job_id.setdefault(stage["job_id"], []).append(stage)
@@ -282,15 +288,17 @@ def add_application_sheet_row() -> ResponseReturnValue:
         if v is not None
     }
     try:
+        user_id = current_user_id()
         with get_repos() as repos:
-            new_job_id = repos["jobs"].insert(job_data)
+            new_job_id = repos["jobs"].insert(user_id, job_data)
             repos["stages"].insert(
+                user_id,
                 {
                     "job_id": new_job_id,
                     "status": "applied",
                     "date": job_data["date_found"],
                     "notes": None,
-                }
+                },
             )
             repos["conn"].commit()
     # ai: claude-sonnet-5 | 2026-08-12
@@ -330,7 +338,7 @@ def update_application_sheet_row(job_id: int) -> ResponseReturnValue:
         return jsonify({"error": "No fields to update"}), 400
     try:
         with get_repos() as repos:
-            repos["jobs"].update(job_id, fields)
+            repos["jobs"].update(current_user_id(), job_id, fields)
             repos["conn"].commit()
     except Exception as exc:
         logger.warning("Error updating tracking row %s: %s", job_id, exc)
@@ -362,7 +370,8 @@ def add_application_sheet_stage(job_id: int) -> ResponseReturnValue:
                     400,
                 )
             repos["stages"].insert(
-                {"job_id": job_id, "status": status, "date": stage_date, "notes": notes}
+                current_user_id(),
+                {"job_id": job_id, "status": status, "date": stage_date, "notes": notes},
             )
             repos["conn"].commit()
     except Exception as exc:
@@ -376,15 +385,20 @@ def add_application_sheet_stage(job_id: int) -> ResponseReturnValue:
 # mark_ghosts voice action can call the same logic instead of duplicating
 # the "walk stages, compute ghosted, insert, commit" work.
 def run_mark_ghosts() -> tuple[dict, int]:
-    """Mark applications whose latest state has been Applied for 30+ days as ghosted."""
+    """Mark applications whose latest state has been Applied for 30+ days as ghosted.
+
+    Always called from request context (this route or the voice-action
+    handler in backend/voice/voice_actions.py) — current_user_id() is safe here.
+    """
+    user_id = current_user_id()
     utc_today = datetime.now(UTC).date()
     cutoff_date = utc_today - timedelta(days=30)
     today = utc_today.isoformat()
     marked: list[dict[str, object]] = []
     try:
         with get_repos() as repos:
-            jobs = repos["jobs"].get_all_ordered()
-            all_stages = repos["stages"].get_all()
+            jobs = repos["jobs"].get_all_ordered(user_id)
+            all_stages = repos["stages"].get_all(user_id)
             stages_by_job_id: dict[int, list[dict]] = {}
             for stage in all_stages:
                 stages_by_job_id.setdefault(stage["job_id"], []).append(stage)
@@ -415,12 +429,13 @@ def run_mark_ghosts() -> tuple[dict, int]:
 
                 days_applied = (utc_today - applied_date).days
                 repos["stages"].insert(
+                    user_id,
                     {
                         "job_id": job["id"],
                         "status": "ghosted",
                         "date": today,
                         "notes": f"Marked ghosted after {days_applied} days in Applied.",
-                    }
+                    },
                 )
                 marked.append(
                     {
@@ -597,32 +612,35 @@ def _check_closed_req(url: str, platform: str) -> str:
 # ── Req-closed scan task tracking (in-memory pointer only) ────────────────────
 # Progress lives in Celery's Redis result backend; this just remembers which
 # task_id to poll, mirroring routes/jd_health_check.py's
-# _submit_jd_health_check_run.
-_closed_req_last_task_id: str | None = None
+# _submit_jd_health_check_run. Keyed by user_id (multi-tenancy) so two users'
+# scans never collide or show each other's progress — mirrors
+# routes/scan.py's _scan_last_task_id_by_user.
+_closed_req_last_task_id_by_user: dict[int, str] = {}
 _closed_req_lock = threading.Lock()
 _CLOSED_REQ_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
-def _submit_closed_req_scan(platforms: frozenset[str] | None = None) -> str | None:
+def _submit_closed_req_scan(
+    user_id: int, platforms: frozenset[str] | None = None
+) -> str | None:
     """Dispatch a closed-req scan unless one is already active. Returns the
     new task id, or None if a scan was already running."""
-    global _closed_req_last_task_id
     with _closed_req_lock:
+        existing = _closed_req_last_task_id_by_user.get(user_id)
         if (
-            _closed_req_last_task_id is not None
-            and AsyncResult(_closed_req_last_task_id, app=celery_app).state
-            in _CLOSED_REQ_ACTIVE_STATES
+            existing is not None
+            and AsyncResult(existing, app=celery_app).state in _CLOSED_REQ_ACTIVE_STATES
         ):
             return None
-        task = run_req_closed_scan_task.delay(platforms=platforms)
-        _closed_req_last_task_id = task.id
+        task = run_req_closed_scan_task.delay(user_id, platforms=platforms)
+        _closed_req_last_task_id_by_user[user_id] = task.id
         return task.id
 
 
-def _closed_req_candidates(repos: dict) -> list[tuple[dict, str, str]]:
+def _closed_req_candidates(repos: dict, user_id: int) -> list[tuple[dict, str, str]]:
     """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, Wellfound, MongoDB, or Jobgether, with their platform."""
-    jobs = repos["jobs"].get_all_ordered()
-    all_stages = repos["stages"].get_all()
+    jobs = repos["jobs"].get_all_ordered(user_id)
+    all_stages = repos["stages"].get_all(user_id)
     terminal_keys = {
         s["key"] for s in repos["stage_statuses"].get_all() if s.get("is_terminal")
     }
@@ -654,7 +672,7 @@ def _closed_req_candidates(repos: dict) -> list[tuple[dict, str, str]]:
     return candidates
 
 
-def _closed_req_browser_queue_snapshot(repos: dict) -> dict[str, int]:
+def _closed_req_browser_queue_snapshot(repos: dict, user_id: int) -> dict[str, int]:
     """Live counts of authenticated LinkedIn/WTTJ rechecks still moving through the
     browser-extension capture queue, plus a rough ETA.
 
@@ -667,7 +685,7 @@ def _closed_req_browser_queue_snapshot(repos: dict) -> dict[str, int]:
     """
     rows = [
         r
-        for r in repos["browser_capture_queue"].get_all()
+        for r in repos["browser_capture_queue"].get_all(user_id)
         if r.get("purpose") == "closed_req"
     ]
     counts = {"pending": 0, "processing": 0, "done": 0, "failed": 0}
@@ -688,7 +706,7 @@ def _closed_req_browser_queue_snapshot(repos: dict) -> dict[str, int]:
 
 # ai: claude-sonnet-5 | 2026-08-09
 def _persist_unreachable_flag(
-    repos: dict, job: dict, today: str, is_unreachable: bool
+    repos: dict, user_id: int, job: dict, today: str, is_unreachable: bool
 ) -> None:
     """Set jobs.unreachable_since to *today* the first time a scan finds this job
     unreachable, or clear it once a later check gets a real response (closed/open/
@@ -698,14 +716,14 @@ def _persist_unreachable_flag(
     """
     current = job.get("unreachable_since")
     if is_unreachable and not current:
-        repos["jobs"].update(job["id"], {"unreachable_since": today})
+        repos["jobs"].update(user_id, job["id"], {"unreachable_since": today})
         repos["conn"].commit()
     elif not is_unreachable and current:
-        repos["jobs"].update(job["id"], {"unreachable_since": None})
+        repos["jobs"].update(user_id, job["id"], {"unreachable_since": None})
         repos["conn"].commit()
 
 
-def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
+def _record_closed_req(user_id: int, job: dict, platform_label: str, today: str) -> None:
     """Record a detected closed req in whichever place the UI actually reads from.
 
     Jobs already on the Applications Sheet (on_sheet flag set) are
@@ -721,20 +739,22 @@ def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
     with get_repos() as repos:
         if job.get("on_sheet"):  # ai: claude-fable-5 | 2026-07-14
             repos["stages"].insert(
+                user_id,
                 {
                     "job_id": job["id"],
                     "status": "req_closed",
                     "date": today,
                     "notes": f"Req closed on {platform_label} (auto-detected).",
-                }
+                },
             )
         else:
             from_status = str(job.get("status") or "")
             repos["jobs"].update(
-                job["id"], {"status": "skipped", "skip_reason": "req_closed"}
+                user_id, job["id"], {"status": "skipped", "skip_reason": "req_closed"}
             )
-            maybe_mark_source_email_read(job, repos["jobs"])
+            maybe_mark_source_email_read(user_id, job, repos["jobs"])
             repos["job_status_history"].insert(
+                user_id,
                 {
                     "job_id": job["id"],
                     "from_status": from_status,
@@ -750,7 +770,7 @@ def _record_closed_req(job: dict, platform_label: str, today: str) -> None:
                             ),
                         }
                     ),
-                }
+                },
             )
         repos["conn"].commit()
 
@@ -762,6 +782,11 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
     real browser tab — using the user's logged-in session for LinkedIn's "no longer
     accepting applications" banner, and just a real browser (to pass Wellfound's
     bot-detection challenge) for Wellfound — and posts back the rendered HTML.
+
+    Called from app.py's _handle_listener_capture, which runs on the standalone
+    import-listener background thread — no Flask session exists there, so this
+    uses the same STOPGAP (first_account_user_id) that callback already uses
+    for the job-import path. See that helper's docstring in backend/utils/utils.py.
     """
     content = str(body.get("content") or "")
     captured_url = str(body.get("url") or "").strip()
@@ -777,7 +802,8 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
         # manages its own connection too (see its docstring), so this block must not
         # hold one open across that call.
         with get_repos() as repos:
-            job = repos["jobs"].get_by_id(job_id) if job_id else None
+            user_id = first_account_user_id(repos)  # STOPGAP — see docstring above
+            job = repos["jobs"].get_by_id(user_id, job_id) if job_id else None
 
         if job:
             platform = (
@@ -787,6 +813,7 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
             page_text = content.lower()
             if _classify_closed_req_page(page_text, captured_url, platform) == "closed":
                 _record_closed_req(
+                    user_id,
                     job,
                     _PLATFORM_LABELS.get(platform, platform),
                     datetime.now(UTC).date().isoformat(),
@@ -797,7 +824,9 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
             )
 
         with get_repos() as repos:
-            repos["browser_capture_queue"].mark_done_by_urls([queue_url, captured_url])
+            repos["browser_capture_queue"].mark_done_by_urls(
+                user_id, [queue_url, captured_url]
+            )
             repos["conn"].commit()
     except Exception as exc:
         logger.warning(
@@ -811,7 +840,7 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
 
 
 # ai: claude-fable-5 | 2026-07-17
-def _browser_recheck_found_closed(repos: dict, job: dict) -> bool:
+def _browser_recheck_found_closed(repos: dict, user_id: int, job: dict) -> bool:
     """True if *job* has been recorded closed since the scan snapshotted it.
 
     Mirrors the two storage shapes _record_closed_req writes (a req_closed
@@ -820,9 +849,9 @@ def _browser_recheck_found_closed(repos: dict, job: dict) -> bool:
     that same function, so this is how the scan thread observes it.
     """
     if job.get("on_sheet"):
-        stages = repos["stages"].get_by_job_id(job["id"])
+        stages = repos["stages"].get_by_job_id(user_id, job["id"])
         return any(s.get("status") == "req_closed" for s in stages)
-    fresh = repos["jobs"].get_by_id(job["id"])
+    fresh = repos["jobs"].get_by_id(user_id, job["id"])
     return (
         fresh is not None
         and fresh.get("status") == "skipped"
@@ -833,7 +862,7 @@ def _browser_recheck_found_closed(repos: dict, job: dict) -> bool:
 # ai: claude-sonnet-5 | 2026-08-20
 @celery_app.task(bind=True)
 def run_req_closed_scan_task(
-    self, platforms: frozenset[str] | None = None
+    self, user_id: int, platforms: frozenset[str] | None = None
 ) -> dict:
     """Scan candidate jobs for closed reqs, limited to `platforms` (keys of
     _PLATFORM_LABELS). None means scan every supported platform. Run as a
@@ -898,10 +927,10 @@ def run_req_closed_scan_task(
         first real classification.
         """
         job, _url, platform, platform_label = item
-        closed = _browser_recheck_found_closed(repos, job)
+        closed = _browser_recheck_found_closed(repos, user_id, job)
         # ai: claude-sonnet-5 | 2026-08-09 — a 'failed' row is this job's real
         # unreachable verdict (the browser extension exhausted its retries).
-        _persist_unreachable_flag(repos, job, today, row_status == "failed")
+        _persist_unreachable_flag(repos, user_id, job, today, row_status == "failed")
         summary = {
             "id": job["id"],
             "company": job.get("company") or "",
@@ -945,7 +974,7 @@ def run_req_closed_scan_task(
                 # its current recheck — older 'done' rows from earlier scan runs
                 # must not be mistaken for this batch's result.
                 latest_by_job: dict[int, dict] = {}
-                for row in repos["browser_capture_queue"].get_all():
+                for row in repos["browser_capture_queue"].get_all(user_id):
                     row_job_id = row.get("job_id")
                     if row.get("purpose") != "closed_req":
                         continue
@@ -995,7 +1024,7 @@ def run_req_closed_scan_task(
         with get_repos() as repos:
             # ai: claude-fable-5 | 2026-07-16
             candidates = [
-                c for c in _closed_req_candidates(repos) if c[2] in selected
+                c for c in _closed_req_candidates(repos, user_id) if c[2] in selected
             ]
         # Connection released before the external fetches below.
 
@@ -1034,7 +1063,7 @@ def run_req_closed_scan_task(
             is_unreachable = result == "unreachable"
             if is_unreachable != bool(job.get("unreachable_since")):
                 with get_repos() as repos:
-                    _persist_unreachable_flag(repos, job, today, is_unreachable)
+                    _persist_unreachable_flag(repos, user_id, job, today, is_unreachable)
             job_summary = {
                 "id": job["id"],
                 "company": job.get("company") or "",
@@ -1042,7 +1071,7 @@ def run_req_closed_scan_task(
                 "platform": platform_label,
             }
             if result == "closed":
-                _record_closed_req(job, platform_label, today)
+                _record_closed_req(user_id, job, platform_label, today)
                 marked.append(job_summary)
                 closed_count += 1
             elif result == "open":
@@ -1082,7 +1111,7 @@ def run_req_closed_scan_task(
                 # run, but the ordering still matters if the extension goes offline
                 # mid-run and only the first batches complete.
                 last_checked: dict[int, str] = {}
-                for row in repos["browser_capture_queue"].get_all():
+                for row in repos["browser_capture_queue"].get_all(user_id):
                     if row.get("purpose") != "closed_req" or row.get("job_id") is None:
                         continue
                     created = row.get("created_at") or ""
@@ -1116,6 +1145,7 @@ def run_req_closed_scan_task(
                         new_id = repos[
                             "browser_capture_queue"
                         ].enqueue_once_for_purpose(
+                            user_id,
                             url,
                             f"{platform_label} (closed-req check)",
                             "closed_req",
@@ -1217,7 +1247,7 @@ def start_closed_req_scan() -> ResponseReturnValue:
         else frozenset(_PLATFORM_LABELS)
     )
 
-    task_id = _submit_closed_req_scan(platforms)
+    task_id = _submit_closed_req_scan(current_user_id(), platforms)
     if task_id is None:
         return jsonify({"error": "Scan already running"}), 409
     return jsonify(
@@ -1230,11 +1260,12 @@ def closed_req_scan_status() -> ResponseReturnValue:
     """Return the current closed-req scan state, plus a live snapshot of the
     browser-extension recheck backlog (which keeps draining after the foreground
     scan itself reports done)."""
+    user_id = current_user_id()
     with get_repos() as repos:
-        browser_queue = _closed_req_browser_queue_snapshot(repos)
+        browser_queue = _closed_req_browser_queue_snapshot(repos, user_id)
 
     with _closed_req_lock:
-        task_id = _closed_req_last_task_id
+        task_id = _closed_req_last_task_id_by_user.get(user_id)
 
     _idle = {
         "running": False,
@@ -1343,13 +1374,14 @@ def get_stage_statuses() -> ResponseReturnValue:
 def normalize_stage_statuses() -> ResponseReturnValue:
     """One-time migration: normalise all stage status values to snake_case lowercase."""
     try:
+        user_id = current_user_id()
         with get_repos() as repos:
-            stages = repos["stages"].get_all()
+            stages = repos["stages"].get_all(user_id)
             fixed = 0
             for stage in stages:
                 normalized = normalize_stage_status(stage.get("status"))
                 if normalized != stage.get("status"):
-                    repos["stages"].update(int(stage["id"]), {"status": normalized})
+                    repos["stages"].update(user_id, int(stage["id"]), {"status": normalized})
                     fixed += 1
             repos["conn"].commit()
             return jsonify({"fixed": fixed})

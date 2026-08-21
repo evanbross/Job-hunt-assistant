@@ -42,6 +42,7 @@ import logging
 import re
 from typing import Any
 
+from backend.db.repositories.app_account import PLACEHOLDER_ACCOUNT_EMAIL
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
 from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
 
@@ -137,6 +138,36 @@ def _has_index(cur: Any, table: str, index_name: str) -> bool:
     return cur.fetchone() is not None
 
 
+# ai: claude-sonnet-5 | 2026-08-20
+# Tables that get a plain `user_id` FK + backfill + index in _migrate() below.
+# Excludes tables needing bespoke handling because a *bare* ADD COLUMN isn't
+# enough to make them correctly per-user: app_settings, application_profile,
+# and scanned_emails each have a natural-key PRIMARY KEY (not a surrogate id)
+# that must become a composite (user_id, <natural key>) — handled in their
+# own migration blocks. Also excludes app_account itself (the identity table).
+_PER_USER_TABLES: tuple[str, ...] = (
+    "jobs",
+    "job_status_history",
+    "browser_capture_queue",
+    "import_repair_history",
+    "email_sources",
+    "ack_patterns",
+    "resume",
+    "application_answers",
+    "application_stages",
+    "penalty_rules",
+    "relevance_feedback",
+    "career_rejection_rules",
+    "career_site_sources",
+    "career_scan_results",
+    "career_scan_failures",
+    "jd_health_check_targets",
+    "jd_health_check_results",
+    "contacts",
+    "cover_letter_phrases",
+)
+
+
 def _migrate(conn: Any) -> None:
     """Apply incremental schema changes (ADD COLUMN IF NOT EXISTS is idempotent)."""
     cur = conn.cursor()
@@ -207,31 +238,11 @@ def _migrate(conn: Any) -> None:
     # that only applies to non-empty URLs. See repositories/jobs.py's insert(),
     # which translates the resulting UniqueViolation into DuplicateJobUrlError
     # so callers can treat "lost the race" the same as "already exists".
-    if not _has_index(cur, "jobs", JOBS_URL_UNIQUE_INDEX):
-        cur.execute(
-            "SELECT url, COUNT(*) AS cnt FROM jobs"
-            " WHERE url IS NOT NULL AND url <> ''"
-            " GROUP BY url HAVING COUNT(*) > 1"
-            " ORDER BY cnt DESC LIMIT 5"
-        )
-        dup_rows = cur.fetchall()
-        if dup_rows:
-            logger.warning(
-                "Skipping jobs.url uniqueness index: %d duplicate URL group(s) "
-                "already exist in the database (e.g. %r used %d times). Merge or "
-                "delete the duplicate rows, then restart the app — the index is "
-                "created automatically on the next successful startup once no "
-                "duplicates remain.",
-                len(dup_rows),
-                dup_rows[0]["url"],
-                dup_rows[0]["cnt"],
-            )
-        else:
-            cur.execute(
-                f"CREATE UNIQUE INDEX {JOBS_URL_UNIQUE_INDEX} ON jobs (url)"
-                " WHERE url IS NOT NULL AND url <> ''"
-            )
-            conn.commit()
+    # ai: claude-sonnet-5 | 2026-08-20 — this index's actual creation moved to
+    # the multi-tenancy migration block further down in this function (it
+    # needs user_id, which doesn't exist on jobs yet at this point in the
+    # function) — this comment stays here since this is where the original
+    # design rationale belongs.
 
     # ai: claude-sonnet-5 | 2026-08-12
     # email_subject renamed to capture_label: non-email sources (browser
@@ -342,17 +353,37 @@ def _migrate(conn: Any) -> None:
 
     conn.commit()
 
-    # Backfill scanned_emails from jobs so existing records are not re-processed
-    cur.execute("""
-        INSERT INTO scanned_emails (email_id, sender_email, email_subject, scanned_at)
-        SELECT dedup_key,
-               COALESCE(sender_email, ''),
-               COALESCE(capture_label, ''),
-               COALESCE(date_found, NOW()::text)
-        FROM jobs
-        WHERE dedup_key IS NOT NULL
-        ON CONFLICT (email_id) DO NOTHING
-    """)
+    # Backfill scanned_emails from jobs so existing records are not re-processed.
+    # ai: claude-sonnet-5 | 2026-08-20 — scanned_emails' PK becomes composite
+    # (user_id, email_id) once the multi-tenancy block further down in this
+    # function runs, which changes what ON CONFLICT target is valid here on
+    # every run after the first (this block runs before that one, so on a
+    # brand new database neither table has user_id yet — the plain-email_id
+    # branch below covers exactly that one-time transitional case).
+    if _has_column(cur, "scanned_emails", "user_id") and _has_column(cur, "jobs", "user_id"):
+        cur.execute("""
+            INSERT INTO scanned_emails
+                (email_id, sender_email, email_subject, scanned_at, user_id)
+            SELECT dedup_key,
+                   COALESCE(sender_email, ''),
+                   COALESCE(capture_label, ''),
+                   COALESCE(date_found, NOW()::text),
+                   user_id
+            FROM jobs
+            WHERE dedup_key IS NOT NULL
+            ON CONFLICT (user_id, email_id) DO NOTHING
+        """)
+    else:
+        cur.execute("""
+            INSERT INTO scanned_emails (email_id, sender_email, email_subject, scanned_at)
+            SELECT dedup_key,
+                   COALESCE(sender_email, ''),
+                   COALESCE(capture_label, ''),
+                   COALESCE(date_found, NOW()::text)
+            FROM jobs
+            WHERE dedup_key IS NOT NULL
+            ON CONFLICT (email_id) DO NOTHING
+        """)
 
     cur.execute(
         "ALTER TABLE application_stages ADD COLUMN IF NOT EXISTS"
@@ -364,14 +395,31 @@ def _migrate(conn: Any) -> None:
     )
     conn.commit()
 
-    # Backfill application_stages for existing applied jobs
-    cur.execute("""
-        INSERT INTO application_stages (job_id, status, date)
-        SELECT id, 'applied', COALESCE(date_found, (NOW() AT TIME ZONE 'UTC')::date::text)
-        FROM jobs
-        WHERE status IN ('added_to_sheet', 'applied')
-          AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
-    """)
+    # Backfill application_stages for existing applied jobs.
+    # ai: claude-sonnet-5 | 2026-08-20 — application_stages gained a user_id
+    # column later in this function (multi-tenancy migration), but this step
+    # runs earlier and predates that — on a brand new database neither table
+    # has user_id yet (the plain branch below covers that one-time
+    # transitional case), but on every run after the first, both columns
+    # exist and this backfill needs to carry jobs.user_id through.
+    if _has_column(cur, "application_stages", "user_id") and _has_column(
+        cur, "jobs", "user_id"
+    ):
+        cur.execute("""
+            INSERT INTO application_stages (user_id, job_id, status, date)
+            SELECT user_id, id, 'applied', COALESCE(date_found, (NOW() AT TIME ZONE 'UTC')::date::text)
+            FROM jobs
+            WHERE status IN ('added_to_sheet', 'applied')
+              AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
+        """)
+    else:
+        cur.execute("""
+            INSERT INTO application_stages (job_id, status, date)
+            SELECT id, 'applied', COALESCE(date_found, (NOW() AT TIME ZONE 'UTC')::date::text)
+            FROM jobs
+            WHERE status IN ('added_to_sheet', 'applied')
+              AND id NOT IN (SELECT DISTINCT job_id FROM application_stages)
+        """)
     cur.execute("UPDATE jobs SET status = 'applied' WHERE status = 'added_to_sheet'")
 
     cur.execute(
@@ -452,6 +500,213 @@ def _migrate(conn: Any) -> None:
     conn.commit()
 
     _backfill_duplicate_of_id(conn)  # ai: claude-sonnet-5 | 2026-07-25
+
+    # ai: claude-sonnet-5 | 2026-08-20
+    # Multi-tenancy migration. app_account moves from a single enforced row
+    # (id fixed at 1) to a normal per-user table — registration is open
+    # (routes/session_auth.py), guarded only by email uniqueness.
+    if _has_unique(cur, "app_account", "app_account_single_row"):
+        cur.execute("ALTER TABLE app_account DROP CONSTRAINT app_account_single_row")
+    if not _has_unique(cur, "app_account", "app_account_email_key"):
+        cur.execute("ALTER TABLE app_account ADD CONSTRAINT app_account_email_key UNIQUE (email)")
+    # Idempotent either way: on a fresh DB the SERIAL column already owns this
+    # sequence and these are no-ops; on a DB created under the old id INTEGER
+    # DEFAULT 1 schema, this converts it to a real auto-incrementing sequence.
+    cur.execute("CREATE SEQUENCE IF NOT EXISTS app_account_id_seq OWNED BY app_account.id")
+    cur.execute(
+        "SELECT setval('app_account_id_seq',"
+        " COALESCE((SELECT MAX(id) FROM app_account), 0) + 1, false)"
+    )
+    cur.execute("ALTER TABLE app_account ALTER COLUMN id SET DEFAULT nextval('app_account_id_seq')")
+    conn.commit()
+
+    # A completely empty app_account is possible here even when other tables
+    # already have rows: seed data (default email_sources/penalty_rules/etc.,
+    # see _seed_data() below) and any pre-existing single-tenant data (jobs
+    # tracked before this login gate existed) both predate any account ever
+    # being created. Give them a row to attach to via the backfill below —
+    # PLACEHOLDER_ACCOUNT_EMAIL is a sentinel routes/session_auth.py's
+    # create_account() recognizes and claims (updates in place) the first
+    # time someone actually registers, rather than leaving pre-existing data
+    # permanently orphaned under an account nobody can log into.
+    #
+    # Don't assume that account's id is 1 — if app_account previously had
+    # rows that were since deleted, its sequence has already moved past 1.
+    # backfill_user_id is always "whichever account existed first."
+    cur.execute("SELECT COUNT(*) AS cnt FROM app_account")
+    if cur.fetchone()["cnt"] == 0:
+        cur.execute(
+            "INSERT INTO app_account (email, password_hash) VALUES (%s, %s)",
+            (PLACEHOLDER_ACCOUNT_EMAIL, ""),
+        )
+        conn.commit()
+    cur.execute("SELECT id FROM app_account ORDER BY id LIMIT 1")
+    backfill_user_id = cur.fetchone()["id"]
+
+    # Every user-owned table gets a user_id FK, backfilled onto that account.
+    # See routes/session_auth.py for how user_id lands in the session, and
+    # backend/utils/utils.py's current_user_id() for how routes read it back.
+    for table in _PER_USER_TABLES:
+        if _has_column(cur, table, "user_id"):
+            continue
+        cur.execute(
+            f"ALTER TABLE {table} ADD COLUMN user_id INTEGER "
+            "REFERENCES app_account(id) ON DELETE CASCADE"
+        )
+        cur.execute(
+            f"UPDATE {table} SET user_id = %s WHERE user_id IS NULL", (backfill_user_id,)
+        )
+        cur.execute(f"ALTER TABLE {table} ALTER COLUMN user_id SET NOT NULL")
+        cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_user_id ON {table} (user_id)")
+    conn.commit()
+
+    # ai: claude-sonnet-5 | 2026-08-20
+    # application_profile, app_settings, and scanned_emails each have a
+    # natural-key PRIMARY KEY (not a surrogate id) — a bare user_id column
+    # isn't enough, since the natural key alone would still collide across
+    # different users' rows. Each becomes a composite (user_id, <natural key>)
+    # identity instead.
+    if not _has_column(cur, "application_profile", "user_id"):
+        if _has_unique(cur, "application_profile", "application_profile_single_row"):
+            cur.execute(
+                "ALTER TABLE application_profile DROP CONSTRAINT application_profile_single_row"
+            )
+        cur.execute(
+            "ALTER TABLE application_profile ADD COLUMN user_id INTEGER "
+            "REFERENCES app_account(id) ON DELETE CASCADE"
+        )
+        cur.execute(
+            "UPDATE application_profile SET user_id = %s WHERE user_id IS NULL",
+            (backfill_user_id,),
+        )
+        cur.execute("ALTER TABLE application_profile ALTER COLUMN user_id SET NOT NULL")
+        cur.execute(
+            "ALTER TABLE application_profile"
+            " ADD CONSTRAINT application_profile_user_id_key UNIQUE (user_id)"
+        )
+        # id previously had a fixed DEFAULT 1 (single-row pattern, like the old
+        # app_account) — give it a real sequence so a second user's row can insert.
+        cur.execute(
+            "CREATE SEQUENCE IF NOT EXISTS application_profile_id_seq"
+            " OWNED BY application_profile.id"
+        )
+        cur.execute(
+            "SELECT setval('application_profile_id_seq',"
+            " COALESCE((SELECT MAX(id) FROM application_profile), 0) + 1, false)"
+        )
+        cur.execute(
+            "ALTER TABLE application_profile ALTER COLUMN id"
+            " SET DEFAULT nextval('application_profile_id_seq')"
+        )
+    conn.commit()
+
+    if not _has_column(cur, "app_settings", "user_id"):
+        cur.execute(
+            "ALTER TABLE app_settings ADD COLUMN user_id INTEGER "
+            "REFERENCES app_account(id) ON DELETE CASCADE"
+        )
+        cur.execute(
+            "UPDATE app_settings SET user_id = %s WHERE user_id IS NULL", (backfill_user_id,)
+        )
+        cur.execute("ALTER TABLE app_settings ALTER COLUMN user_id SET NOT NULL")
+        cur.execute("ALTER TABLE app_settings DROP CONSTRAINT IF EXISTS app_settings_pkey")
+        cur.execute("ALTER TABLE app_settings ADD PRIMARY KEY (user_id, key)")
+    conn.commit()
+
+    if not _has_column(cur, "scanned_emails", "user_id"):
+        cur.execute(
+            "ALTER TABLE scanned_emails ADD COLUMN user_id INTEGER "
+            "REFERENCES app_account(id) ON DELETE CASCADE"
+        )
+        cur.execute(
+            "UPDATE scanned_emails SET user_id = %s WHERE user_id IS NULL", (backfill_user_id,)
+        )
+        cur.execute("ALTER TABLE scanned_emails ALTER COLUMN user_id SET NOT NULL")
+        cur.execute("ALTER TABLE scanned_emails DROP CONSTRAINT IF EXISTS scanned_emails_pkey")
+        cur.execute("ALTER TABLE scanned_emails ADD PRIMARY KEY (user_id, email_id)")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scanned_emails_user_id ON scanned_emails (user_id)"
+        )
+    conn.commit()
+
+    # Global UNIQUE constraints that must become per-user now that user_id
+    # exists on these tables. Left global, each would incorrectly stop a
+    # second user from tracking the same public job URL, saving an answer
+    # with the same normalized question text, matching a career-site listing
+    # another user already scanned, or importing a LinkedIn contact another
+    # user already has.
+    if _has_unique(cur, "jobs", "jobs_dedup_key_key"):
+        cur.execute("ALTER TABLE jobs DROP CONSTRAINT jobs_dedup_key_key")
+    if not _has_unique(cur, "jobs", "jobs_user_dedup_key_key"):
+        cur.execute(
+            "ALTER TABLE jobs ADD CONSTRAINT jobs_user_dedup_key_key UNIQUE (user_id, dedup_key)"
+        )
+
+    if _has_unique(cur, "application_answers", "application_answers_question_normalized_key"):
+        cur.execute(
+            "ALTER TABLE application_answers DROP CONSTRAINT"
+            " application_answers_question_normalized_key"
+        )
+    if not _has_unique(
+        cur, "application_answers", "application_answers_user_question_normalized_key"
+    ):
+        cur.execute(
+            "ALTER TABLE application_answers ADD CONSTRAINT"
+            " application_answers_user_question_normalized_key"
+            " UNIQUE (user_id, question_normalized)"
+        )
+
+    if _has_unique(cur, "career_scan_results", "career_scan_results_job_url_key"):
+        cur.execute(
+            "ALTER TABLE career_scan_results DROP CONSTRAINT career_scan_results_job_url_key"
+        )
+    if not _has_unique(cur, "career_scan_results", "career_scan_results_user_job_url_key"):
+        cur.execute(
+            "ALTER TABLE career_scan_results ADD CONSTRAINT"
+            " career_scan_results_user_job_url_key UNIQUE (user_id, job_url)"
+        )
+
+    if _has_unique(cur, "contacts", "contacts_profile_url_key"):
+        cur.execute("ALTER TABLE contacts DROP CONSTRAINT contacts_profile_url_key")
+    if not _has_unique(cur, "contacts", "contacts_user_profile_url_key"):
+        cur.execute(
+            "ALTER TABLE contacts ADD CONSTRAINT contacts_user_profile_url_key"
+            " UNIQUE (user_id, profile_url)"
+        )
+    conn.commit()
+
+    # jobs.url partial unique index: same per-user rework as dedup_key above,
+    # via drop-and-recreate under a new name (JOBS_URL_UNIQUE_INDEX, see
+    # backend/db/repositories/jobs.py) rather than an ALTER, since Postgres
+    # can't alter an index's column list in place. Reuses the original
+    # index's "skip if real duplicates exist" safety check, just grouped
+    # per-user instead of globally.
+    cur.execute("DROP INDEX IF EXISTS jobs_url_unique_idx")  # old, pre-multi-tenant name
+    if not _has_index(cur, "jobs", JOBS_URL_UNIQUE_INDEX):
+        cur.execute(
+            "SELECT user_id, url, COUNT(*) AS cnt FROM jobs"
+            " WHERE url IS NOT NULL AND url <> ''"
+            " GROUP BY user_id, url HAVING COUNT(*) > 1"
+            " ORDER BY cnt DESC LIMIT 5"
+        )
+        dup_rows = cur.fetchall()
+        if dup_rows:
+            logger.warning(
+                "Skipping jobs.url uniqueness index: %d duplicate URL group(s) "
+                "already exist for the same user (e.g. %r used %d times). Merge "
+                "or delete the duplicate rows, then restart the app — the index "
+                "is created automatically on the next successful startup once no "
+                "duplicates remain.",
+                len(dup_rows),
+                dup_rows[0]["url"],
+                dup_rows[0]["cnt"],
+            )
+        else:
+            cur.execute(
+                f"CREATE UNIQUE INDEX {JOBS_URL_UNIQUE_INDEX} ON jobs (user_id, url)"
+                " WHERE url IS NOT NULL AND url <> ''"
+            )
+    conn.commit()
 
 
 # ai: claude-sonnet-4-6 | 2026-06-09
@@ -621,6 +876,19 @@ def _create_tables(conn: Any) -> None:
             current_company          TEXT,
             updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             CONSTRAINT application_profile_single_row CHECK (id = 1)
+        )
+        """,
+        # ai: claude-sonnet-5 | 2026-08-20
+        # One row per registered user. Registration is open (POST /api/account,
+        # see routes/session_auth.py) — email uniqueness is the only guard.
+        # Every per-user table elsewhere in this schema carries a user_id FK
+        # referencing this table's id.
+        """
+        CREATE TABLE IF NOT EXISTS app_account (
+            id            SERIAL PRIMARY KEY,
+            email         TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
         # ai: claude-sonnet-5 | 2026-08-13
@@ -890,25 +1158,40 @@ def _create_tables(conn: Any) -> None:
 
 def _seed_data(conn: Any) -> None:
     cur = conn.cursor()
+
+    # ai: claude-sonnet-5 | 2026-08-20
+    # email_sources/penalty_rules/ack_patterns/jd_health_check_targets are now
+    # per-user tables, so their seed rows need a user_id. _migrate() (which
+    # always runs before this) guarantees at least one app_account row exists
+    # by this point — reuse whichever account it backfilled onto.
+    # KNOWN GAP: this only seeds defaults once per table (guarded by "table is
+    # still empty"), so it only ever benefits the very first account on this
+    # instance — a second real signup gets no starter email_sources/penalty_rules/
+    # etc. Giving every new account its own onboarding defaults belongs in
+    # routes/session_auth.py's create_account(), not here; not done in this pass.
+    cur.execute("SELECT id FROM app_account ORDER BY id LIMIT 1")
+    seed_user_id = cur.fetchone()["id"]
+
     cur.execute("SELECT COUNT(*) AS cnt FROM email_sources")
     if cur.fetchone()["cnt"] == 0:
         cur.executemany(
-            "INSERT INTO email_sources (name, match_type, match_value) VALUES (%s, %s, %s)",
-            _SEED_SOURCES,
+            "INSERT INTO email_sources (name, match_type, match_value, user_id)"
+            " VALUES (%s, %s, %s, %s)",
+            [(*row, seed_user_id) for row in _SEED_SOURCES],
         )
 
     cur.execute("SELECT COUNT(*) AS cnt FROM penalty_rules")
     if cur.fetchone()["cnt"] == 0:
         cur.executemany(
-            "INSERT INTO penalty_rules (rule_text, penalty_points) VALUES (%s, %s)",
-            _SEED_PENALTIES,
+            "INSERT INTO penalty_rules (rule_text, penalty_points, user_id) VALUES (%s, %s, %s)",
+            [(*row, seed_user_id) for row in _SEED_PENALTIES],
         )
 
     cur.execute("SELECT COUNT(*) AS cnt FROM ack_patterns")
     if cur.fetchone()["cnt"] == 0:
         cur.executemany(
-            "INSERT INTO ack_patterns (pattern, rule_type) VALUES (%s, %s)",
-            _SEED_EMAIL_SUBJECT_RULES,
+            "INSERT INTO ack_patterns (pattern, rule_type, user_id) VALUES (%s, %s, %s)",
+            [(*row, seed_user_id) for row in _SEED_EMAIL_SUBJECT_RULES],
         )
 
     cur.executemany(
@@ -923,8 +1206,9 @@ def _seed_data(conn: Any) -> None:
     cur.execute("SELECT COUNT(*) AS cnt FROM jd_health_check_targets")
     if cur.fetchone()["cnt"] == 0:
         cur.executemany(
-            "INSERT INTO jd_health_check_targets (platform, label, url) VALUES (%s, %s, %s)",
-            [(t["platform"], t["label"], t["url"]) for t in LIVE_CANARY_TARGETS],
+            "INSERT INTO jd_health_check_targets (platform, label, url, user_id)"
+            " VALUES (%s, %s, %s, %s)",
+            [(t["platform"], t["label"], t["url"], seed_user_id) for t in LIVE_CANARY_TARGETS],
         )
 
     conn.commit()

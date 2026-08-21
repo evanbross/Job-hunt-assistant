@@ -24,9 +24,9 @@ whole scan run before this function could apply its fallback behavior.
 
 from unittest.mock import patch
 
-from backend.scanning.career_site_scanner import CareerSiteJob, ScanOutcome
 from backend.email.email_parser import ParsedJob
 from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
+from backend.scanning.career_site_scanner import CareerSiteJob, ScanOutcome
 
 
 def _parsed_job(url: str, company: str = "Acme", source: str = "email") -> ParsedJob:
