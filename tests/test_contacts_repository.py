@@ -44,7 +44,7 @@ def _contact_row(**overrides: object) -> dict[str, object]:
 def test_replace_all_round_trips_and_fully_replaces(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
-        account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+        account = PostgresAppAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         repo = PostgresContactRepository(conn)
 
@@ -70,7 +70,7 @@ def test_replace_all_round_trips_and_fully_replaces(pg_dsn: str) -> None:
 def test_replace_all_with_empty_list_clears_table(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
-        account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+        account = PostgresAppAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         repo = PostgresContactRepository(conn)
         repo.replace_all(user_id, [_contact_row()])

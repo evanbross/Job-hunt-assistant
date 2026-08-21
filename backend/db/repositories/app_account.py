@@ -34,7 +34,9 @@
 
 """Repository for the app_account table — one row per registered user.
 Registration is open (see routes/session_auth.py's create_account), guarded
-only by email uniqueness at the DB level."""
+only by email uniqueness at the DB level, and requires completing an
+email-verification round trip before the account can log in (password_hash
+stays NULL until then — see complete_registration())."""
 
 from __future__ import annotations
 
@@ -66,23 +68,31 @@ class PostgresAppAccountRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def claim_placeholder(self, email: str, password_hash: str) -> dict[str, Any] | None:
-        """Turn the placeholder account (if one exists) into a real account.
+    # ai: claude-sonnet-5 | 2026-08-21
+    def claim_placeholder_pending(
+        self, email: str, token: str, expires_at: str
+    ) -> dict[str, Any] | None:
+        """Start registration by claiming the placeholder account (if one
+        exists), leaving password_hash NULL until complete_registration().
 
         Returns None if there is no placeholder to claim (normal case once
         the instance has at least one real account), or if *email* already
-        belongs to a different, already-claimed account — either way, the
-        caller falls back to create(), which reports a proper 409 for the
-        latter case instead of this method raising a raw UniqueViolation.
+        belongs to a different, already-registered account — either way,
+        the caller falls back to create_pending(), which reports a proper
+        409 for the latter case instead of this method raising a raw
+        UniqueViolation.
         """
         try:
             cur = self._execute(
                 """
-                UPDATE app_account SET email = %s, password_hash = %s, updated_at = NOW()
+                UPDATE app_account
+                SET email = %s, password_hash = NULL,
+                    verification_token = %s, verification_purpose = 'registration',
+                    verification_expires_at = %s, updated_at = NOW()
                 WHERE email = %s
                 RETURNING *
                 """,
-                [email, password_hash, PLACEHOLDER_ACCOUNT_EMAIL],
+                [email, token, expires_at, PLACEHOLDER_ACCOUNT_EMAIL],
             )
         except psycopg2.errors.UniqueViolation:
             self._conn.rollback()
@@ -90,21 +100,101 @@ class PostgresAppAccountRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
-    def create(self, email: str, password_hash: str) -> dict[str, Any] | None:
-        """Insert a new account. Returns None (no-op) if the email is already
-        registered — callers use that to reject the signup with a 409
-        rather than silently overwriting another user's account."""
+    def create_pending(
+        self, email: str, token: str, expires_at: str
+    ) -> dict[str, Any] | None:
+        """Insert a new account with no password yet. Returns None (no-op) if
+        the email is already registered — callers use that to reject the
+        signup with a 409 rather than silently overwriting another user's
+        account."""
         cur = self._execute(
             """
-            INSERT INTO app_account (email, password_hash)
-            VALUES (%s, %s)
+            INSERT INTO app_account
+                (email, password_hash, verification_token, verification_purpose,
+                 verification_expires_at)
+            VALUES (%s, NULL, %s, 'registration', %s)
             ON CONFLICT (email) DO NOTHING
             RETURNING *
             """,
-            [email, password_hash],
+            [email, token, expires_at],
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
+
+    def complete_registration(
+        self, token: str, password_hash: str
+    ) -> dict[str, Any] | None:
+        """Set the password for a pending registration and clear the token.
+        Returns None if the token doesn't exist, is for a different purpose,
+        or has expired — the check and the write are one atomic statement so
+        there's no separate validate-then-write race."""
+        cur = self._execute(
+            """
+            UPDATE app_account
+            SET password_hash = %s, verification_token = NULL,
+                verification_purpose = NULL, verification_expires_at = NULL,
+                updated_at = NOW()
+            WHERE verification_token = %s
+              AND verification_purpose = 'registration'
+              AND verification_expires_at > NOW()
+            RETURNING *
+            """,
+            [password_hash, token],
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def request_email_change(
+        self, user_id: int, new_email: str, token: str, expires_at: str
+    ) -> dict[str, Any]:
+        """Stage a pending email change. The account's real `email` (and
+        password) are untouched until confirm_email_change() — the old
+        email keeps working for login in the meantime."""
+        cur = self._execute(
+            """
+            UPDATE app_account
+            SET pending_email = %s, verification_token = %s,
+                verification_purpose = 'email_change', verification_expires_at = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            RETURNING *
+            """,
+            [new_email, token, expires_at, user_id],
+        )
+        return _row_to_dict(cur.fetchone())
+
+    def confirm_email_change(self, token: str) -> dict[str, Any] | None:
+        """Apply a pending email change. Returns None if the token doesn't
+        exist, is for a different purpose, or has expired. Can also fail with
+        a UniqueViolation if the pending email was claimed by a different
+        account in the meantime — callers should treat that the same as an
+        invalid token (don't leak which case it is)."""
+        try:
+            cur = self._execute(
+                """
+                UPDATE app_account
+                SET email = pending_email, pending_email = NULL,
+                    verification_token = NULL, verification_purpose = NULL,
+                    verification_expires_at = NULL, updated_at = NOW()
+                WHERE verification_token = %s
+                  AND verification_purpose = 'email_change'
+                  AND verification_expires_at > NOW()
+                RETURNING *
+                """,
+                [token],
+            )
+        except psycopg2.errors.UniqueViolation:
+            self._conn.rollback()
+            return None
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def update_name(self, user_id: int, name: str) -> dict[str, Any]:
+        cur = self._execute(
+            "UPDATE app_account SET name = %s, updated_at = NOW() WHERE id = %s RETURNING *",
+            [name, user_id],
+        )
+        return _row_to_dict(cur.fetchone())
 
     def update_password(self, user_id: int, password_hash: str) -> dict[str, Any]:
         cur = self._execute(

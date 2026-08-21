@@ -520,6 +520,34 @@ def _migrate(conn: Any) -> None:
     cur.execute("ALTER TABLE app_account ALTER COLUMN id SET DEFAULT nextval('app_account_id_seq')")
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-08-21
+    # Email-verified registration. password_hash becomes nullable: NULL means
+    # registration was started (email claimed/inserted) but never completed,
+    # so the account cannot log in yet — see routes/session_auth.py's login()
+    # and complete_registration(). No separate "email_verified" column:
+    # password_hash IS NOT NULL already means the account's email was
+    # verified (that's the only way to set it), so a second boolean tracking
+    # the same fact would just be a duplicate source of truth.
+    cur.execute("ALTER TABLE app_account ALTER COLUMN password_hash DROP NOT NULL")
+    cur.execute("ALTER TABLE app_account ADD COLUMN IF NOT EXISTS name TEXT")
+    cur.execute("ALTER TABLE app_account ADD COLUMN IF NOT EXISTS pending_email TEXT")
+    cur.execute(
+        "ALTER TABLE app_account ADD COLUMN IF NOT EXISTS verification_token TEXT"
+    )
+    if not _has_unique(cur, "app_account", "app_account_verification_token_key"):
+        cur.execute(
+            "ALTER TABLE app_account ADD CONSTRAINT"
+            " app_account_verification_token_key UNIQUE (verification_token)"
+        )
+    cur.execute(
+        "ALTER TABLE app_account ADD COLUMN IF NOT EXISTS verification_purpose TEXT"
+    )
+    cur.execute(
+        "ALTER TABLE app_account ADD COLUMN IF NOT EXISTS"
+        " verification_expires_at TIMESTAMPTZ"
+    )
+    conn.commit()
+
     # A completely empty app_account is possible here even when other tables
     # already have rows: seed data (default email_sources/penalty_rules/etc.,
     # see _seed_data() below) and any pre-existing single-tenant data (jobs

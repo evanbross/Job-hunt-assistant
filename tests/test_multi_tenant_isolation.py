@@ -66,14 +66,34 @@ def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
-def client():
+def _sent_emails(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        session_auth_module,
+        "send_verification_email",
+        lambda to, link, purpose: calls.append({"to": to, "link": link, "purpose": purpose}),
+    )
+    return calls
+
+
+@pytest.fixture
+def client(_sent_emails):
     app_module.app.config["TESTING"] = True
     return app_module.app.test_client()
 
 
 def _create_and_login(client, email: str) -> int:
-    resp = client.post("/api/account", json={"email": email, "password": _PASSWORD})
-    assert resp.status_code == 201, resp.get_json()
+    """Full two-step registration through the real routes: start it, pull
+    the token out of the (faked) sent email, complete it."""
+    resp = client.post("/api/account", json={"email": email})
+    assert resp.status_code == 202, resp.get_json()
+    with get_repos() as repos:
+        pending = repos["app_account"].get_by_email(email)
+    token = pending["verification_token"]
+    complete = client.post(
+        "/api/account/complete-registration", json={"token": token, "password": _PASSWORD}
+    )
+    assert complete.status_code == 200, complete.get_json()
     with get_repos() as repos:
         account = repos["app_account"].get_by_email(email)
     return account["id"]

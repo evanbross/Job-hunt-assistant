@@ -32,7 +32,7 @@ from backend.db import (
 
 
 def _make_user_id(conn) -> int:
-    account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+    account = PostgresAppAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
     conn.commit()
     return account["id"]
 

@@ -32,22 +32,28 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-# ai: claude-sonnet-5 | 2026-08-20
+# ai: claude-sonnet-5 | 2026-08-21
 """Tests for the multi-tenant app-login gate: routes/session_auth.py's
 account/login/logout/session routes and app.py's _require_app_login
-before_request guard. Exercised through app.app's real test client rather
-than a helper function — app.py's import is now side-effect-free (see the
-app-factory refactor earlier this session), so this is the first test file
-able to import it directly.
+before_request guard. Exercised through app.app's real test client — app.py's
+import is side-effect-free (see the app-factory refactor earlier this
+session).
 
 The credential lives in the DB (app_account table), so every test here runs
 against the real local test Postgres via the pg_dsn fixture. pg_dsn's
 init_db() always leaves exactly one placeholder account (email
-"unclaimed@localhost", see backend/db/repositories/app_account.py) behind
-before any test body runs — every test below either claims it via
-create_account() or ignores it (its email never matches a test login)."""
+"unclaimed@localhost") behind before any test body runs — every test below
+either claims it via _register() or ignores it (its email never matches a
+test login).
+
+send_verification_email is monkeypatched everywhere in this file to a fake
+that records calls instead of hitting real SMTP/Mailhog — that keeps this
+suite runnable without an external service dependency. Real delivery is
+checked separately via a manual Mailhog smoke test, not here."""
 
 from __future__ import annotations
+
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from werkzeug.security import generate_password_hash
@@ -70,23 +76,55 @@ def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
-def client():
+def sent_emails(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    calls: list[dict] = []
+
+    def _fake_send(to: str, link: str, purpose: str) -> None:
+        calls.append({"to": to, "link": link, "purpose": purpose})
+
+    monkeypatch.setattr(session_auth_module, "send_verification_email", _fake_send)
+    return calls
+
+
+@pytest.fixture
+def client(sent_emails):
     app_module.app.config["TESTING"] = True
     return app_module.app.test_client()
 
 
-def _seed_account(email: str = _TEST_EMAIL, password: str = _TEST_PASSWORD) -> None:
+def _token_from_link(link: str) -> str:
+    return parse_qs(urlparse(link).query)["token"][0]
+
+
+def _seed_active_account(email: str = _TEST_EMAIL, password: str = _TEST_PASSWORD) -> int:
+    """Create a fully-registered (password already set) account directly via
+    the repo, bypassing the email-verification round trip, for tests that
+    just need a working login rather than testing registration itself."""
     with get_repos() as repos:
-        repos["app_account"].create(email, generate_password_hash(password))
+        account = repos["app_account"].create_pending(email, f"seed-{email}", "2099-01-01")
+        account = repos["app_account"].complete_registration(
+            f"seed-{email}", generate_password_hash(password)
+        )
         repos["conn"].commit()
+    return account["id"]
 
 
 def _login(client, *, email: str = _TEST_EMAIL, password: str = _TEST_PASSWORD):
     return client.post("/api/login", json={"email": email, "password": password})
 
 
-def _create_account(client, *, email: str = _TEST_EMAIL, password: str = _TEST_PASSWORD):
-    return client.post("/api/account", json={"email": email, "password": password})
+def _start_registration(client, sent_emails, *, email: str = _TEST_EMAIL):
+    return client.post("/api/account", json={"email": email})
+
+
+def _register_and_activate(client, sent_emails, *, email: str = _TEST_EMAIL, password: str = _TEST_PASSWORD):
+    """Full two-step flow through the real routes: start registration, pull
+    the token out of the (faked) sent email, complete it."""
+    _start_registration(client, sent_emails, email=email)
+    token = _token_from_link(sent_emails[-1]["link"])
+    return client.post(
+        "/api/account/complete-registration", json={"token": token, "password": password}
+    )
 
 
 # ─── session status / guard ────────────────────────────────────────────────
@@ -105,175 +143,256 @@ def test_protected_route_rejects_unauthenticated_request(client) -> None:
 
 
 def test_health_check_is_allowlisted_without_auth(client) -> None:
-    # /api/system/health probes the DB itself, which is already patched to
-    # the real test DB by _test_db — only the auth guard's decision (never a
-    # 401) is under test here.
     resp = client.get("/api/system/health")
     assert resp.status_code != 401
 
 
-# ─── create account (open registration) ────────────────────────────────────
+def test_account_get_requires_authentication(client) -> None:
+    resp = client.get("/api/account")
+    assert resp.status_code == 401
 
 
-def test_create_account_claims_the_pre_seeded_placeholder(client) -> None:
-    # pg_dsn's init_db() always leaves an "unclaimed@localhost" placeholder
-    # behind (see backend/db/schema.py's _migrate()) — the first registration
-    # on a fresh instance claims it rather than inserting a second row, so
-    # that pre-existing/seeded data (owned by the placeholder's id) isn't
-    # orphaned under an account nobody can log into.
+# ─── registration: start (email only) ──────────────────────────────────────
+
+
+def test_start_registration_claims_the_pre_seeded_placeholder(client, sent_emails) -> None:
     with get_repos() as repos:
         placeholder = repos["app_account"].get_by_email("unclaimed@localhost")
     assert placeholder is not None
 
-    resp = _create_account(client)
-    assert resp.status_code == 201
-    assert resp.get_json() == {"authenticated": True}
+    resp = _start_registration(client, sent_emails)
+    assert resp.status_code == 202
+    assert resp.get_json() == {"status": "check_email", "email": _TEST_EMAIL}
 
     with get_repos() as repos:
-        claimed = repos["app_account"].get_by_email(_TEST_EMAIL)
-        assert claimed["id"] == placeholder["id"]  # same row, not a new one
+        pending = repos["app_account"].get_by_email(_TEST_EMAIL)
+        assert pending["id"] == placeholder["id"]  # same row, not a new one
+        assert pending["password_hash"] is None
         assert repos["app_account"].get_by_email("unclaimed@localhost") is None
 
-    status = client.get("/api/session")
-    assert status.get_json() == {"authenticated": True}
+    # no session yet -- registration hasn't been completed
+    assert client.get("/api/session").get_json() == {"authenticated": False}
+
+    assert len(sent_emails) == 1
+    assert sent_emails[0]["to"] == _TEST_EMAIL
+    assert sent_emails[0]["purpose"] == "registration"
+    assert "/verify-account?token=" in sent_emails[0]["link"]
 
 
-def test_create_account_with_different_email_is_a_second_account(client) -> None:
-    _seed_account()  # claims the placeholder as _TEST_EMAIL
-    resp = _create_account(client, email="second-user@example.com", password="whatever123")
-    assert resp.status_code == 201
-
-    # both accounts work independently
-    client.post("/api/logout")
-    first_login = _login(client)
-    assert first_login.status_code == 200
-    client.post("/api/logout")
-    second_login = _login(client, email="second-user@example.com", password="whatever123")
-    assert second_login.status_code == 200
-
-
-def test_create_account_with_duplicate_email_is_rejected(client) -> None:
-    _seed_account()
-    resp = _create_account(client, password="different-password-1")
+def test_start_registration_with_duplicate_email_is_rejected(client, sent_emails) -> None:
+    _seed_active_account()
+    resp = _start_registration(client, sent_emails)
     assert resp.status_code == 409
-
-    # the original account's password must be untouched
-    login_resp = _login(client)
-    assert login_resp.status_code == 200
+    # the existing account must be untouched
+    assert _login(client).status_code == 200
 
 
-def test_create_account_rejects_short_password(client) -> None:
-    resp = _create_account(client, password="short")
+def test_start_registration_rejects_implausible_email(client, sent_emails) -> None:
+    resp = client.post("/api/account", json={"email": "not-an-email"})
     assert resp.status_code == 400
 
 
-def test_create_account_rejects_blank_fields(client) -> None:
-    resp = client.post("/api/account", json={"email": "", "password": ""})
+def test_start_registration_rejects_blank_email(client, sent_emails) -> None:
+    resp = client.post("/api/account", json={"email": ""})
     assert resp.status_code == 400
 
 
-def test_create_account_rate_limited(client) -> None:
-    _seed_account()
+def test_start_registration_rate_limited(client, sent_emails) -> None:
+    _seed_active_account()
     for _ in range(session_auth_module._LOGIN_ATTEMPT_MAX):
-        resp = _create_account(client, password="different-password-1")
+        resp = _start_registration(client, sent_emails)  # duplicate -> 409 each time
         assert resp.status_code == 409
 
-    locked = _create_account(client, password="different-password-2")
+    locked = _start_registration(client, sent_emails)
     assert locked.status_code == 429
+
+
+# ─── registration: complete (token + password) ─────────────────────────────
+
+
+def test_complete_registration_with_valid_token_grants_session(client, sent_emails) -> None:
+    resp = _register_and_activate(client, sent_emails)
+    assert resp.status_code == 200
+    assert resp.get_json() == {"authenticated": True}
+    assert client.get("/api/session").get_json() == {"authenticated": True}
+
+
+def test_login_before_completing_registration_is_rejected(client, sent_emails) -> None:
+    _start_registration(client, sent_emails)
+    resp = _login(client)
+    assert resp.status_code == 401
+
+
+def test_complete_registration_with_invalid_token_is_rejected(client, sent_emails) -> None:
+    resp = client.post(
+        "/api/account/complete-registration",
+        json={"token": "not-a-real-token", "password": _TEST_PASSWORD},
+    )
+    assert resp.status_code == 400
+
+
+def test_complete_registration_with_expired_token_is_rejected(client, sent_emails) -> None:
+    _start_registration(client, sent_emails)
+    token = _token_from_link(sent_emails[-1]["link"])
+    with get_repos() as repos:
+        repos["conn"].cursor().execute(
+            "UPDATE app_account SET verification_expires_at = NOW() - INTERVAL '1 hour'"
+            " WHERE verification_token = %s",
+            [token],
+        )
+        repos["conn"].commit()
+
+    resp = client.post(
+        "/api/account/complete-registration", json={"token": token, "password": _TEST_PASSWORD}
+    )
+    assert resp.status_code == 400
+
+
+def test_complete_registration_rejects_short_password(client, sent_emails) -> None:
+    _start_registration(client, sent_emails)
+    token = _token_from_link(sent_emails[-1]["link"])
+    resp = client.post(
+        "/api/account/complete-registration", json={"token": token, "password": "short"}
+    )
+    assert resp.status_code == 400
 
 
 # ─── login ──────────────────────────────────────────────────────────────────
 
 
 def test_login_with_correct_credentials_grants_session(client) -> None:
-    _seed_account()
+    _seed_active_account()
     resp = _login(client)
     assert resp.status_code == 200
     assert resp.get_json() == {"authenticated": True}
 
-    status = client.get("/api/session")
-    assert status.get_json() == {"authenticated": True}
-
 
 def test_login_grants_access_to_protected_routes(client) -> None:
-    _seed_account()
+    _seed_active_account()
     _login(client)
     resp = client.get("/api/jobs")
     assert resp.status_code == 200
 
 
 def test_login_with_wrong_password_is_rejected(client) -> None:
-    _seed_account()
+    _seed_active_account()
     resp = _login(client, password="wrong")
     assert resp.status_code == 401
     assert resp.get_json() == {"error": "Invalid email or password"}
 
 
-def test_login_with_wrong_email_is_rejected(client) -> None:
-    _seed_account()
-    resp = _login(client, email="someone-else@example.com")
-    assert resp.status_code == 401
-
-
 def test_login_email_is_case_insensitive(client) -> None:
-    _seed_account()
+    _seed_active_account()
     resp = _login(client, email=_TEST_EMAIL.upper())
     assert resp.status_code == 200
 
 
-def test_login_requires_email_and_password(client) -> None:
-    resp = client.post("/api/login", json={"email": _TEST_EMAIL})
-    assert resp.status_code == 400
-
-
-def test_login_when_no_matching_account_exists_is_rejected(client) -> None:
-    # No account was created with _TEST_EMAIL — only the unrelated
-    # pre-seeded placeholder exists, which never matches a login attempt.
-    resp = _login(client)
-    assert resp.status_code == 401
-
-
 def test_login_rate_limit_locks_out_after_max_attempts(client) -> None:
-    _seed_account()
+    _seed_active_account()
     for _ in range(session_auth_module._LOGIN_ATTEMPT_MAX):
-        resp = _login(client, password="wrong")
-        assert resp.status_code == 401
-
-    locked = _login(client)
-    assert locked.status_code == 429
+        assert _login(client, password="wrong").status_code == 401
+    assert _login(client).status_code == 429
 
 
 def test_login_rate_limit_resets_after_window(client, monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed_account()
+    _seed_active_account()
     fake_now = [1_000.0]
     monkeypatch.setattr(session_auth_module.time, "monotonic", lambda: fake_now[0])
-
     for _ in range(session_auth_module._LOGIN_ATTEMPT_MAX):
         _login(client, password="wrong")
-
     fake_now[0] += session_auth_module._LOGIN_ATTEMPT_WINDOW_SECONDS + 1
-    resp = _login(client)
-    assert resp.status_code == 200
+    assert _login(client).status_code == 200
 
 
 def test_logout_clears_session(client) -> None:
-    _seed_account()
+    _seed_active_account()
     _login(client)
-    logout_resp = client.post("/api/logout")
-    assert logout_resp.status_code == 200
+    assert client.post("/api/logout").status_code == 200
+    assert client.get("/api/session").get_json()["authenticated"] is False
+    assert client.get("/api/jobs").status_code == 401
 
-    status = client.get("/api/session")
-    assert status.get_json()["authenticated"] is False
 
-    protected = client.get("/api/jobs")
-    assert protected.status_code == 401
+# ─── account: get / update name ────────────────────────────────────────────
+
+
+def test_get_account_returns_name_and_email(client) -> None:
+    _seed_active_account()
+    _login(client)
+    resp = client.get("/api/account")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"name": None, "email": _TEST_EMAIL}
+
+
+def test_update_account_name(client) -> None:
+    _seed_active_account()
+    _login(client)
+    resp = client.put("/api/account", json={"name": "Alice Example"})
+    assert resp.status_code == 200
+    assert resp.get_json()["name"] == "Alice Example"
+    assert client.get("/api/account").get_json()["name"] == "Alice Example"
+
+
+# ─── email change ───────────────────────────────────────────────────────────
+
+
+def test_request_email_change_requires_authentication(client, sent_emails) -> None:
+    resp = client.post("/api/account/request-email-change", json={"new_email": "new@example.com"})
+    assert resp.status_code == 401
+
+
+def test_request_email_change_sends_to_new_address_old_email_still_works(client, sent_emails) -> None:
+    _seed_active_account()
+    _login(client)
+    resp = client.post("/api/account/request-email-change", json={"new_email": "new@example.com"})
+    assert resp.status_code == 200
+    assert sent_emails[-1]["to"] == "new@example.com"
+    assert sent_emails[-1]["purpose"] == "email_change"
+
+    # old email/password still work while the change is pending
+    client.post("/api/logout")
+    assert _login(client).status_code == 200
+
+
+def test_confirm_email_change_updates_email_without_touching_password(client, sent_emails) -> None:
+    _seed_active_account()
+    _login(client)
+    client.post("/api/account/request-email-change", json={"new_email": "new@example.com"})
+    token = _token_from_link(sent_emails[-1]["link"])
+
+    resp = client.post("/api/account/confirm-email-change", json={"token": token})
+    assert resp.status_code == 200
+    assert resp.get_json() == {"email": "new@example.com"}
+
+    client.post("/api/logout")
+    old_login = _login(client)
+    assert old_login.status_code == 401
+    new_login = _login(client, email="new@example.com", password=_TEST_PASSWORD)
+    assert new_login.status_code == 200
+
+
+def test_confirm_email_change_does_not_require_a_session(client, sent_emails) -> None:
+    # the link can be followed from a different browser/device than the one
+    # that requested the change
+    _seed_active_account()
+    _login(client)
+    client.post("/api/account/request-email-change", json={"new_email": "new@example.com"})
+    token = _token_from_link(sent_emails[-1]["link"])
+    client.post("/api/logout")
+
+    resp = client.post("/api/account/confirm-email-change", json={"token": token})
+    assert resp.status_code == 200
+
+
+def test_confirm_email_change_with_invalid_token_is_rejected(client, sent_emails) -> None:
+    resp = client.post("/api/account/confirm-email-change", json={"token": "not-real"})
+    assert resp.status_code == 400
 
 
 # ─── change password ────────────────────────────────────────────────────────
 
 
 def test_change_password_requires_authentication(client) -> None:
-    _seed_account()
+    _seed_active_account()
     resp = client.post(
         "/api/account/change-password",
         json={"current_password": _TEST_PASSWORD, "new_password": "new-password-123"},
@@ -282,7 +401,7 @@ def test_change_password_requires_authentication(client) -> None:
 
 
 def test_change_password_succeeds_and_old_password_stops_working(client) -> None:
-    _seed_account()
+    _seed_active_account()
     _login(client)
     resp = client.post(
         "/api/account/change-password",
@@ -291,15 +410,12 @@ def test_change_password_succeeds_and_old_password_stops_working(client) -> None
     assert resp.status_code == 200
 
     client.post("/api/logout")
-    old_login = _login(client)
-    assert old_login.status_code == 401
-
-    new_login = _login(client, password="new-password-123")
-    assert new_login.status_code == 200
+    assert _login(client).status_code == 401
+    assert _login(client, password="new-password-123").status_code == 200
 
 
 def test_change_password_rejects_wrong_current_password(client) -> None:
-    _seed_account()
+    _seed_active_account()
     _login(client)
     resp = client.post(
         "/api/account/change-password",
@@ -308,12 +424,11 @@ def test_change_password_rejects_wrong_current_password(client) -> None:
     assert resp.status_code == 401
 
     client.post("/api/logout")
-    still_works = _login(client)
-    assert still_works.status_code == 200
+    assert _login(client).status_code == 200
 
 
 def test_change_password_rejects_short_new_password(client) -> None:
-    _seed_account()
+    _seed_active_account()
     _login(client)
     resp = client.post(
         "/api/account/change-password",

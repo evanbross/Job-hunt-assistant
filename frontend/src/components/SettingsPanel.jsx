@@ -33,7 +33,9 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { apiFetch } from "../utils/apiClient.js";
 import { collectionModeLabel } from "../utils/careerSiteUtils.js";
+import { describeFetchError } from "../utils/fetchErrorUtils.js";
 import ApplicationProfilePanel from "./ApplicationProfilePanel.jsx";
 import Modal from "./common/Modal.jsx";
 import ContactsImport from "./ContactsImport.jsx";
@@ -45,6 +47,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
   const [activeSection, setActiveSection] = useState(() => initialSection || "resume");
 
   const sections = [
+    { id: "account", label: "Account" },
     { id: "resume", label: "Resume" },
     { id: "application_profile", label: "Application Profile" },
     { id: "contacts", label: "LinkedIn Contacts" },
@@ -78,6 +81,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
 
       {/* Content */}
       <div style={{ flex: 1 }}>
+        {activeSection === "account" && <AccountSection />}
         {activeSection === "resume" && <ResumeUpload />}
         {activeSection === "application_profile" && <ApplicationProfilePanel />}
         {activeSection === "contacts" && <ContactsImport />}
@@ -91,6 +95,218 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
         {activeSection === "feedback" && <FeedbackSection />}
         {activeSection === "config" && <ConfigSection />}
         {activeSection === "setup" && <SetupWizardPanel onSetupComplete={onSetupComplete} />}
+      </div>
+    </div>
+  );
+}
+
+// ── Account ───────────────────────────────────────────────────────────────────
+
+// ai: claude-sonnet-5 | 2026-08-21
+function AccountSection() {
+  const [account, setAccount] = useState(null); // { name, email }
+  const [name, setName] = useState("");
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameSaved, setNameSaved] = useState(false);
+
+  const [newEmail, setNewEmail] = useState("");
+  const [emailSubmitting, setEmailSubmitting] = useState(false);
+  const [emailChangeSent, setEmailChangeSent] = useState(false);
+  const [emailError, setEmailError] = useState("");
+
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordSaved, setPasswordSaved] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const res = await apiFetch("/api/account");
+      if (!res.ok) return;
+      const data = await res.json();
+      setAccount(data);
+      setName(data.name || "");
+    })();
+  }, []);
+
+  const saveName = async () => {
+    setNameSaving(true);
+    try {
+      const res = await apiFetch("/api/account", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        window.alert(data.error || `Save failed (${res.status})`);
+        return;
+      }
+      setNameSaved(true);
+      setTimeout(() => setNameSaved(false), 2500);
+    } catch (err) {
+      window.alert(describeFetchError(err));
+    } finally {
+      setNameSaving(false);
+    }
+  };
+
+  const submitEmailChange = async (e) => {
+    e.preventDefault();
+    if (emailSubmitting) return;
+    setEmailSubmitting(true);
+    setEmailError("");
+    try {
+      const res = await apiFetch("/api/account/request-email-change", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_email: newEmail }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEmailError(data.error || `Request failed (HTTP ${res.status})`);
+        return;
+      }
+      setEmailChangeSent(true);
+      setNewEmail("");
+    } catch (err) {
+      setEmailError(describeFetchError(err));
+    } finally {
+      setEmailSubmitting(false);
+    }
+  };
+
+  const submitPasswordChange = async (e) => {
+    e.preventDefault();
+    if (passwordSaving) return;
+    if (newPassword !== confirmPassword) {
+      setPasswordError("New passwords do not match.");
+      return;
+    }
+    setPasswordSaving(true);
+    setPasswordError("");
+    try {
+      const res = await apiFetch("/api/account/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPasswordError(data.error || `Request failed (HTTP ${res.status})`);
+        return;
+      }
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordSaved(true);
+      setTimeout(() => setPasswordSaved(false), 2500);
+    } catch (err) {
+      setPasswordError(describeFetchError(err));
+    } finally {
+      setPasswordSaving(false);
+    }
+  };
+
+  if (!account) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+
+  return (
+    <div>
+      <SectionHeader title="Account" />
+
+      <h3 style={sectionSubheadingStyle}>Name</h3>
+      <div style={formBox}>
+        <label style={labelStyle}>
+          Name
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+        </label>
+        <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
+          <button className="btn-primary" onClick={saveName} disabled={nameSaving}>
+            {nameSaving ? "Saving…" : "Save"}
+          </button>
+          {nameSaved && <span style={{ color: "var(--green)", fontSize: "13px" }}>Saved!</span>}
+        </div>
+      </div>
+
+      <h3 style={{ ...sectionSubheadingStyle, marginTop: "24px" }}>Email</h3>
+      <div style={formBox}>
+        <p style={{ margin: "0 0 12px 0", fontSize: "13px", color: "var(--text)" }}>
+          Current email: <strong>{account.email}</strong>
+        </p>
+        {emailChangeSent ? (
+          <p style={{ color: "var(--green)", fontSize: "13px", margin: 0 }}>
+            Check your new inbox for a confirmation link. Your current email keeps
+            working until you click it.
+          </p>
+        ) : (
+          <form onSubmit={submitEmailChange}>
+            {emailError && <div style={{ color: "var(--red)", fontSize: "13px", marginBottom: "10px" }}>{emailError}</div>}
+            <label style={labelStyle}>
+              New email
+              <input
+                type="email"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                placeholder="you@example.com"
+                required
+              />
+              <span style={helpTextStyle}>
+                We'll send a verification link to the new address. Your password is
+                not affected.
+              </span>
+            </label>
+            <button type="submit" className="btn-primary" style={{ marginTop: "12px" }} disabled={emailSubmitting}>
+              {emailSubmitting ? "Sending…" : "Send verification email"}
+            </button>
+          </form>
+        )}
+      </div>
+
+      <h3 style={{ ...sectionSubheadingStyle, marginTop: "24px" }}>Change password</h3>
+      <div style={formBox}>
+        {passwordError && <div style={{ color: "var(--red)", fontSize: "13px", marginBottom: "10px" }}>{passwordError}</div>}
+        <form onSubmit={submitPasswordChange}>
+          <div style={formGrid}>
+            <label style={labelStyle}>
+              Current password
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                required
+              />
+            </label>
+            <label style={labelStyle}>
+              New password
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                required
+              />
+            </label>
+            <label style={labelStyle}>
+              Confirm new password
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                required
+              />
+            </label>
+          </div>
+          <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
+            <button type="submit" className="btn-primary" disabled={passwordSaving}>
+              {passwordSaving ? "Saving…" : "Change password"}
+            </button>
+            {passwordSaved && <span style={{ color: "var(--green)", fontSize: "13px" }}>Saved!</span>}
+          </div>
+        </form>
       </div>
     </div>
   );

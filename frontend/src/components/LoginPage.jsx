@@ -32,9 +32,10 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-// ai: claude-sonnet-5 | 2026-08-21 — registration is open (multi-tenancy),
-// so this is a normal Sign In / Create Account toggle now, not a one-time
-// bootstrap gate. GET /api/session no longer reports has_account.
+// ai: claude-sonnet-5 | 2026-08-21 — registration is email-verified now:
+// "Create account" submits an email only and shows a "check your email"
+// message. The password is set later, on /verify-account (see
+// VerifyAccountPage.jsx), after the emailed link is followed.
 import { useState } from "react";
 import { apiFetch } from "../utils/apiClient.js";
 import { describeFetchError } from "../utils/fetchErrorUtils.js";
@@ -87,6 +88,11 @@ const styles = {
     fontSize: "13px",
     marginBottom: "14px",
   },
+  success: {
+    color: "var(--green, #1a8a4a)",
+    fontSize: "13px",
+    lineHeight: "1.5",
+  },
   toggle: {
     marginTop: "16px",
     fontSize: "13px",
@@ -101,10 +107,9 @@ const styles = {
 };
 
 export default function LoginPage({ onLoginSuccess }) {
-  const [mode, setMode] = useState("login"); // "login" | "create"
+  const [mode, setMode] = useState("login"); // "login" | "create" | "check_email"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -114,36 +119,54 @@ export default function LoginPage({ onLoginSuccess }) {
     setMode(nextMode);
     setError("");
     setPassword("");
-    setConfirmPassword("");
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (submitting) return;
-    if (isCreate && password !== confirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
     setSubmitting(true);
     setError("");
     try {
       const res = await apiFetch(isCreate ? "/api/account" : "/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify(isCreate ? { email } : { email, password }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(data.error || `Request failed (HTTP ${res.status})`);
         return;
       }
-      onLoginSuccess();
+      if (isCreate) {
+        setMode("check_email");
+      } else {
+        onLoginSuccess();
+      }
     } catch (err) {
       setError(describeFetchError(err));
     } finally {
       setSubmitting(false);
     }
   };
+
+  if (mode === "check_email") {
+    return (
+      <div style={styles.wrap}>
+        <div style={styles.card}>
+          <div style={styles.logo}>💼 Job Hunt Assistant</div>
+          <div style={styles.success}>
+            We sent a verification link to <strong>{email}</strong>. Open it
+            to set your password and finish creating your account.
+          </div>
+          <div style={styles.toggle}>
+            <span style={styles.toggleLink} onClick={() => switchMode("login")}>
+              Back to sign in
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={styles.wrap}>
@@ -166,27 +189,15 @@ export default function LoginPage({ onLoginSuccess }) {
               required
             />
           </div>
-          <div style={styles.field}>
-            <label style={styles.label} htmlFor="login-password">Password</label>
-            <input
-              id="login-password"
-              type="password"
-              autoComplete={isCreate ? "new-password" : "current-password"}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={styles.input}
-              required
-            />
-          </div>
-          {isCreate && (
+          {!isCreate && (
             <div style={styles.field}>
-              <label style={styles.label} htmlFor="login-confirm-password">Confirm password</label>
+              <label style={styles.label} htmlFor="login-password">Password</label>
               <input
-                id="login-confirm-password"
+                id="login-password"
                 type="password"
-                autoComplete="new-password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 style={styles.input}
                 required
               />
@@ -194,8 +205,8 @@ export default function LoginPage({ onLoginSuccess }) {
           )}
           <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={submitting}>
             {submitting
-              ? (isCreate ? "Creating account…" : "Signing in…")
-              : (isCreate ? "Create account" : "Sign in")}
+              ? (isCreate ? "Sending…" : "Signing in…")
+              : (isCreate ? "Send verification email" : "Sign in")}
           </button>
         </form>
         <div style={styles.toggle}>

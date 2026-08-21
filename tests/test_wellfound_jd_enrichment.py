@@ -236,7 +236,7 @@ def test_scan_enriches_wellfound_job_via_fetcher(
     dsn = pg_dsn
     repos = open_repositories(dsn)
     try:
-        account = repos["app_account"].create("owner@example.com", "hash")
+        account = repos["app_account"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         repos["sources"].insert(
             user_id,

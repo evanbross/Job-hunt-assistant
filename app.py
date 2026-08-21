@@ -120,11 +120,16 @@ logging.getLogger("werkzeug").addFilter(_PollFilter())
 
 # ─── App setup ────────────────────────────────────────────────────────────────
 
-app = Flask(
-    __name__,
-    static_folder=str(config.FRONTEND_DIST),
-    static_url_path="",
-)
+# ai: claude-sonnet-5 | 2026-08-21 — static_folder=None disables Flask's own
+# auto-registered /<path:filename> static route. That route used to shadow
+# routes/system.py's serve_frontend() catch-all for any path that isn't a
+# literal file in dist/ (both rules match the same pattern; Flask's built-in
+# one wins and 404s on real-file misses instead of falling through to
+# index.html) — invisible until the app grew actual browser-navigable
+# client-side routes (/verify-account, /confirm-email-change), which always
+# 404'd. serve_frontend() already reimplements the same file-or-index.html
+# logic via send_from_directory, so nothing is lost.
+app = Flask(__name__)
 app.secret_key = config.FLASK_SECRET_KEY
 
 # ai: claude-sonnet-5 | 2026-08-20
@@ -158,8 +163,20 @@ _cors_origins = (
 CORS(app, resources={r"/api/*": {"origins": _cors_origins, "supports_credentials": True}})
 
 _API_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# ai: claude-sonnet-5 | 2026-08-21
+# (method, path) pairs, not bare paths: /api/account now has both a public
+# method (POST — start registration) and session-gated ones (GET/PUT — read
+# or edit the logged-in account), so "is this path allowlisted" alone can no
+# longer answer the question.
 _APP_LOGIN_ALLOWLIST = frozenset(
-    {"/api/login", "/api/account", "/api/session", "/api/system/health"}
+    {
+        ("POST", "/api/login"),
+        ("POST", "/api/account"),
+        ("POST", "/api/account/complete-registration"),
+        ("POST", "/api/account/confirm-email-change"),
+        ("GET", "/api/session"),
+        ("GET", "/api/system/health"),
+    }
 )
 
 
@@ -167,16 +184,26 @@ _APP_LOGIN_ALLOWLIST = frozenset(
 def _require_app_login() -> tuple[flask.Response, int] | None:
     """Reject any /api/* request without an active app-login session.
 
-    Single-owner login gate — see routes/session_auth.py. Everything under
+    Multi-tenant login gate — see routes/session_auth.py. Everything under
     /api/* requires a prior POST /api/login except the narrow allowlist
-    above (POST /api/account is the bootstrap "create my one account" route
-    — it can only ever succeed once, see app_account's schema constraint, so
-    leaving it unauthenticated doesn't weaken the gate). This deliberately
-    includes the existing Google OAuth routes (/api/auth/*): granting Gmail
-    access should only be reachable once already logged into the app, not a
-    second anonymous entry point.
+    above:
+    - POST /api/account starts registration (email only, no password yet)
+      and POST /api/account/complete-registration finishes it — neither can
+      require a session, since there isn't one until registration completes.
+    - POST /api/account/confirm-email-change is deliberately unauthenticated
+      too: possession of the token mailed to the new address is the proof,
+      not an existing session (the same shape as routes/auth.py's OAuth
+      state dance) — it can be followed from a different browser/device than
+      the one that requested the change.
+    - GET /api/session and GET /api/system/health are read-only status
+      checks the login page itself needs before anyone is authenticated.
+    This deliberately excludes the existing Google OAuth routes
+    (/api/auth/*): granting Gmail access should only be reachable once
+    already logged into the app, not a second anonymous entry point.
     """
-    if not request.path.startswith("/api/") or request.path in _APP_LOGIN_ALLOWLIST:
+    if not request.path.startswith("/api/"):
+        return None
+    if (request.method, request.path) in _APP_LOGIN_ALLOWLIST:
         return None
     if session.get("authenticated"):
         return None

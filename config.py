@@ -156,6 +156,22 @@ GMAIL_SCOPES: list[str] = (
 )
 GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:5004/api/auth/google/callback"
 
+# ─── Outbound email (account verification) ───────────────────────────────────
+# ai: claude-sonnet-5 | 2026-08-21
+# Defaults point at ../infra's Mailhog (a local SMTP catcher, UI at
+# mailhog.localhost) so local dev works with zero config. Production
+# overrides these env vars with a real relay (a transactional provider or a
+# dedicated sending account) — see backend/email/smtp_sender.py.
+SMTP_HOST: str = os.getenv("SMTP_HOST", "localhost")
+SMTP_PORT: int = int(os.getenv("SMTP_PORT", "1025"))
+SMTP_USER: str = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "false").lower() == "true"
+SMTP_FROM_ADDRESS: str = os.getenv("SMTP_FROM_ADDRESS", "noreply@jobhuntassistant.local")
+# Same hardcoded-local-URL pattern as GOOGLE_OAUTH_REDIRECT_URI above — used
+# to build the links sent in verification emails.
+APP_BASE_URL: str = os.getenv("APP_BASE_URL", "http://localhost:5004")
+
 # ─── AI Models ────────────────────────────────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-08-19
 # ai_provider/openai_model/ollama_base_url/ollama_model are user preferences,

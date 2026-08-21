@@ -32,7 +32,7 @@ from backend.db import (
 
 
 def _make_user_id(conn) -> int:
-    account = PostgresAppAccountRepository(conn).create("owner@example.com", "hash")
+    account = PostgresAppAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
     conn.commit()
     return account["id"]
 
@@ -95,7 +95,7 @@ def test_profile_upsert_is_scoped_per_user(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_a = _make_user_id(conn)
-        account_b = PostgresAppAccountRepository(conn).create("second@example.com", "hash")
+        account_b = PostgresAppAccountRepository(conn).create_pending("second@example.com", "seed-second@example.com", "2099-01-01")
         conn.commit()
         user_b = account_b["id"]
 
@@ -181,7 +181,7 @@ def test_answers_upsert_is_scoped_per_user(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_a = _make_user_id(conn)
-        account_b = PostgresAppAccountRepository(conn).create("second@example.com", "hash")
+        account_b = PostgresAppAccountRepository(conn).create_pending("second@example.com", "seed-second@example.com", "2099-01-01")
         conn.commit()
         user_b = account_b["id"]
 
