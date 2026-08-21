@@ -135,6 +135,14 @@ class AIProviderClient:
         kwargs: dict[str, Any] = {
             "model": self._anthropic_model,
             "max_tokens": max_tokens,
+            # ai: claude-sonnet-5 | 2026-08-19
+            # Claude Sonnet 5 (and Opus 5) run adaptive thinking by default when
+            # `thinking` is omitted, unlike Sonnet 4.6. `max_tokens` caps thinking +
+            # response text together, so short structured completions (cover letters,
+            # fit scoring, extraction) were exhausting max_tokens on thinking alone and
+            # returning a thinking-only response with no text block. None of these
+            # call sites need extended reasoning, so disable it explicitly.
+            "thinking": {"type": "disabled"},
             "messages": [
                 {"role": message.role, "content": message.content}
                 for message in messages
@@ -168,9 +176,18 @@ class AIProviderClient:
                 time.sleep(delay)
             try:
                 response = self._anthropic_client.messages.create(**kwargs)
-                if not response.content:
-                    raise AIProviderError("Anthropic returned an empty response")
-                return response.content[0].text.strip()
+                # ai: claude-sonnet-5 | 2026-08-19
+                # Response content can include non-text blocks (e.g. ThinkingBlock)
+                # ahead of the text block, so filter by type instead of indexing [0].
+                text_blocks = [
+                    block.text for block in response.content if block.type == "text"
+                ]
+                if not text_blocks:
+                    raise AIProviderError(
+                        "Anthropic returned no text content "
+                        f"(block types: {[b.type for b in response.content]})"
+                    )
+                return "".join(text_blocks).strip()
             except APIStatusError as exc:
                 raise AIProviderError(
                     _anthropic_error_message(exc), status_code=exc.status_code
