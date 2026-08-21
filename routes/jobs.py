@@ -87,6 +87,7 @@ from backend.scoring.job_validator import (
 from backend.scoring.skip_reasons import (
     VALID_SKIP_REASONS,  # ai: claude-fable-5 | 2026-07-16
 )
+from backend.scoring.workplace_type import ensure_workplace_type_preserved
 from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-17
     UnsafeUrlError,
     safe_urlopen,
@@ -848,7 +849,15 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
             url,
         )
         fetched = scanner.scan_single_job_url(job.get("source") or "", url)
-        new_text = fetched["job_text"]
+        # ai: claude-sonnet-5 | 2026-08-21
+        # LinkedIn's fetched JD (guest jobs API) never carries the
+        # Hybrid/Remote/On-site top-card badge — recover it from whatever
+        # text was already stored (email digest snippet, prior DOM capture)
+        # before it's replaced.
+        prior_text = str(
+            job.get("job_description") or job.get("raw_jd_snippet") or ""
+        )
+        new_text = ensure_workplace_type_preserved(fetched["job_text"], prior_text)
         logger.info(
             "refresh-from-url: scan_single_job_url returned in %.1fs, text length=%d",
             time.monotonic() - t0,

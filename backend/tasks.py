@@ -88,6 +88,7 @@ from backend.scoring.jd_enrichment import (
     is_richer_description,
     job_description_text,
 )
+from backend.scoring.workplace_type import ensure_workplace_type_preserved
 from backend.utils.utils import get_repos, parse_positive_int
 
 logger = logging.getLogger(__name__)
@@ -459,8 +460,15 @@ def run_import_task(
                     else:
                         fetched_text = fetched_job.get("job_text", "")
                         if is_richer_description(fetched_text, existing_job):
-                            richer_text = fetched_text
-                            incoming_len = len(fetched_text)
+                            # ai: claude-sonnet-5 | 2026-08-21
+                            # LinkedIn's fetched JD (guest jobs API) never
+                            # carries the Hybrid/Remote/On-site top-card badge
+                            # — recover it from the existing stored text
+                            # before it's replaced.
+                            richer_text = ensure_workplace_type_preserved(
+                                fetched_text, job_description_text(existing_job)
+                            )
+                            incoming_len = len(richer_text)
 
                 if richer_text is not None:
                     _enrich_job_description(user_id, repos, existing_job, richer_text)

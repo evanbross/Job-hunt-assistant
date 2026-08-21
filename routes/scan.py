@@ -73,6 +73,7 @@ from backend.scoring.job_validator import (
     import_warnings_to_json,
     normalize_and_validate,
 )
+from backend.scoring.workplace_type import ensure_workplace_type_preserved
 from backend.utils.utils import ACTIVE_JOB_STATUSES, current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
@@ -715,7 +716,13 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                             )
                             fetched_text = fetched.get("job_text", "")
                         if len(fetched_text) >= 400:
-                            jd_text = fetched_text
+                            # ai: claude-sonnet-5 | 2026-08-21
+                            # LinkedIn's fetched JD (guest jobs API) never carries
+                            # the Hybrid/Remote/On-site top-card badge — recover it
+                            # from the email digest text before it's discarded.
+                            jd_text = ensure_workplace_type_preserved(
+                                fetched_text, email_body
+                            )
                             logger.debug(
                                 "JD enrichment succeeded for %s (%d chars)",
                                 job_url_str,

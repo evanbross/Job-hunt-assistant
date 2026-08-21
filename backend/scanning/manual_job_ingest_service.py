@@ -50,6 +50,7 @@ from backend.scoring.job_validator import (
     import_warnings_to_json,
     normalize_and_validate,
 )
+from backend.scoring.workplace_type import ensure_workplace_type_preserved
 from backend.utils.company_urls import company_from_ats_url, company_from_career_domain
 
 logger = logging.getLogger(__name__)
@@ -184,7 +185,13 @@ class ManualJobIngestService:
                     )
                     fetched_text = fetched_job.get("job_text", "")
                     if len(fetched_text) >= _MIN_DESCRIPTION_CHARS:
-                        score_body = fetched_text
+                        # ai: claude-sonnet-5 | 2026-08-21
+                        # LinkedIn's fetched JD (guest jobs API) never carries the
+                        # Hybrid/Remote/On-site top-card badge — recover it from
+                        # the original DOM capture before it's discarded.
+                        score_body = ensure_workplace_type_preserved(
+                            fetched_text, normalized_text
+                        )
                     else:
                         logger.debug(
                             "JD enrichment returned too little content for %s (%d chars)",
