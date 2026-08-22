@@ -88,6 +88,7 @@ _ALL_TABLES = (
     "ack_patterns",
     "stage_statuses",
     "app_settings",
+    "system_settings",
     "resume",
     "application_profile",
     "application_answers",

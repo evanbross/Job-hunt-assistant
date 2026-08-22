@@ -47,8 +47,8 @@ from backend.scoring.jd_enrichment import job_description_text
 
 
 class CoverLetterGenerator:
-    def __init__(self) -> None:
-        self._client = AIProviderClient()
+    def __init__(self, user_id: int) -> None:
+        self._client = AIProviderClient(user_id)
 
     def generate(
         self,

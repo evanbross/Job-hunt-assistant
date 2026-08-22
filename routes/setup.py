@@ -51,7 +51,9 @@ from dotenv import dotenv_values, set_key
 from flask import Blueprint, jsonify, request
 
 import config
+from backend.settings_service import is_setting_configured
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +61,12 @@ setup_bp = Blueprint("setup", __name__)
 
 _ENV_PATH: Path = config.BASE_DIR / ".env"
 
-# ai: claude-sonnet-5 | 2026-08-19 — only secrets belong in .env; ollama/openai
-# model + URL preferences live solely in data/runtime_config.json (PUT
-# /api/config) to avoid the two files drifting out of sync.
-_ALLOWED_ENV_KEYS: frozenset[str] = frozenset(
-    {
-        "ANTHROPIC_API_KEY",
-        "FLASK_SECRET_KEY",
-        "OPENAI_API_KEY",
-    }
-)
+# ai: claude-sonnet-5 | 2026-08-21 — ANTHROPIC_API_KEY/OPENAI_API_KEY moved to
+# per-user encrypted settings (PUT /api/config, see backend/settings_service.py)
+# so each account brings its own key/billing. FLASK_SECRET_KEY is the only
+# remaining .env-only secret -- a process-level signing key, not a per-user
+# or per-instance setting a UI would ever toggle at runtime.
+_ALLOWED_ENV_KEYS: frozenset[str] = frozenset({"FLASK_SECRET_KEY"})
 
 
 # ─── Status ───────────────────────────────────────────────────────────────────
@@ -81,7 +79,9 @@ def setup_status() -> Any:
     provider = runtime.get("ai_provider", config.AI_PROVIDER)
     env_vals = _read_env_file()
 
-    ai_done = _check_ai_provider_done(provider, env_vals, runtime)
+    user_id = current_user_id()
+    with get_repos() as repos:
+        ai_done = _check_ai_provider_done(provider, runtime, user_id, repos)
 
     creds_done = config.GOOGLE_CREDENTIALS_FILE.exists()
     auth_done = config.GOOGLE_TOKEN_FILE.exists()
@@ -125,15 +125,14 @@ def setup_status() -> Any:
 
 def _check_ai_provider_done(
     provider: str,
-    env_vals: dict[str, str],
     runtime: dict[str, Any],
+    user_id: int,
+    repos: dict[str, Any],
 ) -> bool:
     if provider == "anthropic":
-        key = env_vals.get("ANTHROPIC_API_KEY") or config.ANTHROPIC_API_KEY
-        return bool(key and key.strip())
+        return is_setting_configured("anthropic_api_key", user_id, repos)
     if provider == "openai":
-        key = env_vals.get("OPENAI_API_KEY") or config.OPENAI_API_KEY
-        return bool(key and key.strip())
+        return is_setting_configured("openai_api_key", user_id, repos)
     if provider == "ollama":
         base_url = runtime.get("ollama_base_url") or config.OLLAMA_BASE_URL
         return bool(base_url and base_url.strip())

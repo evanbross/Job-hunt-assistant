@@ -50,6 +50,8 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.scoring.jd_enrichment import rescore_active_queue_jobs
+from backend.settings_registry import SETTINGS, SYSTEM_SETTING_KEYS, USER_SETTING_KEYS
+from backend.settings_service import get_setting, is_setting_configured, set_setting
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
 from backend.utils.utils import current_user_id, get_repos
 
@@ -63,10 +65,25 @@ _VALID_PENALTY_SCOPES: frozenset[str] = frozenset({"title", "company", "body", "
 # ─── Config routes ────────────────────────────────────────────────────────────
 
 
+def _read_user_settings_into(cfg: dict[str, object], user_id: int, repos: dict) -> None:
+    """Merge every USER_SETTING_KEYS entry into *cfg* -- secrets as a "_set"
+    boolean (never the plaintext), everything else as its live value."""
+    for key in USER_SETTING_KEYS:
+        if SETTINGS[key].is_secret:
+            cfg[f"{key}_set"] = is_setting_configured(key, user_id, repos)
+        else:
+            cfg[key] = get_setting(key, user_id, repos)
+
+
 @settings_bp.route("/config")
 def get_config() -> ResponseReturnValue:
     cfg = config.load_runtime_config()
     cfg["default_snooze_days"] = config.DEFAULT_SNOOZE_DAYS
+
+    user_id = current_user_id()
+    with get_repos() as repos:
+        _read_user_settings_into(cfg, user_id, repos)
+
     return jsonify(cfg)
 
 
@@ -249,14 +266,38 @@ def update_config() -> ResponseReturnValue:
 
     config.save_runtime_config(cfg)
 
+    # ai: claude-sonnet-5 | 2026-08-21
+    # Per-user secrets/creds go through settings_service, not runtime_config.json
+    # -- keeps them encrypted and scoped to the account that set them. An empty
+    # string for a secret means "leave it unchanged" (the UI never round-trips
+    # the real value, so an empty submit can't mean anything else).
+    # user_id is deliberately resolved here, not at the top of the function --
+    # every branch above this point is a plain validation check that must be
+    # able to return its 400 without requiring a logged-in session (see
+    # tests/test_ssrf_protection.py, which calls this route directly against a
+    # bare Flask app with no session to test URL validation in isolation).
+    user_id = current_user_id()
+    if any(key in data for key in USER_SETTING_KEYS):
+        with get_repos() as repos:
+            for key in USER_SETTING_KEYS:
+                if key not in data:
+                    continue
+                value = str(data.get(key) or "")
+                if SETTINGS[key].is_secret and not value.strip():
+                    continue
+                set_setting(key, value, user_id, repos)
+
     profile_changed = (
         str(cfg.get("candidate_profile_path") or "").strip() != previous_profile_path
     )
     rescore_summary = {"rescored": 0, "failed": 0}
     if profile_changed:
         with get_repos() as repos:
-            rescore_summary = rescore_active_queue_jobs(current_user_id(), repos)
+            rescore_summary = rescore_active_queue_jobs(user_id, repos)
             repos["conn"].commit()
+
+    with get_repos() as repos:
+        _read_user_settings_into(cfg, user_id, repos)
 
     return jsonify(
         {
@@ -326,6 +367,55 @@ def test_ollama_connection() -> ResponseReturnValue:
             "message": f"Connected, but model '{model}' was not found (no models installed).",
         }
     )
+
+
+# ─── System settings routes (admin-only) ──────────────────────────────────────
+# ai: claude-sonnet-5 | 2026-08-21
+# Instance-wide config (SMTP relay, app base URL) — the same account on
+# every computer sees the same values here, unlike /api/config above.
+# Gated by app.py's _require_admin_for_system_settings before_request hook,
+# not a per-route check, so there's exactly one place that enforces it.
+
+
+def _read_system_settings(repos: dict) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key in SYSTEM_SETTING_KEYS:
+        if SETTINGS[key].is_secret:
+            result[f"{key}_set"] = is_setting_configured(key, None, repos)
+        else:
+            result[key] = get_setting(key, None, repos)
+    return result
+
+
+@settings_bp.route("/settings/system")
+def get_system_settings() -> ResponseReturnValue:
+    with get_repos() as repos:
+        result = _read_system_settings(repos)
+    return jsonify(result)
+
+
+@settings_bp.route("/settings/system", methods=["PUT"])
+def update_system_settings() -> ResponseReturnValue:
+    data: dict[str, object] | None = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    unknown = set(data.keys()) - SYSTEM_SETTING_KEYS
+    if unknown:
+        return jsonify({"error": f"Unknown settings: {sorted(unknown)}"}), 400
+
+    with get_repos() as repos:
+        for key, value in data.items():
+            # An empty string for a secret means "leave it unchanged" -- the
+            # UI never round-trips the real secret value, so an empty submit
+            # can only mean the admin didn't intend to change it.
+            if SETTINGS[key].is_secret and not str(value or "").strip():
+                continue
+            set_setting(key, str(value or ""), None, repos)
+
+        result = _read_system_settings(repos)
+
+    return jsonify(result)
 
 
 # ─── Penalty rule routes ──────────────────────────────────────────────────────

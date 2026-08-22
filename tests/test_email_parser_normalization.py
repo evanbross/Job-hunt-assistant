@@ -169,7 +169,7 @@ def test_parser_strips_bullet_from_ai_returned_company() -> None:
         ' "source": "WorkAtAStartup", "confidence": "high", "confidence_score": 90,'
         ' "confidence_reason": "test"}]'
     )
-    parser = EmailParser(client=client)
+    parser = EmailParser(1, client=client)
     results = parser.parse(
         "Manual pasted job listing", "manual@local", "some listing text"
     )
@@ -191,7 +191,7 @@ def test_keeps_existing_known_company() -> None:
 
 def test_parser_sends_later_digest_jobs_to_ai_client() -> None:
     client = FakeParserClient()
-    parser = EmailParser(client=client)
+    parser = EmailParser(1, client=client)
     late_job_title = "Principal Platform Engineer"
     body = "Top LinkedIn jobs for you\n" + ("filler\n" * 1200) + late_job_title
 
@@ -203,7 +203,7 @@ def test_parser_sends_later_digest_jobs_to_ai_client() -> None:
 
 def test_parser_extracts_all_linkedin_alert_cards_without_ai() -> None:
     client = FakeParserClient()
-    parser = EmailParser(client=client)
+    parser = EmailParser(1, client=client)
     body = """Your job alert for remote engineer
 Results from the new AI-powered job search
 
@@ -325,7 +325,7 @@ def test_parser_resolves_awstrack_tracking_urls_for_jobgether_emails(
     )
 
     client = AwstrackEchoingClient()
-    parser = EmailParser(client=client)
+    parser = EmailParser(1, client=client)
     body = f"Software Engineer\nApply here: {awstrack_url}"
 
     jobs = parser.parse("New job match", "Jobgether <no-reply@jobgether.com>", body)
@@ -340,7 +340,7 @@ def test_parser_detokenizes_url_when_llm_drops_brackets() -> None:
     the literal placeholder string (which previously caused unrelated jobs sharing
     the same placeholder to collide as false duplicates)."""
     client = TokenEchoingClient()
-    parser = EmailParser(client=client)
+    parser = EmailParser(1, client=client)
     body = "Apply here: https://jobs.example.com/postings/123"
 
     jobs = parser.parse("Job alert", "jobs@example.com", body)
@@ -363,7 +363,7 @@ def test_parser_resolves_sendgrid_tracking_urls_for_wttj_emails(
     )
 
     client = FakeParserClient()
-    parser = EmailParser(client=client)
+    parser = EmailParser(1, client=client)
     body = f"""New match for your search
 
 Senior Backend Engineer
@@ -406,7 +406,7 @@ def test_parser_decodes_html_entities_in_wttj_company_logo_alt(
     )
 
     client = FakeParserClient()
-    parser = EmailParser(client=client)
+    parser = EmailParser(1, client=client)
     body = f"""New match for your search
 
 Staff Engineer (AI-Assisted Engineering Practices)
@@ -427,7 +427,7 @@ View job: {sendgrid_url}
 
 def test_parser_extracts_welcome_to_the_jungle_jobs_from_urls_without_ai() -> None:
     client = FakeParserClient()
-    parser = EmailParser(client=client)
+    parser = EmailParser(1, client=client)
     body = """New match for your search
 
 Senior Backend Engineer
@@ -466,7 +466,7 @@ def test_parser_joins_split_title_for_wttj_short_token_url() -> None:
     Regression for jobs 2389/2390 which were imported as '(Guardian Monitoring)' and
     '(Storage)' instead of the full title."""
     client = FakeParserClient()
-    parser = EmailParser(client=client)
+    parser = EmailParser(1, client=client)
     body = """New matches for you
 
 Full Stack Engineer

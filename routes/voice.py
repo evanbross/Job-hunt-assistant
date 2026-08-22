@@ -32,7 +32,7 @@ from flask.typing import ResponseReturnValue
 
 from backend.db.readonly_role import get_readonly_database_url
 from backend.sql_guard import MAX_ROW_LIMIT, SqlGuardError, validate_select
-from backend.utils.utils import ai_error_http_status, safe_error_message
+from backend.utils.utils import ai_error_http_status, current_user_id, safe_error_message
 from backend.voice.voice_actions import VOICE_ACTIONS
 from backend.voice.voice_query import VoiceIntentError, classify, format_answer_text
 
@@ -54,7 +54,7 @@ def voice_query() -> ResponseReturnValue:
         return jsonify({"error": "text is too long"}), 400
 
     try:
-        intent = classify(text)
+        intent = classify(text, current_user_id())
     except VoiceIntentError as exc:
         logger.warning("Voice query intent unparseable: %s", exc)
         return jsonify(

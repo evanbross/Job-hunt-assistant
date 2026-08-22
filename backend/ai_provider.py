@@ -48,6 +48,8 @@ import httpx
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 
 import config
+from backend.db import open_repositories
+from backend.settings_service import get_setting
 from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-15
     UnsafeUrlError,
     safe_urlopen,
@@ -75,7 +77,10 @@ class AIProviderError(RuntimeError):
 class AIProviderClient:
     """Small provider adapter for Anthropic, OpenAI, and local Ollama text generation."""
 
-    def __init__(self, on_retry: Callable[[str], None] | None = None) -> None:
+    # ai: claude-sonnet-5 | 2026-08-21
+    def __init__(
+        self, user_id: int, on_retry: Callable[[str], None] | None = None
+    ) -> None:
         self._on_retry = on_retry
         cfg = config.load_runtime_config()
         self._provider = (
@@ -91,15 +96,30 @@ class AIProviderClient:
             .rstrip("/")
         )
         self._ollama_model = str(cfg.get("ollama_model") or config.OLLAMA_MODEL).strip()
+
+        # AI provider API keys are per-account secrets, not shared instance
+        # config — each account brings its own Anthropic/OpenAI billing.
+        # Opens its own short-lived connection (not backend.utils.utils'
+        # get_repos — that module imports AIProviderError from this one, so
+        # importing back from it here would be a circular import) so callers
+        # never need to manage a repos connection just to build this client.
+        repos = open_repositories(config.DATABASE_URL)
+        try:
+            anthropic_api_key = get_setting("anthropic_api_key", user_id, repos)
+            openai_api_key = get_setting("openai_api_key", user_id, repos)
+        finally:
+            repos["conn"].close()
+
+        self._openai_api_key = openai_api_key
         self._anthropic_client: Anthropic | None = (
             Anthropic(
-                api_key=config.ANTHROPIC_API_KEY,
+                api_key=anthropic_api_key,
                 http_client=httpx.Client(
                     verify=ssl.create_default_context(),
                     timeout=httpx.Timeout(120.0),
                 ),
             )
-            if config.ANTHROPIC_API_KEY
+            if anthropic_api_key
             else None
         )
 
@@ -205,8 +225,8 @@ class AIProviderClient:
         max_tokens: int,
         on_retry: Callable[[str], None] | None = None,
     ) -> str:
-        if not config.OPENAI_API_KEY:
-            raise AIProviderError("OPENAI_API_KEY is not set")
+        if not self._openai_api_key:
+            raise AIProviderError("OpenAI API key is not configured for this account")
         input_items: list[dict[str, str]] = []
         if system:
             input_items.append({"role": "developer", "content": system})
@@ -221,7 +241,7 @@ class AIProviderClient:
         response = self._post_json(
             "https://api.openai.com/v1/responses",
             payload,
-            headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
+            headers={"Authorization": f"Bearer {self._openai_api_key}"},
             on_retry=on_retry,
         )
         output_text = response.get("output_text")

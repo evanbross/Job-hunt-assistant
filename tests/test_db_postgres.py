@@ -463,3 +463,37 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         assert _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
     finally:
         conn.close()
+
+
+# ai: claude-sonnet-5 | 2026-08-21
+def test_first_account_becomes_admin_and_stays_admin_across_migrations(
+    pg_dsn: str,
+) -> None:
+    """See schema.py's _migrate() role-bootstrap block: whichever account
+    existed first (the placeholder pg_dsn's init_db() always creates, or --
+    on a real install -- the account that later claims it by registering)
+    becomes 'admin'; every later registration defaults to 'user'. Re-running
+    the migration must not change who's admin."""
+    conn = get_connection(pg_dsn)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, role FROM app_account ORDER BY id LIMIT 1")
+        first = cur.fetchone()
+        assert first["role"] == "admin"
+
+        account_repo = PostgresAppAccountRepository(conn)
+        second = account_repo.create_pending(
+            "second-user@example.com", "second-token", "2099-01-01"
+        )
+        conn.commit()
+        assert second is not None
+        assert second["role"] == "user"
+
+        _migrate(conn)  # idempotent re-run, e.g. app restart
+
+        cur.execute("SELECT role FROM app_account WHERE id = %s", (first["id"],))
+        assert cur.fetchone()["role"] == "admin"
+        cur.execute("SELECT role FROM app_account WHERE id = %s", (second["id"],))
+        assert cur.fetchone()["role"] == "user"
+    finally:
+        conn.close()

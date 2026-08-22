@@ -134,7 +134,7 @@ def run_re_evaluate_task(self, user_id: int) -> dict:
 
         _publish(message=f"Re-evaluating {total} job{'s' if total != 1 else ''}…")
 
-        scorer = FitScorer()
+        scorer = FitScorer(user_id)
         dedup_checker = DuplicateChecker()
 
         rescored = 0
@@ -385,7 +385,7 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
     )
 
     try:
-        reply_text = AIProviderClient().complete(
+        reply_text = AIProviderClient(user_id).complete(
             system=system_prompt,
             messages=[
                 AIMessage(role=message["role"], content=message["content"])
@@ -489,7 +489,7 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
 
     scoring_text = scoring_text_for_job(job)
     try:
-        result = FitScorer().score(
+        result = FitScorer(user_id).score(
             job_title=str(job.get("job_title") or ""),
             company=str(job.get("company") or ""),
             email_body=scoring_text,
@@ -559,7 +559,7 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
     # Connection released before AI scoring
 
     try:
-        result = FitScorer().score(
+        result = FitScorer(user_id).score(
             job_title=str(job.get("job_title") or ""),
             company=str(job.get("company") or ""),
             email_body=description,

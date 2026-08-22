@@ -173,6 +173,13 @@ class IAppSettingsRepository(Protocol):
     def set(self, user_id: int, key: str, value: str) -> None: ...
 
 
+# ai: claude-sonnet-5 | 2026-08-21
+@runtime_checkable
+class ISystemSettingsRepository(Protocol):
+    def get(self, key: str, default: str | None = None) -> str | None: ...
+    def set(self, key: str, value: str) -> None: ...
+
+
 @runtime_checkable
 class ICareerSiteSourceRepository(Protocol):
     def get_all(self, user_id: int) -> list[dict[str, Any]]: ...

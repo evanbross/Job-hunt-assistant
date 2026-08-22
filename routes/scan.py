@@ -313,11 +313,12 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
             return dict(state)
 
         parser = EmailParser(
+            user_id,
             client=AIProviderClient(
-                on_retry=lambda msg: _update_scan(connection_warning=msg)
-            )
+                user_id, on_retry=lambda msg: _update_scan(connection_warning=msg)
+            ),
         )
-        scorer = FitScorer()
+        scorer = FitScorer(user_id)
         dup_checker = DuplicateChecker()
 
         new_jobs: int = 0

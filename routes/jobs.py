@@ -778,7 +778,7 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
                 resume_text = resume_row["content"] if resume_row else ""
                 penalty_rules = repos["penalties"].get_enabled(user_id)
                 fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
-                scorer = FitScorer()
+                scorer = FitScorer(user_id)
                 result = scorer.score(
                     job_title=job.get("job_title", ""),
                     company=job.get("company", ""),
@@ -906,7 +906,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
     t_score = time.monotonic()
     logger.info("refresh-from-url: starting FitScorer for job %d", job_id)
     try:
-        score_result = FitScorer().score(
+        score_result = FitScorer(user_id).score(
             job_title=job.get("job_title") or "",
             company=job.get("company") or "",
             email_body=new_text,
@@ -1002,7 +1002,7 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
     # Connection released before AI scoring
 
     try:
-        score_result = FitScorer().score(
+        score_result = FitScorer(user_id).score(
             job_title=job.get("job_title") or "",
             company=job.get("company") or "",
             email_body=description,
@@ -1083,7 +1083,7 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
         )
 
     try:
-        parsed_jobs = EmailParser().parse(
+        parsed_jobs = EmailParser(user_id).parse(
             subject, sender, email_body, raw_html=email_raw_html
         )
     except Exception as exc:
@@ -1648,7 +1648,7 @@ def _run_rescan_broken_imports(user_id: int) -> None:
             _rescan_import_state.message = f"Rescanning {total} job{'s' if total != 1 else ''} across {len(groups)} email(s)…"
 
         gmail = GmailClient()
-        parser = EmailParser()
+        parser = EmailParser(user_id)
         dup_checker = DuplicateChecker()
 
         unskipped: list[dict] = []
@@ -1819,7 +1819,7 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                                 exc,
                             )
                     try:
-                        score_result = FitScorer().score(
+                        score_result = FitScorer(user_id).score(
                             job_title=title,
                             company=effective_company,
                             email_body=jd_text if jd_text else email_body,

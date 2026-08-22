@@ -182,7 +182,7 @@ def _re_evaluate_career_scan_results(
     penalty_rules: list[dict] = penalties_repo.get_enabled(user_id)
     fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback(user_id)
     rejection_rules = rejection_rules_repo.get_enabled(user_id)
-    scorer = FitScorer()
+    scorer = FitScorer(user_id)
     dedup_checker = DuplicateChecker()
 
     rescored = 0
@@ -408,7 +408,7 @@ def run_career_site_scan_task(
         )
 
         try:
-            scorer = FitScorer()
+            scorer = FitScorer(user_id)
         except Exception as exc:
             msg = "Career-site scan skipped: Anthropic scoring unavailable."
             logger.warning("%s %s", msg, exc)

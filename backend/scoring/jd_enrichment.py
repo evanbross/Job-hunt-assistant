@@ -115,7 +115,7 @@ def enrich_job_description(
         )
     repos["jobs"].update(user_id, job_id, update_fields)
     try:
-        result = FitScorer().score(
+        result = FitScorer(user_id).score(
             job_title=str(job.get("job_title") or ""),
             company=str(job.get("company") or ""),
             email_body=description,
@@ -149,7 +149,7 @@ def rescore_active_queue_jobs(user_id: int, repos: dict[str, object]) -> dict[st
     resume_text: str = resume_row["content"] if resume_row else ""
     penalty_rules: list[dict] = penalties_repo.get_enabled(user_id)
     fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback(user_id)
-    scorer = FitScorer()
+    scorer = FitScorer(user_id)
 
     rescored = 0
     failed = 0

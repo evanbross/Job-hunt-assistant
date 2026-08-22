@@ -51,8 +51,9 @@ from backend.scanning.sources.greenhouse_searcher import (
     GreenhouseLoginError,
     GreenhouseSearcher,
 )
+from backend.settings_service import get_setting
 from backend.tasks import run_import_task
-from backend.utils.utils import current_user_id
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +144,12 @@ def run_greenhouse_scan_task(self, user_id: int, search_url: str, max_jobs: int)
         self.update_state(state="PROGRESS", meta=dict(state))
 
     try:
+        # ai: claude-sonnet-5 | 2026-08-21 — greenhouse_email is now a
+        # per-user setting, not a shared .env credential.
+        with get_repos() as repos:
+            greenhouse_email = get_setting("greenhouse_email", user_id, repos)
         scraper = GreenhouseSearcher(
-            email=config.GREENHOUSE_EMAIL,
+            email=greenhouse_email,
             session_file=config.GREENHOUSE_SESSION_FILE,
         )
 
@@ -204,15 +209,17 @@ def run_greenhouse_scan_task(self, user_id: int, search_url: str, max_jobs: int)
 # ── Background manual-login thread ────────────────────────────────────────────
 
 
-def _run_manual_login() -> None:
+def _run_manual_login(user_id: int) -> None:
     _update_login(
         running=True,
         message="Browser open — enter your email, check for the code, complete sign-in (5 minutes)",
         error=None,
     )
     try:
+        with get_repos() as repos:
+            greenhouse_email = get_setting("greenhouse_email", user_id, repos)
         scraper = GreenhouseSearcher(
-            email=config.GREENHOUSE_EMAIL,
+            email=greenhouse_email,
             session_file=config.GREENHOUSE_SESSION_FILE,
         )
         scraper.manual_login(timeout_seconds=300)
@@ -353,14 +360,16 @@ def scan_status() -> ResponseReturnValue:
 @greenhouse_bp.route("/greenhouse/browser-login", methods=["POST"])
 def browser_login() -> ResponseReturnValue:
     """Open a visible browser for OTP-based manual login and save the session."""
+    user_id = current_user_id()
     with _login_lock:
         if _login_state.running:
             return jsonify({"error": "A scan or login is already running"}), 409
-    if _greenhouse_scan_is_active(current_user_id()):
+    if _greenhouse_scan_is_active(user_id):
         return jsonify({"error": "A scan or login is already running"}), 409
 
     threading.Thread(
         target=_run_manual_login,
+        args=(user_id,),
         daemon=True,
         name="greenhouse-manual-login",
     ).start()

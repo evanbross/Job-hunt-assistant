@@ -45,6 +45,17 @@ import SetupWizardPanel from "./SetupWizardPanel.jsx";
 // ai: claude-sonnet-5 | 2026-07-26
 export default function SettingsPanel({ initialSection, onSetupComplete }) {
   const [activeSection, setActiveSection] = useState(() => initialSection || "resume");
+  // ai: claude-sonnet-5 | 2026-08-21
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const res = await apiFetch("/api/account");
+      if (!res.ok) return;
+      const data = await res.json();
+      setIsAdmin(data.role === "admin");
+    })();
+  }, []);
 
   const sections = [
     { id: "account", label: "Account" },
@@ -61,6 +72,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
     { id: "feedback", label: "Learned Patterns" },
     { id: "config", label: "Configuration" },
     { id: "setup", label: "Setup" },
+    ...(isAdmin ? [{ id: "system", label: "System" }] : []),
   ];
   const sortedSections = [...sections].sort((a, b) => a.label.localeCompare(b.label));
 
@@ -95,6 +107,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
         {activeSection === "feedback" && <FeedbackSection />}
         {activeSection === "config" && <ConfigSection />}
         {activeSection === "setup" && <SetupWizardPanel onSetupComplete={onSetupComplete} />}
+        {activeSection === "system" && isAdmin && <SystemSettingsSection />}
       </div>
     </div>
   );
@@ -2064,28 +2077,53 @@ function ConfigSection() {
           </label>
 
           {cfg.ai_provider === "anthropic" && (
-            <label style={{ ...labelStyle, marginTop: "12px" }}>
-              Claude Model
-              <input
-                value={cfg.anthropic_model || ""}
-                onChange={(e) => setCfg({ ...cfg, anthropic_model: e.target.value })}
-                placeholder="claude-sonnet-4-6"
-              />
-            </label>
+            <>
+              <label style={{ ...labelStyle, marginTop: "12px" }}>
+                Claude Model
+                <input
+                  value={cfg.anthropic_model || ""}
+                  onChange={(e) => setCfg({ ...cfg, anthropic_model: e.target.value })}
+                  placeholder="claude-sonnet-4-6"
+                />
+              </label>
+              <label style={{ ...labelStyle, marginTop: "12px" }}>
+                Anthropic API Key
+                <input
+                  type="password"
+                  value={cfg.anthropic_api_key || ""}
+                  onChange={(e) => setCfg({ ...cfg, anthropic_api_key: e.target.value })}
+                  placeholder={cfg.anthropic_api_key_set ? "••••••••  (set — leave blank to keep)" : "sk-ant-..."}
+                />
+                <span style={helpTextStyle}>
+                  Your own key — billed to your Anthropic account, not shared with other accounts on this install.
+                </span>
+              </label>
+            </>
           )}
 
           {cfg.ai_provider === "openai" && (
-            <label style={{ ...labelStyle, marginTop: "12px" }}>
-              OpenAI Model
-              <input
-                value={cfg.openai_model || ""}
-                onChange={(e) => setCfg({ ...cfg, openai_model: e.target.value })}
-                placeholder="gpt-4.1"
-              />
-              <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", display: "block" }}>
-                Uses OPENAI_API_KEY from your environment.
-              </span>
-            </label>
+            <>
+              <label style={{ ...labelStyle, marginTop: "12px" }}>
+                OpenAI Model
+                <input
+                  value={cfg.openai_model || ""}
+                  onChange={(e) => setCfg({ ...cfg, openai_model: e.target.value })}
+                  placeholder="gpt-4.1"
+                />
+              </label>
+              <label style={{ ...labelStyle, marginTop: "12px" }}>
+                OpenAI API Key
+                <input
+                  type="password"
+                  value={cfg.openai_api_key || ""}
+                  onChange={(e) => setCfg({ ...cfg, openai_api_key: e.target.value })}
+                  placeholder={cfg.openai_api_key_set ? "••••••••  (set — leave blank to keep)" : "sk-..."}
+                />
+                <span style={helpTextStyle}>
+                  Your own key — billed to your OpenAI account, not shared with other accounts on this install.
+                </span>
+              </label>
+            </>
           )}
 
           {cfg.ai_provider === "ollama" && (
@@ -2122,6 +2160,38 @@ function ConfigSection() {
           )}
         </div>
 
+        {/* ai: claude-sonnet-5 | 2026-08-21 */}
+        <div style={{ marginTop: "20px" }}>
+          <label style={labelStyle}>
+            Wellfound Email
+            <input
+              value={cfg.wellfound_email || ""}
+              onChange={(e) => setCfg({ ...cfg, wellfound_email: e.target.value })}
+              placeholder="you@example.com"
+            />
+          </label>
+          <label style={{ ...labelStyle, marginTop: "12px" }}>
+            Wellfound Password
+            <input
+              type="password"
+              value={cfg.wellfound_password || ""}
+              onChange={(e) => setCfg({ ...cfg, wellfound_password: e.target.value })}
+              placeholder={cfg.wellfound_password_set ? "••••••••  (set — leave blank to keep)" : ""}
+            />
+          </label>
+          <label style={{ ...labelStyle, marginTop: "12px" }}>
+            Greenhouse Email
+            <input
+              value={cfg.greenhouse_email || ""}
+              onChange={(e) => setCfg({ ...cfg, greenhouse_email: e.target.value })}
+              placeholder="you@example.com"
+            />
+          </label>
+          <span style={helpTextStyle}>
+            Used by the Wellfound and Greenhouse board scanners — your own login, not shared with other accounts.
+          </span>
+        </div>
+
         <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <button className="btn-primary" onClick={save} disabled={saving}>
             {saving ? "Saving…" : "Save"}
@@ -2137,6 +2207,128 @@ function ConfigSection() {
               : ""}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── System settings (admin only) ──────────────────────────────────────────────
+
+// ai: claude-sonnet-5 | 2026-08-21
+function SystemSettingsSection() {
+  const [cfg, setCfg] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const res = await apiFetch("/api/settings/system");
+      if (!res.ok) return;
+      setCfg(await res.json());
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await apiFetch("/api/settings/system", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cfg),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        window.alert(data.error || `Save failed (${res.status})`);
+        return;
+      }
+      setCfg(data);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!cfg) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+
+  return (
+    <div>
+      <SectionHeader title="System" />
+      <div style={{ maxWidth: "560px" }}>
+        <span style={helpTextStyle}>
+          Instance-wide settings shared by every account on this install. Admin only.
+        </span>
+
+        <label style={{ ...labelStyle, marginTop: "16px" }}>
+          App Base URL
+          <input
+            value={cfg.app_base_url || ""}
+            onChange={(e) => setCfg({ ...cfg, app_base_url: e.target.value })}
+            placeholder="http://localhost:5004"
+          />
+          <span style={helpTextStyle}>
+            Used to build links in verification/password-reset emails.
+          </span>
+        </label>
+
+        <div style={{ ...formGrid, marginTop: "16px" }}>
+          <label style={labelStyle}>
+            SMTP Host
+            <input
+              value={cfg.smtp_host || ""}
+              onChange={(e) => setCfg({ ...cfg, smtp_host: e.target.value })}
+            />
+          </label>
+          <label style={labelStyle}>
+            SMTP Port
+            <input
+              value={cfg.smtp_port || ""}
+              onChange={(e) => setCfg({ ...cfg, smtp_port: e.target.value })}
+            />
+          </label>
+        </div>
+
+        <label style={{ ...labelStyle, marginTop: "12px" }}>
+          SMTP User
+          <input
+            value={cfg.smtp_user || ""}
+            onChange={(e) => setCfg({ ...cfg, smtp_user: e.target.value })}
+          />
+        </label>
+
+        <label style={{ ...labelStyle, marginTop: "12px" }}>
+          SMTP Password
+          <input
+            type="password"
+            value={cfg.smtp_password || ""}
+            onChange={(e) => setCfg({ ...cfg, smtp_password: e.target.value })}
+            placeholder={cfg.smtp_password_set ? "••••••••  (set — leave blank to keep)" : ""}
+          />
+        </label>
+
+        <label style={{ ...labelStyle, marginTop: "12px" }}>
+          SMTP From Address
+          <input
+            value={cfg.smtp_from_address || ""}
+            onChange={(e) => setCfg({ ...cfg, smtp_from_address: e.target.value })}
+          />
+        </label>
+
+        <label style={{ ...labelStyle, marginTop: "12px", display: "flex", flexDirection: "row", alignItems: "center", gap: "8px" }}>
+          <input
+            type="checkbox"
+            checked={cfg.smtp_use_tls === "true"}
+            onChange={(e) => setCfg({ ...cfg, smtp_use_tls: e.target.checked ? "true" : "false" })}
+          />
+          Use TLS
+        </label>
+
+        <div style={{ marginTop: "16px", display: "flex", alignItems: "center", gap: "10px" }}>
+          <button className="btn-primary" onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+          {saved && <span style={{ color: "var(--green)", fontSize: "13px" }}>Saved!</span>}
+        </div>
       </div>
     </div>
   );

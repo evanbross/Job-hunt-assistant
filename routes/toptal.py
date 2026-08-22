@@ -50,7 +50,7 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.utils.utils import ai_error_http_status, safe_error_message
+from backend.utils.utils import ai_error_http_status, current_user_id, safe_error_message
 
 logger = logging.getLogger(__name__)
 toptal_bp = Blueprint("toptal", __name__)
@@ -77,7 +77,7 @@ def generate_toptal_bio() -> ResponseReturnValue:
     user_prompt = f"CLIENT JOB DESCRIPTION:\n{job_description}"
 
     try:
-        bio = AIProviderClient().complete(
+        bio = AIProviderClient(current_user_id()).complete(
             system=system_prompt,
             messages=[AIMessage(role="user", content=user_prompt)],
             max_tokens=250,
@@ -125,7 +125,7 @@ def toptal_bio_chat() -> ResponseReturnValue:
     )
 
     try:
-        reply_text = AIProviderClient().complete(
+        reply_text = AIProviderClient(current_user_id()).complete(
             system=system_prompt,
             messages=[
                 AIMessage(

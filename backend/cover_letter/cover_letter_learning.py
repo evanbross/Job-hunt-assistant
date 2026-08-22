@@ -56,8 +56,8 @@ _ALLOWED_CATEGORIES = frozenset({"banned_phrase", "structural", "voice"})
 
 
 class CoverLetterStyleLearner:
-    def __init__(self) -> None:
-        self._client = AIProviderClient()
+    def __init__(self, user_id: int) -> None:
+        self._client = AIProviderClient(user_id)
 
     def learn_from_edit(
         self, draft: str, final: str, chat_messages: list[dict] | None = None

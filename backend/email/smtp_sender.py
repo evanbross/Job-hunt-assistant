@@ -32,18 +32,16 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-# ai: claude-sonnet-5 | 2026-08-21
 """SMTP sending for account-verification emails.
 
-Leaf module with no dependencies on other ``backend.*`` modules, matching
-backend/utils/url_safety.py's pattern — this is imported directly by
-routes/session_auth.py. Unlike backend/email/gmail_client.py (which sends
-through a *logged-in user's own* connected Gmail via OAuth), this sends
-through a single system-level SMTP relay configured in config.py, since
-verification emails go to addresses nobody has connected anything to yet.
+Unlike backend/email/gmail_client.py (which sends through a *logged-in
+user's own* connected Gmail via OAuth), this sends through a single
+system-level SMTP relay — an instance-wide setting, not a per-user one,
+since verification emails go to addresses nobody has connected anything to
+yet. See backend/settings_registry.py for the smtp_* system-setting specs.
 
-Defaults to ../infra's Mailhog for local dev (see config.SMTP_HOST) — read
-sent mail at http://mailhog.localhost, no real delivery happens locally.
+Defaults to ../infra's Mailhog for local dev — read sent mail at
+http://mailhog.localhost, no real delivery happens locally.
 """
 
 from __future__ import annotations
@@ -51,10 +49,38 @@ from __future__ import annotations
 import logging
 import smtplib
 from email.message import EmailMessage
+from typing import TypedDict
 
-import config
+from backend.settings_service import get_setting
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
+
+
+class _SmtpSettings(TypedDict):
+    host: str
+    port: str
+    user: str
+    password: str
+    use_tls: str
+    from_address: str
+
+
+# ai: claude-sonnet-5 | 2026-08-21
+def _load_smtp_settings() -> _SmtpSettings:
+    """Short-lived repos connection just to resolve the current instance-wide
+    SMTP settings — kept internal so callers don't need to manage a repos
+    connection just to send a verification email."""
+    with get_repos() as repos:
+        return {
+            "host": get_setting("smtp_host", None, repos),
+            "port": get_setting("smtp_port", None, repos),
+            "user": get_setting("smtp_user", None, repos),
+            "password": get_setting("smtp_password", None, repos),
+            "use_tls": get_setting("smtp_use_tls", None, repos),
+            "from_address": get_setting("smtp_from_address", None, repos),
+        }
+
 
 _SUBJECTS: dict[str, str] = {
     "registration": "Verify your email — Job Hunt Assistant",
@@ -99,16 +125,20 @@ def send_verification_email(to: str, link: str, purpose: str) -> None:
     if purpose not in _SUBJECTS:
         raise ValueError(f"Unknown verification purpose: {purpose!r}")
 
+    smtp_settings = _load_smtp_settings()
+
     message = EmailMessage()
     message["Subject"] = _SUBJECTS[purpose]
-    message["From"] = config.SMTP_FROM_ADDRESS
+    message["From"] = smtp_settings["from_address"]
     message["To"] = to
     message.set_content(_BODIES[purpose].format(link=link))
 
-    with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=10) as smtp:
-        if config.SMTP_USE_TLS:
+    with smtplib.SMTP(
+        smtp_settings["host"], int(smtp_settings["port"]), timeout=10
+    ) as smtp:
+        if smtp_settings["use_tls"].lower() == "true":
             smtp.starttls()
-        if config.SMTP_USER:
-            smtp.login(config.SMTP_USER, config.SMTP_PASSWORD)
+        if smtp_settings["user"]:
+            smtp.login(smtp_settings["user"], smtp_settings["password"])
         smtp.send_message(message)
     logger.info("Sent %s verification email to %s", purpose, to)

@@ -99,9 +99,9 @@ _FALLBACK_QUERIES: list[str] = [
 ]
 
 
-def _generate_board_search_queries() -> list[str]:
+def _generate_board_search_queries(user_id: int) -> list[str]:
     """Ask Claude to generate tailored search queries from the candidate profile."""
-    response_text = AIProviderClient().complete(
+    response_text = AIProviderClient(user_id).complete(
         max_tokens=200,
         messages=[
             AIMessage(
@@ -182,7 +182,7 @@ def run_board_search_task(self, user_id: int) -> dict:
     try:
         # ── 1. Build search queries ──────────────────────────────────────────
         try:
-            search_queries = _generate_board_search_queries()
+            search_queries = _generate_board_search_queries(user_id)
             _update_board(
                 progress=10,
                 message=f"Searching boards with {len(search_queries)} queries…",
@@ -219,7 +219,7 @@ def run_board_search_task(self, user_id: int) -> dict:
         # saves an AI scoring call for the common case of an exact repeat URL.
         known_urls = {j["url"] for j in all_known_jobs if j.get("url")}
 
-        scorer = FitScorer()
+        scorer = FitScorer(user_id)
         dup_checker = DuplicateChecker()
 
         _update_board(progress=20, message="Fetching job listings from boards…")

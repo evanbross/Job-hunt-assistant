@@ -65,8 +65,8 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 from werkzeug.security import check_password_hash, generate_password_hash
 
-import config
 from backend.email.smtp_sender import send_verification_email
+from backend.settings_service import get_setting
 from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
@@ -220,12 +220,13 @@ def create_account() -> ResponseReturnValue:
             account = repos["app_account"].create_pending(email, token, expires_at)
         if account is not None:
             repos["conn"].commit()
+        app_base_url = get_setting("app_base_url", None, repos)
 
     if account is None:
         _record_attempt("login", ip)
         return jsonify({"error": "That email is already registered"}), 409
 
-    link = f"{config.APP_BASE_URL}/verify-account?token={token}"
+    link = f"{app_base_url}/verify-account?token={token}"
     try:
         send_verification_email(email, link, "registration")
     except OSError as exc:
@@ -285,9 +286,10 @@ def forgot_password() -> ResponseReturnValue:
         account = repos["app_account"].request_password_reset(email, token, expires_at)
         if account is not None:
             repos["conn"].commit()
+        app_base_url = get_setting("app_base_url", None, repos)
 
     if account is not None:
-        link = f"{config.APP_BASE_URL}/reset-password?token={token}"
+        link = f"{app_base_url}/reset-password?token={token}"
         try:
             send_verification_email(email, link, "password_reset")
         except OSError as exc:
@@ -381,7 +383,9 @@ def get_account() -> ResponseReturnValue:
         account = repos["app_account"].get(current_user_id())
     if account is None:
         return jsonify({"error": "Account not found"}), 404
-    return jsonify({"name": account["name"], "email": account["email"]})
+    return jsonify(
+        {"name": account["name"], "email": account["email"], "role": account["role"]}
+    )
 
 
 @session_auth_bp.route("/account", methods=["PUT"])
@@ -413,8 +417,9 @@ def request_email_change() -> ResponseReturnValue:
     with get_repos() as repos:
         repos["app_account"].request_email_change(user_id, new_email, token, expires_at)
         repos["conn"].commit()
+        app_base_url = get_setting("app_base_url", None, repos)
 
-    link = f"{config.APP_BASE_URL}/confirm-email-change?token={token}"
+    link = f"{app_base_url}/confirm-email-change?token={token}"
     try:
         send_verification_email(new_email, link, "email_change")
     except OSError as exc:

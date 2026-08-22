@@ -136,7 +136,7 @@ _LLM_ENRICH_MAX_BATCH = 20
 _LLM_ENRICH_MAX_TEXT = 3000
 
 
-def _llm_enrich_batch(url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _llm_enrich_batch(user_id: int, url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Bundle listing_text values into one LLM call to fill missing job_title/company.
 
     Only runs on rows where listing_text is substantial and at least one of
@@ -184,7 +184,7 @@ def _llm_enrich_batch(url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         except OSError as log_exc:
             logger.debug("Could not write LLM prompt log: %s", log_exc)
 
-        raw = AIProviderClient().complete(
+        raw = AIProviderClient(user_id).complete(
             messages=[AIMessage(role="user", content=prompt)],
             max_tokens=2048,
         )
@@ -341,7 +341,7 @@ def run_import_task(
             "run_import_task: _llm_enrich_batch starting for %d rows (missing title/company)",
             total,
         )
-    extracted = _llm_enrich_batch(extracted)
+    extracted = _llm_enrich_batch(user_id, extracted)
     if needs_llm_enrich:
         logger.info(
             "run_import_task: _llm_enrich_batch done in %.1fs", time.monotonic() - t_llm

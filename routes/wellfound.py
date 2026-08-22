@@ -51,8 +51,9 @@ from backend.scanning.sources.wellfound_scraper import (
     WellfoundLoginError,
     WellfoundScraper,
 )
+from backend.settings_service import get_setting
 from backend.tasks import run_import_task
-from backend.utils.utils import current_user_id
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -142,9 +143,14 @@ def run_wellfound_scan_task(self, user_id: int, search_url: str, max_jobs: int) 
         self.update_state(state="PROGRESS", meta=dict(state))
 
     try:
+        # ai: claude-sonnet-5 | 2026-08-21 — wellfound_email/password are now
+        # per-user settings, not shared .env credentials.
+        with get_repos() as repos:
+            wellfound_email = get_setting("wellfound_email", user_id, repos)
+            wellfound_password = get_setting("wellfound_password", user_id, repos)
         scraper = WellfoundScraper(
-            email=config.WELLFOUND_EMAIL,
-            password=config.WELLFOUND_PASSWORD,
+            email=wellfound_email,
+            password=wellfound_password,
             session_file=config.WELLFOUND_SESSION_FILE,
         )
 
@@ -245,10 +251,17 @@ def start_scan() -> ResponseReturnValue:
         if _login_state.running:
             return jsonify({"error": "Scan already running"}), 409
 
-    if not config.WELLFOUND_EMAIL or not config.WELLFOUND_PASSWORD:
+    user_id = current_user_id()
+    with get_repos() as repos:
+        wellfound_email = get_setting("wellfound_email", user_id, repos)
+        wellfound_password = get_setting("wellfound_password", user_id, repos)
+    if not wellfound_email or not wellfound_password:
         return (
             jsonify(
-                {"error": "WELLFOUND_EMAIL and WELLFOUND_PASSWORD must be set in .env"}
+                {
+                    "error": "Wellfound email/password must be set in "
+                    "Settings > Configuration"
+                }
             ),
             400,
         )
@@ -261,7 +274,7 @@ def start_scan() -> ResponseReturnValue:
     )
     max_jobs = min(max(int(body.get("max_jobs") or 30), 1), 200)
 
-    task_id = _submit_wellfound_scan(current_user_id(), search_url, max_jobs)
+    task_id = _submit_wellfound_scan(user_id, search_url, max_jobs)
     if task_id is None:
         return jsonify({"error": "Scan already running"}), 409
 

@@ -78,7 +78,7 @@ from backend.scanning.import_listener import (
     start_job_import_listener,
 )
 from backend.scanning.schedulers import start_jd_health_check_scheduler
-from backend.utils.utils import is_trusted_api_write_origin
+from backend.utils.utils import get_repos, is_trusted_api_write_origin
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
 try:
@@ -214,6 +214,31 @@ def _require_app_login() -> tuple[flask.Response, int] | None:
     if session.get("authenticated"):
         return None
     return jsonify({"error": "Not authenticated"}), 401
+
+
+# ai: claude-sonnet-5 | 2026-08-21
+@app.before_request
+def _require_admin_for_system_settings() -> tuple[flask.Response, int] | None:
+    """Gate every /api/settings/system/* request on an admin account.
+
+    Runs after _require_app_login above, so by the time this executes the
+    caller already has a valid session (or the request was already 401'd) —
+    this only adds the admin check on top, for the one route group that's
+    instance-wide config (SMTP relay, app base URL), not a per-user setting.
+    Queries role fresh from the DB rather than trusting a cached session
+    value, so a promotion/demotion takes effect on the very next request
+    instead of waiting for the account to log back in.
+    """
+    if not request.path.startswith("/api/settings/system"):
+        return None
+    user_id = session.get("user_id")
+    if user_id is None:
+        return None  # _require_app_login already rejected this request
+    with get_repos() as repos:
+        account = repos["app_account"].get(user_id)
+    if not account or account.get("role") != "admin":
+        return jsonify({"error": "Admin access required"}), 403
+    return None
 
 
 @app.before_request

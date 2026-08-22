@@ -107,8 +107,8 @@ class ManualJobIngestService:
         self._jobs_repo = jobs_repo
         self._resume_repo = resume_repo
         self._penalty_repo = penalty_repo
-        self._parser = parser or EmailParser()
-        self._scorer = scorer or FitScorer()
+        self._parser = parser or EmailParser(user_id)
+        self._scorer = scorer or FitScorer(user_id)
         self._duplicate_checker = duplicate_checker or DuplicateChecker()
         self._career_site_scanner = career_site_scanner or CareerSiteScanner()
 

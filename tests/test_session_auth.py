@@ -320,7 +320,10 @@ def test_get_account_returns_name_and_email(client) -> None:
     _login(client)
     resp = client.get("/api/account")
     assert resp.status_code == 200
-    assert resp.get_json() == {"name": None, "email": _TEST_EMAIL}
+    # ai: claude-sonnet-5 | 2026-08-21 -- role added: this account is seeded
+    # via create_pending (a normal registration insert), not the placeholder
+    # row _migrate() promotes to admin, so it's a plain 'user'.
+    assert resp.get_json() == {"name": None, "email": _TEST_EMAIL, "role": "user"}
 
 
 def test_update_account_name(client) -> None:

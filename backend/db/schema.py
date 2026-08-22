@@ -42,9 +42,12 @@ import logging
 import re
 from typing import Any
 
+import config
+from backend.crypto import encrypt_secret
 from backend.db.repositories.app_account import PLACEHOLDER_ACCOUNT_EMAIL
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
 from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
+from backend.settings_registry import SETTINGS
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +169,36 @@ _PER_USER_TABLES: tuple[str, ...] = (
     "contacts",
     "cover_letter_phrases",
 )
+
+
+# ai: claude-sonnet-5 | 2026-08-21
+def _seed_settings_from_env(cur: Any, admin_user_id: int) -> None:
+    """One-time bridge from .env-sourced config defaults into the new
+    system_settings/app_settings tables, so upgrading an existing install
+    doesn't lose an already-configured SMTP relay or AI provider key.
+
+    ON CONFLICT DO NOTHING makes this safe to call on every startup: it only
+    ever fills in a still-missing row, never overwrites a value the admin
+    (or the settings UI) has since set — including an intentional blank.
+    Empty defaults are skipped outright so a never-configured secret doesn't
+    get seeded as an empty ciphertext row.
+    """
+    for key, spec in SETTINGS.items():
+        if not spec.default:
+            continue
+        value = encrypt_secret(spec.default) if spec.is_secret else spec.default
+        if spec.scope == "system":
+            cur.execute(
+                "INSERT INTO system_settings (key, value) VALUES (%s, %s)"
+                " ON CONFLICT (key) DO NOTHING",
+                (key, value),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO app_settings (user_id, key, value) VALUES (%s, %s, %s)"
+                " ON CONFLICT (user_id, key) DO NOTHING",
+                (admin_user_id, key, value),
+            )
 
 
 def _migrate(conn: Any) -> None:
@@ -571,6 +604,21 @@ def _migrate(conn: Any) -> None:
     cur.execute("SELECT id FROM app_account ORDER BY id LIMIT 1")
     backfill_user_id = cur.fetchone()["id"]
 
+    # ai: claude-sonnet-5 | 2026-08-21
+    # System/user settings migration. The first account (backfill_user_id,
+    # above) is also the instance's first admin — on a fresh install that's
+    # the placeholder row a real registration claims in place (see
+    # app_account.py's claim_placeholder_pending), so "first real
+    # registration becomes admin" and "first account becomes admin" are the
+    # same event. Re-running this UPDATE on every startup is harmless: ids
+    # never change, so it keeps re-confirming the same account rather than
+    # promoting a different one later.
+    cur.execute("ALTER TABLE app_account ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'")
+    cur.execute(
+        "UPDATE app_account SET role = 'admin' WHERE id = %s", (backfill_user_id,)
+    )
+    conn.commit()
+
     # Every user-owned table gets a user_id FK, backfilled onto that account.
     # See routes/session_auth.py for how user_id lands in the session, and
     # backend/utils/utils.py's current_user_id() for how routes read it back.
@@ -639,6 +687,11 @@ def _migrate(conn: Any) -> None:
         cur.execute("ALTER TABLE app_settings ALTER COLUMN user_id SET NOT NULL")
         cur.execute("ALTER TABLE app_settings DROP CONSTRAINT IF EXISTS app_settings_pkey")
         cur.execute("ALTER TABLE app_settings ADD PRIMARY KEY (user_id, key)")
+    conn.commit()
+
+    # ai: claude-sonnet-5 | 2026-08-21 — must run after app_settings has its
+    # (user_id, key) primary key (just above), since this seeds rows into it.
+    _seed_settings_from_env(cur, backfill_user_id)
     conn.commit()
 
     if not _has_column(cur, "scanned_emails", "user_id"):
@@ -980,6 +1033,17 @@ def _create_tables(conn: Any) -> None:
         CREATE TABLE IF NOT EXISTS app_settings (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        )
+        """,
+        # ai: claude-sonnet-5 | 2026-08-21
+        # Instance-wide settings (SMTP relay, app base URL, ...) — not scoped
+        # by user_id, contrast with app_settings above. Admin-only to edit,
+        # see routes/settings.py's system settings routes.
+        """
+        CREATE TABLE IF NOT EXISTS system_settings (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
         """

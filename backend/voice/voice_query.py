@@ -89,7 +89,7 @@ class VoiceIntentError(RuntimeError):
     """The model's reply couldn't be parsed into a usable intent."""
 
 
-def classify(text: str) -> dict[str, Any]:
+def classify(text: str, user_id: int) -> dict[str, Any]:
     """Classify `text` into one of:
     - {"type": "sql_query", "sql": str}
     - {"type": "action", "action": str}
@@ -98,7 +98,7 @@ def classify(text: str) -> dict[str, Any]:
     Doesn't validate the sql/action values themselves -- that's
     backend/sql_guard.py and VOICE_ACTIONS's job, in routes/voice.py.
     """
-    raw = AIProviderClient().complete(
+    raw = AIProviderClient(user_id).complete(
         system=_build_system_prompt(),
         messages=[AIMessage(role="user", content=text)],
         max_tokens=400,

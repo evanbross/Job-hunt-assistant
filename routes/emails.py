@@ -343,7 +343,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
             )
 
         try:
-            parsed_jobs = EmailParser().parse(
+            parsed_jobs = EmailParser(user_id).parse(
                 subject, sender, email_body, raw_html=email_raw_html
             )
         except Exception as exc:
@@ -383,7 +383,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         resume_text = resume_row["content"] if resume_row else ""
         penalty_rules = penalty_repo.get_enabled(user_id)
         fit_feedback = job_repo.get_not_a_fit_with_feedback(user_id)
-        scorer = FitScorer()
+        scorer = FitScorer(user_id)
         feedback = feedback_repo.find_match(user_id, sender, subject)
         dedup_checker = DuplicateChecker()
         known_jobs: list[dict] = job_repo.get_all_ordered(user_id)

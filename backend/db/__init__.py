@@ -80,6 +80,7 @@ from .interfaces import (
     IResumeRepository,
     IScannedEmailRepository,
     IStageStatusRepository,
+    ISystemSettingsRepository,
 )
 from .readonly_role import ensure_readonly_role
 from .repositories.app_account import PostgresAppAccountRepository
@@ -114,6 +115,7 @@ from .repositories.penalty_rules import PostgresPenaltyRuleRepository
 from .repositories.relevance_feedback import PostgresRelevanceFeedbackRepository
 from .repositories.resumes import PostgresResumeRepository
 from .repositories.scanned_emails import PostgresScannedEmailRepository
+from .repositories.system_settings import PostgresSystemSettingsRepository
 from .schema import _create_tables, _migrate, _seed_data
 
 __all__ = [
@@ -140,6 +142,7 @@ __all__ = [
     "IResumeRepository",
     "IScannedEmailRepository",
     "IStageStatusRepository",
+    "ISystemSettingsRepository",
     "BROWSER_QUEUE_CLAIM_BATCH_SIZE",
     "BROWSER_QUEUE_MAX_RETRIES",
     "PostgresAppAccountRepository",
@@ -166,6 +169,7 @@ __all__ = [
     "PostgresResumeRepository",
     "PostgresScannedEmailRepository",
     "PostgresStageStatusRepository",
+    "PostgresSystemSettingsRepository",
     "DuplicateJobUrlError",
     "db_startup_error",
     "get_connection",
@@ -306,6 +310,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "application_answers": PostgresApplicationAnswerRepository(conn),
         "stages": PostgresApplicationStageRepository(conn),
         "settings": PostgresAppSettingsRepository(conn),
+        "system_settings": PostgresSystemSettingsRepository(conn),
         "career_sites": PostgresCareerSiteSourceRepository(conn),
         "career_scan_results": PostgresCareerScanResultRepository(conn),
         "career_scan_failures": PostgresCareerScanFailureRepository(conn),

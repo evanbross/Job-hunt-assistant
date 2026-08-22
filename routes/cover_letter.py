@@ -95,7 +95,7 @@ def generate_cover_letter(job_id: int) -> ResponseReturnValue:
     # Connection released before AI generation
 
     try:
-        generator = CoverLetterGenerator()
+        generator = CoverLetterGenerator(current_user_id())
         cover_letter = generator.generate(job, resume_text=resume_text, phrases=phrases)
     except Exception as exc:
         logger.error(
@@ -123,7 +123,7 @@ def learn_cover_letter_style(job_id: int) -> ResponseReturnValue:
         return jsonify({"error": "draft and final text are required"}), 400
 
     try:
-        applied = CoverLetterStyleLearner().learn_from_edit(
+        applied = CoverLetterStyleLearner(current_user_id()).learn_from_edit(
             draft, final, chat_messages
         )
     except Exception as exc:
@@ -317,7 +317,7 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
         )
 
     try:
-        text = AIProviderClient().complete(
+        text = AIProviderClient(current_user_id()).complete(
             system=system_prompt,
             messages=[AIMessage(role="user", content=user_prompt)],
             max_tokens=450,
@@ -384,7 +384,7 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
     )
 
     try:
-        reply_text = AIProviderClient().complete(
+        reply_text = AIProviderClient(current_user_id()).complete(
             system=system_prompt,
             messages=[
                 AIMessage(
@@ -462,7 +462,7 @@ def cover_letter_chat(job_id: int) -> ResponseReturnValue:
     )
 
     try:
-        reply_text = AIProviderClient().complete(
+        reply_text = AIProviderClient(current_user_id()).complete(
             system=system_prompt,
             messages=[
                 AIMessage(
@@ -512,7 +512,7 @@ def generate_resume_tailor(job_id: int) -> ResponseReturnValue:
     # Connection released before AI generation
 
     try:
-        generator = ResumeTailoringGenerator()
+        generator = ResumeTailoringGenerator(current_user_id())
         analysis = generator.generate(job, resume_text=resume_text)
     except Exception as exc:
         logger.error(
@@ -567,7 +567,7 @@ def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
     )
 
     try:
-        reply_text = AIProviderClient().complete(
+        reply_text = AIProviderClient(current_user_id()).complete(
             system=system_prompt,
             messages=[
                 AIMessage(

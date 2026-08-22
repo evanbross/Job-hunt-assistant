@@ -151,7 +151,7 @@ def test_score_extracts_salary_range_from_ai_response() -> None:
         '"salary_min": 110000, "salary_max": 120000}'
     )
     with patch("backend.scoring.fit_scorer.AIProviderClient", return_value=mock_client):
-        result = FitScorer().score(
+        result = FitScorer(1).score(
             job_title="Sr Software Engineer",
             company="Prometric",
             email_body="Salary range: $110,000 - $120,000 per year.",
@@ -167,7 +167,7 @@ def test_score_defaults_salary_to_none_when_ai_omits_it() -> None:
     mock_client = MagicMock()
     mock_client.complete.return_value = '{"score": 60, "reasoning": "Okay fit."}'
     with patch("backend.scoring.fit_scorer.AIProviderClient", return_value=mock_client):
-        result = FitScorer().score(
+        result = FitScorer(1).score(
             job_title="Engineer",
             company="Acme",
             email_body="No salary mentioned.",

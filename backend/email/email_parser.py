@@ -201,8 +201,8 @@ def _jobgether_company_slug_map_from_html(raw_html: str) -> dict[str, str]:
 class EmailParser:
     """Parses job emails using the Anthropic API."""
 
-    def __init__(self, client: EmailParserClient | None = None) -> None:
-        self._client = client or AIProviderClient()
+    def __init__(self, user_id: int, client: EmailParserClient | None = None) -> None:
+        self._client = client or AIProviderClient(user_id)
 
     # ai: claude-sonnet-4-6 | 2026-06-29
     def parse(
