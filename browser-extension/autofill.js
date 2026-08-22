@@ -236,10 +236,15 @@
     { category: 'email', re: /\be-?mail\b/i },
     { category: 'phone', re: /\bphone\b/i },
     { category: 'resume', re: /\bresume\b|\bcv\b/i },
+    // ai: claude-sonnet-5 | 2026-08-21
+    // Checked before 'linkedin' below — confirmed on Greenhouse (Droplet
+    // posting): the code-repository question is phrased "GitHub profile (or
+    // other code you've written--not your LinkedIn profile)", so the bare
+    // /linkedin/i pattern matched first and misfilled this field with the
+    // LinkedIn URL instead of code_repository_url.
+    { category: 'code_repository', re: /\bgithub\b|\bgitlab\b/i },
     { category: 'linkedin', re: /linkedin/i },
     { category: 'portfolio', re: /portfolio|personal (site|website)|\bwebsite\b/i },
-    // ai: claude-sonnet-5 | 2026-08-17
-    { category: 'code_repository', re: /\bgithub\b|\bgitlab\b/i },
     { category: 'pronouns', re: /\bpronouns?\b/i },
     { category: 'gender', re: /\bgender\b/i },
     // ai: claude-sonnet-5 | 2026-08-14
@@ -580,7 +585,20 @@
     await new Promise((resolve) => setTimeout(resolve, platform === 'Ashby' ? 1500 : 900));
 
     const listboxId = el.getAttribute('aria-controls');
-    const shell = el.closest('[class*="select-shell"], [class*="select"]');
+    // ai: claude-sonnet-5 | 2026-08-21
+    // Was `[class*="select-shell"], [class*="select"]` — confirmed live on
+    // Greenhouse (Droplet posting, work-authorization Yes/No question):
+    // react-select names the combobox <input> itself "select__input", which
+    // matches `[class*="select"]` too, so `.closest()` (which tests the
+    // element itself before any ancestor) returned the input as its own
+    // "shell". shell.querySelector('[class*="single-value"]') then always
+    // searched inside a childless <input>, found nothing, and reported the
+    // fill as failed even when the selection had genuinely committed. Nearly
+    // every react-select wrapper level (select__input-container,
+    // select__value-container, select__control, ...) also carries "select"
+    // in its class, so no ancestor depth is safe for that broad pattern —
+    // only the specific, non-self-matching "select-shell" class is.
+    const shell = el.closest('[class*="select-shell"]');
     const listbox = (listboxId && document.getElementById(listboxId)) || shell?.querySelector('[role="listbox"]');
     const option = listbox?.querySelector('[role="option"][aria-selected="true"]')
       || listbox?.querySelector('[role="option"][class*="focused"]')
