@@ -241,7 +241,10 @@ def _enrich_job_description(
     )
     resume_row = repos["resume"].get_latest(user_id)
     resume_text = str(resume_row.get("content") or "") if resume_row else ""
+    # ai: claude-sonnet-5 | 2026-08-23 — missing user_id (same 2026-08-21
+    # multi-tenancy-migration gap as the career-site-source fix above).
     enrich_job_description(
+        user_id,
         repos,
         job,
         description,
