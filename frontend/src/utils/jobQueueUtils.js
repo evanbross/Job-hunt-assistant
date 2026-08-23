@@ -117,6 +117,7 @@ export function formatJobTitles(jobTitles) {
 const IMPORT_WARNING_LABELS = {
   homepage_url: "URL is a homepage, not a job listing",
   jd_body_is_tracking_link: "Job description couldn't be fetched — only a tracking link was captured",
+  kforce_jd_capture_needs_recapture: "Job description was lost to an import bug — reopen this job in the browser extension to recapture it",
   missing_company: "Company name is missing",
   missing_job_title: "Job title is missing",
   page_title: "Title looks like a browser page title (contains \"|\")",

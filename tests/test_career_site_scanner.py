@@ -594,6 +594,20 @@ def test_scan_single_job_url_falls_back_when_wttj_has_no_ats_url() -> None:
     generic_parser.assert_called_once()
 
 
+# ai: claude-sonnet-5 | 2026-08-23
+def test_scan_single_job_url_rejects_kforce_urls_without_fetching() -> None:
+    scanner = CareerSiteScanner()
+    with patch(
+        "backend.scanning.career_site_scanner.safe_urlopen"
+    ) as mock_urlopen:
+        with pytest.raises(ValueError, match="client-rendered"):
+            scanner.scan_single_job_url(
+                "Kforce",
+                "https://www.kforce.com/find-work/search-jobs/#/detail/abc123/",
+            )
+    mock_urlopen.assert_not_called()
+
+
 # ai: claude-sonnet-5 | 2026-08-03
 def _job(**overrides: object) -> CareerSiteJob:
     job: dict[str, object] = {

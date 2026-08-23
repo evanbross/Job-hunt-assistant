@@ -970,6 +970,23 @@ class CareerSiteScanner:
         logger.info("scan_single_job_url: starting for %s", job_url)
         parsed = urlparse(job_url)
 
+        # ai: claude-sonnet-5 | 2026-08-23
+        # Kforce's job pages (www.kforce.com/find-work/search-jobs/#/detail/<id>/)
+        # are an Angular SPA where the description is fetched client-side from an
+        # Azure Search index (see browser-extension/content.js's buildKforceJobPayload
+        # comment) — there is no server-rendered job content to scrape. A plain HTTP
+        # fetch here only returns the page shell (nav links, footer, marketing
+        # copy), which is long enough to pass the "richer description" length check
+        # in manual_job_ingest_service.py and backend/tasks.py, silently replacing a
+        # real (if short) browser-extension capture with boilerplate. Raise instead
+        # of returning that shell so callers keep whatever real text they had
+        # (job 3581: raw_jd_snippet ended up as nav/footer text with zero JD content).
+        if "kforce.com" in parsed.netloc.lower():
+            raise ValueError(
+                "Kforce job pages are client-rendered; description must come "
+                "from the browser extension's DOM capture, not a server fetch."
+            )
+
         # ai: claude-sonnet-5 | 2026-08-02
         # WTTJ's own page is a client-rendered aggregator copy that's missing
         # fields like workplace type (see job 3154/EvenUp — scored "remote"
