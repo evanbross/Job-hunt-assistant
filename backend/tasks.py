@@ -678,7 +678,7 @@ def run_import_task(
                 failed += 1
                 failures.append(_import_failure_detail(url_row, exc, "unexpected"))
 
-        _record_capture_source(capture_source, repos, body)
+        _record_capture_source(user_id, capture_source, repos, body)
 
         # ai: claude-sonnet-4-6 | 2026-06-26
         logger.info(
@@ -710,7 +710,12 @@ def run_import_task(
         }
 
 
-def _record_capture_source(source: dict | None, repos: dict, body: dict) -> None:
+# ai: claude-sonnet-5 | 2026-08-23 — threaded user_id through to career_sites_repo.update
+# (missed in the 2026-08-21 multi-tenancy migration; was silently swallowed by the
+# except Exception below instead of crashing, so recapture timestamps stopped updating).
+def _record_capture_source(
+    user_id: int, source: dict | None, repos: dict, body: dict
+) -> None:
     if not source:
         return
     fields: dict = {"last_captured_at": datetime.now(UTC).isoformat(timespec="seconds")}
@@ -722,7 +727,7 @@ def _record_capture_source(source: dict | None, repos: dict, body: dict) -> None
             field_name="recapture_interval_days",
         )
     try:
-        repos["career_sites"].update(source["id"], fields)
+        repos["career_sites"].update(user_id, source["id"], fields)
         repos["conn"].commit()
     except Exception as exc:
         repos["conn"].rollback()

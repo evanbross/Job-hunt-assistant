@@ -200,9 +200,14 @@ def _lookup_import_locked(
     return max(_active_imports.items(), key=lambda kv: kv[1].started_at)
 
 
-def _capture_source_suggestions(repos: dict[str, object], query: str) -> list[dict]:
+# ai: claude-sonnet-5 | 2026-08-23 — threaded user_id through to career_sites_repo
+# calls (missed in the 2026-08-21 multi-tenancy migration, caused a TypeError on
+# every browser-extension import capture).
+def _capture_source_suggestions(
+    repos: dict[str, object], user_id: int, query: str
+) -> list[dict]:
     career_sites_repo = repos["career_sites"]
-    matches = career_sites_repo.find_matches(query)
+    matches = career_sites_repo.find_matches(user_id, query)
     if matches:
         return matches
 
@@ -264,8 +269,11 @@ def _dismiss_capture_queue_item(user_id: int, page_url: str | None) -> None:
         )
 
 
+# ai: claude-sonnet-5 | 2026-08-23 — threaded user_id through to career_sites_repo
+# calls (missed in the 2026-08-21 multi-tenancy migration, caused a TypeError on
+# every browser-extension import capture).
 def _resolve_capture_source(
-    repos: dict[str, object], body: dict, guessed_source: dict | None
+    repos: dict[str, object], user_id: int, body: dict, guessed_source: dict | None
 ) -> tuple[dict | None, dict | None]:
     career_sites_repo = repos["career_sites"]
     interval_days = parse_positive_int(
@@ -280,7 +288,7 @@ def _resolve_capture_source(
             parsed_source_id = int(source_id)
         except (TypeError, ValueError):
             return None, ({"error": "capture_source_id must be an integer"}, 400)
-        source = career_sites_repo.get_by_id(parsed_source_id)
+        source = career_sites_repo.get_by_id(user_id, parsed_source_id)
         if not source:
             return None, ({"error": "Capture source was not found"}, 404)
         return source, None
@@ -296,10 +304,13 @@ def _resolve_capture_source(
 
     if guessed_source and not source_query and not source_url and not source_name:
         guessed_url = str(guessed_source.get("url") or "").strip()
-        existing = career_sites_repo.get_by_url(guessed_url) if guessed_url else None
+        existing = (
+            career_sites_repo.get_by_url(user_id, guessed_url) if guessed_url else None
+        )
         if existing:
             return existing, None
         new_source_id = career_sites_repo.insert(
+            user_id,
             {
                 "name": str(guessed_source.get("name") or "Captured Job Board").strip(),
                 "url": guessed_url,
@@ -310,12 +321,12 @@ def _resolve_capture_source(
                 ),
                 "recapture_interval_days": interval_days,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            }
+            },
         )
-        return career_sites_repo.get_by_id(new_source_id), None
+        return career_sites_repo.get_by_id(user_id, new_source_id), None
 
     if source_query and not source_url:
-        suggestions = _capture_source_suggestions(repos, source_query)
+        suggestions = _capture_source_suggestions(repos, user_id, source_query)
         if len(suggestions) == 1:
             return None, (
                 {
@@ -352,10 +363,11 @@ def _resolve_capture_source(
                 {"error": "capture_source_url must start with http:// or https://"},
                 400,
             )
-        existing = career_sites_repo.get_by_url(source_url)
+        existing = career_sites_repo.get_by_url(user_id, source_url)
         if existing:
             return existing, None
         new_source_id = career_sites_repo.insert(
+            user_id,
             {
                 "name": source_name
                 or platform_label(platform_for_site_url(source_url)),
@@ -365,9 +377,9 @@ def _resolve_capture_source(
                 "detected_platform": platform_for_site_url(source_url),
                 "recapture_interval_days": interval_days,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            }
+            },
         )
-        return career_sites_repo.get_by_id(new_source_id), None
+        return career_sites_repo.get_by_id(user_id, new_source_id), None
 
     logger.warning(
         "capture source could not be inferred for url=%s", source_url or "(none)"
@@ -508,8 +520,8 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
 
     with get_repos() as repos:
         try:
-            capture_source, source_error = _resolve_capture_source(
-                repos, body, analysis["source"]
+            capture_source, source_error = _resolve_capture_source(  # ai: claude-sonnet-5 | 2026-08-23
+                repos, user_id, body, analysis["source"]
             )
         except ValueError as exc:
             _set_import_progress(
