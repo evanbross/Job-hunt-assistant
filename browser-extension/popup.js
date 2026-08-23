@@ -62,6 +62,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('send-btn').addEventListener('click', handleSend);
   document.getElementById('fill-app-btn').addEventListener('click', handleFillApplication);
+  await initKforceOptions();
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab.id;
@@ -108,6 +109,31 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
+// ai: claude-sonnet-5 | 2026-08-23
+// Loads the saved checkbox/cap values and wires their change listeners once
+// at popup startup; applyScanResult() below only toggles this block's
+// visibility once the page type is known.
+async function initKforceOptions() {
+  const settings = await loadSettings();
+  const checkbox = document.getElementById('kforce-full-desc');
+  const capInput = document.getElementById('kforce-fetch-cap');
+  const capRow = document.getElementById('kforce-cap-row');
+
+  checkbox.checked = !!settings.kforceFullDescriptions;
+  capInput.value = clampKforceFetchCap(settings.kforceFetchCap);
+  capRow.style.display = checkbox.checked ? 'flex' : 'none';
+
+  checkbox.addEventListener('change', () => {
+    capRow.style.display = checkbox.checked ? 'flex' : 'none';
+    chrome.storage.sync.set({ kforceFullDescriptions: checkbox.checked }).catch(() => {});
+  });
+  capInput.addEventListener('change', () => {
+    const clamped = clampKforceFetchCap(capInput.value);
+    capInput.value = clamped;
+    chrome.storage.sync.set({ kforceFetchCap: clamped }).catch(() => {});
+  });
+}
+
 function applyScanResult(result) {
   if (!result) { showNoAccess(); return; }
 
@@ -115,6 +141,8 @@ function applyScanResult(result) {
 
   document.getElementById('site-name').textContent = result.site ?? location.hostname;
   document.getElementById('site-desc').textContent = result.description ?? '';
+  document.getElementById('kforce-options').style.display =
+    result.type === 'kforceSearch' ? 'block' : 'none';
 
   const btn = document.getElementById('send-btn');
   btn.disabled = false;
@@ -134,7 +162,12 @@ async function handleSend() {
   document.getElementById('progress-wrap').style.display = 'none';
 
   try {
-    const buildResult = await sendToTab({ action: 'build' });
+    const settings = await loadSettings();
+    const buildOptions = {
+      fetchFullDescriptions: !!settings.kforceFullDescriptions,
+      fetchCap: clampKforceFetchCap(settings.kforceFetchCap),
+    };
+    const buildResult = await sendToTab({ action: 'build', options: buildOptions });
     if (!buildResult?.payload) {
       showStatus('Failed to capture jobs from this page.', 'error');
       resetButton();
@@ -143,7 +176,6 @@ async function handleSend() {
     }
 
     btn.innerHTML = '<div class="spinner"></div>Sending to app…';
-    const settings = await loadSettings();
     const headers = { 'Content-Type': 'application/json' };
     if (settings.token) headers['X-Job-Import-Token'] = settings.token;
 
@@ -258,10 +290,26 @@ async function loadSettings() {
   // Defaults to stable Caddy names (see app.py's caddy_registry.register calls)
   // rather than fixed ports, so a port shift on either server never needs an
   // extension update.
-  const defaults = { listenerUrl: 'http://jha-listener.localhost', token: '', appUrl: 'http://jha.localhost' };
+  // ai: claude-sonnet-5 | 2026-08-23 — kforceFullDescriptions/kforceFetchCap
+  // added: opt-in full-JD capture for Kforce search-result batches (default
+  // off, since it's a real per-job page load against their site).
+  const defaults = {
+    listenerUrl: 'http://jha-listener.localhost',
+    token: '',
+    appUrl: 'http://jha.localhost',
+    kforceFullDescriptions: false,
+    kforceFetchCap: 25,
+  };
   try {
     return await chrome.storage.sync.get(defaults);
   } catch {
     return defaults;
   }
+}
+
+// ai: claude-sonnet-5 | 2026-08-23
+function clampKforceFetchCap(value) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n < 1) return 25;
+  return Math.min(n, 500);
 }

@@ -1261,6 +1261,82 @@
     return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
   }
 
+  // ai: claude-sonnet-5 | 2026-08-23
+  // Shared by parseKforceRow's card-snippet capture and buildKforceJobPayload's/
+  // the bulk-enrichment loop's full-detail capture, so there's exactly one place
+  // that knows the field order of a Kforce listing_text.
+  function kforceListingLines({ title, url, jobLocation, jobType, posted, compensation, jobId, description }) {
+    return [
+      title,
+      'Company: Kforce',
+      `URL: ${url}`,
+      jobLocation && `Location: ${jobLocation}`,
+      jobType && `Job Type: ${jobType}`,
+      posted && `Posted: ${posted}`,
+      compensation && `Compensation: ${compensation}`,
+      jobId && `JobID: ${jobId}`,
+      description && `\n${description}`,
+    ].filter(Boolean).join('\n');
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-23
+  // Extracts title/meta/description from whatever job detail is currently
+  // rendered at `article` — shared by the single-job capture path
+  // (buildKforceJobPayload) and the bulk per-row enrichment path below, so
+  // there's one place that knows the .data-job-desc/.page-meta selectors.
+  function extractKforceJobDetail() {
+    const title = document.querySelector('article h1')?.textContent.trim() || '';
+    const meta = {};
+    document.querySelectorAll('article .page-meta .col-xs-12').forEach(el => {
+      const text = el.textContent.replace(/\s+/g, ' ').trim();
+      const idx = text.indexOf(':');
+      if (idx !== -1) meta[text.slice(0, idx).trim().toLowerCase()] = text.slice(idx + 1).trim();
+    });
+    const description = document.querySelector('article .data-job-desc')?.innerText.trim() || '';
+    return { title, meta, description };
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-23
+  // Kforce is an Angular SPA routed entirely off location.hash — navigating to
+  // a job's #/detail/<id>/ hash re-renders `article .data-job-desc` in place
+  // (no page reload), but the render is async, so this polls until the
+  // description shows up or timeoutMs elapses. Returns false on timeout
+  // instead of throwing, so one slow/broken job doesn't abort the whole batch.
+  async function waitForKforceJobRender(timeoutMs = 6000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (document.querySelector('article .data-job-desc')?.innerText.trim()) return true;
+      await sleep(250);
+    }
+    return false;
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-23
+  // Uses replaceState + a synthetic hashchange event, rather than assigning
+  // location.hash directly, so walking through dozens of search results for
+  // full-description capture doesn't push one browser-history entry per job.
+  function navigateKforceHash(hash) {
+    const oldURL = location.href;
+    const newURL = `${location.pathname}${location.search}${hash}`;
+    history.replaceState(null, '', newURL);
+    window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: location.href }));
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-23
+  // Confirmed live against kforce.com: Angular's router only re-resolves
+  // `article .data-job-desc` on a list→detail transition. Navigating straight
+  // from one #/detail/<id>/ hash to another #/detail/<id>/ hash (the obvious
+  // approach) leaves the DOM showing the *previous* job — h1/description
+  // don't update, and waitForKforceJobRender still reports "rendered" because
+  // stale content is already non-empty. Bouncing back through the search hash
+  // before each detail hash reliably forces a fresh render every time.
+  async function navigateToKforceDetail(searchHash, detailHash) {
+    navigateKforceHash(searchHash);
+    await sleep(500);
+    navigateKforceHash(detailHash);
+    return waitForKforceJobRender();
+  }
+
   // ai: claude-sonnet-5 | 2026-07-28
   function parseKforceRow(li) {
     const link = li.querySelector('h2 a.linkForJob');
@@ -1272,17 +1348,14 @@
     const jobType = li.querySelector('.job-list-detail .type')?.textContent.trim() || '';
     const jobLocation = li.querySelector('.job-list-detail .locations')?.textContent.trim() || '';
 
-    const lines = [
-      title,
-      'Company: Kforce',
-      `URL: ${url}`,
-      jobLocation && `Location: ${jobLocation}`,
-      jobType && `Job Type: ${jobType}`,
-      posted && `Posted: ${posted}`,
-      snippet && `\n${snippet}`,
-    ].filter(Boolean);
-
-    return { url, job_title: title, company: 'Kforce', listing_text: lines.join('\n') };
+    return {
+      url, job_title: title, company: 'Kforce',
+      // Kept off the outgoing wire payload (see buildKforceSearchPayload's
+      // final .map) — only needed internally to rebuild listing_text if this
+      // row gets a full-description enrichment pass.
+      _title: title, _jobLocation: jobLocation, _jobType: jobType, _posted: posted,
+      listing_text: kforceListingLines({ title, url, jobLocation, jobType, posted, description: snippet }),
+    };
   }
 
   // ai: claude-sonnet-5 | 2026-07-28
@@ -1292,29 +1365,21 @@
   // pathname (/find-work/search-jobs/), so the hash (#/detail/<id>/) is the
   // only part of the URL that actually identifies the posting.
   function buildKforceJobPayload() {
-    const title = document.querySelector('article h1')?.textContent.trim() || '';
-    const meta = {};
-    document.querySelectorAll('article .page-meta .col-xs-12').forEach(el => {
-      const text = el.textContent.replace(/\s+/g, ' ').trim();
-      const idx = text.indexOf(':');
-      if (idx !== -1) meta[text.slice(0, idx).trim().toLowerCase()] = text.slice(idx + 1).trim();
-    });
-    const description = document.querySelector('article .data-job-desc')?.innerText.trim() || '';
+    const { title, meta, description } = extractKforceJobDetail();
     const url = location.origin + location.pathname + location.hash;
-
-    const lines = [
+    const listing_text = kforceListingLines({
       title,
-      'Company: Kforce',
-      `URL: ${url}`,
-      meta.location && `Location: ${meta.location}`,
-      meta['job type'] && `Job Type: ${meta['job type']}`,
-      meta.compensation && `Compensation: ${meta.compensation}`,
-      meta.jobid && `JobID: ${meta.jobid}`,
-      description && `\n${description}`,
-    ].filter(Boolean);
+      url,
+      jobLocation: meta.location || '',
+      jobType: meta['job type'] || '',
+      posted: '',
+      compensation: meta.compensation || '',
+      jobId: meta.jobid || '',
+      description,
+    });
 
     return JSON.stringify({
-      jobs: [{ url, job_title: title, company: 'Kforce', listing_text: lines.join('\n') }],
+      jobs: [{ url, job_title: title, company: 'Kforce', listing_text }],
       source: { url: location.href },
     });
   }
@@ -1328,15 +1393,23 @@
   // this one runs isolated per manifest defaults). Pagination is therefore
   // driven by repeatedly clicking the button and waiting for new rows.
   //
-  // Only the truncated card snippet is available per job here, not the full
-  // description: unlike Jibe/Insight Global, a per-job fetch() can't get the
-  // full text either, because every job's content is rendered client-side by
-  // Angular reading location.hash — the fetched HTML would just be the same
-  // empty SPA shell. Opening a job (which flips detectPage to kforceJob) is
-  // the only way to get its full description.
-  async function buildKforceSearchPayload() {
+  // Only the truncated card snippet is available per job here by default, not
+  // the full description: unlike Jibe/Insight Global, a per-job fetch() can't
+  // get the full text either, because every job's content is rendered
+  // client-side by Angular reading location.hash — the fetched HTML would
+  // just be the same empty SPA shell. Opening a job (which flips detectPage
+  // to kforceJob) is the only reliable way to get its full description — so
+  // when options.fetchFullDescriptions is set, this walks the tab through
+  // each row's #/detail/<id>/ hash in place (see navigateKforceHash) to
+  // collect it, capped at options.fetchCap since that's a real per-job page
+  // load against Kforce's site and can't be parallelized or done in the
+  // background.
+  async function buildKforceSearchPayload(options = {}) {
+    const { fetchFullDescriptions = false, fetchCap = 25 } = options;
     const total = kforceTotalHits();
     if (!total) return buildHtmlPayload();
+
+    const originalHash = location.hash;
 
     const maxClicks = Math.ceil(total / 25) + 2;
     for (let i = 0; i < maxClicks; i++) {
@@ -1361,8 +1434,47 @@
       .map(parseKforceRow)
       .filter(Boolean);
 
-    return jobs.length
-      ? JSON.stringify({ jobs, source: { url: location.href } })
+    if (fetchFullDescriptions && jobs.length) {
+      const limit = Math.min(fetchCap, jobs.length);
+      for (let i = 0; i < limit; i++) {
+        const job = jobs[i];
+        sendProgress(`Fetching full description ${i + 1} of ${limit}…`, (i + 1) / limit);
+        try {
+          const rendered = await navigateToKforceDetail(originalHash, new URL(job.url).hash);
+          if (rendered) {
+            const { meta, description } = extractKforceJobDetail();
+            if (description) {
+              job.listing_text = kforceListingLines({
+                title: job._title,
+                url: job.url,
+                jobLocation: job._jobLocation,
+                jobType: job._jobType,
+                posted: job._posted,
+                compensation: meta.compensation || '',
+                jobId: meta.jobid || '',
+                description,
+              });
+            }
+          }
+        } catch {
+          // Keep this row's short card snippet — one bad job shouldn't sink the batch.
+        }
+        await sleep(700); // politeness delay between per-job SPA navigations
+      }
+      // Leave the tab back on the search list, not sitting on the last job
+      // viewed. .data-job-desc doesn't exist on the list route (confirmed:
+      // Angular unmounts it entirely), so there's nothing to poll for here —
+      // just give the list a moment to re-render before returning.
+      navigateKforceHash(originalHash);
+      await sleep(800);
+    }
+
+    const wireJobs = jobs.map(({ url, job_title, company, listing_text }) => (
+      { url, job_title, company, listing_text }
+    ));
+
+    return wireJobs.length
+      ? JSON.stringify({ jobs: wireJobs, source: { url: location.href } })
       : buildHtmlPayload();
   }
 
@@ -1897,7 +2009,7 @@
     }
   }
 
-  async function buildPayload() {
+  async function buildPayload(options = {}) {
     const page = detectPage();
     let payload;
     switch (page.type) {
@@ -1919,7 +2031,7 @@
       case 'phenomSearch':     payload = await buildPhenomSearchPayload(); break;
       case 'insightGlobalSearch': payload = await buildInsightGlobalSearchPayload(); break;
       case 'kforceJob':        payload = buildKforceJobPayload(); break;
-      case 'kforceSearch':     payload = await buildKforceSearchPayload(); break;
+      case 'kforceSearch':     payload = await buildKforceSearchPayload(options); break;
       case 'jobanni':          payload = await buildJobanniPayload(); break;
       case 'jobgetherJob':     payload = await buildJobgetherJobPayload(); break;
       case 'smartGeneric':     payload = buildSmartGenericPayload(); break;
@@ -1976,7 +2088,7 @@
     }
 
     if (message.action === 'build') {
-      buildPayload()
+      buildPayload(message.options || {})
         .then(payload => sendResponse({ payload }))
         .catch(err => sendResponse({ error: String(err) }));
       return true; // keep channel open for async response
