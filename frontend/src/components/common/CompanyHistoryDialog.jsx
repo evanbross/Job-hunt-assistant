@@ -162,6 +162,7 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
   const [skippingId, setSkippingId] = useState(null);
   const [dismissingId, setDismissingId] = useState(null);
   const [showDuplicates, setShowDuplicates] = useState(true);
+  const [showSkipped, setShowSkipped] = useState(true);
   const [sortBy, setSortBy] = useState("id");
   const [search, setSearch] = useState("");
 
@@ -204,7 +205,10 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
   const duplicateHints = previousRows.filter((row) => titleLooksSimilar(row.title, currentJobTitle)).length;
   // ai: claude-sonnet-4-6 | 2026-06-12
   const declaredDuplicateCount = previousRows.filter(isDeclaredDuplicate).length;
-  const visiblePreviousRows = showDuplicates ? previousRows : previousRows.filter((row) => !isDeclaredDuplicate(row));
+  const duplicateFilteredRows = showDuplicates ? previousRows : previousRows.filter((row) => !isDeclaredDuplicate(row));
+  // ai: claude-sonnet-5 | 2026-08-22
+  const skippedCount = previousRows.filter((row) => row.status === "skipped").length;
+  const visiblePreviousRows = showSkipped ? duplicateFilteredRows : duplicateFilteredRows.filter((row) => row.status !== "skipped");
   // ai: claude-sonnet-5 | 2026-07-26
   const trimmedSearch = search.trim().toLowerCase();
   const searchedPreviousRows = trimmedSearch
@@ -282,6 +286,17 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
                   onChange={(e) => setShowDuplicates(e.target.checked)}
                 />
                 Show duplicates ({declaredDuplicateCount})
+              </label>
+            )}
+            {/* ai: claude-sonnet-5 | 2026-08-22 */}
+            {skippedCount > 0 && (
+              <label style={{ alignItems: "center", display: "flex", gap: "6px", marginLeft: declaredDuplicateCount > 0 || previousRows.length > 1 ? "0" : "auto", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={showSkipped}
+                  onChange={(e) => setShowSkipped(e.target.checked)}
+                />
+                Show skipped ({skippedCount})
               </label>
             )}
           </div>
