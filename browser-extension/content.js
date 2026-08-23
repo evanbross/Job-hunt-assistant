@@ -412,6 +412,14 @@
       // default (2 checks, no floor) exited during an ordinary ~1s pause
       // between stages, before the banner text had actually rendered.
       await waitForStableRender(10000, 500, 4, 3000);
+    } else if (location.hostname.includes('kforce.com')) {
+      // ai: claude-sonnet-5 | 2026-08-23
+      // Kforce's job detail (and its "This job is unavailable." closed state —
+      // confirmed live against two expired real postings) is rendered
+      // client-side by Angular after a single async lookup; capturing
+      // immediately on page load would still show the transient "Loading..."
+      // placeholder instead of either outcome.
+      await waitForStableRender(10000, 500, 3, 2500);
     }
     return JSON.stringify({
       content: document.documentElement.outerHTML,

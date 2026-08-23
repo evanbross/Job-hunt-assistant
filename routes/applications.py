@@ -150,6 +150,12 @@ _CLOSED_PHRASES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
         "this job has expired on jobgether",
         "the employer is not accepting new applications",
     ),
+    # ai: claude-sonnet-5 | 2026-08-23
+    # Confirmed live against two real expired Kforce postings (jobs 3583,
+    # 3589): the Angular app resolves an unknown/closed job ID to this exact
+    # banner text instead of any HTTP-level 404 (the hash-routed job ID never
+    # reaches the server at all, so there's no server-side signal to use).
+    "kforce": ("this job is unavailable",),
 }
 
 _PLATFORM_LABELS: dict[str, str] = {
@@ -158,6 +164,7 @@ _PLATFORM_LABELS: dict[str, str] = {
     "wellfound": "Wellfound",
     "mongodb": "MongoDB",  # ai: claude-fable-5 | 2026-07-16
     "jobgether": "Jobgether",  # ai: claude-sonnet-5 | 2026-07-24
+    "kforce": "Kforce",  # ai: claude-sonnet-5 | 2026-08-23
 }
 
 # ai: claude-fable-5 | 2026-07-17
@@ -464,8 +471,8 @@ def mark_ghost_applications() -> ResponseReturnValue:
 
 
 def _detect_closed_req_platform(job: dict, url: str) -> str | None:
-    """Return 'linkedin', 'wttj', 'wellfound', 'mongodb', or 'jobgether' if job/url
-    belongs to a supported platform, else None."""
+    """Return 'linkedin', 'wttj', 'wellfound', 'mongodb', 'jobgether', or 'kforce'
+    if job/url belongs to a supported platform, else None."""
     source = str(job.get("source") or "").lower()
     netloc = urlparse(url).netloc.lower()
     if "linkedin" in source or "linkedin.com" in netloc or "lnkd.in" in netloc:
@@ -488,6 +495,9 @@ def _detect_closed_req_platform(job: dict, url: str) -> str | None:
     # ai: claude-fable-5 | 2026-07-16
     if "mongodb.com" in netloc:
         return "mongodb"
+    # ai: claude-sonnet-5 | 2026-08-23
+    if "kforce" in source or "kforce.com" in netloc:
+        return "kforce"
     return None
 
 
@@ -545,9 +555,14 @@ def _check_closed_req(url: str, platform: str) -> str:
     closed. Wellfound goes further and fronts every job page with a bot-detection
     challenge (DataDome), so an unauthenticated fetch there always comes back
     'bad_url' (HTTP 403) regardless of whether the URL or job is actually fine —
-    it never reflects the job's real status. run_req_closed_scan_task escalates
-    both cases to an authenticated browser-extension capture (see
-    submit_closed_req_capture), which runs in a real browser and isn't blocked.
+    it never reflects the job's real status. Kforce is different again: its job
+    identity lives entirely in the URL hash (#/detail/<id>/), which browsers
+    never send to the server, so every Kforce fetch here — open, closed, or a
+    job ID that never existed — hits the exact same static page shell and
+    always classifies 'open'; the fetch is not wrong so much as blind. All
+    three cases get escalated to an authenticated browser-extension capture
+    (see submit_closed_req_capture), which runs in a real browser and — for
+    Kforce specifically — actually resolves the hash-routed job.
     """
     if platform == "linkedin":
         url = _canonicalize_linkedin_url(url)
@@ -638,7 +653,7 @@ def _submit_closed_req_scan(
 
 
 def _closed_req_candidates(repos: dict, user_id: int) -> list[tuple[dict, str, str]]:
-    """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, Wellfound, MongoDB, or Jobgether, with their platform."""
+    """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, Wellfound, MongoDB, Jobgether, or Kforce, with their platform."""
     jobs = repos["jobs"].get_all_ordered(user_id)
     all_stages = repos["stages"].get_all(user_id)
     terminal_keys = {
@@ -1039,13 +1054,15 @@ def run_req_closed_scan_task(
         closed_count = 0
         bad_url_count = 0
         unreachable_count = 0
-        # LinkedIn jobs the unauthenticated fetch reports "open" may still be closed
-        # (the closure banner only renders to logged-in sessions), and Wellfound jobs
-        # come back "bad_url" every time because Wellfound bot-blocks unauthenticated
-        # fetches outright (see _check_closed_req) — neither result reflects the job's
-        # real status, so both are collected here and escalated to the browser-extension
-        # capture queue after the fetch loop, which keeps its "no DB connection held
-        # during external fetches" behavior.
+        # LinkedIn and Kforce jobs the unauthenticated fetch reports "open" may still
+        # be closed (LinkedIn's closure banner only renders to logged-in sessions;
+        # Kforce's job hash never reaches the server at all, so its fetch is blind
+        # regardless of true status — see _check_closed_req), and Wellfound jobs come
+        # back "bad_url" every time because Wellfound bot-blocks unauthenticated
+        # fetches outright — none of these results reflect the job's real status, so
+        # all three are collected here and escalated to the browser-extension capture
+        # queue after the fetch loop, which keeps its "no DB connection held during
+        # external fetches" behavior.
         to_browser_check: list[tuple[dict, str, str, str]] = []
         for i, (job, url, platform) in enumerate(candidates):
             platform_label = _PLATFORM_LABELS.get(platform, platform)
@@ -1076,7 +1093,7 @@ def run_req_closed_scan_task(
                 closed_count += 1
             elif result == "open":
                 kept_count += 1
-                if platform == "linkedin":
+                if platform in ("linkedin", "kforce"):
                     to_browser_check.append((job, url, platform, platform_label))
             elif result == "bad_url":
                 if platform == "wellfound":

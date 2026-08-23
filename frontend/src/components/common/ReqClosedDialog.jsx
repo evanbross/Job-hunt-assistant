@@ -146,7 +146,7 @@ export default function ReqClosedDialog({ result, onStart, onClose }) {
   const title = running
     ? (browserRecheckPhase ? "Rechecking via Browser Extension…" : "Scanning for Closed Reqs…") // ai: claude-fable-5 | 2026-07-17
     : browserDraining
-      ? "Waiting on Authenticated LinkedIn Rechecks…"
+      ? "Waiting on Authenticated Browser Rechecks…"
       : "Scan for Closed Reqs Complete";
   const subtitle = result.error
     ? `Scan failed: ${result.error}`
@@ -211,7 +211,7 @@ export default function ReqClosedDialog({ result, onStart, onClose }) {
       {!running && browserTotal > 0 && (
         <div style={{ marginTop: "14px", padding: "10px 12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", fontSize: "12px", color: "var(--text-muted)" }}>
-            <span>Authenticated LinkedIn recheck (browser extension)</span>
+            <span>Authenticated recheck (browser extension)</span>
             <span>{browserDone} of {browserTotal} done</span>
           </div>
           <div className="loading-bar">

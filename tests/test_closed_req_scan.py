@@ -278,6 +278,13 @@ def test_detect_closed_req_platform_recognizes_jobgether_url() -> None:
     assert _detect_closed_req_platform(job, url) == "jobgether"
 
 
+# ai: claude-sonnet-5 | 2026-08-23
+def test_detect_closed_req_platform_recognizes_kforce_url() -> None:
+    job = {"source": "Kforce"}
+    url = "https://www.kforce.com/find-work/search-jobs/#/detail/MTY5Nn5XUUd-MjE4MTkzOVAxfjk5/"
+    assert _detect_closed_req_platform(job, url) == "kforce"
+
+
 # ai: claude-fable-5 | 2026-07-16
 def test_check_closed_req_detects_mongodb_teams_hub_redirect() -> None:
     """MongoDB redirects a closed posting to its generic careers teams hub."""
@@ -677,6 +684,48 @@ def test_run_req_closed_scan_escalates_wellfound_bad_url_to_browser_check(
         repos["conn"].close()
 
 
+# ai: claude-sonnet-5 | 2026-08-23
+def test_run_req_closed_scan_escalates_kforce_open_to_browser_check(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kforce's job identity lives entirely in the URL hash, which the server never
+    sees — every unauthenticated fetch hits the same static page shell regardless
+    of the job's real status and always classifies 'open'. That must be escalated
+    to an authenticated browser-extension capture rather than trusted as-is."""
+    repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
+    try:
+        job_id = repos["jobs"].insert(
+            user_id,
+            {
+                "company": "Kforce",
+                "job_title": "Senior Software Engineer",
+                "url": "https://www.kforce.com/find-work/search-jobs/#/detail/abc123/",
+                "source": "Kforce",
+                "status": "applied",
+                "on_sheet": 1,
+            },
+        )
+        repos["conn"].commit()
+
+        with patch("routes.applications._check_closed_req", return_value="open"):
+            result = _run_req_closed_scan(user_id)
+
+        rows = [
+            r
+            for r in repos["browser_capture_queue"].get_all(user_id)
+            if r["purpose"] == "closed_req"
+        ]
+        assert any(
+            r["job_id"] == job_id for r in rows
+        ), "kforce job reported 'open' never got a browser-check slot"
+        matching = next(r for r in rows if r["job_id"] == job_id)
+        assert matching["site_name"] == "Kforce (closed-req check)"
+
+        assert result["kept_count"] == 1
+    finally:
+        repos["conn"].close()
+
+
 # ai: claude-fable-5 | 2026-07-17
 def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
@@ -950,6 +999,21 @@ def test_classify_closed_req_page_detects_jobgether_banner_phrase() -> None:
             page_text,
             "https://jobgether.com/offer/6a53f99aac00a71a5a8aaeb6-software-engineer-4-mobile",
             "jobgether",
+        )
+        == "closed"
+    )
+
+
+# ai: claude-sonnet-5 | 2026-08-23
+def test_classify_closed_req_page_detects_kforce_banner_phrase() -> None:
+    """Confirmed live against two real expired Kforce postings (jobs 3583,
+    3589): an unknown/closed job hash resolves to this exact banner text."""
+    page_text = "<html>this job is unavailable. your search did not return any results.</html>"
+    assert (
+        _classify_closed_req_page(
+            page_text,
+            "https://www.kforce.com/find-work/search-jobs/#/detail/abc123/",
+            "kforce",
         )
         == "closed"
     )
