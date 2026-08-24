@@ -172,6 +172,27 @@
           description: `${total} jobs — auto-fetches all pages`,
         };
       }
+      // ai: claude-sonnet-5 | 2026-08-24
+      // Insight Global's redesigned search UI (as of this writing, replacing
+      // the /jobs/find_a_job/ pages checked above, which are kept in case any
+      // still-live links resolve there): one URL renders both the result list
+      // (left) and the currently-selected job's full detail (right) via
+      // Angular Router state that never appears in location.href — clicking a
+      // card re-renders the right pane in place with no navigation at all.
+      // That means the page can't be classified as "one job" or "many jobs"
+      // by URL shape the way every other detectPage() branch does; the user
+      // has to say which one they want. See captureModes below and the
+      // captureMode branch in buildPayload's dispatcher.
+      if (/^\/jobs\/search\//.test(path)) {
+        const total = insightGlobalTotalHits();
+        return {
+          site: 'Insight Global',
+          type: 'insightGlobalSplit',
+          jobCount: total,
+          description: `${total} jobs found`,
+          captureModes: ['list', 'detail'],
+        };
+      }
     }
 
     // ai: claude-sonnet-5 | 2026-07-28
@@ -1257,6 +1278,165 @@
       : buildHtmlPayload();
   }
 
+  // ─── Insight Global — redesigned split-view search UI ──────────────────────
+  // ai: claude-sonnet-5 | 2026-08-24
+  // (see the detectPage() comment above for why this can't be told apart by
+  // URL). Field labels use Material Symbols ligature icons rendered as plain
+  // text nodes ("work Permanent", "payments $1 - $2") rather than separate
+  // icon elements, hence stripIgIconLigature below. Neither the list cards
+  // nor the detail pane expose the job's requisitionId (GUID) anywhere in the
+  // DOM — it only ever surfaces in the URL if the user clicks "Apply", which
+  // opens an application dialog and isn't something a capture pass should
+  // trigger. So captured jobs use the search page's own URL (fragment-tagged
+  // per job title for list mode, to keep multiple captured rows visually
+  // distinct) rather than a real per-job deep link.
+
+  function stripIgIconLigature(text) {
+    return (text || '').replace(/^\s*(work|payments|favorite|content_copy|location_on)\s+/i, '').trim();
+  }
+
+  function extractInsightGlobalSplitDetail() {
+    const q = sel => document.querySelector(sel);
+    const title = q('[data-testid="job-details-job-title"]')?.textContent.trim() || '';
+    const locationEl = q('[data-testid="job-details-worksite-location"]');
+    const metaList = locationEl?.closest('ul');
+    const jobLocation = metaList
+      ? [...metaList.querySelectorAll('li')]
+          .filter(li => li.getAttribute('data-testid') !== 'job-details-posted-date')
+          .map(li => li.textContent.trim())
+          .filter(Boolean)
+          .join(' • ')
+      : '';
+    const posted = (q('[data-testid="job-details-posted-date"]')?.textContent || '')
+      .trim().replace(/^Posted\s+/i, '');
+    const jobType = stripIgIconLigature(q('[data-testid="job-details-job-type"]')?.textContent);
+    const payRate = stripIgIconLigature(q('[data-testid="job-details-pay-rate"]')?.textContent);
+    const description = q('[data-testid="job-details-job-description"]')?.innerText.trim() || '';
+    return { title, jobLocation, jobType, payRate, posted, description };
+  }
+
+  function insightGlobalSplitListingLines({ title, jobLocation, jobType, payRate, posted, description, url }) {
+    return [
+      title,
+      'Company: Insight Global',
+      `URL: ${url}`,
+      jobLocation && `Location: ${jobLocation}`,
+      jobType && `Job Type: ${jobType}`,
+      payRate && `Pay: ${payRate}`,
+      posted && `Posted: ${posted}`,
+      description && `\n${description}`,
+    ].filter(Boolean).join('\n');
+  }
+
+  // Captures whatever is currently open in the right-hand detail pane — no
+  // extra fetch or navigation needed, everything's already rendered.
+  function buildInsightGlobalSplitDetailPayload() {
+    const detail = extractInsightGlobalSplitDetail();
+    const url = location.href;
+    const listing_text = insightGlobalSplitListingLines({ ...detail, url });
+    return JSON.stringify({
+      jobs: [{ url, job_title: detail.title, company: 'Insight Global', listing_text }],
+      source: { url: location.href },
+    });
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-24
+  // Selecting a card fetches that job's description from the details API and
+  // re-renders the pane asynchronously — poll for the title to match rather
+  // than assuming the click is synchronous.
+  async function waitForInsightGlobalDetailRender(expectedTitle, timeoutMs = 6000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const title = document.querySelector('[data-testid="job-details-job-title"]')?.textContent.trim();
+      if (title === expectedTitle) return true;
+      await sleep(200);
+    }
+    return false;
+  }
+
+  // Clicking mat-paginator's "next" re-fetches and re-renders the card list
+  // client-side; poll the first card's title for a change rather than assume
+  // a fixed delay covers it.
+  async function waitForInsightGlobalListPageChange(prevFirstTitle, timeoutMs = 6000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const title = document.querySelector('[data-testid="jobs-result-list"] [data-testid="job-card-job-title"]')?.textContent.trim();
+      if (title && title !== prevFirstTitle) return true;
+      await sleep(200);
+    }
+    return false;
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-24
+  // Walks mat-paginator pages rather than replicating IG's filter query
+  // language (workTypes=remote, minimumPayRate, distance, … map to a
+  // different set of filter.* params server-side, and the mapping isn't
+  // fully known) — clicking through reuses whatever filters the page itself
+  // already applied. Full descriptions are opt-in (options.fetchFullDescriptions)
+  // and capped (options.fetchCap) because each one is a real per-job fetch
+  // triggered by selecting that card, same tradeoff as Kforce's search capture.
+  async function buildInsightGlobalSplitListPayload(options = {}) {
+    const { fetchFullDescriptions = false, fetchCap = 25 } = options;
+    const total = insightGlobalTotalHits();
+    if (!total) return buildHtmlPayload();
+
+    const allJobs = [];
+    let fetched = 0;
+    let pageNum = 1;
+
+    while (true) {
+      const cards = [...document.querySelectorAll('[data-testid="jobs-result-list"] .job-card')];
+      if (!cards.length) break;
+
+      for (const card of cards) {
+        const title = card.querySelector('[data-testid="job-card-job-title"]')?.textContent.trim() || '';
+        if (!title) continue;
+        const jobLocation = (card.querySelector('[data-testid="job-card-worksite-location"]')?.textContent || '')
+          .replace(/\s+/g, ' ').trim();
+        const jobType = stripIgIconLigature(card.querySelector('[data-testid="job-card-job-type"]')?.textContent);
+        const payRate = stripIgIconLigature(card.querySelector('[data-testid="job-card-pay-rate"]')?.textContent);
+        const posted = (card.querySelector('[data-testid="job-card-posted-date"]')?.textContent || '')
+          .trim().replace(/^Posted\s+/i, '');
+
+        let description = '';
+        if (fetchFullDescriptions && fetched < fetchCap) {
+          sendProgress(
+            `Fetching description ${fetched + 1} of ${Math.min(total, fetchCap)}…`,
+            (fetched + 1) / Math.min(total, fetchCap)
+          );
+          card.click();
+          if (await waitForInsightGlobalDetailRender(title)) {
+            description = document.querySelector('[data-testid="job-details-job-description"]')?.innerText.trim() || '';
+          }
+          fetched++;
+          await sleep(300);
+        }
+
+        const url = `${location.origin}${location.pathname}${location.search}#job=${encodeURIComponent(title)}`;
+        allJobs.push({
+          url,
+          job_title: title,
+          company: 'Insight Global',
+          listing_text: insightGlobalSplitListingLines({ title, jobLocation, jobType, payRate, posted, description, url }),
+        });
+      }
+
+      if (allJobs.length >= total) break;
+      const nextBtn = document.querySelector('.mat-mdc-paginator-navigation-next');
+      if (!nextBtn || nextBtn.disabled) break;
+
+      const prevFirstTitle = cards[0]?.querySelector('[data-testid="job-card-job-title"]')?.textContent.trim();
+      pageNum++;
+      sendProgress(`Loading page ${pageNum}…`, allJobs.length / total);
+      nextBtn.click();
+      if (!(await waitForInsightGlobalListPageChange(prevFirstTitle))) break;
+    }
+
+    return allJobs.length
+      ? JSON.stringify({ jobs: allJobs, source: { url: location.href } })
+      : buildHtmlPayload();
+  }
+
   // ─── Kforce (kforce.com) ────────────────────────────────────────────────────
 
   // ai: claude-sonnet-5 | 2026-07-28
@@ -2038,6 +2218,11 @@
       case 'jibeSearch':       payload = await buildJibeSearchPayload(); break;
       case 'phenomSearch':     payload = await buildPhenomSearchPayload(); break;
       case 'insightGlobalSearch': payload = await buildInsightGlobalSearchPayload(); break;
+      case 'insightGlobalSplit':
+        payload = options.captureMode === 'detail'
+          ? buildInsightGlobalSplitDetailPayload()
+          : await buildInsightGlobalSplitListPayload(options);
+        break;
       case 'kforceJob':        payload = buildKforceJobPayload(); break;
       case 'kforceSearch':     payload = await buildKforceSearchPayload(options); break;
       case 'jobanni':          payload = await buildJobanniPayload(); break;

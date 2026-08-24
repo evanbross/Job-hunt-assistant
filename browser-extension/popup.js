@@ -39,6 +39,16 @@ let currentJobCount = 0;
 let isSending = false;
 let applicationFrameId = 0; // default: top frame
 
+// ai: claude-sonnet-5 | 2026-08-24
+// Populated once at startup from chrome.storage; the full-description
+// checkbox/cap inputs are a single shared control whose stored key prefix
+// switches per site (and, for Insight Global, per capture mode) — see
+// refreshFullDescUI/activeFullDescPrefix below.
+let fullDescSettings = null;
+let activeFullDescPrefix = 'kforce';
+let lastScanResult = null;
+let currentCaptureMode = null;
+
 // Receives progress messages from content script during long builds (e.g. Wellfound).
 chrome.runtime.onMessage.addListener(msg => {
   if (msg.action !== 'progress') return;
@@ -62,7 +72,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('send-btn').addEventListener('click', handleSend);
   document.getElementById('fill-app-btn').addEventListener('click', handleFillApplication);
-  await initKforceOptions();
+  document.getElementById('capture-mode-list').addEventListener('click', () => setCaptureMode('list'));
+  document.getElementById('capture-mode-detail').addEventListener('click', () => setCaptureMode('detail'));
+  await initFullDescOptions();
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab.id;
@@ -109,46 +121,83 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
-// ai: claude-sonnet-5 | 2026-08-23
-// Loads the saved checkbox/cap values and wires their change listeners once
-// at popup startup; applyScanResult() below only toggles this block's
-// visibility once the page type is known.
-async function initKforceOptions() {
-  const settings = await loadSettings();
-  const checkbox = document.getElementById('kforce-full-desc');
-  const capInput = document.getElementById('kforce-fetch-cap');
-  const capRow = document.getElementById('kforce-cap-row');
-
-  checkbox.checked = !!settings.kforceFullDescriptions;
-  capInput.value = clampKforceFetchCap(settings.kforceFetchCap);
-  capRow.style.display = checkbox.checked ? 'flex' : 'none';
+// ai: claude-sonnet-5 | 2026-08-24
+// Loads the saved checkbox/cap values (for every site's prefix at once —
+// cheap, it's just chrome.storage.sync) and wires their change listeners
+// once at popup startup. applyScanResult()/setCaptureMode() below only pick
+// which prefix's values to display and toggle the block's visibility once
+// the page type (and, for Insight Global, the chosen capture mode) is known.
+async function initFullDescOptions() {
+  fullDescSettings = await loadSettings();
+  const checkbox = document.getElementById('full-desc-checkbox');
+  const capInput = document.getElementById('full-desc-fetch-cap');
+  const capRow = document.getElementById('full-desc-cap-row');
 
   checkbox.addEventListener('change', () => {
     capRow.style.display = checkbox.checked ? 'flex' : 'none';
-    chrome.storage.sync.set({ kforceFullDescriptions: checkbox.checked }).catch(() => {});
+    fullDescSettings[`${activeFullDescPrefix}FullDescriptions`] = checkbox.checked;
+    chrome.storage.sync.set({ [`${activeFullDescPrefix}FullDescriptions`]: checkbox.checked }).catch(() => {});
   });
   capInput.addEventListener('change', () => {
-    const clamped = clampKforceFetchCap(capInput.value);
+    const clamped = clampFetchCap(capInput.value);
     capInput.value = clamped;
-    chrome.storage.sync.set({ kforceFetchCap: clamped }).catch(() => {});
+    fullDescSettings[`${activeFullDescPrefix}FetchCap`] = clamped;
+    chrome.storage.sync.set({ [`${activeFullDescPrefix}FetchCap`]: clamped }).catch(() => {});
   });
+}
+
+// Whether the current site+mode combination offers the opt-in full-description
+// fetch, and which storage-key prefix ('kforce' | 'insightGlobal') it uses.
+function fullDescOptInFor(result, captureMode) {
+  if (result.type === 'kforceSearch') return 'kforce';
+  if (result.type === 'insightGlobalSplit' && captureMode === 'list') return 'insightGlobal';
+  return null;
+}
+
+function refreshFullDescUI() {
+  const prefix = lastScanResult ? fullDescOptInFor(lastScanResult, currentCaptureMode) : null;
+  const optionsEl = document.getElementById('full-desc-options');
+  if (!prefix) { optionsEl.style.display = 'none'; return; }
+
+  activeFullDescPrefix = prefix;
+  optionsEl.style.display = 'block';
+  const checkbox = document.getElementById('full-desc-checkbox');
+  const capInput = document.getElementById('full-desc-fetch-cap');
+  const capRow = document.getElementById('full-desc-cap-row');
+
+  checkbox.checked = !!fullDescSettings[`${prefix}FullDescriptions`];
+  capInput.value = clampFetchCap(fullDescSettings[`${prefix}FetchCap`]);
+  capRow.style.display = checkbox.checked ? 'flex' : 'none';
+}
+
+function setCaptureMode(mode) {
+  currentCaptureMode = mode;
+  document.getElementById('capture-mode-list').classList.toggle('active', mode === 'list');
+  document.getElementById('capture-mode-detail').classList.toggle('active', mode === 'detail');
+  currentJobCount = mode === 'detail' ? 1 : (lastScanResult?.jobCount ?? 0);
+  refreshFullDescUI();
+  resetButton();
 }
 
 function applyScanResult(result) {
   if (!result) { showNoAccess(); return; }
 
+  lastScanResult = result;
   currentJobCount = result.jobCount ?? 0;
 
   document.getElementById('site-name').textContent = result.site ?? location.hostname;
   document.getElementById('site-desc').textContent = result.description ?? '';
-  document.getElementById('kforce-options').style.display =
-    result.type === 'kforceSearch' ? 'block' : 'none';
 
-  const btn = document.getElementById('send-btn');
-  btn.disabled = false;
-  btn.innerHTML = currentJobCount > 0
-    ? `Send ${currentJobCount} Job${currentJobCount !== 1 ? 's' : ''} to App`
-    : 'Send Page to App';
+  const modeRow = document.getElementById('capture-mode-row');
+  if (Array.isArray(result.captureModes) && result.captureModes.length > 1) {
+    modeRow.style.display = 'flex';
+    setCaptureMode(result.captureModes[0]); // also refreshes full-desc UI and the send button
+  } else {
+    modeRow.style.display = 'none';
+    currentCaptureMode = null;
+    refreshFullDescUI();
+    resetButton();
+  }
 }
 
 async function handleSend() {
@@ -163,9 +212,11 @@ async function handleSend() {
 
   try {
     const settings = await loadSettings();
+    const prefix = lastScanResult ? fullDescOptInFor(lastScanResult, currentCaptureMode) : null;
     const buildOptions = {
-      fetchFullDescriptions: !!settings.kforceFullDescriptions,
-      fetchCap: clampKforceFetchCap(settings.kforceFetchCap),
+      captureMode: currentCaptureMode,
+      fetchFullDescriptions: prefix ? !!settings[`${prefix}FullDescriptions`] : false,
+      fetchCap: prefix ? clampFetchCap(settings[`${prefix}FetchCap`]) : 25,
     };
     const buildResult = await sendToTab({ action: 'build', options: buildOptions });
     if (!buildResult?.payload) {
@@ -293,12 +344,17 @@ async function loadSettings() {
   // ai: claude-sonnet-5 | 2026-08-23 — kforceFullDescriptions/kforceFetchCap
   // added: opt-in full-JD capture for Kforce search-result batches (default
   // off, since it's a real per-job page load against their site).
+  // ai: claude-sonnet-5 | 2026-08-24 — insightGlobalFullDescriptions/
+  // insightGlobalFetchCap added: same opt-in tradeoff for Insight Global's
+  // split-view list capture (see fullDescOptInFor above).
   const defaults = {
     listenerUrl: 'http://jha-listener.localhost',
     token: '',
     appUrl: 'http://jha.localhost',
     kforceFullDescriptions: false,
     kforceFetchCap: 25,
+    insightGlobalFullDescriptions: false,
+    insightGlobalFetchCap: 25,
   };
   try {
     return await chrome.storage.sync.get(defaults);
@@ -307,8 +363,9 @@ async function loadSettings() {
   }
 }
 
-// ai: claude-sonnet-5 | 2026-08-23
-function clampKforceFetchCap(value) {
+// ai: claude-sonnet-5 | 2026-08-24 — generalized from clampKforceFetchCap to
+// cover every site's opt-in full-description fetch cap.
+function clampFetchCap(value) {
   const n = parseInt(value, 10);
   if (!Number.isFinite(n) || n < 1) return 25;
   return Math.min(n, 500);
