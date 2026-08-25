@@ -33,7 +33,18 @@
       }
       if (/\/jobs\/(search|collections|search-results)/.test(path)) {
         const count = countLinkedInJobs();
-        return { site: 'LinkedIn Search', type: 'linkedInSearch', jobCount: count, description: `${count} jobs visible` };
+        // ai: claude-sonnet-5 | 2026-08-25
+        // Unlike Insight Global's split view, LinkedIn's search page puts the
+        // selected job's id right in the URL (?currentJobId=...), updated on
+        // every card click — no extra tracking needed to know which job is
+        // open. See buildLinkedInSearchDetailPayload.
+        return {
+          site: 'LinkedIn Search',
+          type: 'linkedInSearch',
+          jobCount: count,
+          description: `${count} jobs visible`,
+          captureModes: ['list', 'detail'],
+        };
       }
     }
 
@@ -449,7 +460,13 @@
     });
   }
 
-  async function buildLinkedInJobPayload() {
+  // ai: claude-sonnet-5 | 2026-08-25
+  // urlOverride lets buildLinkedInSearchDetailPayload reuse this same
+  // extraction against the search page's inline detail pane (confirmed live:
+  // the same selectors below match there) while still recording the
+  // canonical /jobs/view/<id>/ URL rather than the search page's own URL.
+  async function buildLinkedInJobPayload(urlOverride) {
+    const url = urlOverride || location.href;
     const seeMoreBtn = document.querySelector(
       'button.show-more-less-html__button--more, ' +
       'button[aria-label*="more description"], ' +
@@ -503,7 +520,7 @@
     const lines = [];
     if (title) lines.push(title);
     if (company) lines.push('Company: ' + company);
-    lines.push('URL: ' + location.href);
+    lines.push('URL: ' + url);
     // ai: claude-sonnet-4-6 | 2026-06-26
     // Fall back to full page body text whenever a structured description isn't found,
     // even if title/company were extracted. This ensures queue-captured pages always
@@ -514,7 +531,41 @@
       lines.push('', document.body.innerText.trim().slice(0, 12000));
     }
 
-    return JSON.stringify({ jobs: [{ url: location.href, job_title: title, company, listing_text: lines.join('\n') }] });
+    return JSON.stringify({ jobs: [{ url, job_title: title, company, listing_text: lines.join('\n') }] });
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-25
+  // currentJobId is set by LinkedIn itself the moment a job auto-selects or
+  // gets clicked (confirmed live: updates in the URL bar on every card
+  // click, no navigation), so unlike Insight Global there's never a need to
+  // click a card ourselves. But the id lands in the URL before the detail
+  // pane's own async fetch finishes rendering it — confirmed live: reading
+  // the pane immediately after a fresh page load caught it mid-spinner and
+  // returned an empty title/company. Poll briefly for the title selectors
+  // used by buildLinkedInJobPayload to return something before extracting.
+  const _LI_DETAIL_TITLE_SELECTORS = [
+    'h1.top-card-layout__title',
+    '.job-details-jobs-unified-top-card__job-title h1',
+    '.job-details-jobs-unified-top-card__job-title',
+    '.jobs-unified-top-card__job-title h1',
+    '.jobs-unified-top-card__job-title',
+    '[data-test-job-title]',
+  ];
+
+  async function waitForLinkedInDetailRender(timeoutMs = 6000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (pick(_LI_DETAIL_TITLE_SELECTORS)) return true;
+      await sleep(200);
+    }
+    return false;
+  }
+
+  async function buildLinkedInSearchDetailPayload() {
+    const jobId = new URLSearchParams(location.search).get('currentJobId');
+    const url = jobId ? `https://www.linkedin.com/jobs/view/${jobId}/` : location.href;
+    if (jobId) await waitForLinkedInDetailRender();
+    return buildLinkedInJobPayload(url);
   }
 
   function buildLinkedInSearchPayload() {
@@ -2202,7 +2253,11 @@
     let payload;
     switch (page.type) {
       case 'linkedInJob':      payload = await buildLinkedInJobPayload(); break;
-      case 'linkedInSearch':   payload = buildLinkedInSearchPayload(); break;
+      case 'linkedInSearch':
+        payload = options.captureMode === 'detail'
+          ? await buildLinkedInSearchDetailPayload()
+          : buildLinkedInSearchPayload();
+        break;
       case 'wellfoundJob':     payload = buildWellfoundJobPayload(); break;
       case 'wellfoundSearch':  payload = await buildWellfoundSearchPayload(); break;
       case 'greenhouseJob':    payload = buildGreenhouseJobPayload(); break;
