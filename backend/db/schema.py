@@ -530,6 +530,23 @@ def _migrate(conn: Any) -> None:
     cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS is_veteran BOOLEAN")
     cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS has_disability BOOLEAN")
 
+    # ai: claude-sonnet-5 | 2026-08-24
+    # street_address/postal_code were missing entirely — city/state existed
+    # but the mailing-address portion of the form never had backing columns,
+    # so the browser extension had nothing to autofill those fields with even
+    # once its own label-classification bug (see autofill.js) was fixed.
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS street_address TEXT")
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS postal_code TEXT")
+
+    # ai: claude-sonnet-5 | 2026-08-25
+    # Race/ethnicity was missing entirely, same gap as street_address/postal_code
+    # above — gender/veteran/disability all had backing columns and an autofill
+    # category, but this standard OFCCP EEO question (confirmed live on Lever:
+    # a native <select name="eeo[race]"> with the exact option text stored
+    # here) had neither, so the browser extension had nothing to answer it
+    # with and always left it unresolved.
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS race TEXT")
+
     conn.commit()
 
     _backfill_duplicate_of_id(conn)  # ai: claude-sonnet-5 | 2026-07-25
@@ -943,8 +960,10 @@ def _create_tables(conn: Any) -> None:
             legal_name               TEXT,
             email                    TEXT,
             phone                    TEXT,
+            street_address           TEXT,
             city                     TEXT,
             state                    TEXT,
+            postal_code              TEXT,
             work_authorized          BOOLEAN,
             requires_visa_sponsorship BOOLEAN,
             linkedin_url             TEXT,
@@ -952,6 +971,7 @@ def _create_tables(conn: Any) -> None:
             code_repository_url      TEXT,
             pronouns                 TEXT,
             gender                   TEXT,
+            race                     TEXT,
             is_veteran               BOOLEAN,
             has_disability           BOOLEAN,
             current_company          TEXT,

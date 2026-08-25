@@ -53,7 +53,6 @@ import MetricGrid, { MetricItem } from "./components/common/MetricGrid.jsx";
 import { ImportBreakdownDetails } from "./components/JobQueue/ImportSummaryPopup.jsx";
 import VoiceQuery from "./components/VoiceQuery/index.jsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
-import { describeFetchError } from "./utils/fetchErrorUtils.js";
 
 // ai: claude-fable-5 | 2026-07-14 — Career Sites tab removed; sites are managed in Settings
 // ai: claude-sonnet-5 | 2026-07-26 — Setup tab removed; the wizard now lives in Settings

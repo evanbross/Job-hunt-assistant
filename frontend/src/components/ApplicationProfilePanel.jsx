@@ -69,8 +69,10 @@ const emptyProfile = {
   legal_name: "",
   email: "",
   phone: "",
+  street_address: "",
   city: "",
   state: "",
+  postal_code: "",
   work_authorized: null,
   requires_visa_sponsorship: null,
   linkedin_url: "",
@@ -78,12 +80,31 @@ const emptyProfile = {
   code_repository_url: "",
   pronouns: "",
   gender: "",
+  race: "",
   is_veteran: null,
   has_disability: null,
   current_company: "",
 };
 
 const emptyAnswerForm = { question_text: "", answer_text: "", platform: "" };
+
+// ai: claude-sonnet-5 | 2026-08-25
+// The standard OFCCP EEO-1 race/ethnicity categories, confirmed live against
+// a Lever posting's native <select name="eeo[race]"> — Greenhouse's EEO
+// section uses the same wording. Stored verbatim so the extension's
+// autofill.js can match it against a form's <option> text exactly (see
+// setNativeValue's native-<select> path, which does a case-insensitive but
+// otherwise exact string match, not fuzzy matching).
+const RACE_OPTIONS = [
+  "Hispanic or Latino",
+  "White (Not Hispanic or Latino)",
+  "Black or African American (Not Hispanic or Latino)",
+  "Native Hawaiian or Other Pacific Islander (Not Hispanic or Latino)",
+  "Asian (Not Hispanic or Latino)",
+  "American Indian or Alaska Native (Not Hispanic or Latino)",
+  "Two or More Races (Not Hispanic or Latino)",
+  "Decline to self-identify",
+];
 
 // Tri-state select for fields the extension should leave to the user rather
 // than guess wrong on (e.g. an unset field is safer than a confidently wrong one).
@@ -179,8 +200,10 @@ export default function ApplicationProfilePanel() {
           legal_name: profile.legal_name.trim() || null,
           email: profile.email.trim() || null,
           phone: profile.phone.trim() || null,
+          street_address: profile.street_address.trim() || null,
           city: profile.city.trim() || null,
           state: profile.state.trim() || null,
+          postal_code: profile.postal_code.trim() || null,
           work_authorized: profile.work_authorized,
           requires_visa_sponsorship: profile.requires_visa_sponsorship,
           linkedin_url: profile.linkedin_url.trim() || null,
@@ -188,6 +211,7 @@ export default function ApplicationProfilePanel() {
           code_repository_url: profile.code_repository_url.trim() || null,
           pronouns: profile.pronouns.trim() || null,
           gender: profile.gender.trim() || null,
+          race: profile.race.trim() || null,
           is_veteran: profile.is_veteran,
           has_disability: profile.has_disability,
           current_company: profile.current_company.trim() || null,
@@ -246,7 +270,7 @@ export default function ApplicationProfilePanel() {
     setEditForm(emptyAnswerForm);
   };
 
-  const handleEditSave = async (id) => {
+  const handleEditSave = async () => {
     const question_text = editForm.question_text.trim();
     const answer_text = editForm.answer_text.trim();
     if (!question_text || !answer_text) {
@@ -332,6 +356,15 @@ export default function ApplicationProfilePanel() {
               />
             </div>
             <div>
+              <label style={labelStyle}>Street address</label>
+              <input
+                type="text"
+                value={profile.street_address || ""}
+                onChange={(e) => setProfile((p) => ({ ...p, street_address: e.target.value }))}
+                style={fieldStyle}
+              />
+            </div>
+            <div>
               <label style={labelStyle}>City (as you'd answer "where do you currently reside?")</label>
               <input
                 type="text"
@@ -352,6 +385,15 @@ export default function ApplicationProfilePanel() {
               <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                 Full name preferred — the extension also tries the two-letter abbreviation on dropdowns that use one.
               </span>
+            </div>
+            <div>
+              <label style={labelStyle}>Zip / postal code</label>
+              <input
+                type="text"
+                value={profile.postal_code || ""}
+                onChange={(e) => setProfile((p) => ({ ...p, postal_code: e.target.value }))}
+                style={fieldStyle}
+              />
             </div>
             <div>
               <label style={labelStyle}>Authorized to work in the US?</label>
@@ -420,6 +462,22 @@ export default function ApplicationProfilePanel() {
               />
               <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                 The extension also tries Male/Man or Female/Woman interchangeably on dropdowns that use the other wording.
+              </span>
+            </div>
+            <div>
+              <label style={labelStyle}>Race / ethnicity</label>
+              <select
+                value={profile.race || ""}
+                onChange={(e) => setProfile((p) => ({ ...p, race: e.target.value }))}
+                style={fieldStyle}
+              >
+                <option value="">Not set</option>
+                {RACE_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+              <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                Standard EEO wording (Lever, Greenhouse, ...) — the extension matches this against the form's own option text exactly.
               </span>
             </div>
             <div>
@@ -501,7 +559,7 @@ export default function ApplicationProfilePanel() {
                   style={fieldStyle}
                 />
                 <div style={{ display: "flex", gap: "6px" }}>
-                  <button className="btn-primary" style={{ fontSize: "11px", padding: "3px 10px" }} onClick={() => handleEditSave(answer.id)}>
+                  <button className="btn-primary" style={{ fontSize: "11px", padding: "3px 10px" }} onClick={handleEditSave}>
                     Save
                   </button>
                   <button className="btn-secondary" style={{ fontSize: "11px", padding: "3px 10px" }} onClick={cancelEdit}>

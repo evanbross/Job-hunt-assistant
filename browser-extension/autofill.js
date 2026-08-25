@@ -95,6 +95,27 @@
     const ariaLabel = el.getAttribute && el.getAttribute('aria-label');
     if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
 
+    // ai: claude-sonnet-5 | 2026-08-24
+    // Confirmed on JazzHR (herodevsinc.applytojob.com, applytojob.com domain
+    // generally): Address/City/State/Postal share one ancestor .form-group
+    // whose only rendered text is the "Address" field's own label — the
+    // ancestor-text walk below would misclassify City/State/Postal as
+    // "Address" too (they'd all resolve to the same text as their sibling).
+    // Each input's own placeholder is per-field and accurate here, so prefer
+    // it over the ancestor walk when present. Guarded to short, non-sentence
+    // strings so it doesn't win over a real ancestor-derived question on
+    // platforms that use instructional placeholders ("e.g. Chicago, IL...").
+    const placeholder = el.getAttribute && el.getAttribute('placeholder');
+    if (
+      placeholder &&
+      placeholder.trim() &&
+      placeholder.trim().length <= 40 &&
+      !isControlText(placeholder) &&
+      !/^e\.g\.|[?.!]$/i.test(placeholder.trim())
+    ) {
+      return placeholder.trim();
+    }
+
     let node = el.parentElement;
     for (let depth = 0; depth < 6 && node; depth++, node = node.parentElement) {
       const text = firstTextLine(node.innerText);
@@ -247,6 +268,11 @@
     { category: 'portfolio', re: /portfolio|personal (site|website)|\bwebsite\b/i },
     { category: 'pronouns', re: /\bpronouns?\b/i },
     { category: 'gender', re: /\bgender\b/i },
+    // ai: claude-sonnet-5 | 2026-08-25
+    // Confirmed on Lever (Veeva posting): bare-labeled "Race", a native
+    // <select name="eeo[race]">. Greenhouse phrases the same OFCCP question
+    // as "Race/Ethnicity" on some postings.
+    { category: 'race', re: /\brace\b|ethnicity/i },
     // ai: claude-sonnet-5 | 2026-08-14
     // Confirmed on Ashby (Headway posting): phrased "current or previous
     // employer" — the old exact "current (company|employer)" pattern required
@@ -287,6 +313,13 @@
     },
     // ai: claude-sonnet-5 | 2026-08-17
     { category: 'state', re: /state\s*\/\s*province|\bstate\b|\bprovince\b/i },
+    // ai: claude-sonnet-5 | 2026-08-24
+    // Confirmed on JazzHR (herodevsinc.applytojob.com): "Postal" and "Address"
+    // placeholders/labels, previously unclassified (fell through to the answer
+    // bank, then to unresolved). zip/postal checked before street_address so
+    // a "Zip/Postal Code" label doesn't get caught by the broader \baddress\b.
+    { category: 'postal_code', re: /\bzip\b|\bpostal\b/i },
+    { category: 'street_address', re: /\bstreet\b|\baddress\b/i },
     { category: 'name', re: /\bname\b/i },
   ];
 
@@ -316,11 +349,14 @@
       case 'email': return profile.email;
       case 'phone': return profile.phone;
       case 'city': return profile.city;
+      case 'street_address': return profile.street_address;
+      case 'postal_code': return profile.postal_code;
       case 'linkedin': return profile.linkedin_url;
       case 'portfolio': return profile.portfolio_url;
       case 'code_repository': return profile.code_repository_url;
       case 'pronouns': return profile.pronouns;
       case 'gender': return profile.gender;
+      case 'race': return profile.race;
       case 'current_company': return profile.current_company;
       case 'state': return profile.state;
       default: return null;
