@@ -218,7 +218,19 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
   // When the active card is flagged as a possible duplicate of another row,
   // pull that candidate out of the sorted/filtered list and pin it right below
   // the current card instead of leaving the user to hunt for it further down.
-  const pinnedMatchRow = duplicateOfId != null ? previousRows.find((row) => row.id === duplicateOfId) : null;
+  // ai: claude-sonnet-5 | 2026-08-25
+  // Pulled from previousRows (pre-filter), not duplicateFilteredRows/
+  // visiblePreviousRows, and rendered unconditionally below — so it used to
+  // ignore both the "Show skipped" and "Show duplicates" checkboxes entirely.
+  // Confirmed reported live: unchecking "Show skipped" left a skipped pinned
+  // match visible. Hide it the same way the regular list does when its own
+  // status is filtered out.
+  const rawPinnedMatchRow = duplicateOfId != null ? previousRows.find((row) => row.id === duplicateOfId) : null;
+  const pinnedMatchHiddenByFilter = rawPinnedMatchRow
+    ? (!showSkipped && rawPinnedMatchRow.status === "skipped")
+      || (!showDuplicates && isDeclaredDuplicate(rawPinnedMatchRow))
+    : false;
+  const pinnedMatchRow = pinnedMatchHiddenByFilter ? null : rawPinnedMatchRow;
   const remainingPreviousRows = pinnedMatchRow
     ? searchedPreviousRows.filter((row) => row.id !== pinnedMatchRow.id)
     : searchedPreviousRows;
