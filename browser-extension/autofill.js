@@ -67,7 +67,28 @@
     if (host === 'jobs.lever.co' && /\/apply(\/|$)/.test(path)) {
       return { isApplicationPage: true, platform: 'Lever' };
     }
+    // ai: claude-sonnet-5 | 2026-08-25
+    // Unlike every other platform here, LinkedIn's "Easy Apply" form is a
+    // modal overlaid on the job search/detail page (opened by the user
+    // clicking "Easy Apply"), not a dedicated URL or page-embedded form — so
+    // detection has to check for the modal's presence live in the DOM rather
+    // than the URL. See discoveryRoot() below for why this also matters for
+    // control discovery, not just detection.
+    if (host === 'www.linkedin.com' && document.querySelector('.jobs-easy-apply-modal')) {
+      return { isApplicationPage: true, platform: 'LinkedIn' };
+    }
     return { isApplicationPage: false, platform: null };
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-25
+  // Every other platform's application form is the whole page — querying
+  // `document` for controls was always safe. LinkedIn's Easy Apply modal sits
+  // on top of the job search page, which still has its own keyword/location
+  // search inputs, messaging search, etc. underneath — querying `document`
+  // there would discover and try to fill those too. Scope to the modal when
+  // it's open; fall back to `document` (unchanged behavior) everywhere else.
+  function discoveryRoot() {
+    return document.querySelector('.jobs-easy-apply-modal') || document;
   }
 
   function hasFillableControls() {
@@ -160,8 +181,9 @@
   function discoverControls() {
     const controls = [];
     const seen = new Set();
+    const root = discoveryRoot();
 
-    document.querySelectorAll('input[type="file"]').forEach((el) => {
+    root.querySelectorAll('input[type="file"]').forEach((el) => {
       if (seen.has(el)) return;
       seen.add(el);
       controls.push({ type: 'file', el, label: resolveFieldLabel(el) });
@@ -170,7 +192,7 @@
     // Ashby's Yes/No questions: two <button> options driving a hidden,
     // non-interactive (tabindex=-1) checkbox — confirmed live on the Nebulock
     // posting. Filling means clicking the matching button, not the checkbox.
-    document.querySelectorAll('input[type="checkbox"][tabindex="-1"]').forEach((checkbox) => {
+    root.querySelectorAll('input[type="checkbox"][tabindex="-1"]').forEach((checkbox) => {
       const container = checkbox.parentElement;
       if (!container || seen.has(container)) return;
       const buttons = [...container.querySelectorAll('button')];
@@ -180,7 +202,7 @@
       controls.push({ type: 'yesno', el: container, buttons, checkbox, label: resolveFieldLabel(container) });
     });
 
-    document.querySelectorAll('input[role="combobox"]').forEach((el) => {
+    root.querySelectorAll('input[role="combobox"]').forEach((el) => {
       if (seen.has(el)) return;
       seen.add(el);
       controls.push({ type: 'combobox', el, label: resolveFieldLabel(el) });
@@ -193,7 +215,7 @@
     // present) is claimed here too so the generic text-field query below
     // doesn't also discover it as an unrelated bare "Custom"-labeled field.
     const checkboxGroups = new Map();
-    document.querySelectorAll('input[type="checkbox"]').forEach((el) => {
+    root.querySelectorAll('input[type="checkbox"]').forEach((el) => {
       if (seen.has(el) || !el.name) return;
       if (!checkboxGroups.has(el.name)) checkboxGroups.set(el.name, []);
       checkboxGroups.get(el.name).push(el);
@@ -222,12 +244,40 @@
       });
     });
 
+    // ai: claude-sonnet-5 | 2026-08-25
+    // Plain native radio-button groups sharing one `name` — confirmed live on
+    // LinkedIn's Easy Apply modal (a screening question like "Are you
+    // comfortable working in an onsite setting?" renders as a <fieldset> of
+    // two <input type="radio"> options, each option's own <label> just reading
+    // "Yes"/"No" — the question text lives on the fieldset ancestor, same
+    // shape as Lever's checkbox groups above, hence reusing resolveGroupLabel.
+    // None of the ATS platforms already supported use plain radio inputs (Ashby's
+    // Yes/No is a button pair, Lever's multi-choice questions are <select>s),
+    // so this was never hit before.
+    const radioGroups = new Map();
+    root.querySelectorAll('input[type="radio"]').forEach((el) => {
+      if (seen.has(el) || !el.name) return;
+      if (!radioGroups.has(el.name)) radioGroups.set(el.name, []);
+      radioGroups.get(el.name).push(el);
+    });
+    radioGroups.forEach((radios) => {
+      if (radios.length < 2) return;
+      const container = commonAncestor(radios);
+      radios.forEach((r) => seen.add(r));
+      controls.push({
+        type: 'radio-group',
+        el: container,
+        radios,
+        label: resolveGroupLabel(container, radios),
+      });
+    });
+
     // ai: claude-sonnet-5 | 2026-08-14
     // input[type="url"] confirmed missing here on a third Ashby posting
     // (Headway): its LinkedIn Profile URL and Personal Website/Portfolio
     // fields both use type="url", not "text" — they were completely invisible
     // to discovery (and so unfillable regardless of profile data) before this.
-    document
+    root
       .querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="url"], textarea')
       .forEach((el) => {
         if (seen.has(el)) return;
@@ -236,7 +286,7 @@
         controls.push({ type: 'text', el, label: resolveFieldLabel(el) });
       });
 
-    document.querySelectorAll('select').forEach((el) => {
+    root.querySelectorAll('select').forEach((el) => {
       if (seen.has(el)) return;
       seen.add(el);
       controls.push({ type: 'select', el, label: resolveFieldLabel(el) });
@@ -255,6 +305,17 @@
     { category: 'first_name', re: /first name/i },
     { category: 'last_name', re: /last name/i },
     { category: 'email', re: /\be-?mail\b/i },
+    // ai: claude-sonnet-5 | 2026-08-25
+    // Checked before the bare 'phone' pattern below — confirmed live on
+    // LinkedIn's Easy Apply Contact Info step: "Phone country code" is a
+    // separate <select> from "Mobile phone number", and \bphone\b matches
+    // "Phone" as a whole word inside it too. Without this, the country-code
+    // dropdown would classify as 'phone' and get profile.phone's actual
+    // number pushed at it — harmless on a native <select> (no matching
+    // <option> text, so it silently no-ops) but still worth not attempting.
+    // No profile field backs this category; it just keeps the bare 'phone'
+    // pattern from firing so the field falls through to unresolved instead.
+    { category: 'phone_country_code', re: /phone.*country|country.*code/i },
     { category: 'phone', re: /\bphone\b/i },
     { category: 'resume', re: /\bresume\b|\bcv\b/i },
     // ai: claude-sonnet-5 | 2026-08-21
@@ -559,6 +620,24 @@
     return attemptClick();
   }
 
+  // ai: claude-sonnet-5 | 2026-08-25
+  // Fills a plain native radio-button group (see discoverControls' radio-group
+  // case) by clicking whichever option's own .value matches a candidate,
+  // tried in order. A real .click() on a genuine <input type="radio"> is
+  // enough — confirmed live on LinkedIn's Ember-based Easy Apply: unlike
+  // Ashby's fake button-driven checkbox (clickYesNo above) or react-select's
+  // finicky mousedown/mouseup/click choreography (fillCombobox below), a
+  // native radio input's own click behavior (toggle checked, fire change)
+  // works the same regardless of framework, since it's the browser's default
+  // action rather than something a framework has to reimplement.
+  function fillRadioGroup(radios, candidates) {
+    for (const candidate of candidates) {
+      const match = radios.find((r) => (r.value || '').trim().toLowerCase() === String(candidate).trim().toLowerCase());
+      if (match) { match.click(); return true; }
+    }
+    return false;
+  }
+
   // Location/Select-style combobox — covers two confirmed-different widget
   // families, both role="combobox" inputs with an async/filtered option list:
   //
@@ -819,6 +898,14 @@
               markUnresolved(control.el);
               unresolved.push(label);
             }
+          } else if (control.type === 'radio-group') {
+            if (fillRadioGroup(control.radios, candidateValuesForBoolean(category, boolValue))) {
+              markFilled(control.el);
+              filled.push(label);
+            } else {
+              markUnresolved(control.el);
+              unresolved.push(label);
+            }
           } else if (control.type === 'combobox') {
             const picked = await fillComboboxCandidates(control.el, candidateValuesForBoolean(category, boolValue), platform);
             if (picked) { markFilled(control.el); filled.push(label); }
@@ -869,6 +956,19 @@
               markUnresolved(control.el);
               unresolved.push(label);
             }
+          } else if (control.type === 'radio-group') {
+            // e.g. gender or race rendered as a radio group rather than a
+            // <select> — not yet confirmed live, but control.el here is the
+            // group's container (a <fieldset>/<div>), not an input/select, so
+            // this can't fall through to the generic setNativeValue below the
+            // way every other control.type here safely can.
+            if (fillRadioGroup(control.radios, candidates)) {
+              markFilled(control.el);
+              filled.push(label);
+            } else {
+              markUnresolved(control.el);
+              unresolved.push(label);
+            }
           } else {
             setNativeValue(control.el, candidates);
             markFilled(control.el);
@@ -879,10 +979,21 @@
 
         const bankAnswer = control.type === 'combobox' ? null : findBankAnswer(label, safeAnswers);
         if (bankAnswer) {
-          setNativeValue(control.el, bankAnswer.answer_text);
-          markFilled(control.el);
-          filled.push(label);
-          continue;
+          // ai: claude-sonnet-5 | 2026-08-25
+          // Same reasoning as the structuredValue branch above: a radio-group's
+          // control.el is a container, not a fillable element itself.
+          if (control.type === 'radio-group') {
+            if (fillRadioGroup(control.radios, [bankAnswer.answer_text])) {
+              markFilled(control.el);
+              filled.push(label);
+              continue;
+            }
+          } else {
+            setNativeValue(control.el, bankAnswer.answer_text);
+            markFilled(control.el);
+            filled.push(label);
+            continue;
+          }
         }
 
         markUnresolved(control.el);
