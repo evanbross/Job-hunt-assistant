@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import UTC, datetime
 
 from celery.result import AsyncResult
@@ -74,7 +75,12 @@ from backend.scoring.job_validator import (
     normalize_and_validate,
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
-from backend.utils.utils import ACTIVE_JOB_STATUSES, current_user_id, get_repos
+from backend.utils.utils import (
+    ACTIVE_JOB_STATUSES,
+    current_user_id,
+    get_repos,
+    is_celery_task_active,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +94,12 @@ scan_bp = Blueprint("scan", __name__)
 # task_id to poll, mirroring routes/jd_health_check.py's
 # _submit_jd_health_check_run. Keyed by user_id (multi-tenancy migration) so
 # two different users' scans never collide or show each other's progress.
+# ai: claude-sonnet-5 | 2026-08-25 — _scan_submitted_at_by_user added
+# alongside: see is_celery_task_active for why a bare task_id isn't enough
+# to tell "genuinely running" apart from "stale PENDING".
 _scan_last_task_id_by_user: dict[int, str] = {}
+_scan_submitted_at_by_user: dict[int, float] = {}
 _scan_lock = threading.Lock()
-_SCAN_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
 def _submit_scan(user_id: int, rescan_all: bool = False) -> str | None:
@@ -99,13 +108,14 @@ def _submit_scan(user_id: int, rescan_all: bool = False) -> str | None:
     running for this user."""
     with _scan_lock:
         existing = _scan_last_task_id_by_user.get(user_id)
-        if (
-            existing is not None
-            and AsyncResult(existing, app=celery_app).state in _SCAN_ACTIVE_STATES
+        submitted_at = _scan_submitted_at_by_user.get(user_id)
+        if existing is not None and is_celery_task_active(
+            AsyncResult(existing, app=celery_app).state, submitted_at
         ):
             return None
         task = run_scan_task.delay(user_id, rescan_all=rescan_all)
         _scan_last_task_id_by_user[user_id] = task.id
+        _scan_submitted_at_by_user[user_id] = time.monotonic()
         return task.id
 
 
@@ -1039,8 +1049,10 @@ def scan_emails() -> ResponseReturnValue:
 
 @scan_bp.route("/scan/status")
 def scan_status() -> ResponseReturnValue:
+    user_id = current_user_id()
     with _scan_lock:
-        task_id = _scan_last_task_id_by_user.get(current_user_id())
+        task_id = _scan_last_task_id_by_user.get(user_id)
+        submitted_at = _scan_submitted_at_by_user.get(user_id)
 
     _idle = {
         "running": False,
@@ -1063,7 +1075,7 @@ def scan_status() -> ResponseReturnValue:
     result = AsyncResult(task_id, app=celery_app)
     result_state = result.state
 
-    if result_state in _SCAN_ACTIVE_STATES:
+    if is_celery_task_active(result_state, submitted_at):
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
@@ -1082,6 +1094,17 @@ def scan_status() -> ResponseReturnValue:
                 "current_job_title": meta.get("current_job_title", ""),
             }
         )
+
+    # ai: claude-sonnet-5 | 2026-08-25
+    # A PENDING state that reached here (i.e. failed is_celery_task_active
+    # above) means the result backend has no record of this task_id at all —
+    # its result already expired (result_expires=3600 in celery_app.py), or
+    # it was never picked up. Either way there's nothing left describing
+    # what actually happened, so report idle rather than the FAILURE/REVOKED
+    # branch below, which would otherwise misreport a long-finished (possibly
+    # successful) scan as "failed unexpectedly".
+    if result_state == "PENDING":
+        return jsonify(_idle)
 
     if result_state == "SUCCESS":
         final = result.result if isinstance(result.result, dict) else {}
@@ -1130,9 +1153,9 @@ def rescan_all_emails() -> ResponseReturnValue:
     user_id = current_user_id()
     with _scan_lock:
         existing = _scan_last_task_id_by_user.get(user_id)
-        if (
-            existing is not None
-            and AsyncResult(existing, app=celery_app).state in _SCAN_ACTIVE_STATES
+        submitted_at = _scan_submitted_at_by_user.get(user_id)
+        if existing is not None and is_celery_task_active(
+            AsyncResult(existing, app=celery_app).state, submitted_at
         ):
             return jsonify({"error": "A scan is already running"}), 409
 

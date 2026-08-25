@@ -42,6 +42,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
@@ -54,7 +55,12 @@ from backend.scanning.schedulers import (
     jd_health_check_should_run_now,
 )
 from backend.tasks import run_jd_health_check_task
-from backend.utils.utils import current_user_id, get_repos, parse_bool
+from backend.utils.utils import (
+    current_user_id,
+    get_repos,
+    is_celery_task_active,
+    parse_bool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +77,9 @@ jd_health_check_bp = Blueprint("jd_health_check", __name__)
 
 _jd_health_run_lock = threading.Lock()
 _jd_health_last_task_id_by_user: dict[int, str] = {}
-_JD_HEALTH_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
+# ai: claude-sonnet-5 | 2026-08-25 — see is_celery_task_active for why a bare
+# task_id isn't enough to tell "genuinely running" apart from "stale PENDING".
+_jd_health_submitted_at_by_user: dict[int, float] = {}
 
 
 def _submit_jd_health_check_run(user_id: int, triggered_by: str) -> str | None:
@@ -83,13 +91,14 @@ def _submit_jd_health_check_run(user_id: int, triggered_by: str) -> str | None:
     """
     with _jd_health_run_lock:
         existing = _jd_health_last_task_id_by_user.get(user_id)
-        if (
-            existing is not None
-            and AsyncResult(existing, app=celery_app).state in _JD_HEALTH_ACTIVE_STATES
+        submitted_at = _jd_health_submitted_at_by_user.get(user_id)
+        if existing is not None and is_celery_task_active(
+            AsyncResult(existing, app=celery_app).state, submitted_at
         ):
             return None
         task = run_jd_health_check_task.delay(user_id, triggered_by=triggered_by)
         _jd_health_last_task_id_by_user[user_id] = task.id
+        _jd_health_submitted_at_by_user[user_id] = time.monotonic()
         return task.id
 
 

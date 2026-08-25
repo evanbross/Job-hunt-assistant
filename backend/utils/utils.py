@@ -33,6 +33,7 @@ pattern applied to other shared helpers).
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from urllib.parse import urlparse
@@ -112,6 +113,41 @@ def first_account_user_id(repos: dict) -> int:
     if row is None:
         raise RuntimeError("first_account_user_id() called with no app_account rows")
     return row["id"]
+
+
+# ai: claude-sonnet-5 | 2026-08-25
+_CELERY_TASK_ACTIVE_STATES: frozenset[str] = frozenset({"STARTED", "PROGRESS", "RETRY"})
+_CELERY_PENDING_GRACE_SECONDS = 30
+
+
+def is_celery_task_active(
+    state: str, submitted_at: float | None, *, grace_seconds: float = _CELERY_PENDING_GRACE_SECONDS
+) -> bool:
+    """True if a Celery task's *state* means it's genuinely still running.
+
+    Every "is a scan/search/re-eval already running?" guard in this codebase
+    tracks a task_id in an in-memory per-user dict and checks
+    AsyncResult(task_id).state. That state string is ambiguous for PENDING:
+    Celery reports PENDING both for a task that's genuinely queued and
+    hasn't started yet, and for a task_id the result backend has no record
+    of at all -- including one whose result already expired long after it
+    actually finished (celery_app.py sets result_expires=3600). Treating
+    every PENDING as active blocks new submissions forever once a stored
+    task_id's result ages out past that TTL, even though nothing has
+    actually been running for the last 59 minutes.
+
+    submitted_at (time.monotonic() at dispatch time, stored alongside the
+    task_id) resolves the ambiguity: a task_id that's still within
+    grace_seconds of being dispatched is treated as active even at PENDING
+    (Celery just hasn't picked it up yet); once that window passes, PENDING
+    is treated as stale rather than active. STARTED/PROGRESS/RETRY are
+    unambiguous and always active regardless of submitted_at.
+    """
+    if state in _CELERY_TASK_ACTIVE_STATES:
+        return True
+    if state == "PENDING":
+        return submitted_at is not None and (time.monotonic() - submitted_at) < grace_seconds
+    return False
 
 
 def parse_bool(value: object, *, default: bool) -> bool:

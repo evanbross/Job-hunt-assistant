@@ -64,6 +64,7 @@ from backend.utils.utils import (
     current_user_id,
     first_account_user_id,
     get_repos,
+    is_celery_task_active,
     normalize_stage_status,
 )
 
@@ -631,8 +632,10 @@ def _check_closed_req(url: str, platform: str) -> str:
 # scans never collide or show each other's progress — mirrors
 # routes/scan.py's _scan_last_task_id_by_user.
 _closed_req_last_task_id_by_user: dict[int, str] = {}
+# ai: claude-sonnet-5 | 2026-08-25 — see is_celery_task_active for why a bare
+# task_id isn't enough to tell "genuinely running" apart from "stale PENDING".
+_closed_req_submitted_at_by_user: dict[int, float] = {}
 _closed_req_lock = threading.Lock()
-_CLOSED_REQ_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
 def _submit_closed_req_scan(
@@ -642,13 +645,14 @@ def _submit_closed_req_scan(
     new task id, or None if a scan was already running."""
     with _closed_req_lock:
         existing = _closed_req_last_task_id_by_user.get(user_id)
-        if (
-            existing is not None
-            and AsyncResult(existing, app=celery_app).state in _CLOSED_REQ_ACTIVE_STATES
+        submitted_at = _closed_req_submitted_at_by_user.get(user_id)
+        if existing is not None and is_celery_task_active(
+            AsyncResult(existing, app=celery_app).state, submitted_at
         ):
             return None
         task = run_req_closed_scan_task.delay(user_id, platforms=platforms)
         _closed_req_last_task_id_by_user[user_id] = task.id
+        _closed_req_submitted_at_by_user[user_id] = time.monotonic()
         return task.id
 
 
@@ -1283,6 +1287,7 @@ def closed_req_scan_status() -> ResponseReturnValue:
 
     with _closed_req_lock:
         task_id = _closed_req_last_task_id_by_user.get(user_id)
+        submitted_at = _closed_req_submitted_at_by_user.get(user_id)
 
     _idle = {
         "running": False,
@@ -1312,7 +1317,7 @@ def closed_req_scan_status() -> ResponseReturnValue:
     result = AsyncResult(task_id, app=celery_app)
     result_state = result.state
 
-    if result_state in _CLOSED_REQ_ACTIVE_STATES:
+    if is_celery_task_active(result_state, submitted_at):
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
@@ -1338,6 +1343,16 @@ def closed_req_scan_status() -> ResponseReturnValue:
                 "error": meta.get("error"),
             }
         )
+
+    # ai: claude-sonnet-5 | 2026-08-25
+    # A PENDING state that reached here (i.e. failed is_celery_task_active
+    # above) means the result backend has no record of this task_id at all —
+    # its result already expired, or it was never picked up. Report idle
+    # rather than the FAILURE/REVOKED branch below, which would otherwise
+    # misreport a long-finished (possibly successful) scan as "failed
+    # unexpectedly".
+    if result_state == "PENDING":
+        return jsonify(_idle)
 
     if result_state == "SUCCESS":
         final = result.result if isinstance(result.result, dict) else {}

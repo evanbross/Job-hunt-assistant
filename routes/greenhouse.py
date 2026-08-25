@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -53,7 +54,7 @@ from backend.scanning.sources.greenhouse_searcher import (
 )
 from backend.settings_service import get_setting
 from backend.tasks import run_import_task
-from backend.utils.utils import current_user_id, get_repos
+from backend.utils.utils import current_user_id, get_repos, is_celery_task_active
 
 logger = logging.getLogger(__name__)
 
@@ -92,17 +93,20 @@ def _update_login(**kwargs: object) -> None:
 # ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
 # ── Scan task tracking (in-memory pointer only) ────────────────────────────────
 _greenhouse_scan_last_task_id_by_user: dict[int, str] = {}
+# ai: claude-sonnet-5 | 2026-08-25 — see is_celery_task_active for why a bare
+# task_id isn't enough to tell "genuinely running" apart from "stale PENDING".
+_greenhouse_scan_submitted_at_by_user: dict[int, float] = {}
 _greenhouse_scan_lock = threading.Lock()
-_GREENHOUSE_SCAN_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
 def _greenhouse_scan_is_active(user_id: int) -> bool:
     with _greenhouse_scan_lock:
         task_id = _greenhouse_scan_last_task_id_by_user.get(user_id)
+        submitted_at = _greenhouse_scan_submitted_at_by_user.get(user_id)
     if task_id is None:
         return False
-    return (
-        AsyncResult(task_id, app=celery_app).state in _GREENHOUSE_SCAN_ACTIVE_STATES
+    return is_celery_task_active(
+        AsyncResult(task_id, app=celery_app).state, submitted_at
     )
 
 
@@ -112,13 +116,14 @@ def _submit_greenhouse_scan(user_id: int, search_url: str, max_jobs: int) -> str
     running for this user."""
     with _greenhouse_scan_lock:
         existing = _greenhouse_scan_last_task_id_by_user.get(user_id)
-        if (
-            existing is not None
-            and AsyncResult(existing, app=celery_app).state in _GREENHOUSE_SCAN_ACTIVE_STATES
+        submitted_at = _greenhouse_scan_submitted_at_by_user.get(user_id)
+        if existing is not None and is_celery_task_active(
+            AsyncResult(existing, app=celery_app).state, submitted_at
         ):
             return None
         task = run_greenhouse_scan_task.delay(user_id, search_url, max_jobs)
         _greenhouse_scan_last_task_id_by_user[user_id] = task.id
+        _greenhouse_scan_submitted_at_by_user[user_id] = time.monotonic()
         return task.id
 
 
@@ -287,8 +292,10 @@ def scan_status() -> ResponseReturnValue:
             }
         )
 
+    user_id = current_user_id()
     with _greenhouse_scan_lock:
-        task_id = _greenhouse_scan_last_task_id_by_user.get(current_user_id())
+        task_id = _greenhouse_scan_last_task_id_by_user.get(user_id)
+        submitted_at = _greenhouse_scan_submitted_at_by_user.get(user_id)
 
     # ai: claude-sonnet-5 | 2026-08-20
     # No scan has ever run yet: fall back to reporting the login flow's last
@@ -313,7 +320,7 @@ def scan_status() -> ResponseReturnValue:
     result = AsyncResult(task_id, app=celery_app)
     result_state = result.state
 
-    if result_state in _GREENHOUSE_SCAN_ACTIVE_STATES:
+    if is_celery_task_active(result_state, submitted_at):
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
@@ -328,6 +335,16 @@ def scan_status() -> ResponseReturnValue:
                 "error": meta.get("error"),
             }
         )
+
+    # ai: claude-sonnet-5 | 2026-08-25
+    # A PENDING state that reached here (i.e. failed is_celery_task_active
+    # above) means the result backend has no record of this task_id at all —
+    # its result already expired, or it was never picked up. Report idle
+    # rather than the FAILURE/REVOKED branch below, which would otherwise
+    # misreport a long-finished (possibly successful) scan as "failed
+    # unexpectedly".
+    if result_state == "PENDING":
+        return jsonify(_idle)
 
     if result_state == "SUCCESS":
         final = result.result if isinstance(result.result, dict) else {}

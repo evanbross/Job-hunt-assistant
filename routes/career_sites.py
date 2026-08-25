@@ -40,6 +40,7 @@ import logging
 import re
 import secrets
 import threading
+import time
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
@@ -76,6 +77,7 @@ from backend.scoring.job_validator import (
 from backend.utils.utils import (
     current_user_id,
     get_repos,
+    is_celery_task_active,
     parse_bool,
     parse_positive_int,
     safe_error_message,
@@ -95,8 +97,10 @@ _CAREER_SITE_COLLECTION_MODES = frozenset({"automatic", "manual"})
 # task_id to poll, mirroring routes/jd_health_check.py's
 # _submit_jd_health_check_run.
 _career_scan_last_task_id_by_user: dict[int, str] = {}
+# ai: claude-sonnet-5 | 2026-08-25 — see is_celery_task_active for why a bare
+# task_id isn't enough to tell "genuinely running" apart from "stale PENDING".
+_career_scan_submitted_at_by_user: dict[int, float] = {}
 _career_scan_lock = threading.Lock()
-_CAREER_SCAN_ACTIVE_STATES = frozenset({"PENDING", "STARTED", "PROGRESS", "RETRY"})
 
 
 def _submit_career_scan(
@@ -107,13 +111,14 @@ def _submit_career_scan(
     running for this user."""
     with _career_scan_lock:
         existing = _career_scan_last_task_id_by_user.get(user_id)
-        if (
-            existing is not None
-            and AsyncResult(existing, app=celery_app).state in _CAREER_SCAN_ACTIVE_STATES
+        submitted_at = _career_scan_submitted_at_by_user.get(user_id)
+        if existing is not None and is_celery_task_active(
+            AsyncResult(existing, app=celery_app).state, submitted_at
         ):
             return None
         task = run_career_site_scan_task.delay(user_id, trigger=trigger, source_id=source_id)
         _career_scan_last_task_id_by_user[user_id] = task.id
+        _career_scan_submitted_at_by_user[user_id] = time.monotonic()
         return task.id
 
 
@@ -1158,8 +1163,10 @@ def run_career_scan_now() -> ResponseReturnValue:
 
 @career_sites_bp.route("/career-scan/status")
 def career_scan_status() -> ResponseReturnValue:
+    user_id = current_user_id()
     with _career_scan_lock:
-        task_id = _career_scan_last_task_id_by_user.get(current_user_id())
+        task_id = _career_scan_last_task_id_by_user.get(user_id)
+        submitted_at = _career_scan_submitted_at_by_user.get(user_id)
 
     _idle = {
         "running": False,
@@ -1184,7 +1191,7 @@ def career_scan_status() -> ResponseReturnValue:
     result = AsyncResult(task_id, app=celery_app)
     result_state = result.state
 
-    if result_state in _CAREER_SCAN_ACTIVE_STATES:
+    if is_celery_task_active(result_state, submitted_at):
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
@@ -1205,6 +1212,16 @@ def career_scan_status() -> ResponseReturnValue:
                 "interval_minutes": max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES),
             }
         )
+
+    # ai: claude-sonnet-5 | 2026-08-25
+    # A PENDING state that reached here (i.e. failed is_celery_task_active
+    # above) means the result backend has no record of this task_id at all —
+    # its result already expired, or it was never picked up. Report idle
+    # rather than the FAILURE/REVOKED branch below, which would otherwise
+    # misreport a long-finished (possibly successful) scan as "failed
+    # unexpectedly".
+    if result_state == "PENDING":
+        return jsonify(_idle)
 
     if result_state == "SUCCESS":
         final = result.result if isinstance(result.result, dict) else {}
