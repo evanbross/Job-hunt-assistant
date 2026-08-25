@@ -589,10 +589,19 @@ def _has_greenhouse_board_token(site_url: str) -> bool:
 
 
 def _greenhouse_single_job_parts(path: str) -> tuple[str, str] | None:
-    """Return (board_token, job_id) from a Greenhouse single-job URL path."""
+    """Return (board_token, job_id) from a Greenhouse single-job URL path.
+
+    Two shapes are observed in the wild (see content.js's detectPage comment):
+    the public board hosts use <company>/jobs/<id>, while my.greenhouse.io's own
+    embed/apply links put "jobs" first, as /jobs/<company>/<id>.
+    """
     segments = [s for s in path.split("/") if s]
     for idx, segment in enumerate(segments):
-        if segment.lower() == "jobs" and idx > 0 and idx < len(segments) - 1:
+        if segment.lower() != "jobs":
+            continue
+        if idx == 0 and len(segments) > 2:
+            return segments[1], segments[2]
+        if idx > 0 and idx < len(segments) - 1:
             return segments[idx - 1], segments[idx + 1]
     return None
 

@@ -45,6 +45,7 @@ from backend.scanning.career_site_scanner import (
     _extract_json_array_by_key,
     _extract_offsite_apply_url,
     _greenhouse_board_token,
+    _greenhouse_single_job_parts,
     _html_to_text,
     _is_greenhouse_single_job_url,
     _is_unsupported_greenhouse_search_url,
@@ -113,6 +114,21 @@ def test_greenhouse_single_job_url_is_detected() -> None:
 def test_greenhouse_board_url_is_not_single_job() -> None:
     parsed = urlparse("https://job-boards.greenhouse.io/acme/jobs")
     assert not _is_greenhouse_single_job_url(parsed)
+
+
+# ai: claude-sonnet-5 | 2026-08-25
+def test_greenhouse_single_job_parts_handles_both_url_shapes() -> None:
+    # Public board hosts: <company>/jobs/<id>
+    assert _greenhouse_single_job_parts("/acme/jobs/12345") == ("acme", "12345")
+    # my.greenhouse.io's own embed/apply links: /jobs/<company>/<id>
+    assert _greenhouse_single_job_parts("/jobs/codepath/5212924007") == (
+        "codepath",
+        "5212924007",
+    )
+
+
+def test_greenhouse_single_job_parts_rejects_search_path() -> None:
+    assert _greenhouse_single_job_parts("/jobs/search") is None
 
 
 # ai: claude-fable-5 | 2026-07-16

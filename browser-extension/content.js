@@ -21,6 +21,14 @@
   if (window.__jhaContentLoaded) return;
   window.__jhaContentLoaded = true;
 
+  // ai: claude-sonnet-5 | 2026-08-25
+  // Shared by detectPage's job-count and buildGreenhouseSearchPayload's link
+  // collector. A loose "/jobs/<3+ word chars>" test also matches the search
+  // page's own nav links (e.g. /jobs/search), which aren't real job postings
+  // and only yield the SPA shell when fetched — this requires the trailing
+  // numeric job id that both real Greenhouse single-job path shapes share.
+  const _GH_JOB_PATH_RE = /^\/[^/]+\/jobs\/\d+(?:[/?#]|$)|^\/jobs\/[^/]+\/\d+(?:[/?#]|$)/;
+
   // ─── Page Detection ────────────────────────────────────────────────────────
 
   function detectPage() {
@@ -94,7 +102,7 @@
       const count = [...document.querySelectorAll('a[href]')].filter(a => {
         try {
           const u = new URL(a.href);
-          return u.hostname.includes('greenhouse.io') && /\/jobs\/[\w-]{3,}/.test(u.pathname);
+          return u.hostname.includes('greenhouse.io') && _GH_JOB_PATH_RE.test(u.pathname);
         } catch { return false; }
       }).length;
       return { site: 'Greenhouse', type: 'greenhouseSearch', jobCount: count, description: `${count}+ jobs (auto-scrolls to load all)` };
@@ -1068,7 +1076,7 @@
         let u;
         try { u = new URL(a.href); } catch { return; }
         if (!u.hostname.includes('greenhouse.io')) return;
-        if (!/\/jobs\/[\w-]{3,}/.test(u.pathname)) return;
+        if (!_GH_JOB_PATH_RE.test(u.pathname)) return;
         const url = u.origin + u.pathname;
         if (seen.has(url)) return;
         seen.add(url);
