@@ -122,7 +122,14 @@ class ManualJobIngestService:
         job_title_override: str = "",
         sheet_jobs: list[dict[str, Any]] | None = None,
         trigger: str = "ui",
+        prefetched_jd: dict[str, dict[str, Any] | None] | None = None,  # ai: claude-sonnet-5 | 2026-08-26
     ) -> ManualJobIngestResult:
+        """prefetched_jd, when given, maps job URL to an already-fetched
+        CareerSiteJob (or None if that fetch was attempted and failed). A
+        caller processing many jobs at once (see backend/tasks.py's
+        run_import_task) can fetch these concurrently ahead of time via
+        needs_jd_refetch() below and pass the results here, instead of each
+        ingest() call re-fetching serially on its own."""
         normalized_text = listing_text.strip()
         normalized_source_url = source_url.strip()
         normalized_company_override = company_override.strip()
@@ -175,14 +182,25 @@ class ManualJobIngestService:
             # about whether that page was reached, so always re-fetch LinkedIn URLs
             # via CareerSiteScanner — which now follows the offsite apply link too —
             # regardless of how much text the DOM scrape already captured.
-            is_linkedin_job = "linkedin.com/jobs" in job_url.lower()
-            if job_url.startswith("https://") and (
-                len(score_body) < _MIN_DESCRIPTION_CHARS or is_linkedin_job
-            ):
-                try:
-                    fetched_job = self._career_site_scanner.scan_single_job_url(
-                        "", job_url
-                    )
+            if self.needs_jd_refetch(job_url, score_body):
+                # ai: claude-sonnet-5 | 2026-08-26
+                # A batch caller (run_import_task) may have already fetched this
+                # URL concurrently — use that result instead of fetching again
+                # serially. prefetched_jd only contains entries for URLs it
+                # decided (via needs_jd_refetch) were worth fetching, so a URL
+                # present with value None means the prefetch was attempted and
+                # failed — treat that the same as a failed inline fetch below.
+                if prefetched_jd is not None and job_url in prefetched_jd:
+                    fetched_job = prefetched_jd[job_url]
+                else:
+                    try:
+                        fetched_job = self._career_site_scanner.scan_single_job_url(
+                            "", job_url
+                        )
+                    except (ValueError, OSError) as exc:
+                        logger.debug("JD enrichment failed for %s: %s", job_url, exc)
+                        fetched_job = None
+                if fetched_job is not None:
                     fetched_text = fetched_job.get("job_text", "")
                     if len(fetched_text) >= _MIN_DESCRIPTION_CHARS:
                         # ai: claude-sonnet-5 | 2026-08-21
@@ -209,8 +227,6 @@ class ManualJobIngestService:
                         "job_title"
                     ):
                         parsed["job_title"] = fetched_job["job_title"]
-                except (ValueError, OSError) as exc:
-                    logger.debug("JD enrichment failed for %s: %s", job_url, exc)
         elif normalized_source_url:
             fetched_job = self._career_site_scanner.scan_single_job_url(
                 "Manual URL", normalized_source_url
@@ -314,6 +330,20 @@ class ManualJobIngestService:
         return ManualJobIngestResult(
             job=created_job, parsed_job_count=max(1, len(parsed_jobs))
         )
+
+    # ai: claude-sonnet-5 | 2026-08-26
+    @staticmethod
+    def needs_jd_refetch(job_url: str, captured_text: str) -> bool:
+        """Whether ingest() would attempt to re-fetch job_url's JD, given the
+        currently captured text. Exposed so a caller processing many jobs at
+        once (run_import_task) can decide up front which URLs are worth
+        fetching, and fetch them concurrently instead of relying on each
+        ingest() call's serial inline fetch — see the prefetched_jd param
+        above."""
+        if not job_url.startswith("https://"):
+            return False
+        is_linkedin_job = "linkedin.com/jobs" in job_url.lower()
+        return len(captured_text) < _MIN_DESCRIPTION_CHARS or is_linkedin_job
 
     def _resume_text(self) -> str:
         resume_row = self._resume_repo.get_latest(self._user_id)

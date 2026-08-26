@@ -118,8 +118,10 @@ class StubCareerSiteScanner:
             "confidence_level": "high",
             "confidence_score": 93,
         }
+        self.call_count = 0
 
     def scan_single_job_url(self, site_name: str, job_url: str) -> dict:
+        self.call_count += 1
         return dict(self._job)
 
 
@@ -404,3 +406,118 @@ def test_ingest_propagates_duplicate_job_url_error() -> None:
     with pytest.raises(DuplicateJobUrlError) as exc_info:
         service.ingest("Pasted listing text")
     assert exc_info.value.url == "https://example.com/jobs/1"
+
+
+# ai: claude-sonnet-5 | 2026-08-26
+def test_needs_jd_refetch_true_for_short_text_on_https_url() -> None:
+    assert ManualJobIngestService.needs_jd_refetch(
+        "https://job-boards.greenhouse.io/acme/jobs/12345", "short blurb"
+    )
+
+
+def test_needs_jd_refetch_false_for_long_text_on_non_linkedin_url() -> None:
+    long_text = "Full job description text. " * 30  # >= 400 chars
+    assert not ManualJobIngestService.needs_jd_refetch(
+        "https://job-boards.greenhouse.io/acme/jobs/12345", long_text
+    )
+
+
+def test_needs_jd_refetch_true_for_linkedin_even_with_long_text() -> None:
+    long_text = "Full job description text. " * 30  # >= 400 chars
+    assert ManualJobIngestService.needs_jd_refetch(
+        "https://www.linkedin.com/jobs/view/12345", long_text
+    )
+
+
+def test_needs_jd_refetch_false_for_non_https_url() -> None:
+    assert not ManualJobIngestService.needs_jd_refetch(
+        "http://job-boards.greenhouse.io/acme/jobs/12345", "short blurb"
+    )
+
+
+# ai: claude-sonnet-5 | 2026-08-26
+def test_ingest_uses_prefetched_jd_instead_of_calling_scanner() -> None:
+    """A batch caller (run_import_task) that already fetched this URL
+    concurrently should have that result used as-is; ingest() must not call
+    the scanner itself in that case."""
+    job_repo = StubJobRepo()
+    job_url = "https://job-boards.greenhouse.io/breezeway/jobs/5222431008"
+    parser = StubParser(
+        [
+            {
+                "company": "Breezeway",
+                "job_title": "Senior Software Engineer",
+                "url": job_url,
+                "source": "Greenhouse",
+                "confidence": "high",
+                "confidence_score": 90,
+                "confidence_reason": "",
+            }
+        ]
+    )
+    scanner = StubCareerSiteScanner()
+    long_description = "Full job description text. " * 30  # >= 400 chars
+    service = ManualJobIngestService(
+        _TEST_USER_ID,
+        job_repo,
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=parser,
+        scorer=StubScorer(score=85),
+        career_site_scanner=scanner,
+    )
+
+    result = service.ingest(
+        f"Senior Software Engineer\nURL: {job_url}",
+        trigger="listener",
+        prefetched_jd={
+            job_url: {
+                "job_text": long_description,
+                "company": "",
+                "job_title": "",
+            }
+        },
+    )
+
+    assert scanner.call_count == 0
+    assert result.job["raw_jd_snippet"] == long_description[:6000]
+
+
+def test_ingest_treats_failed_prefetch_as_no_enrichment() -> None:
+    """A None entry in prefetched_jd means the batch caller already tried and
+    failed to fetch this URL — ingest() must not retry it inline."""
+    job_repo = StubJobRepo()
+    job_url = "https://job-boards.greenhouse.io/breezeway/jobs/5222431008"
+    parser = StubParser(
+        [
+            {
+                "company": "Breezeway",
+                "job_title": "Senior Software Engineer",
+                "url": job_url,
+                "source": "Greenhouse",
+                "confidence": "high",
+                "confidence_score": 90,
+                "confidence_reason": "",
+            }
+        ]
+    )
+    scanner = StubCareerSiteScanner()
+    short_text = f"Senior Software Engineer\nURL: {job_url}"
+    service = ManualJobIngestService(
+        _TEST_USER_ID,
+        job_repo,
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=parser,
+        scorer=StubScorer(score=85),
+        career_site_scanner=scanner,
+    )
+
+    result = service.ingest(
+        short_text,
+        trigger="listener",
+        prefetched_jd={job_url: None},
+    )
+
+    assert scanner.call_count == 0
+    assert result.job["raw_jd_snippet"] == short_text[:6000]

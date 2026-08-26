@@ -55,6 +55,7 @@ import re
 import socket
 import time
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
 
@@ -134,6 +135,32 @@ def _import_outcome_detail(
 _LLM_ENRICH_MIN_TEXT = 100
 _LLM_ENRICH_MAX_BATCH = 20
 _LLM_ENRICH_MAX_TEXT = 3000
+
+# ai: claude-sonnet-5 | 2026-08-26
+# Bulk captures (e.g. hnhiring.com search results) can carry 50-100+ short
+# blurbs that each trigger a live JD re-fetch (see ManualJobIngestService.
+# needs_jd_refetch). Fetching those serially inside the main per-job loop can
+# take minutes and risks the 15-minute stuck-task auto-clear in
+# routes/import_.py; a bounded thread pool cuts worst-case wall time by
+# roughly this factor without hammering any single employer site too hard.
+_JD_PREFETCH_MAX_WORKERS = 8
+
+
+def _safe_scan_single_job_url(
+    scanner: CareerSiteScanner, url: str
+) -> dict[str, Any] | None:
+    """Fetch url's JD for the concurrent prefetch pool; None on failure.
+
+    Mirrors the (ValueError, OSError) handling both call sites in this file
+    and in ManualJobIngestService.ingest() already use around
+    scan_single_job_url — kept here as the single place that decides "a
+    failed prefetch fetch" means "treat it as if no fetch happened".
+    """
+    try:
+        return scanner.scan_single_job_url("", url)
+    except (ValueError, OSError) as exc:
+        logger.debug("JD prefetch failed for %s: %s", url, exc)
+        return None
 
 
 def _llm_enrich_batch(user_id: int, url_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -356,9 +383,79 @@ def run_import_task(
     # (e.g. WTTJ canonical URL, or URL with JWT token stripped) doesn't match the DB.
     body_queue_url = str(body.get("queue_url") or "").strip() or None
 
+    # ai: claude-sonnet-5 | 2026-08-26
+    # DB-only pass: look up each URL's existing job (if any) and decide which
+    # URLs are worth a live JD fetch — all cheap/local, no network I/O — so
+    # the DB connection can be released before the slow fetch pass below
+    # (see COMMON_CODING_STANDARDS.md's Connection Lifetime vs. Slow External
+    # Work). This mirrors the exact lookup + fallback the main loop used to
+    # do inline per-job; the snapshot stays valid because nothing that runs
+    # between here and the main loop changes an existing job's description
+    # text (see is_richer_description) or inserts a URL already in this
+    # batch (extracted's URLs are pre-deduped by the capture analyzer).
+    existing_job_by_url: dict[str, dict | None] = {}
+    urls_needing_fetch: set[str] = set()
     with get_repos() as repos:
         known_jobs: list[dict] = repos["jobs"].get_all_ordered(user_id)
         blocklist_rules: list[dict] = repos["career_rejection_rules"].get_enabled(user_id)
+
+        for url_row in extracted:
+            url = str(url_row.get("url") or "")
+            incoming_text = str(url_row.get("listing_text") or "").strip()
+            existing_job = repos["jobs"].get_by_url(user_id, url)
+            # ai: claude-sonnet-4-6 | 2026-06-21
+            # Fallback: WTTJ email links store a URL with a JWT token in the DB, but
+            # _normalize_public_job_url strips query params before lookup. If the
+            # normalized URL misses, try the original queue URL (still has the token).
+            if existing_job is None and body_queue_url and body_queue_url != url:
+                existing_job = repos["jobs"].get_by_url(user_id, body_queue_url)
+                if existing_job is not None:
+                    logger.info(
+                        "queue_url fallback matched job %d (captured url=%s, queue_url=%s)",
+                        existing_job["id"],
+                        url,
+                        body_queue_url,
+                    )
+            existing_job_by_url[url] = existing_job
+            if existing_job is not None:
+                if url.startswith("https://") and not is_richer_description(
+                    incoming_text, existing_job
+                ):
+                    urls_needing_fetch.add(url)
+            elif ManualJobIngestService.needs_jd_refetch(url, incoming_text):
+                urls_needing_fetch.add(url)
+
+    # ai: claude-sonnet-5 | 2026-08-26
+    # Fetch every URL flagged above concurrently instead of one at a time in
+    # the main loop below — see _JD_PREFETCH_MAX_WORKERS. No DB connection is
+    # held during this phase.
+    prefetched_jd: dict[str, dict | None] = {}
+    if urls_needing_fetch:
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "phase": "fetching",
+                "progress": 0,
+                "message": (
+                    f"Fetching {len(urls_needing_fetch)} full job description"
+                    f"{'s' if len(urls_needing_fetch) != 1 else ''}…"
+                ),
+                "total": total,
+                "current_job_url": "",
+                "current_platform": "",
+                "capture_source": capture_source,
+            },
+        )
+        scanner = CareerSiteScanner()
+        with ThreadPoolExecutor(max_workers=_JD_PREFETCH_MAX_WORKERS) as pool:
+            future_to_url = {
+                pool.submit(_safe_scan_single_job_url, scanner, u): u
+                for u in urls_needing_fetch
+            }
+            for future in as_completed(future_to_url):
+                prefetched_jd[future_to_url[future]] = future.result()
+
+    with get_repos() as repos:
         service = ManualJobIngestService(
             user_id, repos["jobs"], repos["resume"], repos["penalties"]
         )
@@ -398,20 +495,7 @@ def run_import_task(
                 },
             )
 
-            existing_job = repos["jobs"].get_by_url(user_id, url)
-            # ai: claude-sonnet-4-6 | 2026-06-21
-            # Fallback: WTTJ email links store a URL with a JWT token in the DB, but
-            # _normalize_public_job_url strips query params before lookup. If the
-            # normalized URL misses, try the original queue URL (still has the token).
-            if existing_job is None and body_queue_url and body_queue_url != url:
-                existing_job = repos["jobs"].get_by_url(user_id, body_queue_url)
-                if existing_job is not None:
-                    logger.info(
-                        "queue_url fallback matched job %d (captured url=%s, queue_url=%s)",
-                        existing_job["id"],
-                        url,
-                        body_queue_url,
-                    )
+            existing_job = existing_job_by_url.get(url)
             if existing_job is not None:
                 repaired_ok = repair_existing_job_company(
                     user_id, repos["jobs"], existing_job, url_row
@@ -455,12 +539,11 @@ def run_import_task(
                 # individual job page — fetch that page directly before giving up.
                 # Mirrors the re-fetch ManualJobIngestService already does for
                 # brand-new jobs (see manual_job_ingest_service.py).
+                # ai: claude-sonnet-5 | 2026-08-26 — now looked up from the concurrent
+                # prefetch pass above instead of fetched live here; see urls_needing_fetch.
                 if richer_text is None and url.startswith("https://"):
-                    try:
-                        fetched_job = CareerSiteScanner().scan_single_job_url("", url)
-                    except (ValueError, OSError) as exc:
-                        logger.debug("Existing-job JD re-fetch failed for %s: %s", url, exc)
-                    else:
+                    fetched_job = prefetched_jd.get(url)
+                    if fetched_job is not None:
                         fetched_text = fetched_job.get("job_text", "")
                         if is_richer_description(fetched_text, existing_job):
                             # ai: claude-sonnet-5 | 2026-08-21
@@ -586,6 +669,7 @@ def run_import_task(
                     job_title_override=str(url_row.get("job_title") or ""),
                     sheet_jobs=known_jobs,
                     trigger=body.get("import_trigger", "ui"),
+                    prefetched_jd=prefetched_jd,  # ai: claude-sonnet-5 | 2026-08-26
                 )
                 new_job = ingest_result.job
                 logger.info(
