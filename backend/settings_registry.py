@@ -50,6 +50,19 @@ class SettingSpec:
     scope: str  # "system" | "user"
     is_secret: bool
     default: str
+    # ai: claude-sonnet-5 | 2026-08-26
+    # UI metadata lives here too, not duplicated into SettingsPanel.jsx --
+    # the frontend renders registry-backed fields from GET /api/settings/schema
+    # (see schema_for_scope() below) instead of hand-typing a label/placeholder/
+    # input type per field. Only fields with real custom behavior (a picker
+    # button, a validated dropdown that drives conditional rendering) still
+    # have hand-written JSX, and those aren't in this registry at all -- they
+    # live in runtime_config.json, not system_settings/app_settings.
+    label: str
+    group: str
+    input_type: str = "text"  # "text" | "password" | "checkbox"
+    placeholder: str = ""
+    help_text: str = ""
 
 
 # ai: claude-sonnet-5 | 2026-08-21
@@ -58,19 +71,67 @@ class SettingSpec:
 # drift instead of two copies falling out of sync.
 SETTINGS: dict[str, SettingSpec] = {
     # ─── System-wide (instance) — admin-only ──────────────────────────────────
-    "smtp_host": SettingSpec("system", False, config.SMTP_HOST),
-    "smtp_port": SettingSpec("system", False, str(config.SMTP_PORT)),
-    "smtp_user": SettingSpec("system", False, config.SMTP_USER),
-    "smtp_password": SettingSpec("system", True, config.SMTP_PASSWORD),
-    "smtp_use_tls": SettingSpec("system", False, str(config.SMTP_USE_TLS).lower()),
-    "smtp_from_address": SettingSpec("system", False, config.SMTP_FROM_ADDRESS),
-    "app_base_url": SettingSpec("system", False, config.APP_BASE_URL),
+    "app_base_url": SettingSpec(
+        scope="system",
+        is_secret=False,
+        default=config.APP_BASE_URL,
+        label="App Base URL",
+        group="General",
+        placeholder="http://localhost:5004",
+        help_text="Used to build links in verification/password-reset emails.",
+    ),
+    "smtp_host": SettingSpec(
+        scope="system", is_secret=False, default=config.SMTP_HOST,
+        label="SMTP Host", group="SMTP",
+    ),
+    "smtp_port": SettingSpec(
+        scope="system", is_secret=False, default=str(config.SMTP_PORT),
+        label="SMTP Port", group="SMTP",
+    ),
+    "smtp_user": SettingSpec(
+        scope="system", is_secret=False, default=config.SMTP_USER,
+        label="SMTP User", group="SMTP",
+    ),
+    "smtp_password": SettingSpec(
+        scope="system", is_secret=True, default=config.SMTP_PASSWORD,
+        label="SMTP Password", group="SMTP", input_type="password",
+    ),
+    "smtp_from_address": SettingSpec(
+        scope="system", is_secret=False, default=config.SMTP_FROM_ADDRESS,
+        label="SMTP From Address", group="SMTP",
+    ),
+    "smtp_use_tls": SettingSpec(
+        scope="system", is_secret=False, default=str(config.SMTP_USE_TLS).lower(),
+        label="Use TLS", group="SMTP", input_type="checkbox",
+    ),
     # ─── Per-user ──────────────────────────────────────────────────────────────
-    "anthropic_api_key": SettingSpec("user", True, config.ANTHROPIC_API_KEY),
-    "openai_api_key": SettingSpec("user", True, config.OPENAI_API_KEY),
-    "wellfound_email": SettingSpec("user", False, config.WELLFOUND_EMAIL),
-    "wellfound_password": SettingSpec("user", True, config.WELLFOUND_PASSWORD),
-    "greenhouse_email": SettingSpec("user", False, config.GREENHOUSE_EMAIL),
+    "anthropic_api_key": SettingSpec(
+        scope="user", is_secret=True, default=config.ANTHROPIC_API_KEY,
+        label="Anthropic API Key", group="AI Provider", input_type="password",
+        placeholder="sk-ant-...",
+        help_text="Your own key — billed to your Anthropic account, not shared with other accounts on this install.",
+    ),
+    "openai_api_key": SettingSpec(
+        scope="user", is_secret=True, default=config.OPENAI_API_KEY,
+        label="OpenAI API Key", group="AI Provider", input_type="password",
+        placeholder="sk-...",
+        help_text="Your own key — billed to your OpenAI account, not shared with other accounts on this install.",
+    ),
+    "wellfound_email": SettingSpec(
+        scope="user", is_secret=False, default=config.WELLFOUND_EMAIL,
+        label="Wellfound Email", group="Job Board Credentials",
+        placeholder="you@example.com",
+    ),
+    "wellfound_password": SettingSpec(
+        scope="user", is_secret=True, default=config.WELLFOUND_PASSWORD,
+        label="Wellfound Password", group="Job Board Credentials", input_type="password",
+    ),
+    "greenhouse_email": SettingSpec(
+        scope="user", is_secret=False, default=config.GREENHOUSE_EMAIL,
+        label="Greenhouse Email", group="Job Board Credentials",
+        placeholder="you@example.com",
+        help_text="Used by the Wellfound and Greenhouse board scanners — your own login, not shared with other accounts.",
+    ),
 }
 
 # Keys an admin may write via PUT /api/settings/system.
@@ -83,3 +144,24 @@ SYSTEM_SETTING_KEYS: frozenset[str] = frozenset(
 USER_SETTING_KEYS: frozenset[str] = frozenset(
     key for key, spec in SETTINGS.items() if spec.scope == "user"
 )
+
+
+def schema_for_scope(scope: str) -> list[dict[str, object]]:
+    """UI-safe field metadata for every registry key in *scope*, in
+    declaration order. Never includes `default` -- for a secret, the default
+    can be a real value sourced from .env, and leaking that through a schema
+    endpoint would expose it to every logged-in account, not just the one
+    that owns it."""
+    return [
+        {
+            "key": key,
+            "label": spec.label,
+            "group": spec.group,
+            "input_type": spec.input_type,
+            "placeholder": spec.placeholder,
+            "help_text": spec.help_text,
+            "is_secret": spec.is_secret,
+        }
+        for key, spec in SETTINGS.items()
+        if spec.scope == scope
+    ]

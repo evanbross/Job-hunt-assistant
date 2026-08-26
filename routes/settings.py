@@ -50,7 +50,12 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.scoring.jd_enrichment import rescore_active_queue_jobs
-from backend.settings_registry import SETTINGS, SYSTEM_SETTING_KEYS, USER_SETTING_KEYS
+from backend.settings_registry import (
+    SETTINGS,
+    SYSTEM_SETTING_KEYS,
+    USER_SETTING_KEYS,
+    schema_for_scope,
+)
 from backend.settings_service import get_setting, is_setting_configured, set_setting
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
 from backend.utils.utils import current_user_id, get_repos
@@ -73,6 +78,16 @@ def _read_user_settings_into(cfg: dict[str, object], user_id: int, repos: dict) 
             cfg[f"{key}_set"] = is_setting_configured(key, user_id, repos)
         else:
             cfg[key] = get_setting(key, user_id, repos)
+
+
+# ai: claude-sonnet-5 | 2026-08-26
+@settings_bp.route("/settings/schema")
+def get_settings_schema() -> ResponseReturnValue:
+    """UI metadata (label/group/input type/placeholder) for every
+    registry-backed setting, so the frontend renders fields from the
+    registry instead of hand-typing them a second time. No secret values
+    are ever included -- see schema_for_scope()'s docstring."""
+    return jsonify({"user": schema_for_scope("user"), "system": schema_for_scope("system")})
 
 
 @settings_bp.route("/config")

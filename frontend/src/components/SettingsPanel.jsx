@@ -1966,8 +1966,62 @@ function FeedbackSection() {
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
+// ── Schema-driven settings fields ───────────────────────────────────────────
+// ai: claude-sonnet-5 | 2026-08-26
+// Renders one registry-backed setting (backend/settings_registry.py, served
+// via GET /api/settings/schema) from its schema entry -- label, placeholder,
+// input type, and help text live only in the registry, never re-typed here.
+// Fields with real custom behavior (file pickers, a validated dropdown that
+// drives conditional rendering) aren't registry-backed and stay hand-written.
+function SchemaField({ spec, cfg, setCfg }) {
+  if (!spec) return null;
+  const { key, label, input_type: inputType, placeholder, is_secret: isSecret, help_text: helpText } = spec;
+
+  if (inputType === "checkbox") {
+    return (
+      <label
+        style={{ ...labelStyle, marginTop: "12px", flexDirection: "row", alignItems: "center", gap: "8px" }}
+      >
+        <input
+          type="checkbox"
+          checked={cfg[key] === "true"}
+          onChange={(e) => setCfg({ ...cfg, [key]: e.target.checked ? "true" : "false" })}
+        />
+        {label}
+      </label>
+    );
+  }
+
+  return (
+    <label style={{ ...labelStyle, marginTop: "12px" }}>
+      {label}
+      <input
+        type={inputType === "password" ? "password" : "text"}
+        value={cfg[key] || ""}
+        onChange={(e) => setCfg({ ...cfg, [key]: e.target.value })}
+        placeholder={isSecret && cfg[`${key}_set`] ? "••••••••  (set — leave blank to keep)" : placeholder}
+      />
+      {helpText && <span style={helpTextStyle}>{helpText}</span>}
+    </label>
+  );
+}
+
+// Renders every schema field in *group*, in registry declaration order.
+function SchemaFieldGroup({ fields, group, cfg, setCfg }) {
+  return fields
+    .filter((f) => f.group === group)
+    .map((f) => <SchemaField key={f.key} spec={f} cfg={cfg} setCfg={setCfg} />);
+}
+
+async function fetchSettingsSchema() {
+  const res = await fetch("/api/settings/schema");
+  if (!res.ok) return { user: [], system: [] };
+  return res.json();
+}
+
 function ConfigSection() {
   const [cfg, setCfg] = useState(null);
+  const [schema, setSchema] = useState({ user: [], system: [] });
   const [saved, setSaved] = useState(false);
   const [saveSummary, setSaveSummary] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -1978,7 +2032,13 @@ function ConfigSection() {
     fetch("/api/config")
       .then((r) => r.json())
       .then((d) => setCfg(d));
+    fetchSettingsSchema().then(setSchema);
   }, []);
+
+  const schemaByKey = useMemo(
+    () => Object.fromEntries(schema.user.map((f) => [f.key, f])),
+    [schema]
+  );
 
   const save = async () => {
     setSaving(true);
@@ -2086,18 +2146,7 @@ function ConfigSection() {
                   placeholder="claude-sonnet-4-6"
                 />
               </label>
-              <label style={{ ...labelStyle, marginTop: "12px" }}>
-                Anthropic API Key
-                <input
-                  type="password"
-                  value={cfg.anthropic_api_key || ""}
-                  onChange={(e) => setCfg({ ...cfg, anthropic_api_key: e.target.value })}
-                  placeholder={cfg.anthropic_api_key_set ? "••••••••  (set — leave blank to keep)" : "sk-ant-..."}
-                />
-                <span style={helpTextStyle}>
-                  Your own key — billed to your Anthropic account, not shared with other accounts on this install.
-                </span>
-              </label>
+              <SchemaField spec={schemaByKey.anthropic_api_key} cfg={cfg} setCfg={setCfg} />
             </>
           )}
 
@@ -2111,18 +2160,7 @@ function ConfigSection() {
                   placeholder="gpt-4.1"
                 />
               </label>
-              <label style={{ ...labelStyle, marginTop: "12px" }}>
-                OpenAI API Key
-                <input
-                  type="password"
-                  value={cfg.openai_api_key || ""}
-                  onChange={(e) => setCfg({ ...cfg, openai_api_key: e.target.value })}
-                  placeholder={cfg.openai_api_key_set ? "••••••••  (set — leave blank to keep)" : "sk-..."}
-                />
-                <span style={helpTextStyle}>
-                  Your own key — billed to your OpenAI account, not shared with other accounts on this install.
-                </span>
-              </label>
+              <SchemaField spec={schemaByKey.openai_api_key} cfg={cfg} setCfg={setCfg} />
             </>
           )}
 
@@ -2160,36 +2198,9 @@ function ConfigSection() {
           )}
         </div>
 
-        {/* ai: claude-sonnet-5 | 2026-08-21 */}
+        {/* ai: claude-sonnet-5 | 2026-08-26 */}
         <div style={{ marginTop: "20px" }}>
-          <label style={labelStyle}>
-            Wellfound Email
-            <input
-              value={cfg.wellfound_email || ""}
-              onChange={(e) => setCfg({ ...cfg, wellfound_email: e.target.value })}
-              placeholder="you@example.com"
-            />
-          </label>
-          <label style={{ ...labelStyle, marginTop: "12px" }}>
-            Wellfound Password
-            <input
-              type="password"
-              value={cfg.wellfound_password || ""}
-              onChange={(e) => setCfg({ ...cfg, wellfound_password: e.target.value })}
-              placeholder={cfg.wellfound_password_set ? "••••••••  (set — leave blank to keep)" : ""}
-            />
-          </label>
-          <label style={{ ...labelStyle, marginTop: "12px" }}>
-            Greenhouse Email
-            <input
-              value={cfg.greenhouse_email || ""}
-              onChange={(e) => setCfg({ ...cfg, greenhouse_email: e.target.value })}
-              placeholder="you@example.com"
-            />
-          </label>
-          <span style={helpTextStyle}>
-            Used by the Wellfound and Greenhouse board scanners — your own login, not shared with other accounts.
-          </span>
+          <SchemaFieldGroup fields={schema.user} group="Job Board Credentials" cfg={cfg} setCfg={setCfg} />
         </div>
 
         <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
@@ -2217,6 +2228,7 @@ function ConfigSection() {
 // ai: claude-sonnet-5 | 2026-08-21
 function SystemSettingsSection() {
   const [cfg, setCfg] = useState(null);
+  const [schema, setSchema] = useState({ user: [], system: [] });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -2226,6 +2238,7 @@ function SystemSettingsSection() {
       if (!res.ok) return;
       setCfg(await res.json());
     })();
+    fetchSettingsSchema().then(setSchema);
   }, []);
 
   const save = async () => {
@@ -2259,69 +2272,13 @@ function SystemSettingsSection() {
           Instance-wide settings shared by every account on this install. Admin only.
         </span>
 
-        <label style={{ ...labelStyle, marginTop: "16px" }}>
-          App Base URL
-          <input
-            value={cfg.app_base_url || ""}
-            onChange={(e) => setCfg({ ...cfg, app_base_url: e.target.value })}
-            placeholder="http://localhost:5004"
-          />
-          <span style={helpTextStyle}>
-            Used to build links in verification/password-reset emails.
-          </span>
-        </label>
-
-        <div style={{ ...formGrid, marginTop: "16px" }}>
-          <label style={labelStyle}>
-            SMTP Host
-            <input
-              value={cfg.smtp_host || ""}
-              onChange={(e) => setCfg({ ...cfg, smtp_host: e.target.value })}
-            />
-          </label>
-          <label style={labelStyle}>
-            SMTP Port
-            <input
-              value={cfg.smtp_port || ""}
-              onChange={(e) => setCfg({ ...cfg, smtp_port: e.target.value })}
-            />
-          </label>
+        <div style={{ marginTop: "16px" }}>
+          <SchemaFieldGroup fields={schema.system} group="General" cfg={cfg} setCfg={setCfg} />
         </div>
 
-        <label style={{ ...labelStyle, marginTop: "12px" }}>
-          SMTP User
-          <input
-            value={cfg.smtp_user || ""}
-            onChange={(e) => setCfg({ ...cfg, smtp_user: e.target.value })}
-          />
-        </label>
-
-        <label style={{ ...labelStyle, marginTop: "12px" }}>
-          SMTP Password
-          <input
-            type="password"
-            value={cfg.smtp_password || ""}
-            onChange={(e) => setCfg({ ...cfg, smtp_password: e.target.value })}
-            placeholder={cfg.smtp_password_set ? "••••••••  (set — leave blank to keep)" : ""}
-          />
-        </label>
-
-        <label style={{ ...labelStyle, marginTop: "12px" }}>
-          SMTP From Address
-          <input
-            value={cfg.smtp_from_address || ""}
-            onChange={(e) => setCfg({ ...cfg, smtp_from_address: e.target.value })}
-          />
-        </label>
-
-        <label style={{ ...labelStyle, marginTop: "12px", display: "flex", flexDirection: "row", alignItems: "center", gap: "8px" }}>
-          <input
-            type="checkbox"
-            checked={cfg.smtp_use_tls === "true"}
-            onChange={(e) => setCfg({ ...cfg, smtp_use_tls: e.target.checked ? "true" : "false" })}
-          />
-          Use TLS
-        </label>
+        <div style={{ marginTop: "16px" }}>
+          <SchemaFieldGroup fields={schema.system} group="SMTP" cfg={cfg} setCfg={setCfg} />
+        </div>
 
         <div style={{ marginTop: "16px", display: "flex", alignItems: "center", gap: "10px" }}>
           <button className="btn-primary" onClick={save} disabled={saving}>
