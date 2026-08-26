@@ -19,7 +19,7 @@
 password) and can't reach a "change password" option because you can't log
 in at all.
 
-Deletes the app_account row for the given email. There is no password
+Deletes the user_accounts row for the given email. There is no password
 prompt here — recovery doesn't need one: whoever can run this script already
 has full DB/filesystem access to this machine (same trust level as the
 Google OAuth token already sitting in credentials/). After running this,
@@ -46,12 +46,12 @@ def main() -> None:
     email = sys.argv[1].strip().casefold()
 
     with get_repos() as repos:
-        existing = repos["app_account"].get_by_email(email)
+        existing = repos["user_accounts"].get_by_email(email)
         if existing is None:
             print(f"No account found for {email!r} — nothing to reset.")
             return
         print(f"Deleting account for {existing['email']}...")
-        repos["app_account"].delete(existing["id"])
+        repos["user_accounts"].delete(existing["id"])
         repos["conn"].commit()
     print("Done. Re-register with this email via the Create Account form.")
 

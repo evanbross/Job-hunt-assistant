@@ -88,7 +88,7 @@ GOOGLE_SHEETS_ID=<from your sheet URL>
 ### App login
 
 The whole app sits behind a login screen backed by the database (an
-`app_account` table, not an env var). Registration is open — the first time
+`user_accounts` table, not an env var). Registration is open — the first time
 you load the app, use the "Create account" link on the login page to set
 your email and password; there's nothing to configure in `.env` for this.
 

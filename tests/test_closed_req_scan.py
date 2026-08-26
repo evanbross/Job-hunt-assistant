@@ -420,7 +420,7 @@ def test_throttle_host_fetch_spaces_same_host_only(
 def _fresh_repos(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, int]:
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
     repos = open_repositories(pg_dsn)
-    account = repos["app_account"].get_by_email("unclaimed@localhost")
+    account = repos["user_accounts"].get_by_email("unclaimed@localhost")
     return repos, account["id"]
 
 

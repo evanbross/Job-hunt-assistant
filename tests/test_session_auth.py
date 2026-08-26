@@ -39,7 +39,7 @@ before_request guard. Exercised through app.app's real test client — app.py's
 import is side-effect-free (see the app-factory refactor earlier this
 session).
 
-The credential lives in the DB (app_account table), so every test here runs
+The credential lives in the DB (user_accounts table), so every test here runs
 against the real local test Postgres via the pg_dsn fixture. pg_dsn's
 init_db() always leaves exactly one placeholder account (email
 "unclaimed@localhost") behind before any test body runs — every test below
@@ -101,8 +101,8 @@ def _seed_active_account(email: str = _TEST_EMAIL, password: str = _TEST_PASSWOR
     the repo, bypassing the email-verification round trip, for tests that
     just need a working login rather than testing registration itself."""
     with get_repos() as repos:
-        account = repos["app_account"].create_pending(email, f"seed-{email}", "2099-01-01")
-        account = repos["app_account"].complete_registration(
+        account = repos["user_accounts"].create_pending(email, f"seed-{email}", "2099-01-01")
+        account = repos["user_accounts"].complete_registration(
             f"seed-{email}", generate_password_hash(password)
         )
         repos["conn"].commit()
@@ -157,7 +157,7 @@ def test_account_get_requires_authentication(client) -> None:
 
 def test_start_registration_claims_the_pre_seeded_placeholder(client, sent_emails) -> None:
     with get_repos() as repos:
-        placeholder = repos["app_account"].get_by_email("unclaimed@localhost")
+        placeholder = repos["user_accounts"].get_by_email("unclaimed@localhost")
     assert placeholder is not None
 
     resp = _start_registration(client, sent_emails)
@@ -165,10 +165,10 @@ def test_start_registration_claims_the_pre_seeded_placeholder(client, sent_email
     assert resp.get_json() == {"status": "check_email", "email": _TEST_EMAIL}
 
     with get_repos() as repos:
-        pending = repos["app_account"].get_by_email(_TEST_EMAIL)
+        pending = repos["user_accounts"].get_by_email(_TEST_EMAIL)
         assert pending["id"] == placeholder["id"]  # same row, not a new one
         assert pending["password_hash"] is None
-        assert repos["app_account"].get_by_email("unclaimed@localhost") is None
+        assert repos["user_accounts"].get_by_email("unclaimed@localhost") is None
 
     # no session yet -- registration hasn't been completed
     assert client.get("/api/session").get_json() == {"authenticated": False}
@@ -236,7 +236,7 @@ def test_complete_registration_with_expired_token_is_rejected(client, sent_email
     token = _token_from_link(sent_emails[-1]["link"])
     with get_repos() as repos:
         repos["conn"].cursor().execute(
-            "UPDATE app_account SET verification_expires_at = NOW() - INTERVAL '1 hour'"
+            "UPDATE user_accounts SET verification_expires_at = NOW() - INTERVAL '1 hour'"
             " WHERE verification_token = %s",
             [token],
         )
@@ -483,7 +483,7 @@ def test_reset_password_with_expired_token_is_rejected(client, sent_emails) -> N
     token = _token_from_link(sent_emails[-1]["link"])
     with get_repos() as repos:
         repos["conn"].cursor().execute(
-            "UPDATE app_account SET verification_expires_at = NOW() - INTERVAL '1 hour'"
+            "UPDATE user_accounts SET verification_expires_at = NOW() - INTERVAL '1 hour'"
             " WHERE verification_token = %s",
             [token],
         )

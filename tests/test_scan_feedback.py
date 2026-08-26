@@ -104,7 +104,7 @@ def test_noise_feedback_does_not_skip_entire_email(
     dsn = pg_dsn
     repos = open_repositories(dsn)
     try:
-        account = repos["app_account"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
+        account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         repos["sources"].insert(
             user_id,

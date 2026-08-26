@@ -92,7 +92,7 @@ _ALL_TABLES = (
     "resume",
     "application_profile",
     "application_answers",
-    "app_account",
+    "user_accounts",
 )
 
 

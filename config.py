@@ -57,8 +57,8 @@ FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY", "change-this-in-production
 # ─── App login (single-owner session gate) ────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-08-20
 # Gates the whole /api/* surface (see app.py's _require_app_login). The
-# credential itself lives in the DB (single-row app_account table, see
-# backend/db/repositories/app_account.py) — created via the web UI's "Create
+# credential itself lives in the DB (user_accounts table, see
+# backend/db/repositories/user_accounts.py) — created via the web UI's "Create
 # your account" form, not an env var. These two constants are just session
 # cookie behavior, not credential storage.
 SESSION_COOKIE_SAMESITE: str = "Lax"

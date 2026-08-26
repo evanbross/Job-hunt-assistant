@@ -43,7 +43,7 @@ where that session is created/destroyed and where user_id first enters it.
 
 Registration is two steps, not one: POST /account only takes an email and
 creates a row with password_hash = NULL (see backend/db/repositories/
-app_account.py) — the account cannot log in yet. A verification email is
+user_accounts.py) — the account cannot log in yet. A verification email is
 sent (backend/email/smtp_sender.py); following its link and submitting a
 password via POST /account/complete-registration is what actually creates
 usable credentials and starts the session. Changing an existing account's
@@ -215,9 +215,9 @@ def create_account() -> ResponseReturnValue:
 
     token, expires_at = _new_token(_REGISTRATION_TOKEN_LIFETIME)
     with get_repos() as repos:
-        account = repos["app_account"].claim_placeholder_pending(email, token, expires_at)
+        account = repos["user_accounts"].claim_placeholder_pending(email, token, expires_at)
         if account is None:
-            account = repos["app_account"].create_pending(email, token, expires_at)
+            account = repos["user_accounts"].create_pending(email, token, expires_at)
         if account is not None:
             repos["conn"].commit()
         app_base_url = get_setting("app_base_url", None, repos)
@@ -250,7 +250,7 @@ def complete_registration() -> ResponseReturnValue:
         )
 
     with get_repos() as repos:
-        account = repos["app_account"].complete_registration(
+        account = repos["user_accounts"].complete_registration(
             body.token, generate_password_hash(body.password)
         )
         if account is not None:
@@ -283,7 +283,7 @@ def forgot_password() -> ResponseReturnValue:
     email = body.email.strip().casefold()
     token, expires_at = _new_token(_PASSWORD_RESET_TOKEN_LIFETIME)
     with get_repos() as repos:
-        account = repos["app_account"].request_password_reset(email, token, expires_at)
+        account = repos["user_accounts"].request_password_reset(email, token, expires_at)
         if account is not None:
             repos["conn"].commit()
         app_base_url = get_setting("app_base_url", None, repos)
@@ -319,7 +319,7 @@ def reset_password() -> ResponseReturnValue:
         )
 
     with get_repos() as repos:
-        account = repos["app_account"].reset_password(
+        account = repos["user_accounts"].reset_password(
             body.token, generate_password_hash(body.password)
         )
         if account is not None:
@@ -344,7 +344,7 @@ def login() -> ResponseReturnValue:
         return jsonify({"error": "Email and password are required"}), 400
 
     with get_repos() as repos:
-        account = repos["app_account"].get_by_email(body.email.strip().casefold())
+        account = repos["user_accounts"].get_by_email(body.email.strip().casefold())
 
     # A NULL password_hash means registration was started but never
     # completed (no verification link clicked yet) — treat that the same as
@@ -380,7 +380,7 @@ def session_status() -> ResponseReturnValue:
 @session_auth_bp.route("/account", methods=["GET"])
 def get_account() -> ResponseReturnValue:
     with get_repos() as repos:
-        account = repos["app_account"].get(current_user_id())
+        account = repos["user_accounts"].get(current_user_id())
     if account is None:
         return jsonify({"error": "Account not found"}), 404
     return jsonify(
@@ -396,7 +396,7 @@ def update_account() -> ResponseReturnValue:
         return jsonify({"error": "Name is required"}), 400
 
     with get_repos() as repos:
-        account = repos["app_account"].update_name(current_user_id(), body.name.strip())
+        account = repos["user_accounts"].update_name(current_user_id(), body.name.strip())
         repos["conn"].commit()
     return jsonify({"name": account["name"], "email": account["email"]})
 
@@ -415,7 +415,7 @@ def request_email_change() -> ResponseReturnValue:
 
     token, expires_at = _new_token(_EMAIL_CHANGE_TOKEN_LIFETIME)
     with get_repos() as repos:
-        repos["app_account"].request_email_change(user_id, new_email, token, expires_at)
+        repos["user_accounts"].request_email_change(user_id, new_email, token, expires_at)
         repos["conn"].commit()
         app_base_url = get_setting("app_base_url", None, repos)
 
@@ -441,7 +441,7 @@ def confirm_email_change() -> ResponseReturnValue:
         return jsonify({"error": "A token is required"}), 400
 
     with get_repos() as repos:
-        account = repos["app_account"].confirm_email_change(body.token)
+        account = repos["user_accounts"].confirm_email_change(body.token)
         if account is not None:
             repos["conn"].commit()
 
@@ -468,14 +468,14 @@ def change_password() -> ResponseReturnValue:
         )
 
     with get_repos() as repos:
-        account = repos["app_account"].get(user_id)
+        account = repos["user_accounts"].get(user_id)
         if (
             account is None
             or account["password_hash"] is None
             or not check_password_hash(account["password_hash"], body.current_password)
         ):
             return jsonify({"error": "Current password is incorrect"}), 401
-        repos["app_account"].update_password(user_id, generate_password_hash(body.new_password))
+        repos["user_accounts"].update_password(user_id, generate_password_hash(body.new_password))
         repos["conn"].commit()
 
     return jsonify({"status": "password_changed"})

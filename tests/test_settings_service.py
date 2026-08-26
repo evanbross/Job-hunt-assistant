@@ -45,7 +45,7 @@ from backend.settings_service import get_setting, is_setting_configured, set_set
 def test_user_secret_round_trips_encrypted(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:
-        account = repos["app_account"].create_pending(
+        account = repos["user_accounts"].create_pending(
             "secret-owner@example.com", "tok-1", "2099-01-01"
         )
         repos["conn"].commit()
@@ -69,7 +69,7 @@ def test_unset_user_secret_does_not_fall_back_to_bootstrap_default(pg_dsn: str) 
     time (e.g. the instance owner's Anthropic billing)."""
     repos = open_repositories(pg_dsn)
     try:
-        account = repos["app_account"].create_pending(
+        account = repos["user_accounts"].create_pending(
             "no-key@example.com", "tok-2", "2099-01-01"
         )
         repos["conn"].commit()

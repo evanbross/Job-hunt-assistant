@@ -19,8 +19,8 @@ from __future__ import annotations
 import pytest
 
 from backend.db import (
-    PostgresAppAccountRepository,
     PostgresJdHealthCheckTargetRepository,
+    PostgresUserAccountRepository,
     get_connection,
 )
 
@@ -29,7 +29,7 @@ from backend.db import (
 
 
 def _make_user_id(conn) -> int:
-    account = PostgresAppAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
+    account = PostgresUserAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
     conn.commit()
     return account["id"]
 

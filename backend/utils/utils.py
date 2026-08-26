@@ -73,7 +73,7 @@ def get_repos() -> Generator[dict, None, None]:
 
 # ai: claude-sonnet-5 | 2026-08-20
 def current_user_id() -> int:
-    """The logged-in user's app_account.id, read from the session.
+    """The logged-in user's user_accounts.id, read from the session.
 
     Only call this from a route already covered by app.py's
     _require_app_login before_request guard — every route not on that
@@ -108,10 +108,10 @@ def first_account_user_id(repos: dict) -> int:
     STOPGAP comment so they're easy to find later.
     """
     cur = repos["conn"].cursor()
-    cur.execute("SELECT id FROM app_account ORDER BY id LIMIT 1")
+    cur.execute("SELECT id FROM user_accounts ORDER BY id LIMIT 1")
     row = cur.fetchone()
     if row is None:
-        raise RuntimeError("first_account_user_id() called with no app_account rows")
+        raise RuntimeError("first_account_user_id() called with no user_accounts rows")
     return row["id"]
 
 

@@ -235,7 +235,7 @@ def _require_admin_for_system_settings() -> tuple[flask.Response, int] | None:
     if user_id is None:
         return None  # _require_app_login already rejected this request
     with get_repos() as repos:
-        account = repos["app_account"].get(user_id)
+        account = repos["user_accounts"].get(user_id)
     if not account or account.get("role") != "admin":
         return jsonify({"error": "Admin access required"}), 403
     return None

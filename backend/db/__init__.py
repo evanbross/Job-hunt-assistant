@@ -83,7 +83,6 @@ from .interfaces import (
     IUserSettingsRepository,
 )
 from .readonly_role import ensure_readonly_role
-from .repositories.app_account import PostgresAppAccountRepository
 from .repositories.application_answers import PostgresApplicationAnswerRepository
 from .repositories.application_profile import PostgresApplicationProfileRepository
 from .repositories.application_stages import (
@@ -115,6 +114,7 @@ from .repositories.relevance_feedback import PostgresRelevanceFeedbackRepository
 from .repositories.resumes import PostgresResumeRepository
 from .repositories.scanned_emails import PostgresScannedEmailRepository
 from .repositories.system_settings import PostgresSystemSettingsRepository
+from .repositories.user_accounts import PostgresUserAccountRepository
 from .repositories.user_settings import PostgresUserSettingsRepository
 from .schema import _create_tables, _migrate, _seed_data
 
@@ -145,7 +145,6 @@ __all__ = [
     "IUserSettingsRepository",
     "BROWSER_QUEUE_CLAIM_BATCH_SIZE",
     "BROWSER_QUEUE_MAX_RETRIES",
-    "PostgresAppAccountRepository",
     "PostgresApplicationAnswerRepository",
     "PostgresApplicationProfileRepository",
     "PostgresApplicationStageRepository",
@@ -169,6 +168,7 @@ __all__ = [
     "PostgresScannedEmailRepository",
     "PostgresStageStatusRepository",
     "PostgresSystemSettingsRepository",
+    "PostgresUserAccountRepository",
     "PostgresUserSettingsRepository",
     "DuplicateJobUrlError",
     "db_startup_error",
@@ -305,7 +305,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "feedback": PostgresRelevanceFeedbackRepository(conn),
         "scanned_emails": PostgresScannedEmailRepository(conn),
         "resume": PostgresResumeRepository(conn),
-        "app_account": PostgresAppAccountRepository(conn),
+        "user_accounts": PostgresUserAccountRepository(conn),
         "application_profile": PostgresApplicationProfileRepository(conn),
         "application_answers": PostgresApplicationAnswerRepository(conn),
         "stages": PostgresApplicationStageRepository(conn),

@@ -44,7 +44,7 @@ from typing import Any
 
 import config
 from backend.crypto import encrypt_secret
-from backend.db.repositories.app_account import PLACEHOLDER_ACCOUNT_EMAIL
+from backend.db.repositories.user_accounts import PLACEHOLDER_ACCOUNT_EMAIL
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
 from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
 from backend.settings_registry import SETTINGS
@@ -157,7 +157,7 @@ def _has_index(cur: Any, table: str, index_name: str) -> bool:
 # enough to make them correctly per-user: user_settings, application_profile,
 # and scanned_emails each have a natural-key PRIMARY KEY (not a surrogate id)
 # that must become a composite (user_id, <natural key>) — handled in their
-# own migration blocks. Also excludes app_account itself (the identity table).
+# own migration blocks. Also excludes user_accounts itself (the identity table).
 _PER_USER_TABLES: tuple[str, ...] = (
     "jobs",
     "job_status_history",
@@ -562,22 +562,26 @@ def _migrate(conn: Any) -> None:
     _backfill_duplicate_of_id(conn)  # ai: claude-sonnet-5 | 2026-07-25
 
     # ai: claude-sonnet-5 | 2026-08-20
-    # Multi-tenancy migration. app_account moves from a single enforced row
+    # Multi-tenancy migration. user_accounts moves from a single enforced row
     # (id fixed at 1) to a normal per-user table — registration is open
     # (routes/session_auth.py), guarded only by email uniqueness.
-    if _has_unique(cur, "app_account", "app_account_single_row"):
-        cur.execute("ALTER TABLE app_account DROP CONSTRAINT app_account_single_row")
-    if not _has_unique(cur, "app_account", "app_account_email_key"):
-        cur.execute("ALTER TABLE app_account ADD CONSTRAINT app_account_email_key UNIQUE (email)")
+    if _has_unique(cur, "user_accounts", "app_account_single_row"):
+        cur.execute("ALTER TABLE user_accounts DROP CONSTRAINT app_account_single_row")
+    if not _has_unique(cur, "user_accounts", "user_accounts_email_key"):
+        cur.execute(
+            "ALTER TABLE user_accounts ADD CONSTRAINT user_accounts_email_key UNIQUE (email)"
+        )
     # Idempotent either way: on a fresh DB the SERIAL column already owns this
     # sequence and these are no-ops; on a DB created under the old id INTEGER
     # DEFAULT 1 schema, this converts it to a real auto-incrementing sequence.
-    cur.execute("CREATE SEQUENCE IF NOT EXISTS app_account_id_seq OWNED BY app_account.id")
+    cur.execute("CREATE SEQUENCE IF NOT EXISTS user_accounts_id_seq OWNED BY user_accounts.id")
     cur.execute(
-        "SELECT setval('app_account_id_seq',"
-        " COALESCE((SELECT MAX(id) FROM app_account), 0) + 1, false)"
+        "SELECT setval('user_accounts_id_seq',"
+        " COALESCE((SELECT MAX(id) FROM user_accounts), 0) + 1, false)"
     )
-    cur.execute("ALTER TABLE app_account ALTER COLUMN id SET DEFAULT nextval('app_account_id_seq')")
+    cur.execute(
+        "ALTER TABLE user_accounts ALTER COLUMN id SET DEFAULT nextval('user_accounts_id_seq')"
+    )
     conn.commit()
 
     # ai: claude-sonnet-5 | 2026-08-21
@@ -588,27 +592,27 @@ def _migrate(conn: Any) -> None:
     # password_hash IS NOT NULL already means the account's email was
     # verified (that's the only way to set it), so a second boolean tracking
     # the same fact would just be a duplicate source of truth.
-    cur.execute("ALTER TABLE app_account ALTER COLUMN password_hash DROP NOT NULL")
-    cur.execute("ALTER TABLE app_account ADD COLUMN IF NOT EXISTS name TEXT")
-    cur.execute("ALTER TABLE app_account ADD COLUMN IF NOT EXISTS pending_email TEXT")
+    cur.execute("ALTER TABLE user_accounts ALTER COLUMN password_hash DROP NOT NULL")
+    cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS name TEXT")
+    cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS pending_email TEXT")
     cur.execute(
-        "ALTER TABLE app_account ADD COLUMN IF NOT EXISTS verification_token TEXT"
+        "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS verification_token TEXT"
     )
-    if not _has_unique(cur, "app_account", "app_account_verification_token_key"):
+    if not _has_unique(cur, "user_accounts", "user_accounts_verification_token_key"):
         cur.execute(
-            "ALTER TABLE app_account ADD CONSTRAINT"
-            " app_account_verification_token_key UNIQUE (verification_token)"
+            "ALTER TABLE user_accounts ADD CONSTRAINT"
+            " user_accounts_verification_token_key UNIQUE (verification_token)"
         )
     cur.execute(
-        "ALTER TABLE app_account ADD COLUMN IF NOT EXISTS verification_purpose TEXT"
+        "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS verification_purpose TEXT"
     )
     cur.execute(
-        "ALTER TABLE app_account ADD COLUMN IF NOT EXISTS"
+        "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS"
         " verification_expires_at TIMESTAMPTZ"
     )
     conn.commit()
 
-    # A completely empty app_account is possible here even when other tables
+    # A completely empty user_accounts is possible here even when other tables
     # already have rows: seed data (default email_sources/penalty_rules/etc.,
     # see _seed_data() below) and any pre-existing single-tenant data (jobs
     # tracked before this login gate existed) both predate any account ever
@@ -618,31 +622,33 @@ def _migrate(conn: Any) -> None:
     # time someone actually registers, rather than leaving pre-existing data
     # permanently orphaned under an account nobody can log into.
     #
-    # Don't assume that account's id is 1 — if app_account previously had
+    # Don't assume that account's id is 1 — if user_accounts previously had
     # rows that were since deleted, its sequence has already moved past 1.
     # backfill_user_id is always "whichever account existed first."
-    cur.execute("SELECT COUNT(*) AS cnt FROM app_account")
+    cur.execute("SELECT COUNT(*) AS cnt FROM user_accounts")
     if cur.fetchone()["cnt"] == 0:
         cur.execute(
-            "INSERT INTO app_account (email, password_hash) VALUES (%s, %s)",
+            "INSERT INTO user_accounts (email, password_hash) VALUES (%s, %s)",
             (PLACEHOLDER_ACCOUNT_EMAIL, ""),
         )
         conn.commit()
-    cur.execute("SELECT id FROM app_account ORDER BY id LIMIT 1")
+    cur.execute("SELECT id FROM user_accounts ORDER BY id LIMIT 1")
     backfill_user_id = cur.fetchone()["id"]
 
     # ai: claude-sonnet-5 | 2026-08-21
     # System/user settings migration. The first account (backfill_user_id,
     # above) is also the instance's first admin — on a fresh install that's
     # the placeholder row a real registration claims in place (see
-    # app_account.py's claim_placeholder_pending), so "first real
+    # user_accounts.py's claim_placeholder_pending), so "first real
     # registration becomes admin" and "first account becomes admin" are the
     # same event. Re-running this UPDATE on every startup is harmless: ids
     # never change, so it keeps re-confirming the same account rather than
     # promoting a different one later.
-    cur.execute("ALTER TABLE app_account ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'")
     cur.execute(
-        "UPDATE app_account SET role = 'admin' WHERE id = %s", (backfill_user_id,)
+        "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'"
+    )
+    cur.execute(
+        "UPDATE user_accounts SET role = 'admin' WHERE id = %s", (backfill_user_id,)
     )
     conn.commit()
 
@@ -654,7 +660,7 @@ def _migrate(conn: Any) -> None:
             continue
         cur.execute(
             f"ALTER TABLE {table} ADD COLUMN user_id INTEGER "
-            "REFERENCES app_account(id) ON DELETE CASCADE"
+            "REFERENCES user_accounts(id) ON DELETE CASCADE"
         )
         cur.execute(
             f"UPDATE {table} SET user_id = %s WHERE user_id IS NULL", (backfill_user_id,)
@@ -676,7 +682,7 @@ def _migrate(conn: Any) -> None:
             )
         cur.execute(
             "ALTER TABLE application_profile ADD COLUMN user_id INTEGER "
-            "REFERENCES app_account(id) ON DELETE CASCADE"
+            "REFERENCES user_accounts(id) ON DELETE CASCADE"
         )
         cur.execute(
             "UPDATE application_profile SET user_id = %s WHERE user_id IS NULL",
@@ -688,7 +694,7 @@ def _migrate(conn: Any) -> None:
             " ADD CONSTRAINT application_profile_user_id_key UNIQUE (user_id)"
         )
         # id previously had a fixed DEFAULT 1 (single-row pattern, like the old
-        # app_account) — give it a real sequence so a second user's row can insert.
+        # user_accounts) — give it a real sequence so a second user's row can insert.
         cur.execute(
             "CREATE SEQUENCE IF NOT EXISTS application_profile_id_seq"
             " OWNED BY application_profile.id"
@@ -706,7 +712,7 @@ def _migrate(conn: Any) -> None:
     if not _has_column(cur, "user_settings", "user_id"):
         cur.execute(
             "ALTER TABLE user_settings ADD COLUMN user_id INTEGER "
-            "REFERENCES app_account(id) ON DELETE CASCADE"
+            "REFERENCES user_accounts(id) ON DELETE CASCADE"
         )
         cur.execute(
             "UPDATE user_settings SET user_id = %s WHERE user_id IS NULL", (backfill_user_id,)
@@ -724,7 +730,7 @@ def _migrate(conn: Any) -> None:
     if not _has_column(cur, "scanned_emails", "user_id"):
         cur.execute(
             "ALTER TABLE scanned_emails ADD COLUMN user_id INTEGER "
-            "REFERENCES app_account(id) ON DELETE CASCADE"
+            "REFERENCES user_accounts(id) ON DELETE CASCADE"
         )
         cur.execute(
             "UPDATE scanned_emails SET user_id = %s WHERE user_id IS NULL", (backfill_user_id,)
@@ -908,6 +914,29 @@ def _create_tables(conn: Any) -> None:
             )
         conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-08-26
+    # app_account renamed to user_accounts: the "app_" prefix reads as
+    # instance/software-level and is easily confused with the job-application
+    # tables elsewhere in this schema (application_profile, application_answers,
+    # application_stages). Table renames don't carry dependent constraint/
+    # sequence names along in Postgres, so those are renamed explicitly here
+    # too, to the names _migrate() below and a fresh install both now expect.
+    if _has_table(cur, "app_account") and not _has_table(cur, "user_accounts"):
+        cur.execute("ALTER TABLE app_account RENAME TO user_accounts")
+        for old_name, new_name in [
+            ("app_account_pkey", "user_accounts_pkey"),
+            ("app_account_email_key", "user_accounts_email_key"),
+            ("app_account_verification_token_key", "user_accounts_verification_token_key"),
+        ]:
+            if _has_unique(cur, "user_accounts", old_name):
+                cur.execute(
+                    f"ALTER TABLE user_accounts RENAME CONSTRAINT {old_name} TO {new_name}"
+                )
+        cur.execute(
+            "ALTER SEQUENCE IF EXISTS app_account_id_seq RENAME TO user_accounts_id_seq"
+        )
+        conn.commit()
+
     for stmt in [
         """
         CREATE TABLE IF NOT EXISTS jobs (
@@ -1011,7 +1040,7 @@ def _create_tables(conn: Any) -> None:
         # Every per-user table elsewhere in this schema carries a user_id FK
         # referencing this table's id.
         """
-        CREATE TABLE IF NOT EXISTS app_account (
+        CREATE TABLE IF NOT EXISTS user_accounts (
             id            SERIAL PRIMARY KEY,
             email         TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
@@ -1300,14 +1329,14 @@ def _seed_data(conn: Any) -> None:
     # ai: claude-sonnet-5 | 2026-08-20
     # email_sources/penalty_rules/ack_patterns/jd_health_check_targets are now
     # per-user tables, so their seed rows need a user_id. _migrate() (which
-    # always runs before this) guarantees at least one app_account row exists
+    # always runs before this) guarantees at least one user_accounts row exists
     # by this point — reuse whichever account it backfilled onto.
     # KNOWN GAP: this only seeds defaults once per table (guarded by "table is
     # still empty"), so it only ever benefits the very first account on this
     # instance — a second real signup gets no starter email_sources/penalty_rules/
     # etc. Giving every new account its own onboarding defaults belongs in
     # routes/session_auth.py's create_account(), not here; not done in this pass.
-    cur.execute("SELECT id FROM app_account ORDER BY id LIMIT 1")
+    cur.execute("SELECT id FROM user_accounts ORDER BY id LIMIT 1")
     seed_user_id = cur.fetchone()["id"]
 
     cur.execute("SELECT COUNT(*) AS cnt FROM email_sources")

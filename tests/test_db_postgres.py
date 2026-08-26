@@ -40,10 +40,10 @@ import pytest
 
 from backend.db import (
     DuplicateJobUrlError,
-    PostgresAppAccountRepository,
     PostgresCareerSiteSourceRepository,
     PostgresJobRepository,
     PostgresRelevanceFeedbackRepository,
+    PostgresUserAccountRepository,
     PostgresUserSettingsRepository,
     get_connection,
     open_repositories,
@@ -57,7 +57,7 @@ from backend.db.schema import _migrate
 def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
-        account = PostgresAppAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
+        account = PostgresUserAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         jobs = PostgresJobRepository(conn)
         settings = PostgresUserSettingsRepository(conn)
@@ -110,7 +110,7 @@ def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> 
 def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:
-        account = repos["app_account"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
+        account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         job_id = repos["jobs"].insert(
             user_id,
@@ -173,7 +173,7 @@ def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None
 def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:
-        account = repos["app_account"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
+        account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         repos["scanned_emails"].mark_scanned(
             user_id,
@@ -226,7 +226,7 @@ def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
 def test_scanned_email_get_by_id_returns_disposition(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:
-        account = repos["app_account"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
+        account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         repos["scanned_emails"].mark_scanned(
             user_id,
@@ -255,7 +255,7 @@ def test_relevance_feedback_requires_subject_overlap_for_exact_sender(
 ) -> None:
     conn = get_connection(pg_dsn)
     try:
-        account = PostgresAppAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
+        account = PostgresUserAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         feedback = PostgresRelevanceFeedbackRepository(conn)
         feedback.insert(
@@ -301,7 +301,7 @@ def test_jobs_url_unique_index_rejects_concurrent_duplicate_insert(
     to be the backstop against a duplicate row."""
     repos = open_repositories(pg_dsn)
     try:
-        account = repos["app_account"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
+        account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         first_id = repos["jobs"].insert(
             user_id,
@@ -360,7 +360,7 @@ def test_jobs_url_unique_index_allows_multiple_empty_urls(pg_dsn: str) -> None:
     each other (a plain UNIQUE constraint would, since '' = '' in Postgres)."""
     repos = open_repositories(pg_dsn)
     try:
-        account = repos["app_account"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
+        account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         first_id = repos["jobs"].insert(
             user_id,
@@ -419,7 +419,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         conn.commit()
         assert not _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
 
-        account = PostgresAppAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
+        account = PostgresUserAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         jobs = PostgresJobRepository(conn)
         first_id = jobs.insert(
@@ -477,11 +477,11 @@ def test_first_account_becomes_admin_and_stays_admin_across_migrations(
     conn = get_connection(pg_dsn)
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, role FROM app_account ORDER BY id LIMIT 1")
+        cur.execute("SELECT id, role FROM user_accounts ORDER BY id LIMIT 1")
         first = cur.fetchone()
         assert first["role"] == "admin"
 
-        account_repo = PostgresAppAccountRepository(conn)
+        account_repo = PostgresUserAccountRepository(conn)
         second = account_repo.create_pending(
             "second-user@example.com", "second-token", "2099-01-01"
         )
@@ -491,9 +491,9 @@ def test_first_account_becomes_admin_and_stays_admin_across_migrations(
 
         _migrate(conn)  # idempotent re-run, e.g. app restart
 
-        cur.execute("SELECT role FROM app_account WHERE id = %s", (first["id"],))
+        cur.execute("SELECT role FROM user_accounts WHERE id = %s", (first["id"],))
         assert cur.fetchone()["role"] == "admin"
-        cur.execute("SELECT role FROM app_account WHERE id = %s", (second["id"],))
+        cur.execute("SELECT role FROM user_accounts WHERE id = %s", (second["id"],))
         assert cur.fetchone()["role"] == "user"
     finally:
         conn.close()

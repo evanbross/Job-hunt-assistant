@@ -32,7 +32,7 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""Repository for the app_account table — one row per registered user.
+"""Repository for the user_accounts table — one row per registered user.
 Registration is open (see routes/session_auth.py's create_account), guarded
 only by email uniqueness at the DB level, and requires completing an
 email-verification round trip before the account can log in (password_hash
@@ -57,14 +57,14 @@ from ..connection import _row_to_dict
 PLACEHOLDER_ACCOUNT_EMAIL = "unclaimed@localhost"
 
 
-class PostgresAppAccountRepository(_BaseRepo):
+class PostgresUserAccountRepository(_BaseRepo):
     def get(self, user_id: int) -> dict[str, Any] | None:
-        cur = self._execute("SELECT * FROM app_account WHERE id = %s", [user_id])
+        cur = self._execute("SELECT * FROM user_accounts WHERE id = %s", [user_id])
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
     def get_by_email(self, email: str) -> dict[str, Any] | None:
-        cur = self._execute("SELECT * FROM app_account WHERE email = %s", [email])
+        cur = self._execute("SELECT * FROM user_accounts WHERE email = %s", [email])
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
@@ -85,7 +85,7 @@ class PostgresAppAccountRepository(_BaseRepo):
         try:
             cur = self._execute(
                 """
-                UPDATE app_account
+                UPDATE user_accounts
                 SET email = %s, password_hash = NULL,
                     verification_token = %s, verification_purpose = 'registration',
                     verification_expires_at = %s, updated_at = NOW()
@@ -109,7 +109,7 @@ class PostgresAppAccountRepository(_BaseRepo):
         account."""
         cur = self._execute(
             """
-            INSERT INTO app_account
+            INSERT INTO user_accounts
                 (email, password_hash, verification_token, verification_purpose,
                  verification_expires_at)
             VALUES (%s, NULL, %s, 'registration', %s)
@@ -130,7 +130,7 @@ class PostgresAppAccountRepository(_BaseRepo):
         there's no separate validate-then-write race."""
         cur = self._execute(
             """
-            UPDATE app_account
+            UPDATE user_accounts
             SET password_hash = %s, verification_token = NULL,
                 verification_purpose = NULL, verification_expires_at = NULL,
                 updated_at = NOW()
@@ -152,7 +152,7 @@ class PostgresAppAccountRepository(_BaseRepo):
         email keeps working for login in the meantime."""
         cur = self._execute(
             """
-            UPDATE app_account
+            UPDATE user_accounts
             SET pending_email = %s, verification_token = %s,
                 verification_purpose = 'email_change', verification_expires_at = %s,
                 updated_at = NOW()
@@ -172,7 +172,7 @@ class PostgresAppAccountRepository(_BaseRepo):
         try:
             cur = self._execute(
                 """
-                UPDATE app_account
+                UPDATE user_accounts
                 SET email = pending_email, pending_email = NULL,
                     verification_token = NULL, verification_purpose = NULL,
                     verification_expires_at = NULL, updated_at = NOW()
@@ -202,7 +202,7 @@ class PostgresAppAccountRepository(_BaseRepo):
         account-enumeration oracle for a password-reset endpoint."""
         cur = self._execute(
             """
-            UPDATE app_account
+            UPDATE user_accounts
             SET verification_token = %s, verification_purpose = 'password_reset',
                 verification_expires_at = %s, updated_at = NOW()
             WHERE email = %s AND password_hash IS NOT NULL
@@ -220,7 +220,7 @@ class PostgresAppAccountRepository(_BaseRepo):
         complete_registration()."""
         cur = self._execute(
             """
-            UPDATE app_account
+            UPDATE user_accounts
             SET password_hash = %s, verification_token = NULL,
                 verification_purpose = NULL, verification_expires_at = NULL,
                 updated_at = NOW()
@@ -236,7 +236,7 @@ class PostgresAppAccountRepository(_BaseRepo):
 
     def update_name(self, user_id: int, name: str) -> dict[str, Any]:
         cur = self._execute(
-            "UPDATE app_account SET name = %s, updated_at = NOW() WHERE id = %s RETURNING *",
+            "UPDATE user_accounts SET name = %s, updated_at = NOW() WHERE id = %s RETURNING *",
             [name, user_id],
         )
         return _row_to_dict(cur.fetchone())
@@ -244,7 +244,7 @@ class PostgresAppAccountRepository(_BaseRepo):
     def update_password(self, user_id: int, password_hash: str) -> dict[str, Any]:
         cur = self._execute(
             """
-            UPDATE app_account SET password_hash = %s, updated_at = NOW()
+            UPDATE user_accounts SET password_hash = %s, updated_at = NOW()
             WHERE id = %s
             RETURNING *
             """,
@@ -253,4 +253,4 @@ class PostgresAppAccountRepository(_BaseRepo):
         return _row_to_dict(cur.fetchone())
 
     def delete(self, user_id: int) -> None:
-        self._execute("DELETE FROM app_account WHERE id = %s", [user_id])
+        self._execute("DELETE FROM user_accounts WHERE id = %s", [user_id])

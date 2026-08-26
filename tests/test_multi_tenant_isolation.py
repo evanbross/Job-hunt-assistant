@@ -88,14 +88,14 @@ def _create_and_login(client, email: str) -> int:
     resp = client.post("/api/account", json={"email": email})
     assert resp.status_code == 202, resp.get_json()
     with get_repos() as repos:
-        pending = repos["app_account"].get_by_email(email)
+        pending = repos["user_accounts"].get_by_email(email)
     token = pending["verification_token"]
     complete = client.post(
         "/api/account/complete-registration", json={"token": token, "password": _PASSWORD}
     )
     assert complete.status_code == 200, complete.get_json()
     with get_repos() as repos:
-        account = repos["app_account"].get_by_email(email)
+        account = repos["user_accounts"].get_by_email(email)
     return account["id"]
 
 
