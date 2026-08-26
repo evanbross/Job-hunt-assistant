@@ -49,7 +49,7 @@ Tables/views you may query (read-only):
 - application_stages(id, job_id, status, date, notes, created_at) -- one row per
   application-stage transition. status is one of: applied, waiting_call,
   waiting_second, eval_1, eval_2, eval_3, rejected, job_filled, req_closed, ghosted.
-- stage_statuses(key, label, sort_order, ghost_eligible, is_terminal) -- lookup
+- application_stage_statuses(key, label, sort_order, ghost_eligible, is_terminal) -- lookup
   table describing the application_stages.status values above.
 - latest_application_stage(job_id, latest_status, latest_status_date, notes,
   created_at) -- a view giving each job's MOST RECENT stage only. Always use this

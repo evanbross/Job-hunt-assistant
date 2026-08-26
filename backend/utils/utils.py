@@ -32,7 +32,6 @@ pattern applied to other shared helpers).
 
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -214,31 +213,3 @@ def is_trusted_api_write_origin(
     parsed = urlparse(source)
     source_origin = f"{parsed.scheme}://{parsed.netloc}"
     return source_origin == self_origin or source_origin in cors_origins
-
-
-def normalize_stage_status(raw_status: object) -> str:
-    status = str(raw_status or "").strip()
-    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    aliases = {
-        "applied": "applied",
-        "rejected": "rejected",
-        "employer_rejected": "rejected",
-        "waiting": "waiting_call",
-        "waiting_for_call": "waiting_call",
-        "waiting_call": "waiting_call",
-        "waiting_for_2nd": "waiting_second",
-        "waiting_2nd": "waiting_second",
-        "waiting_for_second": "waiting_second",
-        "waiting_second": "waiting_second",
-        "need_to_do_eval": "eval_1",
-        "eval": "eval_1",
-        "eval_test": "eval_1",
-        "eval_1": "eval_1",
-        "eval_2": "eval_2",
-        "eval_3": "eval_3",
-        "job_was_filled": "job_filled",
-        "job_filled": "job_filled",
-        "filled": "job_filled",
-        "ghosted": "ghosted",
-    }
-    return aliases.get(normalized, normalized)

@@ -88,6 +88,7 @@ from backend.scoring.skip_reasons import (
     VALID_SKIP_REASONS,  # ai: claude-fable-5 | 2026-07-16
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
+from backend.utils.stage_status_normalization import normalize_stage_status
 from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-17
     UnsafeUrlError,
     safe_urlopen,
@@ -96,7 +97,6 @@ from backend.utils.utils import (
     ai_error_http_status,
     current_user_id,
     get_repos,
-    normalize_stage_status,
     safe_error_message,
 )
 

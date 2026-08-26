@@ -72,7 +72,7 @@ const DEFAULT_STATUS_OPTIONS = [
 ];
 
 // Job-queue statuses that live on jobs.status (not application_stages) and are
-// therefore not expected to be in the stage_statuses DB table.
+// therefore not expected to be in the application_stage_statuses DB table.
 const FALLBACK_DISPLAY_NAMES = {
   triage:             "Triage",
   pending_review:     "In Job Queue",

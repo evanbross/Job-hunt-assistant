@@ -86,7 +86,7 @@ _ALL_TABLES = (
     "email_sources",
     "penalty_rules",
     "ack_patterns",
-    "stage_statuses",
+    "application_stage_statuses",
     "user_settings",
     "system_settings",
     "resume",

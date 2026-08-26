@@ -44,10 +44,11 @@ from typing import Any
 
 import config
 from backend.crypto import encrypt_secret
-from backend.db.repositories.user_accounts import PLACEHOLDER_ACCOUNT_EMAIL
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
+from backend.db.repositories.user_accounts import PLACEHOLDER_ACCOUNT_EMAIL
 from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
 from backend.settings_registry import SETTINGS
+from backend.utils.stage_status_normalization import normalize_stage_status
 
 logger = logging.getLogger(__name__)
 
@@ -822,6 +823,22 @@ def _migrate(conn: Any) -> None:
             )
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-08-26
+    # Enforce application_stages.status against the application_stage_statuses
+    # catalog at the DB level. Previously validated ad hoc in a couple of route
+    # handlers (routes/jobs.py, routes/applications.py) but never universally,
+    # so a forgotten call site could still write an unrecognized status with
+    # nothing catching it. ON UPDATE CASCADE so a future catalog key rename
+    # doesn't orphan existing rows.
+    _normalize_and_backfill_application_stage_statuses(conn)
+    if not _has_unique(cur, "application_stages", "application_stages_status_fkey"):
+        cur.execute(
+            "ALTER TABLE application_stages ADD CONSTRAINT"
+            " application_stages_status_fkey FOREIGN KEY (status)"
+            " REFERENCES application_stage_statuses(key) ON UPDATE CASCADE"
+        )
+    conn.commit()
+
 
 # ai: claude-sonnet-4-6 | 2026-06-09
 _HINT_TITLE_RE = re.compile(
@@ -896,6 +913,56 @@ def _backfill_duplicate_of_id(conn: Any) -> None:
     conn.commit()
 
 
+# ai: claude-sonnet-5 | 2026-08-26
+def _normalize_and_backfill_application_stage_statuses(conn: Any) -> None:
+    """Bring every application_stages.status value in line with the
+    application_stage_statuses catalog before _migrate() can safely add the
+    foreign key constraint tying them together.
+
+    Existing installs may carry legacy free-text labels imported from the old
+    Google Sheet this app originally tracked applications on (see
+    normalize_stage_status's alias table) that were never run through the
+    "/applications/repair/normalize-stage-statuses" endpoint, or a value that
+    predates a later addition to the catalog. Rather than let either case
+    fail the ADD CONSTRAINT outright, this normalizes what it recognizes and
+    inserts a catalog row for whatever it still doesn't, so the constraint
+    added right after this never rejects historical data — only genuinely
+    new, unrecognized values going forward.
+    """
+    cur = conn.cursor()
+
+    cur.execute("SELECT DISTINCT status FROM application_stages")
+    for row in cur.fetchall():
+        raw = row["status"]
+        normalized = normalize_stage_status(raw)
+        if normalized != raw:
+            cur.execute(
+                "UPDATE application_stages SET status = %s WHERE status = %s",
+                (normalized, raw),
+            )
+    conn.commit()
+
+    cur.execute("SELECT key FROM application_stage_statuses")
+    known_keys = {row["key"] for row in cur.fetchall()}
+    cur.execute("SELECT DISTINCT status FROM application_stages")
+    remaining_statuses = {row["status"] for row in cur.fetchall()}
+    unknown_keys = remaining_statuses - known_keys
+    if unknown_keys:
+        cur.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) AS max_sort FROM application_stage_statuses"
+        )
+        next_sort = cur.fetchone()["max_sort"] + 1
+        for key in sorted(unknown_keys):
+            cur.execute(
+                "INSERT INTO application_stage_statuses"
+                " (key, label, sort_order, ghost_eligible, is_terminal)"
+                " VALUES (%s, %s, %s, FALSE, FALSE) ON CONFLICT (key) DO NOTHING",
+                (key, key.replace("_", " ").title(), next_sort),
+            )
+            next_sort += 1
+        conn.commit()
+
+
 def _create_tables(conn: Any) -> None:
     cur = conn.cursor()
 
@@ -935,6 +1002,21 @@ def _create_tables(conn: Any) -> None:
         cur.execute(
             "ALTER SEQUENCE IF EXISTS app_account_id_seq RENAME TO user_accounts_id_seq"
         )
+        conn.commit()
+
+    # ai: claude-sonnet-5 | 2026-08-26
+    # stage_statuses renamed to application_stage_statuses: bare "stage_statuses"
+    # reads as a generic pipeline/workflow concept (this codebase's own
+    # docs/pipeline-architecture.md uses "pipeline" for something unrelated —
+    # AI/data pipelines), when this table is specifically the catalog of valid
+    # application_stages.status values.
+    if _has_table(cur, "stage_statuses") and not _has_table(cur, "application_stage_statuses"):
+        cur.execute("ALTER TABLE stage_statuses RENAME TO application_stage_statuses")
+        if _has_unique(cur, "application_stage_statuses", "stage_statuses_pkey"):
+            cur.execute(
+                "ALTER TABLE application_stage_statuses"
+                " RENAME CONSTRAINT stage_statuses_pkey TO application_stage_statuses_pkey"
+            )
         conn.commit()
 
     for stmt in [
@@ -1228,7 +1310,7 @@ def _create_tables(conn: Any) -> None:
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS stage_statuses (
+        CREATE TABLE IF NOT EXISTS application_stage_statuses (
             key            TEXT PRIMARY KEY,
             label          TEXT NOT NULL,
             sort_order     INTEGER DEFAULT 0,
@@ -1363,7 +1445,7 @@ def _seed_data(conn: Any) -> None:
 
     cur.executemany(
         """
-        INSERT INTO stage_statuses (key, label, sort_order, ghost_eligible, is_terminal)
+        INSERT INTO application_stage_statuses (key, label, sort_order, ghost_eligible, is_terminal)
         VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (key) DO NOTHING
         """,

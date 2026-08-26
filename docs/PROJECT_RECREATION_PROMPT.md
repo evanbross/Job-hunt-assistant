@@ -145,7 +145,7 @@ migration-runner tool, unless the project grows enough to need one.
 | `relevance_feedback` | User accept/reject signal on scored jobs, for future tuning. |
 | `resume` | The user's parsed resume text/metadata. |
 | `application_stages` | One row per job's current position in the pipeline. |
-| `stage_statuses` | The seeded, ordered list of valid pipeline stages (see below) — the single source of truth other layers must read from, not re-hardcode. |
+| `application_stage_statuses` | The seeded, ordered list of valid pipeline stages (see below) — the single source of truth other layers must read from, not re-hardcode. |
 | `job_status_history` | Append-only log of stage transitions per job. |
 | `user_settings` | Runtime-editable settings key/value store. |
 | `career_site_sources` | Configured company career pages to periodically scan. |
@@ -158,7 +158,7 @@ migration-runner tool, unless the project grows enough to need one.
 | `contacts` | People associated with target companies. |
 | `cover_letter_phrases` | The reusable, tagged "phrase book" paragraphs described in §4.4. |
 
-Seed `stage_statuses` with an ordered pipeline like: `applied` →
+Seed `application_stage_statuses` with an ordered pipeline like: `applied` →
 `waiting_call` → `waiting_second` → `eval_1` → `eval_2` → `eval_3`, with
 terminal statuses `rejected`, `job_filled`, `req_closed`, and `ghosted`.
 Flag which non-terminal statuses are eligible to auto-transition to

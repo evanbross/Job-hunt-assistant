@@ -136,7 +136,7 @@ class IApplicationStageRepository(Protocol):
 
 
 @runtime_checkable
-class IStageStatusRepository(Protocol):
+class IApplicationStageStatusRepository(Protocol):
     def get_all(self) -> list[dict[str, Any]]: ...
 
 

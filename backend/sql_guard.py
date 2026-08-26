@@ -33,7 +33,7 @@ from sqlglot.errors import ParseError
 MAX_ROW_LIMIT = 200
 
 ALLOWED_TABLES: frozenset[str] = frozenset(
-    {"jobs", "application_stages", "stage_statuses", "latest_application_stage"}
+    {"jobs", "application_stages", "application_stage_statuses", "latest_application_stage"}
 )
 
 # Curated per-table "safe/useful to read aloud" columns -- deliberately
@@ -63,7 +63,7 @@ ALLOWED_COLUMNS: frozenset[str] = frozenset(
         "date",
         "notes",
         "created_at",
-        # stage_statuses
+        # application_stage_statuses
         "key",
         "label",
         "sort_order",

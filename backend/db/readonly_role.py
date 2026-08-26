@@ -41,7 +41,7 @@ READONLY_ROLE_NAME = "jobhunt_readonly"
 READONLY_TABLES: tuple[str, ...] = (
     "jobs",
     "application_stages",
-    "stage_statuses",
+    "application_stage_statuses",
     "latest_application_stage",
 )
 

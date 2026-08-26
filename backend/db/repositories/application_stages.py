@@ -42,8 +42,8 @@ from ..connection import _row_to_dict
 
 # ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
 # user_id parameter (multi-tenancy migration; see backend/db/schema.py's
-# _migrate() for the user_id column this scopes against). PostgresStageStatusRepository
-# below is untouched — stage_statuses is global reference data, not per-user.
+# _migrate() for the user_id column this scopes against). PostgresApplicationStageStatusRepository
+# below is untouched — application_stage_statuses is global reference data, not per-user.
 class PostgresApplicationStageRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {
@@ -112,9 +112,9 @@ class PostgresApplicationStageRepository(_BaseRepo):
         )
 
 
-class PostgresStageStatusRepository(_BaseRepo):
+class PostgresApplicationStageStatusRepository(_BaseRepo):
     def get_all(self) -> list[dict[str, Any]]:
         cur = self._execute(
-            "SELECT * FROM stage_statuses ORDER BY sort_order ASC, key ASC"
+            "SELECT * FROM application_stage_statuses ORDER BY sort_order ASC, key ASC"
         )
         return [_row_to_dict(r) for r in cur.fetchall()]

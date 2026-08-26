@@ -59,13 +59,13 @@ from backend.scanning.closed_req_scan_helpers import (
     canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17 — shared with WTTJ repair
     rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17 — shared with WTTJ repair
 )
+from backend.utils.stage_status_normalization import normalize_stage_status
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils.utils import (
     current_user_id,
     first_account_user_id,
     get_repos,
     is_celery_task_active,
-    normalize_stage_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -1395,7 +1395,7 @@ def closed_req_scan_status() -> ResponseReturnValue:
 
 @applications_bp.route("/applications/stage-statuses")
 def get_stage_statuses() -> ResponseReturnValue:
-    """Return all rows from the stage_statuses table, ordered by sort_order."""
+    """Return all rows from the application_stage_statuses table, ordered by sort_order."""
     with get_repos() as repos:
         return jsonify(repos["stage_statuses"].get_all())
 

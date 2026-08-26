@@ -60,6 +60,7 @@ from .interfaces import (
     IApplicationAnswerRepository,
     IApplicationProfileRepository,
     IApplicationStageRepository,
+    IApplicationStageStatusRepository,
     IBrowserCaptureQueueRepository,
     ICareerRejectionRuleRepository,
     ICareerScanFailureRepository,
@@ -78,7 +79,6 @@ from .interfaces import (
     IRelevanceFeedbackRepository,
     IResumeRepository,
     IScannedEmailRepository,
-    IStageStatusRepository,
     ISystemSettingsRepository,
     IUserSettingsRepository,
 )
@@ -87,7 +87,7 @@ from .repositories.application_answers import PostgresApplicationAnswerRepositor
 from .repositories.application_profile import PostgresApplicationProfileRepository
 from .repositories.application_stages import (
     PostgresApplicationStageRepository,
-    PostgresStageStatusRepository,
+    PostgresApplicationStageStatusRepository,
 )
 from .repositories.browser_capture_queue import (
     BROWSER_QUEUE_CLAIM_BATCH_SIZE,
@@ -122,6 +122,7 @@ __all__ = [
     "IApplicationAnswerRepository",
     "IApplicationProfileRepository",
     "IApplicationStageRepository",
+    "IApplicationStageStatusRepository",
     "IBrowserCaptureQueueRepository",
     "ICareerRejectionRuleRepository",
     "ICareerScanFailureRepository",
@@ -140,7 +141,6 @@ __all__ = [
     "IRelevanceFeedbackRepository",
     "IResumeRepository",
     "IScannedEmailRepository",
-    "IStageStatusRepository",
     "ISystemSettingsRepository",
     "IUserSettingsRepository",
     "BROWSER_QUEUE_CLAIM_BATCH_SIZE",
@@ -148,6 +148,7 @@ __all__ = [
     "PostgresApplicationAnswerRepository",
     "PostgresApplicationProfileRepository",
     "PostgresApplicationStageRepository",
+    "PostgresApplicationStageStatusRepository",
     "PostgresBrowserCaptureQueueRepository",
     "PostgresCareerRejectionRuleRepository",
     "PostgresCareerScanFailureRepository",
@@ -166,7 +167,6 @@ __all__ = [
     "PostgresRelevanceFeedbackRepository",
     "PostgresResumeRepository",
     "PostgresScannedEmailRepository",
-    "PostgresStageStatusRepository",
     "PostgresSystemSettingsRepository",
     "PostgresUserAccountRepository",
     "PostgresUserSettingsRepository",
@@ -316,7 +316,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "career_scan_failures": PostgresCareerScanFailureRepository(conn),
         "career_rejection_rules": PostgresCareerRejectionRuleRepository(conn),
         "email_subject_rules": PostgresEmailSubjectRuleRepository(conn),
-        "stage_statuses": PostgresStageStatusRepository(conn),
+        "stage_statuses": PostgresApplicationStageStatusRepository(conn),
         "job_status_history": PostgresJobStatusHistoryRepository(conn),
         "browser_capture_queue": PostgresBrowserCaptureQueueRepository(conn),
         "import_repair_history": PostgresImportRepairHistoryRepository(conn),
