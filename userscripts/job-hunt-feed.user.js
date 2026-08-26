@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-08-12.01
+// @version      2026-08-26.01
 // @match        https://jobs.ashbyhq.com/vanta/*
 // @match        https://discord.com/careehrs*
 // @match        https://job-boards.greenhouse.io/*/jobs/*
@@ -436,6 +436,25 @@
         return JSON.stringify({ jobs });
     }
 
+    // ai: claude-sonnet-5 | 2026-08-26
+    // A single hnhiring.com card can list several roles for one company as
+    // plain-text lines ("Title: https://apply...") with no heading markup per
+    // role. When that happens link.innerText is just the auto-linkified URL
+    // itself, not a title. Recover the real title from the plain-text node
+    // immediately before the link (the "Title: " part of that line) instead.
+    const _HN_URL_TEXT_RE = /^https?:\/\//i;
+
+    function hnPrecedingLineText(link) {
+        const prev = link.previousSibling;
+        if (!prev || prev.nodeType !== Node.TEXT_NODE) return '';
+        return prev.textContent.replace(/[:\-–—]\s*$/, '').trim();
+    }
+
+    function hnTitleFromLink(link) {
+        const linkText = link.innerText?.trim() || '';
+        return hnPrecedingLineText(link) || (_HN_URL_TEXT_RE.test(linkText) ? '' : linkText);
+    }
+
     function buildHnHiringPayload() {
         // hnhiring.com aggregates HN "Who's Hiring" posts. Each job card contains a
         // company heading, role text, description snippet, and an external apply link.
@@ -461,7 +480,7 @@
                 container = container.parentElement;
             }
             if (!container || container === document.body) {
-                const text = link.innerText?.trim() || 'Job Posting';
+                const text = hnTitleFromLink(link) || 'Job Posting';
                 jobs.push({ url: href, job_title: text, company: '', listing_text: `${text}\nURL: ${href}` });
                 return;
             }
@@ -469,7 +488,7 @@
             // First heading in the container is usually the company name, second is the role.
             const headings = [...container.querySelectorAll('h1,h2,h3,h4')];
             const company = headings[0]?.innerText?.split('\n')[0]?.trim() || '';
-            const title = headings[1]?.innerText?.split('\n')[0]?.trim() || link.innerText?.trim() || '';
+            const title = headings[1]?.innerText?.split('\n')[0]?.trim() || hnTitleFromLink(link) || '';
             const cardText = (container.innerText || '').trim().slice(0, 2000);
 
             const lines = [title || company || 'Job Posting'];

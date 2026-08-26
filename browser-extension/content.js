@@ -829,6 +829,25 @@
     return JSON.stringify({ jobs });
   }
 
+  // ai: claude-sonnet-5 | 2026-08-26
+  // A single hnhiring.com "card" can list several roles for one company as
+  // plain-text lines ("Title: https://apply...") with no heading markup per
+  // role. When that happens link.innerText is just the auto-linkified URL
+  // itself, not a title. Recover the real title from the plain-text node
+  // immediately before the link (the "Title: " part of that line) instead.
+  const _HN_URL_TEXT_RE = /^https?:\/\//i;
+
+  function _hnPrecedingLineText(link) {
+    const prev = link.previousSibling;
+    if (!prev || prev.nodeType !== Node.TEXT_NODE) return '';
+    return prev.textContent.replace(/[:\-–—]\s*$/, '').trim();
+  }
+
+  function _hnTitleFromLink(link) {
+    const linkText = link.innerText?.trim() || '';
+    return _hnPrecedingLineText(link) || (_HN_URL_TEXT_RE.test(linkText) ? '' : linkText);
+  }
+
   function buildHnHiringPayload() {
     const seen = new Set();
     const jobs = [];
@@ -848,14 +867,14 @@
         container = container.parentElement;
       }
       if (!container || container === document.body) {
-        const text = link.innerText?.trim() || 'Job Posting';
+        const text = _hnTitleFromLink(link) || 'Job Posting';
         jobs.push({ url: href, job_title: text, company: '', listing_text: `${text}\nURL: ${href}` });
         return;
       }
 
       const headings = [...container.querySelectorAll('h1,h2,h3,h4')];
       const company = headings[0]?.innerText?.split('\n')[0]?.trim() || '';
-      const title = headings[1]?.innerText?.split('\n')[0]?.trim() || link.innerText?.trim() || '';
+      const title = headings[1]?.innerText?.split('\n')[0]?.trim() || _hnTitleFromLink(link) || '';
       const cardText = (container.innerText || '').trim().slice(0, 2000);
 
       const lines = [title || company || 'Job Posting'];
