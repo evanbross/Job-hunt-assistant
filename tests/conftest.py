@@ -87,7 +87,7 @@ _ALL_TABLES = (
     "penalty_rules",
     "ack_patterns",
     "stage_statuses",
-    "app_settings",
+    "user_settings",
     "system_settings",
     "resume",
     "application_profile",

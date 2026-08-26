@@ -168,7 +168,7 @@ class IApplicationAnswerRepository(Protocol):
 
 
 @runtime_checkable
-class IAppSettingsRepository(Protocol):
+class IUserSettingsRepository(Protocol):
     def get(self, user_id: int, key: str, default: str | None = None) -> str | None: ...
     def set(self, user_id: int, key: str, value: str) -> None: ...
 

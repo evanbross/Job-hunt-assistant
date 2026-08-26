@@ -42,17 +42,17 @@ from ..base import _BaseRepo
 # composite (user_id, key) instead of key alone — these are per-user
 # preferences (AI provider, email lookback days, feature toggles), not
 # instance-wide config.
-class PostgresAppSettingsRepository(_BaseRepo):
+class PostgresUserSettingsRepository(_BaseRepo):
     def get(self, user_id: int, key: str, default: str | None = None) -> str | None:
         cur = self._execute(
-            "SELECT value FROM app_settings WHERE user_id = %s AND key = %s", (user_id, key)
+            "SELECT value FROM user_settings WHERE user_id = %s AND key = %s", (user_id, key)
         )
         row = cur.fetchone()
         return row["value"] if row else default
 
     def set(self, user_id: int, key: str, value: str) -> None:
         self._execute(
-            "INSERT INTO app_settings (user_id, key, value) VALUES (%s, %s, %s)"
+            "INSERT INTO user_settings (user_id, key, value) VALUES (%s, %s, %s)"
             " ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value",
             (user_id, key, value),
         )

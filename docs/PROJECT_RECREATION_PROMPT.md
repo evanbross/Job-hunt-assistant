@@ -147,7 +147,7 @@ migration-runner tool, unless the project grows enough to need one.
 | `application_stages` | One row per job's current position in the pipeline. |
 | `stage_statuses` | The seeded, ordered list of valid pipeline stages (see below) — the single source of truth other layers must read from, not re-hardcode. |
 | `job_status_history` | Append-only log of stage transitions per job. |
-| `app_settings` | Runtime-editable settings key/value store. |
+| `user_settings` | Runtime-editable settings key/value store. |
 | `career_site_sources` | Configured company career pages to periodically scan. |
 | `career_scan_results` / `career_scan_failures` | Outcomes of each career-site scan run. |
 | `career_rejection_rules` | Rules for auto-skipping obviously irrelevant postings found by scanning. |

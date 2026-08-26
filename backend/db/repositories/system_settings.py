@@ -39,7 +39,7 @@ from ..base import _BaseRepo
 
 class PostgresSystemSettingsRepository(_BaseRepo):
     """Instance-wide settings (SMTP relay, app base URL, ...) — one row per
-    key, not scoped by user_id. Contrast with app_settings (per-user KV)."""
+    key, not scoped by user_id. Contrast with user_settings (per-user KV)."""
 
     def get(self, key: str, default: str | None = None) -> str | None:
         cur = self._execute("SELECT value FROM system_settings WHERE key = %s", (key,))

@@ -81,7 +81,7 @@ def test_count_star_is_allowed_despite_wildcard_rejection() -> None:
     validate_select("SELECT COUNT(*) FROM jobs")
 
 
-@pytest.mark.parametrize("table", ["resume", "contacts", "app_settings", "email_sources"])
+@pytest.mark.parametrize("table", ["resume", "contacts", "user_settings", "email_sources"])
 def test_disallowed_table_is_rejected(table: str) -> None:
     with pytest.raises(SqlGuardError, match="isn't a table"):
         validate_select(f"SELECT id FROM {table}")

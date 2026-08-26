@@ -128,6 +128,16 @@ def _has_column(cur: Any, table: str, column: str) -> bool:
     return cur.fetchone() is not None
 
 
+# ai: claude-sonnet-5 | 2026-08-26
+def _has_table(cur: Any, table: str) -> bool:
+    cur.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_name = %s AND table_schema = 'public'",
+        (table,),
+    )
+    return cur.fetchone() is not None
+
+
 # ai: claude-sonnet-5 | 2026-08-12
 def _has_index(cur: Any, table: str, index_name: str) -> bool:
     """Partial unique indexes (e.g. jobs_url_unique_idx) aren't table constraints
@@ -144,7 +154,7 @@ def _has_index(cur: Any, table: str, index_name: str) -> bool:
 # ai: claude-sonnet-5 | 2026-08-20
 # Tables that get a plain `user_id` FK + backfill + index in _migrate() below.
 # Excludes tables needing bespoke handling because a *bare* ADD COLUMN isn't
-# enough to make them correctly per-user: app_settings, application_profile,
+# enough to make them correctly per-user: user_settings, application_profile,
 # and scanned_emails each have a natural-key PRIMARY KEY (not a surrogate id)
 # that must become a composite (user_id, <natural key>) — handled in their
 # own migration blocks. Also excludes app_account itself (the identity table).
@@ -174,7 +184,7 @@ _PER_USER_TABLES: tuple[str, ...] = (
 # ai: claude-sonnet-5 | 2026-08-21
 def _seed_settings_from_env(cur: Any, admin_user_id: int) -> None:
     """One-time bridge from .env-sourced config defaults into the new
-    system_settings/app_settings tables, so upgrading an existing install
+    system_settings/user_settings tables, so upgrading an existing install
     doesn't lose an already-configured SMTP relay or AI provider key.
 
     ON CONFLICT DO NOTHING makes this safe to call on every startup: it only
@@ -195,7 +205,7 @@ def _seed_settings_from_env(cur: Any, admin_user_id: int) -> None:
             )
         else:
             cur.execute(
-                "INSERT INTO app_settings (user_id, key, value) VALUES (%s, %s, %s)"
+                "INSERT INTO user_settings (user_id, key, value) VALUES (%s, %s, %s)"
                 " ON CONFLICT (user_id, key) DO NOTHING",
                 (admin_user_id, key, value),
             )
@@ -245,8 +255,8 @@ def _migrate(conn: Any) -> None:
     # Repair missing constraints (tables may have been pre-created without them)
     if not _has_pk(cur, "scanned_emails"):
         cur.execute("ALTER TABLE scanned_emails ADD PRIMARY KEY (email_id)")
-    if not _has_pk(cur, "app_settings"):
-        cur.execute("ALTER TABLE app_settings ADD PRIMARY KEY (key)")
+    if not _has_pk(cur, "user_settings"):
+        cur.execute("ALTER TABLE user_settings ADD PRIMARY KEY (key)")
     if not _has_unique(cur, "jobs", "jobs_dedup_key_key"):
         cur.execute(
             "ALTER TABLE jobs ADD CONSTRAINT jobs_dedup_key_key UNIQUE (dedup_key)"
@@ -654,7 +664,7 @@ def _migrate(conn: Any) -> None:
     conn.commit()
 
     # ai: claude-sonnet-5 | 2026-08-20
-    # application_profile, app_settings, and scanned_emails each have a
+    # application_profile, user_settings, and scanned_emails each have a
     # natural-key PRIMARY KEY (not a surrogate id) — a bare user_id column
     # isn't enough, since the natural key alone would still collide across
     # different users' rows. Each becomes a composite (user_id, <natural key>)
@@ -693,20 +703,20 @@ def _migrate(conn: Any) -> None:
         )
     conn.commit()
 
-    if not _has_column(cur, "app_settings", "user_id"):
+    if not _has_column(cur, "user_settings", "user_id"):
         cur.execute(
-            "ALTER TABLE app_settings ADD COLUMN user_id INTEGER "
+            "ALTER TABLE user_settings ADD COLUMN user_id INTEGER "
             "REFERENCES app_account(id) ON DELETE CASCADE"
         )
         cur.execute(
-            "UPDATE app_settings SET user_id = %s WHERE user_id IS NULL", (backfill_user_id,)
+            "UPDATE user_settings SET user_id = %s WHERE user_id IS NULL", (backfill_user_id,)
         )
-        cur.execute("ALTER TABLE app_settings ALTER COLUMN user_id SET NOT NULL")
-        cur.execute("ALTER TABLE app_settings DROP CONSTRAINT IF EXISTS app_settings_pkey")
-        cur.execute("ALTER TABLE app_settings ADD PRIMARY KEY (user_id, key)")
+        cur.execute("ALTER TABLE user_settings ALTER COLUMN user_id SET NOT NULL")
+        cur.execute("ALTER TABLE user_settings DROP CONSTRAINT IF EXISTS user_settings_pkey")
+        cur.execute("ALTER TABLE user_settings ADD PRIMARY KEY (user_id, key)")
     conn.commit()
 
-    # ai: claude-sonnet-5 | 2026-08-21 — must run after app_settings has its
+    # ai: claude-sonnet-5 | 2026-08-21 — must run after user_settings has its
     # (user_id, key) primary key (just above), since this seeds rows into it.
     _seed_settings_from_env(cur, backfill_user_id)
     conn.commit()
@@ -882,6 +892,22 @@ def _backfill_duplicate_of_id(conn: Any) -> None:
 
 def _create_tables(conn: Any) -> None:
     cur = conn.cursor()
+
+    # ai: claude-sonnet-5 | 2026-08-26
+    # app_settings renamed to user_settings: it's per-user (composite
+    # (user_id, key) PK, set up in _migrate() below), and the old name read
+    # as instance-wide, easily confused with system_settings. Must run before
+    # the CREATE TABLE IF NOT EXISTS loop below, which would otherwise create
+    # an empty user_settings table alongside the old, still-populated
+    # app_settings one instead of renaming it in place.
+    if _has_table(cur, "app_settings") and not _has_table(cur, "user_settings"):
+        cur.execute("ALTER TABLE app_settings RENAME TO user_settings")
+        if _has_unique(cur, "user_settings", "app_settings_pkey"):
+            cur.execute(
+                "ALTER TABLE user_settings RENAME CONSTRAINT app_settings_pkey TO user_settings_pkey"
+            )
+        conn.commit()
+
     for stmt in [
         """
         CREATE TABLE IF NOT EXISTS jobs (
@@ -1050,14 +1076,14 @@ def _create_tables(conn: Any) -> None:
         ORDER BY job_id, date DESC, created_at DESC, id DESC
         """,
         """
-        CREATE TABLE IF NOT EXISTS app_settings (
+        CREATE TABLE IF NOT EXISTS user_settings (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         )
         """,
         # ai: claude-sonnet-5 | 2026-08-21
         # Instance-wide settings (SMTP relay, app base URL, ...) — not scoped
-        # by user_id, contrast with app_settings above. Admin-only to edit,
+        # by user_id, contrast with user_settings above. Admin-only to edit,
         # see routes/settings.py's system settings routes.
         """
         CREATE TABLE IF NOT EXISTS system_settings (

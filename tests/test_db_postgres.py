@@ -41,10 +41,10 @@ import pytest
 from backend.db import (
     DuplicateJobUrlError,
     PostgresAppAccountRepository,
-    PostgresAppSettingsRepository,
     PostgresCareerSiteSourceRepository,
     PostgresJobRepository,
     PostgresRelevanceFeedbackRepository,
+    PostgresUserSettingsRepository,
     get_connection,
     open_repositories,
 )
@@ -60,7 +60,7 @@ def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> 
         account = PostgresAppAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
         jobs = PostgresJobRepository(conn)
-        settings = PostgresAppSettingsRepository(conn)
+        settings = PostgresUserSettingsRepository(conn)
         career_sites = PostgresCareerSiteSourceRepository(conn)
 
         settings.set(user_id, "cover_letter_folder", "C:/letters")

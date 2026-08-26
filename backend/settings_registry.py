@@ -32,7 +32,7 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""Single source of truth for every setting backed by system_settings/app_settings:
+"""Single source of truth for every setting backed by system_settings/user_settings:
 its scope (instance-wide vs per-user), whether it's a secret (encrypted at
 rest), and its bootstrap default. Routes validate incoming keys against this
 registry instead of trusting arbitrary request bodies — the same allowlist
@@ -57,7 +57,7 @@ class SettingSpec:
     # input type per field. Only fields with real custom behavior (a picker
     # button, a validated dropdown that drives conditional rendering) still
     # have hand-written JSX, and those aren't in this registry at all -- they
-    # live in runtime_config.json, not system_settings/app_settings.
+    # live in runtime_config.json, not system_settings/user_settings.
     label: str
     group: str
     input_type: str = "text"  # "text" | "password" | "checkbox"

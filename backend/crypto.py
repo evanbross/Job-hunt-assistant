@@ -32,7 +32,7 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""Symmetric encryption for secrets stored in system_settings/app_settings
+"""Symmetric encryption for secrets stored in system_settings/user_settings
 (SMTP password, AI provider API keys, scraper credentials).
 
 The encryption key itself cannot live in the database it protects — it stays

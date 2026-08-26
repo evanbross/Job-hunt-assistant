@@ -28,7 +28,7 @@ both when items are added, finished, or reprioritized.
 
 Long-term goal: no `.env` file at all, all config in the DB via
 `backend/settings_service.py` (`get_setting`/`set_setting`, already backed by
-`system_settings`/`app_settings`, optionally scoped per-user). Values that
+`system_settings`/`user_settings`, optionally scoped per-user). Values that
 must stay in `.env` are only the ones needed to *reach* the DB in the first
 place (`DATABASE_URL`/`POSTGRES_*`, `SETTINGS_ENCRYPTION_KEY`,
 `FLASK_SECRET_KEY`) — everything else is a migration candidate.

@@ -60,7 +60,6 @@ from .interfaces import (
     IApplicationAnswerRepository,
     IApplicationProfileRepository,
     IApplicationStageRepository,
-    IAppSettingsRepository,
     IBrowserCaptureQueueRepository,
     ICareerRejectionRuleRepository,
     ICareerScanFailureRepository,
@@ -81,10 +80,10 @@ from .interfaces import (
     IScannedEmailRepository,
     IStageStatusRepository,
     ISystemSettingsRepository,
+    IUserSettingsRepository,
 )
 from .readonly_role import ensure_readonly_role
 from .repositories.app_account import PostgresAppAccountRepository
-from .repositories.app_settings import PostgresAppSettingsRepository
 from .repositories.application_answers import PostgresApplicationAnswerRepository
 from .repositories.application_profile import PostgresApplicationProfileRepository
 from .repositories.application_stages import (
@@ -116,13 +115,13 @@ from .repositories.relevance_feedback import PostgresRelevanceFeedbackRepository
 from .repositories.resumes import PostgresResumeRepository
 from .repositories.scanned_emails import PostgresScannedEmailRepository
 from .repositories.system_settings import PostgresSystemSettingsRepository
+from .repositories.user_settings import PostgresUserSettingsRepository
 from .schema import _create_tables, _migrate, _seed_data
 
 __all__ = [
     "IApplicationAnswerRepository",
     "IApplicationProfileRepository",
     "IApplicationStageRepository",
-    "IAppSettingsRepository",
     "IBrowserCaptureQueueRepository",
     "ICareerRejectionRuleRepository",
     "ICareerScanFailureRepository",
@@ -143,10 +142,10 @@ __all__ = [
     "IScannedEmailRepository",
     "IStageStatusRepository",
     "ISystemSettingsRepository",
+    "IUserSettingsRepository",
     "BROWSER_QUEUE_CLAIM_BATCH_SIZE",
     "BROWSER_QUEUE_MAX_RETRIES",
     "PostgresAppAccountRepository",
-    "PostgresAppSettingsRepository",
     "PostgresApplicationAnswerRepository",
     "PostgresApplicationProfileRepository",
     "PostgresApplicationStageRepository",
@@ -170,6 +169,7 @@ __all__ = [
     "PostgresScannedEmailRepository",
     "PostgresStageStatusRepository",
     "PostgresSystemSettingsRepository",
+    "PostgresUserSettingsRepository",
     "DuplicateJobUrlError",
     "db_startup_error",
     "get_connection",
@@ -309,7 +309,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "application_profile": PostgresApplicationProfileRepository(conn),
         "application_answers": PostgresApplicationAnswerRepository(conn),
         "stages": PostgresApplicationStageRepository(conn),
-        "settings": PostgresAppSettingsRepository(conn),
+        "settings": PostgresUserSettingsRepository(conn),
         "system_settings": PostgresSystemSettingsRepository(conn),
         "career_sites": PostgresCareerSiteSourceRepository(conn),
         "career_scan_results": PostgresCareerScanResultRepository(conn),
