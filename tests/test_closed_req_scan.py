@@ -47,6 +47,7 @@ from flask.testing import FlaskClient
 import config
 import routes.applications as applications_module  # ai: claude-fable-5 | 2026-07-17
 from backend.db import open_repositories
+from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
 from backend.scanning.closed_req_scan_helpers import (  # ai: claude-fable-5 | 2026-07-17
     RATE_LIMIT_DEFAULT_BACKOFF_SECONDS,
     canonicalize_wttj_url,
@@ -413,15 +414,22 @@ def test_throttle_host_fetch_spaces_same_host_only(
 # submit_closed_req_capture (the listener-thread path, no session) resolves
 # its actor via first_account_user_id() -- "whichever account has the lowest
 # id" (see backend/utils/utils.py's STOPGAP docstring). pg_dsn's init_db()
-# always leaves exactly one placeholder account behind (id 1, guaranteed by
-# TRUNCATE...RESTART IDENTITY), so using that same account's id everywhere in
-# this file keeps directly-parameterized calls and the STOPGAP-resolved path
-# pointed at the same owner.
+# always leaves exactly one bootstrap admin account behind (id 1, guaranteed
+# by TRUNCATE...RESTART IDENTITY), so using that same account's id everywhere
+# in this file keeps directly-parameterized calls and the STOPGAP-resolved
+# path pointed at the same owner.
+# ai: claude-sonnet-5 | 2026-08-27 -- close the connection on failure too:
+# a caller only gets `repos` back (and can close it) once this returns
+# successfully, so a raised exception here must close it itself or it leaks.
 def _fresh_repos(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, int]:
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
     repos = open_repositories(pg_dsn)
-    account = repos["user_accounts"].get_by_email("unclaimed@localhost")
-    return repos, account["id"]
+    try:
+        account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)
+        return repos, account["id"]
+    except Exception:
+        repos["conn"].close()
+        raise
 
 
 def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(
@@ -1216,8 +1224,9 @@ def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(
     even though the earlier unauthenticated fetch reported it as open."""
     # submit_closed_req_capture has no session (the real caller is the
     # standalone import-listener thread) and resolves its actor via the
-    # first_account_user_id() STOPGAP -- the placeholder account _fresh_repos
-    # returns is exactly that account, so the job must belong to it too.
+    # first_account_user_id() STOPGAP -- the bootstrap admin account
+    # _fresh_repos returns is exactly that account, so the job must belong
+    # to it too.
     repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
