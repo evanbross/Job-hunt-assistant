@@ -91,7 +91,7 @@ export function formatJobDetails(jobDetails) {
         const duplicateText = jobDetail.duplicate_hint ? ` · ${jobDetail.duplicate_hint}` : "";
         const confidenceText = jobDetail.confidence_score === null || jobDetail.confidence_score === undefined
           ? ""
-          : ` · parser ${jobDetail.confidence_score}%`;
+          : ` · certainty ${jobDetail.confidence_score}%`;
         return (
           <div key={`${jobDetail.job_title || "job"}-${index}`} style={{ color: "var(--text-muted)", lineHeight: 1.35 }}>
             <div style={{ color: "var(--text)", fontWeight: 600, overflowWrap: "anywhere" }}>

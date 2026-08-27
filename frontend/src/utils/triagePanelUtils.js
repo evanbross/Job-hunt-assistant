@@ -149,10 +149,10 @@ export function triageReasoningForJob(job) {
   const parts = [];
   const parserConfidence = String(job.parser_confidence || "").trim();
   if (parserConfidence) {
-    parts.push(`Parser confidence: ${parserConfidence}.`);
+    parts.push(`Certainty: ${parserConfidence}.`);
   }
   if (job.confidence_score != null) {
-    parts.push(`Parser certainty score: ${job.confidence_score}%.`);
+    parts.push(`Certainty score: ${job.confidence_score}%.`);
   }
   if (job.confidence_reason) {
     parts.push(job.confidence_reason);
@@ -196,7 +196,7 @@ export function negativeReasoningBulletStyleFor(item) {
 export function parserConfidenceLabel(job) {
   const level = String(job.parser_confidence || "unknown").trim();
   if (job.confidence_score == null) return level;
-  return `${level} (${job.confidence_score}% certainty)`;
+  return `${level} (${job.confidence_score}%)`;
 }
 
 export function fitConfidenceLabel(job) {

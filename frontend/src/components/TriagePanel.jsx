@@ -1009,7 +1009,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
 
           <div style={triageMetaTextStyle}>
             {job.date_found && <span>{job.date_found}</span>}
-            <span>Parser: {parserConfidenceLabel(job)}</span>
+            <span>Certainty: {parserConfidenceLabel(job)}</span>
             {companySheetRows !== null && companySheetRows.length > 0 && (
               <span
                 style={{ cursor: "pointer" }}
@@ -1924,7 +1924,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
           <div style={triageMetaTextStyle}>
             {job.date_found && <span>{job.date_found}</span>}
-            <span>Parser: {parserConfidenceLabel(job)}</span>
+            <span>Certainty: {parserConfidenceLabel(job)}</span>
             <span
               style={{ color: "var(--text-muted)", cursor: "pointer", fontFamily: "monospace" }}
               title={`Job ID: ${job.id} — click to copy`}

@@ -947,7 +947,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
         # ai: claude-sonnet-4-6 | 2026-06-26
         # Clear parser-confidence fields: they describe email-parse quality and are
         # stale once the JD has been directly fetched. Keeping them would cause the
-        # triage panel to show "Parser certainty score: 45% / company name missing"
+        # triage panel to show "Certainty score: 45% / company name missing"
         # even after a successful re-fetch with a complete description.
         repos["jobs"].update(
             user_id,

@@ -67,10 +67,10 @@ export function fitReasoningBullets(reasoning) {
 function combineParserConfidenceBullets(items) {
   const combinedItems = [];
   for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
-    const confidenceMatch = items[itemIndex].match(/^Parser confidence:\s*(.+?)\.?$/i);
-    const certaintyMatch = items[itemIndex + 1]?.match(/^Parser certainty score:\s*(.+?)\.?$/i);
+    const confidenceMatch = items[itemIndex].match(/^Certainty:\s*(.+?)\.?$/i);
+    const certaintyMatch = items[itemIndex + 1]?.match(/^Certainty score:\s*(.+?)\.?$/i);
     if (confidenceMatch && certaintyMatch) {
-      combinedItems.push(`Parser confidence: ${confidenceMatch[1]} (${certaintyMatch[1]} certainty).`);
+      combinedItems.push(`Certainty: ${confidenceMatch[1]} (${certaintyMatch[1]}).`);
       itemIndex += 1;
     } else {
       combinedItems.push(items[itemIndex]);
