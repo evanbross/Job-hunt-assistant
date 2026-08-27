@@ -391,7 +391,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         created: list[dict] = []
         for job_idx, parsed in enumerate(parsed_jobs):
             job_dedup_key = _rescan_job_dedup_key(job_repo, user_id, base_id, job_idx)
-            confidence = parsed.get("confidence", "low")
+            confidence = parsed.get("certainty_level", "low")
             if feedback and feedback["is_relevant"] == 1:
                 confidence = "high"
             if subject_rule == "whitelist":
@@ -433,14 +433,14 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 "fit_score": None,
                 "fit_reasoning": "",
                 "status": status,
-                "parser_confidence": confidence,
-                "confidence_reason": parsed.get("confidence_reason", ""),
+                JobColumns.CERTAINTY_LEVEL: confidence,
+                JobColumns.CERTAINTY_REASON: parsed.get("certainty_reason", ""),
                 "date_found": datetime.now(UTC).date().isoformat(),
                 "duplicate_hint": duplicate_hint,
                 "duplicate_of_id": duplicate_of_id,
                 "sender_email": sender,
                 JobColumns.CAPTURE_LABEL: subject,
-                "confidence_score": parsed.get("confidence_score", 50),
+                JobColumns.CERTAINTY_SCORE: parsed.get("certainty_score", 50),
             }
 
             # ai: claude-sonnet-4-6 | 2026-06-10

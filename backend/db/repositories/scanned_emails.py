@@ -131,8 +131,8 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 j.status AS child_job_status,
                 j.fit_score AS child_fit_score,
                 j.skip_reason AS child_skip_reason,
-                j.parser_confidence AS child_parser_confidence,
-                j.confidence_score AS child_confidence_score,
+                j.certainty_level AS child_certainty_level,
+                j.certainty_score AS child_certainty_score,
                 j.duplicate_hint AS child_duplicate_hint,
                 j.date_found AS child_date_found
             FROM scanned_emails se
@@ -188,8 +188,8 @@ class PostgresScannedEmailRepository(_BaseRepo):
                 "status": email_job_row["child_job_status"],
                 "fit_score": email_job_row["child_fit_score"],
                 "skip_reason": email_job_row["child_skip_reason"],
-                "parser_confidence": email_job_row["child_parser_confidence"],
-                "confidence_score": email_job_row["child_confidence_score"],
+                "certainty_level": email_job_row["child_certainty_level"],
+                "certainty_score": email_job_row["child_certainty_score"],
                 "duplicate_hint": email_job_row["child_duplicate_hint"],
                 "date_found": email_job_row["child_date_found"],
             }

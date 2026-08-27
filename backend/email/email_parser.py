@@ -70,9 +70,9 @@ class ParsedJob(TypedDict):
     job_title: str
     url: str
     source: str
-    confidence: str  # "high" | "low"
-    confidence_score: int  # 0–100 numeric certainty
-    confidence_reason: str
+    certainty_level: str  # "high" | "low"
+    certainty_score: int  # 0–100 numeric certainty
+    certainty_reason: str
 
 
 class EmailParserClient(Protocol):
@@ -110,9 +110,9 @@ Rules:
    body has a corresponding JSON element.
 7. If the email is not a job posting at all (social notification, newsletter unrelated \
    to jobs, etc.), return an empty array: [].
-8. Set "confidence" to "high" for a job when it has at least a job title, company \
+8. Set "certainty_level" to "high" for a job when it has at least a job title, company \
    name, and an apply/view URL.
-9. Set "confidence" to "low" when the job title, company, or URL is missing or ambiguous.
+9. Set "certainty_level" to "low" when the job title, company, or URL is missing or ambiguous.
 10. "source" should be the job board name if identifiable (e.g. "LinkedIn", "Dice"), \
    otherwise the sender domain.
 11. Leave a field as an empty string if it cannot be determined; do not invent values.
@@ -127,9 +127,9 @@ Each element schema:
   "job_title": "<job title or empty string>",
   "url": "<direct apply or job detail URL or empty string>",
   "source": "<job board name or sender domain>",
-  "confidence": "high" | "low",
-  "confidence_score": <integer 0-100 representing certainty this is a real job posting>,
-  "confidence_reason": "<one sentence explaining the confidence level>"
+  "certainty_level": "high" | "low",
+  "certainty_score": <integer 0-100 representing certainty this is a real job posting>,
+  "certainty_reason": "<one sentence explaining the certainty level>"
 }
 """
 
@@ -318,19 +318,19 @@ class EmailParser:
                 "job_title",
                 "url",
                 "source",
-                "confidence",
-                "confidence_reason",
+                "certainty_level",
+                "certainty_reason",
             ):
                 item.setdefault(key, "")
-            if item.get("confidence") not in ("high", "low"):
-                item["confidence"] = "low"
-                item["confidence_reason"] = "Confidence value was missing or invalid."
+            if item.get("certainty_level") not in ("high", "low"):
+                item["certainty_level"] = "low"
+                item["certainty_reason"] = "Certainty value was missing or invalid."
             try:
-                item["confidence_score"] = max(
-                    0, min(100, int(item.get("confidence_score", 50)))
+                item["certainty_score"] = max(
+                    0, min(100, int(item.get("certainty_score", 50)))
                 )
             except (TypeError, ValueError):
-                item["confidence_score"] = 50
+                item["certainty_score"] = 50
             normalize_title_company(item, subject, body_snippet)
             if item.get("company"):
                 item["company"] = _trim_company_tail(item["company"])
@@ -535,9 +535,9 @@ def _parse_linkedin_alert_jobs(
                 "job_title": job_title,
                 "url": job_url,
                 "source": "LinkedIn",
-                "confidence": "high",
-                "confidence_score": 95,
-                "confidence_reason": "Parsed from a LinkedIn job alert card with title, company, and View job URL.",
+                "certainty_level": "high",
+                "certainty_score": 95,
+                "certainty_reason": "Parsed from a LinkedIn job alert card with title, company, and View job URL.",
             }
         )
         seen_urls.add(job_url)
@@ -623,9 +623,9 @@ def _parse_linkedin_jymbii_jobs(
                 "job_title": card["title"],
                 "url": card["url"],
                 "source": "LinkedIn",
-                "confidence": "high",
-                "confidence_score": 95,
-                "confidence_reason": "Parsed from LinkedIn job recommendation email card with title, company, and job URL.",
+                "certainty_level": "high",
+                "certainty_score": 95,
+                "certainty_reason": "Parsed from LinkedIn job recommendation email card with title, company, and job URL.",
             }
         )
     return results
@@ -802,9 +802,9 @@ def _parse_welcome_to_the_jungle_jobs(
                 "job_title": job_title,
                 "url": job_url,
                 "source": "Welcome to the Jungle",
-                "confidence": "high" if company and job_title else "low",
-                "confidence_score": 92 if company and job_title else 70,
-                "confidence_reason": "Parsed from a Welcome to the Jungle job URL and nearby email text.",
+                "certainty_level": "high" if company and job_title else "low",
+                "certainty_score": 92 if company and job_title else 70,
+                "certainty_reason": "Parsed from a Welcome to the Jungle job URL and nearby email text.",
             }
         )
         seen_job_ids.add(job_id)
@@ -884,9 +884,9 @@ def _parse_matcha_jobs(sender: str, body_snippet: str) -> list[ParsedJob]:
                 "job_title": title,
                 "url": job_url,
                 "source": "Matcha",
-                "confidence": "high" if company else "low",
-                "confidence_score": 90 if company else 60,
-                "confidence_reason": "Parsed from Matcha.fm job digest email anchor text.",
+                "certainty_level": "high" if company else "low",
+                "certainty_score": 90 if company else 60,
+                "certainty_reason": "Parsed from Matcha.fm job digest email anchor text.",
             }
         )
 

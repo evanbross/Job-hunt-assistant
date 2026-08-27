@@ -199,9 +199,9 @@ class FakeEmailParser:
                 "job_title": "Senior Engineer",
                 "url": _SLUG_QUERY_URL,
                 "source": "Wellfound",
-                "confidence": "low",
-                "confidence_reason": "digest job card",
-                "confidence_score": 55,
+                "certainty_level": "low",
+                "certainty_reason": "digest job card",
+                "certainty_score": 55,
             }
         ]
 

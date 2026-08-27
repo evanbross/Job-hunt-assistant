@@ -147,16 +147,16 @@ export function normalizeManualJobUrl(value) {
 
 export function triageReasoningForJob(job) {
   const parts = [];
-  const parserConfidence = String(job.parser_confidence || "").trim();
-  if (parserConfidence) {
-    parts.push(`Certainty: ${parserConfidence}.`);
+  const certaintyLevel = String(job.certainty_level || "").trim();
+  if (certaintyLevel) {
+    parts.push(`Certainty: ${certaintyLevel}.`);
   }
-  if (job.confidence_score != null) {
-    parts.push(`Certainty score: ${job.confidence_score}%.`);
+  if (job.certainty_score != null) {
+    parts.push(`Certainty score: ${job.certainty_score}%.`);
   }
-  if (job.confidence_reason) {
-    parts.push(job.confidence_reason);
-  } else if (parserConfidence && parserConfidence !== "high") {
+  if (job.certainty_reason) {
+    parts.push(job.certainty_reason);
+  } else if (certaintyLevel && certaintyLevel !== "high") {
     parts.push("This was put in triage because the parser did not classify it as a high-confidence job posting.");
   }
   if (job.fit_score != null && Number(job.fit_score) < 70) {
@@ -193,10 +193,10 @@ export function negativeReasoningBulletStyleFor(item) {
   return isNegativeReasoningBullet(item) ? { color: "var(--red)" } : undefined;
 }
 
-export function parserConfidenceLabel(job) {
-  const level = String(job.parser_confidence || "unknown").trim();
-  if (job.confidence_score == null) return level;
-  return `${level} (${job.confidence_score}%)`;
+export function certaintyLabel(job) {
+  const level = String(job.certainty_level || "unknown").trim();
+  if (job.certainty_score == null) return level;
+  return `${level} (${job.certainty_score}%)`;
 }
 
 export function fitConfidenceLabel(job) {

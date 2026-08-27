@@ -288,6 +288,23 @@ def _migrate(conn: Any) -> None:
     # function) — this comment stays here since this is where the original
     # design rationale belongs.
 
+    # ai: claude-sonnet-5 | 2026-08-27
+    # parser_confidence/confidence_score/confidence_reason renamed to
+    # certainty_level/certainty_score/certainty_reason: the old names read as
+    # if they described email-parse quality specifically, but the value is a
+    # general "how sure are we this is a real, well-identified job posting"
+    # signal populated by every ingestion path (email parsing, career-site
+    # promotion, board search, manual URL paste), not just email parsing.
+    # Must run before the ADD COLUMN IF NOT EXISTS loop below, which now
+    # targets the new names.
+    if _has_column(cur, "jobs", "parser_confidence"):
+        cur.execute("ALTER TABLE jobs RENAME COLUMN parser_confidence TO certainty_level")
+    if _has_column(cur, "jobs", "confidence_score"):
+        cur.execute("ALTER TABLE jobs RENAME COLUMN confidence_score TO certainty_score")
+    if _has_column(cur, "jobs", "confidence_reason"):
+        cur.execute("ALTER TABLE jobs RENAME COLUMN confidence_reason TO certainty_reason")
+    conn.commit()
+
     # ai: claude-sonnet-5 | 2026-08-12
     # email_subject renamed to capture_label: non-email sources (browser
     # extension, manual paste, career-site scans) stored a synthetic
@@ -306,8 +323,8 @@ def _migrate(conn: Any) -> None:
         ("duplicate_of_id", "INTEGER"),
         ("sender_email", "TEXT"),
         ("capture_label", "TEXT"),
-        ("confidence_score", "INTEGER"),
-        ("confidence_reason", "TEXT"),
+        ("certainty_score", "INTEGER"),
+        ("certainty_reason", "TEXT"),
         ("skip_reason", "TEXT"),
         ("skip_feedback", "TEXT"),
         ("skip_mismatch_reasons", "TEXT"),
@@ -1032,15 +1049,15 @@ def _create_tables(conn: Any) -> None:
             fit_score             INTEGER,
             fit_reasoning         TEXT,
             status                TEXT,
-            parser_confidence     TEXT,
-            confidence_reason     TEXT,
+            certainty_level       TEXT,
+            certainty_reason      TEXT,
             date_found            TEXT DEFAULT ((NOW() AT TIME ZONE 'UTC')::date::text),
             on_sheet              INTEGER NOT NULL DEFAULT 0,
             duplicate_hint        TEXT,
             duplicate_of_id       INTEGER,
             sender_email          TEXT,
             capture_label         TEXT,
-            confidence_score      INTEGER,
+            certainty_score       INTEGER,
             skip_reason           TEXT,
             skip_feedback         TEXT,
             skip_mismatch_reasons TEXT,

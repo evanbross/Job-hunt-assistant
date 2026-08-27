@@ -154,9 +154,9 @@ class ManualJobIngestService:
             job_title="",
             url="",
             source="",
-            confidence="low",
-            confidence_score=50,
-            confidence_reason="",
+            certainty_level="low",
+            certainty_score=50,
+            certainty_reason="",
         )
         score_body = normalized_text
 
@@ -240,9 +240,9 @@ class ManualJobIngestService:
                 url=fetched_job["job_url"],
                 source=source_name.strip()
                 or self._source_name_for_url(normalized_source_url),
-                confidence="high",
-                confidence_score=fetched_job["confidence_score"],
-                confidence_reason="Loaded from public job URL.",
+                certainty_level="high",
+                certainty_score=fetched_job["confidence_score"],
+                certainty_reason="Loaded from public job URL.",
             )
             score_body = fetched_job["job_text"]
 
@@ -307,14 +307,14 @@ class ManualJobIngestService:
             "salary_min": score_result["salary_min"],
             "salary_max": score_result["salary_max"],
             "status": status,
-            "parser_confidence": parsed.get("confidence", "low"),
-            "confidence_reason": parsed.get("confidence_reason", ""),
+            JobColumns.CERTAINTY_LEVEL: parsed.get("certainty_level", "low"),
+            JobColumns.CERTAINTY_REASON: parsed.get("certainty_reason", ""),
             "date_found": datetime.now(UTC).date().isoformat(),
             "duplicate_hint": duplicate_hint,
             "duplicate_of_id": duplicate_of_id,
             "sender_email": None,
             JobColumns.CAPTURE_LABEL: email_subject,
-            "confidence_score": parsed.get("confidence_score", 50),
+            JobColumns.CERTAINTY_SCORE: parsed.get("certainty_score", 50),
         }
         job_dict, import_warnings = normalize_and_validate(job_dict)
         job_dict["import_warnings"] = import_warnings_to_json(import_warnings)
@@ -354,8 +354,8 @@ class ManualJobIngestService:
         def sort_key(row: ParsedJob) -> tuple[int, int, int]:
             has_title = 1 if row.get("job_title", "").strip() else 0
             has_company = 1 if row.get("company", "").strip() else 0
-            confidence_score = int(row.get("confidence_score", 0))
-            return (confidence_score, has_title, has_company)
+            certainty_score = int(row.get("certainty_score", 0))
+            return (certainty_score, has_title, has_company)
 
         return max(parsed_jobs, key=sort_key)
 

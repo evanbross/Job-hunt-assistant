@@ -45,8 +45,8 @@ class JobColumns:
     FIT_SCORE = "fit_score"
     FIT_REASONING = "fit_reasoning"
     STATUS = "status"
-    PARSER_CONFIDENCE = "parser_confidence"
-    CONFIDENCE_REASON = "confidence_reason"
+    CERTAINTY_LEVEL = "certainty_level"
+    CERTAINTY_REASON = "certainty_reason"
     DATE_FOUND = "date_found"
     ON_SHEET = "on_sheet"
     DUPLICATE_HINT = "duplicate_hint"
@@ -56,7 +56,7 @@ class JobColumns:
     # non-email sources this holds a synthetic capture description (e.g.
     # "Browser Extension streamed job listing"), not a real email subject.
     CAPTURE_LABEL = "capture_label"
-    CONFIDENCE_SCORE = "confidence_score"
+    CERTAINTY_SCORE = "certainty_score"
     SKIP_REASON = "skip_reason"
     SKIP_FEEDBACK = "skip_feedback"
     SKIP_MISMATCH_REASONS = "skip_mismatch_reasons"

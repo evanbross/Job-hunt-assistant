@@ -67,9 +67,9 @@ def expand_board_url_parsed_jobs(parsed_jobs: list[ParsedJob]) -> list[ParsedJob
                     job_title=exp_job["job_title"],
                     url=exp_job["job_url"],
                     source=source,
-                    confidence="high",
-                    confidence_score=exp_job["confidence_score"],
-                    confidence_reason="Expanded from job board URL in email.",
+                    certainty_level="high",
+                    certainty_score=exp_job["confidence_score"],
+                    certainty_reason="Expanded from job board URL in email.",
                 )
             )
 

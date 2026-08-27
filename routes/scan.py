@@ -653,7 +653,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 # UNIQUE constraint on dedup_key is satisfied without a schema change.
                 job_email_id = msg_id if job_idx == 0 else f"{msg_id}:{job_idx}"
 
-                confidence = parsed.get("confidence", "low")
+                confidence = parsed.get("certainty_level", "low")
 
                 # Override confidence to high if feedback marks sender as relevant
                 if feedback and feedback["is_relevant"] == 1:
@@ -776,14 +776,14 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                     "fit_score": None,
                     "fit_reasoning": "",
                     "status": status,
-                    "parser_confidence": confidence,
-                    "confidence_reason": parsed.get("confidence_reason", ""),
+                    JobColumns.CERTAINTY_LEVEL: confidence,
+                    JobColumns.CERTAINTY_REASON: parsed.get("certainty_reason", ""),
                     "date_found": datetime.now(UTC).date().isoformat(),
                     "duplicate_hint": duplicate_hint,
                     "duplicate_of_id": duplicate_of_id,
                     "sender_email": sender,
                     JobColumns.CAPTURE_LABEL: subject,
-                    "confidence_score": parsed.get("confidence_score", 50),
+                    JobColumns.CERTAINTY_SCORE: parsed.get("certainty_score", 50),
                 }
 
                 # ai: claude-fable-5 | 2026-07-16
@@ -902,9 +902,9 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                         "fit_score": job_data.get("fit_score"),
                         "duplicate_hint": duplicate_hint,
                         "duplicate_source": tracking_source,
-                        "parser_confidence": confidence,
-                        "confidence_score": parsed.get("confidence_score", 50),
-                        "confidence_reason": parsed.get("confidence_reason", ""),
+                        "certainty_level": confidence,
+                        "certainty_score": parsed.get("certainty_score", 50),
+                        "certainty_reason": parsed.get("certainty_reason", ""),
                         "scoring_error": scoring_error,
                     }
                 )

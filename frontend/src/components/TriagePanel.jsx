@@ -66,7 +66,7 @@ import {
   jobDisplayName,
   negativeReasoningBulletStyleFor,
   normalizeManualJobUrl,
-  parserConfidenceLabel,
+  certaintyLabel,
   penaltiesAppliedForJob,
   scoreLabel,
   scoreDeltaLabel,
@@ -401,9 +401,9 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     if (sortBy === "fit_desc" || sortBy === "fit_asc") {
       return compareNullableScores(a.fit_score, b.fit_score, sortBy === "fit_desc" ? "desc" : "asc");
     }
-    // confidence_score: possible_duplicate cards don't have one — sort them last
-    const ca = a.confidence_score ?? (a.status === "possible_duplicate" ? -1 : 50);
-    const cb = b.confidence_score ?? (b.status === "possible_duplicate" ? -1 : 50);
+    // certainty_score: possible_duplicate cards don't have one — sort them last
+    const ca = a.certainty_score ?? (a.status === "possible_duplicate" ? -1 : 50);
+    const cb = b.certainty_score ?? (b.status === "possible_duplicate" ? -1 : 50);
     return sortBy === "confidence_desc" ? cb - ca : ca - cb;
   }), [filteredJobs, sortBy]);
 
@@ -1009,7 +1009,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
 
           <div style={triageMetaTextStyle}>
             {job.date_found && <span>{job.date_found}</span>}
-            <span>Certainty: {parserConfidenceLabel(job)}</span>
+            <span>Certainty: {certaintyLabel(job)}</span>
             {companySheetRows !== null && companySheetRows.length > 0 && (
               <span
                 style={{ cursor: "pointer" }}
@@ -1865,9 +1865,9 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         {(() => {
           if (parseImportWarnings(job.import_warnings).length > 0)
             return <span className="badge badge-red">Review Import</span>;
-          if (job.confidence_score != null && job.confidence_score < 70)
+          if (job.certainty_score != null && job.certainty_score < 70)
             return <span className="badge badge-orange">Low Confidence</span>;
-          if (String(job.parser_confidence || "").toLowerCase() === "low")
+          if (String(job.certainty_level || "").toLowerCase() === "low")
             return <span className="badge badge-orange">Low Confidence</span>;
           if (!jobDescriptionText(job))
             return <span className="badge badge-orange">Missing Job Details</span>;
@@ -1924,7 +1924,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
           <div style={triageMetaTextStyle}>
             {job.date_found && <span>{job.date_found}</span>}
-            <span>Certainty: {parserConfidenceLabel(job)}</span>
+            <span>Certainty: {certaintyLabel(job)}</span>
             <span
               style={{ color: "var(--text-muted)", cursor: "pointer", fontFamily: "monospace" }}
               title={`Job ID: ${job.id} — click to copy`}
@@ -2091,7 +2091,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
       </div>
 
       <div style={{ display: "flex", gap: "6px", marginBottom: "10px", flexWrap: "wrap" }}>
-        {job.confidence_score == null && (
+        {job.certainty_score == null && (
           <button
             className="btn-secondary"
             style={{ fontSize: "11px", padding: "2px 8px" }}

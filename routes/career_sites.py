@@ -792,15 +792,15 @@ def run_career_site_scan_task(
                         "fit_score": match_score,
                         "fit_reasoning": match_reasoning,
                         "status": queue_status,
-                        "parser_confidence": str(
+                        JobColumns.CERTAINTY_LEVEL: str(
                             job.get("confidence_level") or "low"
                         ),
-                        "confidence_reason": "",
+                        JobColumns.CERTAINTY_REASON: "",
                         "date_found": datetime.now(UTC).date().isoformat(),
                         "duplicate_hint": None,
                         "sender_email": None,
                         JobColumns.CAPTURE_LABEL: f"Career site: {source_name}",
-                        "confidence_score": int(job.get("confidence_score") or 50),
+                        JobColumns.CERTAINTY_SCORE: int(job.get("confidence_score") or 50),
                     }
                     promote_job_dict, import_warnings = normalize_and_validate(
                         promote_job_dict

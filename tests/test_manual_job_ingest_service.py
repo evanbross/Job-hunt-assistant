@@ -134,18 +134,18 @@ def test_ingest_creates_pending_review_job_from_best_match() -> None:
                 "job_title": "",
                 "url": "",
                 "source": "",
-                "confidence": "low",
-                "confidence_score": 30,
-                "confidence_reason": "",
+                "certainty_level": "low",
+                "certainty_score": 30,
+                "certainty_reason": "",
             },
             {
                 "company": "Acme",
                 "job_title": "Senior Software Engineer",
                 "url": "https://example.com/jobs/1",
                 "source": "Greenhouse",
-                "confidence": "high",
-                "confidence_score": 92,
-                "confidence_reason": "",
+                "certainty_level": "high",
+                "certainty_score": 92,
+                "certainty_reason": "",
             },
         ]
     )
@@ -182,9 +182,9 @@ def test_ingest_uses_manual_overrides_when_parser_is_incomplete() -> None:
                     "job_title": "",
                     "url": "",
                     "source": "",
-                    "confidence": "low",
-                    "confidence_score": 40,
-                    "confidence_reason": "",
+                    "certainty_level": "low",
+                    "certainty_score": 40,
+                    "certainty_reason": "",
                 }
             ]
         ),
@@ -211,9 +211,9 @@ def test_ingest_marks_possible_duplicate_when_sheet_match_exists() -> None:
                 "job_title": "Senior Software Engineer",
                 "url": "",
                 "source": "",
-                "confidence": "high",
-                "confidence_score": 90,
-                "confidence_reason": "",
+                "certainty_level": "high",
+                "certainty_score": 90,
+                "certainty_reason": "",
             }
         ]
     )
@@ -247,9 +247,9 @@ def test_ingest_enriches_thin_listener_text_from_job_url() -> None:
                 "job_title": "Senior Software Engineer",
                 "url": "https://job-boards.greenhouse.io/breezeway/jobs/5222431008",
                 "source": "Greenhouse",
-                "confidence": "high",
-                "confidence_score": 90,
-                "confidence_reason": "",
+                "certainty_level": "high",
+                "certainty_score": 90,
+                "certainty_reason": "",
             }
         ]
     )
@@ -295,9 +295,9 @@ def test_ingest_keeps_short_text_when_enrichment_returns_too_little() -> None:
                 "job_title": "Senior Software Engineer",
                 "url": "https://job-boards.greenhouse.io/breezeway/jobs/5222431008",
                 "source": "Greenhouse",
-                "confidence": "high",
-                "confidence_score": 90,
-                "confidence_reason": "",
+                "certainty_level": "high",
+                "certainty_score": 90,
+                "certainty_reason": "",
             }
         ]
     )
@@ -394,9 +394,9 @@ def test_ingest_propagates_duplicate_job_url_error() -> None:
                     "job_title": "Senior Software Engineer",
                     "url": "https://example.com/jobs/1",
                     "source": "Greenhouse",
-                    "confidence": "high",
-                    "confidence_score": 92,
-                    "confidence_reason": "",
+                    "certainty_level": "high",
+                    "certainty_score": 92,
+                    "certainty_reason": "",
                 },
             ]
         ),
@@ -449,9 +449,9 @@ def test_ingest_uses_prefetched_jd_instead_of_calling_scanner() -> None:
                 "job_title": "Senior Software Engineer",
                 "url": job_url,
                 "source": "Greenhouse",
-                "confidence": "high",
-                "confidence_score": 90,
-                "confidence_reason": "",
+                "certainty_level": "high",
+                "certainty_score": 90,
+                "certainty_reason": "",
             }
         ]
     )
@@ -495,9 +495,9 @@ def test_ingest_treats_failed_prefetch_as_no_enrichment() -> None:
                 "job_title": "Senior Software Engineer",
                 "url": job_url,
                 "source": "Greenhouse",
-                "confidence": "high",
-                "confidence_score": 90,
-                "confidence_reason": "",
+                "certainty_level": "high",
+                "certainty_score": 90,
+                "certainty_reason": "",
             }
         ]
     )

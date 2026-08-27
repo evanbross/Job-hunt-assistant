@@ -302,23 +302,24 @@ def patch_job(job_id: int) -> ResponseReturnValue:
             repos["jobs"].update(user_id, job_id, fields)
 
             # ai: claude-sonnet-5 | 2026-07-29
-            # Clear parser-confidence fields when the user edits company or
-            # job_title: they describe email-parse quality (e.g. "company name
-            # missing from the listing") and go stale the moment the user
-            # supplies/corrects the value by hand. Same rationale as the JD-refresh
-            # paths below (refresh_job_from_url, update_job_description).
+            # Clear certainty fields when the user edits company or job_title:
+            # they describe how sure the ingestion path was about the listing
+            # (e.g. "company name missing from the listing") and go stale the
+            # moment the user supplies/corrects the value by hand. Same
+            # rationale as the JD-refresh paths below (refresh_job_from_url,
+            # update_job_description).
             if {"company", "job_title"} & fields.keys() and (
-                job.get("parser_confidence") is not None
-                or job.get("confidence_score") is not None
-                or job.get("confidence_reason") is not None
+                job.get(JobColumns.CERTAINTY_LEVEL) is not None
+                or job.get(JobColumns.CERTAINTY_SCORE) is not None
+                or job.get(JobColumns.CERTAINTY_REASON) is not None
             ):
                 repos["jobs"].update(
                     user_id,
                     job_id,
                     {
-                        "parser_confidence": None,
-                        "confidence_score": None,
-                        "confidence_reason": None,
+                        JobColumns.CERTAINTY_LEVEL: None,
+                        JobColumns.CERTAINTY_SCORE: None,
+                        JobColumns.CERTAINTY_REASON: None,
                     },
                 )
 
@@ -945,7 +946,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
     )
     with get_repos() as repos:
         # ai: claude-sonnet-4-6 | 2026-06-26
-        # Clear parser-confidence fields: they describe email-parse quality and are
+        # Clear certainty fields: they describe ingestion-time certainty and are
         # stale once the JD has been directly fetched. Keeping them would cause the
         # triage panel to show "Certainty score: 45% / company name missing"
         # even after a successful re-fetch with a complete description.
@@ -959,9 +960,9 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
                 "salary_min": score_result["salary_min"],
                 "salary_max": score_result["salary_max"],
                 "status": current_status,
-                "parser_confidence": None,
-                "confidence_score": None,
-                "confidence_reason": None,
+                JobColumns.CERTAINTY_LEVEL: None,
+                JobColumns.CERTAINTY_SCORE: None,
+                JobColumns.CERTAINTY_REASON: None,
             },
         )
         updated_job = repos["jobs"].get_by_id(user_id, job_id)
@@ -1023,7 +1024,7 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
 
     with get_repos() as repos:
         # ai: claude-sonnet-4-6 | 2026-06-26
-        # Clear parser-confidence fields: they describe email-parse quality and are
+        # Clear certainty fields: they describe ingestion-time certainty and are
         # stale once the user supplies a complete description directly.
         repos["jobs"].update(
             user_id,
@@ -1035,9 +1036,9 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
                 "salary_min": score_result["salary_min"],
                 "salary_max": score_result["salary_max"],
                 "status": current_status,
-                "parser_confidence": None,
-                "confidence_score": None,
-                "confidence_reason": None,
+                JobColumns.CERTAINTY_LEVEL: None,
+                JobColumns.CERTAINTY_SCORE: None,
+                JobColumns.CERTAINTY_REASON: None,
             },
         )
         updated_job = repos["jobs"].get_by_id(user_id, job_id)
@@ -1049,8 +1050,8 @@ def update_job_description(job_id: int) -> ResponseReturnValue:
 def reprocess_job(job_id: int) -> ResponseReturnValue:
     """Re-fetch the original email from Gmail and re-run the parser.
 
-    Used when a triage entry is missing a confidence score (e.g. older rows
-    inserted before confidence_score was tracked).
+    Used when a triage entry is missing a certainty score (e.g. older rows
+    inserted before certainty_score was tracked).
     """
     user_id = current_user_id()
     with get_repos() as repos:
@@ -1102,9 +1103,9 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
     parsed = parsed_jobs[job_idx] if job_idx < len(parsed_jobs) else parsed_jobs[0]
 
     updates: dict = {
-        "confidence_score": parsed.get("confidence_score", 50),
-        "parser_confidence": parsed.get("confidence", "low"),
-        "confidence_reason": parsed.get("confidence_reason", ""),
+        JobColumns.CERTAINTY_SCORE: parsed.get("certainty_score", 50),
+        JobColumns.CERTAINTY_LEVEL: parsed.get("certainty_level", "low"),
+        JobColumns.CERTAINTY_REASON: parsed.get("certainty_reason", ""),
         "sender_email": sender,
         JobColumns.CAPTURE_LABEL: subject,
         "raw_jd_snippet": email_body[:300],
@@ -1759,7 +1760,7 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                         _rescan_import_state.progress = processed
                     continue
 
-                confidence = str(row.get("parser_confidence") or "low")
+                confidence = str(row.get(JobColumns.CERTAINTY_LEVEL) or "low")
                 (
                     tracked_status,
                     tracking_source,

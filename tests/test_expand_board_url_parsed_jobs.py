@@ -35,9 +35,9 @@ def _parsed_job(url: str, company: str = "Acme", source: str = "email") -> Parse
         job_title="Engineer",
         url=url,
         source=source,
-        confidence="high",
-        confidence_score=90,
-        confidence_reason="test fixture",
+        certainty_level="high",
+        certainty_score=90,
+        certainty_reason="test fixture",
     )
 
 
@@ -117,7 +117,7 @@ def test_board_url_expands_into_individual_jobs() -> None:
     assert result[0]["company"] == "Acme"  # falls back to the email's company
     assert result[1]["company"] == "Acme Labs"  # scanner-provided company wins
     assert all(job["source"] == "email" for job in result)
-    assert all(job["confidence"] == "high" for job in result)
+    assert all(job["certainty_level"] == "high" for job in result)
 
 
 def test_scan_failure_falls_back_to_original_entry() -> None:

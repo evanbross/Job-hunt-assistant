@@ -166,8 +166,8 @@ def test_parser_strips_bullet_from_ai_returned_company() -> None:
     client.complete = lambda **kwargs: (  # type: ignore[method-assign]
         '[{"company": "Revamp (S23)•AI-Powered Customer Segmentation for eCommerce",'
         ' "job_title": "Founding Engineer", "url": "https://www.workatastartup.com/jobs/78257",'
-        ' "source": "WorkAtAStartup", "confidence": "high", "confidence_score": 90,'
-        ' "confidence_reason": "test"}]'
+        ' "source": "WorkAtAStartup", "certainty_level": "high", "certainty_score": 90,'
+        ' "certainty_reason": "test"}]'
     )
     parser = EmailParser(1, client=client)
     results = parser.parse(
@@ -265,9 +265,9 @@ class TokenEchoingClient:
                     "job_title": "Software Engineer",
                     "url": "URL_0",
                     "source": "Dice",
-                    "confidence": "high",
-                    "confidence_score": 90,
-                    "confidence_reason": "test",
+                    "certainty_level": "high",
+                    "certainty_score": 90,
+                    "certainty_reason": "test",
                 }
             ]
         )
@@ -294,9 +294,9 @@ class AwstrackEchoingClient:
                     "job_title": "Software Engineer",
                     "url": "[URL_0]",
                     "source": "Jobgether",
-                    "confidence": "high",
-                    "confidence_score": 90,
-                    "confidence_reason": "test",
+                    "certainty_level": "high",
+                    "certainty_score": 90,
+                    "certainty_reason": "test",
                 }
             ]
         )

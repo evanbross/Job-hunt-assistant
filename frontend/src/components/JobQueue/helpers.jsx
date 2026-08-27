@@ -46,8 +46,8 @@ export function sortJobList(list, sortKey) {
       return compareNullableScores(a.fit_score, b.fit_score, sortKey === "fit_desc" ? "desc" : "asc");
     }
     if (sortKey === "confidence_desc" || sortKey === "confidence_asc") {
-      const ca = a.confidence_score ?? (a.status === "possible_duplicate" ? -1 : 50);
-      const cb = b.confidence_score ?? (b.status === "possible_duplicate" ? -1 : 50);
+      const ca = a.certainty_score ?? (a.status === "possible_duplicate" ? -1 : 50);
+      const cb = b.certainty_score ?? (b.status === "possible_duplicate" ? -1 : 50);
       return sortKey === "confidence_desc" ? cb - ca : ca - cb;
     }
     if (sortKey === "company_asc") {
@@ -89,9 +89,9 @@ export function formatJobDetails(jobDetails) {
           ? "not scored"
           : `${jobDetail.fit_score}%`;
         const duplicateText = jobDetail.duplicate_hint ? ` · ${jobDetail.duplicate_hint}` : "";
-        const confidenceText = jobDetail.confidence_score === null || jobDetail.confidence_score === undefined
+        const confidenceText = jobDetail.certainty_score === null || jobDetail.certainty_score === undefined
           ? ""
-          : ` · certainty ${jobDetail.confidence_score}%`;
+          : ` · certainty ${jobDetail.certainty_score}%`;
         return (
           <div key={`${jobDetail.job_title || "job"}-${index}`} style={{ color: "var(--text-muted)", lineHeight: 1.35 }}>
             <div style={{ color: "var(--text)", fontWeight: 600, overflowWrap: "anywhere" }}>

@@ -344,13 +344,13 @@ def run_board_search_task(self, user_id: int) -> dict:
                 "fit_score": fit_score,
                 "fit_reasoning": fit_reasoning,
                 "status": status,
-                "parser_confidence": "high",
-                "confidence_reason": "Loaded from a job board search result.",
+                JobColumns.CERTAINTY_LEVEL: "high",
+                JobColumns.CERTAINTY_REASON: "Loaded from a job board search result.",
                 "date_found": datetime.now(UTC).date().isoformat(),
                 "duplicate_hint": None,
                 "sender_email": None,
                 JobColumns.CAPTURE_LABEL: None,
-                "confidence_score": 100,
+                JobColumns.CERTAINTY_SCORE: 100,
             }
             job_data, import_warnings = normalize_and_validate(job_data)
             job_data["import_warnings"] = import_warnings_to_json(import_warnings)
