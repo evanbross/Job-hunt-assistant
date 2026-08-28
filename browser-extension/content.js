@@ -246,6 +246,19 @@
       };
     }
 
+    // ai: claude-sonnet-5 | 2026-08-28
+    // Robert Half job pages (roberthalf.com/<locale>/job/<location-slug>/<title-slug>/<id>)
+    // embed a schema.org JobPosting JSON-LD block (nested under a WebPage's
+    // mainEntity — see readJobPostingLd) with the real title/company/description.
+    // DOM scraping is unreliable here: the page also renders a hidden
+    // <rhcl-job-card> duplicate (id="joblisting") linking to the same job under
+    // a second URL (-usen suffix) whose nearest heading is the site's marketing
+    // tagline, not the job title — the generic smartGeneric a[href] scan used
+    // to both grab that tagline as the title and double-count the job.
+    if (host.includes('roberthalf.com') && /\/job\//.test(path)) {
+      return { site: 'Robert Half', type: 'robertHalfJob', jobCount: 1, description: 'Single job listing' };
+    }
+
     // ai: claude-fable-5 | 2026-07-13
     // Jibe/iCIMS career sites (careers.marriott.com, …): job URLs end in
     // /job/<32-hex-id> and each page embeds a schema.org JobPosting JSON-LD
@@ -1753,6 +1766,8 @@
   // Returns the schema.org JobPosting object from a document's JSON-LD blocks,
   // or null. Jibe job pages (and many other ATSes) embed one with the full
   // description, hiring organization, and req ID.
+  // ai: claude-sonnet-5 | 2026-08-28 — also unwrap a JobPosting nested under a
+  // WebPage's `mainEntity` (Robert Half's shape) rather than at the top level.
   function readJobPostingLd(doc) {
     for (const s of doc.querySelectorAll('script[type="application/ld+json"]')) {
       try {
@@ -1760,6 +1775,7 @@
         const items = Array.isArray(data) ? data : (data['@graph'] || [data]);
         for (const item of items) {
           if (item && item['@type'] === 'JobPosting') return item;
+          if (item?.mainEntity?.['@type'] === 'JobPosting') return item.mainEntity;
         }
       } catch { /* skip malformed block */ }
     }
@@ -1813,7 +1829,10 @@
   }
 
   // ai: claude-fable-5 | 2026-07-13
-  function jibeJobLines({ title, company, reqId, url, description, fallbackText }) {
+  // ai: claude-sonnet-5 | 2026-08-28 — renamed from jibeJobLines: now shared
+  // with buildRobertHalfJobPayload, which also builds listing text from a
+  // JSON-LD JobPosting block.
+  function jobPostingLines({ title, company, reqId, url, description, fallbackText }) {
     const lines = [];
     if (title) lines.push(title);
     if (company) lines.push('Company: ' + company);
@@ -1843,7 +1862,36 @@
         url,
         job_title: title,
         company,
-        listing_text: jibeJobLines({ title, company, reqId, url, description }),
+        listing_text: jobPostingLines({ title, company, reqId, url, description }),
+      }],
+      source: { url: location.href },
+    });
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-28
+  // Single Robert Half job page — prefer the JSON-LD JobPosting block (see
+  // detectPage's roberthalf.com branch for why: the DOM also contains a
+  // hidden duplicate job card whose nearest heading is the site tagline, not
+  // the job title). reqId falls back to the trailing id segment of the URL
+  // (e.g. "03230-0013488334"), since this posting shape has no `identifier`.
+  function buildRobertHalfJobPayload() {
+    const posting = readJobPostingLd(document);
+    const title = posting?.title || pick(['#jobdetailsheading', 'h1']);
+    const company = posting?.hiringOrganization?.name || 'Robert Half';
+    const reqId = posting?.identifier?.value
+      || (location.pathname.match(/\/job\/[^/]+\/[^/]+\/([\w-]+)\/?$/) || [])[1]
+      || '';
+    const description = posting?.description
+      ? htmlToText(posting.description)
+      : document.body.innerText.trim().slice(0, 12000);
+    const url = location.origin + location.pathname;
+
+    return JSON.stringify({
+      jobs: [{
+        url,
+        job_title: title,
+        company,
+        listing_text: jobPostingLines({ title, company, reqId, url, description }),
       }],
       source: { url: location.href },
     });
@@ -1875,7 +1923,7 @@
         url: item.url,
         job_title: title,
         company,
-        listing_text: jibeJobLines({ title, company, reqId, url: item.url, description, fallbackText: item.cardText }),
+        listing_text: jobPostingLines({ title, company, reqId, url: item.url, description, fallbackText: item.cardText }),
       });
       if (i < items.length - 1) await sleep(400);
     }
@@ -2296,6 +2344,7 @@
       case 'ashbyJob':         payload = await buildAshbyJobPayload(); break;
       case 'ashbySearch':      payload = buildAshbySearchPayload(); break;
       case 'wttjJob':          payload = buildWttjJobPayload(); break;
+      case 'robertHalfJob':    payload = buildRobertHalfJobPayload(); break;
       case 'jibeJob':          payload = buildJibeJobPayload(); break;
       case 'jibeSearch':       payload = await buildJibeSearchPayload(); break;
       case 'phenomSearch':     payload = await buildPhenomSearchPayload(); break;
