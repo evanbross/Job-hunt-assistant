@@ -302,6 +302,22 @@
       };
     }
 
+    // ai: claude-sonnet-5 | 2026-08-28
+    // A job detail page that also lists "similar/related jobs" elsewhere on
+    // the page (e.g. Cisco's careers site) makes the link-scanning heuristic
+    // below count those recommendations as separate jobs to download, even
+    // though there's only one job on the page. If the current URL is itself
+    // a job-shaped link AND the page embeds a JobPosting JSON-LD block (see
+    // readJobPostingLd) — which a search/listing page's own URL essentially
+    // never does, since there's no single canonical job it's "about" — this
+    // is unambiguously a single job page. Skip the link-counting heuristic
+    // entirely rather than let unrelated recommendations inflate the count.
+    let selfUrlForJobPosting;
+    try { selfUrlForJobPosting = new URL(location.href); } catch { selfUrlForJobPosting = null; }
+    if (selfUrlForJobPosting && isJobLink(selfUrlForJobPosting) && readJobPostingLd(document)) {
+      return { site: location.hostname, type: 'html', jobCount: 1, description: 'Single job listing' };
+    }
+
     // Generic fallback: scan for job-shaped links before giving up on counting.
     const smartCount = countSmartGenericJobs();
     if (smartCount >= 2) {
