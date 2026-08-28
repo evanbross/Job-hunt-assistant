@@ -276,6 +276,32 @@
       };
     }
 
+    // ai: claude-sonnet-5 | 2026-08-28
+    // Oracle Fusion Recruiting Cloud ("Candidate Experience") career sites —
+    // the app path is fixed across tenants even though the hostname is
+    // per-company (e.g. Ford's is efds.fa.em5.oraclecloud.com). Clicking a
+    // search result's preview arrow opens the job in a modal ON TOP of the
+    // still-mounted search-results list (URL becomes .../jobs/preview/<id>/)
+    // rather than navigating away from it, so a plain link scan sees every
+    // job in the list behind the modal, not just the one open in it — the
+    // user has to say which they want, like insightGlobalSplit above.
+    const oracleHcmMatch = path.match(
+      /\/hcmUI\/CandidateExperience\/[^/]+\/sites\/[^/]+\/(jobs\/preview|job)\/(\d+)/i
+    );
+    if (oracleHcmMatch) {
+      if (oracleHcmMatch[1].toLowerCase() === 'job') {
+        return { site: 'Oracle Recruiting Cloud', type: 'oracleHcmJob', jobCount: 1, description: 'Single job listing' };
+      }
+      const total = oracleHcmTotalHits();
+      return {
+        site: 'Oracle Recruiting Cloud',
+        type: 'oracleHcmSplit',
+        jobCount: total,
+        description: `${total} jobs found`,
+        captureModes: ['detail', 'list'],
+      };
+    }
+
     // Generic fallback: scan for job-shaped links before giving up on counting.
     const smartCount = countSmartGenericJobs();
     if (smartCount >= 2) {
@@ -2103,12 +2129,25 @@
       const selfKey = selfUrl.origin + selfUrl.pathname;
       if (!seen.has(selfKey)) {
         seen.add(selfKey);
-        const title = pick(['[data-ph-at-id*="title"]', 'h1[class*="job"]', 'h1[class*="title"]', 'h1']) || '';
-        const bodyText = document.body.innerText.trim().slice(0, 12000);
+        // ai: claude-sonnet-5 | 2026-08-28
+        // Prefer a schema.org JobPosting block (see readJobPostingLd) over DOM
+        // heading scraping when the page has one — the RobertHalf bug (a
+        // hidden duplicate card whose nearest heading was the site tagline,
+        // not the job title) is a DOM-scraping failure mode that can happen
+        // on any AEM-style or templated career site landing in this generic
+        // fallback, not just RobertHalf. JSON-LD sidesteps it entirely.
+        const posting = readJobPostingLd(document);
+        const title = posting?.title
+          || pick(['[data-ph-at-id*="title"]', 'h1[class*="job"]', 'h1[class*="title"]', 'h1'])
+          || '';
+        const company = posting?.hiringOrganization?.name || '';
+        const description = posting?.description ? htmlToText(posting.description) : '';
+        const bodyText = description || document.body.innerText.trim().slice(0, 12000);
         const lines = [title || selfKey.split('/').filter(Boolean).pop()];
+        if (company) lines.push('Company: ' + company);
         lines.push('URL: ' + location.href);
         if (bodyText) lines.push('', bodyText);
-        jobs.push({ url: location.href, job_title: title, company: '', listing_text: lines.join('\n') });
+        jobs.push({ url: location.href, job_title: title, company, listing_text: lines.join('\n') });
       }
     }
 
@@ -2222,6 +2261,88 @@
       }],
       source: { url: location.href },
     });
+  }
+
+  // ─── Oracle Fusion Recruiting Cloud (Candidate Experience) ─────────────────
+
+  // ai: claude-sonnet-5 | 2026-08-28
+  // The result count is only rendered as page text ("14 OPEN JOBS"), not a
+  // data attribute. Falls back to counting unique job ids among the search
+  // list's card links (still mounted in the DOM behind an open preview
+  // modal) if that text isn't found.
+  function oracleHcmTotalHits() {
+    const m = document.body.innerText.match(/(\d+)\s+OPEN JOBS?/i);
+    if (m) return parseInt(m[1], 10);
+    const ids = new Set();
+    document.querySelectorAll('a.job-list-item__link[href]').forEach(a => {
+      try {
+        const mm = new URL(a.href).pathname.match(/\/job\/(\d+)/i);
+        if (mm) ids.add(mm[1]);
+      } catch { /* skip */ }
+    });
+    return ids.size;
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-28
+  // Oracle embeds a clean top-level schema.org JobPosting block (unlike
+  // RobertHalf's WebPage-wrapped mainEntity shape) — readJobPostingLd()
+  // already handles it as-is. Used for both the standalone job page
+  // (oracleHcmJob) and the "detail" capture mode of the split-view preview
+  // modal (oracleHcmSplit), since the JSON-LD updates identically either way.
+  function buildOracleHcmJobPayload() {
+    const posting = readJobPostingLd(document);
+    const title = posting?.title || pick(['h1[class*="title"]', 'h1']);
+    const company = posting?.hiringOrganization?.name || '';
+    const reqId = posting?.identifier?.value || '';
+    const description = posting?.description
+      ? htmlToText(posting.description)
+      : document.body.innerText.trim().slice(0, 12000);
+    const url = location.origin + location.pathname;
+
+    return JSON.stringify({
+      jobs: [{
+        url,
+        job_title: title,
+        company,
+        listing_text: jobPostingLines({ title, company, reqId, url, description }),
+      }],
+      source: { url: location.href },
+    });
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-28
+  // "List" capture mode for the split-view preview modal — harvests every
+  // job card from the search-results list still mounted behind the modal.
+  // Cards carry title + location + posted-date as plain text, no per-job
+  // fetch needed. Every job on a given tenant's site is the same employer,
+  // so the currently-open posting's JSON-LD company applies to all of them.
+  // Best-effort, not exhaustive: the list is virtual-scrolled, so a card
+  // outside the current scroll position + buffer is mounted with real size
+  // but zero content until scrolled into view — those are skipped (empty
+  // title) rather than captured. jobCount (from oracleHcmTotalHits) can
+  // therefore be larger than what this actually returns.
+  function buildOracleHcmSplitListPayload() {
+    const company = readJobPostingLd(document)?.hiringOrganization?.name || '';
+    const seen = new Set();
+    const jobs = [];
+    document.querySelectorAll('a.job-list-item__link[href]').forEach(link => {
+      let u;
+      try { u = new URL(link.href); } catch { return; }
+      const m = u.pathname.match(/\/job\/(\d+)/i);
+      if (!m || seen.has(m[1])) return;
+      seen.add(m[1]);
+
+      const cardText = (link.innerText || '').trim();
+      const title = cardText.split('\n')[0]?.trim() || '';
+      if (!title) return; // skip icon-only duplicate links with no visible text
+      const url = u.origin + u.pathname;
+      const lines = [title];
+      if (company) lines.push('Company: ' + company);
+      lines.push('URL: ' + url);
+      if (cardText) lines.push('', cardText);
+      jobs.push({ url, job_title: title, company, listing_text: lines.join('\n') });
+    });
+    return JSON.stringify({ jobs, source: { url: location.href } });
   }
 
   // ─── Jobgether ─────────────────────────────────────────────────────────────
@@ -2358,6 +2479,12 @@
       case 'kforceSearch':     payload = await buildKforceSearchPayload(options); break;
       case 'jobanni':          payload = await buildJobanniPayload(); break;
       case 'jobgetherJob':     payload = await buildJobgetherJobPayload(); break;
+      case 'oracleHcmJob':     payload = buildOracleHcmJobPayload(); break;
+      case 'oracleHcmSplit':
+        payload = options.captureMode === 'list'
+          ? buildOracleHcmSplitListPayload()
+          : buildOracleHcmJobPayload();
+        break;
       case 'smartGeneric':     payload = buildSmartGenericPayload(); break;
       // ai: claude-sonnet-4-6 | 2026-06-26
       // For pages that don't match a known platform, extract body text rather
@@ -2385,20 +2512,27 @@
     await new Promise(resolve => setTimeout(resolve, 400));
   }
 
+  // ai: claude-sonnet-5 | 2026-08-28 — prefer JSON-LD JobPosting (see
+  // readJobPostingLd) over DOM heading scraping for the same reason as the
+  // buildSmartGenericPayload self-inclusion block above.
   async function buildGenericJobPagePayload() {
     await expandCollapsedSections();
-    const title = pick([
+    const posting = readJobPostingLd(document);
+    const title = posting?.title || pick([
       'h1[class*="job"]', 'h1[class*="title"]',
       '[data-testid*="title"]', '[data-testid*="job-title"]',
       'h1',
     ]);
-    const bodyText = document.body.innerText.trim().slice(0, 12000);
+    const company = posting?.hiringOrganization?.name || '';
+    const description = posting?.description ? htmlToText(posting.description) : '';
+    const bodyText = description || document.body.innerText.trim().slice(0, 12000);
     const lines = [];
     if (title) lines.push(title);
+    if (company) lines.push('Company: ' + company);
     lines.push('URL: ' + location.href);
     if (bodyText) lines.push('', bodyText);
     return JSON.stringify({
-      jobs: [{ url: location.href, job_title: title, company: '', listing_text: lines.join('\n') }],
+      jobs: [{ url: location.href, job_title: title, company, listing_text: lines.join('\n') }],
       source: { url: location.href },
     });
   }
