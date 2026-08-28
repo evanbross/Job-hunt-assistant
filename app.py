@@ -58,6 +58,7 @@ from pathlib import Path
 
 import flask
 import flask.json as flask_json
+import psycopg2
 from markupsafe import Markup
 
 if not hasattr(flask, "Markup"):
@@ -78,6 +79,7 @@ from backend.scanning.import_listener import (
     start_job_import_listener,
 )
 from backend.scanning.schedulers import start_jd_health_check_scheduler
+from backend.settings_service import get_setting
 from backend.utils.utils import get_repos, is_trusted_api_write_origin
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
@@ -238,6 +240,59 @@ def _require_admin_for_system_settings() -> tuple[flask.Response, int] | None:
         account = repos["user_accounts"].get(user_id)
     if not account or account.get("role") != "admin":
         return jsonify({"error": "Admin access required"}), 403
+    return None
+
+
+# ai: claude-sonnet-5 | 2026-08-27
+# Paths a session with must_complete_setup=TRUE may still reach -- see
+# DEFAULT_ADMIN_EMAIL's docstring in backend/db/repositories/user_accounts.py
+# for what this gate is protecting against. Deliberately narrow: only what's
+# needed to (a) fix SMTP if it isn't configured yet, since request-email-change
+# below can't complete without it, and (b) actually complete the two forced
+# steps. Everything else in the app (jobs, applications, AI features) stays
+# blocked until both are done.
+_SETUP_GATE_ALLOWLIST = frozenset(
+    {
+        ("GET", "/api/session"),
+        ("POST", "/api/logout"),
+        ("GET", "/api/account"),
+        ("POST", "/api/account/request-email-change"),
+        # ai: claude-sonnet-5 | 2026-08-27 — must be allowlisted here too, not
+        # just in _APP_LOGIN_ALLOWLIST: the confirmation link is normally
+        # followed from the same logged-in session that requested the change
+        # (see frontend/src/components/CompleteSetupPage.jsx), and without
+        # this entry that request would 403 before it could ever clear the
+        # gate it exists to satisfy.
+        ("POST", "/api/account/confirm-email-change"),
+        ("POST", "/api/account/change-password"),
+        ("GET", "/api/settings/schema"),
+        ("GET", "/api/settings/system"),
+        ("PUT", "/api/settings/system"),
+    }
+)
+
+
+@app.before_request
+def _require_setup_completion() -> tuple[flask.Response, int] | None:
+    """Block the rest of the API until the seeded default-admin account has
+    set a real email and a real password (see DEFAULT_ADMIN_EMAIL's docstring
+    in backend/db/repositories/user_accounts.py). Runs after _require_app_login,
+    so a request that reaches here already has a valid session or was already
+    401'd; a request with no session yet (unauthenticated allowlisted paths
+    like /api/system/health) is a no-op here too.
+    """
+    if (
+        not request.path.startswith("/api/")
+        or (request.method, request.path) in _SETUP_GATE_ALLOWLIST
+    ):
+        return None
+    user_id = session.get("user_id")
+    if user_id is None:
+        return None  # _require_app_login already handled this request
+    with get_repos() as repos:
+        account = repos["user_accounts"].get(user_id)
+    if account and account.get("must_complete_setup"):
+        return jsonify({"error": "Complete account setup first", "must_complete_setup": True}), 403
     return None
 
 
@@ -741,6 +796,33 @@ def _stop_vite() -> None:
 _celery_proc: _subprocess.Popen | None = None
 
 
+def _resolve_flask_bind() -> tuple[str, int]:
+    """Resolve the host/port Flask should bind to.
+
+    Read from system_settings (see backend/settings_registry.py's
+    flask_host/flask_port) rather than straight from the environment, so
+    there's one source of truth after first run instead of a value that can
+    drift between .env and the DB-backed Settings UI. Falls back to the
+    .env-sourced config.FLASK_HOST/FLASK_PORT bootstrap defaults if the DB
+    isn't reachable yet -- this runs before any socket is open, so a DB
+    outage must degrade gracefully rather than block startup entirely.
+    """
+    try:
+        with get_repos() as repos:
+            host = get_setting("flask_host", None, repos)
+            port = int(get_setting("flask_port", None, repos))
+        return host, port
+    except (psycopg2.OperationalError, OSError, ValueError) as exc:
+        logger.warning(
+            "Could not read flask_host/flask_port from system_settings (%s) — "
+            "falling back to .env defaults %s:%s",
+            exc,
+            config.FLASK_HOST,
+            config.FLASK_PORT,
+        )
+        return config.FLASK_HOST, config.FLASK_PORT
+
+
 def _port_is_free(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -809,7 +891,7 @@ if __name__ == "__main__":
     _maybe_rebuild_frontend()
     _start_vite()
     _start_celery_worker()
-    _flask_port = int(os.environ.get("FLASK_PORT", "5004"))
+    _flask_host, _flask_port = _resolve_flask_bind()
     if not _port_is_free(_flask_port):
         # ai: claude-sonnet-5 | 2026-07-23
         # Fail fast instead of silently falling back to another port: the Google
@@ -820,9 +902,9 @@ if __name__ == "__main__":
         # Runtime Values Must Not Silently Diverge).
         logger.error(
             "Port %s is already in use. Free it, or stop the other process, before "
-            "starting the server — set FLASK_PORT to use a different port only if you "
-            "also update the Google OAuth redirect URI, frontend/vite.config.js proxy "
-            "target, and README setup docs to match.",
+            "starting the server — change the Server Port in Settings > System to use "
+            "a different port only if you also update the Google OAuth redirect URI, "
+            "frontend/vite.config.js proxy target, and README setup docs to match.",
             _flask_port,
         )
         sys.exit(1)
@@ -869,7 +951,7 @@ if __name__ == "__main__":
     try:
         app.run(
             debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",
-            host=os.environ.get("FLASK_HOST", "127.0.0.1"),
+            host=_flask_host,
             port=_flask_port,
             threaded=True,
         )

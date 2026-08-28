@@ -54,6 +54,18 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY", "change-this-in-production")
 
+# ─── Server bind ──────────────────────────────────────────────────────────────
+# ai: claude-sonnet-5 | 2026-08-26
+# Bootstrap defaults only -- app.py reads the live values through
+# backend.settings_service.get_setting("flask_host"/"flask_port", ...) at
+# startup (see backend/settings_registry.py), falling back to these .env
+# values only on first run (before system_settings has a row) or if the DB
+# is unreachable. Unlike most settings, these can't be changed by just
+# re-reading them on the next request -- the socket is already bound by then
+# -- so a change here always needs a full app restart to take effect.
+FLASK_HOST: str = os.getenv("FLASK_HOST", "127.0.0.1")
+FLASK_PORT: int = int(os.getenv("FLASK_PORT", "5004"))
+
 # ─── App login (single-owner session gate) ────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-08-20
 # Gates the whole /api/* surface (see app.py's _require_app_login). The

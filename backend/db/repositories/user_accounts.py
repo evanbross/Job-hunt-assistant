@@ -56,6 +56,23 @@ from ..connection import _row_to_dict
 # orphaned under an account nobody can log into.
 PLACEHOLDER_ACCOUNT_EMAIL = "unclaimed@localhost"
 
+# ai: claude-sonnet-5 | 2026-08-27
+# Seeded on a genuinely fresh install (see backend/db/schema.py's _migrate) as
+# the very first user_accounts row, with must_complete_setup=TRUE and role
+# 'admin' -- a known, documented bootstrap credential so the first login
+# never depends on SMTP being configured yet (unlike open registration via
+# POST /account, which can't complete without sending a verification email).
+# routes/session_auth.py's confirm_email_change()/change_password() clear
+# must_complete_setup once BOTH a real email and a real password are set
+# (order-independent -- see those functions' comments). app.py's
+# _require_setup_completion before_request hook blocks the rest of the API
+# until that flag clears. This is a distinct concept from
+# PLACEHOLDER_ACCOUNT_EMAIL above: that sentinel is for legacy/pre-existing
+# installs whose first row predates this bootstrap-admin scheme and is left
+# untouched by it.
+DEFAULT_ADMIN_EMAIL = "admin@localhost"
+DEFAULT_ADMIN_PASSWORD = "changeme"
+
 
 class PostgresUserAccountRepository(_BaseRepo):
     def get(self, user_id: int) -> dict[str, Any] | None:
@@ -254,3 +271,14 @@ class PostgresUserAccountRepository(_BaseRepo):
 
     def delete(self, user_id: int) -> None:
         self._execute("DELETE FROM user_accounts WHERE id = %s", [user_id])
+
+    # ai: claude-sonnet-5 | 2026-08-27
+    def mark_setup_complete(self, user_id: int) -> None:
+        """Clear must_complete_setup once the seeded default-admin account has
+        a real email and a real (non-default) password -- see
+        DEFAULT_ADMIN_EMAIL's docstring above for the two call sites."""
+        self._execute(
+            "UPDATE user_accounts SET must_complete_setup = FALSE, updated_at = NOW()"
+            " WHERE id = %s",
+            [user_id],
+        )

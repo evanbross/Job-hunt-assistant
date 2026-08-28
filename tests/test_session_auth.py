@@ -41,10 +41,16 @@ session).
 
 The credential lives in the DB (user_accounts table), so every test here runs
 against the real local test Postgres via the pg_dsn fixture. pg_dsn's
-init_db() always leaves exactly one placeholder account (email
-"unclaimed@localhost") behind before any test body runs — every test below
-either claims it via _register() or ignores it (its email never matches a
-test login).
+init_db() always leaves exactly one seeded account behind before any test body
+runs: the default-admin bootstrap account (email "admin@localhost", see
+DEFAULT_ADMIN_EMAIL in backend/db/repositories/user_accounts.py) —
+must_complete_setup=TRUE, so it never collides with the plain accounts these
+tests create via _seed_active_account(), and its email never matches a test
+login. See tests/test_default_admin_setup.py for coverage of that account and
+the forced-setup gate specifically; test_start_registration_claims_the_pre_seeded_placeholder
+below covers the older, still-supported legacy-placeholder claim path
+(PLACEHOLDER_ACCOUNT_EMAIL) separately, since a fresh DB no longer produces
+one on its own.
 
 send_verification_email is monkeypatched everywhere in this file to a fake
 that records calls instead of hitting real SMTP/Mailhog — that keeps this
@@ -156,8 +162,16 @@ def test_account_get_requires_authentication(client) -> None:
 
 
 def test_start_registration_claims_the_pre_seeded_placeholder(client, sent_emails) -> None:
+    # ai: claude-sonnet-5 | 2026-08-27 — a fresh DB no longer seeds
+    # PLACEHOLDER_ACCOUNT_EMAIL on its own (see the module docstring above),
+    # so this test seeds one directly to simulate a pre-existing install that
+    # still has an unclaimed legacy placeholder row from before the
+    # default-admin bootstrap scheme shipped.
     with get_repos() as repos:
-        placeholder = repos["user_accounts"].get_by_email("unclaimed@localhost")
+        placeholder = repos["user_accounts"].create_pending(
+            "unclaimed@localhost", "legacy-placeholder-token", "2099-01-01"
+        )
+        repos["conn"].commit()
     assert placeholder is not None
 
     resp = _start_registration(client, sent_emails)
@@ -214,7 +228,13 @@ def test_complete_registration_with_valid_token_grants_session(client, sent_emai
     resp = _register_and_activate(client, sent_emails)
     assert resp.status_code == 200
     assert resp.get_json() == {"authenticated": True}
-    assert client.get("/api/session").get_json() == {"authenticated": True}
+    # must_complete_setup is only ever TRUE for the seeded default-admin
+    # account (see tests/test_default_admin_setup.py) -- a normal registered
+    # account never has it.
+    assert client.get("/api/session").get_json() == {
+        "authenticated": True,
+        "must_complete_setup": False,
+    }
 
 
 def test_login_before_completing_registration_is_rejected(client, sent_emails) -> None:
@@ -323,7 +343,13 @@ def test_get_account_returns_name_and_email(client) -> None:
     # ai: claude-sonnet-5 | 2026-08-21 -- role added: this account is seeded
     # via create_pending (a normal registration insert), not the placeholder
     # row _migrate() promotes to admin, so it's a plain 'user'.
-    assert resp.get_json() == {"name": None, "email": _TEST_EMAIL, "role": "user"}
+    assert resp.get_json() == {
+        "name": None,
+        "email": _TEST_EMAIL,
+        "role": "user",
+        "must_complete_setup": False,
+        "password_pending_default": False,
+    }
 
 
 def test_update_account_name(client) -> None:
@@ -450,7 +476,10 @@ def test_reset_password_with_valid_token_grants_session_and_replaces_password(
     )
     assert resp.status_code == 200
     assert resp.get_json() == {"authenticated": True}
-    assert client.get("/api/session").get_json() == {"authenticated": True}
+    assert client.get("/api/session").get_json() == {
+        "authenticated": True,
+        "must_complete_setup": False,
+    }
 
     client.post("/api/logout")
     assert _login(client).status_code == 401  # old password no longer works

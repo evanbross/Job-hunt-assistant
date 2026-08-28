@@ -34,6 +34,7 @@
 
 import { useEffect, useState } from "react";
 import LoginPage from "./components/LoginPage.jsx";
+import CompleteSetupPage from "./components/CompleteSetupPage.jsx";
 import VerifyAccountPage from "./components/VerifyAccountPage.jsx";
 import VerifyEmailChangePage from "./components/VerifyEmailChangePage.jsx";
 import ResetPasswordPage from "./components/ResetPasswordPage.jsx";
@@ -200,6 +201,7 @@ export default function App() {
   });
   const [, setTriageCount] = useState(0);
   const [appAuthenticated, setAppAuthenticated] = useState(null); // null | true | false — app login gate, distinct from Google authStatus below
+  const [mustCompleteSetup, setMustCompleteSetup] = useState(false); // ai: claude-sonnet-5 | 2026-08-27 — default-admin bootstrap gate, see CompleteSetupPage.jsx
   const [authStatus, setAuthStatus] = useState(null); // null | true | false
   const [emailFocusId, setEmailFocusId] = useState(null);
   const [focusedJobCard, setFocusedJobCard] = useState(null);
@@ -261,7 +263,9 @@ export default function App() {
       try {
         const res = await fetch("/api/session", { credentials: "include" });
         const data = await res.json();
-        if (!cancelled) setAppAuthenticated(!!data.authenticated);
+        if (cancelled) return;
+        setAppAuthenticated(!!data.authenticated);
+        setMustCompleteSetup(!!data.must_complete_setup);
       } catch {
         if (!cancelled) setAppAuthenticated(false);
       }
@@ -452,7 +456,20 @@ export default function App() {
 
   if (appAuthenticated === null) return null; // session check in flight
   if (appAuthenticated === false) {
-    return <LoginPage onLoginSuccess={() => setAppAuthenticated(true)} />;
+    return (
+      <LoginPage
+        onLoginSuccess={() => {
+          setAppAuthenticated(true);
+          fetch("/api/session", { credentials: "include" })
+            .then((res) => res.json())
+            .then((data) => setMustCompleteSetup(!!data.must_complete_setup))
+            .catch(() => {});
+        }}
+      />
+    );
+  }
+  if (mustCompleteSetup) {
+    return <CompleteSetupPage onComplete={() => setMustCompleteSetup(false)} />;
   }
 
   return (

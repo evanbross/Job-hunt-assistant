@@ -65,6 +65,7 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
 from backend.email.smtp_sender import send_verification_email
 from backend.settings_service import get_setting
 from backend.utils.utils import current_user_id, get_repos
@@ -196,6 +197,25 @@ def _new_token(lifetime: timedelta) -> tuple[str, str]:
     token = secrets.token_urlsafe(32)
     expires_at = (datetime.now(UTC) + lifetime).isoformat()
     return token, expires_at
+
+
+# ai: claude-sonnet-5 | 2026-08-27
+def _maybe_clear_setup_gate(account: dict, repos: dict) -> None:
+    """Clear must_complete_setup once BOTH a real email and a real password
+    are set on the seeded default-admin account (see DEFAULT_ADMIN_EMAIL's
+    docstring in backend/db/repositories/user_accounts.py) -- order-independent:
+    whichever of confirm_email_change()/change_password() runs second is the
+    one that verifies the other condition and clears the flag. A no-op for
+    every other account, since must_complete_setup is only ever TRUE for that
+    one bootstrap row.
+    """
+    if not account.get("must_complete_setup"):
+        return
+    email_done = account["email"] != DEFAULT_ADMIN_EMAIL
+    password_done = not check_password_hash(account["password_hash"], DEFAULT_ADMIN_PASSWORD)
+    if email_done and password_done:
+        repos["user_accounts"].mark_setup_complete(account["id"])
+        repos["conn"].commit()
 
 
 @session_auth_bp.route("/account", methods=["POST"])
@@ -374,7 +394,19 @@ def logout() -> ResponseReturnValue:
 
 @session_auth_bp.route("/session", methods=["GET"])
 def session_status() -> ResponseReturnValue:
-    return jsonify({"authenticated": bool(session.get("authenticated"))})
+    if not session.get("authenticated"):
+        return jsonify({"authenticated": False})
+    with get_repos() as repos:
+        account = repos["user_accounts"].get(session.get("user_id"))
+    return jsonify(
+        {
+            "authenticated": True,
+            # ai: claude-sonnet-5 | 2026-08-27 — lets the frontend show the
+            # forced setup screen (app.py's _require_setup_completion enforces
+            # it server-side; this is just so the UI doesn't have to guess).
+            "must_complete_setup": bool(account and account.get("must_complete_setup")),
+        }
+    )
 
 
 @session_auth_bp.route("/account", methods=["GET"])
@@ -383,8 +415,21 @@ def get_account() -> ResponseReturnValue:
         account = repos["user_accounts"].get(current_user_id())
     if account is None:
         return jsonify({"error": "Account not found"}), 404
+    must_complete_setup = bool(account.get("must_complete_setup"))
     return jsonify(
-        {"name": account["name"], "email": account["email"], "role": account["role"]}
+        {
+            "name": account["name"],
+            "email": account["email"],
+            "role": account["role"],
+            "must_complete_setup": must_complete_setup,
+            # ai: claude-sonnet-5 | 2026-08-27 — lets CompleteSetupPage.jsx show
+            # which of the two forced steps is still outstanding without being
+            # able to see the password itself.
+            "password_pending_default": (
+                must_complete_setup
+                and check_password_hash(account["password_hash"], DEFAULT_ADMIN_PASSWORD)
+            ),
+        }
     )
 
 
@@ -444,6 +489,7 @@ def confirm_email_change() -> ResponseReturnValue:
         account = repos["user_accounts"].confirm_email_change(body.token)
         if account is not None:
             repos["conn"].commit()
+            _maybe_clear_setup_gate(account, repos)
 
     if account is None:
         return jsonify({"error": "This link is invalid or has expired"}), 400
@@ -475,7 +521,12 @@ def change_password() -> ResponseReturnValue:
             or not check_password_hash(account["password_hash"], body.current_password)
         ):
             return jsonify({"error": "Current password is incorrect"}), 401
-        repos["user_accounts"].update_password(user_id, generate_password_hash(body.new_password))
+        new_hash = generate_password_hash(body.new_password)
+        repos["user_accounts"].update_password(user_id, new_hash)
         repos["conn"].commit()
+        # account still holds the pre-update row -- swap in the new hash so
+        # _maybe_clear_setup_gate checks against what the password now is,
+        # not what it was a moment ago.
+        _maybe_clear_setup_gate({**account, "password_hash": new_hash}, repos)
 
     return jsonify({"status": "password_changed"})

@@ -104,6 +104,19 @@ SETTINGS: dict[str, SettingSpec] = {
         scope="system", is_secret=False, default=str(config.SMTP_USE_TLS).lower(),
         label="Use TLS", group="SMTP", input_type="checkbox",
     ),
+    # ai: claude-sonnet-5 | 2026-08-26
+    "flask_host": SettingSpec(
+        scope="system", is_secret=False, default=config.FLASK_HOST,
+        label="Server Bind Host", group="Server",
+        placeholder="127.0.0.1",
+        help_text="0.0.0.0 exposes the server beyond localhost (e.g. over Tailscale). Requires an app restart to take effect.",
+    ),
+    "flask_port": SettingSpec(
+        scope="system", is_secret=False, default=str(config.FLASK_PORT),
+        label="Server Port", group="Server",
+        placeholder="5004",
+        help_text="Requires an app restart. Also update the Google OAuth redirect URI if you change this.",
+    ),
     # ─── Per-user ──────────────────────────────────────────────────────────────
     "anthropic_api_key": SettingSpec(
         scope="user", is_secret=True, default=config.ANTHROPIC_API_KEY,

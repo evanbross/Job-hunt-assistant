@@ -2007,13 +2007,16 @@ function SchemaField({ spec, cfg, setCfg }) {
 }
 
 // Renders every schema field in *group*, in registry declaration order.
-function SchemaFieldGroup({ fields, group, cfg, setCfg }) {
+// Exported: CompleteSetupPage.jsx reuses this to render the SMTP/Server
+// fields during the forced default-admin setup flow, before the full
+// Settings tab (which owns this component everywhere else) is reachable.
+export function SchemaFieldGroup({ fields, group, cfg, setCfg }) {
   return fields
     .filter((f) => f.group === group)
     .map((f) => <SchemaField key={f.key} spec={f} cfg={cfg} setCfg={setCfg} />);
 }
 
-async function fetchSettingsSchema() {
+export async function fetchSettingsSchema() {
   const res = await fetch("/api/settings/schema");
   if (!res.ok) return { user: [], system: [] };
   return res.json();
@@ -2280,6 +2283,10 @@ function SystemSettingsSection() {
           <SchemaFieldGroup fields={schema.system} group="SMTP" cfg={cfg} setCfg={setCfg} />
         </div>
 
+        <div style={{ marginTop: "16px" }}>
+          <SchemaFieldGroup fields={schema.system} group="Server" cfg={cfg} setCfg={setCfg} />
+        </div>
+
         <div style={{ marginTop: "16px", display: "flex", alignItems: "center", gap: "10px" }}>
           <button className="btn-primary" onClick={save} disabled={saving}>
             {saving ? "Saving…" : "Save"}
@@ -2481,7 +2488,7 @@ const navBtn = (active) => ({
   fontWeight: active ? "600" : "400",
 });
 
-const labelStyle = {
+export const labelStyle = {
   display: "flex",
   flexDirection: "column",
   gap: "4px",
@@ -2492,7 +2499,7 @@ const labelStyle = {
   letterSpacing: "0.04em",
 };
 
-const helpTextStyle = {
+export const helpTextStyle = {
   color: "var(--text-muted)",
   display: "block",
   fontSize: "11px",

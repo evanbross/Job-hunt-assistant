@@ -42,10 +42,12 @@ import logging
 import re
 from typing import Any
 
+from werkzeug.security import generate_password_hash
+
 import config
 from backend.crypto import encrypt_secret
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
-from backend.db.repositories.user_accounts import PLACEHOLDER_ACCOUNT_EMAIL
+from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
 from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
 from backend.settings_registry import SETTINGS
 from backend.utils.stage_status_normalization import normalize_stage_status
@@ -628,17 +630,36 @@ def _migrate(conn: Any) -> None:
         "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS"
         " verification_expires_at TIMESTAMPTZ"
     )
+    # ai: claude-sonnet-5 | 2026-08-27 — must exist before the fresh-install
+    # seed insert below, which sets it TRUE on the bootstrap admin row.
+    cur.execute(
+        "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS"
+        " must_complete_setup BOOLEAN NOT NULL DEFAULT FALSE"
+    )
     conn.commit()
 
     # A completely empty user_accounts is possible here even when other tables
     # already have rows: seed data (default email_sources/penalty_rules/etc.,
     # see _seed_data() below) and any pre-existing single-tenant data (jobs
     # tracked before this login gate existed) both predate any account ever
-    # being created. Give them a row to attach to via the backfill below —
-    # PLACEHOLDER_ACCOUNT_EMAIL is a sentinel routes/session_auth.py's
-    # create_account() recognizes and claims (updates in place) the first
-    # time someone actually registers, rather than leaving pre-existing data
-    # permanently orphaned under an account nobody can log into.
+    # being created. Give them a row to attach to via the backfill below.
+    #
+    # ai: claude-sonnet-5 | 2026-08-27
+    # This row is also the instance's bootstrap admin login (DEFAULT_ADMIN_EMAIL/
+    # DEFAULT_ADMIN_PASSWORD, see user_accounts.py) — a known credential so the
+    # very first login never depends on SMTP being configured yet, unlike open
+    # registration via POST /account which can't complete without sending a
+    # verification email. must_complete_setup=TRUE forces a real email +
+    # real password before the rest of the API is reachable (app.py's
+    # _require_setup_completion). This is deliberately a *different* sentinel
+    # email than the old PLACEHOLDER_ACCOUNT_EMAIL ("unclaimed@localhost") --
+    # keeping them distinct means claim_placeholder_pending() (used by normal
+    # open registration) never matches or overwrites this row by accident;
+    # normal registration just inserts its own row via create_pending().
+    # PLACEHOLDER_ACCOUNT_EMAIL itself is no longer seeded on a fresh install,
+    # but claim_placeholder_pending() is left in place unchanged for any
+    # pre-existing install that already has an unclaimed one from before this
+    # change shipped.
     #
     # Don't assume that account's id is 1 — if user_accounts previously had
     # rows that were since deleted, its sequence has already moved past 1.
@@ -646,10 +667,17 @@ def _migrate(conn: Any) -> None:
     cur.execute("SELECT COUNT(*) AS cnt FROM user_accounts")
     if cur.fetchone()["cnt"] == 0:
         cur.execute(
-            "INSERT INTO user_accounts (email, password_hash) VALUES (%s, %s)",
-            (PLACEHOLDER_ACCOUNT_EMAIL, ""),
+            "INSERT INTO user_accounts (email, password_hash, must_complete_setup)"
+            " VALUES (%s, %s, TRUE)",
+            (DEFAULT_ADMIN_EMAIL, generate_password_hash(DEFAULT_ADMIN_PASSWORD)),
         )
         conn.commit()
+        logger.warning(
+            "Fresh install: created default admin account %s with the "
+            "documented default password. Log in and complete setup "
+            "(real email + real password) immediately.",
+            DEFAULT_ADMIN_EMAIL,
+        )
     cur.execute("SELECT id FROM user_accounts ORDER BY id LIMIT 1")
     backfill_user_id = cur.fetchone()["id"]
 
