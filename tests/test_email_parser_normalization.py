@@ -42,6 +42,7 @@ import backend.email.email_parser as email_parser_module
 from backend.ai_provider import AIMessage
 from backend.email.email_parser import (
     EmailParser,
+    _jobgether_company_slug_map_from_html,
     _trim_company_tail,
     looks_like_wttj_misparsed_title,  # ai: claude-fable-5 | 2026-07-17
     normalize_title_company,
@@ -332,6 +333,31 @@ def test_parser_resolves_awstrack_tracking_urls_for_jobgether_emails(
 
     assert len(jobs) == 1
     assert jobs[0]["url"] == real_jobgether_url
+
+
+# ai: claude-sonnet-5 | 2026-08-28
+def _jobgether_card_html(cdn_host: str, slug: str, href: str) -> str:
+    return (
+        '<div class="content-offers" style="display: flex;">'
+        f'<img src="https://{cdn_host}/{slug}/profile.webp" alt="jobgether">'
+        f'<a href="{href}">Some Job Title</a>'
+        "</div>"
+    )
+
+
+@pytest.mark.parametrize("cdn_host", ["cdn-s3.jobgether.com", "cdn-s3-stag.jobgether.com"])
+def test_jobgether_company_slug_map_matches_prod_and_staging_cdn(cdn_host: str) -> None:
+    """Jobgether moved their logo CDN from cdn-s3-stag.jobgether.com to
+    cdn-s3.jobgether.com sometime after 2026-07-23, and the old host-only regex
+    silently matched zero cards on the new host — leaving the LLM without a
+    company hint for every job in the email (jobs 4505-4507: company ended up
+    missing, or the LLM mistook a job's own title for the company name)."""
+    href = "https://jobgether.com/offer/abc123-software-engineer"
+    html = _jobgether_card_html(cdn_host, "fidelityinvestments", href)
+
+    slug_map = _jobgether_company_slug_map_from_html(html)
+
+    assert slug_map == {href: "fidelityinvestments"}
 
 
 def test_parser_detokenizes_url_when_llm_drops_brackets() -> None:

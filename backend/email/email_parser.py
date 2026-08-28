@@ -472,11 +472,15 @@ _WTTJ_METADATA_LINE_RE = re.compile(
 # company signal is the CDN path segment in the logo's src, e.g.
 # https://cdn-s3-stag.jobgether.com/thehomedepot/profile.webp — a concatenated,
 # unspaced slug ("thehomedepot") rather than a display name.
+# ai: claude-sonnet-5 | 2026-08-28 — Jobgether moved the CDN host from
+# cdn-s3-stag.jobgether.com to cdn-s3.jobgether.com (jobs 4505-4507: the old
+# host-only regex silently matched zero cards, leaving company hints empty
+# and the LLM to misattribute or drop company names). Match either host.
 _JOBGETHER_SENDER_RE = re.compile(r"jobgether\.com", re.IGNORECASE)
 _JOBGETHER_CARD_SPLIT_RE = re.compile(r'(?=<div class="content-offers")')
 _JOBGETHER_HREF_RE = re.compile(r'<a\b[^>]*\bhref="([^"]+)"', re.IGNORECASE)
 _JOBGETHER_LOGO_SRC_RE = re.compile(
-    r'<img\b[^>]*\bsrc="https://cdn-s3-stag\.jobgether\.com/([a-z0-9][a-z0-9-]*)/profile\.webp"',
+    r'<img\b[^>]*\bsrc="https://cdn-s3(?:-stag)?\.jobgether\.com/([a-z0-9][a-z0-9-]*)/profile\.webp"',
     re.IGNORECASE,
 )
 
