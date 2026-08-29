@@ -316,8 +316,19 @@ function showNoAccess() {
   document.getElementById('no-access').style.display = 'block';
 }
 
+// ai: claude-sonnet-5 | 2026-08-29
+// A blocked page (see content.js's isBlockedHost — Gmail, Slack, etc.) has no
+// captureModes and jobCount 0, same shape as a genuinely unrecognized site
+// that still wants the generic "Send Page to App" fallback — so the button
+// must be explicitly disabled here rather than relying on jobCount alone.
 function resetButton() {
   const btn = document.getElementById('send-btn');
+  if (lastScanResult?.type === 'blocked') {
+    btn.disabled = true;
+    btn.innerHTML = 'Not a job page';
+    btn.onclick = null;
+    return;
+  }
   btn.disabled = false;
   btn.innerHTML = currentJobCount > 0
     ? `Send ${currentJobCount} Job${currentJobCount !== 1 ? 's' : ''} to App`

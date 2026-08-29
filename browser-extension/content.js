@@ -29,11 +29,41 @@
   // numeric job id that both real Greenhouse single-job path shapes share.
   const _GH_JOB_PATH_RE = /^\/[^/]+\/jobs\/\d+(?:[/?#]|$)|^\/jobs\/[^/]+\/\d+(?:[/?#]|$)/;
 
+  // ai: claude-sonnet-5 | 2026-08-29
+  // Known non-job utility sites (webmail, calendar, docs, chat) that a stray
+  // "Send to Job Hunt App" click can hit — the generic smartGeneric/body-text
+  // fallback below has no site-shape check, so without this it will happily
+  // scrape page chrome (e.g. Gmail's "Search mail" nav heading) as a job title.
+  // Checked by exact host or as a subdomain suffix (mail.google.com,
+  // inbox.google.com, etc. all end in google.com but google.com itself is left
+  // off the list since it's also a legitimate smartGeneric-eligible domain for
+  // things like Google-hosted career pages).
+  const _NON_JOB_HOSTS = [
+    'mail.google.com',
+    'calendar.google.com',
+    'drive.google.com',
+    'docs.google.com',
+    'outlook.live.com',
+    'outlook.office.com',
+    'outlook.office365.com',
+    'mail.yahoo.com',
+    'slack.com',
+    'teams.microsoft.com',
+  ];
+
+  function isBlockedHost(host) {
+    return _NON_JOB_HOSTS.some(blocked => host === blocked || host.endsWith(`.${blocked}`));
+  }
+
   // ─── Page Detection ────────────────────────────────────────────────────────
 
   function detectPage() {
     const host = location.hostname;
     const path = location.pathname;
+
+    if (isBlockedHost(host)) {
+      return { site: host, type: 'blocked', jobCount: 0, description: 'Not a job page — capture blocked' };
+    }
 
     if (host.includes('linkedin.com')) {
       if (/\/jobs\/view\/\d+/.test(path)) {
@@ -2464,6 +2494,7 @@
     const page = detectPage();
     let payload;
     switch (page.type) {
+      case 'blocked':          payload = null; break;
       case 'linkedInJob':      payload = await buildLinkedInJobPayload(); break;
       case 'linkedInSearch':
         payload = options.captureMode === 'detail'
@@ -2571,6 +2602,11 @@
     // Context menu flow: background can't wait for a long async response,
     // so content script sends the result back proactively via runtime message.
     if (message.action === 'buildForBackground') {
+      const page = detectPage();
+      if (page.type === 'blocked') {
+        chrome.runtime.sendMessage({ action: 'payloadReady', payload: null, blocked: true, site: page.site });
+        return false;
+      }
       buildPayload()
         .then(payload => chrome.runtime.sendMessage({ action: 'payloadReady', payload }))
         .catch(() => chrome.runtime.sendMessage({ action: 'payloadReady', payload: null }));

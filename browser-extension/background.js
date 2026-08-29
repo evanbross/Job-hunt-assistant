@@ -407,10 +407,10 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   const tabId = sender.tab?.id;
   const isQueueCapture = tabId !== undefined && _pendingCaptureTabs.has(tabId);
   if (isQueueCapture) _pendingCaptureTabs.delete(tabId);
-  postToApp(message.payload, tabId, isQueueCapture);
+  postToApp(message.payload, tabId, isQueueCapture, message.blocked ? message.site : null);
 });
 
-async function postToApp(payload, tabId, isQueueCapture = false) {
+async function postToApp(payload, tabId, isQueueCapture = false, blockedSite = null) {
   // ai: claude-sonnet-4-6 | 2026-06-21
   // Read and immediately delete the original queue URL before any await so it
   // is not lost if another tab finishes concurrently and reuses the same tabId.
@@ -457,6 +457,18 @@ async function postToApp(payload, tabId, isQueueCapture = false) {
       chrome.tabs.remove(tabId).catch(() => {});
       if (previousTabId) chrome.tabs.update(previousTabId, { active: true }).catch(() => {});
     }
+  }
+
+  // ai: claude-sonnet-5 | 2026-08-29
+  // Skip the network round-trip entirely for a known non-job page (see
+  // content.js's isBlockedHost) instead of letting the empty-body POST fail
+  // server-side with a generic "Error 400".
+  if (blockedSite) {
+    closeAndRestore();
+    if (!isQueueCapture) {
+      showNotification(`Skipped — ${blockedSite} doesn't look like a job page.`, false);
+    }
+    return;
   }
 
   try {
