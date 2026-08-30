@@ -56,6 +56,7 @@ const SETTINGS_TREE = [
       { id: "resume", label: "Resume" },
       { id: "application_profile", label: "Application Profile" },
       { id: "contacts", label: "LinkedIn Contacts" },
+      { id: "profile_settings", label: "Profile Settings" },
     ],
   },
   {
@@ -135,46 +136,60 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
     });
   };
 
-  const visibleTree = SETTINGS_TREE.filter((node) => !node.adminOnly || isAdmin);
+  // ai: claude-sonnet-5 | 2026-08-30 — admin-only nodes render as a visually
+  // separated block below a divider, so instance-wide settings never mix
+  // into the same list as personal, per-account tabs.
+  const userNodes = SETTINGS_TREE.filter((node) => !node.adminOnly);
+  const adminNodes = SETTINGS_TREE.filter((node) => node.adminOnly && isAdmin);
+
+  const renderNode = (node) =>
+    node.children ? (
+      <div key={node.id}>
+        <button
+          type="button"
+          onClick={() => toggleGroup(node.id)}
+          style={navGroupBtn}
+        >
+          <span style={navChevron}>{expandedGroups.has(node.id) ? "▾" : "▸"}</span>
+          {node.label}
+        </button>
+        {expandedGroups.has(node.id) && (
+          <div style={navChildren}>
+            {node.children.map((child) => (
+              <button
+                key={child.id}
+                onClick={() => setActiveSection(child.id)}
+                style={navBtn(activeSection === child.id)}
+              >
+                {child.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    ) : (
+      <button
+        key={node.id}
+        onClick={() => setActiveSection(node.id)}
+        style={navBtn(activeSection === node.id)}
+      >
+        {node.label}
+      </button>
+    );
 
   return (
     <div style={{ display: "flex", gap: "20px" }}>
       {/* Sidebar nav */}
       <nav style={sideNav}>
-        {visibleTree.map((node) =>
-          node.children ? (
-            <div key={node.id}>
-              <button
-                type="button"
-                onClick={() => toggleGroup(node.id)}
-                style={navGroupBtn}
-              >
-                <span style={navChevron}>{expandedGroups.has(node.id) ? "▾" : "▸"}</span>
-                {node.label}
-              </button>
-              {expandedGroups.has(node.id) && (
-                <div style={navChildren}>
-                  {node.children.map((child) => (
-                    <button
-                      key={child.id}
-                      onClick={() => setActiveSection(child.id)}
-                      style={navBtn(activeSection === child.id)}
-                    >
-                      {child.label}
-                    </button>
-                  ))}
-                </div>
-              )}
+        {userNodes.map(renderNode)}
+        {adminNodes.length > 0 && (
+          <>
+            <div style={navDividerWrap}>
+              <div style={navDividerLine} />
+              <span style={navDividerLabel}>Admin</span>
             </div>
-          ) : (
-            <button
-              key={node.id}
-              onClick={() => setActiveSection(node.id)}
-              style={navBtn(activeSection === node.id)}
-            >
-              {node.label}
-            </button>
-          )
+            {adminNodes.map(renderNode)}
+          </>
         )}
       </nav>
 
@@ -184,6 +199,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
         {activeSection === "resume" && <ResumeUpload />}
         {activeSection === "application_profile" && <ApplicationProfilePanel />}
         {activeSection === "contacts" && <ContactsImport />}
+        {activeSection === "profile_settings" && <ProfileSettingsSection />}
         {activeSection === "sources" && <EmailSourcesSection />}
         {activeSection === "email_subject_rules" && <EmailSubjectRulesSection />}
         {activeSection === "career_sites" && <CareerSitesSection />}
@@ -2113,7 +2129,6 @@ function ConfigSection() {
   const [cfg, setCfg] = useState(null);
   const [schema, setSchema] = useState({ user: [], system: [] });
   const [saved, setSaved] = useState(false);
-  const [saveSummary, setSaveSummary] = useState(null);
   const [saving, setSaving] = useState(false);
   const [ollamaTest, setOllamaTest] = useState(null);
   const [testingOllama, setTestingOllama] = useState(false);
@@ -2144,25 +2159,8 @@ function ConfigSection() {
       return;
     }
     setCfg(data);
-    setSaveSummary(data);
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
-  };
-
-  const browseCandidateProfile = async () => {
-    const res = await fetch("/api/system/select-file", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initial_path: cfg?.candidate_profile_path || "" }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      alert(data.error || "Failed to open file picker");
-      return;
-    }
-    if (data.selected_path) {
-      setCfg((prev) => ({ ...prev, candidate_profile_path: data.selected_path }));
-    }
   };
 
   const testOllamaConnection = async () => {
@@ -2185,35 +2183,7 @@ function ConfigSection() {
       <SectionHeader title="Configuration" />
 
       <div style={{ maxWidth: "760px" }}>
-        <label style={labelStyle}>
-          Candidate Profile File
-          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              value={cfg.candidate_profile_path || ""}
-              onChange={(e) => setCfg({ ...cfg, candidate_profile_path: e.target.value })}
-              style={{ flex: 1, minWidth: "280px", fontFamily: "monospace", fontSize: "12px" }}
-            />
-            <button className="btn-secondary" onClick={browseCandidateProfile} style={{ whiteSpace: "nowrap" }}>
-              Browse…
-            </button>
-          </div>
-          <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", display: "block" }}>
-            Choose the markdown or text file used as the candidate profile for scoring and cover-letter prompts.
-          </span>
-        </label>
-
-        <label style={{ ...labelStyle, marginTop: "16px" }}>
-          Your Timezone
-          <TimezoneSelect
-            value={cfg.candidate_timezone || ""}
-            onChange={(tz) => setCfg({ ...cfg, candidate_timezone: tz })}
-          />
-          <span style={helpTextStyle}>
-            Used to flag remote jobs whose stated timezone window excludes your location.
-          </span>
-        </label>
-
-        <div style={{ marginTop: "16px" }}>
+        <div>
           <label style={labelStyle}>
             AI Provider
             <select
@@ -2292,6 +2262,108 @@ function ConfigSection() {
         <div style={{ marginTop: "20px" }}>
           <SchemaFieldGroup fields={schema.user} group="Job Board Credentials" cfg={cfg} setCfg={setCfg} />
         </div>
+
+        <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <button className="btn-primary" onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+          {saved && <span style={{ color: "var(--green)", fontSize: "13px" }}>Saved!</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Career Profile Settings ──────────────────────────────────────────────────
+
+// ai: claude-sonnet-5 | 2026-08-30 — split out of ConfigSection: the
+// candidate profile file and timezone are personal to the account, not
+// instance config, so they get their own tab under Career Profile instead
+// of sitting next to AI-provider/job-board settings under General.
+function ProfileSettingsSection() {
+  const [cfg, setCfg] = useState(null);
+  const [saved, setSaved] = useState(false);
+  const [saveSummary, setSaveSummary] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then((d) => setCfg(d));
+  }, []);
+
+  const browseCandidateProfile = async () => {
+    const res = await fetch("/api/system/select-file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initial_path: cfg?.candidate_profile_path || "" }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      window.alert(data.error || "Failed to open file picker");
+      return;
+    }
+    if (data.selected_path) {
+      setCfg((prev) => ({ ...prev, candidate_profile_path: data.selected_path }));
+    }
+  };
+
+  const save = async () => {
+    setSaving(true);
+    const res = await fetch("/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        candidate_profile_path: cfg.candidate_profile_path,
+        candidate_timezone: cfg.candidate_timezone,
+      }),
+    });
+    const data = await res.json();
+    setSaving(false);
+    if (!res.ok) {
+      window.alert(data.error || "Failed to save profile settings");
+      return;
+    }
+    setCfg(data);
+    setSaveSummary(data);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  };
+
+  if (!cfg) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+
+  return (
+    <div>
+      <SectionHeader title="Profile Settings" />
+
+      <div style={{ maxWidth: "640px" }}>
+        <label style={labelStyle}>
+          Candidate Profile File
+          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              value={cfg.candidate_profile_path || ""}
+              onChange={(e) => setCfg({ ...cfg, candidate_profile_path: e.target.value })}
+              style={{ flex: 1, minWidth: "280px", fontFamily: "monospace", fontSize: "12px" }}
+            />
+            <button className="btn-secondary" onClick={browseCandidateProfile} style={{ whiteSpace: "nowrap" }}>
+              Browse…
+            </button>
+          </div>
+          <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", display: "block" }}>
+            Choose the markdown or text file used as the candidate profile for scoring and cover-letter prompts.
+          </span>
+        </label>
+
+        <label style={{ ...labelStyle, marginTop: "16px" }}>
+          Your Timezone
+          <TimezoneSelect
+            value={cfg.candidate_timezone || ""}
+            onChange={(tz) => setCfg({ ...cfg, candidate_timezone: tz })}
+          />
+          <span style={helpTextStyle}>
+            Used to flag remote jobs whose stated timezone window excludes your location.
+          </span>
+        </label>
 
         <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <button className="btn-primary" onClick={save} disabled={saving}>
@@ -2609,6 +2681,29 @@ const navChildren = {
   gap: "2px",
   marginLeft: "16px",
   marginBottom: "4px",
+};
+
+// ai: claude-sonnet-5 | 2026-08-30 — separates instance-wide (admin) tabs
+// from personal, per-account tabs above them in the sidebar.
+const navDividerWrap = {
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  margin: "10px 4px 4px 9px",
+};
+
+const navDividerLine = {
+  flex: 1,
+  height: "1px",
+  background: "var(--border)",
+};
+
+const navDividerLabel = {
+  fontSize: "10px",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+  color: "var(--text-muted)",
 };
 
 export const labelStyle = {
