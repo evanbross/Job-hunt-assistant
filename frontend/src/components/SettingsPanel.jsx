@@ -42,11 +42,80 @@ import ContactsImport from "./ContactsImport.jsx";
 import ResumeUpload from "./ResumeUpload.jsx";
 import SetupWizardPanel from "./SetupWizardPanel.jsx";
 
-// ai: claude-sonnet-5 | 2026-07-26
+// ai: claude-sonnet-5 | 2026-08-30
+// Grouped like an IDE settings tree (PyCharm-style): top-level leaves for
+// single-page sections, groups for related clusters of tabs. Order here is
+// render order, not alphabetical -- related things stay adjacent instead of
+// scattering across the sidebar by label.
+const SETTINGS_TREE = [
+  { id: "account", label: "Account" },
+  {
+    id: "career_profile",
+    label: "Career Profile",
+    children: [
+      { id: "resume", label: "Resume" },
+      { id: "application_profile", label: "Application Profile" },
+      { id: "contacts", label: "LinkedIn Contacts" },
+    ],
+  },
+  {
+    id: "email",
+    label: "Email",
+    children: [
+      { id: "sources", label: "Sources" },
+      { id: "email_subject_rules", label: "Subject Rules" },
+    ],
+  },
+  {
+    id: "career_sites_group",
+    label: "Career Sites",
+    children: [
+      { id: "career_sites", label: "Site URLs" },
+      { id: "jd_health_check", label: "JD Parser Health Check" },
+    ],
+  },
+  {
+    id: "automation",
+    label: "Automation",
+    children: [
+      { id: "import_listener", label: "Import Listener" },
+      { id: "fetch_queue", label: "Fetch Queue" },
+    ],
+  },
+  {
+    id: "scoring",
+    label: "Scoring",
+    children: [
+      { id: "penalties", label: "Scoring Rules" },
+      { id: "feedback", label: "Learned Patterns" },
+    ],
+  },
+  {
+    id: "general",
+    label: "General",
+    children: [
+      { id: "config", label: "Configuration" },
+      { id: "setup", label: "Setup" },
+    ],
+  },
+  { id: "system", label: "System", adminOnly: true },
+];
+
+function groupIdContaining(sectionId) {
+  const group = SETTINGS_TREE.find((node) => node.children?.some((child) => child.id === sectionId));
+  return group ? group.id : null;
+}
+
 export default function SettingsPanel({ initialSection, onSetupComplete }) {
   const [activeSection, setActiveSection] = useState(() => initialSection || "resume");
   // ai: claude-sonnet-5 | 2026-08-21
   const [isAdmin, setIsAdmin] = useState(false);
+  // ai: claude-sonnet-5 | 2026-08-30 — only the group containing the initial
+  // section starts open; others expand on click, same as a PyCharm settings tree.
+  const [expandedGroups, setExpandedGroups] = useState(() => {
+    const groupId = groupIdContaining(initialSection || "resume");
+    return new Set(groupId ? [groupId] : []);
+  });
 
   useEffect(() => {
     (async () => {
@@ -57,38 +126,56 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
     })();
   }, []);
 
-  const sections = [
-    { id: "account", label: "Account" },
-    { id: "resume", label: "Resume" },
-    { id: "application_profile", label: "Application Profile" },
-    { id: "contacts", label: "LinkedIn Contacts" },
-    { id: "sources", label: "Email" },
-    { id: "email_subject_rules", label: "Email Subject Rules" },
-    { id: "career_sites", label: "Career Sites" },
-    { id: "jd_health_check", label: "JD Parser Health Check" },
-    { id: "import_listener", label: "Import Listener" },
-    { id: "fetch_queue", label: "Fetch Queue" },
-    { id: "penalties", label: "Scoring Rules" },
-    { id: "feedback", label: "Learned Patterns" },
-    { id: "config", label: "Configuration" },
-    { id: "setup", label: "Setup" },
-    ...(isAdmin ? [{ id: "system", label: "System" }] : []),
-  ];
-  const sortedSections = [...sections].sort((a, b) => a.label.localeCompare(b.label));
+  const toggleGroup = (groupId) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
+
+  const visibleTree = SETTINGS_TREE.filter((node) => !node.adminOnly || isAdmin);
 
   return (
     <div style={{ display: "flex", gap: "20px" }}>
       {/* Sidebar nav */}
       <nav style={sideNav}>
-        {sortedSections.map((s) => (
-          <button
-            key={s.id}
-            onClick={() => setActiveSection(s.id)}
-            style={navBtn(activeSection === s.id)}
-          >
-            {s.label}
-          </button>
-        ))}
+        {visibleTree.map((node) =>
+          node.children ? (
+            <div key={node.id}>
+              <button
+                type="button"
+                onClick={() => toggleGroup(node.id)}
+                style={navGroupBtn}
+              >
+                <span style={navChevron}>{expandedGroups.has(node.id) ? "▾" : "▸"}</span>
+                {node.label}
+              </button>
+              {expandedGroups.has(node.id) && (
+                <div style={navChildren}>
+                  {node.children.map((child) => (
+                    <button
+                      key={child.id}
+                      onClick={() => setActiveSection(child.id)}
+                      style={navBtn(activeSection === child.id)}
+                    >
+                      {child.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              key={node.id}
+              onClick={() => setActiveSection(node.id)}
+              style={navBtn(activeSection === node.id)}
+            >
+              {node.label}
+            </button>
+          )
+        )}
       </nav>
 
       {/* Content */}
@@ -2468,7 +2555,7 @@ function Toggle({ checked, onChange }) {
 // ── Shared styles ─────────────────────────────────────────────────────────────
 
 const sideNav = {
-  width: "160px",
+  width: "200px",
   flexShrink: 0,
   display: "flex",
   flexDirection: "column",
@@ -2486,7 +2573,43 @@ const navBtn = (active) => ({
   cursor: "pointer",
   fontSize: "13px",
   fontWeight: active ? "600" : "400",
+  width: "100%",
 });
+
+// ai: claude-sonnet-5 | 2026-08-30 — tree group header (toggles expand only,
+// never itself "active") and its indented children wrapper.
+const navGroupBtn = {
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  textAlign: "left",
+  width: "100%",
+  padding: "8px 12px 8px 9px",
+  borderRadius: "var(--radius)",
+  background: "transparent",
+  color: "var(--text)",
+  border: "none",
+  cursor: "pointer",
+  fontSize: "11px",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+};
+
+const navChevron = {
+  display: "inline-block",
+  width: "10px",
+  fontSize: "10px",
+  color: "var(--text-muted)",
+};
+
+const navChildren = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "2px",
+  marginLeft: "16px",
+  marginBottom: "4px",
+};
 
 export const labelStyle = {
   display: "flex",
