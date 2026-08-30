@@ -130,20 +130,11 @@ SETTINGS: dict[str, SettingSpec] = {
         placeholder="sk-...",
         help_text="Your own key — billed to your OpenAI account, not shared with other accounts on this install.",
     ),
-    "wellfound_email": SettingSpec(
-        scope="user", is_secret=False, default=config.WELLFOUND_EMAIL,
-        label="Wellfound Email", group="Job Board Credentials",
-        placeholder="you@example.com",
-    ),
-    "wellfound_password": SettingSpec(
-        scope="user", is_secret=True, default=config.WELLFOUND_PASSWORD,
-        label="Wellfound Password", group="Job Board Credentials", input_type="password",
-    ),
     "greenhouse_email": SettingSpec(
         scope="user", is_secret=False, default=config.GREENHOUSE_EMAIL,
         label="Greenhouse Email", group="Job Board Credentials",
         placeholder="you@example.com",
-        help_text="Used by the Wellfound and Greenhouse board scanners — your own login, not shared with other accounts.",
+        help_text="Used by the Greenhouse board scanner — your own login, not shared with other accounts.",
     ),
 }
 

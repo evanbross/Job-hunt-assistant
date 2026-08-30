@@ -118,12 +118,10 @@ DEFAULT_FIT_SCORER_PROMPT_PATH: Path = Path(
 # ─── Redis / Celery ───────────────────────────────────────────────────────────
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-# ─── Wellfound scraper ────────────────────────────────────────────────────────
-WELLFOUND_EMAIL: str = os.getenv("WELLFOUND_EMAIL", "")
-WELLFOUND_PASSWORD: str = os.getenv("WELLFOUND_PASSWORD", "")
-WELLFOUND_SEARCH_URL: str = os.getenv(
-    "WELLFOUND_SEARCH_URL", "https://wellfound.com/jobs"
-)
+# ─── Wellfound JD fetcher ─────────────────────────────────────────────────────
+# ai: claude-sonnet-5 | 2026-08-30 — email/password/search-URL settings removed
+# with the unreachable Wellfound Playwright scan panel; only the session-file
+# path survives, for the JD-enrichment fetcher used by routes/scan.py.
 WELLFOUND_SESSION_FILE: Path = CREDENTIALS_DIR / "wellfound_session.json"
 
 # ─── Jobanni scanner ─────────────────────────────────────────────────────────

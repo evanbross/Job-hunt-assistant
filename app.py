@@ -466,7 +466,6 @@ from routes.setup import setup_bp
 from routes.system import system_bp
 from routes.toptal import toptal_bp
 from routes.voice import voice_bp
-from routes.wellfound import wellfound_bp
 
 app.register_blueprint(application_profile_bp, url_prefix="/api")
 app.register_blueprint(auth_bp, url_prefix="/api")
@@ -487,7 +486,6 @@ app.register_blueprint(settings_bp, url_prefix="/api")
 app.register_blueprint(setup_bp, url_prefix="/api")
 app.register_blueprint(applications_bp, url_prefix="/api")
 app.register_blueprint(jobanni_bp, url_prefix="/api")
-app.register_blueprint(wellfound_bp, url_prefix="/api")
 app.register_blueprint(toptal_bp, url_prefix="/api")
 app.register_blueprint(voice_bp, url_prefix="/api")
 app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /api/system/*

@@ -449,8 +449,12 @@ def run_career_site_scan_task(
         listings_evaluated_total = 0
         source_count = len(target_sources)
 
-        # Sites that require a real browser — handled by dedicated Playwright scrapers.
-        _PLAYWRIGHT_ONLY_HOSTS = frozenset({"wellfound.com", "www.wellfound.com"})
+        # Sites that bot-block automated scanning entirely — no headless or
+        # server-side fetch gets past them, so they're excluded from the
+        # background scanner and captured manually via the browser extension
+        # instead (see WELLFOUND capture support in browser-extension/content.js).
+        # ai: claude-sonnet-5 | 2026-08-30
+        _MANUAL_CAPTURE_ONLY_HOSTS = frozenset({"wellfound.com", "www.wellfound.com"})
 
         for idx, source in enumerate(target_sources):
             current_source_id = source["id"]
@@ -477,16 +481,16 @@ def run_career_site_scan_task(
                 _host = urlparse(source_url).hostname or ""
             except Exception:
                 _host = ""
-            if _host in _PLAYWRIGHT_ONLY_HOSTS:
+            if _host in _MANUAL_CAPTURE_ONLY_HOSTS:
                 logger.info(
-                    "Skipping %s (%s) — Playwright-only host; use the Wellfound Scan panel",
+                    "Skipping %s (%s) — bot-blocks automated scanning; capture via the browser extension instead",
                     source_name,
                     source_url,
                 )
                 _update_career_scan(
                     error=(
-                        f"{source_name}: requires the Wellfound Playwright scanner "
-                        f"— use the Wellfound Scan panel in the Career Sites tab"
+                        f"{source_name}: blocks automated scanning — visit the site "
+                        f"and capture jobs manually with the browser extension"
                     )
                 )
                 scanned_sites += 1
