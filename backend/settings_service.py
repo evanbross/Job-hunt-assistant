@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import config
 from backend.crypto import decrypt_secret, encrypt_secret
 from backend.settings_registry import SETTINGS
 
@@ -99,3 +100,24 @@ def is_setting_configured(key: str, user_id: int | None, repos: dict[str, Any]) 
     if spec.is_secret:
         return bool(raw)
     return bool(raw) or bool(spec.default)
+
+
+# ai: claude-sonnet-5 | 2026-08-30
+# get_setting() always returns a string (the registry's checkbox/numeric
+# fields are stored as plain "true"/"false" or digit strings, same
+# convention as the existing SMTP/Server settings -- see SchemaField's
+# `cfg[key] === "true"` check in SettingsPanel.jsx). These two wrappers
+# centralize the read-time coercion instead of re-implementing it at every
+# call site that reads a typed setting.
+def get_setting_bool(
+    key: str, user_id: int | None, repos: dict[str, Any], default: bool
+) -> bool:
+    """get_setting(), coerced to bool via config.config_bool()."""
+    return config.config_bool(get_setting(key, user_id, repos), default)
+
+
+def get_setting_int(
+    key: str, user_id: int | None, repos: dict[str, Any], default: int
+) -> int:
+    """get_setting(), coerced to int via config.config_int()."""
+    return config.config_int(get_setting(key, user_id, repos), default)

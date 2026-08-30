@@ -55,6 +55,7 @@ from backend.scanning.sources.wellfound_scraper import (
     canonical_wellfound_job_url,
     is_wellfound_job_url,
 )
+from backend.settings_service import set_setting
 from routes import scan
 
 _TRACKING_URL = "https://links.wellfound.com/s/c/AbC123/deadbeef/22"
@@ -247,19 +248,18 @@ def test_scan_enriches_wellfound_job_via_fetcher(
                 "enabled": 1,
             },
         )
+        # ai: claude-sonnet-5 | 2026-08-30 — these are per-user settings now
+        # (see backend/settings_registry.py), seeded as real user_settings
+        # rows instead of monkeypatching config.* accessors that no longer exist.
+        set_setting("email_lookback_days", "7", user_id, repos)
+        set_setting("move_successfully_processed_emails", "false", user_id, repos)
+        set_setting("scanned_email_label", "Scanned", user_id, repos)
         repos["conn"].commit()
     finally:
         repos["conn"].close()
 
     FakeWellfoundJobFetcher.fetched_urls = []
     monkeypatch.setattr(config, "DATABASE_URL", dsn)
-    monkeypatch.setattr(
-        config, "load_runtime_config", lambda: {"email_lookback_days": 7}
-    )
-    monkeypatch.setattr(
-        config, "should_move_successfully_processed_emails", lambda: False
-    )
-    monkeypatch.setattr(config, "get_scanned_email_label", lambda: "Scanned")
     monkeypatch.setattr(scan, "GmailClient", FakeGmailClient)
     monkeypatch.setattr(scan, "EmailParser", FakeEmailParser)
     monkeypatch.setattr(scan, "WellfoundJobFetcher", FakeWellfoundJobFetcher)

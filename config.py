@@ -40,10 +40,8 @@ so they survive restarts without touching the .env file.
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
 
@@ -103,6 +101,14 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "") or (
     if POSTGRES_HOST and POSTGRES_DB and _pg_user
     else ""
 )
+# ai: claude-sonnet-5 | 2026-08-30 — retired as the storage for mutable
+# runtime settings (see load_runtime_config's old docstring in git history);
+# every value that used to live here now lives in system_settings/
+# user_settings via backend/settings_registry.py. This path constant
+# survives only so backend/db/schema.py's one-time
+# _migrate_runtime_config_json can find and read the file left behind by an
+# existing install, to carry its already-configured values into the DB
+# instead of silently resetting them to bootstrap defaults.
 RUNTIME_CONFIG_PATH: Path = DATA_DIR / "runtime_config.json"
 DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(
     os.getenv("CANDIDATE_PROFILE_PATH", str(BASE_DIR / "candidate_profile.md"))
@@ -184,14 +190,15 @@ APP_BASE_URL: str = os.getenv("APP_BASE_URL", "http://localhost:5004")
 
 # ─── AI Models ────────────────────────────────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-08-19
-# ai_provider/openai_model/ollama_base_url/ollama_model are user preferences,
-# not secrets. Their single source of truth is data/runtime_config.json (see
-# load_runtime_config below), edited via the Settings UI / setup wizard's
-# PUT /api/config. These constants are only the bootstrap defaults used the
-# first time that file is created -- they are intentionally NOT read from
-# .env, to avoid two copies of the same setting drifting apart (see
-# routes/setup.py's _ALLOWED_ENV_KEYS, which accepts only secrets:
-# ANTHROPIC_API_KEY, OPENAI_API_KEY, FLASK_SECRET_KEY).
+# ai: claude-sonnet-5 | 2026-08-30 — single source of truth moved from
+# data/runtime_config.json to the per-user "ai_provider"/"anthropic_model"/
+# "openai_model"/"ollama_base_url"/"ollama_model" settings in
+# backend/settings_registry.py (read via get_setting), edited via the
+# Settings UI / setup wizard's PUT /api/config. These constants are only
+# each setting's bootstrap default -- intentionally NOT read from .env, to
+# avoid two copies of the same setting drifting apart (see routes/setup.py's
+# _ALLOWED_ENV_KEYS, which accepts only secrets: ANTHROPIC_API_KEY,
+# OPENAI_API_KEY, FLASK_SECRET_KEY).
 AI_PROVIDER: str = "anthropic"
 # ai: claude-sonnet-4-6 | 2026-06-16
 PARSER_MODEL: str = "claude-sonnet-4-6"
@@ -363,128 +370,27 @@ Response schema (JSON only):
 
 
 # ─── Runtime config helpers ───────────────────────────────────────────────────
+# ai: claude-sonnet-5 | 2026-08-30 — the mutable-runtime-config dict/JSON-file
+# layer that used to live here is gone; every value it held now lives in
+# system_settings/user_settings (backend/settings_registry.py), read via
+# backend.settings_service.get_setting[_bool/_int]. What remains here are
+# pure helpers with no DB awareness, so config.py doesn't need to import
+# backend.settings_service (which itself imports config -- a cycle).
 
 
-def load_runtime_config() -> dict[str, Any]:
-    """Load mutable runtime config, falling back to .env defaults."""
-    if RUNTIME_CONFIG_PATH.exists():
-        try:
-            with open(RUNTIME_CONFIG_PATH) as fh:
-                raw_cfg: dict[str, Any] = json.load(fh)
-                return {
-                    "email_lookback_days": raw_cfg.get(
-                        "email_lookback_days", DEFAULT_EMAIL_LOOKBACK_DAYS
-                    ),
-                    "scanned_email_label": raw_cfg.get(
-                        "scanned_email_label", DEFAULT_SCANNED_EMAIL_LABEL
-                    ),
-                    "move_successfully_processed_emails": _config_bool(
-                        raw_cfg.get("move_successfully_processed_emails"),
-                        DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
-                    ),
-                    "candidate_profile_path": raw_cfg.get(
-                        "candidate_profile_path", str(DEFAULT_CANDIDATE_PROFILE_PATH)
-                    ),
-                    "ai_provider": raw_cfg.get("ai_provider", AI_PROVIDER),
-                    "anthropic_model": raw_cfg.get("anthropic_model", SCORER_MODEL),
-                    "openai_model": raw_cfg.get("openai_model", OPENAI_MODEL),
-                    "ollama_base_url": raw_cfg.get("ollama_base_url", OLLAMA_BASE_URL),
-                    "ollama_model": raw_cfg.get("ollama_model", OLLAMA_MODEL),
-                    "job_import_listener_enabled": raw_cfg.get(
-                        "job_import_listener_enabled",
-                        DEFAULT_JOB_IMPORT_LISTENER_ENABLED,
-                    ),
-                    "job_import_listener_host": raw_cfg.get(
-                        "job_import_listener_host",
-                        DEFAULT_JOB_IMPORT_LISTENER_HOST,
-                    ),
-                    "job_import_listener_port": raw_cfg.get(
-                        "job_import_listener_port",
-                        DEFAULT_JOB_IMPORT_LISTENER_PORT,
-                    ),
-                    "job_import_listener_token": raw_cfg.get(
-                        "job_import_listener_token",
-                        DEFAULT_JOB_IMPORT_LISTENER_TOKEN,
-                    ),
-                    "job_import_listener_max_bytes": raw_cfg.get(
-                        "job_import_listener_max_bytes",
-                        DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
-                    ),
-                    "candidate_timezone": raw_cfg.get(
-                        "candidate_timezone", DEFAULT_CANDIDATE_TIMEZONE
-                    ),
-                    "jd_health_check_enabled": _config_bool(
-                        raw_cfg.get("jd_health_check_enabled"),
-                        DEFAULT_JD_HEALTH_CHECK_ENABLED,
-                    ),
-                    "jd_health_check_time_utc": raw_cfg.get(
-                        "jd_health_check_time_utc", DEFAULT_JD_HEALTH_CHECK_TIME_UTC
-                    ),
-                    "jd_health_check_frequency_days": raw_cfg.get(
-                        "jd_health_check_frequency_days",
-                        DEFAULT_JD_HEALTH_CHECK_FREQUENCY_DAYS,
-                    ),
-                    "jd_health_check_notify_email": raw_cfg.get(
-                        "jd_health_check_notify_email",
-                        DEFAULT_JD_HEALTH_CHECK_NOTIFY_EMAIL,
-                    ),
-                }
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {
-        "email_lookback_days": DEFAULT_EMAIL_LOOKBACK_DAYS,
-        "scanned_email_label": DEFAULT_SCANNED_EMAIL_LABEL,
-        "move_successfully_processed_emails": DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
-        "candidate_profile_path": str(DEFAULT_CANDIDATE_PROFILE_PATH),
-        "ai_provider": AI_PROVIDER,
-        "anthropic_model": SCORER_MODEL,
-        "openai_model": OPENAI_MODEL,
-        "ollama_base_url": OLLAMA_BASE_URL,
-        "ollama_model": OLLAMA_MODEL,
-        "job_import_listener_enabled": DEFAULT_JOB_IMPORT_LISTENER_ENABLED,
-        "job_import_listener_host": DEFAULT_JOB_IMPORT_LISTENER_HOST,
-        "job_import_listener_port": DEFAULT_JOB_IMPORT_LISTENER_PORT,
-        "job_import_listener_token": DEFAULT_JOB_IMPORT_LISTENER_TOKEN,
-        "job_import_listener_max_bytes": DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
-        "candidate_timezone": DEFAULT_CANDIDATE_TIMEZONE,
-        "jd_health_check_enabled": DEFAULT_JD_HEALTH_CHECK_ENABLED,
-        "jd_health_check_time_utc": DEFAULT_JD_HEALTH_CHECK_TIME_UTC,
-        "jd_health_check_frequency_days": DEFAULT_JD_HEALTH_CHECK_FREQUENCY_DAYS,
-        "jd_health_check_notify_email": DEFAULT_JD_HEALTH_CHECK_NOTIFY_EMAIL,
-    }
+def load_candidate_profile(path: Path) -> str:
+    """Load the external candidate profile markdown/text file at *path*.
 
-
-def get_candidate_profile_path() -> Path:
-    """Return the currently configured candidate profile path."""
-    cfg = load_runtime_config()
-    raw_path = str(cfg.get("candidate_profile_path") or "").strip()
-    return Path(raw_path) if raw_path else DEFAULT_CANDIDATE_PROFILE_PATH
-
-
-def get_scanned_email_label() -> str:
-    """Return the Gmail label used when moving processed emails."""
-    cfg = load_runtime_config()
-    scanned_email_label = str(cfg.get("scanned_email_label") or "").strip()
-    return scanned_email_label or DEFAULT_SCANNED_EMAIL_LABEL
-
-
-def should_move_successfully_processed_emails() -> bool:
-    """Return whether successful job emails should be moved during scans."""
-    cfg = load_runtime_config()
-    return _config_bool(
-        cfg.get("move_successfully_processed_emails"),
-        DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
-    )
-
-
-def load_candidate_profile() -> str:
-    """Load the external candidate profile markdown/text file."""
-    candidate_profile_path = get_candidate_profile_path()
+    Callers resolve the path themselves via
+    get_setting("candidate_profile_path", user_id, repos) -- falling back to
+    DEFAULT_CANDIDATE_PROFILE_PATH when unset -- since that requires DB
+    access this module can't have.
+    """
     try:
-        return candidate_profile_path.read_text(encoding="utf-8").strip()
+        return path.read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise RuntimeError(
-            f"Could not read candidate profile file at {candidate_profile_path}: {exc}"
+            f"Could not read candidate profile file at {path}: {exc}"
         ) from exc
 
 
@@ -538,38 +444,18 @@ def load_fit_scorer_prompt_template() -> str:
         ) from exc
 
 
-def get_job_import_listener_config() -> dict[str, Any]:
-    """Return listener settings, using runtime overrides over .env defaults."""
-    cfg = load_runtime_config()
-    return {
-        "enabled": _config_bool(
-            cfg.get("job_import_listener_enabled"),
-            DEFAULT_JOB_IMPORT_LISTENER_ENABLED,
-        ),
-        "host": str(
-            cfg.get("job_import_listener_host") or DEFAULT_JOB_IMPORT_LISTENER_HOST
-        ),
-        "port": _config_int(
-            cfg.get("job_import_listener_port"),
-            DEFAULT_JOB_IMPORT_LISTENER_PORT,
-        ),
-        "token": str(cfg.get("job_import_listener_token") or ""),
-        "max_bytes": _config_int(
-            cfg.get("job_import_listener_max_bytes"),
-            DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
-        ),
-        "ws_port": DEFAULT_JOB_IMPORT_LISTENER_WS_PORT_OVERRIDE
-        or (
-            _config_int(
-                cfg.get("job_import_listener_port"),
-                DEFAULT_JOB_IMPORT_LISTENER_PORT,
-            )
-            + 1
-        ),
-    }
+# ai: claude-sonnet-5 | 2026-08-30 — get_job_import_listener_config() moved to
+# backend/scanning/import_listener.py: it now needs get_setting/get_repos
+# (DB access), which would cycle back through backend.settings_registry's
+# `import config`.
 
 
-def _config_bool(value: object, default: bool) -> bool:
+# ai: claude-sonnet-5 | 2026-08-30 — public (no longer config.py-private):
+# backend.settings_service.get_setting_bool/get_setting_int wrap these to
+# coerce a registry-backed setting's string value to bool/int, so this
+# coercion logic has one implementation instead of being re-typed at every
+# call site that reads a typed setting.
+def config_bool(value: object, default: bool) -> bool:
     if value is None:
         return default
     if isinstance(value, bool):
@@ -585,15 +471,8 @@ def _config_bool(value: object, default: bool) -> bool:
     return default
 
 
-def _config_int(value: object, default: int) -> int:
+def config_int(value: object, default: int) -> int:
     try:
         return int(value or default)
     except (TypeError, ValueError):
         return default
-
-
-def save_runtime_config(cfg: dict[str, Any]) -> None:
-    """Persist mutable runtime config."""
-    RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(RUNTIME_CONFIG_PATH, "w") as fh:
-        json.dump(cfg, fh, indent=2)

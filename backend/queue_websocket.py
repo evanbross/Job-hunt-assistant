@@ -62,7 +62,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
-import config
+from backend.scanning.import_listener import get_job_import_listener_config
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,7 @@ def start_queue_websocket_server(
     """
     global _server
 
-    listener_config = config.get_job_import_listener_config()
+    listener_config = get_job_import_listener_config()
     if not listener_config["enabled"]:
         return None
     if (

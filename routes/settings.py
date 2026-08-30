@@ -45,7 +45,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import fitz
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, session
 from flask.typing import ResponseReturnValue
 
 import config
@@ -56,7 +56,13 @@ from backend.settings_registry import (
     USER_SETTING_KEYS,
     schema_for_scope,
 )
-from backend.settings_service import get_setting, is_setting_configured, set_setting
+from backend.settings_service import (
+    get_setting,
+    get_setting_bool,
+    get_setting_int,
+    is_setting_configured,
+    set_setting,
+)
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
 from backend.utils.utils import current_user_id, get_repos
 
@@ -70,14 +76,87 @@ _VALID_PENALTY_SCOPES: frozenset[str] = frozenset({"title", "company", "body", "
 # ─── Config routes ────────────────────────────────────────────────────────────
 
 
+# ai: claude-sonnet-5 | 2026-08-30
+# Keys formerly stored in the single shared data/runtime_config.json (the
+# multi-tenancy gap this closes) -- now per-user settings read/written with
+# explicit bool/int coercion so GET/PUT /api/config keeps returning the
+# same real JSON types its existing frontend consumers (ConfigSection,
+# ProfileSettingsSection, EmailSourcesSection, JdHealthCheckSection) already
+# expect. Excluded from the generic passthrough helpers below (which always
+# read/write plain strings -- fine for the remaining user keys: API key
+# secrets and greenhouse_email).
+_RUNTIME_CONFIG_USER_KEYS: frozenset[str] = frozenset(
+    {
+        "email_lookback_days",
+        "scanned_email_label",
+        "move_successfully_processed_emails",
+        "candidate_profile_path",
+        "candidate_timezone",
+        "ai_provider",
+        "anthropic_model",
+        "openai_model",
+        "ollama_base_url",
+        "ollama_model",
+        "jd_health_check_enabled",
+        "jd_health_check_time_utc",
+        "jd_health_check_frequency_days",
+        "jd_health_check_notify_email",
+    }
+)
+
+
 def _read_user_settings_into(cfg: dict[str, object], user_id: int, repos: dict) -> None:
-    """Merge every USER_SETTING_KEYS entry into *cfg* -- secrets as a "_set"
-    boolean (never the plaintext), everything else as its live value."""
-    for key in USER_SETTING_KEYS:
+    """Merge every USER_SETTING_KEYS entry not in _RUNTIME_CONFIG_USER_KEYS
+    into *cfg* -- secrets as a "_set" boolean (never the plaintext),
+    everything else as its live value. The excluded keys are read
+    explicitly by _read_runtime_config_user_settings() instead, with
+    bool/int coercion."""
+    for key in USER_SETTING_KEYS - _RUNTIME_CONFIG_USER_KEYS:
         if SETTINGS[key].is_secret:
             cfg[f"{key}_set"] = is_setting_configured(key, user_id, repos)
         else:
             cfg[key] = get_setting(key, user_id, repos)
+
+
+def _read_runtime_config_user_settings(user_id: int, repos: dict) -> dict[str, object]:
+    """Read every _RUNTIME_CONFIG_USER_KEYS entry with its proper JSON type.
+    The single source of truth for that shape, shared by get_config() and
+    update_config()'s response."""
+    return {
+        "email_lookback_days": get_setting_int(
+            "email_lookback_days", user_id, repos, config.DEFAULT_EMAIL_LOOKBACK_DAYS
+        ),
+        "scanned_email_label": get_setting("scanned_email_label", user_id, repos),
+        "move_successfully_processed_emails": get_setting_bool(
+            "move_successfully_processed_emails",
+            user_id,
+            repos,
+            config.DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
+        ),
+        "candidate_profile_path": get_setting("candidate_profile_path", user_id, repos),
+        "candidate_timezone": get_setting("candidate_timezone", user_id, repos),
+        "ai_provider": get_setting("ai_provider", user_id, repos),
+        "anthropic_model": get_setting("anthropic_model", user_id, repos),
+        "openai_model": get_setting("openai_model", user_id, repos),
+        "ollama_base_url": get_setting("ollama_base_url", user_id, repos),
+        "ollama_model": get_setting("ollama_model", user_id, repos),
+        "jd_health_check_enabled": get_setting_bool(
+            "jd_health_check_enabled",
+            user_id,
+            repos,
+            config.DEFAULT_JD_HEALTH_CHECK_ENABLED,
+        ),
+        "jd_health_check_time_utc": get_setting("jd_health_check_time_utc", user_id, repos),
+        "jd_health_check_frequency_days": get_setting_int(
+            "jd_health_check_frequency_days",
+            user_id,
+            repos,
+            config.DEFAULT_JD_HEALTH_CHECK_FREQUENCY_DAYS,
+        ),
+        "jd_health_check_notify_email": get_setting(
+            "jd_health_check_notify_email", user_id, repos
+        ),
+    }
 
 
 # ai: claude-sonnet-5 | 2026-08-26
@@ -92,11 +171,10 @@ def get_settings_schema() -> ResponseReturnValue:
 
 @settings_bp.route("/config")
 def get_config() -> ResponseReturnValue:
-    cfg = config.load_runtime_config()
-    cfg["default_snooze_days"] = config.DEFAULT_SNOOZE_DAYS
-
     user_id = current_user_id()
     with get_repos() as repos:
+        cfg = _read_runtime_config_user_settings(user_id, repos)
+        cfg["default_snooze_days"] = config.DEFAULT_SNOOZE_DAYS
         _read_user_settings_into(cfg, user_id, repos)
 
     return jsonify(cfg)
@@ -108,23 +186,29 @@ def update_config() -> ResponseReturnValue:
     if not data:
         return jsonify({"error": "No data provided"}), 400
 
-    cfg = config.load_runtime_config()
-    previous_profile_path = str(cfg.get("candidate_profile_path") or "").strip()
+    # key -> validated string value, ready for set_setting().
+    updates: dict[str, str] = {}
 
     if "email_lookback_days" in data:
-        cfg["email_lookback_days"] = data["email_lookback_days"]
+        try:
+            lookback_days = int(data.get("email_lookback_days") or 0)
+        except (TypeError, ValueError):
+            return jsonify({"error": "email_lookback_days must be a number"}), 400
+        if lookback_days < 1:
+            return jsonify({"error": "email_lookback_days must be at least 1"}), 400
+        updates["email_lookback_days"] = str(lookback_days)
 
     if "scanned_email_label" in data:
         scanned_email_label = str(data.get("scanned_email_label") or "").strip()
         if not scanned_email_label:
             return jsonify({"error": "scanned_email_label cannot be empty"}), 400
-        cfg["scanned_email_label"] = scanned_email_label
+        updates["scanned_email_label"] = scanned_email_label
 
     if "move_successfully_processed_emails" in data:
         try:
-            cfg["move_successfully_processed_emails"] = _parse_bool_setting(
-                data.get("move_successfully_processed_emails")
-            )
+            updates["move_successfully_processed_emails"] = str(
+                _parse_bool_setting(data.get("move_successfully_processed_emails"))
+            ).lower()
         except ValueError:
             return (
                 jsonify(
@@ -152,7 +236,7 @@ def update_config() -> ResponseReturnValue:
                 jsonify({"error": f"Could not read candidate profile file: {exc}"}),
                 400,
             )
-        cfg["candidate_profile_path"] = str(candidate_profile_file)
+        updates["candidate_profile_path"] = str(candidate_profile_file)
 
     if "ai_provider" in data:
         ai_provider = str(data.get("ai_provider") or "").strip().lower()
@@ -161,89 +245,54 @@ def update_config() -> ResponseReturnValue:
                 jsonify({"error": "ai_provider must be anthropic, openai, or ollama"}),
                 400,
             )
-        cfg["ai_provider"] = ai_provider
+        updates["ai_provider"] = ai_provider
 
-    for key in ("anthropic_model", "openai_model", "ollama_model", "ollama_base_url"):
+    for key in ("anthropic_model", "openai_model", "ollama_model"):
         if key in data:
             value = str(data.get(key) or "").strip()
             if not value:
                 return jsonify({"error": f"{key} cannot be empty"}), 400
-            # ai: claude-sonnet-5 | 2026-08-18 — reject unsafe Ollama URLs, but
-            # only when the value is actually changing. ConfigSection submits
-            # the whole cfg blob on every save (it owns all AI-provider
-            # fields), so an unmodified ollama_base_url that happens to be
-            # unreachable right now (e.g. a home-network hostname while away)
-            # must not block saving an unrelated field like anthropic_model.
-            if key == "ollama_base_url":
-                value = value.rstrip("/")
-                if value != str(cfg.get("ollama_base_url") or "").strip().rstrip("/"):
-                    try:
-                        validate_outbound_url(value, allow_loopback=True)
-                    except UnsafeUrlError as exc:
-                        return jsonify({"error": f"ollama_base_url rejected: {exc}"}), 400
-            cfg[key] = value
+            updates[key] = value
 
-    if "job_import_listener_enabled" in data:
-        try:
-            cfg["job_import_listener_enabled"] = _parse_bool_setting(
-                data.get("job_import_listener_enabled")
-            )
-        except ValueError:
-            return (
-                jsonify({"error": "job_import_listener_enabled must be a boolean"}),
-                400,
-            )
-
-    if "job_import_listener_host" in data:
-        listener_host = str(data.get("job_import_listener_host") or "").strip()
-        if not listener_host:
-            return jsonify({"error": "job_import_listener_host cannot be empty"}), 400
-        cfg["job_import_listener_host"] = listener_host
-
-    if "job_import_listener_port" in data:
-        try:
-            listener_port = int(data.get("job_import_listener_port") or 0)
-        except (TypeError, ValueError):
-            return jsonify({"error": "job_import_listener_port must be a number"}), 400
-        if listener_port < 1 or listener_port > 65535:
-            return (
-                jsonify(
-                    {"error": "job_import_listener_port must be between 1 and 65535"}
-                ),
-                400,
-            )
-        cfg["job_import_listener_port"] = listener_port
-
-    if "job_import_listener_token" in data:
-        cfg["job_import_listener_token"] = str(
-            data.get("job_import_listener_token") or ""
-        ).strip()
+    if "ollama_base_url" in data:
+        value = str(data.get("ollama_base_url") or "").strip()
+        if not value:
+            return jsonify({"error": "ollama_base_url cannot be empty"}), 400
+        value = value.rstrip("/")
+        # ai: claude-sonnet-5 | 2026-08-18 — reject unsafe Ollama URLs, but
+        # only when the value is actually changing. ConfigSection submits
+        # the whole cfg blob on every save (it owns all AI-provider fields),
+        # so an unmodified ollama_base_url that happens to be unreachable
+        # right now (e.g. a home-network hostname while away) must not
+        # block saving an unrelated field like anthropic_model.
+        # ai: claude-sonnet-5 | 2026-08-30 — reads the current value via a
+        # direct session peek, not current_user_id(), so this safety check
+        # still runs (rather than crashing) for a request outside app.py's
+        # login guard -- see tests/test_ssrf_protection.py, which exercises
+        # this route with no session at all. No known session/current value
+        # means "treat as changed" and validate, the conservative default.
+        peeked_user_id = session.get("user_id")
+        current_value = ""
+        if peeked_user_id is not None:
+            with get_repos() as repos:
+                current_value = get_setting(
+                    "ollama_base_url", peeked_user_id, repos
+                ).rstrip("/")
+        if value != current_value:
+            try:
+                validate_outbound_url(value, allow_loopback=True)
+            except UnsafeUrlError as exc:
+                return jsonify({"error": f"ollama_base_url rejected: {exc}"}), 400
+        updates["ollama_base_url"] = value
 
     if "candidate_timezone" in data:
-        cfg["candidate_timezone"] = str(data.get("candidate_timezone") or "").strip()
-
-    if "job_import_listener_max_bytes" in data:
-        try:
-            max_bytes = int(data.get("job_import_listener_max_bytes") or 0)
-        except (TypeError, ValueError):
-            return (
-                jsonify({"error": "job_import_listener_max_bytes must be a number"}),
-                400,
-            )
-        if max_bytes < 1024:
-            return (
-                jsonify(
-                    {"error": "job_import_listener_max_bytes must be at least 1024"}
-                ),
-                400,
-            )
-        cfg["job_import_listener_max_bytes"] = max_bytes
+        updates["candidate_timezone"] = str(data.get("candidate_timezone") or "").strip()
 
     if "jd_health_check_enabled" in data:
         try:
-            cfg["jd_health_check_enabled"] = _parse_bool_setting(
-                data.get("jd_health_check_enabled")
-            )
+            updates["jd_health_check_enabled"] = str(
+                _parse_bool_setting(data.get("jd_health_check_enabled"))
+            ).lower()
         except ValueError:
             return jsonify({"error": "jd_health_check_enabled must be a boolean"}), 400
 
@@ -256,7 +305,7 @@ def update_config() -> ResponseReturnValue:
                 ),
                 400,
             )
-        cfg["jd_health_check_time_utc"] = time_utc
+        updates["jd_health_check_time_utc"] = time_utc
 
     if "jd_health_check_frequency_days" in data:
         try:
@@ -271,47 +320,69 @@ def update_config() -> ResponseReturnValue:
                 jsonify({"error": "jd_health_check_frequency_days must be at least 1"}),
                 400,
             )
-        cfg["jd_health_check_frequency_days"] = frequency_days
+        updates["jd_health_check_frequency_days"] = str(frequency_days)
 
     if "jd_health_check_notify_email" in data:
         notify_email = str(data.get("jd_health_check_notify_email") or "").strip()
         if notify_email and "@" not in notify_email:
             return jsonify({"error": "jd_health_check_notify_email is not a valid email"}), 400
-        cfg["jd_health_check_notify_email"] = notify_email
-
-    config.save_runtime_config(cfg)
+        updates["jd_health_check_notify_email"] = notify_email
 
     # ai: claude-sonnet-5 | 2026-08-21
-    # Per-user secrets/creds go through settings_service, not runtime_config.json
-    # -- keeps them encrypted and scoped to the account that set them. An empty
-    # string for a secret means "leave it unchanged" (the UI never round-trips
-    # the real value, so an empty submit can't mean anything else).
     # user_id is deliberately resolved here, not at the top of the function --
     # every branch above this point is a plain validation check that must be
     # able to return its 400 without requiring a logged-in session (see
     # tests/test_ssrf_protection.py, which calls this route directly against a
     # bare Flask app with no session to test URL validation in isolation).
     user_id = current_user_id()
-    if any(key in data for key in USER_SETTING_KEYS):
-        with get_repos() as repos:
-            for key in USER_SETTING_KEYS:
-                if key not in data:
-                    continue
-                value = str(data.get(key) or "")
-                if SETTINGS[key].is_secret and not value.strip():
-                    continue
-                set_setting(key, value, user_id, repos)
+    generic_keys = USER_SETTING_KEYS - _RUNTIME_CONFIG_USER_KEYS
 
-    profile_changed = (
-        str(cfg.get("candidate_profile_path") or "").strip() != previous_profile_path
-    )
+    profile_changed = False
     rescore_summary = {"rescored": 0, "failed": 0}
-    if profile_changed:
-        with get_repos() as repos:
+
+    with get_repos() as repos:
+        if "candidate_profile_path" in updates:
+            previous_profile_path = get_setting(
+                "candidate_profile_path", user_id, repos
+            )
+            profile_changed = updates["candidate_profile_path"] != previous_profile_path
+
+        for key, value in updates.items():
+            set_setting(key, value, user_id, repos)
+
+        # ai: claude-sonnet-5 | 2026-08-21
+        # Per-user secrets/creds not covered by explicit validation above
+        # (API keys, greenhouse_email) go through settings_service directly
+        # -- keeps them encrypted and scoped to the account that set them.
+        # An empty string for a secret means "leave it unchanged" (the UI
+        # never round-trips the real value, so an empty submit can't mean
+        # anything else).
+        for key in generic_keys:
+            if key not in data:
+                continue
+            value = str(data.get(key) or "")
+            if SETTINGS[key].is_secret and not value.strip():
+                continue
+            set_setting(key, value, user_id, repos)
+
+        # ai: claude-sonnet-5 | 2026-08-30 — every set_setting() call above
+        # was previously never committed (closing the connection without an
+        # explicit commit rolls back an uncommitted Postgres transaction --
+        # confirmed empirically), so a saved setting silently reverted the
+        # moment the connection closed; only visible again within the same
+        # transaction, which is why the UI's own "Saved!" response looked
+        # correct. Found while rewiring this route off the shared
+        # runtime_config.json blob; fixed here since the new
+        # job_import_listener_* admin settings (see update_system_settings)
+        # depend on writes actually persisting.
+        repos["conn"].commit()
+
+        if profile_changed:
             rescore_summary = rescore_active_queue_jobs(user_id, repos)
             repos["conn"].commit()
 
-    with get_repos() as repos:
+        cfg = _read_runtime_config_user_settings(user_id, repos)
+        cfg["default_snooze_days"] = config.DEFAULT_SNOOZE_DAYS
         _read_user_settings_into(cfg, user_id, repos)
 
     return jsonify(
@@ -427,6 +498,10 @@ def update_system_settings() -> ResponseReturnValue:
             if SETTINGS[key].is_secret and not str(value or "").strip():
                 continue
             set_setting(key, str(value or ""), None, repos)
+
+        # ai: claude-sonnet-5 | 2026-08-30 — see the matching commit in
+        # update_config() above for why this was missing and what it broke.
+        repos["conn"].commit()
 
         result = _read_system_settings(repos)
 

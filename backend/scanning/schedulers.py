@@ -30,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from datetime import time as time_of_day
 
 import config
+from backend.settings_service import get_setting, get_setting_bool, get_setting_int
 from backend.utils.utils import first_account_user_id, get_repos
 
 logger = logging.getLogger(__name__)
@@ -116,21 +117,19 @@ def is_jd_health_check_overdue(
 
 def jd_health_check_should_run_now(user_id: int) -> bool:
     """Read config + last-run state and decide if a scheduled run is due now."""
-    cfg = config.load_runtime_config()
-    if not cfg.get("jd_health_check_enabled"):
-        return False
-
-    time_str = str(cfg.get("jd_health_check_time_utc") or "03:00")
-    try:
-        hour, minute = (int(part) for part in time_str.split(":", 1))
-        scheduled_time = time_of_day(hour=hour, minute=minute, tzinfo=UTC)
-    except (ValueError, TypeError):
-        logger.warning("Invalid jd_health_check_time_utc %r; defaulting to 03:00", time_str)
-        scheduled_time = time_of_day(hour=3, minute=0, tzinfo=UTC)
-
-    frequency_days = int(cfg.get("jd_health_check_frequency_days") or 1)
-
     with get_repos() as repos:
+        if not get_setting_bool(
+            "jd_health_check_enabled", user_id, repos,
+            config.DEFAULT_JD_HEALTH_CHECK_ENABLED,
+        ):
+            return False
+
+        time_str = get_setting("jd_health_check_time_utc", user_id, repos)
+        frequency_days = get_setting_int(
+            "jd_health_check_frequency_days", user_id, repos,
+            config.DEFAULT_JD_HEALTH_CHECK_FREQUENCY_DAYS,
+        )
+
         # ai: claude-sonnet-5 | 2026-08-03
         # A run with zero enabled targets never writes a jd_health_results row
         # (see run_jd_health_check_task), so last_run_at would stay None forever
@@ -139,6 +138,13 @@ def jd_health_check_should_run_now(user_id: int) -> bool:
         if not repos["jd_health_targets"].get_enabled(user_id):
             return False
         last_run_at_raw = repos["jd_health_results"].get_last_run_at(user_id)
+
+    try:
+        hour, minute = (int(part) for part in time_str.split(":", 1))
+        scheduled_time = time_of_day(hour=hour, minute=minute, tzinfo=UTC)
+    except (ValueError, TypeError):
+        logger.warning("Invalid jd_health_check_time_utc %r; defaulting to 03:00", time_str)
+        scheduled_time = time_of_day(hour=3, minute=0, tzinfo=UTC)
 
     last_run_at = None
     if last_run_at_raw:

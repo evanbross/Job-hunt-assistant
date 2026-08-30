@@ -42,7 +42,6 @@ from datetime import UTC, datetime
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
-import config
 from backend.db.job_columns import JobColumns
 from backend.email.classification import email_date_from_message, get_subject_rule_match
 from backend.email.email_cleanup_service import EmailCleanupService
@@ -59,6 +58,7 @@ from backend.scoring.job_validator import (
     import_warnings_to_json,
     normalize_and_validate,
 )
+from backend.settings_service import get_setting
 from backend.utils.utils import current_user_id, get_repos, safe_error_message
 
 logger = logging.getLogger(__name__)
@@ -173,10 +173,10 @@ def move_scanned_emails() -> ResponseReturnValue:
     if not email_ids:
         return jsonify({"error": "Select at least one email"}), 400
 
-    scanned_email_label = config.get_scanned_email_label()
     user_id = current_user_id()
     try:
         with get_repos() as repos:
+            scanned_email_label = get_setting("scanned_email_label", user_id, repos)
             scanned_repo = repos["scanned_emails"]
             filtered_email_ids = []
             for eid in email_ids:

@@ -45,9 +45,12 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient, AIProviderError
+from backend.settings_service import get_setting
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,7 @@ _ALLOWED_CATEGORIES = frozenset({"banned_phrase", "structural", "voice"})
 
 class CoverLetterStyleLearner:
     def __init__(self, user_id: int) -> None:
+        self._user_id = user_id
         self._client = AIProviderClient(user_id)
 
     def learn_from_edit(
@@ -137,9 +141,14 @@ class CoverLetterStyleLearner:
             return None
         return parsed if isinstance(parsed, list) else None
 
-    @staticmethod
-    def _append_rule(rule: str) -> bool:
-        path = config.get_candidate_profile_path()
+    def _append_rule(self, rule: str) -> bool:
+        with get_repos() as repos:
+            profile_path_str = get_setting(
+                "candidate_profile_path", self._user_id, repos
+            )
+        path = (
+            Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
+        )
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as exc:

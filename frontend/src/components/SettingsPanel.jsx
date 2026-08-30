@@ -75,14 +75,7 @@ const SETTINGS_TREE = [
       { id: "jd_health_check", label: "JD Parser Health Check" },
     ],
   },
-  {
-    id: "automation",
-    label: "Automation",
-    children: [
-      { id: "import_listener", label: "Import Listener" },
-      { id: "fetch_queue", label: "Fetch Queue" },
-    ],
-  },
+  { id: "fetch_queue", label: "Fetch Queue" },
   {
     id: "scoring",
     label: "Scoring",
@@ -99,7 +92,20 @@ const SETTINGS_TREE = [
       { id: "setup", label: "Setup" },
     ],
   },
-  { id: "system", label: "System", adminOnly: true },
+  // ai: claude-sonnet-5 | 2026-08-30 — Import Listener moved here from
+  // Automation: it's a single process-wide network listener shared by every
+  // account, not a per-user preference (see backend/settings_registry.py's
+  // job_import_listener_* entries), so it belongs with the other
+  // instance-wide settings, not alongside personal tabs.
+  {
+    id: "system",
+    label: "System",
+    adminOnly: true,
+    children: [
+      { id: "system_general", label: "General" },
+      { id: "import_listener", label: "Import Listener" },
+    ],
+  },
 ];
 
 function groupIdContaining(sectionId) {
@@ -204,13 +210,13 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
         {activeSection === "email_subject_rules" && <EmailSubjectRulesSection />}
         {activeSection === "career_sites" && <CareerSitesSection />}
         {activeSection === "jd_health_check" && <JdHealthCheckSection />}
-        {activeSection === "import_listener" && <ImportListenerSection />}
         {activeSection === "fetch_queue" && <FetchQueueSection />}
         {activeSection === "penalties" && <PenaltiesSection />}
         {activeSection === "feedback" && <FeedbackSection />}
         {activeSection === "config" && <ConfigSection />}
         {activeSection === "setup" && <SetupWizardPanel onSetupComplete={onSetupComplete} />}
-        {activeSection === "system" && isAdmin && <SystemSettingsSection />}
+        {activeSection === "system_general" && isAdmin && <SystemSettingsSection />}
+        {activeSection === "import_listener" && isAdmin && <ImportListenerSection />}
       </div>
     </div>
   );
@@ -1565,13 +1571,19 @@ function JdHealthCheckSection() {
 
 // ── Import Listener ──────────────────────────────────────────────────────────
 
+// ai: claude-sonnet-5 | 2026-08-30 — reads/writes /api/settings/system, not
+// /api/config: the listener is a single process-wide network resource
+// shared by every account (see backend/settings_registry.py), so it moved
+// to system-scoped, admin-only settings. System-settings values are always
+// strings (same convention as SchemaField's checkbox handling below), not
+// the real bool/int types /api/config still returns for per-user fields.
 function ImportListenerSection() {
   const [cfg, setCfg] = useState(null);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetch("/api/config")
+    apiFetch("/api/settings/system")
       .then((response) => response.json())
       .then((data) => setCfg(data));
   }, []);
@@ -1590,15 +1602,15 @@ function ImportListenerSection() {
     }
 
     setSaving(true);
-    const res = await fetch("/api/config", {
+    const res = await apiFetch("/api/settings/system", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        job_import_listener_enabled: !!cfg.job_import_listener_enabled,
+        job_import_listener_enabled: cfg.job_import_listener_enabled === "true" ? "true" : "false",
         job_import_listener_host: cfg.job_import_listener_host,
-        job_import_listener_port: port,
+        job_import_listener_port: String(port),
         job_import_listener_token: cfg.job_import_listener_token || "",
-        job_import_listener_max_bytes: maxBytes,
+        job_import_listener_max_bytes: String(maxBytes),
       }),
     });
     const data = await res.json();
@@ -1636,11 +1648,12 @@ function ImportListenerSection() {
           Enabled
           <div>
             <Toggle
-              checked={!!cfg.job_import_listener_enabled}
+              checked={cfg.job_import_listener_enabled === "true"}
               onChange={() =>
                 setCfg({
                   ...cfg,
-                  job_import_listener_enabled: !cfg.job_import_listener_enabled,
+                  job_import_listener_enabled:
+                    cfg.job_import_listener_enabled === "true" ? "false" : "true",
                 })
               }
             />

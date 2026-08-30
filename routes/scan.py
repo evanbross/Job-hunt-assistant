@@ -75,6 +75,7 @@ from backend.scoring.job_validator import (
     normalize_and_validate,
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
+from backend.settings_service import get_setting, get_setting_bool, get_setting_int
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     current_user_id,
@@ -268,16 +269,6 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
             _update_scan(error=str(exc), message="Not authenticated with Google.")
             return dict(state)
 
-        # Load config (no DB needed for these)
-        runtime_cfg = config.load_runtime_config()
-        lookback_days: int = runtime_cfg.get(
-            "email_lookback_days", config.DEFAULT_EMAIL_LOOKBACK_DAYS
-        )
-        move_successfully_processed_emails = (
-            config.should_move_successfully_processed_emails()
-        )
-        scanned_email_label = config.get_scanned_email_label()
-
         # ai: claude-sonnet-5 | 2026-08-19
         # Restructured per Dev-Standards PYTHON_STANDARDS.md "Connection Lifetime
         # vs. Slow External Work" -- the connection used to stay open for the
@@ -289,6 +280,17 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
         # the whole scan (never appended to mid-run, even in the original code),
         # so unlike career_sites.py there's no in-run dedup ordering to preserve.
         with get_repos() as repos:
+            # ai: claude-sonnet-5 | 2026-08-30 — per-user settings, formerly
+            # the shared data/runtime_config.json (a multi-tenancy gap).
+            lookback_days = get_setting_int(
+                "email_lookback_days", user_id, repos,
+                config.DEFAULT_EMAIL_LOOKBACK_DAYS,
+            )
+            move_successfully_processed_emails = get_setting_bool(
+                "move_successfully_processed_emails", user_id, repos,
+                config.DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
+            )
+            scanned_email_label = get_setting("scanned_email_label", user_id, repos)
             subject_rules = repos["email_subject_rules"].get_enabled(user_id)
             enabled_sources = repos["sources"].get_enabled(user_id)
             if not enabled_sources:

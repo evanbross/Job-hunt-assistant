@@ -40,14 +40,19 @@ cover letter for a specific job posting based on the candidate's profile and
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.cover_letter.phrase_book import format_phrase_book_section
 from backend.scoring.jd_enrichment import job_description_text
+from backend.settings_service import get_setting
+from backend.utils.utils import get_repos
 
 
 class CoverLetterGenerator:
     def __init__(self, user_id: int) -> None:
+        self._user_id = user_id
         self._client = AIProviderClient(user_id)
 
     def generate(
@@ -100,13 +105,21 @@ class CoverLetterGenerator:
             phrases or [], company=company, job_title=job_title
         )
 
+        with get_repos() as repos:
+            profile_path_str = get_setting(
+                "candidate_profile_path", self._user_id, repos
+            )
+        profile_path = (
+            Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
+        )
+
         # ai: claude-sonnet-4-6 | 2026-06-10
         prompt = (
             config.load_cover_letter_prompt_template()
             .replace("{{JOB_TITLE}}", job_title)
             .replace("{{COMPANY}}", company)
             .replace("{{JOB_URL_LINE}}", job_url_line)
-            .replace("{{CANDIDATE_PROFILE}}", config.load_candidate_profile())
+            .replace("{{CANDIDATE_PROFILE}}", config.load_candidate_profile(profile_path))
             .replace("{{RESUME_SECTION}}", resume_section)
             .replace("{{FIT_SECTION}}", fit_section)
             .replace("{{JOB_DESCRIPTION_SECTION}}", job_description_section)

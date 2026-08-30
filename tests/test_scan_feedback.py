@@ -38,6 +38,7 @@ import pytest
 
 import config
 from backend.db import open_repositories
+from backend.settings_service import set_setting
 from routes import scan
 
 
@@ -125,18 +126,17 @@ def test_noise_feedback_does_not_skip_entire_email(
                 "created_at": "2026-05-09T12:00:00+00:00",
             },
         )
+        # ai: claude-sonnet-5 | 2026-08-30 — these are per-user settings now
+        # (see backend/settings_registry.py), seeded as real user_settings
+        # rows instead of monkeypatching config.* accessors that no longer exist.
+        set_setting("email_lookback_days", "7", user_id, repos)
+        set_setting("move_successfully_processed_emails", "false", user_id, repos)
+        set_setting("scanned_email_label", "Scanned", user_id, repos)
         repos["conn"].commit()
     finally:
         repos["conn"].close()
 
     monkeypatch.setattr(config, "DATABASE_URL", dsn)
-    monkeypatch.setattr(
-        config, "load_runtime_config", lambda: {"email_lookback_days": 7}
-    )
-    monkeypatch.setattr(
-        config, "should_move_successfully_processed_emails", lambda: False
-    )
-    monkeypatch.setattr(config, "get_scanned_email_label", lambda: "Scanned")
     monkeypatch.setattr(scan, "GmailClient", FakeGmailClient)
     monkeypatch.setattr(scan, "EmailParser", FakeEmailParser)
 

@@ -28,7 +28,6 @@ import pytest
 from flask import Flask
 from flask.testing import FlaskClient
 
-import config
 from backend.ai_provider import AIProviderClient, AIProviderError
 from backend.scanning.sources.jobanni_scanner import scan as jobanni_scan
 from routes.jobanni import JobanniScanRequest, jobanni_bp
@@ -144,10 +143,12 @@ def test_post_json_rejects_non_http_scheme() -> None:
     "base_url",
     ["http://192.168.0.10:11434", "ftp://example.com", "http://user:pass@example.com"],
 )
-def test_update_config_rejects_unsafe_ollama_base_url(
-    monkeypatch: pytest.MonkeyPatch, base_url: str
-) -> None:
-    monkeypatch.setattr(config, "load_runtime_config", lambda: {})
+def test_update_config_rejects_unsafe_ollama_base_url(base_url: str) -> None:
+    # ai: claude-sonnet-5 | 2026-08-30 — no config.load_runtime_config to
+    # monkeypatch anymore: ollama_base_url is a per-user setting now, and
+    # this route reads its current value via a session peek that safely
+    # returns "no known value" (so the safety check below still runs) when
+    # there's no session at all, as here.
     app = Flask(__name__)
     app.register_blueprint(settings_bp, url_prefix="/api")
     test_client = app.test_client()

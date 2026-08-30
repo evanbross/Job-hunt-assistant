@@ -78,33 +78,38 @@ class AIProviderClient:
     """Small provider adapter for Anthropic, OpenAI, and local Ollama text generation."""
 
     # ai: claude-sonnet-5 | 2026-08-21
+    # ai: claude-sonnet-5 | 2026-08-30 — provider/model choice moved from the
+    # (formerly instance-shared) runtime config to per-user settings, same
+    # scope as the API keys just below -- each account picks its own
+    # provider/model, not just its own key.
     def __init__(
         self, user_id: int, on_retry: Callable[[str], None] | None = None
     ) -> None:
         self._on_retry = on_retry
-        cfg = config.load_runtime_config()
-        self._provider = (
-            str(cfg.get("ai_provider") or config.AI_PROVIDER).strip().lower()
-        )
-        self._anthropic_model = str(
-            cfg.get("anthropic_model") or config.SCORER_MODEL
-        ).strip()
-        self._openai_model = str(cfg.get("openai_model") or config.OPENAI_MODEL).strip()
-        self._ollama_base_url = (
-            str(cfg.get("ollama_base_url") or config.OLLAMA_BASE_URL)
-            .strip()
-            .rstrip("/")
-        )
-        self._ollama_model = str(cfg.get("ollama_model") or config.OLLAMA_MODEL).strip()
 
-        # AI provider API keys are per-account secrets, not shared instance
-        # config — each account brings its own Anthropic/OpenAI billing.
+        # AI provider/model choice and API keys are all per-account settings
+        # — each account brings its own provider preference and billing.
         # Opens its own short-lived connection (not backend.utils.utils'
         # get_repos — that module imports AIProviderError from this one, so
         # importing back from it here would be a circular import) so callers
         # never need to manage a repos connection just to build this client.
         repos = open_repositories(config.DATABASE_URL)
         try:
+            self._provider = (
+                get_setting("ai_provider", user_id, repos) or config.AI_PROVIDER
+            ).strip().lower()
+            self._anthropic_model = (
+                get_setting("anthropic_model", user_id, repos) or config.SCORER_MODEL
+            ).strip()
+            self._openai_model = (
+                get_setting("openai_model", user_id, repos) or config.OPENAI_MODEL
+            ).strip()
+            self._ollama_base_url = (
+                get_setting("ollama_base_url", user_id, repos) or config.OLLAMA_BASE_URL
+            ).strip().rstrip("/")
+            self._ollama_model = (
+                get_setting("ollama_model", user_id, repos) or config.OLLAMA_MODEL
+            ).strip()
             anthropic_api_key = get_setting("anthropic_api_key", user_id, repos)
             openai_api_key = get_setting("openai_api_key", user_id, repos)
         finally:

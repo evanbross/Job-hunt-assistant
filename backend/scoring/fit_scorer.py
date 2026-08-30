@@ -42,10 +42,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 from typing import TypedDict
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.settings_service import get_setting
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,7 @@ class FitScorer:
     """Scores job postings against the candidate profile using the Anthropic API."""
 
     def __init__(self, user_id: int) -> None:
+        self._user_id = user_id
         self._client = AIProviderClient(user_id)
 
     def score(
@@ -171,7 +175,11 @@ class FitScorer:
     def _build_system_prompt(
         self, resume_text: str, penalty_rules: list[dict], fit_feedback: list[dict]
     ) -> str:
-        tz = (config.load_runtime_config().get("candidate_timezone") or "").strip()
+        with get_repos() as repos:
+            tz = get_setting("candidate_timezone", self._user_id, repos).strip()
+            profile_path_str = get_setting(
+                "candidate_profile_path", self._user_id, repos
+            )
         if tz:
             timezone_note = (
                 f"- TIMEZONE COMPATIBILITY: The candidate is in the {tz} timezone. "
@@ -216,9 +224,12 @@ class FitScorer:
         # DEFAULT_FIT_SCORER_PROMPT_TEMPLATE, materialized to fit_scorer_prompt.md)
         # so the scoring instructions can be edited without touching this file.
         # Composition logic (which sections apply, in what order) stays here.
+        profile_path = (
+            Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
+        )
         return (
             config.load_fit_scorer_prompt_template()
-            .replace("{{CANDIDATE_PROFILE}}", config.load_candidate_profile())
+            .replace("{{CANDIDATE_PROFILE}}", config.load_candidate_profile(profile_path))
             .replace("{{RESUME_SECTION}}", resume_section)
             .replace("{{TIMEZONE_NOTE}}", timezone_note)
             .replace("{{PENALTY_LIST}}", penalty_list)

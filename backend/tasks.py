@@ -61,7 +61,6 @@ from typing import Any
 
 from googleapiclient.errors import HttpError
 
-import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
 from backend.db import DuplicateJobUrlError
@@ -90,6 +89,7 @@ from backend.scoring.jd_enrichment import (
     job_description_text,
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
+from backend.settings_service import get_setting
 from backend.utils.utils import get_repos, parse_positive_int
 
 logger = logging.getLogger(__name__)
@@ -822,7 +822,9 @@ def _record_capture_source(
 
 
 # ai: claude-sonnet-5 | 2026-08-03
-def _send_jd_health_check_failure_email(failure_details: list[dict[str, str]]) -> None:
+def _send_jd_health_check_failure_email(
+    user_id: int, failure_details: list[dict[str, str]]
+) -> None:
     """Best-effort failure notification. Never raises -- a send failure (not
     configured, not authenticated, or a token missing the gmail.send scope)
     is logged and swallowed; the health check run itself already completed
@@ -831,9 +833,10 @@ def _send_jd_health_check_failure_email(failure_details: list[dict[str, str]]) -
     task -- only GmailClient's documented NotAuthenticatedError/HttpError
     are caught, so a missing-scope 403 surfaces as a log line, not a crash.
     """
-    notify_email = str(
-        config.load_runtime_config().get("jd_health_check_notify_email") or ""
-    ).strip()
+    with get_repos() as repos:
+        notify_email = get_setting(
+            "jd_health_check_notify_email", user_id, repos
+        ).strip()
     if not notify_email:
         logger.info(
             "JD health check: %d failure(s) but no notify email configured",
@@ -963,6 +966,6 @@ def run_jd_health_check_task(
     )
 
     if failure_details:
-        _send_jd_health_check_failure_email(failure_details)
+        _send_jd_health_check_failure_email(user_id, failure_details)
 
     return {"total": total, "passed": passed, "failed": failed}

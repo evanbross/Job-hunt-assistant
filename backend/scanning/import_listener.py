@@ -53,6 +53,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import config
+from backend.settings_service import get_setting, get_setting_bool, get_setting_int
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +504,42 @@ _listener_lock = threading.Lock()
 _listener: JobImportListener | None = None
 
 
+# ai: claude-sonnet-5 | 2026-08-30 — moved from config.py: this listener is a
+# single process-wide network resource (one host:port:token serves every
+# account on the instance, same as config.FLASK_HOST/FLASK_PORT), so its
+# settings are system-scoped (backend/settings_registry.py) rather than
+# per-user. Reading them needs DB access, which config.py can't have without
+# a circular import back through backend.settings_registry's `import config`.
+def get_job_import_listener_config() -> dict[str, Any]:
+    """Return listener settings from system_settings, falling back to the
+    registry's bootstrap defaults for anything never explicitly configured."""
+    with get_repos() as repos:
+        enabled = get_setting_bool(
+            "job_import_listener_enabled", None, repos,
+            config.DEFAULT_JOB_IMPORT_LISTENER_ENABLED,
+        )
+        host = get_setting("job_import_listener_host", None, repos) or (
+            config.DEFAULT_JOB_IMPORT_LISTENER_HOST
+        )
+        port = get_setting_int(
+            "job_import_listener_port", None, repos,
+            config.DEFAULT_JOB_IMPORT_LISTENER_PORT,
+        )
+        token = get_setting("job_import_listener_token", None, repos)
+        max_bytes = get_setting_int(
+            "job_import_listener_max_bytes", None, repos,
+            config.DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES,
+        )
+    return {
+        "enabled": enabled,
+        "host": host,
+        "port": port,
+        "token": token,
+        "max_bytes": max_bytes,
+        "ws_port": config.DEFAULT_JOB_IMPORT_LISTENER_WS_PORT_OVERRIDE or (port + 1),
+    }
+
+
 def start_job_import_listener(
     submit_capture: SubmitCapture,
     claim_queue: ClaimQueue | None = None,
@@ -517,7 +555,7 @@ def start_job_import_listener(
     """
     global _listener
 
-    listener_config = config.get_job_import_listener_config()
+    listener_config = get_job_import_listener_config()
     if not listener_config["enabled"]:
         logger.info("Job import listener disabled by configuration.")
         return None

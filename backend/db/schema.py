@@ -38,6 +38,7 @@ split per-table like the repositories."""
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -47,7 +48,10 @@ from werkzeug.security import generate_password_hash
 import config
 from backend.crypto import encrypt_secret
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
-from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
+from backend.db.repositories.user_accounts import (
+    DEFAULT_ADMIN_EMAIL,
+    DEFAULT_ADMIN_PASSWORD,
+)
 from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
 from backend.settings_registry import SETTINGS
 from backend.utils.stage_status_normalization import normalize_stage_status
@@ -182,6 +186,50 @@ _PER_USER_TABLES: tuple[str, ...] = (
     "contacts",
     "cover_letter_phrases",
 )
+
+
+# ai: claude-sonnet-5 | 2026-08-30
+def _migrate_runtime_config_json(cur: Any, backfill_user_id: int) -> None:
+    """One-time bridge from the old data/runtime_config.json (a single file
+    shared by every account -- the multi-tenancy gap this migration closes)
+    into system_settings/user_settings, so retiring that file doesn't
+    silently reset an existing install's AI provider, candidate profile
+    path, import listener, etc. back to bootstrap defaults.
+
+    Must run before _seed_settings_from_env below: both use
+    ON CONFLICT DO NOTHING, so whichever inserts a key's row first wins --
+    running first here means a real configured value beats that function's
+    bootstrap default. Safe to call on every startup, including once the
+    JSON file is gone (it's simply skipped).
+    """
+    if not config.RUNTIME_CONFIG_PATH.exists():
+        return
+    try:
+        with open(config.RUNTIME_CONFIG_PATH) as fh:
+            raw_cfg: dict[str, Any] = json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return
+
+    for key, raw_value in raw_cfg.items():
+        spec = SETTINGS.get(key)
+        if spec is None:
+            continue  # field retired since this file was last written
+        value = (
+            str(raw_value).lower() if isinstance(raw_value, bool) else str(raw_value)
+        )
+        stored = encrypt_secret(value) if spec.is_secret else value
+        if spec.scope == "system":
+            cur.execute(
+                "INSERT INTO system_settings (key, value) VALUES (%s, %s)"
+                " ON CONFLICT (key) DO NOTHING",
+                (key, stored),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO user_settings (user_id, key, value) VALUES (%s, %s, %s)"
+                " ON CONFLICT (user_id, key) DO NOTHING",
+                (backfill_user_id, key, stored),
+            )
 
 
 # ai: claude-sonnet-5 | 2026-08-21
@@ -770,6 +818,11 @@ def _migrate(conn: Any) -> None:
 
     # ai: claude-sonnet-5 | 2026-08-21 — must run after user_settings has its
     # (user_id, key) primary key (just above), since this seeds rows into it.
+    # ai: claude-sonnet-5 | 2026-08-30 — _migrate_runtime_config_json first,
+    # so a real value from the old shared JSON file wins over
+    # _seed_settings_from_env's bootstrap-default fallback (see its own
+    # docstring for why insert order matters here).
+    _migrate_runtime_config_json(cur, backfill_user_id)
     _seed_settings_from_env(cur, backfill_user_id)
     conn.commit()
 

@@ -51,7 +51,7 @@ from dotenv import dotenv_values, set_key
 from flask import Blueprint, jsonify, request
 
 import config
-from backend.settings_service import is_setting_configured
+from backend.settings_service import get_setting, is_setting_configured
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils.utils import current_user_id, get_repos
 
@@ -75,18 +75,20 @@ _ALLOWED_ENV_KEYS: frozenset[str] = frozenset({"FLASK_SECRET_KEY"})
 @setup_bp.route("/setup/status")
 def setup_status() -> Any:
     """Return completion status of each wizard step."""
-    runtime = config.load_runtime_config()
-    provider = runtime.get("ai_provider", config.AI_PROVIDER)
     env_vals = _read_env_file()
 
     user_id = current_user_id()
     with get_repos() as repos:
-        ai_done = _check_ai_provider_done(provider, runtime, user_id, repos)
+        provider = get_setting("ai_provider", user_id, repos) or config.AI_PROVIDER
+        ai_done = _check_ai_provider_done(provider, user_id, repos)
+        profile_path_str = get_setting("candidate_profile_path", user_id, repos)
 
     creds_done = config.GOOGLE_CREDENTIALS_FILE.exists()
     auth_done = config.GOOGLE_TOKEN_FILE.exists()
 
-    profile_path = config.get_candidate_profile_path()
+    profile_path = (
+        Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
+    )
     profile_char_count, profile_done = _check_profile(profile_path)
 
     current_secret = env_vals.get("FLASK_SECRET_KEY", "") or config.FLASK_SECRET_KEY
@@ -125,7 +127,6 @@ def setup_status() -> Any:
 
 def _check_ai_provider_done(
     provider: str,
-    runtime: dict[str, Any],
     user_id: int,
     repos: dict[str, Any],
 ) -> bool:
@@ -134,7 +135,7 @@ def _check_ai_provider_done(
     if provider == "openai":
         return is_setting_configured("openai_api_key", user_id, repos)
     if provider == "ollama":
-        base_url = runtime.get("ollama_base_url") or config.OLLAMA_BASE_URL
+        base_url = get_setting("ollama_base_url", user_id, repos) or config.OLLAMA_BASE_URL
         return bool(base_url and base_url.strip())
     return False
 
@@ -343,7 +344,12 @@ def setup_candidate_profile() -> Any:
     if not content:
         return jsonify({"error": "Profile content cannot be empty"}), 400
 
-    profile_path = config.get_candidate_profile_path()
+    user_id = current_user_id()
+    with get_repos() as repos:
+        profile_path_str = get_setting("candidate_profile_path", user_id, repos)
+    profile_path = (
+        Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
+    )
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     profile_path.write_text(content, encoding="utf-8")
     logger.info(
