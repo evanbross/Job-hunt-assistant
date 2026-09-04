@@ -838,9 +838,13 @@ def _send_jd_health_check_failure_email(
             "jd_health_check_notify_email", user_id, repos
         ).strip()
     if not notify_email:
+        # ai: claude-sonnet-5 | 2026-09-04 — name the failing targets so the
+        # log line is useful when no notify email is configured to see the
+        # email's per-target detail instead.
         logger.info(
-            "JD health check: %d failure(s) but no notify email configured",
+            "JD health check: %d failure(s) but no notify email configured: %s",
             len(failure_details),
+            ", ".join(f"{d['label']} ({d['url']})" for d in failure_details),
         )
         return
 
@@ -957,12 +961,17 @@ def run_jd_health_check_task(
 
         self.update_state(state="PROGRESS", meta={"total": total, "completed": i + 1})
 
+    # ai: claude-sonnet-5 | 2026-09-04 — append failing target labels/urls so
+    # the DONE line names which targets broke, not just how many.
     logger.info(
-        "JD_HEALTH_CHECK DONE %.1fs total=%d passed=%d failed=%d",
+        "JD_HEALTH_CHECK DONE %.1fs total=%d passed=%d failed=%d%s",
         time.monotonic() - t0,
         total,
         passed,
         failed,
+        "" if not failure_details else " failing_targets=" + ", ".join(
+            f"{d['label']} ({d['url']})" for d in failure_details
+        ),
     )
 
     if failure_details:
