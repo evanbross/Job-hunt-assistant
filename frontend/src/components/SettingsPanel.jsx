@@ -793,7 +793,7 @@ function EmailSourcesSection() {
               <input
                 value={cfg.scanned_email_label || ""}
                 onChange={(e) => setCfg({ ...cfg, scanned_email_label: e.target.value })}
-                placeholder=".Job Hunt 2025/Scanned By Assistant"
+                placeholder={`.Job Hunt/${new Date().getFullYear()}/Scanned By Assistant`}
               />
               <span style={helpTextStyle}>
                 Gmail label used when moving processed emails out of the inbox.

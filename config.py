@@ -41,6 +41,7 @@ so they survive restarts without touching the .env file.
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -215,9 +216,14 @@ OLLAMA_MODEL: str = "qwen2.5:32b"
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 DEFAULT_EMAIL_LOOKBACK_DAYS: int = int(os.getenv("EMAIL_LOOKBACK_DAYS", "10"))
+# ai: claude-sonnet-5 | 2026-09-06 — computed from the current year instead of
+# a literal year string, so a fresh install (or an account with no stored
+# "scanned_email_label" row) doesn't inherit a folder name that goes stale
+# every January. Users can still freely override it via Settings -> Email, or
+# SCANNED_EMAIL_LABEL in .env for a specific fixed value.
 DEFAULT_SCANNED_EMAIL_LABEL: str = os.getenv(
     "SCANNED_EMAIL_LABEL",
-    ".Job Hunt 2025/Scanned By Assistant",
+    f".Job Hunt/{datetime.now(UTC).year}/Scanned By Assistant",
 )
 DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS: bool = os.getenv(
     "MOVE_SUCCESSFULLY_PROCESSED_EMAILS", "false"
