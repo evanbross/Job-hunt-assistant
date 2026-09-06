@@ -86,10 +86,25 @@ def setup_status() -> Any:
     creds_done = config.GOOGLE_CREDENTIALS_FILE.exists()
     auth_done = config.GOOGLE_TOKEN_FILE.exists()
 
-    profile_path = (
-        Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
-    )
+    profile_path = Path(profile_path_str)
     profile_char_count, profile_done = _check_profile(profile_path)
+
+    # ai: claude-sonnet-5 | 2026-09-01 — profile_path_str falls back to
+    # str(DEFAULT_CANDIDATE_PROFILE_PATH) whenever the user hasn't
+    # configured candidate_profile_path themselves (see get_setting's
+    # bootstrap-default fallback), so "still at the default and that file
+    # is missing/empty" is the signal that nothing has been explicitly
+    # chosen yet -- safe to look for an alternately-named file instead of
+    # requiring the wizard's paste-in flow. Reported as detected_path so the
+    # frontend can persist it through the existing, already-validated
+    # PUT /api/config candidate_profile_path path -- never written here,
+    # since this is a GET.
+    detected_profile_path: str | None = None
+    if not profile_done and profile_path_str == str(config.DEFAULT_CANDIDATE_PROFILE_PATH):
+        detected = config.find_candidate_profile_file()
+        if detected is not None and detected != profile_path:
+            detected_profile_path = str(detected)
+            profile_char_count, profile_done = _check_profile(detected)
 
     current_secret = env_vals.get("FLASK_SECRET_KEY", "") or config.FLASK_SECRET_KEY
     flask_secret_ok = bool(
@@ -117,6 +132,26 @@ def setup_status() -> Any:
                     "done": profile_done,
                     "char_count": profile_char_count,
                     "required": True,
+                    "detected_path": detected_profile_path,
+                },
+            },
+            # ai: claude-sonnet-5 | 2026-09-01 — surfaces which of the three
+            # gitignored, editable-on-disk files (see .gitignore) the wizard
+            # found, so StepFinish can show it without a dedicated UI for
+            # cover_letter_prompt.md/fit_scorer_prompt.md, which have no
+            # per-user path setting to point elsewhere.
+            "local_files": {
+                "candidate_profile": {
+                    "filename": (Path(detected_profile_path) if detected_profile_path else profile_path).name,
+                    "found": profile_done,
+                },
+                "cover_letter_prompt": {
+                    "filename": config.DEFAULT_COVER_LETTER_PROMPT_PATH.name,
+                    "found": config.DEFAULT_COVER_LETTER_PROMPT_PATH.exists(),
+                },
+                "fit_scorer_prompt": {
+                    "filename": config.DEFAULT_FIT_SCORER_PROMPT_PATH.name,
+                    "found": config.DEFAULT_FIT_SCORER_PROMPT_PATH.exists(),
                 },
             },
             "redis_reachable": _check_redis_reachable(),

@@ -57,6 +57,7 @@ from backend.utils.utils import (
     ai_error_http_status,
     current_user_id,
     get_repos,
+    resolve_candidate_profile_path,
     safe_error_message,
 )
 
@@ -257,14 +258,16 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
     if pitch_type not in ("why_company", "why_fit"):
         return jsonify({"error": "type must be 'why_company' or 'why_fit'"}), 400
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(current_user_id(), job_id)
-        resume_row = repos["resume"].get_latest(current_user_id())
+        job = repos["jobs"].get_by_id(user_id, job_id)
+        resume_row = repos["resume"].get_latest(user_id)
         phrases = (
-            repos["cover_letter_phrases"].get_all(current_user_id())
+            repos["cover_letter_phrases"].get_all(user_id)
             if pitch_type == "why_company"
             else []
         )
+        profile_path = resolve_candidate_profile_path(user_id, repos)  # ai: claude-sonnet-5 | 2026-09-01
     # Connection released before AI generation
 
     if not job:
@@ -272,7 +275,7 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
 
     company = job.get("company") or "the company"
     job_title = job.get("job_title") or "the position"
-    candidate_profile = config.load_candidate_profile()
+    candidate_profile = config.load_candidate_profile(profile_path)
 
     # ai: claude-fable-5 | 2026-07-13
     context_block, resume_block = job_and_resume_prompt_blocks(job, resume_row)
@@ -317,7 +320,7 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
         )
 
     try:
-        text = AIProviderClient(current_user_id()).complete(
+        text = AIProviderClient(user_id).complete(
             system=system_prompt,
             messages=[AIMessage(role="user", content=user_prompt)],
             max_tokens=450,
@@ -336,9 +339,11 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
 @cover_letter_bp.route("/jobs/<int:job_id>/pitch/chat", methods=["POST"])
 def pitch_chat(job_id: int) -> ResponseReturnValue:
     """AI chat for refining a why-company or why-fit pitch."""
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(current_user_id(), job_id)
-        resume_row = repos["resume"].get_latest(current_user_id())  # ai: claude-fable-5 | 2026-07-13
+        job = repos["jobs"].get_by_id(user_id, job_id)
+        resume_row = repos["resume"].get_latest(user_id)  # ai: claude-fable-5 | 2026-07-13
+        profile_path = resolve_candidate_profile_path(user_id, repos)  # ai: claude-sonnet-5 | 2026-09-01
     # Connection released before AI call
 
     if not job:
@@ -357,7 +362,7 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
 
     company = job.get("company") or "the company"
     job_title = job.get("job_title") or "the position"
-    candidate_profile = config.load_candidate_profile()
+    candidate_profile = config.load_candidate_profile(profile_path)
     pitch_label = (
         "why you want to work at this company"
         if pitch_type == "why_company"
@@ -384,7 +389,7 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
     )
 
     try:
-        reply_text = AIProviderClient(current_user_id()).complete(
+        reply_text = AIProviderClient(user_id).complete(
             system=system_prompt,
             messages=[
                 AIMessage(
@@ -423,9 +428,11 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
 
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter/chat", methods=["POST"])
 def cover_letter_chat(job_id: int) -> ResponseReturnValue:
+    user_id = current_user_id()
     with get_repos() as repos:
-        job = repos["jobs"].get_by_id(current_user_id(), job_id)
-        resume_row = repos["resume"].get_latest(current_user_id())  # ai: claude-fable-5 | 2026-07-13
+        job = repos["jobs"].get_by_id(user_id, job_id)
+        resume_row = repos["resume"].get_latest(user_id)  # ai: claude-fable-5 | 2026-07-13
+        profile_path = resolve_candidate_profile_path(user_id, repos)  # ai: claude-sonnet-5 | 2026-09-01
     # Connection released before AI call
 
     if not job:
@@ -441,7 +448,7 @@ def cover_letter_chat(job_id: int) -> ResponseReturnValue:
     company = job.get("company") or "the company"
     job_title = job.get("job_title") or "the position"
 
-    candidate_profile = config.load_candidate_profile()
+    candidate_profile = config.load_candidate_profile(profile_path)
 
     # ai: claude-fable-5 | 2026-07-13
     job_block, resume_block = job_and_resume_prompt_blocks(job, resume_row)
@@ -462,7 +469,7 @@ def cover_letter_chat(job_id: int) -> ResponseReturnValue:
     )
 
     try:
-        reply_text = AIProviderClient(current_user_id()).complete(
+        reply_text = AIProviderClient(user_id).complete(
             system=system_prompt,
             messages=[
                 AIMessage(

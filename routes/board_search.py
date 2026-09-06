@@ -57,7 +57,12 @@ from backend.scoring.job_validator import (
     import_warnings_to_json,
     normalize_and_validate,
 )
-from backend.utils.utils import current_user_id, get_repos, is_celery_task_active
+from backend.utils.utils import (
+    current_user_id,
+    get_repos,
+    is_celery_task_active,
+    resolve_candidate_profile_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +108,12 @@ _FALLBACK_QUERIES: list[str] = [
 ]
 
 
+# ai: claude-sonnet-5 | 2026-09-01
 def _generate_board_search_queries(user_id: int) -> list[str]:
     """Ask Claude to generate tailored search queries from the candidate profile."""
+    with get_repos() as repos:
+        profile_path = resolve_candidate_profile_path(user_id, repos)
+
     response_text = AIProviderClient(user_id).complete(
         max_tokens=200,
         messages=[
@@ -115,7 +124,7 @@ def _generate_board_search_queries(user_id: int) -> list[str]:
                     "no quotes, 3-6 words each) to find strong matches on Remotive and "
                     "similar remote-job boards for this candidate. Vary them across "
                     "different skills and specializations.\n\n"
-                    f"CANDIDATE PROFILE:\n{config.load_candidate_profile()}"
+                    f"CANDIDATE PROFILE:\n{config.load_candidate_profile(profile_path)}"
                 ),
             )
         ],

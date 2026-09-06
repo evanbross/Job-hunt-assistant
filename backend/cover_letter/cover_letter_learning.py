@@ -45,12 +45,9 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
-import config
 from backend.ai_provider import AIMessage, AIProviderClient, AIProviderError
-from backend.settings_service import get_setting
-from backend.utils.utils import get_repos
+from backend.utils.utils import get_repos, resolve_candidate_profile_path
 
 logger = logging.getLogger(__name__)
 
@@ -141,14 +138,10 @@ class CoverLetterStyleLearner:
             return None
         return parsed if isinstance(parsed, list) else None
 
+    # ai: claude-sonnet-5 | 2026-09-01
     def _append_rule(self, rule: str) -> bool:
         with get_repos() as repos:
-            profile_path_str = get_setting(
-                "candidate_profile_path", self._user_id, repos
-            )
-        path = (
-            Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
-        )
+            path = resolve_candidate_profile_path(self._user_id, repos)
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as exc:

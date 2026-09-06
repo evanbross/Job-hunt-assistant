@@ -42,13 +42,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
 from typing import TypedDict
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.settings_service import get_setting
-from backend.utils.utils import get_repos
+from backend.utils.utils import get_repos, resolve_candidate_profile_path
 
 logger = logging.getLogger(__name__)
 
@@ -177,9 +176,7 @@ class FitScorer:
     ) -> str:
         with get_repos() as repos:
             tz = get_setting("candidate_timezone", self._user_id, repos).strip()
-            profile_path_str = get_setting(
-                "candidate_profile_path", self._user_id, repos
-            )
+            profile_path = resolve_candidate_profile_path(self._user_id, repos)  # ai: claude-sonnet-5 | 2026-09-01
         if tz:
             timezone_note = (
                 f"- TIMEZONE COMPATIBILITY: The candidate is in the {tz} timezone. "
@@ -224,9 +221,6 @@ class FitScorer:
         # DEFAULT_FIT_SCORER_PROMPT_TEMPLATE, materialized to fit_scorer_prompt.md)
         # so the scoring instructions can be edited without touching this file.
         # Composition logic (which sections apply, in what order) stays here.
-        profile_path = (
-            Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
-        )
         return (
             config.load_fit_scorer_prompt_template()
             .replace("{{CANDIDATE_PROFILE}}", config.load_candidate_profile(profile_path))

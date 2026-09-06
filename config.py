@@ -113,6 +113,12 @@ RUNTIME_CONFIG_PATH: Path = DATA_DIR / "runtime_config.json"
 DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(
     os.getenv("CANDIDATE_PROFILE_PATH", str(BASE_DIR / "candidate_profile.md"))
 )
+# ai: claude-sonnet-5 | 2026-09-01 — filenames the setup wizard also checks
+# for in BASE_DIR when candidate_profile_path is still at its bootstrap
+# default and that file doesn't exist yet, so a profile the user already
+# dropped into the project folder under a name of their own choosing (never
+# tracked in git — see .gitignore) is picked up without retyping it.
+CANDIDATE_PROFILE_ALT_FILENAMES: tuple[str, ...] = ("client_profile.md",)
 DEFAULT_COVER_LETTER_PROMPT_PATH: Path = Path(
     os.getenv("COVER_LETTER_PROMPT_PATH", str(BASE_DIR / "cover_letter_prompt.md"))
 )
@@ -376,6 +382,21 @@ Response schema (JSON only):
 # backend.settings_service.get_setting[_bool/_int]. What remains here are
 # pure helpers with no DB awareness, so config.py doesn't need to import
 # backend.settings_service (which itself imports config -- a cycle).
+
+
+# ai: claude-sonnet-5 | 2026-09-01
+def find_candidate_profile_file() -> Path | None:
+    """Return the first existing candidate profile file in BASE_DIR, checking
+    DEFAULT_CANDIDATE_PROFILE_PATH first and then CANDIDATE_PROFILE_ALT_FILENAMES.
+    Returns None if none of them exist. Used by the setup wizard to detect a
+    profile file already sitting in the project folder under an alternate name."""
+    for candidate in (
+        DEFAULT_CANDIDATE_PROFILE_PATH,
+        *(BASE_DIR / name for name in CANDIDATE_PROFILE_ALT_FILENAMES),
+    ):
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
 
 
 def load_candidate_profile(path: Path) -> str:

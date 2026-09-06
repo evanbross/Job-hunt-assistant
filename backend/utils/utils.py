@@ -35,6 +35,7 @@ from __future__ import annotations
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 from urllib.parse import urlparse
 
 from flask import session
@@ -42,6 +43,7 @@ from flask import session
 import config
 from backend.ai_provider import AIProviderError
 from backend.db import open_repositories
+from backend.settings_service import get_setting
 
 ACTIVE_JOB_STATUSES: frozenset[str] = frozenset(
     {
@@ -88,6 +90,21 @@ def current_user_id() -> int:
             "route is not behind app.py's _require_app_login guard"
         )
     return user_id
+
+
+# ai: claude-sonnet-5 | 2026-09-01
+def resolve_candidate_profile_path(user_id: int, repos: dict) -> Path:
+    """Resolve the on-disk path for *user_id*'s candidate profile file,
+    honoring an explicit candidate_profile_path setting override.
+
+    Single source of truth for the "profile_path_str or
+    DEFAULT_CANDIDATE_PROFILE_PATH" fallback every prompt-building call site
+    needs before calling config.load_candidate_profile(path) -- previously
+    duplicated at each call site, which let three of them drift into calling
+    config.load_candidate_profile() with no argument at all.
+    """
+    profile_path_str = get_setting("candidate_profile_path", user_id, repos)
+    return Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
 
 
 # ai: claude-sonnet-5 | 2026-08-20

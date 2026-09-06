@@ -50,7 +50,13 @@ from flask.typing import ResponseReturnValue
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
-from backend.utils.utils import ai_error_http_status, current_user_id, safe_error_message
+from backend.utils.utils import (
+    ai_error_http_status,
+    current_user_id,
+    get_repos,
+    resolve_candidate_profile_path,
+    safe_error_message,
+)
 
 logger = logging.getLogger(__name__)
 toptal_bp = Blueprint("toptal", __name__)
@@ -64,7 +70,11 @@ def generate_toptal_bio() -> ResponseReturnValue:
     if not job_description:
         return jsonify({"error": "job_description is required"}), 400
 
-    candidate_profile = config.load_candidate_profile()
+    # ai: claude-sonnet-5 | 2026-09-01
+    user_id = current_user_id()
+    with get_repos() as repos:
+        profile_path = resolve_candidate_profile_path(user_id, repos)
+    candidate_profile = config.load_candidate_profile(profile_path)
 
     system_prompt = (
         "You are writing a short bio for a software engineer applying to a job "
@@ -77,7 +87,7 @@ def generate_toptal_bio() -> ResponseReturnValue:
     user_prompt = f"CLIENT JOB DESCRIPTION:\n{job_description}"
 
     try:
-        bio = AIProviderClient(current_user_id()).complete(
+        bio = AIProviderClient(user_id).complete(
             system=system_prompt,
             messages=[AIMessage(role="user", content=user_prompt)],
             max_tokens=250,
@@ -102,7 +112,11 @@ def toptal_bio_chat() -> ResponseReturnValue:
     if not messages:
         return jsonify({"error": "No messages provided"}), 400
 
-    candidate_profile = config.load_candidate_profile()
+    # ai: claude-sonnet-5 | 2026-09-01
+    user_id = current_user_id()
+    with get_repos() as repos:
+        profile_path = resolve_candidate_profile_path(user_id, repos)
+    candidate_profile = config.load_candidate_profile(profile_path)
     job_description_block = (
         f"\nCLIENT JOB DESCRIPTION:\n{job_description}\n" if job_description else ""
     )
@@ -125,7 +139,7 @@ def toptal_bio_chat() -> ResponseReturnValue:
     )
 
     try:
-        reply_text = AIProviderClient(current_user_id()).complete(
+        reply_text = AIProviderClient(user_id).complete(
             system=system_prompt,
             messages=[
                 AIMessage(
