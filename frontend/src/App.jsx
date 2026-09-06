@@ -252,6 +252,23 @@ export default function App() {
       window.history.replaceState({}, "", "/");
       fetchAuthStatus();
     }
+
+    // ai: claude-sonnet-5 | 2026-09-05 — re-check on focus/visibility, not
+    // just once at mount. Without this, a tab left open while
+    // credentials/token.json is (re)created outside the app (restored from
+    // backup, dropped in manually, connected in a different tab) keeps
+    // showing "not connected" until a manual reload, even once the file on
+    // disk is already valid. Mirrors the recheck-on-focus pattern
+    // pollBackendHealth uses above.
+    const recheckAuthStatus = () => {
+      if (!document.hidden) fetchAuthStatus();
+    };
+    window.addEventListener("focus", recheckAuthStatus);
+    document.addEventListener("visibilitychange", recheckAuthStatus);
+    return () => {
+      window.removeEventListener("focus", recheckAuthStatus);
+      document.removeEventListener("visibilitychange", recheckAuthStatus);
+    };
   }, []);
 
   // ai: claude-sonnet-5 | 2026-08-20 — app-login gate: check once on mount,
