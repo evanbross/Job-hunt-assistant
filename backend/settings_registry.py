@@ -186,7 +186,7 @@ SETTINGS: dict[str, SettingSpec] = {
     "scanned_email_label": SettingSpec(
         scope="user", is_secret=False, default=config.DEFAULT_SCANNED_EMAIL_LABEL,
         label="Processed Email Label", group="Email",
-        placeholder=".Job Hunt 2025/Scanned By Assistant",
+        placeholder=config.DEFAULT_SCANNED_EMAIL_LABEL,
         help_text="Gmail label used when moving processed emails out of the inbox.",
     ),
     "move_successfully_processed_emails": SettingSpec(

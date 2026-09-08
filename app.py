@@ -52,6 +52,8 @@ import re
 import socket
 import subprocess as _subprocess
 import sys
+import threading
+import time
 import urllib.parse
 from datetime import timedelta
 from pathlib import Path
@@ -919,33 +921,74 @@ if __name__ == "__main__":
     start_jd_health_check_scheduler()
     # ai: claude-sonnet-5 | 2026-07-31
 
-    def _register_with_caddy(name: str, port: int, scheme: str) -> None:
+    def _register_with_caddy(name: str, port: int, scheme: str) -> bool:
         assert _caddy_registry is not None
         if _caddy_registry.register(name, port):
             atexit.register(_caddy_registry.deregister, name)
-        else:
-            logger.warning(
-                "Caddy registration failed — %s://%s.localhost will not work; "
-                "use %s://127.0.0.1:%d directly, or start the infra stack "
-                "(cd ../infra && docker-compose up -d).",
-                scheme,
-                name,
-                scheme,
-                port,
-            )
+            return True
+        logger.warning(
+            "Caddy registration failed — %s://%s.localhost will not work; "
+            "use %s://127.0.0.1:%d directly, or start the infra stack "
+            "(cd ../infra && docker-compose up -d).",
+            scheme,
+            name,
+            scheme,
+            port,
+        )
+        return False
+
+    # ai: claude-sonnet-5 | 2026-09-05
+    _CADDY_RECONCILE_INTERVAL_SECONDS = 120
+
+    def _reconcile_caddy_routes(routes: list[tuple[str, int]]) -> None:
+        """Background loop: re-register any Caddy route that has disappeared.
+
+        _register_with_caddy above (via caddy_registry.register()'s own
+        retries) only covers registration failing at startup. Caddy holds
+        routes in memory only, so if the Caddy container is restarted
+        independently of this app (a Docker/Desktop restart, not an app
+        restart) an already-registered route silently vanishes and
+        *.localhost stops resolving with no further signal — this process
+        keeps running, unaware. Caddy has no restart webhook to push that
+        event to us, so this polls at a slow, minutes-scale interval as a
+        fallback safety net rather than a primary mechanism.
+        """
+        assert _caddy_registry is not None
+        while True:
+            time.sleep(_CADDY_RECONCILE_INTERVAL_SECONDS)
+            for name, port in routes:
+                if not _caddy_registry.route_registered(f"app-{name}"):
+                    logger.warning(
+                        "Caddy: route for %s.localhost has disappeared — re-registering",
+                        name,
+                    )
+                    _caddy_registry.register(name, port)
 
     if _caddy_registry is not None:
-        _register_with_caddy("jha", _flask_port, "http")
+        _caddy_routes: list[tuple[str, int]] = []
+        if _register_with_caddy("jha", _flask_port, "http"):
+            _caddy_routes.append(("jha", _flask_port))
         # ai: claude-sonnet-5 | 2026-08-07
         # The browser extension talks to these two servers directly (see
         # browser-extension/background.js) — registering them under stable Caddy
         # names, rather than requiring a fixed port, lets both fall back to an
         # OS-assigned port on conflict (see backend/import_listener.py and
         # backend/queue_websocket.py) without the extension needing any changes.
-        if _import_listener is not None:
-            _register_with_caddy("jha-listener", _import_listener.port, "http")
-        if _queue_ws_server is not None:
-            _register_with_caddy("jha-listener-ws", _queue_ws_server.port, "ws")
+        if _import_listener is not None and _register_with_caddy(
+            "jha-listener", _import_listener.port, "http"
+        ):
+            _caddy_routes.append(("jha-listener", _import_listener.port))
+        if _queue_ws_server is not None and _register_with_caddy(
+            "jha-listener-ws", _queue_ws_server.port, "ws"
+        ):
+            _caddy_routes.append(("jha-listener-ws", _queue_ws_server.port))
+        if _caddy_routes:
+            threading.Thread(
+                target=_reconcile_caddy_routes,
+                args=(_caddy_routes,),
+                daemon=True,
+                name="caddy-route-reconciler",
+            ).start()
     try:
         app.run(
             debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",

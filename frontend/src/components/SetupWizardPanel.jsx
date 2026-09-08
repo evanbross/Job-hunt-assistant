@@ -100,6 +100,11 @@ export default function SetupWizardPanel({ onSetupComplete }) {
   const [profileContent, setProfileContent] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileSaveResult, setProfileSaveResult] = useState(null);
+  // ai: claude-sonnet-5 | 2026-09-01 — auto-detected candidate profile file
+  // (see fetchStatus below) and the local-files summary for StepFinish.
+  const [detectedProfileFilename, setDetectedProfileFilename] = useState(null);
+  const [localFiles, setLocalFiles] = useState(null);
+  const detectPersistInFlight = useRef(false);
 
   useEffect(() => {
     // fetchStatus is redefined every render; run once on mount only.
@@ -123,6 +128,29 @@ export default function SetupWizardPanel({ onSetupComplete }) {
       const data = await res.json();
       setServerStatus(data);
       applyServerStatus(data);
+
+      // ai: claude-sonnet-5 | 2026-09-01 — a detected_path means the backend
+      // found a candidate profile file under an alternate name (e.g.
+      // client_profile.md) in the project folder but hasn't persisted it as
+      // the candidate_profile_path setting yet (setup/status is a GET, so it
+      // never writes). Adopt it automatically through the same validated
+      // PUT /api/config path the Settings page already uses, so every other
+      // reader of that setting (fit scorer, cover letter generator, etc.)
+      // picks it up too — no retyping, no manual confirmation click.
+      const detectedPath = data?.steps?.candidate_profile?.detected_path;
+      if (detectedPath && !detectPersistInFlight.current) {
+        detectPersistInFlight.current = true;
+        try {
+          const cfgRes = await fetch("/api/config", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ candidate_profile_path: detectedPath }),
+          });
+          if (cfgRes.ok) await fetchStatus();
+        } finally {
+          detectPersistInFlight.current = false;
+        }
+      }
     } catch {
       /* no-op — don't block wizard on network error */
     }
@@ -136,6 +164,11 @@ export default function SetupWizardPanel({ onSetupComplete }) {
     const profileDone = steps.candidate_profile?.done ?? false;
 
     setStepDone({ ai: aiDone, creds: credsDone, auth: authDone, profile: profileDone });
+
+    // ai: claude-sonnet-5 | 2026-09-01
+    setLocalFiles(data?.local_files || null);
+    const detectedPath = steps.candidate_profile?.detected_path;
+    setDetectedProfileFilename(detectedPath ? detectedPath.split(/[\\/]/).pop() : null);
 
     if (steps.ai_provider?.provider) setAiProvider(steps.ai_provider.provider);
 
@@ -395,12 +428,14 @@ export default function SetupWizardPanel({ onSetupComplete }) {
               onSave={handleSaveProfile}
               alreadyDone={stepDone.profile}
               serverCharCount={serverStatus?.steps?.candidate_profile?.char_count}
+              detectedFilename={detectedProfileFilename}
             />
           )}
           {currentStep === STEP_FINISH && (
             <StepFinish
               stepDone={stepDone}
               serverStatus={serverStatus}
+              localFiles={localFiles}
             />
           )}
         </div>
@@ -765,7 +800,8 @@ function StepAuth({ done, polling, onConnect, credsMissing }) {
 
 // ─── Step 3: Candidate Profile ────────────────────────────────────────────────
 
-function StepProfile({ content, onContentChange, saveResult, saving, onSave, alreadyDone, serverCharCount }) {
+// ai: claude-sonnet-5 | 2026-09-01 — detectedFilename prop added
+function StepProfile({ content, onContentChange, saveResult, saving, onSave, alreadyDone, serverCharCount, detectedFilename }) {
   const charCount = content.length;
   const tooShort = charCount > 0 && charCount < 200;
 
@@ -776,7 +812,13 @@ function StepProfile({ content, onContentChange, saveResult, saving, onSave, alr
         Describe your skills, experience, and job preferences. The AI uses this to score how well each job matches you. The more detail you provide, the better the scoring.
       </p>
 
-      {alreadyDone && serverCharCount > 0 && !content && (
+      {detectedFilename && (
+        <div style={styles.alreadyDoneBanner}>
+          Found <code>{detectedFilename}</code> in your project folder and set it as your candidate profile — nothing to type here.
+        </div>
+      )}
+
+      {!detectedFilename && alreadyDone && serverCharCount > 0 && !content && (
         <div style={styles.alreadyDoneBanner}>
           A profile with {serverCharCount.toLocaleString()} characters is already saved. Edit it below or click Next to keep it.
         </div>
@@ -817,9 +859,17 @@ function StepProfile({ content, onContentChange, saveResult, saving, onSave, alr
 
 // ─── Step 4: Finish ───────────────────────────────────────────────────────────
 
-function StepFinish({ stepDone, serverStatus }) {
+function StepFinish({ stepDone, serverStatus, localFiles }) {
   const redisOk = serverStatus?.redis_reachable ?? null;
   const secretOk = serverStatus?.flask_secret_ok ?? true;
+
+  // ai: claude-sonnet-5 | 2026-09-01 — localFiles prop + fileItems for the
+  // new "Local Files" summary below
+  const fileItems = [
+    { key: "candidate_profile", label: "Candidate profile" },
+    { key: "cover_letter_prompt", label: "Cover letter prompt" },
+    { key: "fit_scorer_prompt", label: "Fit scorer prompt" },
+  ];
 
   const items = [
     { label: "AI Provider", done: stepDone.ai, required: true },
@@ -864,6 +914,25 @@ function StepFinish({ stepDone, serverStatus }) {
           </div>
         )}
       </div>
+
+      {localFiles && (
+        <div style={{ ...styles.infraSection, marginTop: "12px" }}>
+          <div style={styles.infraTitle}>Local Files</div>
+          {fileItems.map(({ key, label }) => {
+            const info = localFiles[key];
+            const found = !!info?.found;
+            return (
+              <div key={key} style={{ ...styles.infraRow, marginTop: "4px" }}>
+                <span style={styles.infraDot(found ? "green" : "gray")} />
+                <span style={{ fontSize: "13px" }}>
+                  {label} — <code>{info?.filename}</code>{" "}
+                  {found ? "found in project folder" : "not found (a default will be created on first use)"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div style={{ marginTop: "16px", fontSize: "13px", color: "var(--text-muted)" }}>
         Settings can be updated at any time in the <strong>Settings</strong> tab.

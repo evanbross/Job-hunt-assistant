@@ -74,6 +74,14 @@ class FakeCoverLetterPhraseRepo:
         return []
 
 
+# ai: claude-sonnet-5 | 2026-09-01 — routes/cover_letter.py now resolves the
+# candidate profile path via resolve_candidate_profile_path(), which reads
+# candidate_profile_path through repos["settings"].get()
+class FakeSettingsRepo:
+    def get(self, user_id: int, key: str, default: str | None = None) -> str | None:
+        return default
+
+
 class FakeAIClient:
     """Captures the prompt kwargs the route sends to the AI provider."""
 
@@ -114,12 +122,13 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Any:
         "jobs": FakeJobsRepo(job_row),
         "resume": FakeResumeRepo(),
         "cover_letter_phrases": FakeCoverLetterPhraseRepo(),
+        "settings": FakeSettingsRepo(),
         "conn": FakeConnection(),
     }
     monkeypatch.setattr(cover_letter_module, "get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr(cover_letter_module, "AIProviderClient", FakeAIClient)
     monkeypatch.setattr(cover_letter_module, "current_user_id", lambda: _FAKE_USER_ID)
-    monkeypatch.setattr(config, "load_candidate_profile", lambda: PROFILE_TEXT)
+    monkeypatch.setattr(config, "load_candidate_profile", lambda path: PROFILE_TEXT)
     FakeAIClient.captured = {}
 
     app = Flask(__name__)

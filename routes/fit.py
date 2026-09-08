@@ -60,6 +60,7 @@ from backend.utils.utils import (
     current_user_id,
     get_repos,
     is_celery_task_active,
+    resolve_candidate_profile_path,
     safe_error_message,
 )
 
@@ -350,6 +351,7 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(user_id, job_id)
         resume = repos["resume"].get_latest(user_id)
+        profile_path = resolve_candidate_profile_path(user_id, repos)  # ai: claude-sonnet-5 | 2026-09-01
     # Connection released before AI call
 
     if not job:
@@ -392,7 +394,7 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
         '"reasoning": "<short replacement fit reasoning>"}</FIT_RECLASSIFICATION>\n'
         "Use status pending_review for jobs that should remain in the job queue, triage for uncertain "
         "jobs that need later review, and skipped for jobs that are clearly not a fit.\n\n"
-        f"CANDIDATE PROFILE:\n{config.load_candidate_profile()}\n\n"
+        f"CANDIDATE PROFILE:\n{config.load_candidate_profile(profile_path)}\n\n"
         f"CANDIDATE RESUME:\n{resume_text[:8000] if resume_text else 'Not yet uploaded.'}\n\n"
         "CURRENT JOB FIT DATA:\n"
         f"Title: {job.get('job_title') or 'Unknown'}\n"
