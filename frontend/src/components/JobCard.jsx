@@ -75,6 +75,7 @@ function JobCard({
   onSkip,
   onSnooze,
   onUpdate,
+  onDismissDuplicate,
   onNavigateToJobCard,
   contactsByCompany,
   companyJobCounts,
@@ -957,6 +958,7 @@ function JobCard({
           onClose={companyHistory.close}
           onNavigateToJobCard={onNavigateToJobCard}
           onSkipDuplicate={(rowId) => onSkip(rowId, "duplicate", "", [])}
+          onDismissDuplicate={onDismissDuplicate}
           onRefresh={companyHistory.refresh}
         />
       )}

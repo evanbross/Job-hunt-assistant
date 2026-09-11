@@ -599,6 +599,21 @@ export default function JobQueue({
     }
   };
 
+  // ai: claude-sonnet-5 | 2026-09-11
+  // Restores a job the Company History dialog shows as "Skipped - Duplicate"
+  // (or "Possible Duplicate") back onto the queue/triage list. The job being
+  // restored is usually NOT in `jobs` yet (it was hidden while skipped), so a
+  // full refetch is needed rather than an in-place list update.
+  const handleDismissDuplicate = async (jobId) => {
+    const res = await fetch(`/api/jobs/${jobId}/dismiss-duplicate`, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      window.alert(err.error || "Failed to restore job");
+      return;
+    }
+    await fetchJobs();
+  };
+
   const handleSnooze = async (jobId, days) => {
     const res = await fetch(`/api/jobs/${jobId}/snooze`, {
       method: "POST",
@@ -2563,6 +2578,7 @@ export default function JobQueue({
               onReEvaluate={handleJobReEvaluate}
               onSkip={handleSkip}
               onSnooze={handleSnooze}
+              onDismissDuplicate={handleDismissDuplicate}
               defaultSnoozeDays={defaultSnoozeDays}
               onNavigateToJobCard={onNavigateToJobCard}
               contactsByCompany={contactsByCompany}

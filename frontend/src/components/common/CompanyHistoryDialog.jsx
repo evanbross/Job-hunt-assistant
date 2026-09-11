@@ -148,6 +148,21 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, di
             {dismissingId === row.id ? "Saving…" : "No, New Job"}
           </button>
         )}
+        {/* ai: claude-sonnet-5 | 2026-09-11 */}
+        {/* Already-skipped "duplicate" rows have no live card anywhere (skipped
+            jobs don't render on Queue/Triage), so this dialog is the only place
+            to un-skip one. Reuses the same dismiss-duplicate endpoint/handler
+            as the possible_duplicate case above. */}
+        {isDeclaredDuplicate(effectiveRow) && onDismissDuplicate && (
+          <button
+            type="button"
+            className="btn-success btn-sm"
+            onClick={(e) => { e.stopPropagation(); handleDismissDuplicate(row); }}
+            disabled={skippingId !== null || dismissingId !== null}
+          >
+            {dismissingId === row.id ? "Restoring…" : "Not a Duplicate - Restore"}
+          </button>
+        )}
         {navigable && (
           <span style={{ color: "var(--accent)", fontSize: "11px", whiteSpace: "nowrap" }}>Go to card →</span>
         )}

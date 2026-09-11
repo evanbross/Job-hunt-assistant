@@ -56,6 +56,7 @@ export function jobMatchesSearch(job, searchText, searchAllFields = false) {
 
   const fields = searchAllFields
     ? [
+        job.id == null ? "" : `#${job.id}`,
         job.company,
         job.job_title,
         job.source,
