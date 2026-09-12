@@ -111,6 +111,15 @@ def setup_status() -> Any:
         current_secret and current_secret != "change-this-in-production"
     )
 
+    # ai: claude-sonnet-5 | 2026-09-09
+    # The effective path actually checked above (detected takes priority
+    # over the configured/default one -- see the block above) so the
+    # frontend can tell the user exactly where the file it found lives,
+    # not just its bare filename.
+    effective_profile_path = (
+        Path(detected_profile_path) if detected_profile_path else profile_path
+    )
+
     return jsonify(
         {
             "complete": ai_done and profile_done,
@@ -133,6 +142,7 @@ def setup_status() -> Any:
                     "char_count": profile_char_count,
                     "required": True,
                     "detected_path": detected_profile_path,
+                    "path": str(effective_profile_path),
                 },
             },
             # ai: claude-sonnet-5 | 2026-09-01 — surfaces which of the three
@@ -142,7 +152,7 @@ def setup_status() -> Any:
             # per-user path setting to point elsewhere.
             "local_files": {
                 "candidate_profile": {
-                    "filename": (Path(detected_profile_path) if detected_profile_path else profile_path).name,
+                    "filename": effective_profile_path.name,
                     "found": profile_done,
                 },
                 "cover_letter_prompt": {

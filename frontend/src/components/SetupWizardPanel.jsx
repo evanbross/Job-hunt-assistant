@@ -105,6 +105,10 @@ export default function SetupWizardPanel({ onSetupComplete }) {
   const [detectedProfileFilename, setDetectedProfileFilename] = useState(null);
   const [localFiles, setLocalFiles] = useState(null);
   const detectPersistInFlight = useRef(false);
+  // ai: claude-sonnet-5 | 2026-09-09 — explicit confirmation that Browse
+  // actually picked up and saved a file, distinct from profileSaveResult
+  // (which only fires from typing + clicking Save Profile).
+  const [profileBrowseResult, setProfileBrowseResult] = useState(null);
 
   useEffect(() => {
     // fetchStatus is redefined every render; run once on mount only.
@@ -364,6 +368,55 @@ export default function SetupWizardPanel({ onSetupComplete }) {
     }
   };
 
+  // ai: claude-sonnet-5 | 2026-09-09
+  // Same native file-picker endpoint ProfileSettingsSection uses in the
+  // Settings tab (routes/system.py's /api/system/select-file). Persists the
+  // choice the same way the auto-detected-file adoption above does --
+  // PUT /api/config, then re-fetch status so the banner/char-count and the
+  // "found on disk" messaging reflect the newly chosen file immediately.
+  const handleBrowseProfile = async () => {
+    setProfileBrowseResult(null);
+    try {
+      const pickRes = await fetch("/api/system/select-file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          initial_path: serverStatus?.steps?.candidate_profile?.path || "",
+        }),
+      });
+      const pickData = await pickRes.json();
+      if (!pickRes.ok) {
+        window.alert(pickData.error || "Failed to open file picker");
+        return;
+      }
+      if (!pickData.selected_path) return;
+
+      const cfgRes = await fetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidate_profile_path: pickData.selected_path }),
+      });
+      if (!cfgRes.ok) {
+        const err = await cfgRes.json().catch(() => ({}));
+        window.alert(err.error || "Failed to save the selected file");
+        return;
+      }
+      await fetchStatus();
+      // ai: claude-sonnet-5 | 2026-09-09 — explicit success acknowledgment,
+      // separate from the "found on disk" banner above the textarea (that
+      // banner only appears once alreadyDone/detectedFilename recompute
+      // from the refreshed status, one render later) so the click has
+      // immediate, unambiguous feedback that the file actually loaded.
+      setProfileBrowseResult({
+        ok: true,
+        path: pickData.selected_path,
+        filename: pickData.selected_path.split(/[\\/]/).pop(),
+      });
+    } catch (e) {
+      window.alert("Request failed: " + e.message);
+    }
+  };
+
   const handleFinish = () => {
     onSetupComplete();
   };
@@ -429,6 +482,9 @@ export default function SetupWizardPanel({ onSetupComplete }) {
               alreadyDone={stepDone.profile}
               serverCharCount={serverStatus?.steps?.candidate_profile?.char_count}
               detectedFilename={detectedProfileFilename}
+              profilePath={serverStatus?.steps?.candidate_profile?.path}
+              onBrowse={handleBrowseProfile}
+              browseResult={profileBrowseResult}
             />
           )}
           {currentStep === STEP_FINISH && (
@@ -801,9 +857,37 @@ function StepAuth({ done, polling, onConnect, credsMissing }) {
 // ─── Step 3: Candidate Profile ────────────────────────────────────────────────
 
 // ai: claude-sonnet-5 | 2026-09-01 — detectedFilename prop added
-function StepProfile({ content, onContentChange, saveResult, saving, onSave, alreadyDone, serverCharCount, detectedFilename }) {
+// ai: claude-sonnet-5 | 2026-09-09
+function StepProfile({
+  content,
+  onContentChange,
+  saveResult,
+  saving,
+  onSave,
+  alreadyDone,
+  serverCharCount,
+  detectedFilename,
+  profilePath,
+  onBrowse,
+  browseResult,
+}) {
   const charCount = content.length;
   const tooShort = charCount > 0 && charCount < 200;
+  // ai: claude-sonnet-5 | 2026-09-09
+  // When a real file was already found (detected, browsed to, or already
+  // configured), `content` is deliberately left "" rather than pre-filled
+  // with PROFILE_TEMPLATE (see the STEP_PROFILE render call above) so
+  // clicking Save can't blindly overwrite a real file with boilerplate.
+  // But an empty textarea with PROFILE_TEMPLATE as its placeholder renders
+  // that entire template in the box, in the same near-full-opacity color as
+  // real typed text (input::placeholder in index.css only dims it to 0.7)
+  // -- indistinguishable at a glance from genuine unsaved content sitting
+  // there ready to be saved over the real file. Swap in a short, explicit
+  // placeholder in that state instead of the multi-paragraph template.
+  const showingExistingFile = alreadyDone && !content;
+  const textareaPlaceholder = showingExistingFile
+    ? "Your existing file already has content — leave this blank and click Next to keep it. Type here only if you want to replace it."
+    : PROFILE_TEMPLATE;
 
   return (
     <div>
@@ -815,20 +899,46 @@ function StepProfile({ content, onContentChange, saveResult, saving, onSave, alr
       {detectedFilename && (
         <div style={styles.alreadyDoneBanner}>
           Found <code>{detectedFilename}</code> in your project folder and set it as your candidate profile — nothing to type here.
+          {profilePath && (
+            <div style={styles.profilePathLine}>Location: <code>{profilePath}</code></div>
+          )}
         </div>
       )}
 
-      {!detectedFilename && alreadyDone && serverCharCount > 0 && !content && (
+      {!detectedFilename && !browseResult?.ok && alreadyDone && serverCharCount > 0 && !content && (
         <div style={styles.alreadyDoneBanner}>
-          A profile with {serverCharCount.toLocaleString()} characters is already saved. Edit it below or click Next to keep it.
+          Found a profile with {serverCharCount.toLocaleString()} characters already saved on disk. Edit it below or click Next to keep it.
+          {profilePath && (
+            <div style={styles.profilePathLine}>Location: <code>{profilePath}</code></div>
+          )}
+        </div>
+      )}
+
+      <div style={styles.profileBrowseRow}>
+        <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>
+          Already have a profile file saved somewhere else?
+        </span>
+        <button type="button" className="btn-secondary" onClick={onBrowse}>
+          Browse…
+        </button>
+      </div>
+
+      {/* ai: claude-sonnet-5 | 2026-09-09 — immediate confirmation that the
+          browsed file actually loaded and was saved, independent of the
+          "found on disk" banners above (those only reflect once the
+          refreshed status re-renders, which can lag a beat behind the click). */}
+      {browseResult?.ok && (
+        <div style={styles.alreadyDoneBanner}>
+          ✓ Loaded <code>{browseResult.filename}</code> and set it as your candidate profile.
+          <div style={styles.profilePathLine}>Location: <code>{browseResult.path}</code></div>
         </div>
       )}
 
       <textarea
-        style={styles.profileTextarea}
+        style={showingExistingFile ? styles.profileTextareaEmpty : styles.profileTextarea}
         value={content}
         onChange={(e) => { onContentChange(e.target.value); }}
-        placeholder={PROFILE_TEMPLATE}
+        placeholder={textareaPlaceholder}
         rows={18}
         spellCheck={false}
       />
@@ -921,12 +1031,21 @@ function StepFinish({ stepDone, serverStatus, localFiles }) {
           {fileItems.map(({ key, label }) => {
             const info = localFiles[key];
             const found = !!info?.found;
+            // ai: claude-sonnet-5 | 2026-09-09
+            // Only candidate_profile has a configurable path (candidate_profile_path)
+            // that can point anywhere on disk -- cover_letter_prompt/fit_scorer_prompt
+            // always live in the project folder with no override, so "found in
+            // project folder" stays accurate for those two.
+            const locationText =
+              key === "candidate_profile" && serverStatus?.steps?.candidate_profile?.path
+                ? `found at ${serverStatus.steps.candidate_profile.path}`
+                : "found in project folder";
             return (
               <div key={key} style={{ ...styles.infraRow, marginTop: "4px" }}>
                 <span style={styles.infraDot(found ? "green" : "gray")} />
                 <span style={{ fontSize: "13px" }}>
                   {label} — <code>{info?.filename}</code>{" "}
-                  {found ? "found in project folder" : "not found (a default will be created on first use)"}
+                  {found ? locationText : "not found (a default will be created on first use)"}
                 </span>
               </div>
             );
@@ -1146,11 +1265,42 @@ const styles = {
     lineHeight: 1.6,
     boxSizing: "border-box",
   },
+  // ai: claude-sonnet-5 | 2026-09-09 — visually distinct from profileTextarea
+  // (dashed border, no monospace) so a genuinely empty box showing the
+  // short "already saved" placeholder can't be mistaken for one holding
+  // real template text ready to be saved.
+  profileTextareaEmpty: {
+    width: "100%",
+    padding: "12px",
+    border: "1px dashed var(--border)",
+    borderRadius: "var(--radius)",
+    fontSize: "13px",
+    fontStyle: "italic",
+    color: "var(--text)",
+    background: "var(--surface)",
+    resize: "vertical",
+    lineHeight: 1.6,
+    boxSizing: "border-box",
+  },
   profileFooter: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
     marginTop: "10px",
+  },
+  // ai: claude-sonnet-5 | 2026-09-09
+  profilePathLine: {
+    marginTop: "4px",
+    fontSize: "12px",
+    color: "var(--text-muted)",
+    wordBreak: "break-all",
+  },
+  profileBrowseRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "10px",
+    marginBottom: "10px",
   },
   summaryList: {
     display: "flex",
