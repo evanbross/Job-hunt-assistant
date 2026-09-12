@@ -845,8 +845,7 @@ def _send_jd_health_check_failure_email(
             "JD health check: %d failure(s) but no notify email configured: %s",
             len(failure_details),
             ", ".join(
-                f"[{d['target_id']}] {d['label']} ({d['url']})"
-                for d in failure_details
+                f"{d['label']} ({d['url']})" for d in failure_details
             ),
         )
         return
@@ -857,7 +856,7 @@ def _send_jd_health_check_failure_email(
     ]
     for detail in failure_details:
         lines.append(
-            f"- [{detail['target_id']}] {detail['label']} ({detail['url']}): {detail['reason']}"
+            f"- {detail['label']} ({detail['url']}): {detail['reason']}"
         )
     body_text = "\n".join(lines)
 
@@ -964,7 +963,6 @@ def run_jd_health_check_task(
             failed += 1
             failure_details.append(
                 {
-                    "target_id": str(target["id"]),
                     "label": label,
                     "url": url,
                     "reason": reason or "",
@@ -982,7 +980,7 @@ def run_jd_health_check_task(
         passed,
         failed,
         "" if not failure_details else " failing_targets=" + ", ".join(
-            f"[{d['target_id']}] {d['label']} ({d['url']})" for d in failure_details
+            f"{d['label']} ({d['url']})" for d in failure_details
         ),
     )
 

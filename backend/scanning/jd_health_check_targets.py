@@ -57,11 +57,28 @@ those two entries are necessarily single-job canaries and WILL eventually
 need replacing when the posting closes -- an expected maintenance task, not
 a bug. Update via Settings > JD Parser Health Check, or edit the list below.
 
+IMPORTANT -- pick single-job canaries (WTTJ, LinkedIn) that are NOT also a
+job the user has personally applied to or is tracking in the jobs table.
+The original WTTJ entry was the exact URL of a real applied-to job (id
+3154), copied in as a canary because it happened to be the regression case
+for the WTTJ -> ATS-resolution bug being fixed that day. That job was later
+rejected and its underlying ATS posting removed; the canary then failed for
+a reason that had nothing to do with parser health (the user's own
+application outcome), producing a false alarm. Before picking a single-job
+canary, check the candidate company against the user's own tracked
+companies (SELECT DISTINCT company FROM jobs, case-insensitive) and prefer
+one with zero overlap.
+
 All four entries were hand-verified live in-browser on 2026-08-03 (not
 guessed) -- see COMMON_CODING_STANDARDS.md's preference for going to the
 real source of truth over a derived/assumed one. The WTTJ entry doubles as
 an end-to-end check of the WTTJ -> underlying-ATS resolution added the same
-day (backend/scanning/career_site_scanner.py's _wttj_ats_url_from_html).
+day (backend/scanning/career_site_scanner.py's _wttj_ats_url_from_html). The
+WTTJ entry was replaced on 2026-09-09 (see "pick single-job canaries" above)
+with a posting for a company absent from the user's tracked-jobs table,
+re-verified live -- open for applications, resolves via
+_wttj_ats_url_from_html to a real jobs.lever.co URL, and that URL itself
+returns a live, unfilled posting.
 """
 
 from __future__ import annotations
@@ -92,8 +109,8 @@ LIVE_CANARY_TARGETS: list[LiveCanaryTarget] = [
     },
     {
         "platform": "wttj",
-        "label": "EvenUp - Backend Engineer (WTTJ, resolves to Ashby)",
-        "url": "https://app.welcometothejungle.com/jobs/hxE-2lk8",
+        "label": "Metabase - Software Engineer, Backend (WTTJ, resolves to Lever)",
+        "url": "https://app.welcometothejungle.com/jobs/UmxDK3hO",
     },
     {
         "platform": "linkedin",
