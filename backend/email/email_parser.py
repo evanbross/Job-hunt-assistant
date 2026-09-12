@@ -120,6 +120,13 @@ Rules:
    to fill in "company" for the matching job (matched by URL token) when the \
    visible text doesn't already give you a confident company name. This is not \
    inventing a value — it is decoding a real company name from its slug.
+13. Some digests (e.g. Glassdoor "SuperMatch") give full details for one featured \
+   job, then merely name other companies in a passing summary sentence (e.g. \
+   "...matched with roles at Acme, Contoso and 5 more."). Do NOT create a job \
+   element for a company that only appears in such a summary/teaser mention with \
+   no job title or URL of its own — that is not a distinct job posting, just a \
+   reference to one. Only emit an element for a company when the email gives it \
+   its own title or URL.
 
 Each element schema:
 {
@@ -355,6 +362,20 @@ class EmailParser:
                 if fallback:
                     item["url"] = fallback
                     logger.debug("URL fallback: extracted %s from email body", fallback)
+            # ai: claude-sonnet-5 | 2026-09-12
+            # A job with neither a title nor a URL carries no identifying signal
+            # at all — it can only come from a company being named in passing
+            # (e.g. a Glassdoor "SuperMatch" teaser sentence: "...at Acme, Contoso
+            # and 5 more.") rather than a real, distinct posting. Rule 13 above
+            # asks the LLM not to emit these, but drop them here too as a backstop
+            # so a prompt miss can't still produce an unactionable triage row.
+            if not item.get("job_title") and not item.get("url"):
+                logger.debug(
+                    "Dropping parsed job with no title or URL (company=%r) — "
+                    "likely a passing mention, not a distinct posting",
+                    item.get("company"),
+                )
+                continue
             jobs.append(item)  # type: ignore[arg-type]
 
         return jobs
