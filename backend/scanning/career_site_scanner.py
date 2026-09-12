@@ -447,20 +447,18 @@ def _is_generic_anchor(text: str) -> bool:
     return normalized in _GENERIC_ANCHOR_TEXTS
 
 
-def _ashby_job_from_html(page_html: str) -> dict | None:
-    """Extract job posting data from an Ashby job detail page.
+def _json_object_after_key(page_html: str, key: str) -> dict | None:
+    """Extract the JSON object value of `"key": { ... }` from raw HTML via brace-matching.
 
-    Ashby is a Vite SPA (not Next.js); job data is embedded in a
-    window.__appData script tag as __appData.posting. The visible DOM is an
-    empty loading spinner — only the embedded JSON has the content.
+    Handles arbitrarily large objects without DOTALL catastrophic backtracking —
+    shared by Ashby's __appData "posting" and "organization" extraction below,
+    which both need this same embedded-JSON-in-a-script-tag technique.
     """
-    # Find "posting": { ... } inside the __appData block using brace-matching
-    # so we handle arbitrarily large objects without DOTALL catastrophic backtracking.
-    match = re.search(r'[{,]\s*"posting"\s*:\s*\{', page_html)
+    match = re.search(rf'[{{,]\s*"{re.escape(key)}"\s*:\s*\{{', page_html)
     if not match:
         return None
 
-    i = match.end() - 1  # position of the opening '{' of the posting value
+    i = match.end() - 1  # position of the opening '{' of the value
     depth = 0
     in_str = False
     escaped = False
@@ -488,11 +486,39 @@ def _ashby_job_from_html(page_html: str) -> dict | None:
         return None
 
     try:
-        posting = json.loads(page_html[i : end + 1])
+        value = json.loads(page_html[i : end + 1])
     except json.JSONDecodeError:
         return None
 
-    return posting if isinstance(posting, dict) and posting.get("title") else None
+    return value if isinstance(value, dict) else None
+
+
+def _ashby_job_from_html(page_html: str) -> dict | None:
+    """Extract job posting data from an Ashby job detail page.
+
+    Ashby is a Vite SPA (not Next.js); job data is embedded in a
+    window.__appData script tag as __appData.posting. The visible DOM is an
+    empty loading spinner — only the embedded JSON has the content.
+    """
+    posting = _json_object_after_key(page_html, "posting")
+    return posting if posting and posting.get("title") else None
+
+
+# ai: claude-sonnet-5 | 2026-09-09
+def _ashby_organization_name_from_html(page_html: str) -> str | None:
+    """Extract the real, correctly-cased employer name from an Ashby job page.
+
+    window.__appData carries "organization": {"name": "EvenUp", ...} as a
+    sibling of "posting" — the same JSON blob _ashby_job_from_html reads. This
+    is the actual source of truth for company casing (e.g. "EvenUp", not the
+    "Evenup" a naive slug_to_title_case("evenup") would produce), so prefer it
+    over the URL-slug-guessing fallbacks in backend/utils/company_urls.py.
+    """
+    organization = _json_object_after_key(page_html, "organization")
+    if not organization:
+        return None
+    name = organization.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else None
 
 
 def _detect_embedded_ashby_base_url(listing_html: str) -> str | None:
@@ -1206,7 +1232,10 @@ class CareerSiteScanner:
                     "scan_single_job_url: Ashby extraction succeeded in %.1fs total",
                     time.monotonic() - t0,
                 )
-                return self._ashby_job_from_posting(site_name, final_url, ashby_posting)
+                ashby_company = _ashby_organization_name_from_html(page_html)
+                return self._ashby_job_from_posting(
+                    site_name, final_url, ashby_posting, company=ashby_company
+                )
             logger.info(
                 "scan_single_job_url: Ashby extraction found nothing, falling through to generic parser"
             )
@@ -1221,7 +1250,12 @@ class CareerSiteScanner:
         return result
 
     def _ashby_job_from_posting(
-        self, site_name: str, job_url: str, posting: dict
+        self,
+        site_name: str,
+        job_url: str,
+        posting: dict,
+        *,
+        company: str | None = None,
     ) -> CareerSiteJob:
         title = _clean_text(str(posting.get("title") or "")) or "Untitled Job"
         department = _clean_text(
@@ -1265,7 +1299,7 @@ class CareerSiteScanner:
         text = _clean_text(" ".join(text_parts))
 
         confidence_level, confidence_score = _confidence_for(title, text)
-        return CareerSiteJob(
+        result = CareerSiteJob(
             site_name=site_name,
             site_url=job_url,
             job_title=title[:300],
@@ -1277,6 +1311,9 @@ class CareerSiteScanner:
             confidence_level=confidence_level,
             confidence_score=confidence_score,
         )
+        if company:
+            result["company"] = company
+        return result
 
     def _linkedin_job_from_guest_api(
         self, site_name: str, job_url: str, job_id: str

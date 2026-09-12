@@ -251,14 +251,29 @@ class ManualJobIngestService:
             normalized_job_title_override or (parsed.get("job_title") or "").strip()
         )
         url = normalized_source_url or (parsed.get("url") or "").strip()
+        # ai: claude-sonnet-5 | 2026-09-09
+        # `url` above is deliberately the original aggregator URL the caller
+        # supplied (e.g. welcometothejungle.com) so that's what gets stored as
+        # the job's canonical URL. But for the company-from-URL fallbacks below,
+        # an aggregator URL that resolved through to a real ATS page (see
+        # CareerSiteScanner._wttj_ats_url_from_html) has that resolved URL
+        # sitting in parsed["url"] -- prefer it here, since a WTTJ/aggregator
+        # domain itself never encodes the employer name (company_from_career_domain
+        # would read the aggregator's own name, e.g. "Welcometothejungle", off
+        # it instead of the real employer off jobs.ashbyhq.com/<company>).
+        ats_resolved_url = (parsed.get("url") or "").strip()
         # ai: claude-sonnet-4-6 | 2026-06-27
         # Last-resort fallback: extract company from the ATS URL slug when all
         # other extraction paths (parser, LLM, JD re-fetch) produced nothing.
+        if not company and ats_resolved_url:
+            company = company_from_ats_url(ats_resolved_url) or ""
         if not company and url:
             company = company_from_ats_url(url) or ""
         # ai: claude-sonnet-4-6 | 2026-07-09
         # Further fallback: infer the company from a branded careers domain
         # (e.g. careers.labcorp.com) when the URL isn't a known ATS slug URL.
+        if not company and ats_resolved_url:
+            company = company_from_career_domain(ats_resolved_url) or ""
         if not company and url:
             company = company_from_career_domain(url) or ""
         parsed_source = (parsed.get("source") or "").strip()
