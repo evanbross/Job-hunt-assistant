@@ -279,17 +279,23 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
     duplicates instead of erasing application history.
     """
     user_id = current_user_id()
+    base_id = email_id.split(":")[0]
+
+    try:
+        gmail = GmailClient()
+    except NotAuthenticatedError as exc:
+        return jsonify({"error": str(exc)}), 401
+
+    # ai: claude-sonnet-5 | 2026-09-12
+    # Restructured per Dev-Standards DATABASE_STANDARDS.md "Connection Lifecycle" --
+    # this used to hold one DB connection open across the entire rescan, including
+    # the Gmail fetch, the AI parse call, and every AI fit-scoring call in the loop
+    # below. Now: a brief DB phase clears prior state and snapshots what parsing/
+    # scoring will need -> release -> Gmail fetch + AI work run with no DB held ->
+    # reopen briefly just to write the results.
     with get_repos() as repos:
         scanned_repo = repos["scanned_emails"]
         job_repo = repos["jobs"]
-        resume_repo = repos["resume"]
-        penalty_repo = repos["penalties"]
-        feedback_repo = repos["feedback"]
-
-        try:
-            gmail = GmailClient()
-        except NotAuthenticatedError as exc:
-            return jsonify({"error": str(exc)}), 401
 
         # Remove prior scanned record so this email is treated as new
         scanned_repo.delete(user_id, email_id)
@@ -297,35 +303,37 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         # Delete active jobs produced from this email. Preserve terminal history
         # so applied/rejected jobs are still duplicate candidates.
         existing_jobs = job_repo.get_by_statuses(user_id, list(_ACTIVE_RESCAN_STATUSES))
-        base_id = email_id.split(":")[0]
         for job in existing_jobs:
             eid = job.get(JobColumns.DEDUP_KEY) or ""
             if eid == email_id or eid.startswith(base_id + ":"):
                 job_repo.delete(user_id, job["id"])
 
-        # Re-fetch and re-parse
-        try:
-            full_msg = gmail.get_message(base_id)
-            subject, sender, email_body = gmail.extract_text(full_msg)
-            email_raw_html = gmail.extract_raw_html(full_msg)
-        except Exception as exc:
-            return (
-                jsonify(
-                    {
-                        "error": safe_error_message(
-                            exc, "Failed to fetch email from Gmail"
-                        )
-                    }
-                ),
-                500,
-            )
-
-        email_date = email_date_from_message(full_msg)
-
         subject_rules = repos["email_subject_rules"].get_enabled(user_id)
-        subject_rule = get_subject_rule_match(subject, subject_rules)
-        if subject_rule == "blacklist":
-            scanned_repo.mark_scanned(
+        resume_row = repos["resume"].get_latest(user_id)
+        resume_text = resume_row["content"] if resume_row else ""
+        penalty_rules = repos["penalties"].get_enabled(user_id)
+        fit_feedback = job_repo.get_not_a_fit_with_feedback(user_id)
+        known_jobs: list[dict] = job_repo.get_all_ordered(user_id)
+        repos["conn"].commit()
+
+    # Re-fetch (Gmail API call, no DB connection held)
+    try:
+        full_msg = gmail.get_message(base_id)
+        subject, sender, email_body = gmail.extract_text(full_msg)
+        email_raw_html = gmail.extract_raw_html(full_msg)
+    except Exception as exc:
+        return (
+            jsonify(
+                {"error": safe_error_message(exc, "Failed to fetch email from Gmail")}
+            ),
+            500,
+        )
+
+    email_date = email_date_from_message(full_msg)
+    subject_rule = get_subject_rule_match(subject, subject_rules)
+    if subject_rule == "blacklist":
+        with get_repos() as repos:
+            repos["scanned_emails"].mark_scanned(
                 user_id,
                 email_id,
                 sender,
@@ -335,19 +343,21 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 raw_body=email_body,
             )
             repos["conn"].commit()
-            return jsonify(
-                {
-                    "jobs": [],
-                    "message": "Acknowledged application email — no job extracted.",
-                }
-            )
+        return jsonify(
+            {
+                "jobs": [],
+                "message": "Acknowledged application email — no job extracted.",
+            }
+        )
 
-        try:
-            parsed_jobs = EmailParser(user_id).parse(
-                subject, sender, email_body, raw_html=email_raw_html
-            )
-        except Exception as exc:
-            scanned_repo.mark_scanned(
+    # Re-parse (AI call, no DB connection held)
+    try:
+        parsed_jobs = EmailParser(user_id).parse(
+            subject, sender, email_body, raw_html=email_raw_html
+        )
+    except Exception as exc:
+        with get_repos() as repos:
+            repos["scanned_emails"].mark_scanned(
                 user_id,
                 email_id,
                 sender,
@@ -358,10 +368,11 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 parser_error_msg=str(exc),
             )
             repos["conn"].commit()
-            return jsonify({"jobs": [], "message": f"Parser error: {exc}"})
+        return jsonify({"jobs": [], "message": f"Parser error: {exc}"})
 
-        if not parsed_jobs:
-            scanned_repo.mark_scanned(
+    if not parsed_jobs:
+        with get_repos() as repos:
+            repos["scanned_emails"].mark_scanned(
                 user_id,
                 email_id,
                 sender,
@@ -371,114 +382,122 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 raw_body=email_body,
             )
             repos["conn"].commit()
-            return jsonify(
-                {"jobs": [], "message": "No job postings found in this email."}
+        return jsonify(
+            {"jobs": [], "message": "No job postings found in this email."}
+        )
+
+    # Expand board-listing URLs into individual job entries
+    parsed_jobs = expand_board_url_parsed_jobs(parsed_jobs)
+
+    # find_match needs sender/subject, which are only known post-fetch — a
+    # quick standalone DB round trip rather than holding a connection since
+    # the Gmail fetch above.
+    with get_repos() as repos:
+        feedback = repos["feedback"].find_match(user_id, sender, subject)
+
+    snippet = email_body[:300]
+    scorer = FitScorer(user_id)
+    dedup_checker = DuplicateChecker()
+
+    jobs_to_insert: list[dict] = []
+    for parsed in parsed_jobs:
+        confidence = parsed.get("certainty_level", "low")
+        if feedback and feedback["is_relevant"] == 1:
+            confidence = "high"
+        if subject_rule == "whitelist":
+            confidence = "high"
+
+        # ai: claude-sonnet-4-6 | 2026-06-10
+        (
+            _tracked_status,
+            tracking_source,
+            duplicate_hint,
+            duplicate_of_id,
+            match_scores,
+        ) = db_match_for_job(
+            job_title=str(parsed.get("job_title") or ""),
+            company=str(parsed.get("company") or ""),
+            job_url=str(parsed.get("url") or ""),
+            known_jobs=known_jobs,
+            dedup_checker=dedup_checker,
+        )
+
+        # ai: claude-sonnet-4-6 | 2026-06-10
+        if (
+            duplicate_hint
+            and confidence == "high"
+            and is_near_certain_duplicate(tracking_source, match_scores)
+        ):
+            status = "skipped"
+        elif duplicate_hint:
+            status = "possible_duplicate"
+        else:
+            status = "pending_review" if confidence == "high" else "triage"
+        job_data: dict = {
+            "company": parsed.get("company", ""),
+            "job_title": parsed.get("job_title", ""),
+            "url": parsed.get("url", ""),
+            "source": parsed.get("source", ""),
+            "raw_jd_snippet": snippet,
+            "fit_score": None,
+            "fit_reasoning": "",
+            "status": status,
+            JobColumns.CERTAINTY_LEVEL: confidence,
+            JobColumns.CERTAINTY_REASON: parsed.get("certainty_reason", ""),
+            "date_found": datetime.now(UTC).date().isoformat(),
+            "duplicate_hint": duplicate_hint,
+            "duplicate_of_id": duplicate_of_id,
+            "sender_email": sender,
+            JobColumns.CAPTURE_LABEL: subject,
+            JobColumns.CERTAINTY_SCORE: parsed.get("certainty_score", 50),
+        }
+
+        # ai: claude-sonnet-4-6 | 2026-06-10
+        if status == "skipped":
+            job_data["skip_reason"] = "duplicate"
+            job_data["skip_feedback"] = (
+                f"Auto-rejected: near-certain duplicate of job #{duplicate_of_id} ({duplicate_hint})."
             )
 
-        # Expand board-listing URLs into individual job entries
-        parsed_jobs = expand_board_url_parsed_jobs(parsed_jobs)
-
-        snippet = email_body[:300]
-        resume_row = resume_repo.get_latest(user_id)
-        resume_text = resume_row["content"] if resume_row else ""
-        penalty_rules = penalty_repo.get_enabled(user_id)
-        fit_feedback = job_repo.get_not_a_fit_with_feedback(user_id)
-        scorer = FitScorer(user_id)
-        feedback = feedback_repo.find_match(user_id, sender, subject)
-        dedup_checker = DuplicateChecker()
-        known_jobs: list[dict] = job_repo.get_all_ordered(user_id)
-
-        created: list[dict] = []
-        for job_idx, parsed in enumerate(parsed_jobs):
-            job_dedup_key = _rescan_job_dedup_key(job_repo, user_id, base_id, job_idx)
-            confidence = parsed.get("certainty_level", "low")
-            if feedback and feedback["is_relevant"] == 1:
-                confidence = "high"
-            if subject_rule == "whitelist":
-                confidence = "high"
-
-            # ai: claude-sonnet-4-6 | 2026-06-10
-            (
-                _tracked_status,
-                tracking_source,
-                duplicate_hint,
-                duplicate_of_id,
-                match_scores,
-            ) = db_match_for_job(
-                job_title=str(parsed.get("job_title") or ""),
-                company=str(parsed.get("company") or ""),
-                job_url=str(parsed.get("url") or ""),
-                known_jobs=known_jobs,
-                dedup_checker=dedup_checker,
-            )
-
-            # ai: claude-sonnet-4-6 | 2026-06-10
-            if (
-                duplicate_hint
-                and confidence == "high"
-                and is_near_certain_duplicate(tracking_source, match_scores)
-            ):
-                status = "skipped"
-            elif duplicate_hint:
-                status = "possible_duplicate"
-            else:
-                status = "pending_review" if confidence == "high" else "triage"
-            job_data: dict = {
-                JobColumns.DEDUP_KEY: job_dedup_key,
-                "company": parsed.get("company", ""),
-                "job_title": parsed.get("job_title", ""),
-                "url": parsed.get("url", ""),
-                "source": parsed.get("source", ""),
-                "raw_jd_snippet": snippet,
-                "fit_score": None,
-                "fit_reasoning": "",
-                "status": status,
-                JobColumns.CERTAINTY_LEVEL: confidence,
-                JobColumns.CERTAINTY_REASON: parsed.get("certainty_reason", ""),
-                "date_found": datetime.now(UTC).date().isoformat(),
-                "duplicate_hint": duplicate_hint,
-                "duplicate_of_id": duplicate_of_id,
-                "sender_email": sender,
-                JobColumns.CAPTURE_LABEL: subject,
-                JobColumns.CERTAINTY_SCORE: parsed.get("certainty_score", 50),
-            }
-
-            # ai: claude-sonnet-4-6 | 2026-06-10
-            if status == "skipped":
-                job_data["skip_reason"] = "duplicate"
-                job_data["skip_feedback"] = (
-                    f"Auto-rejected: near-certain duplicate of job #{duplicate_of_id} ({duplicate_hint})."
+        if confidence == "high" and status != "skipped":
+            try:
+                result = scorer.score(
+                    job_title=parsed.get("job_title", ""),
+                    company=parsed.get("company", ""),
+                    email_body=email_body,
+                    resume_text=resume_text,
+                    penalty_rules=penalty_rules,
+                    fit_feedback=fit_feedback,
                 )
+                job_data["fit_score"] = result["score"]
+                job_data["fit_reasoning"] = result["reasoning"]
+                if result["score"] < 70:
+                    job_data["status"] = "triage"
+            except Exception as exc:
+                logger.warning("Scoring failed during rescan: %s", exc)
 
-            if confidence == "high" and status != "skipped":
-                try:
-                    result = scorer.score(
-                        job_title=parsed.get("job_title", ""),
-                        company=parsed.get("company", ""),
-                        email_body=email_body,
-                        resume_text=resume_text,
-                        penalty_rules=penalty_rules,
-                        fit_feedback=fit_feedback,
-                    )
-                    job_data["fit_score"] = result["score"]
-                    job_data["fit_reasoning"] = result["reasoning"]
-                    if result["score"] < 70:
-                        job_data["status"] = "triage"
-                except Exception as exc:
-                    logger.warning("Scoring failed during rescan: %s", exc)
+        job_data, import_warnings = normalize_and_validate(job_data)
+        job_data["import_warnings"] = import_warnings_to_json(import_warnings)
+        if import_warnings and job_data["status"] not in (
+            "possible_duplicate",
+            "skipped",
+        ):
+            job_data["status"] = "triage"
 
-            job_data, import_warnings = normalize_and_validate(job_data)
-            job_data["import_warnings"] = import_warnings_to_json(import_warnings)
-            if import_warnings and job_data["status"] not in (
-                "possible_duplicate",
-                "skipped",
-            ):
-                job_data["status"] = "triage"
+        jobs_to_insert.append(job_data)
 
+    # ── Write results (DB reopened only for this fast phase) ──────────────
+    created: list[dict] = []
+    with get_repos() as repos:
+        job_repo = repos["jobs"]
+        for job_idx, job_data in enumerate(jobs_to_insert):
+            job_data[JobColumns.DEDUP_KEY] = _rescan_job_dedup_key(
+                job_repo, user_id, base_id, job_idx
+            )
             new_id = job_repo.insert(user_id, job_data)
             created.append(job_repo.get_by_id(user_id, new_id))
 
-        scanned_repo.mark_scanned(
+        repos["scanned_emails"].mark_scanned(
             user_id,
             email_id,
             sender,
@@ -488,12 +507,13 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
             raw_body=email_body,
         )
         repos["conn"].commit()
-        return jsonify(
-            {
-                "jobs": created,
-                "message": f"Rescanned — {len(created)} job(s) extracted.",
-            }
-        )
+
+    return jsonify(
+        {
+            "jobs": created,
+            "message": f"Rescanned — {len(created)} job(s) extracted.",
+        }
+    )
 
 
 def _rescan_job_dedup_key(
