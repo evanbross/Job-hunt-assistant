@@ -351,6 +351,28 @@ SCORING INSTRUCTIONS:
   unless the listing explicitly says so in words (e.g. "must reside in Texas", "Texas
   residents only", "candidates must be located in <state>"). A bare state/city label next
   to "Remote" is not that evidence.
+- IMPORTANT — explicit state/region eligibility lists: when the posting names a specific,
+  enumerated list of eligible or ineligible states/regions for remote work (e.g. "must
+  reside in one of the following states: CA, TX, NY...", "not eligible in NY, CA, WA"),
+  verify the candidate's eligibility against it precisely instead of skimming or
+  pattern-matching on the first few states you see:
+  1. Read the clause in full before drawing any conclusion — do not stop partway through
+     a long list.
+  2. Determine whether it is an INCLUDE list (only these states qualify) or an EXCLUDE
+     list (these states are excluded, all others qualify).
+  3. Check explicitly whether the candidate's home state (see CANDIDATE PROFILE above)
+     appears in that list.
+  4. If the candidate's state isn't named individually, check whether the clause uses a
+     regional grouping (a time zone, "West Coast", a named multi-state region) that would
+     implicitly include or exclude it before concluding either way.
+  5. If eligibility is still genuinely ambiguous after this check (truncated text, unclear
+     grouping), say so explicitly in the reasoning — never silently assume disqualification
+     or eligibility.
+  6. Only treat a state list as a disqualifier when the candidate's state is affirmatively
+     excluded (named on an exclude list, or absent from a clearly exhaustive include list
+     with no ambiguity). If the state list drives the score in either direction, name the
+     specific outcome in the reasoning (e.g. "NC is explicitly included") so it can be
+     checked directly against the posting.
 - IMPORTANT — numbered engineer titles are not senior: a trailing digit or roman
   numeral on an "Engineer" title (e.g. "Software Engineer 2", "Engineer II",
   "SDE I") names a specific rung on the pre-Senior career ladder — an
