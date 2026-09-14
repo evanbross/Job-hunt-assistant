@@ -45,6 +45,7 @@ export default function renderJobOrTriageCard(job, queueHandlers, triageHandlers
         onReEvaluate={queueHandlers.onReEvaluate}
         onSkip={queueHandlers.onSkip}
         onSnooze={queueHandlers.onSnooze}
+        onRescanEmail={queueHandlers.onRescanEmail}
         onNavigateToJobCard={onNavigateToJobCard}
         onUpdate={(jobId, updatedJob) => queueHandlers.onUpdate(jobId, updatedJob, job)}
         contactsByCompany={contactsByCompany}
@@ -67,6 +68,9 @@ export default function renderJobOrTriageCard(job, queueHandlers, triageHandlers
         onReEvaluate={() => triageHandlers.reEvaluateFit(job)}
         onRefreshFromUrl={() => triageHandlers.refreshFromUrl(job)}
         onReprocessed={(updated) => triageHandlers.reprocessed(job, updated)}
+        onRescanEmail={() => triageHandlers.rescanEmail(job)}
+        onSnooze={triageHandlers.snooze}
+        defaultSnoozeDays={defaultSnoozeDays}
         allSheetRows={allSheetRows}
         onNavigateToJobCard={onNavigateToJobCard}
         contactsByCompany={contactsByCompany}
@@ -85,6 +89,9 @@ export default function renderJobOrTriageCard(job, queueHandlers, triageHandlers
       onRefreshFromUrl={() => triageHandlers.refreshFromUrl(job)}
       onSkipDuplicate={(jobId) => triageHandlers.skip({ id: jobId }, "duplicate", "", [])}
       onDismissDuplicate={(jobId) => triageHandlers.markUnique({ id: jobId })}
+      onRescanEmail={() => triageHandlers.rescanEmail(job)}
+      onSnooze={triageHandlers.snooze}
+      defaultSnoozeDays={defaultSnoozeDays}
       allSheetRows={allSheetRows}
       onReprocessed={(updated) => triageHandlers.reprocessed(job, updated)}
       onDescriptionUpdated={(updated, previous) => triageHandlers.descriptionUpdated(job, updated, previous)}

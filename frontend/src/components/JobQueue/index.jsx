@@ -38,7 +38,7 @@ import { ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBa
 import { jobMatchesSearch } from "../../utils/jobSearchUtils.js";
 import { contactsMatchKey } from "../../utils/contactsUtils.js";
 import ReqClosedDialog from "../common/ReqClosedDialog.jsx";
-import { extractSender, extractSubjectWords } from "../../utils/triagePanelUtils.js";
+import { emailIdForRescan, extractSender, extractSubjectWords } from "../../utils/triagePanelUtils.js";
 import { applicationRowFromSheet } from "../../utils/sheetUtils.js";
 import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../../utils/reqClosedScanStorage.js";
 import { readStoredPref, writeStoredPref } from "../../utils/storedPreference.js";
@@ -450,6 +450,29 @@ export default function JobQueue({
     };
   }, [fetchJobs]);
 
+  // ai: claude-sonnet-5 | 2026-09-14
+  // A rescan can delete this job (and any digest siblings) and create a
+  // different number of replacement rows, so there's no single "updated job"
+  // to swap in — a full reload of both lists is the only correct outcome.
+  const handleRescanEmail = async (job) => {
+    const emailId = emailIdForRescan(job);
+    if (!emailId) return;
+    try {
+      const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/rescan`, {
+        method: "POST",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        window.alert(data.error || "Failed to rescan email");
+        return;
+      }
+      await Promise.all([fetchJobs(), fetchTriageJobs()]);
+      window.alert(data.message || "Email rescanned.");
+    } catch {
+      window.alert("Failed to rescan email");
+    }
+  };
+
   const pollScanStatus = async (onDone) => {
     try {
       const res = await fetch("/api/scan/status");
@@ -765,6 +788,25 @@ export default function JobQueue({
     } else {
       const err = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to mark job as applied");
+    }
+  };
+
+  // ai: claude-sonnet-5 | 2026-09-14
+  const handleTriageSnooze = async (jobId, days) => {
+    const res = await fetch(`/api/jobs/${jobId}/snooze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ days }),
+    });
+    if (res.ok) {
+      setTriageJobs((prev) => {
+        const updated = prev.filter((j) => j.id !== jobId);
+        onTriageCountChange(updated.length);
+        return updated;
+      });
+    } else {
+      const err = await res.json().catch(() => ({}));
+      window.alert(err.error || "Failed to snooze job");
     }
   };
 
@@ -1662,6 +1704,8 @@ export default function JobQueue({
     refreshFromUrl: handleTriageRefreshFromUrl,
     reprocessed: handleTriageReprocessed,
     descriptionUpdated: handleTriageDescriptionUpdated,
+    rescanEmail: handleRescanEmail,
+    snooze: handleTriageSnooze,
   };
 
   const isBatchRefreshing = triageBatchRefreshPopup?.phase === "running";
@@ -2500,6 +2544,7 @@ export default function JobQueue({
               onQueueReEvaluate={handleJobReEvaluate}
               onQueueSkip={handleSkip}
               onQueueSnooze={handleSnooze}
+              onQueueRescanEmail={handleRescanEmail}
               onQueueUpdate={(jobId, updatedJob, originalJob) => {
                 captureScrollAnchor(jobId);
                 if (updatedJob.fit_score !== originalJob.fit_score || updatedJob.fit_reasoning !== originalJob.fit_reasoning) {
@@ -2541,6 +2586,7 @@ export default function JobQueue({
             onReEvaluate: handleJobReEvaluate,
             onSkip: handleSkip,
             onSnooze: handleSnooze,
+            onRescanEmail: handleRescanEmail,
             onUpdate: (jobId, updatedJob, originalJob) => {
               captureScrollAnchor(jobId);
               if (updatedJob.fit_score !== originalJob.fit_score || updatedJob.fit_reasoning !== originalJob.fit_reasoning) {
@@ -2579,6 +2625,7 @@ export default function JobQueue({
               onSkip={handleSkip}
               onSnooze={handleSnooze}
               onDismissDuplicate={handleDismissDuplicate}
+              onRescanEmail={handleRescanEmail}
               defaultSnoozeDays={defaultSnoozeDays}
               onNavigateToJobCard={onNavigateToJobCard}
               contactsByCompany={contactsByCompany}

@@ -54,7 +54,7 @@ const companyGroupHeaderStyle = {
 
 export default function CompanyGroup({
   company, jobs, triageHandlers, allSheetRows, contactsByCompany, companyJobCounts, onNavigateToJobCard,
-  onQueueApprove, onQueueReEvaluate, onQueueSkip, onQueueSnooze, onQueueUpdate, defaultSnoozeDays,
+  onQueueApprove, onQueueReEvaluate, onQueueSkip, onQueueSnooze, onQueueRescanEmail, onQueueUpdate, defaultSnoozeDays,
 }) {
   const [open, setOpen] = useState(false);
   const queueCount = jobs.filter((j) => j.status === "pending_review").length;
@@ -65,6 +65,7 @@ export default function CompanyGroup({
     onReEvaluate: onQueueReEvaluate,
     onSkip: onQueueSkip,
     onSnooze: onQueueSnooze,
+    onRescanEmail: onQueueRescanEmail,
     onUpdate: onQueueUpdate,
   };
 

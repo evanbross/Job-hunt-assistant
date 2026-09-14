@@ -38,6 +38,11 @@ import { reasoningWithoutPenaltySummary } from "./fitScoringUtils.js";
 // (backend/skip_reasons.py) — edit shared/skip_reasons.json, not this file.
 import skipReasons from "../../../shared/skip_reasons.json";
 
+// ai: claude-sonnet-5 | 2026-09-14
+// Shared localStorage key so the last snooze-days value a user picked on any
+// card (queue, triage, or duplicate) is remembered as the default everywhere.
+export const SNOOZE_DAYS_STORAGE_KEY = "jobcard_snooze_days";
+
 export const PLATFORM_LABELS = {
   greenhouse: "Greenhouse",
   lever: "Lever",
@@ -92,6 +97,20 @@ export function isManualPastedJob(job) {
     || subject === "tampermonkey streamed job listing" // backward compat
     || isManualSource(String(job.source || ""))
   );
+}
+
+// ai: claude-sonnet-5 | 2026-09-14
+// dedup_key holds a real Gmail message ID (16 lowercase hex chars, optionally
+// with a ":N" suffix for a multi-job digest email) only for email-sourced
+// jobs — see backend/db/job_columns.py's DEDUP_KEY comment. Every other
+// source (browser extension, manual paste, career-site scan, board search)
+// uses a "prefix:date:token" shaped key instead, which this regex rejects.
+const _EMAIL_DEDUP_KEY_RE = /^[0-9a-f]{16}(?::\d+)?$/i;
+
+export function emailIdForRescan(job) {
+  const dedupKey = String(job.dedup_key || "").trim();
+  if (!_EMAIL_DEDUP_KEY_RE.test(dedupKey)) return "";
+  return dedupKey.split(":")[0];
 }
 
 export function titleCaseKnownSource(source) {

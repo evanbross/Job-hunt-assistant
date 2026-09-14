@@ -92,10 +92,22 @@ class PostgresJobRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def get_by_statuses(self, user_id: int, statuses: list[str]) -> list[dict[str, Any]]:
+    def get_by_statuses(
+        self, user_id: int, statuses: list[str], exclude_snoozed: bool = False
+    ) -> list[dict[str, Any]]:
+        # ai: claude-sonnet-5 | 2026-09-14 — exclude_snoozed defaults False:
+        # duplicate-detection callers (jd_enrichment, email rescan, board
+        # scan) must still see snoozed jobs so they don't re-create a
+        # duplicate of one the user is just hiding temporarily. Only the
+        # triage panel's own display query opts in.
         placeholders = ", ".join(["%s"] * len(statuses))
+        snooze_clause = (
+            " AND (snoozed_until IS NULL OR snoozed_until::date <= (NOW() AT TIME ZONE 'UTC')::date)"
+            if exclude_snoozed
+            else ""
+        )
         cur = self._execute(
-            f"SELECT * FROM jobs WHERE user_id = %s AND status IN ({placeholders})"
+            f"SELECT * FROM jobs WHERE user_id = %s AND status IN ({placeholders}){snooze_clause}"
             " ORDER BY date_found DESC",
             [user_id, *statuses],
         )

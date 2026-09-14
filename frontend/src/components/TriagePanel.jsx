@@ -38,6 +38,7 @@ import CoverLetterModal from "./common/CoverLetterModal.jsx";
 import PitchModal from "./common/PitchModal.jsx";
 import ResumeTailorModal from "./common/ResumeTailorModal.jsx";
 import TailorProgressModal from "./common/TailorProgressModal.jsx";
+import SnoozeModal from "./common/SnoozeModal.jsx";
 import StatusBadge from "./common/StatusBadge.jsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
 import ContactsBadge from "./common/ContactsBadge.jsx";
@@ -53,8 +54,10 @@ import { describeFetchError } from "../utils/fetchErrorUtils.js"; // ai: claude-
 import {
   MISMATCH_REASONS,
   SKIP_REASONS,
+  SNOOZE_DAYS_STORAGE_KEY,
   compareNullableScores,
   dispositionLabel,
+  emailIdForRescan,
   extractSender,
   extractSubjectWords,
   fitPercentageLabel,
@@ -715,7 +718,7 @@ function CompanyNameEditor({ jobId, company, onSave, onError }) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }) {
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }) {
   const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
@@ -742,6 +745,12 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
   const [resumeTailor, setResumeTailor] = useState(null);
   const [resumeTailorOpen, setResumeTailorOpen] = useState(false);
   const [tailorPhaseIdx, setTailorPhaseIdx] = useState(0);
+  // ai: claude-sonnet-5 | 2026-09-14
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const [snoozeDays, setSnoozeDays] = useState(() => {
+    const stored = parseInt(localStorage.getItem(SNOOZE_DAYS_STORAGE_KEY), 10);
+    return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
+  });
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
   const companyHistory = useCompanyHistoryLookup(job);
   const triageReasoning = triageReasoningForJob(job);
@@ -754,6 +763,15 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     } finally {
       setLoadingAction(null);
     }
+  };
+
+  // ai: claude-sonnet-5 | 2026-09-14
+  const handleSnoozeConfirm = async () => {
+    const days = parseInt(snoozeDays, 10);
+    if (!Number.isFinite(days) || days < 1) return;
+    localStorage.setItem(SNOOZE_DAYS_STORAGE_KEY, String(days));
+    setSnoozeOpen(false);
+    await act(() => onSnooze(job.id, days), "snooze");
   };
 
   const handleReEvaluateClick = async () => {
@@ -1123,6 +1141,27 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
               {job.sender_email}
             </div>
           )}
+          {emailIdForRescan(job) && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    "Re-fetch this email from Gmail and re-parse it? This deletes any other active job(s) extracted from the same email — applied/skipped jobs are kept as duplicate-detection history."
+                  )
+                ) {
+                  return;
+                }
+                act(() => onRescanEmail(job), "rescan");
+              }}
+              disabled={loadingAction !== null}
+              style={{ fontSize: "12px", marginTop: "6px", padding: "3px 9px" }}
+              title="Re-fetch this email from Gmail and re-run the parser on it"
+            >
+              {loadingAction === "rescan" ? "Rescanning…" : "Rescan Email"}
+            </button>
+          )}
         </div>
       )}
 
@@ -1264,6 +1303,15 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
         >
           {loadingAction === "applied" ? "Saving…" : "Mark Applied"}
         </button>
+        {/* ai: claude-sonnet-5 | 2026-09-14 */}
+        <button
+          className="btn-secondary btn-sm"
+          onClick={() => setSnoozeOpen((open) => !open)}
+          disabled={loadingAction !== null}
+          title="Hide this job for a few days, then show it again"
+        >
+          {loadingAction === "snooze" ? "Snoozing…" : "Snooze"}
+        </button>
         {/* ai: claude-sonnet-4-6 | 2026-06-24 */}
         <div style={{ position: "relative" }}>
           <button
@@ -1302,6 +1350,16 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           )}
         </div>
       </div>
+
+      {snoozeOpen && (
+        <SnoozeModal
+          days={snoozeDays}
+          onDaysChange={setSnoozeDays}
+          onConfirm={handleSnoozeConfirm}
+          onClose={() => setSnoozeOpen(false)}
+          busy={loadingAction === "snooze"}
+        />
+      )}
 
       {skipConfirm && (
         <div style={skipConfirmPanelStyle}>
@@ -1423,7 +1481,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
 export const DuplicateCard = memo(DuplicateCardImpl, arePropsEqualIgnoringFunctions);
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }) {
+function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }) {
   const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
@@ -1463,6 +1521,12 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
   const [chatReclassification, setChatReclassification] = useState(null);
   const [chatAccepting, setChatAccepting] = useState(false);
   const chatMessagesRef = useRef(null);
+  // ai: claude-sonnet-5 | 2026-09-14
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const [snoozeDays, setSnoozeDays] = useState(() => {
+    const stored = parseInt(localStorage.getItem(SNOOZE_DAYS_STORAGE_KEY), 10);
+    return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
+  });
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
   const companyHistory = useCompanyHistoryLookup(job);
   const triageReasoning = triageReasoningForJob(job);
@@ -1484,6 +1548,15 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     } finally {
       setLoadingAction(null);
     }
+  };
+
+  // ai: claude-sonnet-5 | 2026-09-14
+  const handleSnoozeConfirm = async () => {
+    const days = parseInt(snoozeDays, 10);
+    if (!Number.isFinite(days) || days < 1) return;
+    localStorage.setItem(SNOOZE_DAYS_STORAGE_KEY, String(days));
+    setSnoozeOpen(false);
+    await act(() => onSnooze(job.id, days), "snooze");
   };
 
   const handleReEvaluateClick = async () => {
@@ -2116,6 +2189,27 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
               {job.sender_email}
             </div>
           )}
+          {emailIdForRescan(job) && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    "Re-fetch this email from Gmail and re-parse it? This deletes any other active job(s) extracted from the same email — applied/skipped jobs are kept as duplicate-detection history."
+                  )
+                ) {
+                  return;
+                }
+                act(() => onRescanEmail(job), "rescan");
+              }}
+              disabled={loadingAction !== null}
+              style={{ fontSize: "12px", marginTop: "6px", padding: "3px 9px" }}
+              title="Re-fetch this email from Gmail and re-run the parser on it"
+            >
+              {loadingAction === "rescan" ? "Rescanning…" : "Rescan Email"}
+            </button>
+          )}
         </div>
       )}
 
@@ -2321,6 +2415,16 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         >
           {loadingAction === "applied" ? "Saving…" : "Mark Applied"}
         </button>
+        {/* ai: claude-sonnet-5 | 2026-09-14 */}
+        <button
+          className="btn-secondary"
+          onClick={() => setSnoozeOpen((open) => !open)}
+          disabled={loadingAction !== null}
+          style={{ flexShrink: 0 }}
+          title="Hide this job for a few days, then show it again"
+        >
+          {loadingAction === "snooze" ? "Snoozing…" : "Snooze"}
+        </button>
         <div style={{ position: "relative", flex: 1 }}>
           <button
             className="btn-danger"
@@ -2358,6 +2462,16 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           )}
         </div>
       </div>
+
+      {snoozeOpen && (
+        <SnoozeModal
+          days={snoozeDays}
+          onDaysChange={setSnoozeDays}
+          onConfirm={handleSnoozeConfirm}
+          onClose={() => setSnoozeOpen(false)}
+          busy={loadingAction === "snooze"}
+        />
+      )}
 
       {skipConfirm && (
         <div style={skipConfirmPanelStyle}>

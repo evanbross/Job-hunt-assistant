@@ -341,7 +341,9 @@ def re_evaluate_status() -> ResponseReturnValue:
 @fit_bp.route("/jobs/triage")
 def get_triage_jobs() -> ResponseReturnValue:
     with get_repos() as repos:
-        jobs = repos["jobs"].get_by_statuses(current_user_id(), ["triage", "possible_duplicate"])
+        jobs = repos["jobs"].get_by_statuses(
+            current_user_id(), ["triage", "possible_duplicate"], exclude_snoozed=True
+        )
     return jsonify(jobs)
 
 

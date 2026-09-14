@@ -52,6 +52,8 @@ import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.js";
 import {
   MISMATCH_REASONS,
   SKIP_REASONS,
+  SNOOZE_DAYS_STORAGE_KEY,
+  emailIdForRescan,
   isDescriptionUnavailable,
   isNegativeReasoningBullet,
   jobDescriptionText,
@@ -60,8 +62,6 @@ import {
   penaltiesAppliedForJob,
   platformLabelForUrl,
 } from "../utils/triagePanelUtils.js";
-
-const _DEFAULT_SNOOZE_DAYS_KEY = "jobcard_snooze_days";
 
 // ai: claude-sonnet-4-6 | 2026-06-23
 // Memoized: parent re-renders on every search keystroke, and callback props
@@ -76,6 +76,7 @@ function JobCard({
   onSnooze,
   onUpdate,
   onDismissDuplicate,
+  onRescanEmail,
   onNavigateToJobCard,
   contactsByCompany,
   companyJobCounts,
@@ -94,7 +95,7 @@ function JobCard({
   const [skipMenuAnchor, setSkipMenuAnchor] = useState(null);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [snoozeDays, setSnoozeDays] = useState(() => {
-    const stored = parseInt(localStorage.getItem(_DEFAULT_SNOOZE_DAYS_KEY), 10);
+    const stored = parseInt(localStorage.getItem(SNOOZE_DAYS_STORAGE_KEY), 10);
     return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
   });
   const [pitchText, setPitchText] = useState(null);
@@ -174,6 +175,7 @@ function JobCard({
   const unmatchedPenalties = penaltiesApplied.filter((_, i) => !usedPenaltyIndices.has(i));
 
   const showEmailOrigin = shouldShowEmailOrigin(job);
+  const rescanEmailId = emailIdForRescan(job);
   const jobDescription = jobDescriptionText(job);
   // ai: claude-sonnet-4-6 | 2026-06-16
   const descriptionUnavailable = isDescriptionUnavailable(jobDescription);
@@ -190,7 +192,7 @@ function JobCard({
   const handleSnoozeConfirm = async () => {
     const days = parseInt(snoozeDays, 10);
     if (!Number.isFinite(days) || days < 1) return;
-    localStorage.setItem(_DEFAULT_SNOOZE_DAYS_KEY, String(days));
+    localStorage.setItem(SNOOZE_DAYS_STORAGE_KEY, String(days));
     setSnoozeOpen(false);
     setLoading("snooze");
     try {
@@ -340,6 +342,23 @@ function JobCard({
       onUpdate?.(job.id, data);
     } catch (e) {
       setRefreshError(e.message || "Re-fetch from URL failed");
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  // ai: claude-sonnet-5 | 2026-09-14
+  const handleRescanEmail = async () => {
+    if (
+      !window.confirm(
+        "Re-fetch this email from Gmail and re-parse it? This deletes any other active job(s) extracted from the same email — applied/skipped jobs are kept as duplicate-detection history."
+      )
+    ) {
+      return;
+    }
+    setLoading("rescan");
+    try {
+      await onRescanEmail?.(job);
     } finally {
       setLoading(null);
     }
@@ -942,6 +961,18 @@ function JobCard({
               <span style={{ fontWeight: "500", color: "var(--text)" }}>From: </span>
               {job.sender_email}
             </div>
+          )}
+          {rescanEmailId && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={handleRescanEmail}
+              disabled={busy}
+              style={{ fontSize: "12px", marginTop: "6px", padding: "3px 9px" }}
+              title="Re-fetch this email from Gmail and re-run the parser on it"
+            >
+              {loading === "rescan" ? "Rescanning…" : "Rescan Email"}
+            </button>
           )}
         </div>
       )}
