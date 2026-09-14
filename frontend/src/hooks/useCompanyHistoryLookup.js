@@ -35,27 +35,7 @@
 import { useState } from "react";
 import { describeFetchError } from "../utils/fetchErrorUtils.js";
 import { applicationRowFromSheet, jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.js";
-
-// ai: claude-sonnet-5 | 2026-07-21
-// Every duplicate candidate the job has ever been matched against — the current
-// hint plus every id previously dismissed via dismiss-duplicate — must stay
-// force-included. Only force-including the *current* duplicate_of_id caused
-// earlier candidates (e.g. #1822, #1821) to silently drop out of the list once
-// the hint moved on to a new candidate (#1755), because their stored company
-// name doesn't always pass the fuzzy match in rowMatchesCompany.
-function alwaysIncludedIds(job) {
-  const ids = new Set();
-  if (job.duplicate_of_id) ids.add(job.duplicate_of_id);
-  try {
-    const dismissed = JSON.parse(job.dismissed_duplicate_ids || "[]");
-    if (Array.isArray(dismissed)) {
-      for (const id of dismissed) ids.add(id);
-    }
-  } catch {
-    // malformed/legacy value — ignore, current duplicate_of_id is still included
-  }
-  return ids;
-}
+import { alwaysIncludedIds } from "../utils/jobQueueUtils.js";
 
 // ai: claude-sonnet-4-6 | 2026-06-11
 export function useCompanyHistoryLookup(job) {

@@ -145,12 +145,38 @@ export function companyCountKey(company) {
   return String(company || "").trim().toLowerCase();
 }
 
-// True only once there is at least one OTHER job on record for this company —
-// i.e. the Company History dialog would actually show something beyond the
-// current card. `companyJobCounts` is the bulk map from /api/jobs/company-counts;
-// null means it hasn't loaded yet, in which case the button stays enabled
-// rather than flashing disabled-then-enabled once counts arrive.
+// ai: claude-sonnet-5 | 2026-09-14
+// Every duplicate candidate the job has ever been matched against — the current
+// hint plus every id previously dismissed via dismiss-duplicate. These are the
+// ids useCompanyHistoryLookup force-includes in the dialog even when their
+// stored company name doesn't pass rowMatchesCompany's fuzzy threshold (see
+// that hook's own comment — duplicate detection uses fuzzy company matching,
+// e.g. "mindbody (playlist?)" vs "Playlist", so the two company strings can
+// legitimately differ). hasCompanyHistoryAvailable below reuses this so the
+// button doesn't disagree with the dialog about whether there's anything to show.
+export function alwaysIncludedIds(job) {
+  const ids = new Set();
+  if (job.duplicate_of_id) ids.add(job.duplicate_of_id);
+  try {
+    const dismissed = JSON.parse(job.dismissed_duplicate_ids || "[]");
+    if (Array.isArray(dismissed)) {
+      for (const id of dismissed) ids.add(id);
+    }
+  } catch {
+    // malformed/legacy value — ignore, current duplicate_of_id is still included
+  }
+  return ids;
+}
+
+// True once there is at least one OTHER job on record for this company, OR
+// this job has a duplicate match (current or previously dismissed) that the
+// Company History dialog will force-include regardless of company-name text —
+// i.e. the dialog would actually show something beyond the current card.
+// `companyJobCounts` is the bulk map from /api/jobs/company-counts; null means
+// it hasn't loaded yet, in which case the button stays enabled rather than
+// flashing disabled-then-enabled once counts arrive.
 export function hasCompanyHistoryAvailable(job, companyJobCounts) {
+  if (alwaysIncludedIds(job).size > 0) return true;
   const company = String(job?.company || "").trim();
   if (!company) return false;
   if (!companyJobCounts) return true;
