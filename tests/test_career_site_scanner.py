@@ -56,6 +56,7 @@ from backend.scanning.career_site_scanner import (
     _workday_parts,
     _workday_single_job_parts,
     _wttj_ats_url_from_html,
+    _wttj_canonical_url,
     is_job_board_url,
     validate_board_scan,
     validate_extraction,
@@ -608,6 +609,73 @@ def test_scan_single_job_url_falls_back_when_wttj_has_no_ats_url() -> None:
         )
 
     generic_parser.assert_called_once()
+
+
+# ai: claude-sonnet-5 | 2026-09-14
+def test_wttj_canonical_url_strips_query_and_fragment() -> None:
+    assert (
+        _wttj_canonical_url(
+            "https://app.welcometothejungle.com/jobs/llx0qwy8"
+            "?token=abc&position=3&count=3&utm_campaign=new_job_notification"
+        )
+        == "https://app.welcometothejungle.com/jobs/llx0qwy8"
+    )
+
+
+def test_wttj_canonical_url_returns_none_when_no_query_or_fragment() -> None:
+    assert (
+        _wttj_canonical_url("https://app.welcometothejungle.com/jobs/hxE-2lk8")
+        is None
+    )
+
+
+# ai: claude-sonnet-5 | 2026-09-14
+def test_scan_single_job_url_retries_wttj_without_tracking_params() -> None:
+    """Job 2512 (Harvey): WTTJ's email-notification link carries a token/position/
+    count/utm_* query string that makes WTTJ's server return a generic app-shell
+    page with no JSON-LD — even though the same /jobs/<slug> path with no query
+    string SSRs the full posting. The tracked-link fetch must not be the only
+    attempt; a second fetch against the canonical (query-stripped) URL should
+    still resolve the ATS URL.
+    """
+    scanner = CareerSiteScanner()
+    shell_html = "<html><body>Generic WTTJ app shell, no JSON-LD</body></html>"
+    canonical_html = (
+        '<script type="application/ld+json">'
+        '{"@type":"JobPosting","identifier":{"value":'
+        '"https://job-boards.greenhouse.io/acme/jobs/12345"}}'
+        "</script>"
+    )
+    expected_job = {
+        "site_name": "Acme",
+        "site_url": "https://job-boards.greenhouse.io/acme/jobs/12345",
+        "job_title": "Senior Engineer",
+        "job_url": "https://job-boards.greenhouse.io/acme/jobs/12345",
+        "job_text": "Full description | Hybrid",
+        "posted_at": None,
+        "confidence_level": "high",
+        "confidence_score": 88,
+    }
+    tracked_url = (
+        "https://app.welcometothejungle.com/jobs/llx0qwy8"
+        "?token=abc&position=3&count=3&utm_campaign=new_job_notification"
+    )
+    canonical_url = "https://app.welcometothejungle.com/jobs/llx0qwy8"
+    with (
+        patch(
+            "backend.scanning.career_site_scanner._fetch_html",
+            side_effect=[shell_html, canonical_html],
+        ) as fetch_html,
+        patch.object(
+            scanner, "_greenhouse_single_job_from_api", return_value=expected_job
+        ) as greenhouse_api,
+    ):
+        result = scanner.scan_single_job_url("Welcome to the Jungle", tracked_url)
+
+    assert fetch_html.call_args_list[0].args[0] == tracked_url
+    assert fetch_html.call_args_list[1].args[0] == canonical_url
+    greenhouse_api.assert_called_once()
+    assert result == expected_job
 
 
 # ai: claude-sonnet-5 | 2026-08-23

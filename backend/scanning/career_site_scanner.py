@@ -52,7 +52,7 @@ from html import unescape
 from html.parser import HTMLParser
 from typing import NotRequired, TypedDict
 from urllib.error import URLError
-from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
+from urllib.parse import ParseResult, parse_qs, urljoin, urlparse, urlunparse
 from urllib.request import Request
 
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
@@ -293,6 +293,21 @@ _LD_JSON_SCRIPT_RE = re.compile(
     r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(?P<json>.*?)</script>',
     re.IGNORECASE | re.DOTALL,
 )
+
+
+def _wttj_canonical_url(url: str) -> str | None:
+    """Strip query string/fragment from a WTTJ job URL, or None if there's none to strip.
+
+    Email-notification links (job 2512/Harvey) carry a token/position/count/utm_*
+    query string that makes WTTJ's server skip SSR of the actual job content and
+    return a generic app-shell page with no JSON-LD — even though the same
+    /jobs/<slug> path with no query string SSRs the full posting (confirmed by
+    directly comparing both fetches). The slug alone identifies the job.
+    """
+    parsed = urlparse(url)
+    if not parsed.query and not parsed.fragment:
+        return None
+    return urlunparse(parsed._replace(query="", fragment=""))
 
 
 def _wttj_ats_url_from_html(page_html: str) -> str | None:
@@ -1030,24 +1045,37 @@ class CareerSiteScanner:
         # etc.) parses the real, structured posting instead.
         if "welcometothejungle.com" in parsed.netloc.lower():
             logger.info("scan_single_job_url: WTTJ URL, resolving underlying ATS URL")
-            try:
-                wttj_html = _fetch_html(job_url)
-                ats_url = _wttj_ats_url_from_html(wttj_html)
-                if ats_url:
+            ats_url: str | None = None
+            for candidate_url in (job_url, _wttj_canonical_url(job_url)):
+                if candidate_url is None:
+                    continue
+                try:
+                    wttj_html = _fetch_html(candidate_url)
+                    ats_url = _wttj_ats_url_from_html(wttj_html)
+                except (UnsafeUrlError, URLError, socket.timeout, OSError) as exc:
                     logger.info(
-                        "scan_single_job_url: WTTJ resolved to ATS URL %s", ats_url
+                        "scan_single_job_url: WTTJ fetch of %s failed: %s",
+                        candidate_url,
+                        exc,
                     )
-                    return self.scan_single_job_url(site_name, ats_url)
+                    continue
+                if ats_url:
+                    break
                 logger.info(
-                    "scan_single_job_url: WTTJ page had no resolvable ATS URL, "
-                    "falling back to generic parser"
+                    "scan_single_job_url: WTTJ fetch of %s had no resolvable ATS "
+                    "URL (email-tracking query params can break WTTJ's SSR — "
+                    "retrying without them)",
+                    candidate_url,
                 )
-            except (UnsafeUrlError, URLError, socket.timeout, OSError) as exc:
+            if ats_url:
                 logger.info(
-                    "scan_single_job_url: WTTJ ATS-URL resolution failed, "
-                    "falling back to generic parser: %s",
-                    exc,
+                    "scan_single_job_url: WTTJ resolved to ATS URL %s", ats_url
                 )
+                return self.scan_single_job_url(site_name, ats_url)
+            logger.info(
+                "scan_single_job_url: WTTJ URL had no resolvable ATS URL after "
+                "retrying without query params, falling back to generic parser"
+            )
 
         if "greenhouse.io" in parsed.netloc.lower() and _is_greenhouse_single_job_url(
             parsed
