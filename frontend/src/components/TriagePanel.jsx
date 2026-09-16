@@ -55,6 +55,7 @@ import {
   MISMATCH_REASONS,
   SKIP_REASONS,
   SNOOZE_DAYS_STORAGE_KEY,
+  compareByDateFoundDesc,
   compareNullableScores,
   dispositionLabel,
   emailIdForRescan,
@@ -402,7 +403,8 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
       return sortBy === "date_desc" ? db - da : da - db;
     }
     if (sortBy === "fit_desc" || sortBy === "fit_asc") {
-      return compareNullableScores(a.fit_score, b.fit_score, sortBy === "fit_desc" ? "desc" : "asc");
+      const scoreCompare = compareNullableScores(a.fit_score, b.fit_score, sortBy === "fit_desc" ? "desc" : "asc");
+      return scoreCompare !== 0 ? scoreCompare : compareByDateFoundDesc(a, b);
     }
     // certainty_score: possible_duplicate cards don't have one — sort them last
     const ca = a.certainty_score ?? (a.status === "possible_duplicate" ? -1 : 50);

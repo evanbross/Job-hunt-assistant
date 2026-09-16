@@ -250,6 +250,12 @@ export function compareNullableScores(leftScore, rightScore, direction) {
   return direction === "desc" ? -comparison : comparison;
 }
 
+// Tiebreaker for fit-score sorts: newest date_found first, regardless of
+// whether the score sort itself is ascending or descending.
+export function compareByDateFoundDesc(a, b) {
+  return new Date(b.date_found || 0) - new Date(a.date_found || 0);
+}
+
 export function dispositionLabel(status) {
   if (status === "pending_review") return "In Job Queue";
   if (status === "triage") return "Still triage";

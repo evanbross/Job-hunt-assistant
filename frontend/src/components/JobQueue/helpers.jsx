@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import { compareNullableScores } from "../../utils/triagePanelUtils.js";
+import { compareByDateFoundDesc, compareNullableScores } from "../../utils/triagePanelUtils.js";
 import { formatScanDisposition } from "../../utils/jobQueueUtils.js";
 
 export function sortJobList(list, sortKey) {
@@ -43,7 +43,8 @@ export function sortJobList(list, sortKey) {
       return sortKey === "date_desc" ? db - da : da - db;
     }
     if (sortKey === "fit_desc" || sortKey === "fit_asc") {
-      return compareNullableScores(a.fit_score, b.fit_score, sortKey === "fit_desc" ? "desc" : "asc");
+      const scoreCompare = compareNullableScores(a.fit_score, b.fit_score, sortKey === "fit_desc" ? "desc" : "asc");
+      return scoreCompare !== 0 ? scoreCompare : compareByDateFoundDesc(a, b);
     }
     if (sortKey === "confidence_desc" || sortKey === "confidence_asc") {
       const ca = a.certainty_score ?? (a.status === "possible_duplicate" ? -1 : 50);
