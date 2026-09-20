@@ -208,7 +208,8 @@ const VIEW_MODES = [
 const SORT_OPTIONS = [
   { key: "date_desc", label: "Newest first" },
   { key: "date_asc", label: "Oldest first" },
-  { key: "fit_desc", label: "Highest fit" },
+  { key: "fit_desc_date_desc", label: "Highest fit, newest first" },
+  { key: "fit_desc_date_asc", label: "Highest fit, oldest first" },
   { key: "fit_asc", label: "Lowest fit" },
   { key: "confidence_desc", label: "Highest confidence" },
   { key: "confidence_asc", label: "Lowest confidence" },
@@ -229,7 +230,10 @@ export default function JobQueue({
   const [debouncedSearchText, setDebouncedSearchText] = useState(searchText);
   const [searchAllFields, setSearchAllFields] = useState(() => readStoredViewPref(SEARCH_ALL_FIELDS_KEY, "false") === "true");
   const [viewMode, setViewMode] = useState(() => readStoredViewPref(VIEW_MODE_STORAGE_KEY, "queue"));
-  const [sortBy, setSortBy] = useState(() => readStoredViewPref(SORT_STORAGE_KEY, "date_desc"));
+  const [sortBy, setSortBy] = useState(() => {
+    const stored = readStoredViewPref(SORT_STORAGE_KEY, "date_desc");
+    return stored === "fit_desc" ? "fit_desc_date_desc" : stored; // ai: claude-sonnet-5 | 2026-09-20 migrate old stored sort key
+  });
   const [triageJobs, setTriageJobs] = useState([]);
   const [triageLoading, setTriageLoading] = useState(false);
   const [unreachableJobs, setUnreachableJobs] = useState([]);

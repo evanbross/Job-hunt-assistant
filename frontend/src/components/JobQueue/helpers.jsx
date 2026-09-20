@@ -42,8 +42,14 @@ export function sortJobList(list, sortKey) {
       const db = new Date(b.date_found || 0);
       return sortKey === "date_desc" ? db - da : da - db;
     }
-    if (sortKey === "fit_desc" || sortKey === "fit_asc") {
-      const scoreCompare = compareNullableScores(a.fit_score, b.fit_score, sortKey === "fit_desc" ? "desc" : "asc");
+    if (sortKey === "fit_desc_date_desc" || sortKey === "fit_desc_date_asc") {
+      const scoreCompare = compareNullableScores(a.fit_score, b.fit_score, "desc");
+      if (scoreCompare !== 0) return scoreCompare;
+      const dateCompare = compareByDateFoundDesc(a, b);
+      return sortKey === "fit_desc_date_desc" ? dateCompare : -dateCompare;
+    }
+    if (sortKey === "fit_asc") {
+      const scoreCompare = compareNullableScores(a.fit_score, b.fit_score, "asc");
       return scoreCompare !== 0 ? scoreCompare : compareByDateFoundDesc(a, b);
     }
     if (sortKey === "confidence_desc" || sortKey === "confidence_asc") {
