@@ -40,6 +40,8 @@ from urllib.parse import urlparse
 
 import psycopg2
 
+from backend.scoring.company_matching import normalize_company_name
+
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
 from ..job_columns import JobColumns
@@ -218,32 +220,40 @@ class PostgresJobRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    # ai: claude-sonnet-4-6 | 2026-06-28
+    # ai: claude-sonnet-5 | 2026-09-19
     def get_by_company(self, user_id: int, company: str) -> list[dict[str, Any]]:
-        """Return all jobs whose company matches case-insensitively, newest first."""
-        cur = self._execute(
-            "SELECT * FROM jobs WHERE user_id = %s AND LOWER(TRIM(company)) = LOWER(TRIM(%s))"
-            " ORDER BY id DESC",
-            (user_id, company),
-        )
-        return [_row_to_dict(r) for r in cur.fetchall()]
+        """Return all jobs whose company matches, newest first.
 
-    # ai: claude-sonnet-5 | 2026-08-19
-    def get_company_counts(self, user_id: int) -> dict[str, int]:
-        """Total job count per normalized (lower/trimmed) company name, across every
-        status. Used by the frontend to gray out the Company History button when a
-        job is the only one on record for its company — the same normalization
-        get_by_company uses, so the counts agree with what that lookup would return."""
+        Matching goes through normalize_company_name() (strips corporate suffixes
+        like "Corp"/"Corporation"/"Inc" and non-alphanumerics) rather than a plain
+        LOWER(TRIM()) comparison, so e.g. "Seeq" and "Seeq Corporation" are treated
+        as the same employer. See get_company_counts below, which must use the same
+        normalization so the two agree on what counts as a match."""
+        target = normalize_company_name(company)
         cur = self._execute(
-            """
-            SELECT LOWER(TRIM(company)) AS normalized_company, COUNT(*) AS job_count
-            FROM jobs
-            WHERE user_id = %s AND TRIM(COALESCE(company, '')) != ''
-            GROUP BY LOWER(TRIM(company))
-            """,
+            "SELECT * FROM jobs WHERE user_id = %s AND TRIM(COALESCE(company, '')) != ''"
+            " ORDER BY id DESC",
             (user_id,),
         )
-        return {row["normalized_company"]: row["job_count"] for row in cur.fetchall()}
+        rows = [_row_to_dict(r) for r in cur.fetchall()]
+        return [row for row in rows if normalize_company_name(row.get("company")) == target]
+
+    # ai: claude-sonnet-5 | 2026-09-19
+    def get_company_counts(self, user_id: int) -> dict[str, int]:
+        """Total job count per normalized company name (see normalize_company_name),
+        across every status. Used by the frontend to gray out the Company History
+        button when a job is the only one on record for its company — the same
+        normalization get_by_company uses, so the counts agree with what that lookup
+        would return."""
+        cur = self._execute(
+            "SELECT company FROM jobs WHERE user_id = %s AND TRIM(COALESCE(company, '')) != ''",
+            (user_id,),
+        )
+        counts: dict[str, int] = {}
+        for row in cur.fetchall():
+            key = normalize_company_name(row["company"])
+            counts[key] = counts.get(key, 0) + 1
+        return counts
 
     _MISSING_COMPANY_SQL: str = (
         "COALESCE(TRIM(LOWER(company)), '') IN ('', 'unknown', 'unknown company', 'null', 'none')"

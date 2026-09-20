@@ -33,6 +33,7 @@
  */
 
 import { SKIP_REASONS } from "./triagePanelUtils.js";
+import { contactsMatchKey } from "./contactsUtils.js";
 
 export function scoreDeltaLabel(previousScore, newScore) {
   if (previousScore === null || previousScore === undefined || newScore === null || newScore === undefined) {
@@ -138,11 +139,13 @@ export function importWarningTooltip(warnings) {
   return warnings.map((code) => IMPORT_WARNING_LABELS[code] || code).join("\n");
 }
 
-// ai: claude-sonnet-5 | 2026-08-19
-// Mirrors the LOWER(TRIM(company)) grouping used by get_company_counts() /
-// get_by_company() in backend/db/repositories/jobs.py — keep both in sync.
+// ai: claude-sonnet-5 | 2026-09-19
+// Mirrors normalize_company_name() (via the grouping key in get_company_counts() /
+// get_by_company() in backend/db/repositories/jobs.py) — keep both in sync.
+// Strips corporate suffixes (Corp/Corporation/Inc/LLC/...) so e.g. "Seeq" and
+// "Seeq Corporation" count as the same employer instead of two separate ones.
 export function companyCountKey(company) {
-  return String(company || "").trim().toLowerCase();
+  return contactsMatchKey(company);
 }
 
 // ai: claude-sonnet-5 | 2026-09-14

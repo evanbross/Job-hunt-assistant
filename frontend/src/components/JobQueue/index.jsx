@@ -1427,19 +1427,31 @@ export default function JobQueue({
     [viewMode, filteredJobs, filteredTriageJobs, sortBy],
   );
 
+  // ai: claude-sonnet-5 | 2026-09-19
+  // Group by contactsMatchKey (same corporate-suffix-stripping normalizer as
+  // Company History / the queue-card button) rather than the raw trimmed
+  // string, so e.g. "Seeq" and "Seeq Corporation" land in one section instead
+  // of two. Each group's display label is its most common raw spelling.
   const companiesMap = useMemo(
     () => viewMode === "company"
       ? combinedJobs.reduce((acc, job) => {
-          const key = String(job.company || "").trim() || "Unknown Company";
-          if (!acc[key]) acc[key] = [];
-          acc[key].push(job);
+          const rawCompany = String(job.company || "").trim() || "Unknown Company";
+          const key = contactsMatchKey(rawCompany) || "unknown-company";
+          if (!acc[key]) acc[key] = { jobs: [], labelCounts: {} };
+          acc[key].jobs.push(job);
+          acc[key].labelCounts[rawCompany] = (acc[key].labelCounts[rawCompany] || 0) + 1;
           return acc;
         }, {})
       : {},
     [viewMode, combinedJobs],
   );
   const companiesList = useMemo(
-    () => Object.entries(companiesMap).sort(([a], [b]) => a.localeCompare(b)),
+    () => Object.values(companiesMap)
+      .map((group) => [
+        Object.entries(group.labelCounts).sort((a, b) => b[1] - a[1])[0][0],
+        group.jobs,
+      ])
+      .sort(([a], [b]) => a.localeCompare(b)),
     [companiesMap],
   );
 
