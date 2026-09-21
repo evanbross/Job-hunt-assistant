@@ -42,6 +42,7 @@ import re
 import socket
 import threading
 import time  # ai: claude-fable-5 | 2026-07-17
+from collections.abc import Collection
 from datetime import UTC, date, datetime, timedelta
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -650,7 +651,11 @@ def _submit_closed_req_scan(
             AsyncResult(existing, app=celery_app).state, submitted_at
         ):
             return None
-        task = run_req_closed_scan_task.delay(user_id, platforms=platforms)
+        # ai: claude-sonnet-5 | 2026-09-20 — Celery's JSON serializer can't
+        # encode a frozenset; send a sorted list over the wire instead.
+        task = run_req_closed_scan_task.delay(
+            user_id, platforms=sorted(platforms) if platforms is not None else None
+        )
         _closed_req_last_task_id_by_user[user_id] = task.id
         _closed_req_submitted_at_by_user[user_id] = time.monotonic()
         return task.id
@@ -881,7 +886,7 @@ def _browser_recheck_found_closed(repos: dict, user_id: int, job: dict) -> bool:
 # ai: claude-sonnet-5 | 2026-08-20
 @celery_app.task(bind=True)
 def run_req_closed_scan_task(
-    self, user_id: int, platforms: frozenset[str] | None = None
+    self, user_id: int, platforms: Collection[str] | None = None
 ) -> dict:
     """Scan candidate jobs for closed reqs, limited to `platforms` (keys of
     _PLATFORM_LABELS). None means scan every supported platform. Run as a
@@ -899,7 +904,9 @@ def run_req_closed_scan_task(
          whole pool is done or the extension goes quiet.
     """
     today = datetime.now(UTC).date().isoformat()
-    selected = platforms if platforms is not None else frozenset(_PLATFORM_LABELS)
+    # platforms arrives as a list over Celery (JSON has no frozenset), or as a
+    # frozenset when the task is invoked in-process via .apply() in tests.
+    selected = frozenset(platforms) if platforms is not None else frozenset(_PLATFORM_LABELS)
     selected_labels = ", ".join(
         label for key, label in _PLATFORM_LABELS.items() if key in selected
     )
