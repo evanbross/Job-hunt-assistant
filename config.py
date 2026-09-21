@@ -129,7 +129,7 @@ DEFAULT_FIT_SCORER_PROMPT_PATH: Path = Path(
 )
 
 # ─── Redis / Celery ───────────────────────────────────────────────────────────
-REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:16379/0")  # ai: claude-sonnet-5 | 2026-09-20 — was 6379, in a Hyper-V exclusion range
 
 # ─── Wellfound JD fetcher ─────────────────────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-08-30 — email/password/search-URL settings removed
