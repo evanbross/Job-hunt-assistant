@@ -40,6 +40,7 @@ import pytest
 
 from backend.db import (
     DuplicateJobUrlError,
+    PostgresApplicationStageRepository,
     PostgresCareerSiteSourceRepository,
     PostgresJobRepository,
     PostgresRelevanceFeedbackRepository,
@@ -495,5 +496,61 @@ def test_first_account_becomes_admin_and_stays_admin_across_migrations(
         assert cur.fetchone()["role"] == "admin"
         cur.execute("SELECT role FROM user_accounts WHERE id = %s", (second["id"],))
         assert cur.fetchone()["role"] == "user"
+    finally:
+        conn.close()
+
+
+# ai: claude-sonnet-5 | 2026-09-20
+def test_history_page_query_paginates_searches_and_batches_stages(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = PostgresUserAccountRepository(conn).create_pending(
+            "pager@example.com", "seed-pager@example.com", "2099-01-01"
+        )["id"]
+        jobs = PostgresJobRepository(conn)
+        stages = PostgresApplicationStageRepository(conn)
+        titles = ["Alpha 100%", "Beta", "Gamma", "Delta", "Alpha_2"]
+        job_ids = [
+            jobs.insert(
+                user_id,
+                {
+                    "dedup_key": f"hist-{index}",
+                    "company": title,
+                    "job_title": "Engineer",
+                    "url": f"https://example.com/hist/{index}",
+                    "source": "manual",
+                    "status": "applied",
+                    "date_found": "2026-05-01",
+                },
+            )
+            for index, title in enumerate(titles)
+        ]
+        stages.insert(
+            user_id, {"job_id": job_ids[0], "status": "applied", "date": "2026-05-01", "notes": None}
+        )
+        conn.commit()
+
+        first = jobs.get_page_by_statuses(user_id, ["applied"], limit=2, offset=0)
+        second = jobs.get_page_by_statuses(user_id, ["applied"], limit=2, offset=2)
+        third = jobs.get_page_by_statuses(user_id, ["applied"], limit=2, offset=4)
+        paged_ids = [job["id"] for job in first + second + third]
+        assert paged_ids == sorted(job_ids, reverse=True)
+
+        assert [j["company"] for j in jobs.get_page_by_statuses(user_id, ["applied"], 10, 0, "alp*")] == [
+            "Alpha_2",
+            "Alpha 100%",
+        ]
+        assert [j["company"] for j in jobs.get_page_by_statuses(user_id, ["applied"], 10, 0, "100%")] == [
+            "Alpha 100%"
+        ]
+        assert [j["company"] for j in jobs.get_page_by_statuses(user_id, ["applied"], 10, 0, "alpha_")] == [
+            "Alpha_2"
+        ]
+
+        grouped = stages.get_by_job_ids(user_id, job_ids)
+        assert set(grouped) == set(job_ids)
+        assert len(grouped[job_ids[0]]) == 1
+        assert grouped[job_ids[1]] == []
+        assert stages.get_by_job_ids(user_id, []) == {}
     finally:
         conn.close()

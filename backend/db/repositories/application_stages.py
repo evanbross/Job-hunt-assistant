@@ -72,6 +72,22 @@ class PostgresApplicationStageRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
+    # ai: claude-sonnet-5 | 2026-09-20
+    def get_by_job_ids(self, user_id: int, job_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+        """Stages for many jobs in one query, grouped by job_id (every requested id is a key)."""
+        grouped: dict[int, list[dict[str, Any]]] = {job_id: [] for job_id in job_ids}
+        if not job_ids:
+            return grouped
+        cur = self._execute(
+            "SELECT * FROM application_stages WHERE user_id = %s AND job_id = ANY(%s)"
+            " ORDER BY date ASC, created_at ASC, id ASC",
+            (user_id, job_ids),
+        )
+        for row in cur.fetchall():
+            stage = _row_to_dict(row)
+            grouped[stage["job_id"]].append(stage)
+        return grouped
+
     def get_by_id(self, user_id: int, stage_id: int) -> dict[str, Any] | None:
         cur = self._execute(
             "SELECT * FROM application_stages WHERE id = %s AND user_id = %s",

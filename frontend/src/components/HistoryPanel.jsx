@@ -32,7 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import StatusBadge from "./common/StatusBadge.jsx";
 import { scoreTone } from "../utils/fitScoringUtils.js";
 import { statusTone } from "../utils/jobQueueUtils.js";
@@ -40,6 +40,8 @@ import { formatJobDescription, jobDescriptionText } from "../utils/triagePanelUt
 import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
 
 const HISTORY_SEARCH_STORAGE_KEY = "jha.history.search";
+const PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 300;
 
 // ── Status definitions ────────────────────────────────────────────────────────
 
@@ -129,40 +131,77 @@ function AddStageForm({ jobId, onAdded }) {
 }
 
 
-// ── Wildcard search helper ────────────────────────────────────────────────────
-
-function matchesSearch(job, query) {
-  if (!query) return true;
-  // Convert wildcard pattern (* and ?) to a regex
-  const escaped = query.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  const pattern = escaped.replace(/\*/g, ".*").replace(/\?/g, ".");
-  const re = new RegExp(pattern, "i");
-  return (
-    re.test(job.company || "") ||
-    re.test(job.job_title || "") ||
-    re.test(job.source || "") ||
-    re.test(job.date_found || "")
-  );
-}
-
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function HistoryPanel() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [expanded, setExpanded] = useState(new Set());
   const [descriptionOpen, setDescriptionOpen] = useState(new Set());
   const [search, setSearch] = useState(() => readStoredPref(HISTORY_SEARCH_STORAGE_KEY));
+  const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
+  const latestRequestRef = useRef(0);
+  const sentinelRef = useRef(null);
 
   useEffect(() => {
-    fetch("/api/jobs/history")
-      .then((r) => r.json())
-      .then((data) => {
-        setJobs(Array.isArray(data) ? data : []);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Search is applied server-side (the client only ever holds the pages loaded so far), so
+  // a request id discards responses that were overtaken by a newer search or page.
+  const loadPage = useCallback(
+    (offset) => {
+      latestRequestRef.current += 1;
+      const requestId = latestRequestRef.current;
+      const params = new URLSearchParams({ limit: PAGE_SIZE, offset, q: debouncedSearch });
+      if (offset === 0) setLoading(true);
+      else setLoadingMore(true);
+      fetch(`/api/jobs/history?${params}`)
+        .then((r) => {
+          if (!r.ok) throw new Error(`History load failed: ${r.status}`);
+          return r.json();
+        })
+        .then((data) => {
+          if (requestId !== latestRequestRef.current) return;
+          const page = Array.isArray(data.jobs) ? data.jobs : [];
+          setJobs((prev) => (offset === 0 ? page : [...prev, ...page]));
+          setHasMore(Boolean(data.has_more));
+        })
+        .catch(() => {
+          // Stop auto-loading on failure; otherwise the sentinel would retry in a tight loop.
+          if (requestId !== latestRequestRef.current) return;
+          setHasMore(false);
+        })
+        .finally(() => {
+          if (requestId !== latestRequestRef.current) return;
+          setLoading(false);
+          setLoadingMore(false);
+        });
+    },
+    [debouncedSearch]
+  );
+
+  useEffect(() => {
+    loadPage(0);
+  }, [loadPage]);
+
+  // The observer is recreated after every page so a still-visible sentinel fires again,
+  // chaining loads until the viewport is filled.
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || !hasMore || loading || loadingMore) return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) loadPage(jobs.length);
+      },
+      { rootMargin: "300px" }
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMore, loading, loadingMore, jobs.length, loadPage]);
 
   useEffect(() => {
     writeStoredPref(HISTORY_SEARCH_STORAGE_KEY, search);
@@ -214,9 +253,11 @@ export default function HistoryPanel() {
     }
   };
 
-  if (loading) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+  if (loading && jobs.length === 0 && !search) {
+    return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+  }
 
-  if (jobs.length === 0) {
+  if (!loading && jobs.length === 0 && !debouncedSearch) {
     return (
       <div className="empty-state">
         <p style={{ fontSize: "32px" }}>📋</p>
@@ -224,8 +265,6 @@ export default function HistoryPanel() {
       </div>
     );
   }
-
-  const filteredJobs = jobs.filter((j) => matchesSearch(j, search));
 
   return (
     <div>
@@ -258,13 +297,13 @@ export default function HistoryPanel() {
           </tr>
         </thead>
         <tbody>
-          {filteredJobs.length === 0 ? (
+          {jobs.length === 0 ? (
             <tr>
               <td colSpan={7} style={{ ...tdStyle, textAlign: "center", color: "var(--text-muted)", padding: "24px" }}>
-                No jobs match "{search}"
+                {loading ? "Loading…" : `No jobs match "${debouncedSearch}"`}
               </td>
             </tr>
-          ) : filteredJobs.map((job) => {
+          ) : jobs.map((job) => {
             const stages = job.stages || [];
             const latestStage = stages[stages.length - 1];
             const displayStatus = latestStage ? latestStage.status : job.status;
@@ -373,6 +412,11 @@ export default function HistoryPanel() {
         </tbody>
       </table>
       </div>
+      {hasMore && (
+        <div ref={sentinelRef} style={{ padding: "16px", textAlign: "center", color: "var(--text-muted)", fontSize: "12px" }}>
+          {loadingMore ? "Loading more…" : ""}
+        </div>
+      )}
     </div>
   );
 }

@@ -525,11 +525,21 @@ def undo_status_change(history_id: int) -> ResponseReturnValue:
 @jobs_bp.route("/jobs/history")
 def get_history_jobs() -> ResponseReturnValue:
     user_id = current_user_id()
+    limit = max(1, min(request.args.get("limit", 50, type=int), 200))
+    offset = max(0, request.args.get("offset", 0, type=int))
+    search = request.args.get("q", "").strip()
     with get_repos() as repos:
-        jobs = repos["jobs"].get_by_statuses(user_id, ["applied", "skipped"])
+        # ai: claude-sonnet-5 | 2026-09-20
+        # Fetch one extra row so has_more is known without a separate COUNT query.
+        jobs = repos["jobs"].get_page_by_statuses(
+            user_id, ["applied", "skipped"], limit + 1, offset, search
+        )
+        has_more = len(jobs) > limit
+        jobs = jobs[:limit]
+        stages_by_job = repos["stages"].get_by_job_ids(user_id, [job["id"] for job in jobs])
         for job in jobs:
-            job["stages"] = repos["stages"].get_by_job_id(user_id, job["id"])
-    return jsonify(jobs)
+            job["stages"] = stages_by_job[job["id"]]
+    return jsonify({"jobs": jobs, "has_more": has_more})
 
 
 # ai: claude-sonnet-4-6 | 2026-06-28

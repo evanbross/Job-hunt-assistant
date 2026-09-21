@@ -115,6 +115,31 @@ class PostgresJobRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
+    # ai: claude-sonnet-5 | 2026-09-20
+    def get_page_by_statuses(
+        self, user_id: int, statuses: list[str], limit: int, offset: int, search: str = ""
+    ) -> list[dict[str, Any]]:
+        """One page of jobs in `statuses`, newest first. `search` supports * and ? wildcards
+        and matches company, job_title, source, or date_found as a substring."""
+        placeholders = ", ".join(["%s"] * len(statuses))
+        params: list[Any] = [user_id, *statuses]
+        search_clause = ""
+        if search:
+            escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped.replace('*', '%').replace('?', '_')}%"
+            search_clause = (
+                " AND (company ILIKE %s OR job_title ILIKE %s OR source ILIKE %s"
+                " OR date_found::text ILIKE %s)"
+            )
+            params.extend([pattern] * 4)
+        # id DESC tie-break keeps page boundaries stable when many rows share a date_found.
+        cur = self._execute(
+            f"SELECT * FROM jobs WHERE user_id = %s AND status IN ({placeholders}){search_clause}"
+            " ORDER BY date_found DESC, id DESC LIMIT %s OFFSET %s",
+            [*params, limit, offset],
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
     def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
         cur = self._execute(
             "SELECT * FROM jobs WHERE id = %s AND user_id = %s", (job_id, user_id)
