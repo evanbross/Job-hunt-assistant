@@ -71,6 +71,7 @@ from backend.scoring.duplicate_matching import (
 )
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.job_validator import (
+    SCORING_FAILED_WARNING,
     import_warnings_to_json,
     normalize_and_validate,
 )
@@ -810,6 +811,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 else:
                     outcome = status.replace("_", " ")
                 scoring_error = ""
+                scoring_failed = False  # ai: claude-sonnet-5 | 2026-09-21
                 if confidence == "high" and status != "skipped":
                     try:
                         score_result = scorer.score(
@@ -829,6 +831,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                             low_fit_score_jobs += 1
                     except Exception as exc:
                         scoring_failed_jobs += 1
+                        scoring_failed = True  # ai: claude-sonnet-5 | 2026-09-21
                         scoring_error = str(exc)
                         outcome = "scoring failed"
                         logger.warning(
@@ -840,6 +843,12 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                     outcome = "possible duplicate"
 
                 job_data, import_warnings = normalize_and_validate(job_data)
+                # ai: claude-sonnet-5 | 2026-09-21
+                # A scoring failure must not leave the job in pending_review with a
+                # NULL score (indistinguishable from a normal queued job). Flagging
+                # it as an import warning reuses the triage routing just below.
+                if scoring_failed:
+                    import_warnings.append(SCORING_FAILED_WARNING)
                 job_data["import_warnings"] = import_warnings_to_json(
                     import_warnings
                 )
@@ -849,7 +858,11 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 ):
                     job_data["status"] = "triage"
                     status = "triage"
-                    if outcome not in ("low fit score", "possible duplicate"):
+                    if outcome not in (
+                        "low fit score",
+                        "possible duplicate",
+                        "scoring failed",
+                    ):
                         outcome = "import review needed"
 
                 # The email digest gave us only a tracking link, not real JD text

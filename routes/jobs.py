@@ -81,8 +81,10 @@ from backend.scoring.duplicate_matching import (
 )
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.job_validator import (
+    SCORING_FAILED_WARNING,
     import_warnings_to_json,
     normalize_and_validate,
+    remove_import_warning,
 )
 from backend.scoring.skip_reasons import (
     VALID_SKIP_REASONS,  # ai: claude-fable-5 | 2026-07-16
@@ -802,6 +804,10 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
                 updates["fit_reasoning"] = result["reasoning"]
                 updates["salary_min"] = result["salary_min"]
                 updates["salary_max"] = result["salary_max"]
+                # ai: claude-sonnet-5 | 2026-09-21
+                updates["import_warnings"] = remove_import_warning(
+                    job.get("import_warnings"), SCORING_FAILED_WARNING
+                )
             except Exception as exc:
                 logger.warning("Scoring failed during approval: %s", exc)
 
@@ -1845,6 +1851,10 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                         updates["raw_jd_snippet"] = (
                             jd_text if jd_text else email_body
                         )[:6000]
+                        # ai: claude-sonnet-5 | 2026-09-21
+                        updates["import_warnings"] = remove_import_warning(
+                            row.get("import_warnings"), SCORING_FAILED_WARNING
+                        )
                         if score_result["score"] < 70:
                             updates["status"] = "triage"
                             new_status = "triage"
@@ -1988,6 +1998,7 @@ _IMPORT_WARNING_LABELS = {
     "missing_company": "Company name is missing",
     "missing_job_title": "Job title is missing",
     "page_title": "Title looks like a browser page title",
+    "scoring_failed": "Fit scoring failed when this job was imported — re-evaluate to score it",
 }
 
 _PATTERN_MIN_COUNT = 3

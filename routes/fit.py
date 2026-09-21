@@ -53,6 +53,7 @@ from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import db_match_for_job
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_enrichment import scoring_text_for_job
+from backend.scoring.job_validator import SCORING_FAILED_WARNING, remove_import_warning
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     FIT_PANEL_STATUSES,
@@ -206,6 +207,10 @@ def run_re_evaluate_task(self, user_id: int) -> dict:
                 updates["fit_reasoning"] = result["reasoning"]
                 updates["salary_min"] = result["salary_min"]
                 updates["salary_max"] = result["salary_max"]
+                # ai: claude-sonnet-5 | 2026-09-21
+                updates["import_warnings"] = remove_import_warning(
+                    job.get("import_warnings"), SCORING_FAILED_WARNING
+                )
                 rescored += 1
             except Exception as exc:
                 logger.warning(
@@ -544,6 +549,10 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
                 "salary_min": result["salary_min"],
                 "salary_max": result["salary_max"],
                 "status": new_status,
+                # ai: claude-sonnet-5 | 2026-09-21
+                "import_warnings": remove_import_warning(
+                    job.get("import_warnings"), SCORING_FAILED_WARNING
+                ),
             },
         )
         updated_job = repos["jobs"].get_by_id(user_id, job_id)
@@ -613,6 +622,10 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
                 "salary_min": result["salary_min"],
                 "salary_max": result["salary_max"],
                 "status": new_status,
+                # ai: claude-sonnet-5 | 2026-09-21
+                "import_warnings": remove_import_warning(
+                    job.get("import_warnings"), SCORING_FAILED_WARNING
+                ),
             },
         )
         updated_job = repos["jobs"].get_by_id(user_id, job_id)

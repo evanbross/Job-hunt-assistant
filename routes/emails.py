@@ -55,6 +55,7 @@ from backend.scoring.duplicate_matching import (
 )
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.job_validator import (
+    SCORING_FAILED_WARNING,
     import_warnings_to_json,
     normalize_and_validate,
 )
@@ -459,6 +460,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 f"Auto-rejected: near-certain duplicate of job #{duplicate_of_id} ({duplicate_hint})."
             )
 
+        scoring_failed = False  # ai: claude-sonnet-5 | 2026-09-21
         if confidence == "high" and status != "skipped":
             try:
                 result = scorer.score(
@@ -474,9 +476,13 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 if result["score"] < 70:
                     job_data["status"] = "triage"
             except Exception as exc:
+                scoring_failed = True  # ai: claude-sonnet-5 | 2026-09-21
                 logger.warning("Scoring failed during rescan: %s", exc)
 
         job_data, import_warnings = normalize_and_validate(job_data)
+        # ai: claude-sonnet-5 | 2026-09-21 — see routes/scan.py; routes to triage below
+        if scoring_failed:
+            import_warnings.append(SCORING_FAILED_WARNING)
         job_data["import_warnings"] = import_warnings_to_json(import_warnings)
         if import_warnings and job_data["status"] not in (
             "possible_duplicate",
