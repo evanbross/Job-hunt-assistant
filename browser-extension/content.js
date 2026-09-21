@@ -453,6 +453,50 @@
     return '';
   }
 
+  // ai: claude-sonnet-5 | 2026-09-21
+  // Whole-page text fallback for job pages with no structured description. Site chrome
+  // and "Similar Jobs" sidebars are excluded: their unrelated titles (e.g. an "Intern"
+  // listing beside a senior role) otherwise leak into the JD and trip title-level
+  // penalty rules and the fit scorer.
+  const NON_JD_LANDMARK_SELECTOR =
+    'aside, nav, footer, header, [role="complementary"], [role="navigation"], [role="contentinfo"], [role="banner"]';
+  const RELATED_JOBS_HEADING_RE =
+    /^(similar|related|recommended|suggested|other|more)\s+(jobs|roles|positions|openings|opportunities)\b/i;
+
+  function collectNonJdElements() {
+    const found = new Set();
+    document.querySelectorAll(NON_JD_LANDMARK_SELECTOR).forEach(el => {
+      // A <header>/<footer> nested in <main>/<article> is part of the posting itself.
+      const isPostingChrome = /^(header|footer)$/i.test(el.tagName) && el.closest('main, article');
+      if (!isPostingChrome) found.add(el);
+    });
+    // Related-jobs lists are often plain divs, so find the heading by its text and take
+    // everything from that block onward within its container.
+    document.body.querySelectorAll('*').forEach(el => {
+      if (el.children.length > 0) return;
+      const text = (el.textContent || '').trim();
+      if (text.length > 40 || !RELATED_JOBS_HEADING_RE.test(text)) return;
+      let start = el;
+      while (start.parentElement && start.parentElement !== document.body && !start.nextElementSibling) {
+        start = start.parentElement;
+      }
+      for (let node = start; node; node = node.nextElementSibling) found.add(node);
+    });
+    // Never hide anything that holds the job title.
+    return [...found].filter(el => !el.matches('h1') && !el.querySelector('h1'));
+  }
+
+  function jobPageBodyText(extraHidden = []) {
+    const targets = [...collectNonJdElements(), ...extraHidden];
+    const previous = targets.map(el => el.style.display);
+    targets.forEach(el => { el.style.display = 'none'; });
+    try {
+      return document.body.innerText.trim();
+    } finally {
+      targets.forEach((el, i) => { el.style.display = previous[i]; });
+    }
+  }
+
   function longestText(selectors) {
     let best = '';
     selectors.forEach(sel => {
@@ -621,7 +665,7 @@
     if (description) {
       lines.push('', description);
     } else {
-      lines.push('', document.body.innerText.trim().slice(0, 12000));
+      lines.push('', jobPageBodyText().slice(0, 12000));
     }
 
     return JSON.stringify({ jobs: [{ url, job_title: title, company, listing_text: lines.join('\n') }] });
@@ -843,7 +887,7 @@
     if (description) {
       lines.push('', description);
     } else {
-      lines.push('', document.body.innerText.trim().slice(0, 12000));
+      lines.push('', jobPageBodyText().slice(0, 12000));
     }
 
     return JSON.stringify({ jobs: [{ url: location.href, job_title: title, company, listing_text: lines.join('\n') }] });
@@ -1926,7 +1970,7 @@
       || '';
     const description = posting?.description
       ? htmlToText(posting.description)
-      : document.body.innerText.trim().slice(0, 12000);
+      : jobPageBodyText().slice(0, 12000);
     const url = location.origin + location.pathname;
 
     return JSON.stringify({
@@ -1955,7 +1999,7 @@
       || '';
     const description = posting?.description
       ? htmlToText(posting.description)
-      : document.body.innerText.trim().slice(0, 12000);
+      : jobPageBodyText().slice(0, 12000);
     const url = location.origin + location.pathname;
 
     return JSON.stringify({
@@ -2188,7 +2232,7 @@
           || '';
         const company = posting?.hiringOrganization?.name || '';
         const description = posting?.description ? htmlToText(posting.description) : '';
-        const bodyText = description || document.body.innerText.trim().slice(0, 12000);
+        const bodyText = description || jobPageBodyText().slice(0, 12000);
         const lines = [title || selfKey.split('/').filter(Boolean).pop()];
         if (company) lines.push('Company: ' + company);
         lines.push('URL: ' + location.href);
@@ -2218,12 +2262,7 @@
   // it) rather than clicking "Yes"/"No", which would record an unintended answer.
   function bodyTextExcludingWttjModal() {
     const modal = document.querySelector('[data-testid="modal"], [role="dialog"]');
-    if (!modal) return document.body.innerText.trim();
-    const prevDisplay = modal.style.display;
-    modal.style.display = 'none';
-    const text = document.body.innerText.trim();
-    modal.style.display = prevDisplay;
-    return text;
+    return jobPageBodyText(modal ? [modal] : []);
   }
 
   // ai: claude-sonnet-4-6 | 2026-06-27
@@ -2342,7 +2381,7 @@
     const reqId = posting?.identifier?.value || '';
     const description = posting?.description
       ? htmlToText(posting.description)
-      : document.body.innerText.trim().slice(0, 12000);
+      : jobPageBodyText().slice(0, 12000);
     const url = location.origin + location.pathname;
 
     return JSON.stringify({
@@ -2460,7 +2499,7 @@
     }
 
     const matchScoreLine = extractJobgetherMatchScore();
-    const bodyText = document.body.innerText.trim().slice(0, 12000);
+    const bodyText = jobPageBodyText().slice(0, 12000);
 
     const lines = [];
     if (title) lines.push(title);
@@ -2572,7 +2611,7 @@
     ]);
     const company = posting?.hiringOrganization?.name || '';
     const description = posting?.description ? htmlToText(posting.description) : '';
-    const bodyText = description || document.body.innerText.trim().slice(0, 12000);
+    const bodyText = description || jobPageBodyText().slice(0, 12000);
     const lines = [];
     if (title) lines.push(title);
     if (company) lines.push('Company: ' + company);

@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-08-26.01
+// @version      2026-09-21.01
 // @match        https://jobs.ashbyhq.com/vanta/*
 // @match        https://discord.com/careehrs*
 // @match        https://job-boards.greenhouse.io/*/jobs/*
@@ -211,6 +211,45 @@
         return '';
     }
 
+    // ai: claude-sonnet-5 | 2026-09-21
+    // Whole-page text fallback with site chrome and "Similar Jobs" sidebars excluded, so
+    // unrelated listings (e.g. an "Intern" role beside a senior one) don't leak into the JD.
+    // Mirrors jobPageBodyText() in browser-extension/content.js — keep the two in sync.
+    const NON_JD_LANDMARK_SELECTOR =
+        'aside, nav, footer, header, [role="complementary"], [role="navigation"], [role="contentinfo"], [role="banner"]';
+    const RELATED_JOBS_HEADING_RE =
+        /^(similar|related|recommended|suggested|other|more)\s+(jobs|roles|positions|openings|opportunities)\b/i;
+
+    function collectNonJdElements() {
+        const found = new Set();
+        document.querySelectorAll(NON_JD_LANDMARK_SELECTOR).forEach(el => {
+            const isPostingChrome = /^(header|footer)$/i.test(el.tagName) && el.closest('main, article');
+            if (!isPostingChrome) found.add(el);
+        });
+        document.body.querySelectorAll('*').forEach(el => {
+            if (el.children.length > 0) return;
+            const text = (el.textContent || '').trim();
+            if (text.length > 40 || !RELATED_JOBS_HEADING_RE.test(text)) return;
+            let start = el;
+            while (start.parentElement && start.parentElement !== document.body && !start.nextElementSibling) {
+                start = start.parentElement;
+            }
+            for (let node = start; node; node = node.nextElementSibling) found.add(node);
+        });
+        return [...found].filter(el => !el.matches('h1') && !el.querySelector('h1'));
+    }
+
+    function jobPageBodyText() {
+        const targets = collectNonJdElements();
+        const previous = targets.map(el => el.style.display);
+        targets.forEach(el => { el.style.display = 'none'; });
+        try {
+            return document.body.innerText.trim();
+        } finally {
+            targets.forEach((el, i) => { el.style.display = previous[i]; });
+        }
+    }
+
     function longestText(selectors) {
         let best = '';
         selectors.forEach(sel => {
@@ -351,7 +390,7 @@
         lines.push('URL: ' + window.location.href);
         if (description) lines.push('', description);
         if (!title && !company && !description) {
-            lines.push('', document.body.innerText.trim().slice(0, 12000));
+            lines.push('', jobPageBodyText().slice(0, 12000));
         }
 
         // Send as { jobs: [...] } — the listener's JSON path handles this
@@ -647,7 +686,7 @@
         if (company) lines.push('Company: ' + company);
         lines.push('URL: ' + window.location.href);
         if (description) lines.push('', description);
-        if (!title && !company && !description) lines.push(document.body.innerText.trim().slice(0, 12000));
+        if (!title && !company && !description) lines.push(jobPageBodyText().slice(0, 12000));
 
         return JSON.stringify({
             jobs: [{ url: window.location.href, job_title: title, company, listing_text: lines.join('\n') }],
