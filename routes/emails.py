@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
@@ -84,6 +85,52 @@ _ACTIVE_RESCAN_STATUSES: tuple[str, ...] = (
     "triage",
     "possible_duplicate",
 )
+
+
+def job_url_base(url: str) -> str:
+    """URL without query/fragment, for matching links whose tracking params shift."""
+    return urlparse(url)._replace(query="", fragment="").geturl() if url else ""
+
+
+# ai: claude-sonnet-5 | 2026-09-22
+def find_existing_email_job_match(
+    parsed: dict, candidates: list[dict], dedup_checker: DuplicateChecker
+) -> dict | None:
+    """Match a freshly re-parsed job against this email's previously-extracted
+    active jobs, so a rescan can update a row in place instead of deleting and
+    recreating one that still represents the same listing.
+
+    URL match (exact, or base URL without query/fragment) is unambiguous and
+    tried first. Falls back to the fuzzy company+title comparator used for
+    duplicate detection elsewhere, so a listing whose tracking params changed
+    between rescans still matches.
+    """
+    parsed_url = str(parsed.get("url") or "").strip()
+    if parsed_url:
+        parsed_base = job_url_base(parsed_url)
+        for candidate in candidates:
+            candidate_url = str(candidate.get("url") or "").strip()
+            if not candidate_url:
+                continue
+            if candidate_url == parsed_url or job_url_base(candidate_url) == parsed_base:
+                return candidate
+
+    match = dedup_checker.check(
+        job_title=str(parsed.get("job_title") or ""),
+        company=str(parsed.get("company") or ""),
+        sheet_jobs=candidates,
+    )
+    if not match:
+        return None
+    return next(
+        (
+            c
+            for c in candidates
+            if (c.get("company") or "") == match["sheet_company"]
+            and (c.get("job_title") or "") == match["sheet_title"]
+        ),
+        None,
+    )
 
 
 # ─── Scanned email routes ────────────────────────────────────────────────────
@@ -275,9 +322,11 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
     """
     Re-fetch a single email from Gmail and re-run the parser on it.
 
-    Deletes active jobs for this email first so the email is treated as fresh.
-    Applied/skipped jobs are preserved so a rescan can detect them as tracked
-    duplicates instead of erasing application history.
+    Freshly re-parsed jobs are matched against this email's currently-active
+    jobs (by URL, then fuzzy company+title) and updated in place; only active
+    jobs with no match in the new parse are deleted. Applied/skipped jobs are
+    never touched, so a rescan can still detect them as tracked duplicates and
+    application history is never erased.
     """
     user_id = current_user_id()
     base_id = email_id.split(":")[0]
@@ -301,20 +350,34 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         # Remove prior scanned record so this email is treated as new
         scanned_repo.delete(user_id, email_id)
 
-        # Delete active jobs produced from this email. Preserve terminal history
-        # so applied/rejected jobs are still duplicate candidates.
-        existing_jobs = job_repo.get_by_statuses(user_id, list(_ACTIVE_RESCAN_STATUSES))
-        for job in existing_jobs:
-            eid = job.get(JobColumns.DEDUP_KEY) or ""
-            if eid == email_id or eid.startswith(base_id + ":"):
-                job_repo.delete(user_id, job["id"])
+        # ai: claude-sonnet-5 | 2026-09-22
+        # Snapshot this email's currently-active jobs instead of deleting them
+        # here. Each freshly re-parsed job below is matched against this list
+        # and updated in place; only entries left unmatched after the parse
+        # (see the write phase) are deleted, so a rescan no longer wipes rows
+        # that still represent the same listing.
+        all_jobs: list[dict] = job_repo.get_all_ordered(user_id)
+        existing_email_jobs: list[dict] = [
+            job
+            for job in all_jobs
+            if job.get("status") in _ACTIVE_RESCAN_STATUSES
+            and (
+                (job.get(JobColumns.DEDUP_KEY) or "") == email_id
+                or (job.get(JobColumns.DEDUP_KEY) or "").startswith(base_id + ":")
+            )
+        ]
+        existing_email_job_ids = {job["id"] for job in existing_email_jobs}
+        # Duplicate-hint detection must exclude this email's own jobs so a
+        # rescanned job is never flagged as a duplicate of itself.
+        known_jobs: list[dict] = [
+            job for job in all_jobs if job["id"] not in existing_email_job_ids
+        ]
 
         subject_rules = repos["email_subject_rules"].get_enabled(user_id)
         resume_row = repos["resume"].get_latest(user_id)
         resume_text = resume_row["content"] if resume_row else ""
         penalty_rules = repos["penalties"].get_enabled(user_id)
         fit_feedback = job_repo.get_not_a_fit_with_feedback(user_id)
-        known_jobs: list[dict] = job_repo.get_all_ordered(user_id)
         repos["conn"].commit()
 
     # Re-fetch (Gmail API call, no DB connection held)
@@ -400,8 +463,20 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
     scorer = FitScorer(user_id)
     dedup_checker = DuplicateChecker()
 
-    jobs_to_insert: list[dict] = []
+    # ai: claude-sonnet-5 | 2026-09-22
+    # Pool of this email's still-active jobs available to match against.
+    # Consumed as parsed jobs below claim a match; whatever's left at the end
+    # no longer corresponds to anything in the fresh parse and gets deleted.
+    unmatched_email_jobs: list[dict] = list(existing_email_jobs)
+
+    jobs_to_write: list[dict] = []
     for parsed in parsed_jobs:
+        matched_existing = find_existing_email_job_match(
+            parsed, unmatched_email_jobs, dedup_checker
+        )
+        if matched_existing is not None:
+            unmatched_email_jobs.remove(matched_existing)
+
         confidence = parsed.get("certainty_level", "low")
         if feedback and feedback["is_relevant"] == 1:
             confidence = "high"
@@ -490,18 +565,34 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         ):
             job_data["status"] = "triage"
 
-        jobs_to_insert.append(job_data)
+        jobs_to_write.append({"job_data": job_data, "matched_existing": matched_existing})
 
     # ── Write results (DB reopened only for this fast phase) ──────────────
     created: list[dict] = []
+    updated: list[dict] = []
     with get_repos() as repos:
         job_repo = repos["jobs"]
-        for job_idx, job_data in enumerate(jobs_to_insert):
-            job_data[JobColumns.DEDUP_KEY] = _rescan_job_dedup_key(
-                job_repo, user_id, base_id, job_idx
-            )
-            new_id = job_repo.insert(user_id, job_data)
-            created.append(job_repo.get_by_id(user_id, new_id))
+        for job_idx, entry in enumerate(jobs_to_write):
+            job_data = entry["job_data"]
+            matched_existing = entry["matched_existing"]
+            if matched_existing is not None:
+                # ai: claude-sonnet-5 | 2026-09-22
+                # Update in place — preserve the row's id/dedup_key/date_found
+                # (when this listing was first seen) rather than recreating it.
+                job_data.pop("date_found", None)
+                job_repo.update(user_id, matched_existing["id"], job_data)
+                updated.append(job_repo.get_by_id(user_id, matched_existing["id"]))
+            else:
+                job_data[JobColumns.DEDUP_KEY] = _rescan_job_dedup_key(
+                    job_repo, user_id, base_id, job_idx
+                )
+                new_id = job_repo.insert(user_id, job_data)
+                created.append(job_repo.get_by_id(user_id, new_id))
+
+        # Active jobs from this email that no longer match anything in the
+        # fresh parse (listing removed/replaced) — remove them.
+        for stale_job in unmatched_email_jobs:
+            job_repo.delete(user_id, stale_job["id"])
 
         repos["scanned_emails"].mark_scanned(
             user_id,
@@ -516,8 +607,11 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
 
     return jsonify(
         {
-            "jobs": created,
-            "message": f"Rescanned — {len(created)} job(s) extracted.",
+            "jobs": created + updated,
+            "message": (
+                f"Rescanned — {len(created)} new, {len(updated)} updated, "
+                f"{len(unmatched_email_jobs)} removed."
+            ),
         }
     )
 

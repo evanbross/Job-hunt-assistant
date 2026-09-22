@@ -351,7 +351,7 @@ function JobCard({
   const handleRescanEmail = async () => {
     if (
       !window.confirm(
-        "Re-fetch this email from Gmail and re-parse it? This deletes any other active job(s) extracted from the same email — applied/skipped jobs are kept as duplicate-detection history."
+        "Re-fetch this email from Gmail and re-parse it? Jobs from the same email that still match are updated in place; any that no longer match are removed. Applied/skipped jobs are always kept as duplicate-detection history."
       )
     ) {
       return;
