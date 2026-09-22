@@ -215,6 +215,7 @@ def _company_similarity(a: str, b: str) -> int:
     return score
 
 
+# ai: claude-sonnet-5 | 2026-09-22
 def companies_match(a: str, b: str) -> bool:
     """True when two company names likely refer to the same company."""
     if not a or not b:
@@ -255,6 +256,7 @@ class DuplicateChecker:
             if not sheet_company_raw and not sheet_title_raw:
                 continue
 
+            # ai: claude-sonnet-5 | 2026-09-22 — extracted to _company_similarity, reused by companies_match
             c_score: int = _company_similarity(company, sheet_company_raw)
             norm_sheet_title = _normalize(sheet_title_raw)
             t_score: int = fuzz.token_set_ratio(norm_title, norm_sheet_title)

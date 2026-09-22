@@ -166,6 +166,7 @@ def repair_ats_url_company(
     return True
 
 
+# ai: claude-sonnet-5 | 2026-09-22
 def repair_existing_job_company(
     user_id: int,
     jobs_repo: JobUpdater,

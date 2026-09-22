@@ -87,6 +87,7 @@ _ACTIVE_RESCAN_STATUSES: tuple[str, ...] = (
 )
 
 
+# ai: claude-sonnet-5 | 2026-09-22
 def job_url_base(url: str) -> str:
     """URL without query/fragment, for matching links whose tracking params shift."""
     return urlparse(url)._replace(query="", fragment="").geturl() if url else ""
