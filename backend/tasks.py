@@ -513,7 +513,7 @@ def run_import_task(
                     repaired_details.append(
                         _import_outcome_detail(
                             url_row,
-                            "Existing job had missing or weak company data; company was inferred from the captured listing or URL.",
+                            "Existing job had missing, weak, or incorrect company data; company was inferred from the captured listing or URL.",
                             "repaired",
                             existing_job,
                         )

@@ -68,18 +68,37 @@ def test_repairs_existing_job_with_unknown_company() -> None:
     assert repo.updated == (42, {"company": "Softrip"})
 
 
-def test_does_not_overwrite_existing_company() -> None:
+def test_does_not_overwrite_fuzzy_matching_company_variant() -> None:
+    """A differently-cased/suffixed spelling of the same company (e.g. a
+    Greenhouse board slug vs. the display name) is left alone."""
     repo = FakeJobsRepo()
 
     repaired = repair_existing_job_company(
         _TEST_USER_ID,
         repo,
-        {"id": 42, "company": "Existing Co"},
+        {"id": 42, "company": "Softrip Inc."},
         {"company": "Softrip"},
     )
 
     assert repaired is False
     assert repo.updated is None
+
+
+def test_corrects_existing_job_with_wrong_company() -> None:
+    """A stored company that a fresh capture clearly contradicts (not just a
+    spelling variant) is corrected — see job 4706: an email-derived guess of
+    "Installation Made Easy" for a listing that was actually NinjaOne."""
+    repo = FakeJobsRepo()
+
+    repaired = repair_existing_job_company(
+        _TEST_USER_ID,
+        repo,
+        {"id": 4706, "company": "Installation Made Easy"},
+        {"company": "NinjaOne"},
+    )
+
+    assert repaired is True
+    assert repo.updated == (4706, {"company": "NinjaOne"})
 
 
 # ── WTTJ title/company repair from live job-page JSON-LD ──────────────────────
