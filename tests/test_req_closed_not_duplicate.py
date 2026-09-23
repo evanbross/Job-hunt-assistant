@@ -28,6 +28,12 @@ literally the same posting, and jobs.url carries a per-user unique index.
 
 from __future__ import annotations
 
+from backend.db import (
+    PostgresApplicationStageRepository,
+    PostgresJobRepository,
+    PostgresUserAccountRepository,
+    get_connection,
+)
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import (
     db_match_for_job,
@@ -133,3 +139,81 @@ def test_dismissed_duplicate_ids_tolerates_unset_and_corrupt_values() -> None:
         assert isinstance(result, set)
     assert dismissed_duplicate_ids({}) == set()
     assert dismissed_duplicate_ids({"dismissed_duplicate_ids": '[1, null, "x"]'}) == {1}
+
+
+# ── On-sheet shape: a 'req_closed' application_stages row, job keeps its status ─
+
+
+def test_on_sheet_req_closed_flag_excludes_fuzzy_match() -> None:
+    """Sheet jobs record a closed req as a stage row, not on the jobs row, so the
+    row alone says 'applied'. get_all_ordered folds the stage into is_req_closed."""
+    row = _tapcart_row(status="applied", is_req_closed=True)
+    assert _match([row]) == (None, None, None, None, None)
+
+
+def test_on_sheet_job_without_flag_still_matches() -> None:
+    row = _tapcart_row(status="applied", is_req_closed=False)
+    _tracked, source, _hint, matched_id, _scores = _match([row])
+    assert source == "db_fuzzy"
+    assert matched_id == 2665
+
+
+def test_duplicate_checker_itself_skips_req_closed_rows() -> None:
+    """The exclusion lives in DuplicateChecker.check, so callers that bypass
+    db_match_for_job (ingest, board search, repair) get it too."""
+    checker = DuplicateChecker()
+    closed = _tapcart_row(status="skipped", skip_reason="req_closed")
+    flagged = _tapcart_row(id=2670, status="applied", is_req_closed=True)
+    open_row = _tapcart_row(id=2671)
+    kwargs = {"job_title": "Sr. Full Stack Engineer", "company": "Tapcart"}
+    assert checker.check(sheet_jobs=[closed, flagged], **kwargs) is None
+    assert checker.check(sheet_jobs=[closed, flagged, open_row], **kwargs) is not None
+
+
+def _new_job(title: str, **overrides: object) -> dict:
+    job: dict = {
+        "job_title": title,
+        "company": "Tapcart",
+        "url": f"https://example.com/{title.replace(' ', '-').lower()}",
+        "status": "pending_review",
+    }
+    job.update(overrides)
+    return job
+
+
+def test_get_all_ordered_flags_both_req_closed_shapes(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        account = PostgresUserAccountRepository(conn).create_pending(
+            "owner@example.com", "seed-owner@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        jobs = PostgresJobRepository(conn)
+        stages = PostgresApplicationStageRepository(conn)
+
+        queue_closed = jobs.insert(
+            user_id, _new_job("queue closed", status="skipped", skip_reason="req_closed")
+        )
+        sheet_closed = jobs.insert(user_id, _new_job("sheet closed", status="applied"))
+        stages.insert(
+            user_id,
+            {"job_id": sheet_closed, "status": "req_closed", "date": "2026-09-01"},
+        )
+        sheet_open = jobs.insert(user_id, _new_job("sheet open", status="applied"))
+        stages.insert(
+            user_id, {"job_id": sheet_open, "status": "applied", "date": "2026-09-01"}
+        )
+        skipped_other = jobs.insert(
+            user_id, _new_job("skipped other", status="skipped", skip_reason="not_a_fit")
+        )
+        conn.commit()
+
+        flags = {row["id"]: row["is_req_closed"] for row in jobs.get_all_ordered(user_id)}
+        assert flags == {
+            queue_closed: True,
+            sheet_closed: True,
+            sheet_open: False,
+            skipped_other: False,
+        }
+    finally:
+        conn.close()

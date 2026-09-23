@@ -79,17 +79,28 @@ if REQ_CLOSED_SKIP_REASON not in VALID_SKIP_REASONS:
     )
 
 
-# ai: claude-opus-5 | 2026-09-23
-def is_req_closed_job_row(job: dict) -> bool:
-    """True when a jobs-table row has been marked as a closed requisition.
+# ai: claude-sonnet-5 | 2026-09-23
+# Computed column JobsRepository.get_all_ordered adds to every row: true when the
+# job is req closed by *either* storage shape (see is_req_closed_job_row).
+REQ_CLOSED_ROW_FLAG: str = "is_req_closed"
 
-    Only covers the shape stored *on the job row* (status "skipped" +
-    skip_reason "req_closed"), which is how routes/applications.py's
-    _record_closed_req marks a pre-triage queue job. Jobs already on the
-    Applications Sheet instead get a 'req_closed' application_stages row and
-    keep their own status, so they can't be recognised from the row alone —
-    a caller that needs those must query the stages table.
+
+# ai: claude-sonnet-5 | 2026-09-23
+def is_req_closed_job_row(job: dict) -> bool:
+    """True when a job row has been marked as a closed requisition.
+
+    A closed req is recorded in one of two places, mirroring
+    routes/applications.py's _record_closed_req:
+      * pre-triage queue jobs: status "skipped" + skip_reason "req_closed" on
+        the jobs row itself;
+      * jobs already on the Applications Sheet: a 'req_closed' application_stages
+        row, with the job keeping its own status.
+    The second shape isn't visible on the row, so JobsRepository.get_all_ordered
+    folds it into the REQ_CLOSED_ROW_FLAG column. Rows from any other query lack
+    that flag and are only recognised by the first shape.
     """
+    if job.get(REQ_CLOSED_ROW_FLAG):
+        return True
     return (job.get("status") or "").strip() == "skipped" and (
         job.get("skip_reason") or ""
     ).strip() == REQ_CLOSED_SKIP_REASON

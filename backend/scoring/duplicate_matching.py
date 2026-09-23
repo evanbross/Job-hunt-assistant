@@ -177,7 +177,9 @@ def db_match_for_job(
     # with "Sr. Full Stack Engineer" at Tapcart being matched to that company's
     # req-closed "Sr. React Native Engineer" on a 75% title score.) Only the
     # fuzzy path is filtered; an exact URL match is the same posting and must
-    # still be recognised — see the docstring.
+    # still be recognised — see the docstring. DuplicateChecker.check skips
+    # these rows too; filtering here as well keeps the `matched` lookup below
+    # from landing on a req-closed row that shares the winner's company/title.
     fuzzy_candidates = [row for row in known_jobs if not is_req_closed_job_row(row)]
     dup = dedup_checker.check(
         job_title=job_title,

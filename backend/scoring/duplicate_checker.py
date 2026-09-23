@@ -41,6 +41,8 @@ from typing import TypedDict
 
 from rapidfuzz import fuzz
 
+from backend.scoring.skip_reasons import is_req_closed_job_row
+
 # Regex substitutions applied after lowercasing.
 # Order matters — apply more specific / longer patterns first.
 _ABBREV_PATTERNS: list[tuple[str, str]] = [
@@ -254,6 +256,14 @@ class DuplicateChecker:
             sheet_title_raw = row.get("job_title") or ""
 
             if not sheet_company_raw and not sheet_title_raw:
+                continue
+
+            # ai: claude-sonnet-5 | 2026-09-23
+            # A closed req is a dead listing: a *similar* new posting at the same
+            # company is a fresh opening, not a duplicate of it. Enforced here, the
+            # one place every fuzzy caller funnels through, so no call site can
+            # forget it.
+            if is_req_closed_job_row(row):
                 continue
 
             # ai: claude-sonnet-5 | 2026-09-22 — extracted to _company_similarity, reused by companies_match
