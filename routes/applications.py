@@ -60,6 +60,10 @@ from backend.scanning.closed_req_scan_helpers import (
     canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17 — shared with WTTJ repair
     rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17 — shared with WTTJ repair
 )
+from backend.scoring.skip_reasons import (
+    REQ_CLOSED_SKIP_REASON,
+    is_req_closed_job_row,
+)
 from backend.utils.stage_status_normalization import normalize_stage_status
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils.utils import (
@@ -766,7 +770,7 @@ def _record_closed_req(user_id: int, job: dict, platform_label: str, today: str)
                 user_id,
                 {
                     "job_id": job["id"],
-                    "status": "req_closed",
+                    "status": REQ_CLOSED_SKIP_REASON,
                     "date": today,
                     "notes": f"Req closed on {platform_label} (auto-detected).",
                 },
@@ -774,7 +778,9 @@ def _record_closed_req(user_id: int, job: dict, platform_label: str, today: str)
         else:
             from_status = str(job.get("status") or "")
             repos["jobs"].update(
-                user_id, job["id"], {"status": "skipped", "skip_reason": "req_closed"}
+                user_id,
+                job["id"],
+                {"status": "skipped", "skip_reason": REQ_CLOSED_SKIP_REASON},
             )
             maybe_mark_source_email_read(user_id, job, repos["jobs"])
             repos["job_status_history"].insert(
@@ -874,13 +880,10 @@ def _browser_recheck_found_closed(repos: dict, user_id: int, job: dict) -> bool:
     """
     if job.get("on_sheet"):
         stages = repos["stages"].get_by_job_id(user_id, job["id"])
-        return any(s.get("status") == "req_closed" for s in stages)
+        return any(s.get("status") == REQ_CLOSED_SKIP_REASON for s in stages)
     fresh = repos["jobs"].get_by_id(user_id, job["id"])
-    return (
-        fresh is not None
-        and fresh.get("status") == "skipped"
-        and fresh.get("skip_reason") == "req_closed"
-    )
+    # ai: claude-opus-5 | 2026-09-23 — shared with duplicate_matching's req-closed exclusion
+    return fresh is not None and is_req_closed_job_row(fresh)
 
 
 # ai: claude-sonnet-5 | 2026-08-20

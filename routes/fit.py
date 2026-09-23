@@ -50,7 +50,10 @@ import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
 from backend.scoring.duplicate_checker import DuplicateChecker
-from backend.scoring.duplicate_matching import db_match_for_job
+from backend.scoring.duplicate_matching import (
+    db_match_for_job,
+    dismissed_duplicate_ids,
+)
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_enrichment import scoring_text_for_job
 from backend.scoring.job_validator import SCORING_FAILED_WARNING, remove_import_warning
@@ -182,6 +185,10 @@ def run_re_evaluate_task(self, user_id: int) -> dict:
                 known_jobs=known_jobs,
                 dedup_checker=dedup_checker,
                 exclude_id=job.get("id"),
+                # ai: claude-opus-5 | 2026-09-23
+                # Without this a re-score re-flags matches the user already
+                # dismissed via /dismiss-duplicate, silently undoing that call.
+                dismissed_ids=dismissed_duplicate_ids(job),
             )
             if duplicate_hint:
                 updates["duplicate_hint"] = duplicate_hint

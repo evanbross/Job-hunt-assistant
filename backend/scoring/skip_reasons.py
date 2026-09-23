@@ -66,3 +66,30 @@ def load_skip_reasons() -> list[dict]:
 
 SKIP_REASONS: list[dict] = load_skip_reasons()
 VALID_SKIP_REASONS: frozenset[str] = frozenset(str(r["key"]) for r in SKIP_REASONS)
+
+# ai: claude-opus-5 | 2026-09-23
+# Named here rather than as a bare string literal at each call site so a rename
+# in shared/skip_reasons.json fails loudly at import instead of silently turning
+# every "is this req closed?" check into a no-op.
+REQ_CLOSED_SKIP_REASON: str = "req_closed"
+if REQ_CLOSED_SKIP_REASON not in VALID_SKIP_REASONS:
+    raise ValueError(
+        f"{REQ_CLOSED_SKIP_REASON!r} is missing from {SKIP_REASONS_PATH} — update "
+        "REQ_CLOSED_SKIP_REASON to match the renamed key."
+    )
+
+
+# ai: claude-opus-5 | 2026-09-23
+def is_req_closed_job_row(job: dict) -> bool:
+    """True when a jobs-table row has been marked as a closed requisition.
+
+    Only covers the shape stored *on the job row* (status "skipped" +
+    skip_reason "req_closed"), which is how routes/applications.py's
+    _record_closed_req marks a pre-triage queue job. Jobs already on the
+    Applications Sheet instead get a 'req_closed' application_stages row and
+    keep their own status, so they can't be recognised from the row alone —
+    a caller that needs those must query the stages table.
+    """
+    return (job.get("status") or "").strip() == "skipped" and (
+        job.get("skip_reason") or ""
+    ).strip() == REQ_CLOSED_SKIP_REASON
