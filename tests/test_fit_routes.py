@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -41,6 +42,7 @@ from typing import Any
 import pytest
 from flask import Flask
 
+from backend.scoring.job_validator import SCORING_FAILED_WARNING
 from routes.fit import fit_bp
 
 
@@ -163,3 +165,35 @@ def test_re_evaluate_fit_preserves_possible_duplicate_status(
     assert data["status"] == "possible_duplicate"
     assert conn.committed
     assert conn.closed
+
+
+# ai: claude-sonnet-5 | 2026-09-21
+def test_re_evaluate_fit_clears_scoring_failed_warning_and_promotes_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = FakeConnection()
+    jobs_repo = FakeJobsRepo()
+    jobs_repo.row["status"] = "triage"
+    jobs_repo.row["import_warnings"] = json.dumps(
+        ["homepage_url", SCORING_FAILED_WARNING]
+    )
+    repos = {
+        "conn": conn,
+        "jobs": jobs_repo,
+        "resume": FakeResumeRepo(),
+        "penalties": FakePenaltyRepo(),
+    }
+
+    monkeypatch.setattr("routes.fit.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.fit.FitScorer", FakeFitScorer)
+    monkeypatch.setattr("routes.fit.current_user_id", lambda: _FAKE_USER_ID)
+
+    app = Flask(__name__)
+    app.register_blueprint(fit_bp, url_prefix="/api")
+
+    response = app.test_client().post("/api/jobs/7/re-evaluate-fit")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "pending_review"
+    assert json.loads(data["import_warnings"]) == ["homepage_url"]

@@ -23,16 +23,41 @@ normalization)."""
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Collection
 from urllib.parse import parse_qs, urlparse
 
 from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.scoring.skip_reasons import is_req_closed_job_row
 
 # Thresholds for treating a duplicate match as near-certain enough to auto-skip
 # instead of routing to the triage queue for manual review. Stricter than
 # DuplicateChecker's own thresholds (80/70), which only flag a "possible duplicate".
 AUTO_REJECT_DUPLICATE_TITLE_THRESHOLD: int = 95
 AUTO_REJECT_DUPLICATE_COMPANY_THRESHOLD: int = 95
+
+
+# ai: claude-opus-5 | 2026-09-23
+def dismissed_duplicate_ids(job: dict) -> set[int]:
+    """Job ids the user has explicitly dismissed as non-duplicates of *job*.
+
+    Stored on the row as a JSON array by the dismiss-duplicate route. Returns an
+    empty set for the unset/corrupt cases so callers can filter unconditionally.
+    """
+    try:
+        raw = json.loads(job.get("dismissed_duplicate_ids") or "[]")
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(raw, list):
+        return set()
+    ids: set[int] = set()
+    for item in raw:
+        try:
+            ids.add(int(item))
+        except (TypeError, ValueError):
+            continue
+    return ids
 
 
 def extract_ashby_job_id(url: str) -> str | None:
@@ -78,6 +103,7 @@ def db_match_for_job(
     known_jobs: list[dict],
     dedup_checker: DuplicateChecker,
     exclude_id: int | None = None,
+    dismissed_ids: Collection[int] | None = None,
 ) -> tuple[str | None, str | None, str | None, int | None, dict[str, int] | None]:
     """Check known_jobs for an exact URL match or fuzzy title/company duplicate.
 
@@ -85,8 +111,22 @@ def db_match_for_job(
     all None when no match. matched_job_id is the DB id of the job that this is a
     duplicate of, when available. match_scores holds the rapidfuzz "title_score" and
     "company_score" for db_fuzzy matches (None for db_url matches and non-matches).
-    Duplicates are always flagged regardless of the original job's current status.
+
+    dismissed_ids are jobs the user has already said this one is *not* a duplicate
+    of (see dismissed_duplicate_ids); they are dropped from both candidate lists so
+    no later re-score can resurrect a match the user has settled.
+
+    An exact URL/job-id match is otherwise flagged regardless of the matched job's
+    status — it is literally the same posting, and jobs.url carries a per-user unique
+    index (jobs_url_unique_idx), so failing to recognise it would turn a re-import
+    into a DuplicateJobUrlError rather than a clean "already tracked" result. Fuzzy
+    matches are different: see the req-closed exclusion below.
     """
+    skip_ids: set[int] = {int(i) for i in (dismissed_ids or ())}
+    if exclude_id is not None:
+        skip_ids.add(int(exclude_id))
+    known_jobs = [row for row in known_jobs if row.get("id") not in skip_ids]
+
     current_job_url = job_url.strip()
     current_ashby_job_id = extract_ashby_job_id(current_job_url)
     current_linkedin_job_id = extract_linkedin_job_id(current_job_url)
@@ -95,8 +135,7 @@ def db_match_for_job(
         (
             row
             for row in known_jobs
-            if (exclude_id is None or row.get("id") != exclude_id)
-            and (row.get("url") or "").strip()
+            if (row.get("url") or "").strip()
             and (
                 (row.get("url") or "").strip().lower() == current_job_url.lower()
                 or (
@@ -131,9 +170,17 @@ def db_match_for_job(
     if not company.strip() or not job_title.strip() or not known_jobs:
         return None, None, None, None, None
 
-    fuzzy_candidates = [
-        row for row in known_jobs if exclude_id is None or row.get("id") != exclude_id
-    ]
+    # ai: claude-opus-5 | 2026-09-23
+    # A closed req is a dead listing, so a *similar* new posting at the same
+    # company is a fresh opening, not a duplicate of it — flagging it as one
+    # buries a live job behind a triage card pointing at an expired req. (Seen
+    # with "Sr. Full Stack Engineer" at Tapcart being matched to that company's
+    # req-closed "Sr. React Native Engineer" on a 75% title score.) Only the
+    # fuzzy path is filtered; an exact URL match is the same posting and must
+    # still be recognised — see the docstring. DuplicateChecker.check skips
+    # these rows too; filtering here as well keeps the `matched` lookup below
+    # from landing on a req-closed row that shares the winner's company/title.
+    fuzzy_candidates = [row for row in known_jobs if not is_req_closed_job_row(row)]
     dup = dedup_checker.check(
         job_title=job_title,
         company=company,

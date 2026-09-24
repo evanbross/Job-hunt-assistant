@@ -26,6 +26,7 @@ from typing import Any
 from backend.db import IJobRepository, IPenaltyRuleRepository, IResumeRepository
 from backend.db.job_columns import JobColumns
 from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.job_validator import SCORING_FAILED_WARNING, remove_import_warning
 from backend.utils.utils import ACTIVE_JOB_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,12 @@ def enrich_job_description(
             "fit_reasoning": result["reasoning"],
             "salary_min": result["salary_min"],
             "salary_max": result["salary_max"],
+            # ai: claude-sonnet-5 | 2026-09-21 — update_fields may already hold the
+            # tracking-link-cleaned value; job's copy is stale in that case.
+            "import_warnings": remove_import_warning(
+                update_fields.get("import_warnings", job.get("import_warnings")),
+                SCORING_FAILED_WARNING,
+            ),
         }
         if current_status not in {"skipped", "applied"}:
             score_updates["status"] = "pending_review" if score >= 70 else "triage"
@@ -175,6 +182,10 @@ def rescore_active_queue_jobs(user_id: int, repos: dict[str, object]) -> dict[st
                     "fit_reasoning": result["reasoning"],
                     "salary_min": result["salary_min"],
                     "salary_max": result["salary_max"],
+                    # ai: claude-sonnet-5 | 2026-09-21
+                    "import_warnings": remove_import_warning(
+                        job.get("import_warnings"), SCORING_FAILED_WARNING
+                    ),
                 },
             )
             repos["conn"].commit()

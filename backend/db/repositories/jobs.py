@@ -41,6 +41,7 @@ from urllib.parse import urlparse
 import psycopg2
 
 from backend.scoring.company_matching import normalize_company_name
+from backend.scoring.skip_reasons import REQ_CLOSED_ROW_FLAG, REQ_CLOSED_SKIP_REASON
 
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
@@ -211,10 +212,20 @@ class PostgresJobRepository(_BaseRepo):
         # ai: claude-fable-5 | 2026-07-14
         # on_sheet DESC keeps Applications Sheet jobs ahead of queue jobs —
         # _closed_req_candidates depends on that ordering.
+        # ai: claude-sonnet-5 | 2026-09-23
+        # REQ_CLOSED_ROW_FLAG folds both req-closed storage shapes into one
+        # column so duplicate detection (the main consumer of these rows) can
+        # skip dead listings without a second query — see is_req_closed_job_row.
         cur = self._execute(
-            "SELECT * FROM jobs WHERE user_id = %s"
-            " ORDER BY on_sheet DESC, date_found DESC NULLS LAST, id DESC",
-            (user_id,),
+            "SELECT jobs.*, (("
+            " jobs.status = 'skipped' AND jobs.skip_reason = %s"
+            ") OR EXISTS ("
+            " SELECT 1 FROM application_stages s"
+            " WHERE s.job_id = jobs.id AND s.user_id = jobs.user_id AND s.status = %s"
+            f")) AS {REQ_CLOSED_ROW_FLAG}"
+            " FROM jobs WHERE jobs.user_id = %s"
+            " ORDER BY jobs.on_sheet DESC, jobs.date_found DESC NULLS LAST, jobs.id DESC",
+            (REQ_CLOSED_SKIP_REASON, REQ_CLOSED_SKIP_REASON, user_id),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 

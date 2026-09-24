@@ -41,6 +41,8 @@ from typing import TypedDict
 
 from rapidfuzz import fuzz
 
+from backend.scoring.skip_reasons import is_req_closed_job_row
+
 # Regex substitutions applied after lowercasing.
 # Order matters — apply more specific / longer patterns first.
 _ABBREV_PATTERNS: list[tuple[str, str]] = [
@@ -200,6 +202,29 @@ def _slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
+# ai: claude-sonnet-5 | 2026-09-22
+def _company_similarity(a: str, b: str) -> int:
+    """Fuzzy similarity score (0-100) between two company names.
+
+    Falls back to slug equality for cases like a Greenhouse board token
+    stored as the company name ("paynearmeinc" vs "PayNearMe, Inc.").
+    """
+    score: int = fuzz.token_set_ratio(_normalize(a), _normalize(b))
+    if score < _COMPANY_THRESHOLD:
+        a_slug, b_slug = _slugify(a), _slugify(b)
+        if a_slug and b_slug and a_slug == b_slug:
+            score = 100
+    return score
+
+
+# ai: claude-sonnet-5 | 2026-09-22
+def companies_match(a: str, b: str) -> bool:
+    """True when two company names likely refer to the same company."""
+    if not a or not b:
+        return False
+    return _company_similarity(a, b) >= _COMPANY_THRESHOLD
+
+
 class DuplicateChecker:
     """
     Compares a job's (company, title) against a list of already-tracked sheet
@@ -220,7 +245,6 @@ class DuplicateChecker:
         sheet_jobs: list of dicts with at least 'company' and 'job_title' keys.
         """
         norm_title = _normalize(job_title)
-        norm_company = _normalize(company)
         own_seniority = _extract_seniority(norm_title)
         own_is_flex = bool(_FLEX_PREFIX_RE.match(job_title))
 
@@ -234,16 +258,16 @@ class DuplicateChecker:
             if not sheet_company_raw and not sheet_title_raw:
                 continue
 
-            c_score: int = fuzz.token_set_ratio(
-                norm_company, _normalize(sheet_company_raw)
-            )
-            # Slug fallback: catches Greenhouse board tokens stored as company names
-            # (e.g. "paynearmeinc" vs "PayNearMe, Inc.").
-            if c_score < _COMPANY_THRESHOLD:
-                own_slug = _slugify(company)
-                sheet_slug = _slugify(sheet_company_raw)
-                if own_slug and sheet_slug and own_slug == sheet_slug:
-                    c_score = 100
+            # ai: claude-sonnet-5 | 2026-09-23
+            # A closed req is a dead listing: a *similar* new posting at the same
+            # company is a fresh opening, not a duplicate of it. Enforced here, the
+            # one place every fuzzy caller funnels through, so no call site can
+            # forget it.
+            if is_req_closed_job_row(row):
+                continue
+
+            # ai: claude-sonnet-5 | 2026-09-22 — extracted to _company_similarity, reused by companies_match
+            c_score: int = _company_similarity(company, sheet_company_raw)
             norm_sheet_title = _normalize(sheet_title_raw)
             t_score: int = fuzz.token_set_ratio(norm_title, norm_sheet_title)
 

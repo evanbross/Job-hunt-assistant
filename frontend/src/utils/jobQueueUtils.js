@@ -122,6 +122,7 @@ const IMPORT_WARNING_LABELS = {
   missing_company: "Company name is missing",
   missing_job_title: "Job title is missing",
   page_title: "Title looks like a browser page title (contains \"|\")",
+  scoring_failed: "Fit scoring failed when this job was imported — re-evaluate to score it",
 };
 
 export function parseImportWarnings(value) {

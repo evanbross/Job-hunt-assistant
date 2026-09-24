@@ -66,3 +66,41 @@ def load_skip_reasons() -> list[dict]:
 
 SKIP_REASONS: list[dict] = load_skip_reasons()
 VALID_SKIP_REASONS: frozenset[str] = frozenset(str(r["key"]) for r in SKIP_REASONS)
+
+# ai: claude-opus-5 | 2026-09-23
+# Named here rather than as a bare string literal at each call site so a rename
+# in shared/skip_reasons.json fails loudly at import instead of silently turning
+# every "is this req closed?" check into a no-op.
+REQ_CLOSED_SKIP_REASON: str = "req_closed"
+if REQ_CLOSED_SKIP_REASON not in VALID_SKIP_REASONS:
+    raise ValueError(
+        f"{REQ_CLOSED_SKIP_REASON!r} is missing from {SKIP_REASONS_PATH} — update "
+        "REQ_CLOSED_SKIP_REASON to match the renamed key."
+    )
+
+
+# ai: claude-sonnet-5 | 2026-09-23
+# Computed column JobsRepository.get_all_ordered adds to every row: true when the
+# job is req closed by *either* storage shape (see is_req_closed_job_row).
+REQ_CLOSED_ROW_FLAG: str = "is_req_closed"
+
+
+# ai: claude-sonnet-5 | 2026-09-23
+def is_req_closed_job_row(job: dict) -> bool:
+    """True when a job row has been marked as a closed requisition.
+
+    A closed req is recorded in one of two places, mirroring
+    routes/applications.py's _record_closed_req:
+      * pre-triage queue jobs: status "skipped" + skip_reason "req_closed" on
+        the jobs row itself;
+      * jobs already on the Applications Sheet: a 'req_closed' application_stages
+        row, with the job keeping its own status.
+    The second shape isn't visible on the row, so JobsRepository.get_all_ordered
+    folds it into the REQ_CLOSED_ROW_FLAG column. Rows from any other query lack
+    that flag and are only recognised by the first shape.
+    """
+    if job.get(REQ_CLOSED_ROW_FLAG):
+        return True
+    return (job.get("status") or "").strip() == "skipped" and (
+        job.get("skip_reason") or ""
+    ).strip() == REQ_CLOSED_SKIP_REASON

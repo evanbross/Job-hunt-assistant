@@ -86,6 +86,33 @@
       }
     }
 
+    // ai: claude-sonnet-5 | 2026-09-22
+    // Indeed renders the same split view (job cards on the left, the
+    // currently-selected job's full detail on the right) on more than just
+    // /jobs — the signed-in homepage ("/", recommendations grouped under
+    // "Related to your work experience" etc.) uses the identical widget and
+    // DOM shape. Rather than enumerate every path Indeed might mount it on,
+    // detect the widget itself: a [data-testid="viewjob-main-content"] detail
+    // pane alongside at least one .job_seen_beacon card. Like LinkedIn Search
+    // above (and unlike Insight Global's split view further below), the open
+    // job's id is tracked directly in the URL query string (?vjk=<key>) once
+    // a card is clicked — see indeedJobKey() for the pre-click fallback.
+    if (host.includes('indeed.com')) {
+      if (/^\/viewjob\/?$/.test(path)) {
+        return { site: 'Indeed', type: 'indeedJob', jobCount: 1, description: 'Single job listing' };
+      }
+      const cardCount = document.querySelectorAll('.job_seen_beacon').length;
+      if (cardCount > 0 && document.querySelector('[data-testid="viewjob-main-content"]')) {
+        return {
+          site: 'Indeed',
+          type: 'indeedSplit',
+          jobCount: cardCount,
+          description: `${cardCount} jobs visible`,
+          captureModes: ['list', 'detail'],
+        };
+      }
+    }
+
     if (host.includes('wellfound.com')) {
       if (/^\/jobs\/\d+/.test(path)) {
         return { site: 'Wellfound', type: 'wellfoundJob', jobCount: 1, description: 'Single job listing' };
@@ -2430,6 +2457,103 @@
     return JSON.stringify({ jobs, source: { url: location.href } });
   }
 
+  // ─── Indeed ─────────────────────────────────────────────────────────────────
+
+  // ai: claude-sonnet-5 | 2026-09-22
+  // The standalone job page (/viewjob?jk=<key>) uses the exact same detail-pane
+  // DOM shape as the split-view search page's right-hand pane, so
+  // buildIndeedJobPayload() below is shared between indeedJob and the "detail"
+  // capture mode of indeedSplit — same pattern as Oracle's buildOracleHcmJobPayload.
+  // ai: claude-sonnet-5 | 2026-09-22
+  // On first paint of the split view, Indeed auto-opens the first result in
+  // the detail pane but doesn't add ?vjk= to the URL until the user actually
+  // clicks a card — so the query-string lookup alone misses that initial
+  // state. Fall back to matching the detail pane's title against the list's
+  // title links (both are on-page simultaneously) to recover its key.
+  function indeedJobKey() {
+    const params = new URLSearchParams(location.search);
+    const fromUrl = params.get('vjk') || params.get('jk');
+    if (fromUrl) return fromUrl;
+    const title = document.querySelector('[data-testid="vj-job-title"]')?.innerText.trim();
+    if (!title) return '';
+    const match = [...document.querySelectorAll('.job_seen_beacon a.jcs-JobTitle[data-jk]')]
+      .find(a => a.innerText.trim() === title);
+    return match?.getAttribute('data-jk') || '';
+  }
+
+  function indeedJobUrl(jk) {
+    return jk ? `${location.origin}/viewjob?jk=${jk}` : location.origin + location.pathname;
+  }
+
+  // ai: claude-sonnet-5 | 2026-09-22
+  // [data-testid="company-info-metadata"] packs company name and location as
+  // newline-separated text with no per-field markup, and the standalone
+  // /viewjob page repeats the location twice (once from the sticky header,
+  // once from a duplicate row) where the split-view detail pane only shows it
+  // once — dedupe lines rather than assume a fixed line count.
+  function buildIndeedJobPayload() {
+    const jk = indeedJobKey();
+    const url = indeedJobUrl(jk);
+    const title = pick(['[data-testid="vj-job-title"]', 'h1']);
+    // The star-rating badge (e.g. "AmeriSave Mortgage Corp. · 2.6 ★ Remote")
+    // renders as its own "·" separator line and bare numeric rating line
+    // between company and location — drop both rather than let them leak
+    // into the location field as noise.
+    const metaLines = [...new Set(
+      pick(['[data-testid="company-info-metadata"]']).split('\n')
+        .map(l => l.trim())
+        .filter(l => l && l !== '·' && !/^\d+(\.\d+)?$/.test(l))
+    )];
+    const company = metaLines[0] || '';
+    const jobLocation = metaLines.slice(1).join(', ');
+    const descEl = document.querySelector('.simple-job-description-html');
+    const description = descEl ? descEl.innerText.trim() : jobPageBodyText().slice(0, 12000);
+
+    const lines = [title];
+    if (company) lines.push('Company: ' + company);
+    if (jobLocation) lines.push('Location: ' + jobLocation);
+    lines.push('URL: ' + url);
+    if (description) lines.push('', description);
+
+    return JSON.stringify({
+      jobs: [{ url, job_title: title, company, listing_text: lines.join('\n') }],
+      source: { url: location.href },
+    });
+  }
+
+  // ai: claude-sonnet-5 | 2026-09-22
+  // "List" capture mode for the split view — harvests every job card visible
+  // in the left-hand results list rather than just the one open on the right.
+  // Cards carry dedicated testids for title/company/location (company-name,
+  // text-location) plus a data-jk job key on the title link, so no per-job
+  // fetch is needed.
+  function buildIndeedSplitListPayload() {
+    const seen = new Set();
+    const jobs = [];
+    document.querySelectorAll('.job_seen_beacon').forEach(card => {
+      const link = card.querySelector('a.jcs-JobTitle[data-jk]');
+      const jk = link?.getAttribute('data-jk');
+      if (!jk || seen.has(jk)) return;
+      seen.add(jk);
+
+      const title = link.innerText.trim();
+      if (!title) return; // skip icon-only duplicate links with no visible text
+      const company = card.querySelector('[data-testid="company-name"]')?.innerText.trim() || '';
+      const jobLocation = card.querySelector('[data-testid="text-location"]')?.innerText.trim() || '';
+      const url = indeedJobUrl(jk);
+
+      const lines = [title];
+      if (company) lines.push('Company: ' + company);
+      if (jobLocation) lines.push('Location: ' + jobLocation);
+      lines.push('URL: ' + url);
+      const cardText = card.innerText.trim();
+      if (cardText) lines.push('', cardText);
+
+      jobs.push({ url, job_title: title, company, listing_text: lines.join('\n') });
+    });
+    return JSON.stringify({ jobs, source: { url: location.href } });
+  }
+
   // ─── Jobgether ─────────────────────────────────────────────────────────────
 
   // ai: claude-sonnet-5 | 2026-07-23
@@ -2570,6 +2694,12 @@
         payload = options.captureMode === 'list'
           ? buildOracleHcmSplitListPayload()
           : buildOracleHcmJobPayload();
+        break;
+      case 'indeedJob':        payload = buildIndeedJobPayload(); break;
+      case 'indeedSplit':
+        payload = options.captureMode === 'list'
+          ? buildIndeedSplitListPayload()
+          : buildIndeedJobPayload();
         break;
       case 'smartGeneric':     payload = buildSmartGenericPayload(); break;
       // ai: claude-sonnet-4-6 | 2026-06-26

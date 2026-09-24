@@ -121,6 +121,32 @@ def normalize_and_validate(
     return job, warnings
 
 
+# ai: claude-sonnet-5 | 2026-09-21
+# Set by insert-time scan paths when the fit scorer threw, so the job is routed
+# to triage as "needs scoring" instead of sitting in pending_review with a NULL
+# score. Every path that later scores the job successfully must clear it via
+# remove_import_warning().
+SCORING_FAILED_WARNING = "scoring_failed"
+
+
+# ai: claude-sonnet-5 | 2026-09-21
+def remove_import_warning(raw_warnings: str | None, code: str) -> str | None:
+    """Return the import_warnings JSON with *code* removed (None when none remain).
+
+    Leaves other warning codes untouched, and returns *raw_warnings* unchanged
+    when it is empty, unparseable, or doesn't contain *code*.
+    """
+    if not raw_warnings:
+        return raw_warnings
+    try:
+        existing = json.loads(raw_warnings)
+    except (json.JSONDecodeError, TypeError):
+        return raw_warnings
+    if not isinstance(existing, list) or code not in existing:
+        return raw_warnings
+    return import_warnings_to_json([w for w in existing if w != code])
+
+
 def import_warnings_to_json(warnings: list[str]) -> str | None:
     """Serialize a warnings list to a JSON string for the import_warnings column.
 

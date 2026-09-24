@@ -43,7 +43,7 @@ from backend.email.email_parser import (  # ai: claude-fable-5 | 2026-07-17
     looks_like_wttj_misparsed_title,
 )
 from backend.scanning.career_site_scanner import CareerSiteScanner
-from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.scoring.duplicate_checker import DuplicateChecker, companies_match
 from backend.utils.company_urls import company_from_ats_url
 
 
@@ -166,14 +166,31 @@ def repair_ats_url_company(
     return True
 
 
+# ai: claude-sonnet-5 | 2026-09-22
 def repair_existing_job_company(
     user_id: int,
     jobs_repo: JobUpdater,
     existing_job: dict[str, Any],
     url_row: dict[str, Any],
 ) -> bool:
+    """Fill in a missing company, or correct one that mismatches a fresh capture.
+
+    A blank/"unknown" company is always filled from the captured listing. A
+    non-blank company is only overwritten when the captured name clearly
+    names a *different* company (companies_match fails) — e.g. an
+    email-derived guess like "Installation Made Easy" where the live page
+    says "NinjaOne". A fuzzy-matching variant of the same name (casing, a
+    trailing "Inc."/"LLC", a Greenhouse board slug) is left untouched so this
+    never churns a correctly-stored name.
+    """
     captured_company = str(url_row.get("company") or "").strip()
-    if not captured_company or not is_missing_company(existing_job.get("company")):
+    if not captured_company:
+        return False
+    existing_company = str(existing_job.get("company") or "").strip()
+    if is_missing_company(existing_company):
+        jobs_repo.update(user_id, int(existing_job["id"]), {"company": captured_company})
+        return True
+    if companies_match(existing_company, captured_company):
         return False
     jobs_repo.update(user_id, int(existing_job["id"]), {"company": captured_company})
     return True
