@@ -177,7 +177,8 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
   const [skippingId, setSkippingId] = useState(null);
   const [dismissingId, setDismissingId] = useState(null);
   const [showDuplicates, setShowDuplicates] = useState(true);
-  const [showSkipped, setShowSkipped] = useState(true);
+  // ai: claude-sonnet-5 | 2026-09-25
+  const [showSkipped, setShowSkipped] = useState(false);
   const [sortBy, setSortBy] = useState("id");
   const [search, setSearch] = useState("");
 
