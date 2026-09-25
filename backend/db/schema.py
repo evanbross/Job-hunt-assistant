@@ -184,6 +184,7 @@ _PER_USER_TABLES: tuple[str, ...] = (
     "jd_health_check_targets",
     "jd_health_check_results",
     "contacts",
+    "contact_emails",
     "cover_letter_phrases",
 )
 
@@ -888,6 +889,56 @@ def _migrate(conn: Any) -> None:
         )
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-09-25
+    # Contacts tab: per-contact user state (interested / is_recruiter /
+    # email address) plus a dedup_key so a re-import can upsert in place instead
+    # of the old delete-everything-and-reinsert, which would wipe that state.
+    # dedup_key is the LinkedIn profile URL when present, else
+    # "<lowercased full name>|<company_normalized>" -- keep in sync with
+    # ContactImportService.
+    cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_address TEXT")
+    cur.execute(
+        "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS interested BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    cur.execute(
+        "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_recruiter BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    # contact_type (recruiter/personal/NULL) briefly existed before it became
+    # the is_recruiter checkbox; carry any flagged recruiters over, then drop it.
+    if _has_column(cur, "contacts", "contact_type"):
+        cur.execute("UPDATE contacts SET is_recruiter = TRUE WHERE contact_type = 'recruiter'")
+        cur.execute("ALTER TABLE contacts DROP COLUMN contact_type")
+    if not _has_column(cur, "contacts", "dedup_key"):
+        cur.execute("ALTER TABLE contacts ADD COLUMN dedup_key TEXT")
+        cur.execute(
+            """
+            UPDATE contacts c
+            SET dedup_key = CASE WHEN ranked.rn > 1
+                                 THEN ranked.base_key || '|dup' || c.id
+                                 ELSE ranked.base_key END
+            FROM (
+                SELECT id,
+                       COALESCE(profile_url, lower(full_name) || '|' || company_normalized)
+                           AS base_key,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY user_id,
+                                        COALESCE(profile_url,
+                                                 lower(full_name) || '|' || company_normalized)
+                           ORDER BY id
+                       ) AS rn
+                FROM contacts
+            ) ranked
+            WHERE c.id = ranked.id
+            """
+        )
+        cur.execute("ALTER TABLE contacts ALTER COLUMN dedup_key SET NOT NULL")
+    if not _has_unique(cur, "contacts", "contacts_user_dedup_key_key"):
+        cur.execute(
+            "ALTER TABLE contacts ADD CONSTRAINT contacts_user_dedup_key_key"
+            " UNIQUE (user_id, dedup_key)"
+        )
+    conn.commit()
+
     # jobs.url partial unique index: same per-user rework as dedup_key above,
     # via drop-and-recreate under a new name (JOBS_URL_UNIQUE_INDEX, see
     # backend/db/repositories/jobs.py) rather than an ALTER, since Postgres
@@ -1482,6 +1533,22 @@ def _create_tables(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_contacts_company_normalized
             ON contacts (company_normalized)
+        """,
+        # ai: claude-sonnet-5 | 2026-09-25
+        # One row per outreach email the user logged to a contact. sent_at and
+        # response_received_at are UTC ISO 8601 timestamps
+        # ('2026-09-25T18:30:00+00:00'); the frontend converts to/from local time.
+        """
+        CREATE TABLE IF NOT EXISTS contact_emails (
+            id                    SERIAL PRIMARY KEY,
+            contact_id            INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            sent_at               TEXT NOT NULL,
+            response_received_at  TEXT
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_contact_emails_contact_id
+            ON contact_emails (contact_id)
         """,
         # ai: claude-sonnet-5 | 2026-08-11
         """

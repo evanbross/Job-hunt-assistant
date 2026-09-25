@@ -1,0 +1,434 @@
+/*!
+ * Copyright (c) 2026 ZombieTech LLC. All rights reserved.
+ *
+ * LICENSE: Personal Use Only
+ * This source code is made available for personal, non-commercial use only.
+ * You may read, study, and run this code for personal purposes.
+ * You may NOT:
+ *   - Use this code, in whole or in part, in any commercial product or service
+ *   - Sell, sublicense, or otherwise monetize this code or derivatives of it
+ *   - Redistribute this code without explicit written permission from ZombieTech LLC
+ *
+ * No warranty is provided, express or implied. Use at your own risk.
+ *
+ * Licensing inquiries: license@zombietech.biz
+ */
+
+import { useEffect, useMemo, useState } from "react";
+import ContactDetail from "./ContactDetail.jsx";
+import ContactsImport from "./ContactsImport.jsx";
+import { formatLocalDate } from "../utils/dateTimeUtils.js";
+
+const PAGE_SIZE = 100;
+
+const EMAIL_FILTERS = [
+  { value: "all", label: "All contacts" },
+  { value: "emailed", label: "Emailed" },
+  { value: "not_emailed", label: "Not emailed" },
+  { value: "awaiting", label: "Emailed, awaiting reply" },
+  { value: "replied", label: "Replied" },
+];
+
+const RECRUITER_FILTERS = [
+  { value: "all", label: "Recruiters and others" },
+  { value: "recruiter", label: "Recruiters only" },
+  { value: "not_recruiter", label: "Not recruiters" },
+];
+
+// ai: claude-sonnet-5 | 2026-09-25
+function emailState(contact) {
+  if (contact.emails.length === 0) return "none";
+  return contact.emails.some((email) => email.response_received_at) ? "replied" : "awaiting";
+}
+
+// ai: claude-sonnet-5 | 2026-09-25
+// Profile URLs come from the imported CSV, so only http(s) may become a link
+// target -- a `javascript:` value in the file must never reach an href.
+function safeHttpUrl(value) {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+// ai: claude-sonnet-5 | 2026-09-25
+function matchesFilters(contact, { search, emailFilter, recruiterFilter, interestedOnly }) {
+  if (interestedOnly && !contact.interested) return false;
+
+  const state = emailState(contact);
+  if (emailFilter === "emailed" && state === "none") return false;
+  if (emailFilter === "not_emailed" && state !== "none") return false;
+  if (emailFilter === "awaiting" && state !== "awaiting") return false;
+  if (emailFilter === "replied" && state !== "replied") return false;
+
+  if (recruiterFilter === "recruiter" && !contact.is_recruiter) return false;
+  if (recruiterFilter === "not_recruiter" && contact.is_recruiter) return false;
+
+  const needle = search.trim().toLowerCase();
+  if (!needle) return true;
+  return [contact.full_name, contact.company_raw, contact.position].some((field) =>
+    (field || "").toLowerCase().includes(needle),
+  );
+}
+
+// ai: claude-sonnet-5 | 2026-09-25
+async function sendJson(url, method, body) {
+  return fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+// ai: claude-sonnet-5 | 2026-09-25
+export default function ContactsPanel() {
+  const [contacts, setContacts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [showImport, setShowImport] = useState(false);
+  const [expandedId, setExpandedId] = useState(null);
+
+  const [search, setSearch] = useState("");
+  const [emailFilter, setEmailFilter] = useState("all");
+  const [recruiterFilter, setRecruiterFilter] = useState("all");
+  const [interestedOnly, setInterestedOnly] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  const loadContacts = async () => {
+    try {
+      const res = await fetch("/api/contacts");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setContacts(data.contacts);
+      setLoadError("");
+    } catch (e) {
+      setLoadError(`Could not load contacts: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadContacts();
+  }, []);
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [search, emailFilter, recruiterFilter, interestedOnly]);
+
+  const filtered = useMemo(
+    () =>
+      contacts.filter((contact) =>
+        matchesFilters(contact, { search, emailFilter, recruiterFilter, interestedOnly }),
+      ),
+    [contacts, search, emailFilter, recruiterFilter, interestedOnly],
+  );
+  const interestedCount = useMemo(() => contacts.filter((c) => c.interested).length, [contacts]);
+
+  const replaceContact = (contactId, changes) =>
+    setContacts((prev) => prev.map((c) => (c.id === contactId ? { ...c, ...changes } : c)));
+
+  // Optimistic: flip the UI immediately, roll back only the touched fields if
+  // the server rejects the write.
+  const patchContact = async (contactId, fields) => {
+    const previous = contacts.find((c) => c.id === contactId);
+    if (!previous) return false;
+    const rollback = Object.fromEntries(Object.keys(fields).map((key) => [key, previous[key]]));
+    replaceContact(contactId, fields);
+    try {
+      const res = await sendJson(`/api/contacts/${contactId}`, "PATCH", fields);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return true;
+    } catch (e) {
+      replaceContact(contactId, rollback);
+      window.alert(`Save failed: ${e.message}`);
+      return false;
+    }
+  };
+
+  const saveEmailAddress = (contactId, value) =>
+    patchContact(contactId, { email_address: value === "" ? null : value });
+
+  const logEmail = async (contactId, sentAt) => {
+    try {
+      const res = await sendJson(`/api/contacts/${contactId}/emails`, "POST", { sent_at: sentAt });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const created = await res.json();
+      setContacts((prev) =>
+        prev.map((c) =>
+          c.id === contactId
+            ? {
+                ...c,
+                emails: [...c.emails, created].sort(
+                  (a, b) => a.sent_at.localeCompare(b.sent_at) || a.id - b.id,
+                ),
+              }
+            : c,
+        ),
+      );
+    } catch (e) {
+      window.alert(`Could not log the email: ${e.message}`);
+    }
+  };
+
+  const setResponse = async (contactId, emailId, receivedAt) => {
+    try {
+      const res = await sendJson(`/api/contact-emails/${emailId}`, "PATCH", {
+        response_received_at: receivedAt,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setContacts((prev) =>
+        prev.map((c) =>
+          c.id === contactId
+            ? {
+                ...c,
+                emails: c.emails.map((email) =>
+                  email.id === emailId ? { ...email, response_received_at: receivedAt } : email,
+                ),
+              }
+            : c,
+        ),
+      );
+    } catch (e) {
+      window.alert(`Could not update the reply: ${e.message}`);
+    }
+  };
+
+  const deleteEmail = async (contactId, emailId) => {
+    try {
+      const res = await sendJson(`/api/contact-emails/${emailId}`, "DELETE");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setContacts((prev) =>
+        prev.map((c) =>
+          c.id === contactId ? { ...c, emails: c.emails.filter((e) => e.id !== emailId) } : c,
+        ),
+      );
+    } catch (e) {
+      window.alert(`Could not remove the email: ${e.message}`);
+    }
+  };
+
+  const importVisible = showImport || (!loading && !loadError && contacts.length === 0);
+  const visible = filtered.slice(0, visibleCount);
+
+  return (
+    <div>
+      <div style={{ marginBottom: "16px", display: "flex", alignItems: "flex-end", gap: "16px" }}>
+        <div style={{ flex: 1 }}>
+          <h2 style={titleStyle}>Contacts</h2>
+          <p style={summaryStyle}>
+            Your LinkedIn connections. Check the ones you're interested in reaching, mark
+            the recruiters, and log the emails you send and any replies.
+          </p>
+        </div>
+        {contacts.length > 0 && (
+          <button className="btn-secondary btn-sm" onClick={() => setShowImport((open) => !open)}>
+            {importVisible ? "Hide import" : "Import CSV"}
+          </button>
+        )}
+      </div>
+
+      {importVisible && (
+        <div className="card" style={{ marginBottom: "16px" }}>
+          <ContactsImport onImported={loadContacts} />
+        </div>
+      )}
+
+      {loadError && <div style={{ color: "var(--red)", marginBottom: "12px" }}>{loadError}</div>}
+
+      {contacts.length > 0 && (
+        <>
+          <div style={toolbar}>
+            <input
+              type="search"
+              placeholder="Search name, company, or title"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{ flex: "1 1 220px", minWidth: "180px" }}
+              aria-label="Search contacts"
+            />
+            <select
+              value={emailFilter}
+              onChange={(e) => setEmailFilter(e.target.value)}
+              aria-label="Filter by email status"
+            >
+              {EMAIL_FILTERS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <select
+              value={recruiterFilter}
+              onChange={(e) => setRecruiterFilter(e.target.value)}
+              aria-label="Filter by recruiter"
+            >
+              {RECRUITER_FILTERS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px" }}>
+              <input
+                type="checkbox"
+                checked={interestedOnly}
+                onChange={(e) => setInterestedOnly(e.target.checked)}
+              />
+              Interested only ({interestedCount})
+            </label>
+          </div>
+
+          <div style={{ color: "var(--text-muted)", fontSize: "12px", margin: "0 2px 8px" }}>
+            {filtered.length.toLocaleString()} of {contacts.length.toLocaleString()} contacts
+          </div>
+
+          <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+            {visible.length === 0 ? (
+              <div style={{ padding: "18px", color: "var(--text-muted)" }}>
+                No contacts match these filters.
+              </div>
+            ) : (
+              visible.map((contact) => {
+                const state = emailState(contact);
+                const profileUrl = safeHttpUrl(contact.profile_url);
+                const expanded = expandedId === contact.id;
+                const lastSent = contact.emails.length
+                  ? contact.emails[contact.emails.length - 1].sent_at
+                  : null;
+                return (
+                  <div key={contact.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                    <div style={rowGrid}>
+                      <input
+                        type="checkbox"
+                        checked={contact.interested}
+                        onChange={(e) => patchContact(contact.id, { interested: e.target.checked })}
+                        aria-label={`Interested in ${contact.full_name}`}
+                      />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 600 }}>
+                          {profileUrl ? (
+                            <a href={profileUrl} target="_blank" rel="noopener noreferrer">
+                              {contact.full_name}
+                            </a>
+                          ) : (
+                            contact.full_name
+                          )}
+                        </div>
+                        <div style={subtleText}>
+                          {[contact.position, contact.company_raw].filter(Boolean).join(" at ") ||
+                            "No title or company"}
+                        </div>
+                      </div>
+                      <label style={recruiterLabel}>
+                        <input
+                          type="checkbox"
+                          checked={contact.is_recruiter}
+                          onChange={(e) =>
+                            patchContact(contact.id, { is_recruiter: e.target.checked })
+                          }
+                        />
+                        Recruiter
+                      </label>
+                      <div>
+                        {state === "none" && <span className="badge badge-gray">Not emailed</span>}
+                        {state === "awaiting" && (
+                          <span className="badge badge-orange">
+                            Emailed {formatLocalDate(lastSent)}
+                            {contact.emails.length > 1 ? ` (${contact.emails.length}x)` : ""} · no reply
+                          </span>
+                        )}
+                        {state === "replied" && (
+                          <span className="badge badge-green">
+                            Replied
+                            {contact.emails.length > 1 ? ` (${contact.emails.length} sent)` : ""}
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        className="btn-secondary btn-xs"
+                        onClick={() => setExpandedId(expanded ? null : contact.id)}
+                        aria-expanded={expanded}
+                      >
+                        {expanded ? "Close" : "Emails"}
+                      </button>
+                    </div>
+                    {expanded && (
+                      <ContactDetail
+                        contact={contact}
+                        onSaveEmailAddress={saveEmailAddress}
+                        onLogEmail={logEmail}
+                        onSetResponse={setResponse}
+                        onDeleteEmail={deleteEmail}
+                      />
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {filtered.length > visibleCount && (
+            <div style={{ textAlign: "center", marginTop: "12px" }}>
+              <button
+                className="btn-secondary btn-sm"
+                onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
+              >
+                Show {Math.min(PAGE_SIZE, filtered.length - visibleCount)} more
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {loading && <div style={{ color: "var(--text-muted)" }}>Loading contacts…</div>}
+    </div>
+  );
+}
+
+const titleStyle = {
+  fontSize: "18px",
+  fontWeight: 700,
+  lineHeight: 1.2,
+};
+
+const summaryStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "2px",
+  maxWidth: "640px",
+};
+
+const toolbar = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "10px",
+  marginBottom: "10px",
+};
+
+const rowGrid = {
+  display: "grid",
+  gridTemplateColumns: "24px minmax(0, 1fr) 100px 230px 70px",
+  alignItems: "center",
+  gap: "12px",
+  padding: "10px 14px",
+};
+
+const recruiterLabel = {
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  fontSize: "13px",
+};
+
+const subtleText = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};

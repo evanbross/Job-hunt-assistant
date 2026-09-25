@@ -58,3 +58,20 @@ export function formatLocalDate(value) {
   if (parsed) return parsed.toLocaleDateString();
   return value || "—";
 }
+
+// ai: claude-sonnet-5 | 2026-09-25
+// <input type="datetime-local"> value ("YYYY-MM-DDTHH:mm") in the user's local time.
+export function toLocalDateTimeInputValue(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// ai: claude-sonnet-5 | 2026-09-25
+// Inverse of the above: a datetime-local value is a *local* wall-clock time
+// (no offset), which `new Date(...)` reads as local; toISOString() then
+// yields the matching UTC instant. Returns null for an empty/invalid value.
+export function localInputToUtcIso(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}

@@ -38,6 +38,7 @@ from typing import Any
 
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
+from ..interfaces import ContactSyncResult
 
 
 # ai: claude-sonnet-5 | 2026-07-25
@@ -45,17 +46,24 @@ from ..connection import _row_to_dict
 # user_id parameter (multi-tenancy migration); profile_url uniqueness is now
 # scoped (user_id, profile_url) — see contacts_user_profile_url_key.
 class PostgresContactRepository(_BaseRepo):
-    _ALLOWED_COLUMNS: frozenset[str] = frozenset(
+    # Columns a LinkedIn CSV import is allowed to write. Deliberately excludes
+    # the user-owned columns (interested, is_recruiter) so a re-import never
+    # overwrites them.
+    _IMPORT_COLUMNS: frozenset[str] = frozenset(
         {
+            "dedup_key",
             "full_name",
             "company_raw",
             "company_normalized",
             "position",
             "profile_url",
+            "email_address",
             "connected_on",
             "imported_at",
         }
     )
+    # Columns the Contacts tab may edit on a single contact.
+    _EDITABLE_COLUMNS: frozenset[str] = frozenset({"interested", "is_recruiter", "email_address"})
 
     def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
@@ -64,26 +72,97 @@ class PostgresContactRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    def replace_all(self, user_id: int, rows: list[dict[str, Any]]) -> None:
-        self._execute("DELETE FROM contacts WHERE user_id = %s", (user_id,))
-        if not rows:
-            return
+    # ai: claude-sonnet-5 | 2026-09-25
+    def list_with_emails(self, user_id: int) -> list[dict[str, Any]]:
+        cur = self._execute(
+            """
+            SELECT c.id, c.full_name, c.company_raw, c.position, c.profile_url,
+                   c.connected_on, c.email_address, c.interested, c.is_recruiter,
+                   COALESCE(
+                       json_agg(
+                           json_build_object(
+                               'id', e.id,
+                               'sent_at', e.sent_at,
+                               'response_received_at', e.response_received_at
+                           ) ORDER BY e.sent_at, e.id
+                       ) FILTER (WHERE e.id IS NOT NULL),
+                       '[]'::json
+                   ) AS emails
+            FROM contacts c
+            LEFT JOIN contact_emails e ON e.contact_id = c.id AND e.user_id = c.user_id
+            WHERE c.user_id = %s
+            GROUP BY c.id
+            ORDER BY lower(c.full_name), c.id
+            """,
+            (user_id,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
 
-        columns = ["user_id", *sorted(self._ALLOWED_COLUMNS)]
+    # ai: claude-sonnet-5 | 2026-09-25
+    def sync_import(self, user_id: int, rows: list[dict[str, Any]]) -> ContactSyncResult:
+        """Merge a parsed LinkedIn export into the user's contacts.
+
+        Rows already present (same dedup_key) are refreshed in place, keeping
+        the user's interested/is_recruiter/email history; new rows are added.
+        Contacts absent from the file are removed only if the user never acted
+        on them -- anyone flagged, marked recruiter, or emailed is kept."""
         for row in rows:
-            unknown = set(row.keys()) - self._ALLOWED_COLUMNS
+            unknown = set(row.keys()) - self._IMPORT_COLUMNS
             if unknown:
                 raise ValueError(f"Attempt to insert unknown columns: {unknown}")
 
-        placeholders = ", ".join(["%s"] * len(columns))
-        cur = self._conn.cursor()
-        cur.executemany(
-            f"INSERT INTO contacts ({', '.join(columns)}) VALUES ({placeholders})",
-            [
-                (user_id, *(row.get(col) for col in sorted(self._ALLOWED_COLUMNS)))
-                for row in rows
-            ],
+        existing_keys = {
+            r["dedup_key"]
+            for r in self._execute(
+                "SELECT dedup_key FROM contacts WHERE user_id = %s", (user_id,)
+            ).fetchall()
+        }
+        file_keys = [row["dedup_key"] for row in rows]
+        added = sum(1 for key in file_keys if key not in existing_keys)
+
+        columns = sorted(self._IMPORT_COLUMNS)
+        refreshed = [col for col in columns if col not in ("dedup_key", "email_address")]
+        assignments = ", ".join(f"{col} = EXCLUDED.{col}" for col in refreshed)
+        # A blank Email Address in the file must not erase one the user typed in.
+        assignments += ", email_address = COALESCE(EXCLUDED.email_address, contacts.email_address)"
+        if rows:
+            cur = self._conn.cursor()
+            cur.executemany(
+                f"INSERT INTO contacts (user_id, {', '.join(columns)})"
+                f" VALUES (%s, {', '.join(['%s'] * len(columns))})"
+                f" ON CONFLICT (user_id, dedup_key) DO UPDATE SET {assignments}",
+                [(user_id, *(row.get(col) for col in columns)) for row in rows],
+            )
+
+        removed_cur = self._execute(
+            """
+            DELETE FROM contacts c
+            WHERE c.user_id = %s
+              AND NOT (c.dedup_key = ANY(%s))
+              AND NOT c.interested
+              AND NOT c.is_recruiter
+              AND NOT EXISTS (SELECT 1 FROM contact_emails e WHERE e.contact_id = c.id)
+            """,
+            (user_id, file_keys),
         )
+        return ContactSyncResult(
+            added=added, updated=len(rows) - added, removed=removed_cur.rowcount
+        )
+
+    # ai: claude-sonnet-5 | 2026-09-25
+    def update(self, user_id: int, contact_id: int, fields: dict[str, Any]) -> bool:
+        unknown = set(fields.keys()) - self._EDITABLE_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
+        if not fields:
+            raise ValueError("No fields to update")
+
+        assignments = ", ".join(f"{col} = %s" for col in fields)
+        cur = self._execute(
+            f"UPDATE contacts SET {assignments} WHERE id = %s AND user_id = %s",
+            (*fields.values(), contact_id, user_id),
+        )
+        return cur.rowcount > 0
 
     def count(self, user_id: int) -> int:
         cur = self._execute("SELECT COUNT(*) AS cnt FROM contacts WHERE user_id = %s", (user_id,))

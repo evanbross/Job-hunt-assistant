@@ -66,6 +66,7 @@ from .interfaces import (
     ICareerScanFailureRepository,
     ICareerScanResultRepository,
     ICareerSiteSourceRepository,
+    IContactEmailRepository,
     IContactRepository,
     ICoverLetterPhraseRepository,
     IEmailSourceRepository,
@@ -98,6 +99,7 @@ from .repositories.career_rejection_rules import PostgresCareerRejectionRuleRepo
 from .repositories.career_scan_failures import PostgresCareerScanFailureRepository
 from .repositories.career_scan_results import PostgresCareerScanResultRepository
 from .repositories.career_site_sources import PostgresCareerSiteSourceRepository
+from .repositories.contact_emails import PostgresContactEmailRepository
 from .repositories.contacts import PostgresContactRepository
 from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseRepository
 from .repositories.email_sources import PostgresEmailSourceRepository
@@ -128,6 +130,7 @@ __all__ = [
     "ICareerScanFailureRepository",
     "ICareerScanResultRepository",
     "ICareerSiteSourceRepository",
+    "IContactEmailRepository",
     "IContactRepository",
     "ICoverLetterPhraseRepository",
     "IEmailSourceRepository",
@@ -154,6 +157,7 @@ __all__ = [
     "PostgresCareerScanFailureRepository",
     "PostgresCareerScanResultRepository",
     "PostgresCareerSiteSourceRepository",
+    "PostgresContactEmailRepository",
     "PostgresContactRepository",
     "PostgresCoverLetterPhraseRepository",
     "PostgresEmailSourceRepository",
@@ -321,6 +325,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "browser_capture_queue": PostgresBrowserCaptureQueueRepository(conn),
         "import_repair_history": PostgresImportRepairHistoryRepository(conn),
         "contacts": PostgresContactRepository(conn),
+        "contact_emails": PostgresContactEmailRepository(conn),
         "cover_letter_phrases": PostgresCoverLetterPhraseRepository(conn),
         "jd_health_targets": PostgresJdHealthCheckTargetRepository(conn),
         "jd_health_results": PostgresJdHealthCheckResultRepository(conn),

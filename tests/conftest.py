@@ -72,6 +72,7 @@ _ALL_TABLES = (
     "application_stages",
     "browser_capture_queue",
     "import_repair_history",
+    "contact_emails",
     "contacts",
     "cover_letter_phrases",
     "career_scan_results",

@@ -37,6 +37,7 @@ services depend on instead of concrete Postgres repository classes."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -307,9 +308,30 @@ class IImportRepairHistoryRepository(Protocol):
     def delete_all(self, user_id: int) -> None: ...
 
 
+# ai: claude-sonnet-5 | 2026-09-25
+@dataclass(frozen=True)
+class ContactSyncResult:
+    added: int
+    updated: int
+    removed: int
+
+
 # ai: claude-sonnet-5 | 2026-07-25
+# ai: claude-sonnet-5 | 2026-09-25 — replace_all became sync_import; added list_with_emails/update
 @runtime_checkable
 class IContactRepository(Protocol):
     def get_all(self, user_id: int) -> list[dict[str, Any]]: ...
-    def replace_all(self, user_id: int, rows: list[dict[str, Any]]) -> None: ...
+    def list_with_emails(self, user_id: int) -> list[dict[str, Any]]: ...
+    def sync_import(self, user_id: int, rows: list[dict[str, Any]]) -> ContactSyncResult: ...
+    def update(self, user_id: int, contact_id: int, fields: dict[str, Any]) -> bool: ...
     def count(self, user_id: int) -> int: ...
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+@runtime_checkable
+class IContactEmailRepository(Protocol):
+    def add(self, user_id: int, contact_id: int, sent_at: str) -> dict[str, Any] | None: ...
+    def set_response(
+        self, user_id: int, email_id: int, response_received_at: str | None
+    ) -> bool: ...
+    def delete(self, user_id: int, email_id: int) -> bool: ...

@@ -16,20 +16,24 @@
 
 import { useEffect, useRef, useState } from "react";
 import Modal from "./common/Modal.jsx";
+import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
 
 // ai: claude-sonnet-5 | 2026-07-26
-export default function ContactsImport() {
+export default function ContactsImport({ onImported }) {
   const [status, setStatus] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [summary, setSummary] = useState(null);
   const fileRef = useRef(null);
 
-  useEffect(() => {
+  const loadStatus = () =>
     fetch("/api/contacts/status")
       .then((r) => r.json())
       .then((data) => setStatus(data))
       .catch(() => {});
+
+  useEffect(() => {
+    loadStatus();
   }, []);
 
   const handleFileChange = async (e) => {
@@ -54,7 +58,8 @@ export default function ContactsImport() {
         return;
       }
       setSummary(data);
-      setStatus({ count: data.imported, last_imported_at: data.imported_at });
+      await loadStatus();
+      onImported?.();
     } catch (e) {
       setError("Import failed: " + e.message);
     } finally {
@@ -70,8 +75,9 @@ export default function ContactsImport() {
       <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "12px" }}>
         Import your LinkedIn connections (Settings &gt; Data privacy &gt; Get a copy of
         your data &gt; Connections) to see who you already know at companies you're
-        applying to. Each import fully replaces the previous list, so re-upload
-        periodically to stay current.
+        applying to. Re-importing updates the list in place: new connections are
+        added, existing ones are refreshed, and anyone you've flagged, classified
+        or emailed is always kept.
       </p>
 
       {status?.count ? (
@@ -84,7 +90,7 @@ export default function ContactsImport() {
               </div>
               {status.last_imported_at && (
                 <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>
-                  Last imported {status.last_imported_at.slice(0, 19).replace("T", " ")}
+                  Last imported {formatLocalDateTime(status.last_imported_at)}
                 </div>
               )}
             </div>
@@ -98,8 +104,10 @@ export default function ContactsImport() {
 
       {summary && (
         <div style={{ ...infoBox, marginTop: "10px", fontSize: "12px" }}>
-          Imported {summary.imported} of {summary.total_rows} rows
-          {summary.skipped > 0 && ` (${summary.skipped} skipped)`}.
+          Read {summary.imported} of {summary.total_rows} rows: {summary.added} new,
+          {" "}{summary.updated} updated
+          {summary.removed > 0 && `, ${summary.removed} no longer in your export removed`}
+          {summary.skipped > 0 && ` (${summary.skipped} rows skipped)`}.
         </div>
       )}
 

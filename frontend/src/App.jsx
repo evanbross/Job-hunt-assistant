@@ -44,6 +44,8 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 import EmailsPanel from "./components/EmailsPanel.jsx";
 import HistoryPanel from "./components/HistoryPanel.jsx";
 import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
+import ContactsPanel from "./components/ContactsPanel.jsx";
+import GoogleConnectionMenu from "./components/GoogleConnectionMenu.jsx";
 import PhraseBookPanel from "./components/PhraseBookPanel.jsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
 import StatsBar from "./components/StatsBar.jsx";
@@ -58,10 +60,12 @@ import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 // ai: claude-fable-5 | 2026-07-14 — Career Sites tab removed; sites are managed in Settings
 // ai: claude-sonnet-5 | 2026-07-26 — Setup tab removed; the wizard now lives in Settings
 // ai: claude-sonnet-5 | 2026-08-13 — Phrase Book tab added
+// ai: claude-sonnet-5 | 2026-09-25 — Contacts tab added
 const TABS = [
   { key: "queue", label: "Job Queue" },
   { key: "applications", label: "Applications" },
   { key: "emails", label: "Email History" },
+  { key: "contacts", label: "Contacts" },
   { key: "phrasebook", label: "Phrase Book" },
   { key: "settings", label: "Settings" },
 ];
@@ -453,6 +457,21 @@ export default function App() {
     }
   };
 
+  // ai: claude-sonnet-5 | 2026-09-25 — "Disconnect" choice in the header Connected menu
+  const handleDisconnect = async () => {
+    if (!window.confirm("Disconnect your Google account? Email scanning stops until you reconnect.")) return;
+    try {
+      const res = await fetch("/api/auth/disconnect", { method: "POST" });
+      if (!res.ok) {
+        window.alert(`Disconnect failed (HTTP ${res.status}).`);
+        return;
+      }
+      await fetchAuthStatus();
+    } catch (e) {
+      window.alert("Failed to disconnect: " + e.message);
+    }
+  };
+
   // ai: claude-sonnet-5 | 2026-08-21 — email-verification links land here
   // regardless of session state (a new-account link arrives with no session
   // yet; an email-change link arrives while already logged in), so this
@@ -533,19 +552,7 @@ export default function App() {
               ↩ Recent
             </button>
             {authStatus === true && (
-              <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.85)", fontWeight: "500", display: "flex", alignItems: "center", gap: "10px" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                  <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#4ade80", display: "inline-block", boxShadow: "0 0 6px #4ade80" }} />
-                  Connected
-                </span>
-                <button
-                  onClick={handleReconnect}
-                  style={{ fontSize: "11px", padding: "3px 10px", background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.7)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "var(--radius)", cursor: "pointer" }}
-                  title="Re-authenticate to refresh Google permissions"
-                >
-                  Reconnect
-                </button>
-              </span>
+              <GoogleConnectionMenu onReconnect={handleReconnect} onDisconnect={handleDisconnect} />
             )}
             {authStatus === false && (
               <button style={{ fontSize: "12px", padding: "7px 16px", background: "rgba(255,255,255,0.15)", color: "#fff", border: "1px solid rgba(255,255,255,0.3)", borderRadius: "var(--radius)", cursor: "pointer", fontWeight: "500" }} onClick={handleAuthClick}>
@@ -636,6 +643,7 @@ export default function App() {
             focusEmailId={emailFocusId}
           />
         )}
+        {activeTab === "contacts" && <ContactsPanel />}
         {activeTab === "phrasebook" && <PhraseBookPanel />}
         {activeTab === "settings" && (
           <SettingsPanel initialSection={settingsInitialSection} onSetupComplete={handleSetupComplete} />

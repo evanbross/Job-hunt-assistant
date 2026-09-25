@@ -33,6 +33,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ValidationError, model_validator
 
+from backend.db.interfaces import ContactSyncResult
 from backend.scoring.company_matching import normalize_company_name
 
 logger = logging.getLogger(__name__)
@@ -40,15 +41,17 @@ logger = logging.getLogger(__name__)
 
 # ai: claude-sonnet-5 | 2026-07-25
 # ai: claude-sonnet-5 | 2026-08-21 — replace_all gained a leading user_id
+# ai: claude-sonnet-5 | 2026-09-25 — replace_all became sync_import (merge, not wipe)
 @runtime_checkable
 class IContactRepository(Protocol):
-    def replace_all(self, user_id: int, rows: list[dict[str, Any]]) -> None: ...
+    def sync_import(self, user_id: int, rows: list[dict[str, Any]]) -> ContactSyncResult: ...
 
 
 class LinkedInConnectionRow(BaseModel):
     first_name: str = ""
     last_name: str = ""
     url: str = ""
+    email_address: str = ""
     company: str = ""
     position: str = ""
     connected_on_raw: str = ""
@@ -63,6 +66,9 @@ class LinkedInConnectionRow(BaseModel):
 @dataclass(frozen=True)
 class ContactImportResult:
     imported: int
+    added: int
+    updated: int
+    removed: int
     skipped: int
     skipped_reasons: dict[str, int]
     total_rows: int
@@ -86,6 +92,7 @@ class ContactImportService:
                     first_name=raw_row.get("First Name") or "",
                     last_name=raw_row.get("Last Name") or "",
                     url=raw_row.get("URL") or "",
+                    email_address=raw_row.get("Email Address") or "",
                     company=raw_row.get("Company") or "",
                     position=raw_row.get("Position") or "",
                     connected_on_raw=raw_row.get("Connected On") or "",
@@ -96,8 +103,9 @@ class ContactImportService:
 
             profile_url = parsed.url.strip()
             company_normalized = normalize_company_name(parsed.company)
-            name_key = f"{parsed.first_name.strip().lower()} {parsed.last_name.strip().lower()}"
-            dedup_key = profile_url or f"{name_key}|{company_normalized}"
+            full_name = f"{parsed.first_name.strip()} {parsed.last_name.strip()}".strip()
+            # Must match the contacts.dedup_key backfill in backend/db/schema.py.
+            dedup_key = profile_url or f"{full_name.lower()}|{company_normalized}"
             if dedup_key in seen_keys:
                 skipped_reasons["duplicate_in_file"] = (
                     skipped_reasons.get("duplicate_in_file", 0) + 1
@@ -107,21 +115,26 @@ class ContactImportService:
 
             to_insert.append(
                 {
-                    "full_name": f"{parsed.first_name.strip()} {parsed.last_name.strip()}".strip(),
+                    "dedup_key": dedup_key,
+                    "full_name": full_name,
                     "company_raw": parsed.company.strip(),
                     "company_normalized": company_normalized,
                     "position": parsed.position.strip(),
                     "profile_url": profile_url or None,
+                    "email_address": parsed.email_address.strip() or None,
                     "connected_on": self._parse_connected_on(parsed.connected_on_raw),
                     "imported_at": datetime.now(UTC).isoformat(timespec="seconds"),
                 }
             )
 
-        self._contacts_repo.replace_all(user_id, to_insert)
+        sync = self._contacts_repo.sync_import(user_id, to_insert)
 
         skipped = sum(skipped_reasons.values())
         return ContactImportResult(
             imported=len(to_insert),
+            added=sync.added,
+            updated=sync.updated,
+            removed=sync.removed,
             skipped=skipped,
             skipped_reasons=skipped_reasons,
             total_rows=total_rows,

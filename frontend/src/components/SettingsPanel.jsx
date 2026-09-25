@@ -38,7 +38,6 @@ import { collectionModeLabel } from "../utils/careerSiteUtils.js";
 import { describeFetchError } from "../utils/fetchErrorUtils.js";
 import ApplicationProfilePanel from "./ApplicationProfilePanel.jsx";
 import Modal from "./common/Modal.jsx";
-import ContactsImport from "./ContactsImport.jsx";
 import ResumeUpload from "./ResumeUpload.jsx";
 import SetupWizardPanel from "./SetupWizardPanel.jsx";
 
@@ -55,7 +54,6 @@ const SETTINGS_TREE = [
     children: [
       { id: "resume", label: "Resume" },
       { id: "application_profile", label: "Application Profile" },
-      { id: "contacts", label: "LinkedIn Contacts" },
       { id: "profile_settings", label: "Profile Settings" },
     ],
   },
@@ -204,7 +202,6 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
         {activeSection === "account" && <AccountSection />}
         {activeSection === "resume" && <ResumeUpload />}
         {activeSection === "application_profile" && <ApplicationProfilePanel />}
-        {activeSection === "contacts" && <ContactsImport />}
         {activeSection === "profile_settings" && <ProfileSettingsSection />}
         {activeSection === "sources" && <EmailSourcesSection />}
         {activeSection === "email_subject_rules" && <EmailSubjectRulesSection />}

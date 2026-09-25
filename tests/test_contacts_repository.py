@@ -18,7 +18,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from backend.db import (
+    PostgresContactEmailRepository,
     PostgresContactRepository,
     PostgresUserAccountRepository,
     get_connection,
@@ -41,44 +44,205 @@ def _contact_row(**overrides: object) -> dict[str, object]:
     return row
 
 
-def test_replace_all_round_trips_and_fully_replaces(pg_dsn: str) -> None:
+def _import_row(**overrides: object) -> dict[str, object]:
+    row = _contact_row(**overrides)
+    row["email_address"] = row.get("email_address")
+    row["dedup_key"] = row["profile_url"] or f"{str(row['full_name']).lower()}|{row['company_normalized']}"
+    return row
+
+
+def _new_user(conn: object, email: str = "owner@example.com") -> int:
+    account = PostgresUserAccountRepository(conn).create_pending(
+        email, f"seed-{email}", "2099-01-01"
+    )
+    return account["id"]
+
+
+def test_sync_import_adds_updates_and_reports_counts(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
-        account = PostgresUserAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
-        user_id = account["id"]
+        user_id = _new_user(conn)
         repo = PostgresContactRepository(conn)
 
-        repo.replace_all(
-            user_id, [_contact_row(), _contact_row(full_name="John Smith", profile_url=None)]
+        first = repo.sync_import(
+            user_id, [_import_row(), _import_row(full_name="John Smith", profile_url=None)]
         )
         conn.commit()
-
-        all_contacts = repo.get_all(user_id)
+        assert (first.added, first.updated, first.removed) == (2, 0, 0)
         assert repo.count(user_id) == 2
-        assert {c["full_name"] for c in all_contacts} == {"Jane Doe", "John Smith"}
 
-        repo.replace_all(user_id, [_contact_row(full_name="Only Contact")])
+        second = repo.sync_import(user_id, [_import_row(position="Staff Engineer")])
         conn.commit()
-
+        assert (second.added, second.updated, second.removed) == (0, 1, 1)
         remaining = repo.get_all(user_id)
-        assert repo.count(user_id) == 1
-        assert remaining[0]["full_name"] == "Only Contact"
+        assert [c["full_name"] for c in remaining] == ["Jane Doe"]
+        assert remaining[0]["position"] == "Staff Engineer"
     finally:
         conn.close()
 
 
-def test_replace_all_with_empty_list_clears_table(pg_dsn: str) -> None:
+def test_sync_import_preserves_user_flags_and_keeps_acted_on_contacts(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
-        account = PostgresUserAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
-        user_id = account["id"]
+        user_id = _new_user(conn)
         repo = PostgresContactRepository(conn)
-        repo.replace_all(user_id, [_contact_row()])
+        email_repo = PostgresContactEmailRepository(conn)
+        repo.sync_import(
+            user_id,
+            [
+                _import_row(),
+                _import_row(full_name="Recruiter Rita", profile_url="https://linkedin.com/in/rita"),
+                _import_row(full_name="Emailed Ed", profile_url="https://linkedin.com/in/ed"),
+                _import_row(full_name="Untouched Ursula", profile_url="https://linkedin.com/in/u"),
+            ],
+        )
+        by_name = {c["full_name"]: c["id"] for c in repo.get_all(user_id)}
+        assert repo.update(user_id, by_name["Jane Doe"], {"interested": True})
+        assert repo.update(user_id, by_name["Recruiter Rita"], {"is_recruiter": True})
+        assert email_repo.add(user_id, by_name["Emailed Ed"], "2026-09-01T12:00:00+00:00") is not None
+        conn.commit()
+
+        # Re-import with none of the four people in the file except Jane.
+        result = repo.sync_import(user_id, [_import_row(position="Changed")])
+        conn.commit()
+
+        assert result.removed == 1
+        names = {c["full_name"] for c in repo.get_all(user_id)}
+        assert names == {"Jane Doe", "Recruiter Rita", "Emailed Ed"}
+        jane = next(c for c in repo.get_all(user_id) if c["full_name"] == "Jane Doe")
+        assert jane["interested"] is True
+        assert jane["position"] == "Changed"
+    finally:
+        conn.close()
+
+
+def test_sync_import_blank_email_does_not_erase_a_typed_email(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        repo.sync_import(user_id, [_import_row()])
+        contact_id = repo.get_all(user_id)[0]["id"]
+        assert repo.update(user_id, contact_id, {"email_address": "jane@example.com"})
+
+        repo.sync_import(user_id, [_import_row(email_address=None)])
+        assert repo.get_all(user_id)[0]["email_address"] == "jane@example.com"
+
+        repo.sync_import(user_id, [_import_row(email_address="new@example.com")])
+        assert repo.get_all(user_id)[0]["email_address"] == "new@example.com"
+    finally:
+        conn.close()
+
+
+def test_sync_import_with_empty_list_clears_untouched_contacts(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        repo.sync_import(user_id, [_import_row()])
         conn.commit()
         assert repo.count(user_id) == 1
 
-        repo.replace_all(user_id, [])
+        repo.sync_import(user_id, [])
         conn.commit()
         assert repo.count(user_id) == 0
+    finally:
+        conn.close()
+
+
+def test_sync_import_rejects_unknown_columns(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        with pytest.raises(ValueError, match="unknown columns"):
+            repo.sync_import(user_id, [_import_row(interested=True)])
+    finally:
+        conn.close()
+
+
+def test_update_rejects_unknown_columns_and_scopes_to_user(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        owner_id = _new_user(conn)
+        other_id = _new_user(conn, "other@example.com")
+        repo = PostgresContactRepository(conn)
+        repo.sync_import(owner_id, [_import_row()])
+        contact_id = repo.get_all(owner_id)[0]["id"]
+
+        with pytest.raises(ValueError, match="unknown columns"):
+            repo.update(owner_id, contact_id, {"full_name": "Hacked"})
+        assert repo.update(other_id, contact_id, {"interested": True}) is False
+        assert repo.get_all(owner_id)[0]["interested"] is False
+    finally:
+        conn.close()
+
+
+def test_list_with_emails_aggregates_email_log(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        email_repo = PostgresContactEmailRepository(conn)
+        repo.sync_import(
+            user_id,
+            [_import_row(), _import_row(full_name="Bob Quiet", profile_url="https://linkedin.com/in/bob")],
+        )
+        jane_id = next(c["id"] for c in repo.get_all(user_id) if c["full_name"] == "Jane Doe")
+        first = email_repo.add(user_id, jane_id, "2026-09-01T12:00:00+00:00")
+        email_repo.add(user_id, jane_id, "2026-09-10T12:00:00+00:00")
+        assert first is not None
+        assert email_repo.set_response(user_id, first["id"], "2026-09-03T08:00:00+00:00")
+        conn.commit()
+
+        listed = {c["full_name"]: c for c in repo.list_with_emails(user_id)}
+        assert [e["sent_at"] for e in listed["Jane Doe"]["emails"]] == [
+            "2026-09-01T12:00:00+00:00",
+            "2026-09-10T12:00:00+00:00",
+        ]
+        assert (
+            listed["Jane Doe"]["emails"][0]["response_received_at"] == "2026-09-03T08:00:00+00:00"
+        )
+        assert listed["Jane Doe"]["emails"][1]["response_received_at"] is None
+        assert listed["Bob Quiet"]["emails"] == []
+    finally:
+        conn.close()
+
+
+def test_contact_email_repo_is_scoped_to_owning_user(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        owner_id = _new_user(conn)
+        other_id = _new_user(conn, "other@example.com")
+        repo = PostgresContactRepository(conn)
+        email_repo = PostgresContactEmailRepository(conn)
+        repo.sync_import(owner_id, [_import_row()])
+        contact_id = repo.get_all(owner_id)[0]["id"]
+
+        assert email_repo.add(other_id, contact_id, "2026-09-01") is None
+
+        created = email_repo.add(owner_id, contact_id, "2026-09-01")
+        assert created is not None
+        assert email_repo.set_response(other_id, created["id"], "2026-09-02") is False
+        assert email_repo.delete(other_id, created["id"]) is False
+        assert email_repo.delete(owner_id, created["id"]) is True
+        assert repo.list_with_emails(owner_id)[0]["emails"] == []
+    finally:
+        conn.close()
+
+
+def test_deleting_a_contact_cascades_to_its_email_log(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        email_repo = PostgresContactEmailRepository(conn)
+        repo.sync_import(user_id, [_import_row()])
+        contact_id = repo.get_all(user_id)[0]["id"]
+        created = email_repo.add(user_id, contact_id, "2026-09-01")
+        assert created is not None
+
+        conn.cursor().execute("DELETE FROM contacts WHERE id = %s", (contact_id,))
+        assert email_repo.set_response(user_id, created["id"], "2026-09-02") is False
     finally:
         conn.close()

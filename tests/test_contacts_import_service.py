@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.contacts.contacts_import_service import ContactImportService
+from backend.db.interfaces import ContactSyncResult
 
 # ai: claude-sonnet-5 | 2026-07-25
 _PREAMBLE = (
@@ -36,12 +37,13 @@ _TEST_USER_ID = 1
 
 class FakeContactsRepo:
     def __init__(self) -> None:
-        self.replaced_with: list[dict[str, Any]] | None = None
-        self.replaced_for_user_id: int | None = None
+        self.synced_rows: list[dict[str, Any]] | None = None
+        self.synced_for_user_id: int | None = None
 
-    def replace_all(self, user_id: int, rows: list[dict[str, Any]]) -> None:
-        self.replaced_for_user_id = user_id
-        self.replaced_with = rows
+    def sync_import(self, user_id: int, rows: list[dict[str, Any]]) -> ContactSyncResult:
+        self.synced_for_user_id = user_id
+        self.synced_rows = rows
+        return ContactSyncResult(added=len(rows), updated=0, removed=0)
 
 
 def test_import_csv_skips_preamble_and_imports_valid_rows() -> None:
@@ -55,8 +57,8 @@ def test_import_csv_skips_preamble_and_imports_valid_rows() -> None:
     assert result.imported == 1
     assert result.skipped == 0
     assert result.total_rows == 1
-    assert repo.replaced_with is not None
-    row = repo.replaced_with[0]
+    assert repo.synced_rows is not None
+    row = repo.synced_rows[0]
     assert row["full_name"] == "Jane Doe"
     assert row["company_raw"] == "Acme Inc"
     assert row["company_normalized"] == "acme"
@@ -91,7 +93,7 @@ def test_import_csv_row_with_unparseable_date_still_imports() -> None:
     result = ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
 
     assert result.imported == 1
-    assert repo.replaced_with[0]["connected_on"] is None
+    assert repo.synced_rows[0]["connected_on"] is None
 
 
 def test_import_csv_dedupes_duplicate_profile_url_within_file() -> None:
@@ -107,7 +109,7 @@ def test_import_csv_dedupes_duplicate_profile_url_within_file() -> None:
     assert result.imported == 1
     assert result.skipped == 1
     assert result.skipped_reasons == {"duplicate_in_file": 1}
-    assert repo.replaced_with[0]["position"] == "Engineer"
+    assert repo.synced_rows[0]["position"] == "Engineer"
 
 
 def test_import_csv_row_with_no_profile_url_is_imported() -> None:
@@ -116,7 +118,7 @@ def test_import_csv_row_with_no_profile_url_is_imported() -> None:
     result = ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
 
     assert result.imported == 1
-    assert repo.replaced_with[0]["profile_url"] is None
+    assert repo.synced_rows[0]["profile_url"] is None
 
 
 def test_import_csv_no_header_row_found_returns_empty() -> None:
@@ -126,4 +128,45 @@ def test_import_csv_no_header_row_found_returns_empty() -> None:
 
     assert result.imported == 0
     assert result.total_rows == 0
-    assert repo.replaced_with == []
+    assert repo.synced_rows == []
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+def test_import_csv_builds_dedup_key_from_url_else_name_and_company() -> None:
+    csv_text = (
+        _PREAMBLE
+        + _HEADER
+        + "Jane,Doe,https://linkedin.com/in/janedoe,,Acme Inc,Engineer,\n"
+        + "John,Smith,,,Acme Inc,Manager,\n"
+    )
+    repo = FakeContactsRepo()
+    ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
+
+    assert repo.synced_rows is not None
+    assert repo.synced_rows[0]["dedup_key"] == "https://linkedin.com/in/janedoe"
+    assert repo.synced_rows[1]["dedup_key"] == "john smith|acme"
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+def test_import_csv_carries_email_address_and_blank_becomes_none() -> None:
+    csv_text = (
+        _PREAMBLE
+        + _HEADER
+        + "Jane,Doe,https://linkedin.com/in/janedoe,jane@example.com,Acme,Engineer,\n"
+        + "John,Smith,https://linkedin.com/in/johnsmith,,Acme,Manager,\n"
+    )
+    repo = FakeContactsRepo()
+    ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
+
+    assert repo.synced_rows is not None
+    assert repo.synced_rows[0]["email_address"] == "jane@example.com"
+    assert repo.synced_rows[1]["email_address"] is None
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+def test_import_csv_reports_sync_counts() -> None:
+    csv_text = _PREAMBLE + _HEADER + "Jane,Doe,,,Acme,Engineer,\n"
+    repo = FakeContactsRepo()
+    result = ContactImportService(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
+
+    assert (result.added, result.updated, result.removed) == (1, 0, 0)

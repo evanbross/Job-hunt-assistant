@@ -32,15 +32,19 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
-"""LinkedIn contacts import and company-match lookup routes."""
+"""LinkedIn contacts import, company-match lookup, and Contacts-tab routes
+(interest/type flags and the outreach-email log)."""
 
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
+from typing import Annotated
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import AfterValidator, BaseModel, ConfigDict, StrictBool, ValidationError, field_validator
 
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.contacts_service import build_company_map
@@ -49,6 +53,72 @@ from backend.utils.utils import current_user_id, get_repos
 logger = logging.getLogger(__name__)
 
 contacts_bp = Blueprint("contacts", __name__)
+
+_MAX_EMAIL_ADDRESS_LENGTH = 254
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+def _normalize_utc_timestamp(value: str) -> str:
+    """Accept an ISO 8601 instant with an explicit UTC offset ("Z" or +hh:mm)
+    and return it as a UTC string. A value with no offset is rejected rather
+    than guessed at -- a naive time is ambiguous, and a date-only string
+    parses as a naive midnight."""
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include a UTC offset")
+    return parsed.astimezone(UTC).isoformat(timespec="seconds")
+
+
+UtcTimestamp = Annotated[str, AfterValidator(_normalize_utc_timestamp)]
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+class ContactUpdate(BaseModel):
+    """Partial update: only fields present in the request body are written
+    (see model_dump(exclude_unset=True) in update_contact), so a PATCH of one
+    flag never nulls out the others."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    interested: StrictBool = False
+    is_recruiter: StrictBool = False
+    email_address: str | None = None
+
+    @field_validator("email_address")
+    @classmethod
+    def _normalize_email_address(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if len(value) > _MAX_EMAIL_ADDRESS_LENGTH or not re.fullmatch(r"[^@\s]+@[^@\s]+", value):
+            raise ValueError("not a valid email address")
+        return value
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+class ContactEmailCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sent_at: UtcTimestamp | None = None
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+class ContactEmailResponseUpdate(BaseModel):
+    """response_received_at is required (no default) so a body must state
+    explicitly whether a reply came in (a date) or is being cleared (null)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    response_received_at: UtcTimestamp | None
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+def _invalid_request(exc: ValidationError) -> ResponseReturnValue:
+    # Field paths only -- exc.errors() also echoes the rejected input values.
+    fields = sorted({".".join(str(part) for part in err["loc"]) for err in exc.errors()})
+    return jsonify({"error": "Invalid request", "fields": fields}), 400
 
 
 # ai: claude-sonnet-5 | 2026-07-25
@@ -73,6 +143,9 @@ def import_contacts() -> ResponseReturnValue:
     return jsonify(
         {
             "imported": result.imported,
+            "added": result.added,
+            "updated": result.updated,
+            "removed": result.removed,
             "skipped": result.skipped,
             "skipped_reasons": result.skipped_reasons,
             "total_rows": result.total_rows,
@@ -95,3 +168,74 @@ def get_contacts_company_map() -> ResponseReturnValue:
     with get_repos() as repos:
         contacts = repos["contacts"].get_all(current_user_id())
     return jsonify(build_company_map(contacts))
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+@contacts_bp.route("/contacts")
+def list_contacts() -> ResponseReturnValue:
+    with get_repos() as repos:
+        contacts = repos["contacts"].list_with_emails(current_user_id())
+    return jsonify({"contacts": contacts})
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+@contacts_bp.route("/contacts/<int:contact_id>", methods=["PATCH"])
+def update_contact(contact_id: int) -> ResponseReturnValue:
+    try:
+        update = ContactUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return _invalid_request(exc)
+
+    fields = update.model_dump(exclude_unset=True)
+    if not fields:
+        return jsonify({"error": "No fields to update"}), 400
+
+    with get_repos() as repos:
+        if not repos["contacts"].update(current_user_id(), contact_id, fields):
+            return jsonify({"error": "Contact not found"}), 404
+        repos["conn"].commit()
+    return jsonify({"ok": True})
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+@contacts_bp.route("/contacts/<int:contact_id>/emails", methods=["POST"])
+def log_contact_email(contact_id: int) -> ResponseReturnValue:
+    try:
+        body = ContactEmailCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return _invalid_request(exc)
+
+    sent_at = body.sent_at or datetime.now(UTC).isoformat(timespec="seconds")
+    with get_repos() as repos:
+        created = repos["contact_emails"].add(current_user_id(), contact_id, sent_at)
+        if created is None:
+            return jsonify({"error": "Contact not found"}), 404
+        repos["conn"].commit()
+    return jsonify(created), 201
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+@contacts_bp.route("/contact-emails/<int:email_id>", methods=["PATCH"])
+def update_contact_email_response(email_id: int) -> ResponseReturnValue:
+    try:
+        body = ContactEmailResponseUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return _invalid_request(exc)
+
+    with get_repos() as repos:
+        if not repos["contact_emails"].set_response(
+            current_user_id(), email_id, body.response_received_at
+        ):
+            return jsonify({"error": "Email not found"}), 404
+        repos["conn"].commit()
+    return jsonify({"ok": True})
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+@contacts_bp.route("/contact-emails/<int:email_id>", methods=["DELETE"])
+def delete_contact_email(email_id: int) -> ResponseReturnValue:
+    with get_repos() as repos:
+        if not repos["contact_emails"].delete(current_user_id(), email_id):
+            return jsonify({"error": "Email not found"}), 404
+        repos["conn"].commit()
+    return jsonify({"ok": True})
