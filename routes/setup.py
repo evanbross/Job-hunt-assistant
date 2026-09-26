@@ -38,16 +38,13 @@ from __future__ import annotations
 
 import json
 import logging
-import secrets
 import socket
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 from typing import Any
 
 import anthropic
-from dotenv import dotenv_values, set_key
 from flask import Blueprint, jsonify, request
 from pydantic import ValidationError
 
@@ -65,24 +62,12 @@ logger = logging.getLogger(__name__)
 
 setup_bp = Blueprint("setup", __name__)
 
-_ENV_PATH: Path = config.BASE_DIR / ".env"
-
-# ai: claude-sonnet-5 | 2026-08-21 — ANTHROPIC_API_KEY/OPENAI_API_KEY moved to
-# per-user encrypted settings (PUT /api/config, see backend/settings_service.py)
-# so each account brings its own key/billing. FLASK_SECRET_KEY is the only
-# remaining .env-only secret -- a process-level signing key, not a per-user
-# or per-instance setting a UI would ever toggle at runtime.
-_ALLOWED_ENV_KEYS: frozenset[str] = frozenset({"FLASK_SECRET_KEY"})
-
-
 # ─── Status ───────────────────────────────────────────────────────────────────
 
 
 @setup_bp.route("/setup/status")
 def setup_status() -> Any:
     """Return completion status of each wizard step."""
-    env_vals = _read_env_file()
-
     user_id = current_user_id()
     with get_repos() as repos:
         provider = get_setting("ai_provider", user_id, repos) or config.AI_PROVIDER
@@ -96,11 +81,6 @@ def setup_status() -> Any:
 
     profile_char_count = len(str((profile_row or {}).get("content") or "").strip())
     profile_done = profile_char_count > 0
-
-    current_secret = env_vals.get("FLASK_SECRET_KEY", "") or config.FLASK_SECRET_KEY
-    flask_secret_ok = bool(
-        current_secret and current_secret != "change-this-in-production"
-    )
 
     return jsonify(
         {
@@ -139,7 +119,6 @@ def setup_status() -> Any:
                 },
             },
             "redis_reachable": _check_redis_reachable(),
-            "flask_secret_ok": flask_secret_ok,
         }
     )
 
@@ -157,33 +136,6 @@ def _check_ai_provider_done(
         base_url = get_setting("ollama_base_url", user_id, repos) or config.OLLAMA_BASE_URL
         return bool(base_url and base_url.strip())
     return False
-
-
-# ─── Save env vars ────────────────────────────────────────────────────────────
-
-
-@setup_bp.route("/setup/save-env", methods=["POST"])
-def setup_save_env() -> Any:
-    """Write key=value pairs to .env. Auto-generates FLASK_SECRET_KEY if absent."""
-    data: dict[str, str] = request.get_json() or {}
-
-    unknown = set(data.keys()) - _ALLOWED_ENV_KEYS
-    if unknown:
-        return jsonify({"error": f"Unknown env keys: {sorted(unknown)}"}), 400
-
-    env_vals = _read_env_file()
-    current_secret = env_vals.get("FLASK_SECRET_KEY", "")
-    if not current_secret or current_secret == "change-this-in-production":
-        if "FLASK_SECRET_KEY" not in data:
-            data = {**data, "FLASK_SECRET_KEY": secrets.token_hex(32)}
-
-    if not _ENV_PATH.exists():
-        _ENV_PATH.touch()
-
-    for key, value in data.items():
-        set_key(str(_ENV_PATH), key, str(value))
-
-    return jsonify({"ok": True})
 
 
 # ─── Test AI connection ───────────────────────────────────────────────────────
@@ -370,12 +322,6 @@ def setup_candidate_profile() -> Any:
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _read_env_file() -> dict[str, str]:
-    if not _ENV_PATH.exists():
-        return {}
-    return {k: v for k, v in dotenv_values(str(_ENV_PATH)).items() if v is not None}
 
 
 def _check_redis_reachable() -> bool:

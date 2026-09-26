@@ -227,33 +227,17 @@ export default function SetupWizardPanel({ onSetupComplete }) {
   const handleSaveAI = async () => {
     setAiSaving(true);
     try {
-      // ai: claude-sonnet-5 | 2026-08-19
-      // Only secrets (API keys) go to .env via /api/setup/save-env. The
-      // model/URL preferences are not secrets, so they're saved directly to
-      // runtime config (PUT /api/config) -- the same single source of truth
-      // the Settings page's ConfigSection edits later. Writing them to both
-      // files let the two copies drift apart (see routes/settings.py's
-      // ollama_base_url validation fix).
-      const envPayload = {};
-      if (aiProvider === "anthropic") envPayload.ANTHROPIC_API_KEY = apiKey;
-      else if (aiProvider === "openai") envPayload.OPENAI_API_KEY = apiKey;
-
-      if (Object.keys(envPayload).length > 0) {
-        const envRes = await fetch("/api/setup/save-env", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(envPayload),
-        });
-        if (!envRes.ok) {
-          const err = await envRes.json();
-          window.alert("Failed to save: " + (err.error || envRes.status));
-          return;
-        }
-      }
-
+      // ai: claude-sonnet-5 | 2026-09-26
+      // Everything, including the API key, is saved through PUT /api/config: keys
+      // are per-account settings stored encrypted in the database (the wizard
+      // used to POST them to /api/setup/save-env, which no longer accepts them
+      // and has been removed).
       const cfgPayload = { ai_provider: aiProvider };
-      if (aiProvider === "openai") cfgPayload.openai_model = openaiModel;
-      else if (aiProvider === "ollama") {
+      if (aiProvider === "anthropic") cfgPayload.anthropic_api_key = apiKey;
+      else if (aiProvider === "openai") {
+        cfgPayload.openai_api_key = apiKey;
+        cfgPayload.openai_model = openaiModel;
+      } else if (aiProvider === "ollama") {
         cfgPayload.ollama_base_url = ollamaUrl;
         cfgPayload.ollama_model = ollamaModel;
       }
@@ -264,7 +248,8 @@ export default function SetupWizardPanel({ onSetupComplete }) {
         body: JSON.stringify(cfgPayload),
       });
       if (!cfgRes.ok) {
-        window.alert("Saved API key but could not update AI provider setting.");
+        const err = await cfgRes.json().catch(() => ({}));
+        window.alert("Failed to save: " + (err.error || cfgRes.status));
         return;
       }
 
@@ -898,7 +883,6 @@ function StepProfile({
 
 function StepFinish({ stepDone, serverStatus, localFiles }) {
   const redisOk = serverStatus?.redis_reachable ?? null;
-  const secretOk = serverStatus?.flask_secret_ok ?? true;
 
   // ai: claude-sonnet-5 | 2026-09-01 — localFiles prop + fileItems for the
   // new "Local Files" summary below
@@ -944,11 +928,6 @@ function StepFinish({ stepDone, serverStatus, localFiles }) {
             {redisOk === true ? "— reachable (background tasks enabled)" : redisOk === false ? "— not reachable (background tasks will fail)" : "— status unknown"}
           </span>
         </div>
-        {!secretOk && (
-          <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--orange)" }}>
-            Flask secret key is still the default. Save your AI provider settings to auto-generate a secure one.
-          </div>
-        )}
       </div>
 
       {localFiles && (

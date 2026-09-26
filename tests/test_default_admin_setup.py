@@ -45,6 +45,7 @@ duplicating them -- see that file for the general app-login-gate coverage."""
 
 from __future__ import annotations
 
+import os
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -54,10 +55,11 @@ import config
 import routes.session_auth as session_auth_module
 from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
-    DEFAULT_ADMIN_PASSWORD,
 )
 from backend.utils.utils import get_repos
 
+# tests/conftest.py provisions the bootstrap account through this variable.
+BOOTSTRAP_PASSWORD = os.environ["BOOTSTRAP_ADMIN_PASSWORD"]
 _NEW_PASSWORD = "a real password nobody guesses"  # noqa: S105
 _NEW_EMAIL = "real-owner@example.com"
 
@@ -93,14 +95,14 @@ def _token_from_link(link: str) -> str:
 
 def _login_default_admin(client):
     return client.post(
-        "/api/login", json={"email": DEFAULT_ADMIN_EMAIL, "password": DEFAULT_ADMIN_PASSWORD}
+        "/api/login", json={"email": DEFAULT_ADMIN_EMAIL, "password": BOOTSTRAP_PASSWORD}
     )
 
 
 def _change_password(client, new_password: str = _NEW_PASSWORD):
     return client.post(
         "/api/account/change-password",
-        json={"current_password": DEFAULT_ADMIN_PASSWORD, "new_password": new_password},
+        json={"current_password": BOOTSTRAP_PASSWORD, "new_password": new_password},
     )
 
 
@@ -244,3 +246,119 @@ def test_password_pending_default_flips_false_after_password_change(client) -> N
     assert data["password_pending_default"] is False
     # must_complete_setup stays True until the email step is also done
     assert data["must_complete_setup"] is True
+
+
+# ─── the bootstrap password is never a fixed, publicly known value ──────────────
+# ai: claude-sonnet-5 | 2026-09-26
+
+
+def test_the_old_documented_password_no_longer_works(client) -> None:
+    resp = client.post("/api/login", json={"email": DEFAULT_ADMIN_EMAIL, "password": "changeme"})
+    assert resp.status_code == 401
+
+
+def test_a_fresh_install_without_a_provisioned_password_gets_a_random_one_time_password(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from werkzeug.security import check_password_hash
+
+    from backend.db import init_db
+    from backend.db.repositories.user_accounts import BOOTSTRAP_ADMIN_PASSWORD_ENV
+
+    monkeypatch.delenv(BOOTSTRAP_ADMIN_PASSWORD_ENV)
+    with get_repos() as repos:
+        repos["conn"].cursor().execute("TRUNCATE user_accounts RESTART IDENTITY CASCADE")
+        repos["conn"].commit()
+
+    with caplog.at_level("WARNING"):
+        init_db(config.DATABASE_URL)
+
+    with get_repos() as repos:
+        account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)
+    logged = [r.getMessage() for r in caplog.records if "ONE-TIME password" in r.getMessage()]
+    assert len(logged) == 1
+    one_time = logged[0].split("ONE-TIME password is ")[1].split(" ")[0]
+    assert len(one_time) >= 20 and one_time != "changeme"
+    assert check_password_hash(account["password_hash"], one_time)
+    assert account["bootstrap_password_pending"] is True and account["must_complete_setup"] is True
+
+
+def test_a_provisioned_password_is_used_and_not_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from werkzeug.security import check_password_hash
+
+    from backend.db import init_db
+    from backend.db.repositories.user_accounts import BOOTSTRAP_ADMIN_PASSWORD_ENV
+
+    provisioned = "provisioned-by-the-deployment-7"
+    monkeypatch.setenv(BOOTSTRAP_ADMIN_PASSWORD_ENV, provisioned)
+    with get_repos() as repos:
+        repos["conn"].cursor().execute("TRUNCATE user_accounts RESTART IDENTITY CASCADE")
+        repos["conn"].commit()
+
+    with caplog.at_level("WARNING"):
+        init_db(config.DATABASE_URL)
+
+    with get_repos() as repos:
+        account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)
+    assert check_password_hash(account["password_hash"], provisioned)
+    assert provisioned not in caplog.text
+
+
+@pytest.mark.parametrize("weak", ["short", "changeme", "password", "admin"])
+def test_a_weak_provisioned_password_stops_the_install(
+    monkeypatch: pytest.MonkeyPatch, weak: str
+) -> None:
+    from backend.db import init_db
+    from backend.db.repositories.user_accounts import BOOTSTRAP_ADMIN_PASSWORD_ENV
+
+    monkeypatch.setenv(BOOTSTRAP_ADMIN_PASSWORD_ENV, weak)
+    with get_repos() as repos:
+        repos["conn"].cursor().execute("TRUNCATE user_accounts RESTART IDENTITY CASCADE")
+        repos["conn"].commit()
+
+    with pytest.raises(RuntimeError, match=BOOTSTRAP_ADMIN_PASSWORD_ENV):
+        init_db(config.DATABASE_URL)
+
+
+def test_an_install_still_holding_the_old_default_password_gets_it_replaced(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from werkzeug.security import check_password_hash, generate_password_hash
+
+    from backend.db import init_db
+    from backend.db.repositories.user_accounts import LEGACY_DEFAULT_ADMIN_PASSWORD
+
+    with get_repos() as repos:
+        repos["conn"].cursor().execute(
+            "UPDATE user_accounts SET password_hash = %s, bootstrap_password_pending = FALSE"
+            " WHERE email = %s",
+            (generate_password_hash(LEGACY_DEFAULT_ADMIN_PASSWORD), DEFAULT_ADMIN_EMAIL),
+        )
+        repos["conn"].commit()
+
+    with caplog.at_level("WARNING"):
+        init_db(config.DATABASE_URL)
+
+    with get_repos() as repos:
+        account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)
+    assert not check_password_hash(account["password_hash"], LEGACY_DEFAULT_ADMIN_PASSWORD)
+    assert account["bootstrap_password_pending"] is True
+    assert "still had the old documented default password" in caplog.text
+
+
+def test_an_account_that_already_changed_its_password_is_left_alone(client) -> None:
+    from werkzeug.security import check_password_hash
+
+    from backend.db import init_db
+
+    _login_default_admin(client)
+    assert _change_password(client).status_code == 200
+
+    init_db(config.DATABASE_URL)
+
+    with get_repos() as repos:
+        account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)
+    assert check_password_hash(account["password_hash"], _NEW_PASSWORD)
+    assert account["bootstrap_password_pending"] is False

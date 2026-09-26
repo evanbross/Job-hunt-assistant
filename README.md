@@ -74,16 +74,25 @@ cd job-hunt-assistant
 uv sync
 
 # Copy and fill in environment variables
-cp .env .env  # edit the values inside
+cp .env.example .env
+
+# Generate the two required secrets and paste them into .env
+python scripts/manage_secrets.py generate
 ```
 
-Edit `.env`:
+Edit `.env` and set at least:
 ```
-ANTHROPIC_API_KEY=sk-ant-...
-EMAIL_LOOKBACK_DAYS=10
-FLASK_SECRET_KEY=<random 32+ char string>
-GOOGLE_SHEETS_ID=<from your sheet URL>
+FLASK_SECRET_KEY=<from the generate command>
+SETTINGS_ENCRYPTION_KEY=<from the generate command>
 ```
+
+The app **refuses to start** without strong values for those two (a missing,
+example, or short value is an error). Everything else is optional. AI provider
+keys are entered per account in the app (Settings), not in `.env`. For local
+development you can set `APP_ENV=development` to have a missing
+`FLASK_SECRET_KEY` generated for you. See
+[docs/secrets-and-key-rotation.md](docs/secrets-and-key-rotation.md) for
+rotating either secret.
 
 ### App login
 
@@ -91,6 +100,14 @@ The whole app sits behind a login screen backed by the database (an
 `user_accounts` table, not an env var). Registration is open — the first time
 you load the app, use the "Create account" link on the login page to set
 your email and password; there's nothing to configure in `.env` for this.
+
+On a brand-new database the app also creates a bootstrap admin
+(`admin@localhost`) so you can sign in before email is configured. Its
+password is **random and shown once in the server log at first start** (look
+for "ONE-TIME password"); it is never a fixed value. A deployment that
+provisions the account can set `BOOTSTRAP_ADMIN_PASSWORD` (12+ characters)
+instead. You are required to replace both the email and the password before
+anything else works.
 
 If you're locked out (forgot a password and can't reach "Change password"
 because you can't log in), run:

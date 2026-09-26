@@ -40,6 +40,7 @@ stays NULL until then — see complete_registration())."""
 
 from __future__ import annotations
 
+import secrets
 from typing import Any
 
 import psycopg2
@@ -71,7 +72,32 @@ PLACEHOLDER_ACCOUNT_EMAIL = "unclaimed@localhost"
 # installs whose first row predates this bootstrap-admin scheme and is left
 # untouched by it.
 DEFAULT_ADMIN_EMAIL = "admin@localhost"
-DEFAULT_ADMIN_PASSWORD = "changeme"
+
+# ai: claude-sonnet-5 | 2026-09-26
+# The bootstrap admin used to be seeded with the same documented password on every
+# install ("changeme"): on any network-reachable fresh install, whoever got there
+# first owned it. It is now seeded with a random one-time password (logged once at
+# first start, never stored), or with BOOTSTRAP_ADMIN_PASSWORD when a deployment
+# provisions it. `bootstrap_password_pending` records that the seeded password has
+# not yet been replaced, instead of comparing against a known string.
+BOOTSTRAP_ADMIN_PASSWORD_ENV = "BOOTSTRAP_ADMIN_PASSWORD"
+MIN_BOOTSTRAP_PASSWORD_LENGTH = 12
+# Kept ONLY so the startup migration can recognise and replace it on an install
+# that never completed setup. It is never used to seed an account.
+LEGACY_DEFAULT_ADMIN_PASSWORD = "changeme"
+
+
+def generate_bootstrap_password() -> str:
+    return secrets.token_urlsafe(16)
+
+
+def bootstrap_password_problem(value: str) -> str | None:
+    """Why *value* is unacceptable as a provisioned bootstrap password, or None."""
+    if len(value) < MIN_BOOTSTRAP_PASSWORD_LENGTH:
+        return f"must be at least {MIN_BOOTSTRAP_PASSWORD_LENGTH} characters"
+    if value.lower() in {LEGACY_DEFAULT_ADMIN_PASSWORD, "password", "admin"}:
+        return "is a well-known default"
+    return None
 
 
 class PostgresUserAccountRepository(_BaseRepo):
@@ -250,7 +276,7 @@ class PostgresUserAccountRepository(_BaseRepo):
             UPDATE user_accounts
             SET password_hash = %s, verification_token = NULL,
                 verification_purpose = NULL, verification_expires_at = NULL,
-                updated_at = NOW()
+                bootstrap_password_pending = FALSE, updated_at = NOW()
             WHERE verification_token = %s
               AND verification_purpose = 'password_reset'
               AND verification_expires_at > NOW()
@@ -271,7 +297,8 @@ class PostgresUserAccountRepository(_BaseRepo):
     def update_password(self, user_id: int, password_hash: str) -> dict[str, Any]:
         cur = self._execute(
             """
-            UPDATE user_accounts SET password_hash = %s, updated_at = NOW()
+            UPDATE user_accounts
+            SET password_hash = %s, bootstrap_password_pending = FALSE, updated_at = NOW()
             WHERE id = %s
             RETURNING *
             """,

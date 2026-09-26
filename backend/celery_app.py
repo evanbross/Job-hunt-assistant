@@ -43,11 +43,17 @@ Run the worker with:
 from __future__ import annotations
 
 import logging
+import os
 
 from celery import Celery
 from celery.exceptions import OperationalError
+from celery.signals import worker_init
 
 import config
+from backend.security.secrets_policy import (
+    InsecureSecretError,
+    validate_encryption_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +92,19 @@ celery_app.conf.update(
     worker_pool="threads",
     worker_concurrency=4,
 )
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+@worker_init.connect
+def _require_valid_encryption_key(**_kwargs: object) -> None:
+    """Tasks decrypt stored tokens and API keys; a worker with a missing or
+    placeholder SETTINGS_ENCRYPTION_KEY would only fail later, task by task.
+    SystemExit (not an Exception) is what lets this stop the worker's startup."""
+    try:
+        validate_encryption_config(os.environ)
+    except InsecureSecretError as exc:
+        logger.critical("%s", exc)
+        raise SystemExit(1) from exc
 
 
 # ai: claude-fable-5 | 2026-07-16

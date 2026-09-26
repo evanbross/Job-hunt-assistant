@@ -46,10 +46,21 @@ from pathlib import Path
 
 import psycopg2
 import pytest
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 
-import config
-from backend.db import init_db
+# ai: claude-sonnet-5 | 2026-09-26
+# The app refuses to start without strong bootstrap secrets, and code paths that
+# encrypt or sign need them too. Give the suite its own throwaway values (unless
+# the environment already supplies some) BEFORE config is first imported --
+# config.py calls load_dotenv() at import, and a developer's real .env must not
+# be what the tests run against.
+os.environ.setdefault("FLASK_SECRET_KEY", "unit-test-signing-secret-0123456789abcdef")
+os.environ.setdefault("SETTINGS_ENCRYPTION_KEY", Fernet.generate_key().decode())
+os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026")
+
+import config  # noqa: E402
+from backend.db import init_db  # noqa: E402
 
 load_dotenv()
 

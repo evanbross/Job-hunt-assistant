@@ -319,7 +319,7 @@ export default function CompleteSetupPage({ onComplete }) {
                   value={currentPassword}
                   onChange={(e) => setCurrentPassword(e.target.value)}
                   style={styles.input}
-                  placeholder="the default password from setup"
+                  placeholder="the one-time password from setup"
                 />
               </label>
               <label style={{ ...labelStyle, marginTop: "10px" }}>

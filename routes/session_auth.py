@@ -67,7 +67,6 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
-    DEFAULT_ADMIN_PASSWORD,
 )
 from backend.email.smtp_sender import send_verification_email
 from backend.settings_service import get_setting
@@ -215,7 +214,7 @@ def _maybe_clear_setup_gate(account: dict, repos: dict) -> None:
     if not account.get("must_complete_setup"):
         return
     email_done = account["email"] != DEFAULT_ADMIN_EMAIL
-    password_done = not check_password_hash(account["password_hash"], DEFAULT_ADMIN_PASSWORD)
+    password_done = not account["bootstrap_password_pending"]
     if email_done and password_done:
         repos["user_accounts"].mark_setup_complete(account["id"])
         repos["conn"].commit()
@@ -429,8 +428,7 @@ def get_account() -> ResponseReturnValue:
             # which of the two forced steps is still outstanding without being
             # able to see the password itself.
             "password_pending_default": (
-                must_complete_setup
-                and check_password_hash(account["password_hash"], DEFAULT_ADMIN_PASSWORD)
+                must_complete_setup and bool(account["bootstrap_password_pending"])
             ),
         }
     )
@@ -530,6 +528,8 @@ def change_password() -> ResponseReturnValue:
         # account still holds the pre-update row -- swap in the new hash so
         # _maybe_clear_setup_gate checks against what the password now is,
         # not what it was a moment ago.
-        _maybe_clear_setup_gate({**account, "password_hash": new_hash}, repos)
+        _maybe_clear_setup_gate(
+            {**account, "password_hash": new_hash, "bootstrap_password_pending": False}, repos
+        )
 
     return jsonify({"status": "password_changed"})

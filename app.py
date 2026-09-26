@@ -84,6 +84,12 @@ from backend.scanning.import_listener import (
     start_job_import_listener,
 )
 from backend.scanning.schedulers import start_jd_health_check_scheduler
+from backend.security.secrets_policy import InsecureSecretError
+from backend.security.session_cookies import (
+    normalize_secure_mode,
+    session_cookie_config,
+)
+from backend.security.startup import enforce_startup_secrets, normalize_app_env
 from backend.settings_service import get_setting
 from backend.utils.utils import (
     CandidateProfileMissingError,
@@ -144,14 +150,15 @@ app = Flask(__name__)
 app.secret_key = config.FLASK_SECRET_KEY
 
 # ai: claude-sonnet-5 | 2026-08-20
-# Session cookie config for the app-login gate (routes/session_auth.py).
-# SESSION_COOKIE_SECURE is intentionally left at its default (False): this app
-# is served over plain HTTP on a local machine (see the port fail-fast check
-# below and the "development server" warning app.run() prints) — a Secure
-# cookie would silently fail to be set at all under that deployment. HttpOnly
-# is on by default; SameSite=Lax plus the existing Origin/Referer CSRF guard
-# below cover the realistic threat model for a localhost personal tool.
-app.config["SESSION_COOKIE_SAMESITE"] = config.SESSION_COOKIE_SAMESITE
+# ai: claude-sonnet-5 | 2026-09-26
+# Session cookie for the app-login gate (routes/session_auth.py). HttpOnly and
+# SameSite=Lax always; Secure (and the __Host- name prefix) follow the app's base
+# URL -- see backend/security/session_cookies.py. These import-time values use
+# the .env base URL; _init_runtime_state() re-applies them from the database
+# setting once it is reachable. The signing key is validated and installed at
+# runtime start too (_enforce_startup_secrets); the value here only keeps
+# tooling and tests that import this module working.
+app.config.update(session_cookie_config(config.APP_BASE_URL, "auto"))
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
     days=config.PERMANENT_SESSION_LIFETIME_DAYS
 )
@@ -631,6 +638,52 @@ _import_listener: JobImportListener | None = None
 _queue_ws_server: QueueWebSocketServer | None = None
 
 
+# ai: claude-sonnet-5 | 2026-09-26
+def _enforce_startup_secrets() -> str:
+    """Refuse to start on a missing or weak FLASK_SECRET_KEY / SETTINGS_ENCRYPTION_KEY,
+    then install the validated signing key (and any rotation fallbacks). Returns
+    the normalized APP_ENV."""
+    try:
+        app_env = normalize_app_env(config.APP_ENV)
+        secrets_config = enforce_startup_secrets(
+            os.environ, app_env=app_env, env_file=config.BASE_DIR / ".env"
+        )
+    except InsecureSecretError as exc:
+        logger.critical("%s", exc)
+        raise SystemExit(1) from exc
+    app.secret_key = secrets_config.flask_secret
+    # Flask signs with secret_key and still accepts anything signed with these.
+    app.config["SECRET_KEY_FALLBACKS"] = list(secrets_config.flask_fallbacks)
+    return app_env
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def _apply_session_cookie_config(app_env: str) -> None:
+    """Set the session cookie flags from the app's real base URL (the database
+    setting, falling back to .env if the database is unreachable)."""
+    base_url = config.APP_BASE_URL
+    try:
+        with get_repos() as repos:
+            base_url = get_setting("app_base_url", None, repos) or base_url
+    except psycopg2.Error as exc:
+        logger.warning("Could not read app_base_url for the session cookie config: %s", exc)
+    settings = session_cookie_config(base_url, normalize_secure_mode(config.SESSION_COOKIE_SECURE_MODE))
+    app.config.update(settings)
+    logger.info(
+        "Session cookie: Secure=%s HttpOnly=%s SameSite=%s name=%s",
+        settings["SESSION_COOKIE_SECURE"],
+        settings["SESSION_COOKIE_HTTPONLY"],
+        settings["SESSION_COOKIE_SAMESITE"],
+        settings["SESSION_COOKIE_NAME"],
+    )
+    if app_env == "production" and not settings["SESSION_COOKIE_SECURE"]:
+        logger.warning(
+            "Session cookies are not marked Secure because the app base URL (%s) is not https://. "
+            "Serve the app over HTTPS and set app_base_url accordingly before exposing it to a network.",
+            base_url,
+        )
+
+
 # ai: claude-sonnet-5 | 2026-08-20
 def _init_runtime_state() -> None:
     """Perform every import-time side effect the app used to run at module load.
@@ -644,12 +697,14 @@ def _init_runtime_state() -> None:
     """
     global _import_listener, _queue_ws_server
 
+    app_env = _enforce_startup_secrets()  # before anything else: fail fast
     config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Retries with backoff; if the database is still unreachable the app starts
     # in degraded mode (so /api/system/health can report the outage to the
     # frontend) and keeps retrying in the background.
     init_db_with_retry(config.DATABASE_URL)
+    _apply_session_cookie_config(app_env)
 
     _import_listener = start_job_import_listener(
         _authenticate_extension_token,

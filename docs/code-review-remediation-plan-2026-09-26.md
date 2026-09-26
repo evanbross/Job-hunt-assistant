@@ -242,3 +242,43 @@ Found, not fixed (candidates for the next items):
 - The OAuth `_pending_auths` state and the WebSocket ticket store are
   in-process memory; a multi-instance deployment needs Redis behind the same
   interfaces.
+
+## Item 3 progress (2026-09-26)
+
+Status: **implemented, not yet committed.**
+
+- **Fail fast.** `FLASK_SECRET_KEY` and `SETTINGS_ENCRYPTION_KEY` are validated at
+  startup (`backend/security/`): a missing, example/placeholder, whitespace-padded,
+  repetitive, or (for the Flask secret) under-32-character value stops the app with
+  every problem listed and the fix. The code default `change-this-in-production`
+  is gone. `APP_ENV` defaults to `production`; an explicit `APP_ENV=development`
+  additionally generates a *missing* Flask secret into `.env` (never an encryption
+  key, never overwriting a weak value). The Celery worker refuses to start without
+  a valid encryption key. Test runs get their own throwaway secrets and never read
+  a developer's real `.env`.
+- **Rotation.** Both secrets have `*_FALLBACKS` lists: Flask signs with the new
+  secret and still accepts sessions signed with an old one; the encryption layer is
+  now a `MultiFernet` (encrypt with the primary, decrypt with any).
+  `scripts/manage_secrets.py` provides `generate`, `rotate-flask-secret`,
+  `rotate-encryption-key` (re-encrypts every stored ciphertext in one transaction,
+  new `.env` written first so a failure can't strand data) and `check-encryption`
+  (tells you when the old key can be dropped). Preview by default; `--write`
+  applies. See `docs/secrets-and-key-rotation.md`.
+- **Session cookies.** Explicitly `HttpOnly` and `SameSite=Lax`; `Secure` follows
+  the app base URL (`SESSION_COOKIE_SECURE=auto|true|false`) and a Secure cookie
+  also gets the `__Host-` name prefix. Startup logs the effective settings and
+  warns in production if cookies aren't Secure. Tests read the real `Set-Cookie`
+  headers and prove a session survives a secret rotation only with the fallback.
+- **Known default credential removed.** The bootstrap admin was seeded on every
+  fresh install with the documented password `changeme`. It is now a random
+  one-time password logged once (or `BOOTSTRAP_ADMIN_PASSWORD`), tracked by a
+  `bootstrap_password_pending` flag instead of comparing to a known string, and a
+  startup migration replaces `changeme` on any install that never completed setup.
+- **Wizard.** The setup wizard's AI step was already broken (it posted API keys to
+  `/api/setup/save-env`, which stopped accepting them in August). That route and
+  its `flask_secret_ok` check are removed; the wizard saves keys through
+  `PUT /api/config` (per-account, encrypted).
+
+Not done here (still open in this plan): production secret sourcing from a secrets
+manager (this is env-var based), audit logging of secret rotation, and the item 4
+infrastructure hardening.

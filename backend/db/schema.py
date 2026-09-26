@@ -41,12 +41,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from werkzeug.security import generate_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
 from backend.crypto import (
@@ -56,8 +57,11 @@ from backend.crypto import (
 )
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
 from backend.db.repositories.user_accounts import (
+    BOOTSTRAP_ADMIN_PASSWORD_ENV,
     DEFAULT_ADMIN_EMAIL,
-    DEFAULT_ADMIN_PASSWORD,
+    LEGACY_DEFAULT_ADMIN_PASSWORD,
+    bootstrap_password_problem,
+    generate_bootstrap_password,
 )
 from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
 from backend.settings_registry import SETTINGS
@@ -892,6 +896,12 @@ def _migrate(conn: Any) -> None:
         "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS"
         " must_complete_setup BOOLEAN NOT NULL DEFAULT FALSE"
     )
+    # ai: claude-sonnet-5 | 2026-09-26 -- TRUE while the seeded bootstrap password
+    # has not been replaced; cleared by any password change/reset.
+    cur.execute(
+        "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS"
+        " bootstrap_password_pending BOOLEAN NOT NULL DEFAULT FALSE"
+    )
     conn.commit()
 
     # A completely empty user_accounts is possible here even when other tables
@@ -922,18 +932,61 @@ def _migrate(conn: Any) -> None:
     # backfill_user_id is always "whichever account existed first."
     cur.execute("SELECT COUNT(*) AS cnt FROM user_accounts")
     if cur.fetchone()["cnt"] == 0:
+        provisioned = os.environ.get(BOOTSTRAP_ADMIN_PASSWORD_ENV, "").strip()
+        if provisioned:
+            problem = bootstrap_password_problem(provisioned)
+            if problem:
+                raise RuntimeError(f"{BOOTSTRAP_ADMIN_PASSWORD_ENV} {problem}.")
+            bootstrap_password = provisioned
+        else:
+            bootstrap_password = generate_bootstrap_password()
         cur.execute(
-            "INSERT INTO user_accounts (email, password_hash, must_complete_setup)"
-            " VALUES (%s, %s, TRUE)",
-            (DEFAULT_ADMIN_EMAIL, generate_password_hash(DEFAULT_ADMIN_PASSWORD)),
+            "INSERT INTO user_accounts"
+            " (email, password_hash, must_complete_setup, bootstrap_password_pending)"
+            " VALUES (%s, %s, TRUE, TRUE)",
+            (DEFAULT_ADMIN_EMAIL, generate_password_hash(bootstrap_password)),
         )
         conn.commit()
-        logger.warning(
-            "Fresh install: created default admin account %s with the "
-            "documented default password. Log in and complete setup "
-            "(real email + real password) immediately.",
-            DEFAULT_ADMIN_EMAIL,
-        )
+        if provisioned:
+            logger.warning(
+                "Fresh install: created the bootstrap admin account %s using %s. Log in and "
+                "complete setup (real email + real password).",
+                DEFAULT_ADMIN_EMAIL,
+                BOOTSTRAP_ADMIN_PASSWORD_ENV,
+            )
+        else:
+            logger.warning(
+                "Fresh install: created the bootstrap admin account %s. Its ONE-TIME password is "
+                "%s -- it is not stored anywhere and will not be shown again. Log in and complete "
+                "setup (real email + real password).",
+                DEFAULT_ADMIN_EMAIL,
+                bootstrap_password,
+            )
+
+    # ai: claude-sonnet-5 | 2026-09-26
+    # An install that seeded the old documented password and never finished setup
+    # still has it. Replace it with a fresh random one-time password now (logged
+    # once) rather than leave a publicly-known credential active. Accounts that
+    # already changed their password never match, so this is a no-op for them.
+    cur.execute(
+        "SELECT id, email, password_hash FROM user_accounts"
+        " WHERE must_complete_setup AND password_hash IS NOT NULL"
+    )
+    for account in cur.fetchall():
+        if check_password_hash(account["password_hash"], LEGACY_DEFAULT_ADMIN_PASSWORD):
+            replacement = generate_bootstrap_password()
+            cur.execute(
+                "UPDATE user_accounts SET password_hash = %s, bootstrap_password_pending = TRUE"
+                " WHERE id = %s",
+                (generate_password_hash(replacement), account["id"]),
+            )
+            conn.commit()
+            logger.warning(
+                "The bootstrap admin account %s still had the old documented default password. "
+                "It has been replaced. Its new ONE-TIME password is %s -- shown once, not stored.",
+                account["email"],
+                replacement,
+            )
     cur.execute("SELECT id FROM user_accounts ORDER BY id LIMIT 1")
     backfill_user_id = cur.fetchone()["id"]
 

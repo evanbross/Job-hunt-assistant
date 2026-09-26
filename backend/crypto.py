@@ -38,16 +38,29 @@
 The encryption key itself cannot live in the database it protects — it stays
 in .env (SETTINGS_ENCRYPTION_KEY), the same bootstrap-only tier as
 FLASK_SECRET_KEY. Generate one with:
-    python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    python scripts/manage_secrets.py generate
+
+Rotation: new values are always encrypted with SETTINGS_ENCRYPTION_KEY, while
+anything encrypted under a key listed in SETTINGS_ENCRYPTION_KEY_FALLBACKS
+(comma-separated, older keys) is still readable. `scripts/manage_secrets.py
+rotate-encryption-key` re-encrypts stored values under the current key so the
+old one can then be dropped. See docs/secrets-and-key-rotation.md.
 """
 
 from __future__ import annotations
 
 import os
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
-_fernet: Fernet | None = None
+from backend.security.secrets_policy import (
+    ENCRYPTION_KEY_ENV,
+    ENCRYPTION_KEY_FALLBACKS_ENV,
+    split_key_list,
+)
+
+_fernet: MultiFernet | None = None
+_primary_fernet: Fernet | None = None
 
 
 class SettingsEncryptionKeyMissingError(RuntimeError):
@@ -56,19 +69,21 @@ class SettingsEncryptionKeyMissingError(RuntimeError):
     it specifically if they want to surface a setup-wizard-style hint."""
 
 
-def _get_fernet() -> Fernet:
-    global _fernet
+def _get_fernet() -> MultiFernet:
+    global _fernet, _primary_fernet
     if _fernet is not None:
         return _fernet
-    key = os.getenv("SETTINGS_ENCRYPTION_KEY", "")
+    key = os.getenv(ENCRYPTION_KEY_ENV, "").strip()
     if not key:
         raise SettingsEncryptionKeyMissingError(
-            "SETTINGS_ENCRYPTION_KEY is not set. Generate one with: "
-            "python -c \"from cryptography.fernet import Fernet; "
-            'print(Fernet.generate_key().decode())"'
+            f"{ENCRYPTION_KEY_ENV} is not set. Generate one with: "
+            "python scripts/manage_secrets.py generate"
             " and add it to .env."
         )
-    _fernet = Fernet(key.encode("utf-8"))
+    fallbacks = split_key_list(os.getenv(ENCRYPTION_KEY_FALLBACKS_ENV, ""))
+    _primary_fernet = Fernet(key.encode("utf-8"))
+    # MultiFernet encrypts with the first key and tries each in order to decrypt.
+    _fernet = MultiFernet([_primary_fernet, *(Fernet(old.encode("utf-8")) for old in fallbacks)])
     return _fernet
 
 
@@ -100,3 +115,24 @@ def decrypt_bytes(token: str) -> bytes:
             "Could not decrypt stored secret — SETTINGS_ENCRYPTION_KEY may have "
             "changed since this value was saved."
         ) from exc
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def needs_rotation(token: str) -> bool:
+    """True if *token* is readable but not encrypted under the current primary
+    key (i.e. only an older fallback key can open it). Raises ValueError if no
+    configured key can read it at all."""
+    _get_fernet()
+    assert _primary_fernet is not None
+    try:
+        _primary_fernet.decrypt(token.encode("utf-8"))
+    except InvalidToken:
+        decrypt_bytes(token)  # raises ValueError if no fallback can read it either
+        return True
+    return False
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def reencrypt(token: str) -> str:
+    """Re-encrypt *token* under the current primary key."""
+    return _get_fernet().rotate(token.encode("utf-8")).decode("utf-8")

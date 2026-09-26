@@ -51,7 +51,14 @@ load_dotenv()
 # ─── API Keys ─────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY", "change-this-in-production")
+# ai: claude-sonnet-5 | 2026-09-26 -- no default: a missing value must never quietly
+# become a known string. backend/security/startup.py refuses to start without a
+# strong one (see docs/secrets-and-key-rotation.md).
+FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY", "")
+# "production" (default) or "development"; anything else is rejected at startup.
+APP_ENV: str = os.getenv("APP_ENV", "")
+# auto | true | false -- see backend/security/session_cookies.py.
+SESSION_COOKIE_SECURE_MODE: str = os.getenv("SESSION_COOKIE_SECURE", "auto")
 
 # ─── Server bind ──────────────────────────────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-08-26
@@ -71,8 +78,7 @@ FLASK_PORT: int = int(os.getenv("FLASK_PORT", "5004"))
 # credential itself lives in the DB (user_accounts table, see
 # backend/db/repositories/user_accounts.py) — created via the web UI's "Create
 # your account" form, not an env var. These two constants are just session
-# cookie behavior, not credential storage.
-SESSION_COOKIE_SAMESITE: str = "Lax"
+# cookie lifetime, not credential storage (cookie flags: backend/security/session_cookies.py).
 PERMANENT_SESSION_LIFETIME_DAYS: int = 30
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
