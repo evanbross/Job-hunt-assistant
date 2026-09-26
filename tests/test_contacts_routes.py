@@ -56,6 +56,7 @@ class FakeContactsRepo:
     def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
         self.rows = rows or []
         self.updates: list[tuple[int, dict[str, Any]]] = []
+        self.bulk_calls: list[tuple[list[int], bool]] = []
 
     def get_all(self, user_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.rows]
@@ -70,6 +71,10 @@ class FakeContactsRepo:
     def update(self, user_id: int, contact_id: int, fields: dict[str, Any]) -> bool:
         self.updates.append((contact_id, fields))
         return any(row.get("id") == contact_id for row in self.rows)
+
+    def bulk_set_recruiter(self, user_id: int, contact_ids: list[int], is_recruiter: bool) -> int:
+        self.bulk_calls.append((contact_ids, is_recruiter))
+        return len([row for row in self.rows if row.get("id") in contact_ids])
 
     def count(self, user_id: int) -> int:
         return len(self.rows)
@@ -389,3 +394,39 @@ def test_delete_contact_email(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert client.delete("/api/contact-emails/7").status_code == 200
     assert emails.deleted == [7]
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+def test_bulk_set_recruiter_dedupes_ids_and_reports_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    contacts = FakeContactsRepo([{"id": 1}, {"id": 2}])
+    client = _contacts_client(monkeypatch, contacts)
+
+    response = client.post(
+        "/api/contacts/bulk-recruiter", json={"contact_ids": [2, 1, 2], "is_recruiter": True}
+    )
+    assert response.status_code == 200
+    assert response.get_json() == {"updated": 2}
+    assert contacts.bulk_calls == [([1, 2], True)]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"contact_ids": [], "is_recruiter": True},
+        {"contact_ids": [1]},
+        {"contact_ids": [1], "is_recruiter": "yes"},
+        {"contact_ids": ["1"], "is_recruiter": True},
+        {"contact_ids": [True], "is_recruiter": True},
+        {"contact_ids": [1], "is_recruiter": True, "interested": True},
+    ],
+)
+def test_bulk_set_recruiter_rejects_invalid_body(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    contacts = FakeContactsRepo([{"id": 1}])
+    client = _contacts_client(monkeypatch, contacts)
+
+    response = client.post("/api/contacts/bulk-recruiter", json=body)
+    assert response.status_code == 400
+    assert contacts.bulk_calls == []

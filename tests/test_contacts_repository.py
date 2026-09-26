@@ -246,3 +246,40 @@ def test_deleting_a_contact_cascades_to_its_email_log(pg_dsn: str) -> None:
         assert email_repo.set_response(user_id, created["id"], "2026-09-02") is False
     finally:
         conn.close()
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+def test_bulk_set_recruiter_updates_only_listed_contacts_owned_by_user(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        owner_id = _new_user(conn)
+        other_id = _new_user(conn, "other@example.com")
+        repo = PostgresContactRepository(conn)
+        repo.sync_import(
+            owner_id,
+            [
+                _import_row(),
+                _import_row(full_name="Bob", profile_url="https://linkedin.com/in/bob"),
+                _import_row(full_name="Cy", profile_url="https://linkedin.com/in/cy"),
+            ],
+        )
+        repo.sync_import(other_id, [_import_row(full_name="Theirs", profile_url="https://linkedin.com/in/t")])
+        owner_ids = {c["full_name"]: c["id"] for c in repo.get_all(owner_id)}
+        other_contact_id = repo.get_all(other_id)[0]["id"]
+
+        updated = repo.bulk_set_recruiter(
+            owner_id, [owner_ids["Jane Doe"], owner_ids["Bob"], other_contact_id], True
+        )
+        conn.commit()
+
+        assert updated == 2
+        flags = {c["full_name"]: c["is_recruiter"] for c in repo.list_with_emails(owner_id)}
+        assert flags == {"Jane Doe": True, "Bob": True, "Cy": False}
+        assert repo.list_with_emails(other_id)[0]["is_recruiter"] is False
+
+        assert repo.bulk_set_recruiter(owner_id, [owner_ids["Bob"]], False) == 1
+        assert {
+            c["full_name"]: c["is_recruiter"] for c in repo.list_with_emails(owner_id)
+        }["Bob"] is False
+    finally:
+        conn.close()

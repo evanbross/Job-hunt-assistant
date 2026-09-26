@@ -164,6 +164,19 @@ class PostgresContactRepository(_BaseRepo):
         )
         return cur.rowcount > 0
 
+    # ai: claude-sonnet-5 | 2026-09-25
+    def bulk_set_recruiter(
+        self, user_id: int, contact_ids: list[int], is_recruiter: bool
+    ) -> int:
+        """Set is_recruiter on every listed contact the user owns; returns how
+        many rows changed (ids that don't exist or belong to someone else are
+        silently not matched)."""
+        cur = self._execute(
+            "UPDATE contacts SET is_recruiter = %s WHERE user_id = %s AND id = ANY(%s)",
+            (is_recruiter, user_id, contact_ids),
+        )
+        return cur.rowcount
+
     def count(self, user_id: int) -> int:
         cur = self._execute("SELECT COUNT(*) AS cnt FROM contacts WHERE user_id = %s", (user_id,))
         return int(cur.fetchone()["cnt"])

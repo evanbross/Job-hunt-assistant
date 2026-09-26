@@ -44,7 +44,16 @@ from typing import Annotated
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
-from pydantic import AfterValidator, BaseModel, ConfigDict, StrictBool, ValidationError, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    ValidationError,
+    field_validator,
+)
 
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.contacts_service import build_company_map
@@ -55,6 +64,7 @@ logger = logging.getLogger(__name__)
 contacts_bp = Blueprint("contacts", __name__)
 
 _MAX_EMAIL_ADDRESS_LENGTH = 254
+_MAX_BULK_CONTACT_IDS = 50_000
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -95,6 +105,14 @@ class ContactUpdate(BaseModel):
         if len(value) > _MAX_EMAIL_ADDRESS_LENGTH or not re.fullmatch(r"[^@\s]+@[^@\s]+", value):
             raise ValueError("not a valid email address")
         return value
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+class BulkRecruiterUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contact_ids: list[StrictInt] = Field(min_length=1, max_length=_MAX_BULK_CONTACT_IDS)
+    is_recruiter: StrictBool
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -195,6 +213,22 @@ def update_contact(contact_id: int) -> ResponseReturnValue:
             return jsonify({"error": "Contact not found"}), 404
         repos["conn"].commit()
     return jsonify({"ok": True})
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+@contacts_bp.route("/contacts/bulk-recruiter", methods=["POST"])
+def bulk_set_recruiter() -> ResponseReturnValue:
+    try:
+        body = BulkRecruiterUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return _invalid_request(exc)
+
+    with get_repos() as repos:
+        updated = repos["contacts"].bulk_set_recruiter(
+            current_user_id(), sorted(set(body.contact_ids)), body.is_recruiter
+        )
+        repos["conn"].commit()
+    return jsonify({"updated": updated})
 
 
 # ai: claude-sonnet-5 | 2026-09-25

@@ -96,6 +96,8 @@ export default function ContactsPanel() {
   const [recruiterFilter, setRecruiterFilter] = useState("all");
   const [interestedOnly, setInterestedOnly] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkPending, setBulkPending] = useState(false);
 
   const loadContacts = async () => {
     try {
@@ -127,6 +129,52 @@ export default function ContactsPanel() {
     [contacts, search, emailFilter, recruiterFilter, interestedOnly],
   );
   const interestedCount = useMemo(() => contacts.filter((c) => c.interested).length, [contacts]);
+
+  // ai: claude-sonnet-5 | 2026-09-25
+  // A bulk action must only ever touch rows the user can currently see in the
+  // filtered list, so selections that a filter change hides are dropped.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const filteredIds = new Set(filtered.map((c) => c.id));
+      const kept = new Set([...prev].filter((id) => filteredIds.has(id)));
+      return kept.size === prev.size ? prev : kept;
+    });
+  }, [filtered]);
+
+  const allFilteredSelected = filtered.length > 0 && selectedIds.size === filtered.length;
+
+  const toggleSelected = (contactId, checked) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(contactId);
+      else next.delete(contactId);
+      return next;
+    });
+
+  const toggleSelectAllFiltered = (checked) =>
+    setSelectedIds(checked ? new Set(filtered.map((c) => c.id)) : new Set());
+
+  const bulkSetRecruiter = async (isRecruiter) => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setBulkPending(true);
+    try {
+      const res = await sendJson("/api/contacts/bulk-recruiter", "POST", {
+        contact_ids: ids,
+        is_recruiter: isRecruiter,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const idSet = new Set(ids);
+      setContacts((prev) =>
+        prev.map((c) => (idSet.has(c.id) ? { ...c, is_recruiter: isRecruiter } : c)),
+      );
+      setSelectedIds(new Set());
+    } catch (e) {
+      window.alert(`Bulk update failed: ${e.message}`);
+    } finally {
+      setBulkPending(false);
+    }
+  };
 
   const replaceContact = (contactId, changes) =>
     setContacts((prev) => prev.map((c) => (c.id === contactId ? { ...c, ...changes } : c)));
@@ -220,8 +268,9 @@ export default function ContactsPanel() {
         <div style={{ flex: 1 }}>
           <h2 style={titleStyle}>Contacts</h2>
           <p style={summaryStyle}>
-            Your LinkedIn connections. Check the ones you're interested in reaching, mark
-            the recruiters, and log the emails you send and any replies.
+            Your LinkedIn connections. Check the ones you're interested in reaching, mark the
+            recruiters (or select several and mark them at once), and log the emails you send
+            and any replies.
           </p>
         </div>
         {contacts.length > 0 && (
@@ -286,7 +335,52 @@ export default function ContactsPanel() {
             {filtered.length.toLocaleString()} of {contacts.length.toLocaleString()} contacts
           </div>
 
+          {selectedIds.size > 0 && (
+            <div style={bulkBar}>
+              <strong>{selectedIds.size.toLocaleString()} selected</strong>
+              <button
+                className="btn-primary btn-sm"
+                disabled={bulkPending}
+                onClick={() => bulkSetRecruiter(true)}
+              >
+                Mark as recruiter
+              </button>
+              <button
+                className="btn-secondary btn-sm"
+                disabled={bulkPending}
+                onClick={() => bulkSetRecruiter(false)}
+              >
+                Unmark recruiter
+              </button>
+              <button
+                className="btn-secondary btn-sm"
+                disabled={bulkPending}
+                onClick={() => setSelectedIds(new Set())}
+              >
+                Clear selection
+              </button>
+            </div>
+          )}
+
           <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+            {visible.length > 0 && (
+              <div style={{ ...rowGrid, ...headerRow }}>
+                <label style={headerCell}>
+                  <input
+                    type="checkbox"
+                    checked={allFilteredSelected}
+                    onChange={(e) => toggleSelectAllFiltered(e.target.checked)}
+                    aria-label={`Select all ${filtered.length} filtered contacts`}
+                  />
+                  Select
+                </label>
+                <span style={headerCell}>Interested</span>
+                <span style={headerCell}>Contact</span>
+                <span style={headerCell}>Recruiter</span>
+                <span style={headerCell}>Email status</span>
+                <span />
+              </div>
+            )}
             {visible.length === 0 ? (
               <div style={{ padding: "18px", color: "var(--text-muted)" }}>
                 No contacts match these filters.
@@ -302,6 +396,12 @@ export default function ContactsPanel() {
                 return (
                   <div key={contact.id} style={{ borderBottom: "1px solid var(--border)" }}>
                     <div style={rowGrid}>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(contact.id)}
+                        onChange={(e) => toggleSelected(contact.id, e.target.checked)}
+                        aria-label={`Select ${contact.full_name}`}
+                      />
                       <input
                         type="checkbox"
                         checked={contact.interested}
@@ -412,10 +512,39 @@ const toolbar = {
 
 const rowGrid = {
   display: "grid",
-  gridTemplateColumns: "24px minmax(0, 1fr) 100px 230px 70px",
+  gridTemplateColumns: "64px 70px minmax(0, 1fr) 100px 230px 70px",
   alignItems: "center",
   gap: "12px",
   padding: "10px 14px",
+};
+
+const bulkBar = {
+  display: "flex",
+  alignItems: "center",
+  gap: "10px",
+  padding: "8px 14px",
+  marginBottom: "10px",
+  background: "var(--accent-light)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  fontSize: "13px",
+};
+
+const headerRow = {
+  background: "var(--surface2)",
+  borderBottom: "1px solid var(--border)",
+  padding: "6px 14px",
+};
+
+const headerCell = {
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  fontSize: "11px",
+  fontWeight: 700,
+  color: "var(--text-muted)",
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
 };
 
 const recruiterLabel = {
