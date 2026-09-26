@@ -42,11 +42,13 @@ app's own POSTGRES_*/DATABASE_URL vars."""
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import psycopg2
 import pytest
 from dotenv import load_dotenv
 
+import config
 from backend.db import init_db
 
 load_dotenv()
@@ -74,6 +76,9 @@ _ALL_TABLES = (
     "import_repair_history",
     "contact_emails",
     "extension_tokens",
+    "google_oauth_tokens",
+    "greenhouse_sessions",
+    "candidate_profiles",
     "contacts",
     "cover_letter_phrases",
     "career_scan_results",
@@ -96,6 +101,23 @@ _ALL_TABLES = (
     "application_answers",
     "user_accounts",
 )
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+@pytest.fixture(autouse=True)
+def isolated_legacy_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point every legacy shared-file location at a throwaway directory.
+
+    init_db() runs one-time migrations that move the old shared files
+    (uploads/resume.pdf, the Google credentials and token files, the
+    candidate profile) into the database, renaming or reading them; without this, running the suite against a
+    developer checkout would consume their real files."""
+    monkeypatch.setattr(config, "UPLOADS_DIR", tmp_path)
+    monkeypatch.setattr(config, "LEGACY_GOOGLE_CREDENTIALS_FILE", tmp_path / "google_credentials.json")
+    monkeypatch.setattr(config, "LEGACY_GOOGLE_TOKEN_FILE", tmp_path / "token.json")
+    monkeypatch.setattr(config, "LEGACY_GREENHOUSE_SESSION_FILE", tmp_path / "greenhouse_session.json")
+    monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_PATH", tmp_path / "candidate_profile.md")
+    monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_ALT_FILENAMES", ())
 
 
 # ai: claude-sonnet-5 | 2026-07-25

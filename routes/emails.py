@@ -194,7 +194,7 @@ def mark_email_read(email_id: str) -> ResponseReturnValue:
         return jsonify({"error": "email_id is required"}), 400
 
     try:
-        GmailClient().mark_as_read(base_email_id)
+        GmailClient(current_user_id()).mark_as_read(base_email_id)
     except NotAuthenticatedError as exc:
         return jsonify({"error": str(exc)}), 401
     except Exception:
@@ -245,7 +245,7 @@ def move_scanned_emails() -> ResponseReturnValue:
                 {"status": "ok", "moved": 0, "message": "No eligible emails to move"}
             )
 
-        moved_count = GmailClient().move_messages_to_label(
+        moved_count = GmailClient(user_id).move_messages_to_label(
             filtered_email_ids, scanned_email_label
         )
     except NotAuthenticatedError as exc:
@@ -279,7 +279,7 @@ def clean_displayed_emails() -> ResponseReturnValue:
         return jsonify({"checked": 0, "hidden": 0, "hidden_email_ids": []})
 
     try:
-        gmail = GmailClient()
+        gmail = GmailClient(current_user_id())
     except NotAuthenticatedError as exc:
         return jsonify({"error": str(exc)}), 401
 
@@ -333,7 +333,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
     base_id = email_id.split(":")[0]
 
     try:
-        gmail = GmailClient()
+        gmail = GmailClient(current_user_id())
     except NotAuthenticatedError as exc:
         return jsonify({"error": str(exc)}), 401
 

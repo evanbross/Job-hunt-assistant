@@ -50,12 +50,35 @@ class PostgresResumeRepository(_BaseRepo):
             "content",
             "uploaded_at",
             "user_id",
+            "file_encrypted",
+            "file_size",
+            "file_sha256",
         }
+    )
+
+    # ai: claude-sonnet-5 | 2026-09-26 -- deliberately not SELECT *: many callers
+    # only need the extracted text, and the encrypted PDF (up to several MB)
+    # should only be read by get_latest_file. has_file tells the UI whether a
+    # stored file exists without loading it.
+    _SUMMARY_COLUMNS = (
+        "id, user_id, filename, content, uploaded_at, file_size, file_sha256,"
+        " (file_encrypted IS NOT NULL) AS has_file"
     )
 
     def get_latest(self, user_id: int) -> dict[str, Any] | None:
         cur = self._execute(
-            "SELECT * FROM resume WHERE user_id = %s ORDER BY uploaded_at DESC LIMIT 1",
+            f"SELECT {self._SUMMARY_COLUMNS} FROM resume"
+            " WHERE user_id = %s ORDER BY uploaded_at DESC LIMIT 1",
+            [user_id],
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    # ai: claude-sonnet-5 | 2026-09-26
+    def get_latest_file(self, user_id: int) -> dict[str, Any] | None:
+        cur = self._execute(
+            "SELECT filename, file_encrypted FROM resume"
+            " WHERE user_id = %s ORDER BY uploaded_at DESC LIMIT 1",
             [user_id],
         )
         row = cur.fetchone()

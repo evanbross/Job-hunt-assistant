@@ -52,6 +52,7 @@ from backend.scanning.sources.greenhouse_searcher import (
     GreenhouseLoginError,
     GreenhouseSearcher,
 )
+from backend.scanning.sources.greenhouse_session_store import GreenhouseSessionStore
 from backend.settings_service import get_setting
 from backend.tasks import run_import_task
 from backend.utils.utils import current_user_id, get_repos, is_celery_task_active
@@ -155,7 +156,7 @@ def run_greenhouse_scan_task(self, user_id: int, search_url: str, max_jobs: int)
             greenhouse_email = get_setting("greenhouse_email", user_id, repos)
         scraper = GreenhouseSearcher(
             email=greenhouse_email,
-            session_file=config.GREENHOUSE_SESSION_FILE,
+            session_store=GreenhouseSessionStore(user_id),
         )
 
         def on_progress(current: int, total: int, message: str) -> None:
@@ -225,7 +226,7 @@ def _run_manual_login(user_id: int) -> None:
             greenhouse_email = get_setting("greenhouse_email", user_id, repos)
         scraper = GreenhouseSearcher(
             email=greenhouse_email,
-            session_file=config.GREENHOUSE_SESSION_FILE,
+            session_store=GreenhouseSessionStore(user_id),
         )
         scraper.manual_login(timeout_seconds=300)
         _update_login(
@@ -396,9 +397,7 @@ def browser_login() -> ResponseReturnValue:
 
 @greenhouse_bp.route("/greenhouse/clear-session", methods=["POST"])
 def clear_session() -> ResponseReturnValue:
-    """Delete the persisted Greenhouse session so the next scan re-authenticates."""
-    session_file = config.GREENHOUSE_SESSION_FILE
-    if session_file.exists():
-        session_file.unlink()
+    """Delete the caller's saved Greenhouse session so the next scan re-authenticates."""
+    if GreenhouseSessionStore(current_user_id()).clear():
         return jsonify({"status": "session cleared"})
-    return jsonify({"status": "no session on disk"})
+    return jsonify({"status": "no saved session"})

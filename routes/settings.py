@@ -41,14 +41,23 @@ import logging
 import re
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
-from pathlib import Path
 
-import fitz
 from flask import Blueprint, jsonify, request, session
 from flask.typing import ResponseReturnValue
+from pydantic import ValidationError
 
 import config
+from backend.candidate_profile_service import (
+    CandidateProfileUpdate,
+    save_candidate_profile,
+)
+from backend.resume.resume_file_service import (
+    MAX_RESUME_BYTES,
+    InvalidResumeFileError,
+    ResumeFileService,
+    extract_pdf_text,
+    validate_pdf_upload,
+)
 from backend.scoring.jd_enrichment import rescore_active_queue_jobs
 from backend.settings_registry import (
     SETTINGS,
@@ -90,7 +99,6 @@ _RUNTIME_CONFIG_USER_KEYS: frozenset[str] = frozenset(
         "email_lookback_days",
         "scanned_email_label",
         "move_successfully_processed_emails",
-        "candidate_profile_path",
         "candidate_timezone",
         "ai_provider",
         "anthropic_model",
@@ -133,7 +141,6 @@ def _read_runtime_config_user_settings(user_id: int, repos: dict) -> dict[str, o
             repos,
             config.DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
         ),
-        "candidate_profile_path": get_setting("candidate_profile_path", user_id, repos),
         "candidate_timezone": get_setting("candidate_timezone", user_id, repos),
         "ai_provider": get_setting("ai_provider", user_id, repos),
         "anthropic_model": get_setting("anthropic_model", user_id, repos),
@@ -216,27 +223,6 @@ def update_config() -> ResponseReturnValue:
                 ),
                 400,
             )
-
-    if "candidate_profile_path" in data:
-        candidate_profile_path = str(data.get("candidate_profile_path") or "").strip()
-        if not candidate_profile_path:
-            return jsonify({"error": "candidate_profile_path cannot be empty"}), 400
-        candidate_profile_file = Path(candidate_profile_path)
-        if not candidate_profile_file.exists() or not candidate_profile_file.is_file():
-            return (
-                jsonify(
-                    {"error": "candidate_profile_path must point to an existing file"}
-                ),
-                400,
-            )
-        try:
-            candidate_profile_file.read_text(encoding="utf-8")
-        except OSError as exc:
-            return (
-                jsonify({"error": f"Could not read candidate profile file: {exc}"}),
-                400,
-            )
-        updates["candidate_profile_path"] = str(candidate_profile_file)
 
     if "ai_provider" in data:
         ai_provider = str(data.get("ai_provider") or "").strip().lower()
@@ -337,16 +323,7 @@ def update_config() -> ResponseReturnValue:
     user_id = current_user_id()
     generic_keys = USER_SETTING_KEYS - _RUNTIME_CONFIG_USER_KEYS
 
-    profile_changed = False
-    rescore_summary = {"rescored": 0, "failed": 0}
-
     with get_repos() as repos:
-        if "candidate_profile_path" in updates:
-            previous_profile_path = get_setting(
-                "candidate_profile_path", user_id, repos
-            )
-            profile_changed = updates["candidate_profile_path"] != previous_profile_path
-
         for key, value in updates.items():
             set_setting(key, value, user_id, repos)
 
@@ -377,21 +354,11 @@ def update_config() -> ResponseReturnValue:
         # depend on writes actually persisting.
         repos["conn"].commit()
 
-        if profile_changed:
-            rescore_summary = rescore_active_queue_jobs(user_id, repos)
-            repos["conn"].commit()
-
         cfg = _read_runtime_config_user_settings(user_id, repos)
         cfg["default_snooze_days"] = config.DEFAULT_SNOOZE_DAYS
         _read_user_settings_into(cfg, user_id, repos)
 
-    return jsonify(
-        {
-            **cfg,
-            "profile_changed": profile_changed,
-            "rescore_summary": rescore_summary,
-        }
-    )
+    return jsonify(cfg)
 
 
 def _parse_bool_setting(value: object) -> bool:
@@ -685,6 +652,54 @@ def delete_email_subject_rule(rule_id: int) -> ResponseReturnValue:
     return jsonify({"status": "ok"})
 
 
+# ─── Candidate profile routes ─────────────────────────────────────────────────
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+@settings_bp.route("/candidate-profile")
+def get_candidate_profile_text() -> ResponseReturnValue:
+    with get_repos() as repos:
+        row = repos["candidate_profiles"].get(current_user_id())
+    content = str((row or {}).get("content") or "")
+    return jsonify(
+        {
+            "content": content,
+            "char_count": len(content),
+            "updated_at": (row or {}).get("updated_at"),
+        }
+    )
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+@settings_bp.route("/candidate-profile", methods=["PUT"])
+def save_candidate_profile_text() -> ResponseReturnValue:
+    try:
+        update = CandidateProfileUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        # Field paths only -- exc.errors() also echoes the rejected input values.
+        fields = sorted({".".join(str(part) for part in err["loc"]) for err in exc.errors()})
+        return jsonify({"error": "Invalid request", "fields": fields}), 400
+
+    user_id = current_user_id()
+    rescore_summary = {"rescored": 0, "failed": 0}
+    with get_repos() as repos:
+        profile_changed = save_candidate_profile(repos, user_id, update.content)
+        # Committed before rescoring: the scorer reads the profile through its
+        # own connection, so it must see the new text.
+        repos["conn"].commit()
+        if profile_changed:
+            rescore_summary = rescore_active_queue_jobs(user_id, repos)
+            repos["conn"].commit()
+
+    return jsonify(
+        {
+            "char_count": len(update.content),
+            "profile_changed": profile_changed,
+            "rescore_summary": rescore_summary,
+        }
+    )
+
+
 # ─── Resume routes ────────────────────────────────────────────────────────────
 
 
@@ -697,29 +712,20 @@ def upload_resume() -> ResponseReturnValue:
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         return jsonify({"error": "Only PDF files are accepted"}), 400
 
-    config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    save_path = config.UPLOADS_DIR / "resume.pdf"
-    file.save(str(save_path))
-
+    # Read at most one byte past the limit so an oversized upload is rejected
+    # without buffering the whole thing. Extraction happens before any DB
+    # connection is opened, so a slow PDF never holds one.
+    pdf_bytes = file.stream.read(MAX_RESUME_BYTES + 1)
     try:
-        with fitz.open(str(save_path)) as doc:
-            text = "\n".join(page.get_text() for page in doc)
-    except Exception as exc:
-        logger.error("PDF extraction failed: %s", exc)
-        return jsonify({"error": f"PDF text extraction failed: {exc}"}), 500
+        validate_pdf_upload(pdf_bytes)
+        text = extract_pdf_text(pdf_bytes)
+    except InvalidResumeFileError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     with get_repos() as repos:
-        user_id = current_user_id()
-        repos["resume"].delete_all(user_id)
-        repos["resume"].insert(
-            user_id,
-            {
-                "filename": file.filename,
-                "content": text,
-                "uploaded_at": datetime.now(UTC).isoformat(),
-            },
+        resume = ResumeFileService(repos["resume"]).replace(
+            current_user_id(), file.filename, pdf_bytes, text
         )
-        resume = repos["resume"].get_latest(user_id)
         repos["conn"].commit()
 
     return (
@@ -729,6 +735,7 @@ def upload_resume() -> ResponseReturnValue:
                 "filename": resume["filename"],
                 "uploaded_at": resume["uploaded_at"],
                 "char_count": len(text),
+                "has_file": resume["has_file"],
             }
         ),
         201,
@@ -747,5 +754,6 @@ def get_resume() -> ResponseReturnValue:
             "filename": resume["filename"],
             "uploaded_at": resume["uploaded_at"],
             "char_count": len(resume.get("content", "")),
+            "has_file": resume["has_file"],
         }
     )

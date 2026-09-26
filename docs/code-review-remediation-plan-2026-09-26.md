@@ -142,9 +142,7 @@ legacy auth forms rejected, body-not-read-before-auth, WebSocket ticket auth
 and per-user push over a real socket, cross-tenant closed-req capture.
 
 Known remaining gaps (not part of item 1):
-- Resume PDF is still a single shared file (`uploads/resume.pdf`): the
-  listener now serves the authenticated user's DB row but whichever file was
-  written last. This is item 2 and is the next thing to do.
+- (Resolved by item 2, below: the resume PDF is now stored per user.)
 - No per-token or per-IP throttling of failed listener authentication yet
   (item 5); tokens are 256-bit so guessing is infeasible, but each bad request
   costs a DB lookup.
@@ -168,3 +166,79 @@ Known remaining gaps (not part of item 1):
     bump `manifest.json` version.
 1f. Schedulers / Celery tasks / closed-req capture carry explicit `user_id`;
     remove `first_account_user_id()` entirely.
+
+## Item 2 progress (2026-09-26)
+
+Status: **implemented, not yet committed.** Full backend suite green apart from
+the failures fixed along the way; ruff clean; frontend build and ESLint clean
+apart from the three pre-existing Fast Refresh warnings.
+
+Every file that held per-user data on the server's disk now lives in the
+database, scoped to its owner, with secrets encrypted at rest (the existing
+Fernet helper, `SETTINGS_ENCRYPTION_KEY`).
+
+- **2a Resume PDF.** Stored encrypted in the user's own `resume` row
+  (`backend/resume/resume_file_service.py`); validated (PDF magic bytes, 5 MB
+  cap, filename reduced to a basename) and text-extracted from memory. Replaces
+  `uploads/resume.pdf`. `resume.get_latest` no longer loads the encrypted blob
+  and reports `has_file`; the Resume settings panel tells a user whose original
+  PDF was never stored to re-upload it.
+- **2b Google.** Each user's OAuth token is an encrypted row
+  (`google_oauth_tokens`, `GoogleTokenStore`); `GmailClient` now takes a
+  `user_id` and all nine call sites pass the acting user. Disconnect and
+  refresh affect only that user (previously one user disconnecting removed
+  everyone's token, and every account's scans read the same mailbox). The
+  OAuth *client* config is now an admin-only, encrypted system setting managed
+  through the setup wizard (`google_oauth_client_config`, a new `hidden` flag
+  keeps it out of the generic settings UI/API). The authorization callback is
+  bound to the user who started the flow and rejects a different logged-in
+  account.
+- **2c Candidate profile.** Now a per-user row (`candidate_profiles`) read
+  through `get_candidate_profile(user_id, repos)`; the file-path setting, the
+  wizard's "detect a file in the project folder" flow, and the server-side
+  native file dialog (`/api/system/select-file`) are gone. New
+  `GET/PUT /api/candidate-profile` (validated, 100 000 character cap;
+  rescores the queue only when the text changed), a text editor in Settings and
+  the wizard with client-side "Import from a file", and learned cover-letter
+  rules are appended to the user's row under a row lock. A missing profile is a
+  409 with a clear message instead of a 500. Previously any account without its
+  own path read one shared file.
+- **2d Greenhouse login session.** Now an encrypted per-user row
+  (`greenhouse_sessions`, `GreenhouseSessionStore`) instead of
+  `credentials/greenhouse_session.json`; the searcher takes a store instead of
+  a path and `clear-session` only clears the caller's.
+
+One-time startup migrations (idempotent, never delete: files are renamed to
+`*.migrated` or only read) move an existing install's data across: the resume
+PDF goes to the account with the newest resume row; `token.json`,
+`google_credentials.json`, and `greenhouse_session.json` go to the first
+account / system settings; each account's `candidate_profile_path` file (and,
+for the first account only, the implicit shared default) is copied into its
+row. If `SETTINGS_ENCRYPTION_KEY` is missing they are deferred with a warning.
+The test suite is isolated from the developer's real files (autouse fixture in
+`tests/conftest.py`).
+
+Also fixed while here: unauthenticated listener POSTs now drain a bounded
+amount of the request body after the 401 so Windows doesn't reset the
+connection before the client reads the response; the `FitScorer` unit tests no
+longer open a database connection.
+
+Found, not fixed (candidates for the next items):
+- `POST /api/system/select-folder` opens a native folder dialog on the *server*
+  (tkinter) and the cover-letter save path is a server-side folder. Both are
+  desktop-only and, in a cloud deployment, a server-side file write chosen by
+  the caller: replace with an in-app download/export.
+- Greenhouse "Login with browser" opens a visible browser on the server;
+  inherently desktop-only, needs redesign (extension-based capture) before a
+  hosted deployment.
+- The Wellfound session file (`credentials/wellfound_session.json`) is shared
+  on purpose: it only carries an anti-bot clearance cookie for public pages
+  (no login), so it is not per-user data. It is still an on-disk cache that
+  won't be shared across instances.
+- Extracted resume text, the candidate profile, and the application profile /
+  answer bank are stored in plaintext columns (the resume *PDF*, tokens and
+  sessions are encrypted). Decide on a consistent at-rest policy (column
+  encryption vs. database/volume encryption) as part of the data-lifecycle work.
+- The OAuth `_pending_auths` state and the WebSocket ticket store are
+  in-process memory; a multi-instance deployment needs Redis behind the same
+  interfaces.

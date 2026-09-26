@@ -72,6 +72,8 @@ GetAnswers = Callable[[int], list[dict[str, Any]]]
 LearnAnswer = Callable[[int, str, str, str | None], dict[str, Any]]
 
 _BEARER_PREFIX = "bearer "
+_MAX_DISCARD_BYTES = 1024 * 1024
+_DISCARD_TIMEOUT_SECONDS = 1.0
 
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -366,6 +368,7 @@ class JobImportListener:
                 # can't make the server buffer up to max_bytes per request.
                 user_id = self._authenticated_user_id()
                 if user_id is None:
+                    self._discard_request_body()
                     return
 
                 if path == "/ws-ticket":
@@ -443,6 +446,28 @@ class JobImportListener:
 
                 payload, status_code = submit_capture(user_id, parsed_request.body)
                 self._send_json(payload, status_code)
+
+            def _discard_request_body(self) -> None:
+                """Drain at most _MAX_DISCARD_BYTES of an already-rejected request's
+                body (never stored) so closing the connection can't reset it before
+                the client has read our response. The response has already been
+                sent; the short timeout keeps a client that announced a body but
+                never sends it from holding this thread."""
+                try:
+                    remaining = min(
+                        int(self.headers.get("Content-Length") or "0"), _MAX_DISCARD_BYTES
+                    )
+                except ValueError:
+                    return
+                try:
+                    self.connection.settimeout(_DISCARD_TIMEOUT_SECONDS)
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                except OSError:
+                    pass  # timed out or the client went away; nothing left to protect
 
             def _read_body(self) -> bytes | None:
                 """Reads the request body honoring Content-Length/max_bytes; sends

@@ -62,6 +62,7 @@ from .interfaces import (
     IApplicationStageRepository,
     IApplicationStageStatusRepository,
     IBrowserCaptureQueueRepository,
+    ICandidateProfileRepository,
     ICareerRejectionRuleRepository,
     ICareerScanFailureRepository,
     ICareerScanResultRepository,
@@ -72,6 +73,8 @@ from .interfaces import (
     IEmailSourceRepository,
     IEmailSubjectRuleRepository,
     IExtensionTokenRepository,
+    IGoogleTokenRepository,
+    IGreenhouseSessionRepository,
     IImportRepairHistoryRepository,
     IJdHealthCheckResultRepository,
     IJdHealthCheckTargetRepository,
@@ -96,6 +99,7 @@ from .repositories.browser_capture_queue import (
     BROWSER_QUEUE_MAX_RETRIES,
     PostgresBrowserCaptureQueueRepository,
 )
+from .repositories.candidate_profiles import PostgresCandidateProfileRepository
 from .repositories.career_rejection_rules import PostgresCareerRejectionRuleRepository
 from .repositories.career_scan_failures import PostgresCareerScanFailureRepository
 from .repositories.career_scan_results import PostgresCareerScanResultRepository
@@ -106,6 +110,8 @@ from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseReposito
 from .repositories.email_sources import PostgresEmailSourceRepository
 from .repositories.email_subject_rules import PostgresEmailSubjectRuleRepository
 from .repositories.extension_tokens import PostgresExtensionTokenRepository
+from .repositories.google_tokens import PostgresGoogleTokenRepository
+from .repositories.greenhouse_sessions import PostgresGreenhouseSessionRepository
 from .repositories.import_repair_history import PostgresImportRepairHistoryRepository
 from .repositories.jd_health_check_results import PostgresJdHealthCheckResultRepository
 from .repositories.jd_health_check_targets import PostgresJdHealthCheckTargetRepository
@@ -127,6 +133,7 @@ __all__ = [
     "IApplicationProfileRepository",
     "IApplicationStageRepository",
     "IApplicationStageStatusRepository",
+    "ICandidateProfileRepository",
     "IBrowserCaptureQueueRepository",
     "ICareerRejectionRuleRepository",
     "ICareerScanFailureRepository",
@@ -135,6 +142,8 @@ __all__ = [
     "IContactEmailRepository",
     "IContactRepository",
     "IExtensionTokenRepository",
+    "IGoogleTokenRepository",
+    "IGreenhouseSessionRepository",
     "ICoverLetterPhraseRepository",
     "IEmailSourceRepository",
     "IEmailSubjectRuleRepository",
@@ -156,6 +165,7 @@ __all__ = [
     "PostgresApplicationStageRepository",
     "PostgresApplicationStageStatusRepository",
     "PostgresBrowserCaptureQueueRepository",
+    "PostgresCandidateProfileRepository",
     "PostgresCareerRejectionRuleRepository",
     "PostgresCareerScanFailureRepository",
     "PostgresCareerScanResultRepository",
@@ -163,6 +173,8 @@ __all__ = [
     "PostgresContactEmailRepository",
     "PostgresContactRepository",
     "PostgresExtensionTokenRepository",
+    "PostgresGoogleTokenRepository",
+    "PostgresGreenhouseSessionRepository",
     "PostgresCoverLetterPhraseRepository",
     "PostgresEmailSourceRepository",
     "PostgresEmailSubjectRuleRepository",
@@ -331,6 +343,9 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "contacts": PostgresContactRepository(conn),
         "contact_emails": PostgresContactEmailRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),
+        "google_tokens": PostgresGoogleTokenRepository(conn),
+        "greenhouse_sessions": PostgresGreenhouseSessionRepository(conn),
+        "candidate_profiles": PostgresCandidateProfileRepository(conn),
         "cover_letter_phrases": PostgresCoverLetterPhraseRepository(conn),
         "jd_health_targets": PostgresJdHealthCheckTargetRepository(conn),
         "jd_health_results": PostgresJdHealthCheckResultRepository(conn),

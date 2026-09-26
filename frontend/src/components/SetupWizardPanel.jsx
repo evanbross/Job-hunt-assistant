@@ -100,15 +100,9 @@ export default function SetupWizardPanel({ onSetupComplete }) {
   const [profileContent, setProfileContent] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileSaveResult, setProfileSaveResult] = useState(null);
-  // ai: claude-sonnet-5 | 2026-09-01 — auto-detected candidate profile file
-  // (see fetchStatus below) and the local-files summary for StepFinish.
-  const [detectedProfileFilename, setDetectedProfileFilename] = useState(null);
+  // ai: claude-sonnet-5 | 2026-09-01 — local-files summary for StepFinish
+  // (the prompt-template files; the candidate profile lives in the account).
   const [localFiles, setLocalFiles] = useState(null);
-  const detectPersistInFlight = useRef(false);
-  // ai: claude-sonnet-5 | 2026-09-09 — explicit confirmation that Browse
-  // actually picked up and saved a file, distinct from profileSaveResult
-  // (which only fires from typing + clicking Save Profile).
-  const [profileBrowseResult, setProfileBrowseResult] = useState(null);
 
   useEffect(() => {
     // fetchStatus is redefined every render; run once on mount only.
@@ -133,26 +127,13 @@ export default function SetupWizardPanel({ onSetupComplete }) {
       setServerStatus(data);
       applyServerStatus(data);
 
-      // ai: claude-sonnet-5 | 2026-09-01 — a detected_path means the backend
-      // found a candidate profile file under an alternate name (e.g.
-      // client_profile.md) in the project folder but hasn't persisted it as
-      // the candidate_profile_path setting yet (setup/status is a GET, so it
-      // never writes). Adopt it automatically through the same validated
-      // PUT /api/config path the Settings page already uses, so every other
-      // reader of that setting (fit scorer, cover letter generator, etc.)
-      // picks it up too — no retyping, no manual confirmation click.
-      const detectedPath = data?.steps?.candidate_profile?.detected_path;
-      if (detectedPath && !detectPersistInFlight.current) {
-        detectPersistInFlight.current = true;
-        try {
-          const cfgRes = await fetch("/api/config", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ candidate_profile_path: detectedPath }),
-          });
-          if (cfgRes.ok) await fetchStatus();
-        } finally {
-          detectPersistInFlight.current = false;
+      // ai: claude-sonnet-5 | 2026-09-26 — show the saved profile so it can be
+      // reviewed and edited here, instead of an empty box that hides it.
+      if (data?.steps?.candidate_profile?.done) {
+        const profileRes = await fetch("/api/candidate-profile");
+        if (profileRes.ok) {
+          const saved = await profileRes.json();
+          setProfileContent((current) => current || saved.content);
         }
       }
     } catch {
@@ -171,8 +152,6 @@ export default function SetupWizardPanel({ onSetupComplete }) {
 
     // ai: claude-sonnet-5 | 2026-09-01
     setLocalFiles(data?.local_files || null);
-    const detectedPath = steps.candidate_profile?.detected_path;
-    setDetectedProfileFilename(detectedPath ? detectedPath.split(/[\\/]/).pop() : null);
 
     if (steps.ai_provider?.provider) setAiProvider(steps.ai_provider.provider);
 
@@ -368,53 +347,20 @@ export default function SetupWizardPanel({ onSetupComplete }) {
     }
   };
 
-  // ai: claude-sonnet-5 | 2026-09-09
-  // Same native file-picker endpoint ProfileSettingsSection uses in the
-  // Settings tab (routes/system.py's /api/system/select-file). Persists the
-  // choice the same way the auto-detected-file adoption above does --
-  // PUT /api/config, then re-fetch status so the banner/char-count and the
-  // "found on disk" messaging reflect the newly chosen file immediately.
-  const handleBrowseProfile = async () => {
-    setProfileBrowseResult(null);
-    try {
-      const pickRes = await fetch("/api/system/select-file", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          initial_path: serverStatus?.steps?.candidate_profile?.path || "",
-        }),
-      });
-      const pickData = await pickRes.json();
-      if (!pickRes.ok) {
-        window.alert(pickData.error || "Failed to open file picker");
-        return;
-      }
-      if (!pickData.selected_path) return;
-
-      const cfgRes = await fetch("/api/config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ candidate_profile_path: pickData.selected_path }),
-      });
-      if (!cfgRes.ok) {
-        const err = await cfgRes.json().catch(() => ({}));
-        window.alert(err.error || "Failed to save the selected file");
-        return;
-      }
-      await fetchStatus();
-      // ai: claude-sonnet-5 | 2026-09-09 — explicit success acknowledgment,
-      // separate from the "found on disk" banner above the textarea (that
-      // banner only appears once alreadyDone/detectedFilename recompute
-      // from the refreshed status, one render later) so the click has
-      // immediate, unambiguous feedback that the file actually loaded.
-      setProfileBrowseResult({
-        ok: true,
-        path: pickData.selected_path,
-        filename: pickData.selected_path.split(/[\\/]/).pop(),
-      });
-    } catch (e) {
-      window.alert("Request failed: " + e.message);
+  // ai: claude-sonnet-5 | 2026-09-26
+  // Reads the chosen file in the browser and puts its text in the editor; the
+  // user then saves it like any other edit. (Nothing is read from, or written
+  // to, the server's disk.)
+  const handleImportProfileFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 200_000) {
+      window.alert("That file is too large to be a candidate profile (200 KB maximum).");
+      return;
     }
+    setProfileContent(await file.text());
+    setProfileSaveResult(null);
   };
 
   const handleFinish = () => {
@@ -462,6 +408,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
               onFileChange={handleCredFileChange}
               fileInputRef={fileInputRef}
               alreadyDone={stepDone.creds}
+              canConfigure={serverStatus?.steps?.google_credentials?.can_configure ?? true}
             />
           )}
           {currentStep === STEP_AUTH && (
@@ -481,10 +428,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
               onSave={handleSaveProfile}
               alreadyDone={stepDone.profile}
               serverCharCount={serverStatus?.steps?.candidate_profile?.char_count}
-              detectedFilename={detectedProfileFilename}
-              profilePath={serverStatus?.steps?.candidate_profile?.path}
-              onBrowse={handleBrowseProfile}
-              browseResult={profileBrowseResult}
+              onImportFile={handleImportProfileFile}
             />
           )}
           {currentStep === STEP_FINISH && (
@@ -751,8 +695,24 @@ function StepAI({
 
 function StepCredentials({
   fileName, parseError, fileReady, uploadResult,
-  onFileChange, fileInputRef, alreadyDone,
+  onFileChange, fileInputRef, alreadyDone, canConfigure,
 }) {
+  // ai: claude-sonnet-5 | 2026-09-26 -- one Google OAuth client serves the whole
+  // installation, so only an administrator may upload it (see routes/setup.py).
+  if (!canConfigure) {
+    return (
+      <div>
+        <h3 style={styles.stepTitle}>Google Cloud Setup</h3>
+        <p style={styles.stepDesc}>
+          Google sign-in is set up once for the whole installation by an administrator.{" "}
+          {alreadyDone
+            ? "It is already configured, so you can continue and connect your own Google account."
+            : "It has not been configured yet. You can skip this step and connect Google later, once your administrator has set it up."}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div>
       <h3 style={styles.stepTitle}>Google Cloud Setup</h3>
@@ -820,7 +780,7 @@ function StepAuth({ done, polling, onConnect, credsMissing }) {
 
       {credsMissing && (
         <div style={styles.warningBanner}>
-          You skipped the Google credentials step. You'll need to complete that step and restart the app before connecting.
+          Google sign-in isn't configured for this installation yet. An administrator needs to upload the Google credentials before you can connect.
         </div>
       )}
 
@@ -856,8 +816,9 @@ function StepAuth({ done, polling, onConnect, credsMissing }) {
 
 // ─── Step 3: Candidate Profile ────────────────────────────────────────────────
 
-// ai: claude-sonnet-5 | 2026-09-01 — detectedFilename prop added
-// ai: claude-sonnet-5 | 2026-09-09
+// ai: claude-sonnet-5 | 2026-09-26 -- the profile is saved in the account and
+// edited here; a file can be imported into the editor but is never read from
+// the server's disk.
 function StepProfile({
   content,
   onContentChange,
@@ -866,28 +827,10 @@ function StepProfile({
   onSave,
   alreadyDone,
   serverCharCount,
-  detectedFilename,
-  profilePath,
-  onBrowse,
-  browseResult,
+  onImportFile,
 }) {
   const charCount = content.length;
   const tooShort = charCount > 0 && charCount < 200;
-  // ai: claude-sonnet-5 | 2026-09-09
-  // When a real file was already found (detected, browsed to, or already
-  // configured), `content` is deliberately left "" rather than pre-filled
-  // with PROFILE_TEMPLATE (see the STEP_PROFILE render call above) so
-  // clicking Save can't blindly overwrite a real file with boilerplate.
-  // But an empty textarea with PROFILE_TEMPLATE as its placeholder renders
-  // that entire template in the box, in the same near-full-opacity color as
-  // real typed text (input::placeholder in index.css only dims it to 0.7)
-  // -- indistinguishable at a glance from genuine unsaved content sitting
-  // there ready to be saved over the real file. Swap in a short, explicit
-  // placeholder in that state instead of the multi-paragraph template.
-  const showingExistingFile = alreadyDone && !content;
-  const textareaPlaceholder = showingExistingFile
-    ? "Your existing file already has content — leave this blank and click Next to keep it. Type here only if you want to replace it."
-    : PROFILE_TEMPLATE;
 
   return (
     <div>
@@ -896,49 +839,33 @@ function StepProfile({
         Describe your skills, experience, and job preferences. The AI uses this to score how well each job matches you. The more detail you provide, the better the scoring.
       </p>
 
-      {detectedFilename && (
+      {alreadyDone && serverCharCount > 0 && (
         <div style={styles.alreadyDoneBanner}>
-          Found <code>{detectedFilename}</code> in your project folder and set it as your candidate profile — nothing to type here.
-          {profilePath && (
-            <div style={styles.profilePathLine}>Location: <code>{profilePath}</code></div>
-          )}
-        </div>
-      )}
-
-      {!detectedFilename && !browseResult?.ok && alreadyDone && serverCharCount > 0 && !content && (
-        <div style={styles.alreadyDoneBanner}>
-          Found a profile with {serverCharCount.toLocaleString()} characters already saved on disk. Edit it below or click Next to keep it.
-          {profilePath && (
-            <div style={styles.profilePathLine}>Location: <code>{profilePath}</code></div>
-          )}
+          A profile with {serverCharCount.toLocaleString()} characters is already saved. Edit it below or click Next to keep it.
         </div>
       )}
 
       <div style={styles.profileBrowseRow}>
         <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>
-          Already have a profile file saved somewhere else?
+          Already have a profile in a file?
         </span>
-        <button type="button" className="btn-secondary" onClick={onBrowse}>
-          Browse…
-        </button>
+        <input
+          type="file"
+          accept=".md,.markdown,.txt,text/markdown,text/plain"
+          onChange={onImportFile}
+          style={{ display: "none" }}
+          id="wizard-profile-file"
+        />
+        <label htmlFor="wizard-profile-file" className="btn-secondary" style={{ cursor: "pointer" }}>
+          Import from a file…
+        </label>
       </div>
 
-      {/* ai: claude-sonnet-5 | 2026-09-09 — immediate confirmation that the
-          browsed file actually loaded and was saved, independent of the
-          "found on disk" banners above (those only reflect once the
-          refreshed status re-renders, which can lag a beat behind the click). */}
-      {browseResult?.ok && (
-        <div style={styles.alreadyDoneBanner}>
-          ✓ Loaded <code>{browseResult.filename}</code> and set it as your candidate profile.
-          <div style={styles.profilePathLine}>Location: <code>{browseResult.path}</code></div>
-        </div>
-      )}
-
       <textarea
-        style={showingExistingFile ? styles.profileTextareaEmpty : styles.profileTextarea}
+        style={styles.profileTextarea}
         value={content}
         onChange={(e) => { onContentChange(e.target.value); }}
-        placeholder={textareaPlaceholder}
+        placeholder={PROFILE_TEMPLATE}
         rows={18}
         spellCheck={false}
       />
@@ -976,7 +903,6 @@ function StepFinish({ stepDone, serverStatus, localFiles }) {
   // ai: claude-sonnet-5 | 2026-09-01 — localFiles prop + fileItems for the
   // new "Local Files" summary below
   const fileItems = [
-    { key: "candidate_profile", label: "Candidate profile" },
     { key: "cover_letter_prompt", label: "Cover letter prompt" },
     { key: "fit_scorer_prompt", label: "Fit scorer prompt" },
   ];
@@ -1031,21 +957,12 @@ function StepFinish({ stepDone, serverStatus, localFiles }) {
           {fileItems.map(({ key, label }) => {
             const info = localFiles[key];
             const found = !!info?.found;
-            // ai: claude-sonnet-5 | 2026-09-09
-            // Only candidate_profile has a configurable path (candidate_profile_path)
-            // that can point anywhere on disk -- cover_letter_prompt/fit_scorer_prompt
-            // always live in the project folder with no override, so "found in
-            // project folder" stays accurate for those two.
-            const locationText =
-              key === "candidate_profile" && serverStatus?.steps?.candidate_profile?.path
-                ? `found at ${serverStatus.steps.candidate_profile.path}`
-                : "found in project folder";
             return (
               <div key={key} style={{ ...styles.infraRow, marginTop: "4px" }}>
                 <span style={styles.infraDot(found ? "green" : "gray")} />
                 <span style={{ fontSize: "13px" }}>
                   {label} — <code>{info?.filename}</code>{" "}
-                  {found ? locationText : "not found (a default will be created on first use)"}
+                  {found ? "found in project folder" : "not found (a default will be created on first use)"}
                 </span>
               </div>
             );
@@ -1265,35 +1182,11 @@ const styles = {
     lineHeight: 1.6,
     boxSizing: "border-box",
   },
-  // ai: claude-sonnet-5 | 2026-09-09 — visually distinct from profileTextarea
-  // (dashed border, no monospace) so a genuinely empty box showing the
-  // short "already saved" placeholder can't be mistaken for one holding
-  // real template text ready to be saved.
-  profileTextareaEmpty: {
-    width: "100%",
-    padding: "12px",
-    border: "1px dashed var(--border)",
-    borderRadius: "var(--radius)",
-    fontSize: "13px",
-    fontStyle: "italic",
-    color: "var(--text)",
-    background: "var(--surface)",
-    resize: "vertical",
-    lineHeight: 1.6,
-    boxSizing: "border-box",
-  },
   profileFooter: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
     marginTop: "10px",
-  },
-  // ai: claude-sonnet-5 | 2026-09-09
-  profilePathLine: {
-    marginTop: "4px",
-    fontSize: "12px",
-    color: "var(--text-muted)",
-    wordBreak: "break-all",
   },
   profileBrowseRow: {
     display: "flex",

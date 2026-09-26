@@ -81,8 +81,20 @@ def decrypt_secret(token: str) -> str:
     """Decrypt a stored secret value. Raises ValueError if the token is invalid
     or was encrypted under a different key (fail loud rather than returning
     garbage that looks like a valid credential)."""
+    return decrypt_bytes(token).decode("utf-8")
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def encrypt_bytes(data: bytes) -> str:
+    """Encrypt arbitrary bytes (e.g. an uploaded document) for storage as TEXT."""
+    return _get_fernet().encrypt(data).decode("utf-8")
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def decrypt_bytes(token: str) -> bytes:
+    """Inverse of encrypt_bytes; same fail-loud contract as decrypt_secret."""
     try:
-        return _get_fernet().decrypt(token.encode("utf-8")).decode("utf-8")
+        return _get_fernet().decrypt(token.encode("utf-8"))
     except InvalidToken as exc:
         raise ValueError(
             "Could not decrypt stored secret — SETTINGS_ENCRYPTION_KEY may have "

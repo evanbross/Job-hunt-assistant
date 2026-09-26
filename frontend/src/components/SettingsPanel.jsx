@@ -2278,89 +2278,126 @@ function ConfigSection() {
 // ── Career Profile Settings ──────────────────────────────────────────────────
 
 // ai: claude-sonnet-5 | 2026-08-30 — split out of ConfigSection: the
-// candidate profile file and timezone are personal to the account, not
-// instance config, so they get their own tab under Career Profile instead
-// of sitting next to AI-provider/job-board settings under General.
+// candidate profile and timezone are personal to the account, not instance
+// config, so they get their own tab under Career Profile instead of sitting
+// next to AI-provider/job-board settings under General.
+// ai: claude-sonnet-5 | 2026-09-26 — the profile is text stored in the
+// account (GET/PUT /api/candidate-profile), edited here directly, instead of a
+// path to a file on the server's disk.
+const MAX_PROFILE_IMPORT_BYTES = 200_000;
+
 function ProfileSettingsSection() {
-  const [cfg, setCfg] = useState(null);
+  const [timezone, setTimezone] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [savedProfile, setSavedProfile] = useState("");
   const [saved, setSaved] = useState(false);
   const [saveSummary, setSaveSummary] = useState(null);
   const [saving, setSaving] = useState(false);
+  const fileRef = useRef(null);
 
   useEffect(() => {
-    fetch("/api/config")
+    apiFetch("/api/config")
       .then((r) => r.json())
-      .then((d) => setCfg(d));
+      .then((d) => setTimezone(d.candidate_timezone || ""));
+    apiFetch("/api/candidate-profile")
+      .then((r) => r.json())
+      .then((d) => {
+        setProfile(d.content);
+        setSavedProfile(d.content);
+      });
   }, []);
 
-  const browseCandidateProfile = async () => {
-    const res = await fetch("/api/system/select-file", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initial_path: cfg?.candidate_profile_path || "" }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      window.alert(data.error || "Failed to open file picker");
+  const importFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (fileRef.current) fileRef.current.value = "";
+    if (!file) return;
+    if (file.size > MAX_PROFILE_IMPORT_BYTES) {
+      window.alert("That file is too large to be a candidate profile (200 KB maximum).");
       return;
     }
-    if (data.selected_path) {
-      setCfg((prev) => ({ ...prev, candidate_profile_path: data.selected_path }));
-    }
+    setProfile(await file.text());
   };
 
   const save = async () => {
-    setSaving(true);
-    const res = await fetch("/api/config", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        candidate_profile_path: cfg.candidate_profile_path,
-        candidate_timezone: cfg.candidate_timezone,
-      }),
-    });
-    const data = await res.json();
-    setSaving(false);
-    if (!res.ok) {
-      window.alert(data.error || "Failed to save profile settings");
+    if (!profile.trim()) {
+      window.alert("The candidate profile can't be empty.");
       return;
     }
-    setCfg(data);
-    setSaveSummary(data);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setSaving(true);
+    try {
+      if (profile.trim() !== savedProfile.trim()) {
+        const profileRes = await apiFetch("/api/candidate-profile", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: profile }),
+        });
+        const profileData = await profileRes.json();
+        if (!profileRes.ok) {
+          window.alert(profileData.error || "Failed to save the candidate profile");
+          return;
+        }
+        setSavedProfile(profile);
+        setSaveSummary(profileData);
+      }
+      const cfgRes = await apiFetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidate_timezone: timezone }),
+      });
+      if (!cfgRes.ok) {
+        const cfgData = await cfgRes.json().catch(() => ({}));
+        window.alert(cfgData.error || "Failed to save your timezone");
+        return;
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } finally {
+      setSaving(false);
+    }
   };
 
-  if (!cfg) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+  if (profile === null || timezone === null) {
+    return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+  }
 
   return (
     <div>
       <SectionHeader title="Profile Settings" />
 
-      <div style={{ maxWidth: "640px" }}>
-        <label style={labelStyle}>
-          Candidate Profile File
-          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              value={cfg.candidate_profile_path || ""}
-              onChange={(e) => setCfg({ ...cfg, candidate_profile_path: e.target.value })}
-              style={{ flex: 1, minWidth: "280px", fontFamily: "monospace", fontSize: "12px" }}
-            />
-            <button className="btn-secondary" onClick={browseCandidateProfile} style={{ whiteSpace: "nowrap" }}>
-              Browse…
-            </button>
-          </div>
-          <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", display: "block" }}>
-            Choose the markdown or text file used as the candidate profile for scoring and cover-letter prompts.
-          </span>
+      <div style={{ maxWidth: "760px" }}>
+        <label style={labelStyle} htmlFor="candidate-profile-text">
+          Candidate Profile
         </label>
+        <textarea
+          id="candidate-profile-text"
+          value={profile}
+          onChange={(e) => setProfile(e.target.value)}
+          rows={22}
+          spellCheck={false}
+          placeholder="Describe your skills, experience, and what you're looking for. The AI uses this to score jobs and write cover letters."
+          style={{ width: "100%", fontFamily: "monospace", fontSize: "12px", resize: "vertical" }}
+        />
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "6px", flexWrap: "wrap" }}>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".md,.markdown,.txt,text/markdown,text/plain"
+            onChange={importFile}
+            style={{ display: "none" }}
+            id="candidate-profile-file"
+          />
+          <label htmlFor="candidate-profile-file" className="btn-secondary" style={{ cursor: "pointer" }}>
+            Import from a file…
+          </label>
+          <span style={helpTextStyle}>
+            {profile.length.toLocaleString()} characters. Used for fit scoring, cover letters, and
+            pitches. Cover-letter preferences the app learns are appended to it automatically.
+          </span>
+        </div>
 
         <label style={{ ...labelStyle, marginTop: "16px" }}>
           Your Timezone
-          <TimezoneSelect
-            value={cfg.candidate_timezone || ""}
-            onChange={(tz) => setCfg({ ...cfg, candidate_timezone: tz })}
-          />
+          <TimezoneSelect value={timezone} onChange={setTimezone} />
           <span style={helpTextStyle}>
             Used to flag remote jobs whose stated timezone window excludes your location.
           </span>

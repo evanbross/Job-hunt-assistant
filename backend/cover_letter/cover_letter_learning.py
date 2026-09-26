@@ -45,9 +45,10 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 
 from backend.ai_provider import AIMessage, AIProviderClient, AIProviderError
-from backend.utils.utils import get_repos, resolve_candidate_profile_path
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -139,30 +140,39 @@ class CoverLetterStyleLearner:
         return parsed if isinstance(parsed, list) else None
 
     # ai: claude-sonnet-5 | 2026-09-01
+    # ai: claude-sonnet-5 | 2026-09-26 -- the profile is a database row now; the
+    # row is locked for the read-modify-write so a concurrent edit isn't lost.
     def _append_rule(self, rule: str) -> bool:
         with get_repos() as repos:
-            path = resolve_candidate_profile_path(self._user_id, repos)
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            logger.warning("Could not read candidate profile at %s: %s", path, exc)
-            return False
-
-        if rule in text:
-            return False
-
-        if _LEARNED_SECTION_HEADER not in text:
-            text = text.rstrip() + f"\n\n{_LEARNED_SECTION_HEADER}\n"
-        lines = text.splitlines()
-        header_idx = lines.index(_LEARNED_SECTION_HEADER)
-        insert_idx = header_idx + 1
-        while insert_idx < len(lines) and lines[insert_idx].strip().startswith("-"):
-            insert_idx += 1
-        lines.insert(insert_idx, f"- {rule}")
-
-        try:
-            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        except OSError as exc:
-            logger.warning("Could not write candidate profile at %s: %s", path, exc)
-            return False
+            row = repos["candidate_profiles"].get_for_update(self._user_id)
+            if row is None:
+                logger.warning(
+                    "Cannot record a learned rule: user %s has no candidate profile",
+                    self._user_id,
+                )
+                return False
+            updated = insert_learned_rule(str(row["content"]), rule)
+            if updated is None:
+                return False
+            repos["candidate_profiles"].upsert(
+                self._user_id, updated, datetime.now(UTC).isoformat(timespec="seconds")
+            )
+            repos["conn"].commit()
         return True
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def insert_learned_rule(text: str, rule: str) -> str | None:
+    """Return *text* with *rule* added under the learned-preferences section
+    (creating the section if needed), or None if the rule is already present."""
+    if rule in text:
+        return None
+    if _LEARNED_SECTION_HEADER not in text:
+        text = text.rstrip() + f"\n\n{_LEARNED_SECTION_HEADER}\n"
+    lines = text.splitlines()
+    header_idx = lines.index(_LEARNED_SECTION_HEADER)
+    insert_idx = header_idx + 1
+    while insert_idx < len(lines) and lines[insert_idx].strip().startswith("-"):
+        insert_idx += 1
+    lines.insert(insert_idx, f"- {rule}")
+    return "\n".join(lines) + "\n"

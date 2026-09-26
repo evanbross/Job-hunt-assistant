@@ -86,7 +86,7 @@ def maybe_mark_source_email_read(
         return
 
     try:
-        GmailClient().mark_as_read(base_dedup_key)
+        GmailClient(user_id).mark_as_read(base_dedup_key)
     except NotAuthenticatedError:
         logger.warning(
             "Could not mark email %s as read: Gmail is not authenticated", base_dedup_key

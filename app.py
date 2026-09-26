@@ -78,13 +78,18 @@ from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
 from backend.extension_auth.token_service import ExtensionTokenService
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
 from backend.queue_websocket import QueueWebSocketServer, start_queue_websocket_server
+from backend.resume.resume_file_service import ResumeFileService
 from backend.scanning.import_listener import (
     JobImportListener,
     start_job_import_listener,
 )
 from backend.scanning.schedulers import start_jd_health_check_scheduler
 from backend.settings_service import get_setting
-from backend.utils.utils import get_repos, is_trusted_api_write_origin
+from backend.utils.utils import (
+    CandidateProfileMissingError,
+    get_repos,
+    is_trusted_api_write_origin,
+)
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
 try:
@@ -446,6 +451,13 @@ def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
     }
 
 
+# ai: claude-sonnet-5 | 2026-09-26
+@app.errorhandler(CandidateProfileMissingError)
+def _candidate_profile_missing(exc: CandidateProfileMissingError) -> tuple[flask.Response, int]:
+    """AI features need the caller's profile; say so plainly instead of a 500."""
+    return jsonify({"error": str(exc), "code": "candidate_profile_missing"}), 409
+
+
 # ─── Blueprint registration ───────────────────────────────────────────────────
 
 from routes.application_profile import application_profile_bp
@@ -554,23 +566,12 @@ def _get_application_profile_for_listener(user_id: int) -> dict | None:
 
 
 # ai: claude-sonnet-5 | 2026-08-13
-# KNOWN GAP (docs/code-review-remediation-plan-2026-09-26.md, item 2): the
-# resume PDF on disk (resume_path below) isn't per-user yet -- only the DB row
-# is -- so once a second account uploads a resume this serves that user's
-# metadata with whichever file was written last. Same gap as
-# routes/settings.py's upload_resume.
+# ai: claude-sonnet-5 | 2026-09-26 -- the PDF now lives, encrypted, in the
+# authenticated user's own resume row (backend/resume/resume_file_service.py),
+# not in a shared file, so this can only ever return that user's resume.
 def _get_resume_file_bytes(user_id: int) -> tuple[bytes, str] | None:
-    """Reads the resume PDF already saved to disk by routes.settings.upload_resume
-    — the DB row only holds extracted text, not the file bytes (see
-    backend/db/repositories/resumes.py)."""
     with get_repos() as repos:
-        resume = repos["resume"].get_latest(user_id)
-    if resume is None:
-        return None
-    resume_path = config.UPLOADS_DIR / "resume.pdf"
-    if not resume_path.is_file():
-        return None
-    return resume_path.read_bytes(), str(resume.get("filename") or "resume.pdf")
+        return ResumeFileService(repos["resume"]).load_file(user_id)
 
 
 # ai: claude-sonnet-5 | 2026-08-13
@@ -644,7 +645,6 @@ def _init_runtime_state() -> None:
     global _import_listener, _queue_ws_server
 
     config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
-    config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Retries with backoff; if the database is still unreachable the app starts
     # in degraded mode (so /api/system/health can report the outage to the

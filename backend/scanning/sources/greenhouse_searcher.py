@@ -56,12 +56,12 @@ import re
 import socket
 import time
 from collections.abc import Callable
-from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request
 
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
+from backend.scanning.sources.greenhouse_session_store import GreenhouseSessionStore
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
@@ -105,11 +105,11 @@ class GreenhouseSearcher:
     def __init__(
         self,
         email: str,
-        session_file: Path,
+        session_store: GreenhouseSessionStore,
         headless: bool = True,
     ) -> None:
         self._email = email
-        self._session_file = session_file
+        self._session = session_store
         self._headless = headless
 
     def scrape(
@@ -159,18 +159,16 @@ class GreenhouseSearcher:
         }
 
     def _load_context(self, browser: Browser) -> BrowserContext:
-        if self._session_file.exists():
-            try:
-                return browser.new_context(
-                    storage_state=str(self._session_file),
-                    **self._context_kwargs(),
-                )
-            except Exception as exc:
-                logger.warning("Could not load Greenhouse session file: %s", exc)
+        try:
+            state = self._session.load()
+            if state is not None:
+                return browser.new_context(storage_state=state, **self._context_kwargs())
+        except Exception as exc:
+            logger.warning("Could not load the saved Greenhouse session: %s", exc)
         return browser.new_context(**self._context_kwargs())
 
     def _is_authenticated(self, page: Page, search_url: str) -> bool:
-        if not self._session_file.exists():
+        if not self._session.exists():
             return False
         try:
             page.goto(search_url, wait_until="domcontentloaded", timeout=25_000)
@@ -179,9 +177,8 @@ class GreenhouseSearcher:
         return "my.greenhouse.io" in page.url
 
     def _persist_session(self, context: BrowserContext) -> None:
-        self._session_file.parent.mkdir(parents=True, exist_ok=True)
-        context.storage_state(path=str(self._session_file))
-        logger.info("Greenhouse session saved → %s", self._session_file)
+        self._session.save(context.storage_state())
+        logger.info("Greenhouse session saved for the current user")
 
     # ── search-results scraping ────────────────────────────────────────────────
 

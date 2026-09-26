@@ -48,13 +48,12 @@ import re
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
-import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.utils.utils import (
     ai_error_http_status,
     current_user_id,
+    get_candidate_profile,
     get_repos,
-    resolve_candidate_profile_path,
     safe_error_message,
 )
 
@@ -73,8 +72,7 @@ def generate_toptal_bio() -> ResponseReturnValue:
     # ai: claude-sonnet-5 | 2026-09-01
     user_id = current_user_id()
     with get_repos() as repos:
-        profile_path = resolve_candidate_profile_path(user_id, repos)
-    candidate_profile = config.load_candidate_profile(profile_path)
+        candidate_profile = get_candidate_profile(user_id, repos)
 
     system_prompt = (
         "You are writing a short bio for a software engineer applying to a job "
@@ -115,8 +113,7 @@ def toptal_bio_chat() -> ResponseReturnValue:
     # ai: claude-sonnet-5 | 2026-09-01
     user_id = current_user_id()
     with get_repos() as repos:
-        profile_path = resolve_candidate_profile_path(user_id, repos)
-    candidate_profile = config.load_candidate_profile(profile_path)
+        candidate_profile = get_candidate_profile(user_id, repos)
     job_description_block = (
         f"\nCLIENT JOB DESCRIPTION:\n{job_description}\n" if job_description else ""
     )

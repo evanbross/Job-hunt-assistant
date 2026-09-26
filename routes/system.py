@@ -113,39 +113,6 @@ def select_folder() -> ResponseReturnValue:
     return jsonify({"selected_path": selected})
 
 
-@system_bp.route("/api/system/select-file", methods=["POST"])
-def select_file() -> ResponseReturnValue:
-    if not _TKINTER_AVAILABLE:
-        return jsonify({"error": "tkinter is not available on this platform"}), 500
-
-    body = request.get_json(silent=True) or {}
-    initial_path = (body.get("initial_path") or "").strip()
-
-    try:
-        root = _tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        selected = _filedialog.askopenfilename(
-            initialdir=(
-                str(Path(initial_path).parent) if initial_path else str(Path.home())
-            ),
-            title="Select candidate profile file",
-            filetypes=[
-                ("Markdown and text files", "*.md *.markdown *.txt"),
-                ("All files", "*.*"),
-            ],
-        )
-        root.destroy()
-    except Exception:
-        logger.exception("Could not open file picker")
-        return jsonify({"error": "Could not open file picker"}), 500
-
-    if not selected:
-        return jsonify({"selected_path": None})
-
-    return jsonify({"selected_path": selected})
-
-
 @system_bp.route("/")
 @system_bp.route("/<path:path>")
 def serve_frontend(path: str = "") -> ResponseReturnValue:

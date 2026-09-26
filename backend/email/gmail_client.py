@@ -54,12 +54,13 @@ from typing import Any
 
 from google.auth.exceptions import RefreshError, TransportError
 from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from backend.email.email_source_filters import build_gmail_source_query
-from config import GMAIL_SCOPES, GOOGLE_TOKEN_FILE, READ_ONLY_MODE
+from backend.email.google_token_store import GoogleTokenStore
+from backend.utils.utils import get_repos
+from config import READ_ONLY_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -77,30 +78,34 @@ class GmailMessageState:
 class GmailClient:
     """Thin wrapper around the Gmail API for reading and marking emails."""
 
-    def __init__(self) -> None:
+    def __init__(self, user_id: int) -> None:
+        self._user_id = user_id
         self._service = self._build_service()
 
     def _build_service(self) -> Any:
-        if not GOOGLE_TOKEN_FILE.exists():
+        # Each step opens its own short connection so none is held open across
+        # the token-refresh network call below.
+        with get_repos() as repos:
+            creds = GoogleTokenStore(repos["google_tokens"]).load(self._user_id)
+        if creds is None:
             raise NotAuthenticatedError(
-                "Google token not found. Complete OAuth via /api/auth/google first."
+                "Google is not connected for this account. Complete OAuth via /api/auth/google first."
             )
-
-        creds = Credentials.from_authorized_user_file(
-            str(GOOGLE_TOKEN_FILE), GMAIL_SCOPES
-        )
 
         if not creds.valid:
             if creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
-                    # Persist the refreshed token
-                    GOOGLE_TOKEN_FILE.write_text(creds.to_json())
+                    with get_repos() as repos:
+                        GoogleTokenStore(repos["google_tokens"]).save(self._user_id, creds)
+                        repos["conn"].commit()
                 except RefreshError as exc:
                     # Covers invalid_scope (scopes changed since token was issued),
                     # revoked access, and other OAuth-level rejections.
                     # Delete the bad token so auth status correctly shows unauthenticated.
-                    GOOGLE_TOKEN_FILE.unlink(missing_ok=True)
+                    with get_repos() as repos:
+                        GoogleTokenStore(repos["google_tokens"]).delete(self._user_id)
+                        repos["conn"].commit()
                     raise NotAuthenticatedError(
                         f"Token rejected by Google ({exc}). "
                         "Re-authenticate via /api/auth/google."

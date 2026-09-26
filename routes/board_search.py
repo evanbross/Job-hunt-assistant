@@ -59,9 +59,9 @@ from backend.scoring.job_validator import (
 )
 from backend.utils.utils import (
     current_user_id,
+    get_candidate_profile,
     get_repos,
     is_celery_task_active,
-    resolve_candidate_profile_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ _FALLBACK_QUERIES: list[str] = [
 def _generate_board_search_queries(user_id: int) -> list[str]:
     """Ask Claude to generate tailored search queries from the candidate profile."""
     with get_repos() as repos:
-        profile_path = resolve_candidate_profile_path(user_id, repos)
+        candidate_profile = get_candidate_profile(user_id, repos)
 
     response_text = AIProviderClient(user_id).complete(
         max_tokens=200,
@@ -124,7 +124,7 @@ def _generate_board_search_queries(user_id: int) -> list[str]:
                     "no quotes, 3-6 words each) to find strong matches on Remotive and "
                     "similar remote-job boards for this candidate. Vary them across "
                     "different skills and specializations.\n\n"
-                    f"CANDIDATE PROFILE:\n{config.load_candidate_profile(profile_path)}"
+                    f"CANDIDATE PROFILE:\n{candidate_profile}"
                 ),
             )
         ],

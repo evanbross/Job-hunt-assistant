@@ -111,15 +111,14 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "") or (
 # existing install, to carry its already-configured values into the DB
 # instead of silently resetting them to bootstrap defaults.
 RUNTIME_CONFIG_PATH: Path = DATA_DIR / "runtime_config.json"
-DEFAULT_CANDIDATE_PROFILE_PATH: Path = Path(
+# The candidate profile used to be a file on the server's disk (shared by every
+# account that hadn't pointed at its own). It now lives in the candidate_profiles
+# table, one row per user. These names survive only so backend/db/schema.py can
+# copy an existing install's file into the owning account once.
+LEGACY_CANDIDATE_PROFILE_PATH: Path = Path(
     os.getenv("CANDIDATE_PROFILE_PATH", str(BASE_DIR / "candidate_profile.md"))
 )
-# ai: claude-sonnet-5 | 2026-09-01 — filenames the setup wizard also checks
-# for in BASE_DIR when candidate_profile_path is still at its bootstrap
-# default and that file doesn't exist yet, so a profile the user already
-# dropped into the project folder under a name of their own choosing (never
-# tracked in git — see .gitignore) is picked up without retyping it.
-CANDIDATE_PROFILE_ALT_FILENAMES: tuple[str, ...] = ("client_profile.md",)
+LEGACY_CANDIDATE_PROFILE_ALT_FILENAMES: tuple[str, ...] = ("client_profile.md",)
 DEFAULT_COVER_LETTER_PROMPT_PATH: Path = Path(
     os.getenv("COVER_LETTER_PROMPT_PATH", str(BASE_DIR / "cover_letter_prompt.md"))
 )
@@ -153,11 +152,17 @@ GREENHOUSE_SEARCH_URL: str = os.getenv(
     "&salary=more_than_200k&work_type[]=remote"
     "&employment_type[]=full_time&employment_type[]=contract",
 )
-GREENHOUSE_SESSION_FILE: Path = CREDENTIALS_DIR / "greenhouse_session.json"
+# Legacy: the Greenhouse login session is now stored, encrypted, per user in the
+# database; this path remains only for the one-time migration in backend/db/schema.py.
+LEGACY_GREENHOUSE_SESSION_FILE: Path = CREDENTIALS_DIR / "greenhouse_session.json"
 
 # ─── Google OAuth ─────────────────────────────────────────────────────────────
-GOOGLE_CREDENTIALS_FILE: Path = CREDENTIALS_DIR / "google_credentials.json"
-GOOGLE_TOKEN_FILE: Path = CREDENTIALS_DIR / "token.json"
+# Google credentials used to live in these shared files. They are now in the
+# database (the OAuth client config as an admin-managed system setting, each
+# user's token in their own encrypted row); these paths remain only so
+# backend/db/schema.py can move an existing install's files across once.
+LEGACY_GOOGLE_CREDENTIALS_FILE: Path = CREDENTIALS_DIR / "google_credentials.json"
+LEGACY_GOOGLE_TOKEN_FILE: Path = CREDENTIALS_DIR / "token.json"
 
 # Set to False when ready to enable Gmail mark-as-read.
 # While True, OAuth scopes are read-only and all write methods are no-ops.
@@ -412,34 +417,17 @@ Response schema (JSON only):
 
 
 # ai: claude-sonnet-5 | 2026-09-01
-def find_candidate_profile_file() -> Path | None:
-    """Return the first existing candidate profile file in BASE_DIR, checking
-    DEFAULT_CANDIDATE_PROFILE_PATH first and then CANDIDATE_PROFILE_ALT_FILENAMES.
-    Returns None if none of them exist. Used by the setup wizard to detect a
-    profile file already sitting in the project folder under an alternate name."""
+def find_legacy_candidate_profile_file() -> Path | None:
+    """The first existing legacy candidate profile file in BASE_DIR (the
+    default name, then the alternates), or None. Used only by the one-time
+    database migration."""
     for candidate in (
-        DEFAULT_CANDIDATE_PROFILE_PATH,
-        *(BASE_DIR / name for name in CANDIDATE_PROFILE_ALT_FILENAMES),
+        LEGACY_CANDIDATE_PROFILE_PATH,
+        *(BASE_DIR / name for name in LEGACY_CANDIDATE_PROFILE_ALT_FILENAMES),
     ):
         if candidate.exists() and candidate.is_file():
             return candidate
     return None
-
-
-def load_candidate_profile(path: Path) -> str:
-    """Load the external candidate profile markdown/text file at *path*.
-
-    Callers resolve the path themselves via
-    get_setting("candidate_profile_path", user_id, repos) -- falling back to
-    DEFAULT_CANDIDATE_PROFILE_PATH when unset -- since that requires DB
-    access this module can't have.
-    """
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise RuntimeError(
-            f"Could not read candidate profile file at {path}: {exc}"
-        ) from exc
 
 
 # ai: claude-sonnet-4-6 | 2026-06-10

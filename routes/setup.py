@@ -49,9 +49,15 @@ from typing import Any
 import anthropic
 from dotenv import dotenv_values, set_key
 from flask import Blueprint, jsonify, request
+from pydantic import ValidationError
 
 import config
-from backend.settings_service import get_setting, is_setting_configured
+from backend.candidate_profile_service import (
+    CandidateProfileUpdate,
+    save_candidate_profile,
+)
+from backend.email.google_token_store import GoogleTokenStore
+from backend.settings_service import get_setting, is_setting_configured, set_setting
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils.utils import current_user_id, get_repos
 
@@ -81,43 +87,19 @@ def setup_status() -> Any:
     with get_repos() as repos:
         provider = get_setting("ai_provider", user_id, repos) or config.AI_PROVIDER
         ai_done = _check_ai_provider_done(provider, user_id, repos)
-        profile_path_str = get_setting("candidate_profile_path", user_id, repos)
+        profile_row = repos["candidate_profiles"].get(user_id)
+        # ai: claude-sonnet-5 | 2026-09-26 -- the OAuth client config is app-wide
+        # (admin-managed); each user's own connection is their token row.
+        creds_done = is_setting_configured("google_oauth_client_config", None, repos)
+        auth_done = GoogleTokenStore(repos["google_tokens"]).is_connected(user_id)
+        can_configure_google = (repos["user_accounts"].get(user_id) or {}).get("role") == "admin"
 
-    creds_done = config.GOOGLE_CREDENTIALS_FILE.exists()
-    auth_done = config.GOOGLE_TOKEN_FILE.exists()
-
-    profile_path = Path(profile_path_str)
-    profile_char_count, profile_done = _check_profile(profile_path)
-
-    # ai: claude-sonnet-5 | 2026-09-01 — profile_path_str falls back to
-    # str(DEFAULT_CANDIDATE_PROFILE_PATH) whenever the user hasn't
-    # configured candidate_profile_path themselves (see get_setting's
-    # bootstrap-default fallback), so "still at the default and that file
-    # is missing/empty" is the signal that nothing has been explicitly
-    # chosen yet -- safe to look for an alternately-named file instead of
-    # requiring the wizard's paste-in flow. Reported as detected_path so the
-    # frontend can persist it through the existing, already-validated
-    # PUT /api/config candidate_profile_path path -- never written here,
-    # since this is a GET.
-    detected_profile_path: str | None = None
-    if not profile_done and profile_path_str == str(config.DEFAULT_CANDIDATE_PROFILE_PATH):
-        detected = config.find_candidate_profile_file()
-        if detected is not None and detected != profile_path:
-            detected_profile_path = str(detected)
-            profile_char_count, profile_done = _check_profile(detected)
+    profile_char_count = len(str((profile_row or {}).get("content") or "").strip())
+    profile_done = profile_char_count > 0
 
     current_secret = env_vals.get("FLASK_SECRET_KEY", "") or config.FLASK_SECRET_KEY
     flask_secret_ok = bool(
         current_secret and current_secret != "change-this-in-production"
-    )
-
-    # ai: claude-sonnet-5 | 2026-09-09
-    # The effective path actually checked above (detected takes priority
-    # over the configured/default one -- see the block above) so the
-    # frontend can tell the user exactly where the file it found lives,
-    # not just its bare filename.
-    effective_profile_path = (
-        Path(detected_profile_path) if detected_profile_path else profile_path
     )
 
     return jsonify(
@@ -132,6 +114,7 @@ def setup_status() -> Any:
                 "google_credentials": {
                     "done": creds_done,
                     "required": False,
+                    "can_configure": can_configure_google,
                 },
                 "google_auth": {
                     "done": auth_done,
@@ -141,20 +124,11 @@ def setup_status() -> Any:
                     "done": profile_done,
                     "char_count": profile_char_count,
                     "required": True,
-                    "detected_path": detected_profile_path,
-                    "path": str(effective_profile_path),
                 },
             },
-            # ai: claude-sonnet-5 | 2026-09-01 — surfaces which of the three
-            # gitignored, editable-on-disk files (see .gitignore) the wizard
-            # found, so StepFinish can show it without a dedicated UI for
-            # cover_letter_prompt.md/fit_scorer_prompt.md, which have no
-            # per-user path setting to point elsewhere.
+            # Editable-on-disk prompt templates the wizard reports on (the candidate
+            # profile is per-user data in the database, not a file).
             "local_files": {
-                "candidate_profile": {
-                    "filename": effective_profile_path.name,
-                    "found": profile_done,
-                },
                 "cover_letter_prompt": {
                     "filename": config.DEFAULT_COVER_LETTER_PROMPT_PATH.name,
                     "found": config.DEFAULT_COVER_LETTER_PROMPT_PATH.exists(),
@@ -183,16 +157,6 @@ def _check_ai_provider_done(
         base_url = get_setting("ollama_base_url", user_id, repos) or config.OLLAMA_BASE_URL
         return bool(base_url and base_url.strip())
     return False
-
-
-def _check_profile(profile_path: Path) -> tuple[int, bool]:
-    if not profile_path.exists() or not profile_path.is_file():
-        return 0, False
-    try:
-        content = profile_path.read_text(encoding="utf-8").strip()
-        return len(content), len(content) > 0
-    except OSError:
-        return 0, False
 
 
 # ─── Save env vars ────────────────────────────────────────────────────────────
@@ -338,7 +302,16 @@ def _test_ollama(base_url: str, model: str) -> Any:
 
 @setup_bp.route("/setup/upload-credentials", methods=["POST"])
 def setup_upload_credentials() -> Any:
-    """Save google_credentials.json content to the credentials directory."""
+    """Save the app-wide Google OAuth client config (admin only).
+
+    One Google OAuth client serves every account on the installation, so this
+    is an instance-level setting: letting any user replace it would let them
+    change (or break) Google sign-in for everyone."""
+    with get_repos() as repos:
+        account = repos["user_accounts"].get(current_user_id())
+    if not account or account.get("role") != "admin":
+        return jsonify({"error": "Admin access required"}), 403
+
     data: dict[str, object] = request.get_json() or {}
     if not data:
         return jsonify({"error": "No data provided"}), 400
@@ -369,11 +342,10 @@ def setup_upload_credentials() -> Any:
             400,
         )
 
-    config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
-    config.GOOGLE_CREDENTIALS_FILE.write_text(
-        json.dumps(data, indent=2), encoding="utf-8"
-    )
-    logger.info("Google credentials saved to %s", config.GOOGLE_CREDENTIALS_FILE)
+    with get_repos() as repos:
+        set_setting("google_oauth_client_config", json.dumps(data), None, repos)
+        repos["conn"].commit()
+    logger.info("Google OAuth client config saved to system settings")
 
     return jsonify({"ok": True, "message": "Credentials saved successfully."})
 
@@ -383,25 +355,18 @@ def setup_upload_credentials() -> Any:
 
 @setup_bp.route("/setup/candidate-profile", methods=["POST"])
 def setup_candidate_profile() -> Any:
-    """Write candidate profile text to the configured profile file."""
-    data: dict[str, object] = request.get_json() or {}
-    content = str(data.get("content") or "").strip()
-    if not content:
+    """Save the caller's candidate profile text (wizard step)."""
+    try:
+        update = CandidateProfileUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
         return jsonify({"error": "Profile content cannot be empty"}), 400
 
-    user_id = current_user_id()
     with get_repos() as repos:
-        profile_path_str = get_setting("candidate_profile_path", user_id, repos)
-    profile_path = (
-        Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
-    )
-    profile_path.parent.mkdir(parents=True, exist_ok=True)
-    profile_path.write_text(content, encoding="utf-8")
-    logger.info(
-        "Candidate profile written to %s (%d chars)", profile_path, len(content)
-    )
+        save_candidate_profile(repos, current_user_id(), update.content)
+        repos["conn"].commit()
+    logger.info("Candidate profile saved (%d chars)", len(update.content))
 
-    return jsonify({"ok": True, "char_count": len(content)})
+    return jsonify({"ok": True, "char_count": len(update.content)})
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

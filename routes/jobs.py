@@ -1073,7 +1073,7 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
     # Connection released before external Gmail fetch
 
     try:
-        gmail = GmailClient()
+        gmail = GmailClient(user_id)
     except NotAuthenticatedError as exc:
         return jsonify({"error": str(exc)}), 401
 
@@ -1657,7 +1657,7 @@ def _run_rescan_broken_imports(user_id: int) -> None:
             _rescan_import_state.total = total
             _rescan_import_state.message = f"Rescanning {total} job{'s' if total != 1 else ''} across {len(groups)} email(s)…"
 
-        gmail = GmailClient()
+        gmail = GmailClient(user_id)
         parser = EmailParser(user_id)
         dup_checker = DuplicateChecker()
 

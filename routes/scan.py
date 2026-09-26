@@ -265,7 +265,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
         _update_scan(progress=5, message="Connecting to Gmail...")
 
         try:
-            gmail = GmailClient()
+            gmail = GmailClient(user_id)
         except NotAuthenticatedError as exc:
             _update_scan(error=str(exc), message="Not authenticated with Google.")
             return dict(state)

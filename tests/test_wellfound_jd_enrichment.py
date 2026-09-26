@@ -164,6 +164,9 @@ def test_fetch_listing_metadata_returns_empty_when_cache_lookup_misses() -> None
 
 
 class FakeGmailClient:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
     def list_unread_messages(
         self,
         lookback_days: int,

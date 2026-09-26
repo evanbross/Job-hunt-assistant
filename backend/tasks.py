@@ -861,7 +861,7 @@ def _send_jd_health_check_failure_email(
     body_text = "\n".join(lines)
 
     try:
-        GmailClient().send_email(
+        GmailClient(user_id).send_email(
             to=notify_email,
             subject=f"JD parser health check: {len(failure_details)} failure(s)",
             body_text=body_text,

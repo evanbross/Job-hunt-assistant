@@ -36,22 +36,30 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import time
 
 from flask import Blueprint, jsonify, redirect, request
 from flask.typing import ResponseReturnValue
-from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 
 import config
+from backend.crypto import SettingsEncryptionKeyMissingError
+from backend.email.google_token_store import GoogleTokenStore
+from backend.settings_service import get_setting
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint("auth", __name__)
 
-# Maps a random state token → {"verifier": str, "created_at": float}.
+_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+
+# Maps a random state token → {"verifier": str, "created_at": float, "user_id": int}.
+# The user who started the flow is recorded so the callback can only ever
+# store the resulting token for that same user.
 # Using a server-side dict avoids session-cookie issues when the Vite dev proxy
 # is in the path: the cookie set by Flask on :5004 isn't visible when the browser
 # calls :5173, so the callback (which hits :5004 directly from Google's redirect)
@@ -74,48 +82,61 @@ def _prune_pending_auths() -> None:
         _pending_auths.pop(oldest, None)
 
 
+# ai: claude-sonnet-5 | 2026-09-26
+def _google_client_config() -> str:
+    """The app-wide Google OAuth client JSON (an admin-managed system setting)."""
+    with get_repos() as repos:
+        return get_setting("google_oauth_client_config", None, repos)
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def _build_flow(client_config_json: str) -> Flow:
+    return Flow.from_client_config(
+        json.loads(client_config_json),
+        scopes=config.GMAIL_SCOPES,
+        redirect_uri=config.GOOGLE_OAUTH_REDIRECT_URI,
+    )
+
+
 @auth_bp.route("/auth/status")
 def auth_status() -> ResponseReturnValue:
     # ai: claude-sonnet-5 | 2026-08-03
     # has_send_scope lets the Settings UI show "reconnect Gmail" for the JD
     # health check's failure-notification email (needs gmail.send, added
     # after gmail.modify was already in use — existing tokens predate it).
-    # This only parses the locally stored token file (no network call, no
+    # This only reads the caller's own stored token (no network call, no
     # refresh attempt), so it can't trigger auth itself.
-    if not config.GOOGLE_TOKEN_FILE.exists():
-        return jsonify({"authenticated": False, "has_send_scope": False})
+    user_id = current_user_id()
+    with get_repos() as repos:
+        store = GoogleTokenStore(repos["google_tokens"])
+        if not store.is_connected(user_id):
+            return jsonify({"authenticated": False, "has_send_scope": False})
+        try:
+            scopes = store.granted_scopes(user_id)
+        except (ValueError, SettingsEncryptionKeyMissingError) as exc:
+            logger.warning("Could not read stored Google token scopes: %s", exc)
+            scopes = []
 
-    has_send_scope = False
-    try:
-        creds = Credentials.from_authorized_user_file(str(config.GOOGLE_TOKEN_FILE))
-        has_send_scope = "https://www.googleapis.com/auth/gmail.send" in (
-            creds.scopes or []
-        )
-    except (OSError, ValueError) as exc:
-        logger.warning("Could not read stored Google token scopes: %s", exc)
-
-    return jsonify({"authenticated": True, "has_send_scope": has_send_scope})
+    return jsonify({"authenticated": True, "has_send_scope": _GMAIL_SEND_SCOPE in scopes})
 
 
 @auth_bp.route("/auth/google")
 def auth_google_start() -> ResponseReturnValue:
     """Return the Google OAuth URL. The frontend opens it in a new tab."""
-    if not config.GOOGLE_CREDENTIALS_FILE.exists():
+    client_config = _google_client_config()
+    if not client_config:
         return (
             jsonify(
                 {
-                    "error": "google_credentials.json not found in credentials/. "
-                    "Download OAuth2 desktop credentials from Google Cloud Console."
+                    "error": "Google sign-in is not configured for this installation. "
+                    "An administrator needs to upload the Google OAuth client "
+                    "credentials in the setup wizard first."
                 }
             ),
             400,
         )
 
-    flow = Flow.from_client_secrets_file(
-        str(config.GOOGLE_CREDENTIALS_FILE),
-        scopes=config.GMAIL_SCOPES,
-        redirect_uri=config.GOOGLE_OAUTH_REDIRECT_URI,
-    )
+    flow = _build_flow(client_config)
 
     # Generate a random state token and store the PKCE code verifier server-side.
     # This avoids relying on Flask session cookies, which don't survive the Vite
@@ -134,13 +155,14 @@ def auth_google_start() -> ResponseReturnValue:
     _pending_auths[state] = {
         "verifier": flow.code_verifier,
         "created_at": time.monotonic(),
+        "user_id": current_user_id(),
     }
     return jsonify({"auth_url": auth_url})
 
 
 @auth_bp.route("/auth/google/callback")
 def auth_google_callback() -> ResponseReturnValue:
-    """Exchange the OAuth code for a token and save it."""
+    """Exchange the OAuth code for a token and save it for the user who started the flow."""
     code = request.args.get("code")
     if not code:
         return jsonify({"error": "Missing code parameter"}), 400
@@ -156,15 +178,27 @@ def auth_google_callback() -> ResponseReturnValue:
         )
     code_verifier = str(entry["verifier"])
 
-    flow = Flow.from_client_secrets_file(
-        str(config.GOOGLE_CREDENTIALS_FILE),
-        scopes=config.GMAIL_SCOPES,
-        redirect_uri=config.GOOGLE_OAUTH_REDIRECT_URI,
-    )
+    # ai: claude-sonnet-5 | 2026-09-26
+    # The token must land in the account that started the flow. If a different
+    # account is logged in on this browser now, someone is completing another
+    # user's authorization inside their own session; refuse rather than attach it.
+    flow_owner_id = int(entry["user_id"])  # type: ignore[call-overload]
+    if current_user_id() != flow_owner_id:
+        return (
+            jsonify({"error": "This authorization was started by a different account."}),
+            403,
+        )
+
+    client_config = _google_client_config()
+    if not client_config:
+        return jsonify({"error": "Google sign-in is no longer configured."}), 400
+
+    flow = _build_flow(client_config)
     flow.code_verifier = code_verifier
-    flow.fetch_token(code=code)
-    creds = flow.credentials
-    config.GOOGLE_TOKEN_FILE.write_text(creds.to_json())
+    flow.fetch_token(code=code)  # network call: no DB connection is open here
+    with get_repos() as repos:
+        GoogleTokenStore(repos["google_tokens"]).save(flow_owner_id, flow.credentials)
+        repos["conn"].commit()
 
     # In dev mode (no built frontend) Flask's catch-all returns JSON, so redirect
     # to the Vite dev server instead.  In production both are on the same origin.
@@ -176,6 +210,8 @@ def auth_google_callback() -> ResponseReturnValue:
 
 @auth_bp.route("/auth/disconnect", methods=["POST"])
 def auth_disconnect() -> ResponseReturnValue:
-    """Delete the stored Google token so the user can re-authenticate."""
-    config.GOOGLE_TOKEN_FILE.unlink(missing_ok=True)
+    """Remove the caller's own stored Google token so they can re-authenticate."""
+    with get_repos() as repos:
+        GoogleTokenStore(repos["google_tokens"]).delete(current_user_id())
+        repos["conn"].commit()
     return jsonify({"status": "disconnected"})

@@ -38,15 +38,22 @@ split per-table like the repositories."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from werkzeug.security import generate_password_hash
 
 import config
-from backend.crypto import encrypt_secret
+from backend.crypto import (
+    SettingsEncryptionKeyMissingError,
+    encrypt_bytes,
+    encrypt_secret,
+)
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
 from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
@@ -188,6 +195,205 @@ _PER_USER_TABLES: tuple[str, ...] = (
     "extension_tokens",
     "cover_letter_phrases",
 )
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def _migrate_legacy_greenhouse_session(conn: Any) -> None:
+    """Move the old shared credentials/greenhouse_session.json into the first
+    account's row (the same convention as the other pre-multi-tenant data),
+    renaming the file once moved. Left in place, with a warning, if the
+    encryption key is missing or the content is unusable."""
+    session_file = config.LEGACY_GREENHOUSE_SESSION_FILE
+    if not session_file.is_file():
+        return
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM user_accounts ORDER BY id LIMIT 1")
+    owner = cur.fetchone()
+    text = session_file.read_text(encoding="utf-8")
+    try:
+        json.loads(text)
+    except ValueError:
+        logger.warning("%s is not valid JSON; leaving it unmigrated.", session_file.name)
+        return
+    if owner is None:
+        return
+    try:
+        cur.execute(
+            "INSERT INTO greenhouse_sessions (user_id, state_encrypted, updated_at)"
+            " VALUES (%s, %s, %s) ON CONFLICT (user_id) DO NOTHING",
+            (owner["id"], encrypt_secret(text), datetime.now(UTC).isoformat(timespec="seconds")),
+        )
+    except SettingsEncryptionKeyMissingError:
+        logger.warning(
+            "Cannot migrate %s: SETTINGS_ENCRYPTION_KEY is not set. "
+            "It will be retried at next startup.",
+            session_file.name,
+        )
+        return
+    session_file.rename(session_file.with_name(session_file.name + ".migrated"))
+    conn.commit()
+    logger.info("Migrated the Greenhouse session into the first account's row.")
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def _migrate_legacy_candidate_profiles(conn: Any) -> None:
+    """Copy each account's candidate profile file into its own database row.
+
+    An account that had pointed candidate_profile_path at a file gets that
+    file. The implicit shared default (candidate_profile.md, or the alternate
+    names, in the project folder) went to whoever had not configured a path,
+    which for a real install is the owner, so it is copied to the first
+    account only -- other accounts start empty rather than inheriting
+    someone else's personal profile. Files are only read, never moved, and the
+    obsolete setting rows are then removed. Safe to re-run: accounts that
+    already have a row are skipped."""
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM user_accounts ORDER BY id")
+    account_ids = [row["id"] for row in cur.fetchall()]
+    shared_default = config.find_legacy_candidate_profile_file()
+
+    for position, user_id in enumerate(account_ids):
+        cur.execute("SELECT 1 FROM candidate_profiles WHERE user_id = %s", (user_id,))
+        if cur.fetchone() is not None:
+            continue
+        candidates: list[Path] = []
+        cur.execute(
+            "SELECT value FROM user_settings WHERE user_id = %s AND key = 'candidate_profile_path'",
+            (user_id,),
+        )
+        configured = cur.fetchone()
+        if configured and configured["value"]:
+            candidates.append(Path(configured["value"]))
+        if position == 0 and shared_default is not None:
+            candidates.append(shared_default)
+        for path in candidates:
+            try:
+                text = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if text:
+                cur.execute(
+                    "INSERT INTO candidate_profiles (user_id, content, updated_at)"
+                    " VALUES (%s, %s, %s)",
+                    (user_id, text, datetime.now(UTC).isoformat(timespec="seconds")),
+                )
+                logger.info("Migrated the candidate profile file into account %s.", user_id)
+                break
+
+    cur.execute("DELETE FROM user_settings WHERE key = 'candidate_profile_path'")
+    conn.commit()
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def _migrate_legacy_google_files(conn: Any) -> None:
+    """One-time bridge from the old shared credentials/ files into the database.
+
+    google_credentials.json (the OAuth *client* config) becomes the
+    admin-managed system setting. token.json (an authorized user's token)
+    goes to the first account, matching how every other pre-multi-tenant row
+    was backfilled. Each file is renamed, not deleted, once moved, and left
+    in place (with a warning) if the encryption key is missing or the content
+    is unusable, so nothing is lost and startup never fails over it."""
+    cur = conn.cursor()
+
+    creds_file = config.LEGACY_GOOGLE_CREDENTIALS_FILE
+    if creds_file.is_file():
+        text = creds_file.read_text(encoding="utf-8")
+        try:
+            json.loads(text)
+        except ValueError:
+            logger.warning("%s is not valid JSON; leaving it unmigrated.", creds_file.name)
+        else:
+            try:
+                cur.execute(
+                    "INSERT INTO system_settings (key, value) VALUES (%s, %s)"
+                    " ON CONFLICT (key) DO NOTHING",
+                    ("google_oauth_client_config", encrypt_secret(text)),
+                )
+            except SettingsEncryptionKeyMissingError:
+                logger.warning(
+                    "Cannot migrate %s: SETTINGS_ENCRYPTION_KEY is not set. "
+                    "It will be retried at next startup.",
+                    creds_file.name,
+                )
+            else:
+                creds_file.rename(creds_file.with_name(creds_file.name + ".migrated"))
+                conn.commit()
+                logger.info("Migrated Google OAuth client config into system settings.")
+
+    token_file = config.LEGACY_GOOGLE_TOKEN_FILE
+    if token_file.is_file():
+        cur.execute("SELECT id FROM user_accounts ORDER BY id LIMIT 1")
+        owner = cur.fetchone()
+        text = token_file.read_text(encoding="utf-8")
+        try:
+            json.loads(text)
+        except ValueError:
+            logger.warning("%s is not valid JSON; leaving it unmigrated.", token_file.name)
+            return
+        if owner is None:
+            return
+        try:
+            cur.execute(
+                "INSERT INTO google_oauth_tokens (user_id, token_encrypted, updated_at)"
+                " VALUES (%s, %s, %s) ON CONFLICT (user_id) DO NOTHING",
+                (owner["id"], encrypt_secret(text), datetime.now(UTC).isoformat(timespec="seconds")),
+            )
+        except SettingsEncryptionKeyMissingError:
+            logger.warning(
+                "Cannot migrate %s: SETTINGS_ENCRYPTION_KEY is not set. "
+                "It will be retried at next startup.",
+                token_file.name,
+            )
+            return
+        token_file.rename(token_file.with_name(token_file.name + ".migrated"))
+        conn.commit()
+        logger.info("Migrated the Google token into the first account's row.")
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def _migrate_legacy_resume_file(conn: Any) -> None:
+    """One-time bridge from the old shared uploads/resume.pdf into the database.
+
+    Every upload used to overwrite that one file, so it always belongs to the
+    account whose resume row is newest -- the only account it can safely be
+    attached to. Other accounts' rows stay without a stored file (they simply
+    re-upload). The file is renamed, not deleted, so nothing is lost if this
+    misjudges; it never re-runs once renamed."""
+    legacy = config.UPLOADS_DIR / "resume.pdf"
+    if not legacy.is_file():
+        return
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, user_id, file_encrypted FROM resume ORDER BY uploaded_at DESC LIMIT 1"
+    )
+    newest = cur.fetchone()
+    if newest is None:
+        return  # no resume row to attach it to yet; leave the file for a later run
+    data = legacy.read_bytes()
+    looks_like_pdf = data.startswith(b"%PDF-") and len(data) <= 5 * 1024 * 1024
+    if newest["file_encrypted"] is None and looks_like_pdf:
+        try:
+            cur.execute(
+                "UPDATE resume SET file_encrypted = %s, file_size = %s, file_sha256 = %s"
+                " WHERE id = %s",
+                (encrypt_bytes(data), len(data), hashlib.sha256(data).hexdigest(), newest["id"]),
+            )
+        except SettingsEncryptionKeyMissingError:
+            logger.warning(
+                "Cannot migrate uploads/resume.pdf into the database: "
+                "SETTINGS_ENCRYPTION_KEY is not set. It will be retried at next startup."
+            )
+            return
+        logger.info(
+            "Migrated legacy uploads/resume.pdf into the resume row of user %s.",
+            newest["user_id"],
+        )
+    elif newest["file_encrypted"] is None:
+        logger.warning("uploads/resume.pdf is not a usable PDF; leaving it unmigrated.")
+        return
+    legacy.rename(legacy.with_name("resume.pdf.migrated"))
+    conn.commit()
 
 
 # ai: claude-sonnet-5 | 2026-08-30
@@ -904,6 +1110,51 @@ def _migrate(conn: Any) -> None:
     cur.execute(
         "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_recruiter BOOLEAN NOT NULL DEFAULT FALSE"
     )
+    # ai: claude-sonnet-5 | 2026-09-26 -- resume PDFs move from the shared
+    # uploads/resume.pdf into the owning user's row (encrypted at rest).
+    cur.execute("ALTER TABLE resume ADD COLUMN IF NOT EXISTS file_encrypted TEXT")
+    cur.execute("ALTER TABLE resume ADD COLUMN IF NOT EXISTS file_size INTEGER")
+    cur.execute("ALTER TABLE resume ADD COLUMN IF NOT EXISTS file_sha256 TEXT")
+    conn.commit()
+    _migrate_legacy_resume_file(conn)
+    # ai: claude-sonnet-5 | 2026-09-26 -- per-user Google OAuth token, encrypted.
+    # user_id is the primary key: one connected Google account per user.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS google_oauth_tokens (
+            user_id          INTEGER PRIMARY KEY REFERENCES user_accounts(id) ON DELETE CASCADE,
+            token_encrypted  TEXT NOT NULL,
+            updated_at       TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    _migrate_legacy_google_files(conn)
+    # ai: claude-sonnet-5 | 2026-09-26 -- the candidate profile is per-user data in
+    # the database, not a file on the server's disk.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS candidate_profiles (
+            user_id     INTEGER PRIMARY KEY REFERENCES user_accounts(id) ON DELETE CASCADE,
+            content     TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    _migrate_legacy_candidate_profiles(conn)
+    # ai: claude-sonnet-5 | 2026-09-26 -- per-user saved Greenhouse login, encrypted.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS greenhouse_sessions (
+            user_id          INTEGER PRIMARY KEY REFERENCES user_accounts(id) ON DELETE CASCADE,
+            state_encrypted  TEXT NOT NULL,
+            updated_at       TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    _migrate_legacy_greenhouse_session(conn)
     cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS notes TEXT")
     # contact_type (recruiter/personal/NULL) briefly existed before it became
     # the is_recruiter checkbox; carry any flagged recruiters over, then drop it.

@@ -64,6 +64,11 @@ class SettingSpec:
     input_type: str = "text"  # "text" | "password" | "checkbox"
     placeholder: str = ""
     help_text: str = ""
+    # ai: claude-sonnet-5 | 2026-09-26 -- a hidden setting is never rendered by
+    # the generic settings UI and is not writable through the generic
+    # PUT /api/settings/system route; it is managed only by a dedicated,
+    # validating route (e.g. the Google OAuth client config upload).
+    hidden: bool = False
 
 
 # ai: claude-sonnet-5 | 2026-08-21
@@ -136,6 +141,11 @@ SETTINGS: dict[str, SettingSpec] = {
         scope="system", is_secret=False, default=str(config.DEFAULT_JOB_IMPORT_LISTENER_PORT),
         label="Port", group="Import Listener", placeholder="8765",
     ),
+    "google_oauth_client_config": SettingSpec(
+        scope="system", is_secret=True, default="", label="Google OAuth client", group="Google",
+        hidden=True,
+        help_text="The app-wide Google OAuth client JSON; uploaded through the setup wizard.",
+    ),
     "job_import_listener_max_bytes": SettingSpec(
         scope="system", is_secret=False,
         default=str(config.DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES),
@@ -183,11 +193,6 @@ SETTINGS: dict[str, SettingSpec] = {
         scope="user", is_secret=False,
         default=str(config.DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS).lower(),
         label="Move Scanned Emails", group="Email", input_type="checkbox",
-    ),
-    "candidate_profile_path": SettingSpec(
-        scope="user", is_secret=False, default=str(config.DEFAULT_CANDIDATE_PROFILE_PATH),
-        label="Candidate Profile File", group="Career Profile",
-        help_text="Choose the markdown or text file used as the candidate profile for scoring and cover-letter prompts.",
     ),
     "candidate_timezone": SettingSpec(
         scope="user", is_secret=False, default=config.DEFAULT_CANDIDATE_TIMEZONE,
@@ -241,7 +246,7 @@ SETTINGS: dict[str, SettingSpec] = {
 
 # Keys an admin may write via PUT /api/settings/system.
 SYSTEM_SETTING_KEYS: frozenset[str] = frozenset(
-    key for key, spec in SETTINGS.items() if spec.scope == "system"
+    key for key, spec in SETTINGS.items() if spec.scope == "system" and not spec.hidden
 )
 
 # Keys a regular user may write via PUT /api/settings/user (secrets not
@@ -268,5 +273,5 @@ def schema_for_scope(scope: str) -> list[dict[str, object]]:
             "is_secret": spec.is_secret,
         }
         for key, spec in SETTINGS.items()
-        if spec.scope == scope
+        if spec.scope == scope and not spec.hidden
     ]

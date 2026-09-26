@@ -44,7 +44,7 @@ import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.cover_letter.phrase_book import format_phrase_book_section
 from backend.scoring.jd_enrichment import job_description_text
-from backend.utils.utils import get_repos, resolve_candidate_profile_path
+from backend.utils.utils import get_candidate_profile, get_repos
 
 
 class CoverLetterGenerator:
@@ -104,7 +104,7 @@ class CoverLetterGenerator:
 
         # ai: claude-sonnet-5 | 2026-09-01
         with get_repos() as repos:
-            profile_path = resolve_candidate_profile_path(self._user_id, repos)
+            candidate_profile = get_candidate_profile(self._user_id, repos)
 
         # ai: claude-sonnet-4-6 | 2026-06-10
         prompt = (
@@ -112,7 +112,7 @@ class CoverLetterGenerator:
             .replace("{{JOB_TITLE}}", job_title)
             .replace("{{COMPANY}}", company)
             .replace("{{JOB_URL_LINE}}", job_url_line)
-            .replace("{{CANDIDATE_PROFILE}}", config.load_candidate_profile(profile_path))
+            .replace("{{CANDIDATE_PROFILE}}", candidate_profile)
             .replace("{{RESUME_SECTION}}", resume_section)
             .replace("{{FIT_SECTION}}", fit_section)
             .replace("{{JOB_DESCRIPTION_SECTION}}", job_description_section)

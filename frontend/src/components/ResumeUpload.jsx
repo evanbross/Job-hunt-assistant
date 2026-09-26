@@ -90,6 +90,12 @@ export default function ResumeUpload() {
                 Uploaded {resume.uploaded_at?.slice(0, 19).replace("T", " ")} ·{" "}
                 {resume.char_count?.toLocaleString()} characters extracted
               </div>
+              {resume.has_file === false && (
+                <div style={{ color: "var(--orange)", fontSize: "12px", marginTop: "2px" }}>
+                  The original PDF isn't stored. Re-upload it to enable resume upload in
+                  application autofill.
+                </div>
+              )}
             </div>
           </div>
         </div>

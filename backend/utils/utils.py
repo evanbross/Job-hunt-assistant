@@ -35,7 +35,6 @@ from __future__ import annotations
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path
 from urllib.parse import urlparse
 
 from flask import session
@@ -43,7 +42,6 @@ from flask import session
 import config
 from backend.ai_provider import AIProviderError
 from backend.db import open_repositories
-from backend.settings_service import get_setting
 
 ACTIVE_JOB_STATUSES: frozenset[str] = frozenset(
     {
@@ -92,19 +90,25 @@ def current_user_id() -> int:
     return user_id
 
 
-# ai: claude-sonnet-5 | 2026-09-01
-def resolve_candidate_profile_path(user_id: int, repos: dict) -> Path:
-    """Resolve the on-disk path for *user_id*'s candidate profile file,
-    honoring an explicit candidate_profile_path setting override.
+# ai: claude-sonnet-5 | 2026-09-26
+class CandidateProfileMissingError(RuntimeError):
+    """The user has not saved a candidate profile yet."""
 
-    Single source of truth for the "profile_path_str or
-    DEFAULT_CANDIDATE_PROFILE_PATH" fallback every prompt-building call site
-    needs before calling config.load_candidate_profile(path) -- previously
-    duplicated at each call site, which let three of them drift into calling
-    config.load_candidate_profile() with no argument at all.
-    """
-    profile_path_str = get_setting("candidate_profile_path", user_id, repos)
-    return Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
+
+# ai: claude-sonnet-5 | 2026-09-26
+def get_candidate_profile(user_id: int, repos: dict) -> str:
+    """The user's own candidate profile text. Replaces the old file-path
+    resolver: the profile is per-user data in the database, so there is no
+    shared default that one account's prompts could accidentally read from
+    another's. Raises CandidateProfileMissingError if none is saved."""
+    row = repos["candidate_profiles"].get(user_id)
+    content = str((row or {}).get("content") or "").strip()
+    if not content:
+        raise CandidateProfileMissingError(
+            "No candidate profile is saved for this account. Add one under "
+            "Settings > Career Profile > Profile Settings."
+        )
+    return content
 
 
 # ai: claude-sonnet-5 | 2026-08-25

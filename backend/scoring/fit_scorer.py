@@ -47,7 +47,7 @@ from typing import TypedDict
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.settings_service import get_setting
-from backend.utils.utils import get_repos, resolve_candidate_profile_path
+from backend.utils.utils import get_candidate_profile, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ class FitScorer:
     ) -> str:
         with get_repos() as repos:
             tz = get_setting("candidate_timezone", self._user_id, repos).strip()
-            profile_path = resolve_candidate_profile_path(self._user_id, repos)  # ai: claude-sonnet-5 | 2026-09-01
+            candidate_profile = get_candidate_profile(self._user_id, repos)  # ai: claude-sonnet-5 | 2026-09-01
         if tz:
             timezone_note = (
                 f"- TIMEZONE COMPATIBILITY: The candidate is in the {tz} timezone. "
@@ -223,7 +223,7 @@ class FitScorer:
         # Composition logic (which sections apply, in what order) stays here.
         return (
             config.load_fit_scorer_prompt_template()
-            .replace("{{CANDIDATE_PROFILE}}", config.load_candidate_profile(profile_path))
+            .replace("{{CANDIDATE_PROFILE}}", candidate_profile)
             .replace("{{RESUME_SECTION}}", resume_section)
             .replace("{{TIMEZONE_NOTE}}", timezone_note)
             .replace("{{PENALTY_LIST}}", penalty_list)

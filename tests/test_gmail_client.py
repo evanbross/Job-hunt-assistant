@@ -53,7 +53,7 @@ def _client_with_mocked_service() -> tuple[GmailClient, MagicMock]:
     this file's OAuth-never-triggered-from-code design (see GmailClient's
     module docstring)."""
     with patch.object(GmailClient, "_build_service", return_value=MagicMock()):
-        client = GmailClient()
+        client = GmailClient(user_id=1)
     return client, client._service
 
 

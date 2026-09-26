@@ -43,6 +43,9 @@ from routes import scan
 
 
 class FakeGmailClient:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
     def list_unread_messages(
         self,
         lookback_days: int,
