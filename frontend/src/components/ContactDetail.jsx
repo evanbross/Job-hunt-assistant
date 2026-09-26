@@ -30,11 +30,13 @@ import {
 export default function ContactDetail({
   contact,
   onSaveEmailAddress,
+  onSaveNotes,
   onLogEmail,
   onSetResponse,
   onDeleteEmail,
 }) {
   const [addressDraft, setAddressDraft] = useState(contact.email_address || "");
+  const [notesDraft, setNotesDraft] = useState(contact.notes || "");
   const [sentAtInput, setSentAtInput] = useState(toLocalDateTimeInputValue());
   const [pending, setPending] = useState(false);
 
@@ -53,6 +55,15 @@ export default function ContactDetail({
     run(async () => {
       const saved = await onSaveEmailAddress(contact.id, trimmed);
       if (!saved) setAddressDraft(contact.email_address || "");
+    });
+  };
+
+  const commitNotes = () => {
+    const trimmed = notesDraft.trim();
+    if (trimmed === (contact.notes || "")) return;
+    run(async () => {
+      const saved = await onSaveNotes(contact.id, trimmed);
+      if (!saved) setNotesDraft(contact.notes || "");
     });
   };
 
@@ -84,6 +95,25 @@ export default function ContactDetail({
           onChange={(e) => setAddressDraft(e.target.value)}
           onBlur={commitAddress}
           style={{ flex: 1, maxWidth: "320px" }}
+        />
+      </div>
+
+      <div style={{ ...fieldRow, alignItems: "flex-start", marginTop: "12px" }}>
+        <label
+          htmlFor={`contact-notes-${contact.id}`}
+          style={{ ...fieldLabel, paddingTop: "6px" }}
+        >
+          Notes
+        </label>
+        <textarea
+          id={`contact-notes-${contact.id}`}
+          value={notesDraft}
+          rows={3}
+          maxLength={5000}
+          placeholder="Where you met, what to ask, follow-up ideas"
+          onChange={(e) => setNotesDraft(e.target.value)}
+          onBlur={commitNotes}
+          style={{ flex: 1, maxWidth: "480px", resize: "vertical" }}
         />
       </div>
 

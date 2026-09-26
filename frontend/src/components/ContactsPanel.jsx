@@ -69,7 +69,7 @@ function matchesFilters(contact, { search, emailFilter, recruiterFilter, interes
 
   const needle = search.trim().toLowerCase();
   if (!needle) return true;
-  return [contact.full_name, contact.company_raw, contact.position].some((field) =>
+  return [contact.full_name, contact.company_raw, contact.position, contact.notes].some((field) =>
     (field || "").toLowerCase().includes(needle),
   );
 }
@@ -200,6 +200,9 @@ export default function ContactsPanel() {
   const saveEmailAddress = (contactId, value) =>
     patchContact(contactId, { email_address: value === "" ? null : value });
 
+  const saveNotes = (contactId, value) =>
+    patchContact(contactId, { notes: value === "" ? null : value });
+
   const logEmail = async (contactId, sentAt) => {
     try {
       const res = await sendJson(`/api/contacts/${contactId}/emails`, "POST", { sent_at: sentAt });
@@ -293,7 +296,7 @@ export default function ContactsPanel() {
           <div style={toolbar}>
             <input
               type="search"
-              placeholder="Search name, company, or title"
+              placeholder="Search name, company, title, or notes"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               style={{ flex: "1 1 220px", minWidth: "180px" }}
@@ -422,6 +425,11 @@ export default function ContactsPanel() {
                           {[contact.position, contact.company_raw].filter(Boolean).join(" at ") ||
                             "No title or company"}
                         </div>
+                        {contact.notes && (
+                          <div style={{ ...subtleText, fontStyle: "italic" }} title={contact.notes}>
+                            {contact.notes}
+                          </div>
+                        )}
                       </div>
                       <label style={recruiterLabel}>
                         <input
@@ -453,13 +461,14 @@ export default function ContactsPanel() {
                         onClick={() => setExpandedId(expanded ? null : contact.id)}
                         aria-expanded={expanded}
                       >
-                        {expanded ? "Close" : "Emails"}
+                        {expanded ? "Close" : "Details"}
                       </button>
                     </div>
                     {expanded && (
                       <ContactDetail
                         contact={contact}
                         onSaveEmailAddress={saveEmailAddress}
+                        onSaveNotes={saveNotes}
                         onLogEmail={logEmail}
                         onSetResponse={setResponse}
                         onDeleteEmail={deleteEmail}

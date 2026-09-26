@@ -47,7 +47,7 @@ from ..interfaces import ContactSyncResult
 # scoped (user_id, profile_url) — see contacts_user_profile_url_key.
 class PostgresContactRepository(_BaseRepo):
     # Columns a LinkedIn CSV import is allowed to write. Deliberately excludes
-    # the user-owned columns (interested, is_recruiter) so a re-import never
+    # the user-owned columns (interested, is_recruiter, notes) so a re-import never
     # overwrites them.
     _IMPORT_COLUMNS: frozenset[str] = frozenset(
         {
@@ -63,7 +63,9 @@ class PostgresContactRepository(_BaseRepo):
         }
     )
     # Columns the Contacts tab may edit on a single contact.
-    _EDITABLE_COLUMNS: frozenset[str] = frozenset({"interested", "is_recruiter", "email_address"})
+    _EDITABLE_COLUMNS: frozenset[str] = frozenset(
+        {"interested", "is_recruiter", "email_address", "notes"}
+    )
 
     def get_all(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
@@ -77,7 +79,7 @@ class PostgresContactRepository(_BaseRepo):
         cur = self._execute(
             """
             SELECT c.id, c.full_name, c.company_raw, c.position, c.profile_url,
-                   c.connected_on, c.email_address, c.interested, c.is_recruiter,
+                   c.connected_on, c.email_address, c.interested, c.is_recruiter, c.notes,
                    COALESCE(
                        json_agg(
                            json_build_object(
@@ -103,9 +105,9 @@ class PostgresContactRepository(_BaseRepo):
         """Merge a parsed LinkedIn export into the user's contacts.
 
         Rows already present (same dedup_key) are refreshed in place, keeping
-        the user's interested/is_recruiter/email history; new rows are added.
+        the user's interested/is_recruiter/notes/email history; new rows are added.
         Contacts absent from the file are removed only if the user never acted
-        on them -- anyone flagged, marked recruiter, or emailed is kept."""
+        on them -- anyone flagged, marked recruiter, noted, or emailed is kept."""
         for row in rows:
             unknown = set(row.keys()) - self._IMPORT_COLUMNS
             if unknown:
@@ -141,6 +143,7 @@ class PostgresContactRepository(_BaseRepo):
               AND NOT (c.dedup_key = ANY(%s))
               AND NOT c.interested
               AND NOT c.is_recruiter
+              AND c.notes IS NULL
               AND NOT EXISTS (SELECT 1 FROM contact_emails e WHERE e.contact_id = c.id)
             """,
             (user_id, file_keys),

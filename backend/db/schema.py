@@ -890,7 +890,7 @@ def _migrate(conn: Any) -> None:
     conn.commit()
 
     # ai: claude-sonnet-5 | 2026-09-25
-    # Contacts tab: per-contact user state (interested / is_recruiter /
+    # Contacts tab: per-contact user state (interested / is_recruiter / notes /
     # email address) plus a dedup_key so a re-import can upsert in place instead
     # of the old delete-everything-and-reinsert, which would wipe that state.
     # dedup_key is the LinkedIn profile URL when present, else
@@ -903,6 +903,7 @@ def _migrate(conn: Any) -> None:
     cur.execute(
         "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_recruiter BOOLEAN NOT NULL DEFAULT FALSE"
     )
+    cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS notes TEXT")
     # contact_type (recruiter/personal/NULL) briefly existed before it became
     # the is_recruiter checkbox; carry any flagged recruiters over, then drop it.
     if _has_column(cur, "contacts", "contact_type"):

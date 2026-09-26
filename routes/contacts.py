@@ -65,6 +65,7 @@ contacts_bp = Blueprint("contacts", __name__)
 
 _MAX_EMAIL_ADDRESS_LENGTH = 254
 _MAX_BULK_CONTACT_IDS = 50_000
+_MAX_NOTES_LENGTH = 5000
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -93,6 +94,7 @@ class ContactUpdate(BaseModel):
     interested: StrictBool = False
     is_recruiter: StrictBool = False
     email_address: str | None = None
+    notes: str | None = None
 
     @field_validator("email_address")
     @classmethod
@@ -105,6 +107,16 @@ class ContactUpdate(BaseModel):
         if len(value) > _MAX_EMAIL_ADDRESS_LENGTH or not re.fullmatch(r"[^@\s]+@[^@\s]+", value):
             raise ValueError("not a valid email address")
         return value
+
+    @field_validator("notes")
+    @classmethod
+    def _normalize_notes(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if len(value) > _MAX_NOTES_LENGTH:
+            raise ValueError(f"notes are limited to {_MAX_NOTES_LENGTH} characters")
+        return value or None
 
 
 # ai: claude-sonnet-5 | 2026-09-25

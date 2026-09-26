@@ -275,6 +275,8 @@ def test_update_contact_can_unset_recruiter_flag(monkeypatch: pytest.MonkeyPatch
         {"contact_type": "recruiter"},
         {"interested": "yes"},
         {"email_address": "not-an-email"},
+        {"notes": "x" * 5001},
+        {"notes": 42},
         {"full_name": "Injected"},
     ],
 )
@@ -296,6 +298,17 @@ def test_update_contact_normalizes_blank_email_to_none(monkeypatch: pytest.Monke
     response = client.patch("/api/contacts/1", json={"email_address": "  "})
     assert response.status_code == 200
     assert contacts.updates == [(1, {"email_address": None})]
+
+
+def test_update_contact_trims_notes_and_blank_becomes_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contacts = FakeContactsRepo([{"id": 1}])
+    client = _contacts_client(monkeypatch, contacts)
+
+    assert client.patch("/api/contacts/1", json={"notes": "  met at PyCon \n"}).status_code == 200
+    assert client.patch("/api/contacts/1", json={"notes": "   "}).status_code == 200
+    assert contacts.updates == [(1, {"notes": "met at PyCon"}), (1, {"notes": None})]
 
 
 def test_update_contact_unknown_id_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:

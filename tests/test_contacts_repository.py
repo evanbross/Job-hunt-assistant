@@ -283,3 +283,33 @@ def test_bulk_set_recruiter_updates_only_listed_contacts_owned_by_user(pg_dsn: s
         }["Bob"] is False
     finally:
         conn.close()
+
+
+# ai: claude-sonnet-5 | 2026-09-25
+def test_notes_survive_reimport_and_protect_contact_from_pruning(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        repo.sync_import(
+            user_id,
+            [
+                _import_row(),
+                _import_row(full_name="Noted Nora", profile_url="https://linkedin.com/in/nora"),
+            ],
+        )
+        by_name = {c["full_name"]: c["id"] for c in repo.get_all(user_id)}
+        assert repo.update(user_id, by_name["Jane Doe"], {"notes": "Hiring manager at Acme"})
+        assert repo.update(user_id, by_name["Noted Nora"], {"notes": "Ask about referral"})
+        conn.commit()
+
+        result = repo.sync_import(user_id, [_import_row(position="Director")])
+        conn.commit()
+
+        assert result.removed == 0
+        listed = {c["full_name"]: c for c in repo.list_with_emails(user_id)}
+        assert set(listed) == {"Jane Doe", "Noted Nora"}
+        assert listed["Jane Doe"]["notes"] == "Hiring manager at Acme"
+        assert listed["Jane Doe"]["position"] == "Director"
+    finally:
+        conn.close()
