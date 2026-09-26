@@ -61,3 +61,7 @@ Thumbs.db
 /dump.json
 /tmp
 .claude/settings.local.json
+
+# Production deployment secrets (deploy/.env.production.example is the template)
+deploy/.env.production
+deploy/secrets/

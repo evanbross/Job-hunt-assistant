@@ -50,6 +50,7 @@ from celery.exceptions import OperationalError
 from celery.signals import worker_init
 
 import config
+from backend.security.redis_tls import redis_ssl_options
 from backend.security.secrets_policy import (
     InsecureSecretError,
     validate_encryption_config,
@@ -79,6 +80,12 @@ celery_app = Celery(
         "routes.greenhouse",
     ],
 )
+
+# ai: claude-sonnet-5 | 2026-09-26 -- a rediss:// URL means TLS; verify the server
+# certificate against REDIS_TLS_CA_FILE (see backend/security/redis_tls.py).
+_redis_ssl = redis_ssl_options(config.REDIS_URL, config.REDIS_TLS_CA_FILE)
+if _redis_ssl is not None:
+    celery_app.conf.update(broker_use_ssl=_redis_ssl, redis_backend_use_ssl=_redis_ssl)
 
 celery_app.conf.update(
     task_serializer="json",

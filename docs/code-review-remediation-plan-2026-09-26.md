@@ -282,3 +282,53 @@ Status: **implemented, not yet committed.**
 Not done here (still open in this plan): production secret sourcing from a secrets
 manager (this is env-var based), audit logging of secret rotation, and the item 4
 infrastructure hardening.
+
+## Item 4 progress (2026-09-26)
+
+Status: **implemented and tested; two repositories changed (this one and `../infra`),
+nothing committed in either.** The running dev stack was NOT restarted: the new port
+bindings only take effect when its containers are recreated
+(`cd ../infra && docker compose up -d`).
+
+**Dev stack (`../infra`)**
+- Every published port (Caddy 80 and admin 7019, Redis, MailHog SMTP + UI, MinIO API +
+  console) is bound to `127.0.0.1`. Nothing is reachable from the LAN or a Tailscale
+  peer. The phone-over-Tailscale setup is unaffected: it talks to Flask on :5004
+  directly and never went through Caddy.
+- **Caddy admin API.** Tested in throwaway containers: setting `origins` alone did
+  nothing (Caddy disables Host checking when the admin API listens on a wildcard
+  address, which Docker port publishing requires). `"enforce_origin": true` is what
+  works: a browser-borne request (any page's `Origin`, including DNS-rebinding
+  patterns) gets 403, while `caddy_registry` (now sending a matching `Origin` on every
+  admin call) works. Any other client of the admin API must send an `Origin`.
+- The `caddy.localhost` alias that proxied the admin API through the public :80
+  listener is removed, and a Caddy still running it has it deleted on first contact.
+  `caddy_registry`'s public functions are unchanged (BizMan and CostcoPrices import it).
+- **MinIO** root credentials now come from `../infra/.env` (git-ignored, generated);
+  compose refuses to start MinIO without them. The committed `admin` / `password` are gone.
+- **Redis** password is opt-in (`REDIS_PASSWORD`) because MySitter connects to
+  `dev_redis` without one; unset keeps today's behaviour.
+
+**Production reference (`deploy/`)**, validated with `docker compose config`,
+`caddy validate`, and a live run of the Redis service:
+- Caddy is the only thing publishing ports (80/443); the admin API is off; security
+  headers and a body-size cap are set (microphone stays allowed for the voice feature).
+- Redis: TLS only (plain port disabled), password required, internal-only network
+  with no internet route, runs as its own user with a read-only root filesystem and
+  every capability dropped. Verified: correct password works, wrong password and
+  plain-text connections are refused, the network has no route out.
+- **Celery over TLS.** New `backend/security/redis_tls.py`: a `rediss://` URL
+  requires certificate verification against `REDIS_TLS_CA_FILE` and refuses to
+  proceed without a CA rather than downgrading. Verified against the real service
+  from a container (broker and result backend connect; a wrong CA is rejected).
+  `scripts/generate_redis_tls.py` creates the CA and server certificate (a live test
+  found Python 3.13's strict verification needs key-identifier extensions).
+- Every secret is a required compose variable; `deploy/.env.production` and
+  `deploy/secrets/` are git-ignored.
+
+**Not included (deliberately, see `deploy/README.md`):** the application image. `app.py`
+is a desktop launcher (Vite, its own Celery worker, dev-Caddy registration), so a
+production image needs a WSGI server, managed listener/WebSocket processes, and a
+container entrypoint. That is a separate piece of work and should be item 4b. Also
+open: `*_FILE` secret support, and the extension deriving the WebSocket host only for
+`*.localhost` names.

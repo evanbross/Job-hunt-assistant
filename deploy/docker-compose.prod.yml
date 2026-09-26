@@ -1,0 +1,135 @@
+# Production reference: reverse proxy + broker + app/worker, with the network split so
+# that only Caddy is reachable from outside and Redis is reachable from nothing but
+# the app and workers. See deploy/README.md before using; it lists what this does NOT
+# include (notably the application image).
+#
+#   cp deploy/.env.production.example deploy/.env.production      # then fill it in
+#   python scripts/generate_redis_tls.py                          # once
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d
+#
+# Differences from ../infra (the shared DEV stack) on purpose:
+#   * no MailHog, no MinIO, no Caddy admin API ("admin off" in the Caddyfile)
+#   * Redis requires a password AND TLS, has no published port, and sits on an
+#     internal-only network with no route to the internet
+#   * nothing is bound to a host port except Caddy's 80/443
+#   * every secret is a required variable: compose refuses to start without it
+
+name: jha-prod
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN, the public host name (e.g. jobs.example.com)}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL, the address Let's Encrypt can reach you at}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # issued certificates; losing it forces re-issuance
+      - caddy_config:/config
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    networks: [edge, egress]     # edge: to the app; egress: to reach Let's Encrypt
+    depends_on:
+      - app
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    # TLS only (plain port disabled). The password is read by the container's shell
+    # from its environment, so it never appears in the command line compose records.
+    command:
+      - sh
+      - -c
+      - >-
+        exec redis-server
+        --port 0
+        --tls-port 6379
+        --tls-cert-file /tls/redis.crt
+        --tls-key-file /tls/redis.key
+        --tls-ca-cert-file /tls/ca.crt
+        --tls-auth-clients no
+        --requirepass "$$REDIS_PASSWORD"
+        --appendonly yes
+        --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+      - ./secrets/redis-tls:/tls:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'redis-cli --tls --cacert /tls/ca.crt -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Run as the image's unprivileged user from the start. (With `command: sh -c ...` the
+    # image entrypoint's drop-from-root step is bypassed, so it must not start as root.)
+    user: redis
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [backend]                # internal-only: no published port, no internet route
+
+  # The application image is not part of this repository yet -- see deploy/README.md.
+  # Everything below is what it must be given.
+  app:
+    image: ${JHA_IMAGE:-jha-app:unset}
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
+      REDIS_TLS_CA_FILE: /tls/ca.crt
+      # Bind inside the container network; Caddy is the only thing that reaches these.
+      FLASK_HOST: 0.0.0.0
+      JOB_IMPORT_LISTENER_HOST: 0.0.0.0
+      APP_ENV: production
+    volumes:
+      - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [edge, backend, egress]  # egress: Postgres, the AI providers, Gmail
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: ${JHA_IMAGE:-jha-app:unset}
+    restart: unless-stopped
+    command: ["celery", "-A", "backend.celery_app", "worker", "--pool=threads", "--concurrency=4", "--loglevel=info"]
+    env_file: .env.production
+    environment:
+      REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
+      REDIS_TLS_CA_FILE: /tls/ca.crt
+      APP_ENV: production
+    volumes:
+      - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [backend, egress]        # not reachable from the internet at all
+    depends_on:
+      redis:
+        condition: service_healthy
+
+networks:
+  # Caddy <-> app only.
+  edge: {}
+  # app, workers and Redis. `internal: true` means containers here have no route to
+  # the outside world, so a compromised Redis cannot call out and nothing outside can
+  # reach it. app/worker also join `egress` for their own outbound calls.
+  backend:
+    internal: true
+  # Outbound access only (no published ports live on this network).
+  egress: {}
+
+volumes:
+  caddy_data:
+  caddy_config:
+  redis_data:

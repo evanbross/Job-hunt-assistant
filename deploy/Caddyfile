@@ -1,0 +1,53 @@
+# Production reverse proxy. TLS certificates are obtained and renewed automatically.
+# Values come from the environment (see docker-compose.prod.yml).
+
+{
+	# The admin API can reconfigure the proxy; production has no use for it, so it is
+	# off entirely rather than merely firewalled.
+	admin off
+	email {$ACME_EMAIL}
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	# Largest legitimate body is the extension listener's captured page (15 MB by
+	# default); this front door needs no more than that.
+	request_body {
+		max_size 16MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# The voice assistant needs the microphone, so it is allowed for this origin.
+		Permissions-Policy "camera=(), geolocation=(), microphone=(self)"
+		-Server
+	}
+
+	# Caddy sets X-Forwarded-For / -Proto / -Host on proxied requests itself.
+	reverse_proxy app:5004
+}
+
+# Browser-extension endpoints (HTTP + WebSocket). The extension's listenerUrl points here.
+listener.{$APP_DOMAIN} {
+	request_body {
+		max_size 16MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	reverse_proxy app:8765
+}
+
+listener-ws.{$APP_DOMAIN} {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	reverse_proxy app:8766
+}
