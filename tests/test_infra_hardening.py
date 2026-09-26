@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import importlib.util
+import ipaddress
 import socket
 import ssl
 import threading
@@ -26,6 +27,7 @@ from typing import Any
 import pytest
 import yaml
 
+from backend.security.client_ip import parse_trusted_proxies
 from backend.security.redis_tls import redis_ssl_options
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -195,3 +197,16 @@ def test_the_production_caddyfile_disables_the_admin_api_and_sets_security_heade
 def test_production_secrets_are_git_ignored() -> None:
     ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert "deploy/.env.production" in ignored and "deploy/secrets/" in ignored
+
+
+def test_the_app_trusts_forwarding_headers_from_exactly_the_proxy(prod_compose: dict[str, Any]) -> None:
+    """TRUSTED_PROXIES must be Caddy's pinned address on the edge network: not a wider range
+    (any other container on the network could forge client addresses) and not something
+    that drifts from where Caddy actually sits."""
+    caddy_address = prod_compose["services"]["caddy"]["networks"]["edge"]["ipv4_address"]
+    subnet = ipaddress.ip_network(prod_compose["networks"]["edge"]["ipam"]["config"][0]["subnet"])
+
+    trusted = parse_trusted_proxies(prod_compose["services"]["app"]["environment"]["TRUSTED_PROXIES"])
+
+    assert ipaddress.ip_address(caddy_address) in subnet
+    assert [str(network) for network in trusted] == [f"{caddy_address}/32"]

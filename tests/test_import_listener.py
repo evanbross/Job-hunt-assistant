@@ -47,6 +47,7 @@ from websockets.exceptions import InvalidStatus
 from websockets.sync.client import connect
 
 import backend.queue_websocket as queue_websocket
+import backend.scanning.import_listener as import_listener
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
 from backend.queue_websocket import QueueWebSocketServer
 from backend.scanning.import_listener import (
@@ -54,6 +55,8 @@ from backend.scanning.import_listener import (
     JobImportListener,
     bearer_token,
 )
+from backend.security.client_ip import parse_trusted_proxies
+from backend.security.rate_limiter import Policy
 
 USER_A_TOKEN = "jha_token-for-user-a"
 USER_B_TOKEN = "jha_token-for-user-b"
@@ -466,3 +469,97 @@ def test_websocket_pushes_queue_ready_only_to_the_user_with_pending_work(
         assert json.loads(client_a.recv(timeout=3)) == {"type": "queue-ready"}
         with pytest.raises(TimeoutError):
             client_b.recv(timeout=0.5)
+
+
+# ─── throttling ───────────────────────────────────────────────────────────────
+
+
+def _limit_failures(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
+    monkeypatch.setattr(import_listener, "AUTH_FAILURE_IP", Policy("test-listener-fail", limit, 900))
+
+
+def test_repeated_authentication_failures_from_one_address_are_throttled(
+    running_listener: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _limit_failures(monkeypatch, 3)
+    listener, recorder, _ = running_listener
+    for _ in range(3):
+        assert _request(listener, "/queue", token="jha_wrong")[0] == HTTPStatus.UNAUTHORIZED
+
+    status, _, headers = _request(listener, "/queue", token="jha_wrong")
+
+    assert status == HTTPStatus.TOO_MANY_REQUESTS
+    assert int(headers["Retry-After"]) > 0
+    calls_before = len(recorder.auth_calls)
+    _request(listener, "/queue", token="jha_wrong")
+    assert len(recorder.auth_calls) == calls_before  # refused before touching the database
+
+
+def test_a_missing_token_counts_as_a_failure_too(running_listener: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _limit_failures(monkeypatch, 2)
+    listener, _, _ = running_listener
+    for _ in range(2):
+        _request(listener, "/queue", token=None)
+
+    assert _request(listener, "/queue", token=None)[0] == HTTPStatus.TOO_MANY_REQUESTS
+
+
+def test_forwarded_for_from_an_untrusted_peer_does_not_dodge_the_failure_limit(
+    running_listener: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _limit_failures(monkeypatch, 2)
+    listener, _, _ = running_listener  # no trusted proxies configured
+    for n in range(2):
+        _request(listener, "/queue", token="jha_wrong", headers={"X-Forwarded-For": f"10.9.9.{n}"})
+
+    status, _, _ = _request(listener, "/queue", token="jha_wrong", headers={"X-Forwarded-For": "10.9.9.99"})
+
+    assert status == HTTPStatus.TOO_MANY_REQUESTS
+
+
+def test_behind_a_trusted_proxy_failures_are_counted_per_real_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _limit_failures(monkeypatch, 2)
+    listener = JobImportListener(
+        host="127.0.0.1",
+        port=0,
+        max_bytes=1_000_000,
+        authenticate=lambda token: _TOKENS.get(token),
+        submit_capture=lambda user_id, body: ({}, 200),
+        claim_queue=lambda user_id: [],
+        trusted_proxies=parse_trusted_proxies("127.0.0.1"),  # the test client is the "proxy"
+    )
+    listener.start()
+    try:
+        for _ in range(2):
+            _request(listener, "/queue", token="jha_wrong", headers={"X-Forwarded-For": "203.0.113.7"})
+
+        blocked = _request(listener, "/queue", token="jha_wrong", headers={"X-Forwarded-For": "203.0.113.7"})[0]
+        other_client = _request(listener, "/queue", token="jha_wrong", headers={"X-Forwarded-For": "203.0.113.8"})[0]
+        valid_other_client = _request(listener, "/queue", headers={"X-Forwarded-For": "203.0.113.8"})[0]
+    finally:
+        listener.stop()
+
+    assert blocked == HTTPStatus.TOO_MANY_REQUESTS
+    assert other_client == HTTPStatus.UNAUTHORIZED
+    assert valid_other_client == HTTPStatus.OK
+
+
+def test_a_token_over_its_request_rate_is_throttled_without_affecting_other_tokens(
+    running_listener: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(import_listener, "TOKEN_REQUESTS", Policy("test-listener-rate", 3, 60))
+    listener, _, _ = running_listener
+    statuses = [_request(listener, "/queue", token=USER_A_TOKEN)[0] for _ in range(5)]
+
+    assert statuses == [200, 200, 200, HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.TOO_MANY_REQUESTS]
+    assert _request(listener, "/queue", token=USER_B_TOKEN)[0] == HTTPStatus.OK
+
+
+def test_the_health_check_is_not_throttled(running_listener: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _limit_failures(monkeypatch, 1)
+    listener, _, _ = running_listener
+    _request(listener, "/queue", token="jha_wrong")
+
+    assert _request(listener, "/health", token=None)[0] == HTTPStatus.OK

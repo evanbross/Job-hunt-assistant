@@ -84,6 +84,11 @@ from backend.scanning.import_listener import (
     start_job_import_listener,
 )
 from backend.scanning.schedulers import start_jd_health_check_scheduler
+from backend.security.client_ip import (
+    Network,
+    TrustedProxyMiddleware,
+    parse_trusted_proxies,
+)
 from backend.security.secrets_policy import InsecureSecretError
 from backend.security.session_cookies import (
     normalize_secure_mode,
@@ -658,6 +663,18 @@ def _enforce_startup_secrets() -> str:
 
 
 # ai: claude-sonnet-5 | 2026-09-26
+def _install_trusted_proxies() -> tuple[Network, ...]:
+    """Make request.remote_addr / request.scheme reflect the real client when (and only
+    when) the connection came from a proxy listed in TRUSTED_PROXIES. Returns the parsed
+    networks so the extension listener can apply the same rule."""
+    trusted = parse_trusted_proxies(config.TRUSTED_PROXIES)
+    if trusted:
+        app.wsgi_app = TrustedProxyMiddleware(app.wsgi_app, trusted)  # type: ignore[method-assign]
+        logger.info("Trusting forwarding headers from: %s", ", ".join(str(n) for n in trusted))
+    return trusted
+
+
+# ai: claude-sonnet-5 | 2026-09-26
 def _apply_session_cookie_config(app_env: str) -> None:
     """Set the session cookie flags from the app's real base URL (the database
     setting, falling back to .env if the database is unreachable)."""
@@ -705,6 +722,7 @@ def _init_runtime_state() -> None:
     # frontend) and keeps retrying in the background.
     init_db_with_retry(config.DATABASE_URL)
     _apply_session_cookie_config(app_env)
+    trusted_proxies = _install_trusted_proxies()
 
     _import_listener = start_job_import_listener(
         _authenticate_extension_token,
@@ -715,6 +733,7 @@ def _init_runtime_state() -> None:
         get_answers=_get_application_answers_for_listener,
         learn_answer=_learn_application_answer,
         ws_tickets=_ws_tickets,
+        trusted_proxies=trusted_proxies,
     )
     _queue_ws_server = start_queue_websocket_server(
         _ws_tickets.redeem, _browser_capture_queue_has_pending

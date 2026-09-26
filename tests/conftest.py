@@ -42,6 +42,7 @@ app's own POSTGRES_*/DATABASE_URL vars."""
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import psycopg2
@@ -61,6 +62,7 @@ os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026"
 
 import config  # noqa: E402
 from backend.db import init_db  # noqa: E402
+from backend.security.rate_limiter import RateLimiter, set_rate_limiter  # noqa: E402
 
 load_dotenv()
 
@@ -112,6 +114,37 @@ _ALL_TABLES = (
     "application_answers",
     "user_accounts",
 )
+
+
+class FakeClock:
+    """Wall clock the rate limiter reads, so tests can move time without sleeping."""
+
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+@pytest.fixture
+def rate_clock() -> FakeClock:
+    return FakeClock()
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+@pytest.fixture(autouse=True)
+def isolated_rate_limiter(rate_clock: FakeClock) -> Iterator[RateLimiter]:
+    """Every test gets fresh in-memory counters. Without this the process-wide limiter
+    would point at the developer's real Redis, and counts would leak between tests (and
+    into the running app's own limits)."""
+    limiter = RateLimiter(clock=rate_clock)
+    set_rate_limiter(limiter)
+    yield limiter
+    set_rate_limiter(None)
 
 
 # ai: claude-sonnet-5 | 2026-09-26

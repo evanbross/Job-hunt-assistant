@@ -60,9 +60,7 @@ _PASSWORD = "correct horse battery staple"  # noqa: S105
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
-    session_auth_module._rate_limit_attempts.clear()
     yield
-    session_auth_module._rate_limit_attempts.clear()
 
 
 @pytest.fixture

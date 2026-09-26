@@ -57,6 +57,30 @@ verify the server certificate against `REDIS_TLS_CA_FILE` (the compose file sets
 both). A `rediss://` URL without a CA file is an error, not a silent downgrade to
 unverified TLS. The certificate is issued for the host name `redis`.
 
+## Client addresses and rate limiting
+
+Login, registration, password reset and the extension listener throttle by client
+address (and by account), so the app has to know the real address behind Caddy. Two
+settings make that safe:
+
+* Caddy has a fixed address on the `edge` network (`172.28.0.2`) and the app is given
+  `TRUSTED_PROXIES=172.28.0.2`. Only a connection from that address may say which client
+  address and scheme a request had (`X-Forwarded-For` / `X-Forwarded-Proto`); the same
+  header from anyone else, including a caller who reaches the app directly, is ignored.
+  If you change the subnet or the address, change both together.
+* Caddy replaces any `X-Forwarded-For` sent by a client with the address it actually saw.
+  If you put another proxy or CDN in front of Caddy, that proxy must be listed in Caddy's
+  `servers { trusted_proxies ... }` block, and `TRUSTED_PROXIES` stays as the address of
+  Caddy (the last hop the app can vouch for), not the CDN's.
+
+Counters are kept in the same Redis (`jha:rl:*` keys), so every app process enforces one
+limit. If Redis is unreachable the app logs a warning and falls back to per-process
+counters until it returns; it neither locks users out nor stops limiting.
+
+Not built: per-tenant AI cost quotas. Users bring their own AI provider keys, so the
+spend that could run away is theirs, not the operator's. Revisit this if the service ever
+supplies AI access itself.
+
 ## Browser extension
 
 The extension talks to two endpoints, exposed as `listener.<APP_DOMAIN>` (HTTP) and
@@ -75,6 +99,4 @@ extended before the push channel works; HTTP polling works regardless.
    work. `JHA_IMAGE` in the compose file is a placeholder until that exists.
 2. **Reading secrets from files.** Secrets are environment variables. Supporting the
    `*_FILE` convention (Docker/Kubernetes secrets) is a small follow-up.
-3. **Trusted-proxy handling in the app** (correct client addresses for rate limiting
-   behind Caddy): item 5 in `docs/code-review-remediation-plan-2026-09-26.md`.
-4. **Database provisioning, backups, monitoring, and log shipping.**
+3. **Database provisioning, backups, monitoring, and log shipping.**

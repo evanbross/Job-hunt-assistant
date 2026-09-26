@@ -332,3 +332,57 @@ production image needs a WSGI server, managed listener/WebSocket processes, and 
 container entrypoint. That is a separate piece of work and should be item 4b. Also
 open: `*_FILE` secret support, and the extension deriving the WebSocket host only for
 `*.localhost` names.
+
+## Item 5 progress (2026-09-26)
+
+Status: **implemented and tested, nothing committed.**
+
+**Trusted-proxy handling** (`backend/security/client_ip.py`, config `TRUSTED_PROXIES`)
+- Empty by default: no proxy is trusted and forwarding headers are ignored, which is right
+  when the app is reached directly. Entries are IPs or CIDRs; a bad entry or a `/0` fails
+  startup.
+- `X-Forwarded-For` / `X-Forwarded-Proto` are honoured only when the immediate peer is in
+  that set, so a caller who reaches Flask or the listener directly cannot forge its
+  address. The forwarded chain is walked from the right and stops at the first hop that is
+  not trusted or not an IP.
+- A WSGI middleware rewrites `REMOTE_ADDR` and `wsgi.url_scheme` (installed in
+  `_init_runtime_state`). The scheme matters beyond throttling: the CSRF origin guard in
+  `app.py` compares against `request.scheme`, which is `http` behind a TLS-terminating
+  proxy and would reject every write.
+- The production compose file pins Caddy to `172.28.0.2` on `edge` and sets
+  `TRUSTED_PROXIES` to exactly that address (guarded by a test).
+
+**Shared limiter** (`backend/security/rate_limiter.py`)
+- Sliding window in Redis sorted sets (same Redis and TLS settings as Celery, `jha:rl:*`
+  keys), so every worker shares one count. Emails and tokens are hashed before they become
+  keys. Falls back to per-process counters, with a warning and a 30 s retry, if Redis is
+  down: not fail-open, not a login outage.
+
+**Policies** (`routes/session_auth.py`, `backend/scanning/import_listener.py`)
+- Login: address 30/15 min, account 15/15 min, address+account 5/15 min. Failures only;
+  a success clears the pair but not the address or account counters, so one valid login
+  does not reset the budget for guessing others. Same behaviour for accounts that do not exist.
+- Registration: address 10/h and target email 3/h, every attempt counted (each one sends
+  mail or probes existence). Forgot password: address 10/15 min, plus 3/h per email that is
+  silently suppressed so the response never says which addresses exist.
+- Token submission (reset, complete registration, confirm email change): 20 failures/15 min
+  per address, shared across the three. Change password: 5 failures/15 min per user.
+  Email change: 5/h per user and 3/h per target address.
+- Listener: 120 failed authentications/15 min per resolved client address (sized so one
+  stale extension token retrying does not lock out valid tokens behind the same address)
+  and 600 requests/min per token. Responses are 429 with `Retry-After`.
+
+**Judgement calls**
+- The account-wide login limit lets an attacker who knows an email force a temporary
+  lockout for that account. The pair limit and account limit are the standard trade; the
+  account limit is set at 15 so it takes deliberate distributed effort. A lockout stays
+  visible (429 with `Retry-After`) rather than silent.
+- **Per-tenant AI cost quotas: not built.** Users supply their own provider keys, so
+  runaway spend is theirs. Revisit if the service ever provides AI access itself.
+- Not throttled: the queue WebSocket (single-use 256-bit tickets, issued by the throttled
+  listener) and the Google OAuth callback.
+
+**Tests:** `tests/test_client_ip.py`, `tests/test_rate_limiter.py` (both backends, the
+Redis one against the real dev Redis, skipped if none), throttle sections in
+`tests/test_session_auth.py` and `tests/test_import_listener.py`. `tests/conftest.py` gives
+every test its own in-memory limiter and a controllable clock.

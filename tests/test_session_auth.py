@@ -67,6 +67,7 @@ from werkzeug.security import generate_password_hash
 import app as app_module
 import config
 import routes.session_auth as session_auth_module
+from backend.security.client_ip import TrustedProxyMiddleware, parse_trusted_proxies
 from backend.utils.utils import get_repos
 
 _TEST_EMAIL = "owner@example.com"
@@ -76,9 +77,7 @@ _TEST_PASSWORD = "correct horse battery staple"  # noqa: S105
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
-    session_auth_module._rate_limit_attempts.clear()
     yield
-    session_auth_module._rate_limit_attempts.clear()
 
 
 @pytest.fixture
@@ -211,13 +210,24 @@ def test_start_registration_rejects_blank_email(client, sent_emails) -> None:
     assert resp.status_code == 400
 
 
-def test_start_registration_rate_limited(client, sent_emails) -> None:
+def test_start_registration_is_limited_per_target_email(client, sent_emails) -> None:
     _seed_active_account()
-    for _ in range(session_auth_module._RATE_LIMIT_MAX_ATTEMPTS):
+    for _ in range(session_auth_module.REGISTER_EMAIL.limit):
         resp = _start_registration(client, sent_emails)  # duplicate -> 409 each time
         assert resp.status_code == 409
 
     locked = _start_registration(client, sent_emails)
+    assert locked.status_code == 429
+    assert int(locked.headers["Retry-After"]) > 0
+    # a different target from the same address is unaffected
+    assert _start_registration(client, sent_emails, email="someone-else@example.com").status_code == 202
+
+
+def test_start_registration_is_limited_per_address_across_emails(client, sent_emails) -> None:
+    for n in range(session_auth_module.REGISTER_IP.limit):
+        assert _start_registration(client, sent_emails, email=f"user{n}@example.com").status_code == 202
+
+    locked = _start_registration(client, sent_emails, email="one-more@example.com")
     assert locked.status_code == 429
 
 
@@ -309,19 +319,84 @@ def test_login_email_is_case_insensitive(client) -> None:
 
 def test_login_rate_limit_locks_out_after_max_attempts(client) -> None:
     _seed_active_account()
-    for _ in range(session_auth_module._RATE_LIMIT_MAX_ATTEMPTS):
+    for _ in range(session_auth_module.LOGIN_PAIR.limit):
         assert _login(client, password="wrong").status_code == 401
-    assert _login(client).status_code == 429
+    locked = _login(client)  # even the right password is refused while locked
+    assert locked.status_code == 429
+    assert int(locked.headers["Retry-After"]) > 0
 
 
-def test_login_rate_limit_resets_after_window(client, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_login_rate_limit_resets_after_window(client, rate_clock) -> None:
     _seed_active_account()
-    fake_now = [1_000.0]
-    monkeypatch.setattr(session_auth_module.time, "monotonic", lambda: fake_now[0])
-    for _ in range(session_auth_module._RATE_LIMIT_MAX_ATTEMPTS):
+    for _ in range(session_auth_module.LOGIN_PAIR.limit):
         _login(client, password="wrong")
-    fake_now[0] += session_auth_module._RATE_LIMIT_WINDOW_SECONDS + 1
+    rate_clock.advance(session_auth_module.LOGIN_PAIR.window_seconds + 1)
     assert _login(client).status_code == 200
+
+
+def test_login_lockout_applies_the_same_way_to_accounts_that_do_not_exist(client) -> None:
+    for _ in range(session_auth_module.LOGIN_PAIR.limit):
+        assert _login(client, email="nobody@example.com", password="x").status_code == 401
+    assert _login(client, email="nobody@example.com", password="x").status_code == 429
+
+
+def test_login_lockout_is_per_account_not_only_per_address(client) -> None:
+    _seed_active_account()
+    for _ in range(session_auth_module.LOGIN_PAIR.limit):
+        assert _login(client, password="wrong").status_code == 401
+
+    # the same address can still try a different account...
+    assert _login(client, email="other@example.com", password="x").status_code == 401
+    # ...and the locked account is reachable from another address only until that
+    # address's own pair budget is spent (the pair key includes the address)
+    other_address = {"environ_overrides": {"REMOTE_ADDR": "203.0.113.9"}}
+    assert client.post(
+        "/api/login", json={"email": _TEST_EMAIL, "password": _TEST_PASSWORD}, **other_address
+    ).status_code == 200
+
+
+def test_login_account_limit_blocks_distributed_guessing(client) -> None:
+    _seed_active_account()
+    for n in range(session_auth_module.LOGIN_ACCOUNT.limit):
+        response = client.post(
+            "/api/login",
+            json={"email": _TEST_EMAIL, "password": "wrong"},
+            environ_overrides={"REMOTE_ADDR": f"198.51.100.{n + 1}"},
+        )
+        assert response.status_code == 401  # each address stays under its own pair limit
+
+    blocked = client.post(
+        "/api/login",
+        json={"email": _TEST_EMAIL, "password": _TEST_PASSWORD},
+        environ_overrides={"REMOTE_ADDR": "198.51.100.200"},
+    )
+    assert blocked.status_code == 429
+
+
+def test_login_address_limit_blocks_spraying_many_accounts(client) -> None:
+    for n in range(session_auth_module.LOGIN_IP.limit):
+        assert _login(client, email=f"target{n}@example.com", password="x").status_code == 401
+    assert _login(client, email="fresh@example.com", password="x").status_code == 429
+
+
+def test_a_successful_login_does_not_reset_the_account_counter(client) -> None:
+    _seed_active_account()
+
+    def attempt(n: int, password: str) -> int:
+        return client.post(
+            "/api/login",
+            json={"email": _TEST_EMAIL, "password": password},
+            environ_overrides={"REMOTE_ADDR": f"198.51.100.{n}"},
+        ).status_code
+
+    limit = session_auth_module.LOGIN_ACCOUNT.limit
+    for n in range(1, limit):
+        assert attempt(n, "wrong") == 401
+    assert attempt(limit, _TEST_PASSWORD) == 200  # right password, budget not yet spent
+    assert attempt(limit + 1, "wrong") == 401  # the limit-th failure since the window began
+
+    # had the success wiped the account counter, this would be attempt 2, not 16
+    assert attempt(limit + 2, _TEST_PASSWORD) == 429
 
 
 def test_logout_clears_session(client) -> None:
@@ -454,10 +529,10 @@ def test_forgot_password_for_account_mid_registration_sends_nothing(client, sent
 
 def test_forgot_password_rate_limited_independently_of_login(client, sent_emails) -> None:
     _seed_active_account()
-    for _ in range(session_auth_module._RATE_LIMIT_MAX_ATTEMPTS):
-        resp = client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    for n in range(session_auth_module.RESET_REQUEST_IP.limit):
+        resp = client.post("/api/account/forgot-password", json={"email": f"user{n}@example.com"})
         assert resp.status_code == 202
-    locked = client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    locked = client.post("/api/account/forgot-password", json={"email": "one-more@example.com"})
     assert locked.status_code == 429
 
     # a maxed-out forgot-password bucket must not block actual login attempts
@@ -595,3 +670,157 @@ def test_change_password_rejects_short_new_password(client) -> None:
         json={"current_password": _TEST_PASSWORD, "new_password": "short"},
     )
     assert resp.status_code == 400
+
+
+# ─── throttling: the remaining account routes ───────────────────────────────
+
+
+def test_forgot_password_never_reveals_that_one_address_is_being_flooded(client, sent_emails) -> None:
+    """Past the per-email limit the reset mail stops, but the answer stays identical --
+    a different response would say which addresses are registered."""
+    _seed_active_account()
+    responses = [
+        client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+        for _ in range(session_auth_module.RESET_REQUEST_EMAIL.limit + 2)
+    ]
+
+    assert {(r.status_code, r.get_data()) for r in responses} == {(202, responses[0].get_data())}
+    assert len(sent_emails) == session_auth_module.RESET_REQUEST_EMAIL.limit
+
+
+def test_forgot_password_per_email_limit_is_case_insensitive(client, sent_emails) -> None:
+    _seed_active_account()
+    for n in range(session_auth_module.RESET_REQUEST_EMAIL.limit + 2):
+        email = _TEST_EMAIL.upper() if n % 2 else _TEST_EMAIL
+        client.post("/api/account/forgot-password", json={"email": email})
+
+    assert len(sent_emails) == session_auth_module.RESET_REQUEST_EMAIL.limit
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/account/reset-password", {"token": "guess", "password": "new-password-123"}),
+        ("/api/account/complete-registration", {"token": "guess", "password": "new-password-123"}),
+        ("/api/account/confirm-email-change", {"token": "guess"}),
+    ],
+)
+def test_token_guessing_is_throttled_per_address(client, path: str, payload: dict) -> None:
+    for _ in range(session_auth_module.TOKEN_FAILURE_IP.limit):
+        assert client.post(path, json=payload).status_code == 400
+
+    blocked = client.post(path, json=payload)
+    assert blocked.status_code == 429
+    assert int(blocked.headers["Retry-After"]) > 0
+
+
+def test_failed_token_guesses_on_one_route_also_block_the_others(client) -> None:
+    for _ in range(session_auth_module.TOKEN_FAILURE_IP.limit):
+        client.post("/api/account/confirm-email-change", json={"token": "guess"})
+
+    resp = client.post(
+        "/api/account/reset-password", json={"token": "guess", "password": "new-password-123"}
+    )
+    assert resp.status_code == 429
+
+
+def test_a_valid_token_is_not_counted_against_the_address(client, sent_emails) -> None:
+    _seed_active_account()
+    for _ in range(session_auth_module.TOKEN_FAILURE_IP.limit - 1):
+        client.post("/api/account/confirm-email-change", json={"token": "guess"})
+
+    client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    token = _token_from_link(sent_emails[-1]["link"])
+    resp = client.post(
+        "/api/account/reset-password", json={"token": token, "password": "new-password-123"}
+    )
+
+    assert resp.status_code == 200
+
+
+def test_change_password_current_password_guessing_is_throttled(client) -> None:
+    _seed_active_account()
+    _login(client)
+    body = {"current_password": "wrong", "new_password": "new-password-123"}
+    for _ in range(session_auth_module.PASSWORD_CHANGE_USER.limit):
+        assert client.post("/api/account/change-password", json=body).status_code == 401
+
+    locked = client.post(
+        "/api/account/change-password",
+        json={"current_password": _TEST_PASSWORD, "new_password": "new-password-123"},
+    )
+    assert locked.status_code == 429
+
+
+def test_change_password_success_clears_its_failure_count(client) -> None:
+    _seed_active_account()
+    _login(client)
+    for _ in range(session_auth_module.PASSWORD_CHANGE_USER.limit - 1):
+        client.post(
+            "/api/account/change-password",
+            json={"current_password": "wrong", "new_password": "new-password-123"},
+        )
+    ok = client.post(
+        "/api/account/change-password",
+        json={"current_password": _TEST_PASSWORD, "new_password": "new-password-123"},
+    )
+    assert ok.status_code == 200
+
+    again = client.post(
+        "/api/account/change-password",
+        json={"current_password": "wrong", "new_password": "another-password-1"},
+    )
+    assert again.status_code == 401  # not 429: the earlier failures were cleared
+
+
+def test_email_change_requests_are_limited_per_account(client, sent_emails) -> None:
+    _seed_active_account()
+    _login(client)
+    for n in range(session_auth_module.EMAIL_CHANGE_USER.limit):
+        resp = client.post("/api/account/request-email-change", json={"new_email": f"new{n}@example.com"})
+        assert resp.status_code == 200
+
+    locked = client.post("/api/account/request-email-change", json={"new_email": "one-more@example.com"})
+    assert locked.status_code == 429
+
+
+def test_email_change_requests_are_limited_per_target_address(client, sent_emails) -> None:
+    """An account cannot be used to flood a third party's inbox with verification mail."""
+    _seed_active_account()
+    _login(client)
+    for _ in range(session_auth_module.EMAIL_CHANGE_TARGET.limit):
+        assert client.post(
+            "/api/account/request-email-change", json={"new_email": "victim@example.com"}
+        ).status_code == 200
+
+    locked = client.post("/api/account/request-email-change", json={"new_email": "victim@example.com"})
+    assert locked.status_code == 429
+    assert len(sent_emails) == session_auth_module.EMAIL_CHANGE_TARGET.limit
+
+
+# ─── throttling: addresses behind a trusted proxy ───────────────────────────
+
+
+def test_login_limits_follow_the_forwarded_client_not_the_proxy(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the middleware installed for the proxy's address, two different real clients
+    behind it are throttled separately (previously they would share the proxy's budget)."""
+    _seed_active_account()
+    monkeypatch.setattr(
+        app_module.app,
+        "wsgi_app",
+        TrustedProxyMiddleware(app_module.app.wsgi_app, parse_trusted_proxies("172.30.0.0/24")),
+    )
+
+    def login_as(real_client: str, password: str) -> int:
+        return client.post(
+            "/api/login",
+            json={"email": _TEST_EMAIL, "password": password},
+            headers={"X-Forwarded-For": real_client},
+            environ_overrides={"REMOTE_ADDR": "172.30.0.2"},
+        ).status_code
+
+    for _ in range(session_auth_module.LOGIN_PAIR.limit):
+        assert login_as("203.0.113.7", "wrong") == 401
+
+    assert login_as("203.0.113.7", _TEST_PASSWORD) == 429
+    assert login_as("203.0.113.8", _TEST_PASSWORD) == 200

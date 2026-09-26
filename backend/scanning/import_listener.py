@@ -58,6 +58,14 @@ from urllib.parse import parse_qs, urlparse
 
 import config
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
+from backend.security.client_ip import Network, resolve_client_address
+from backend.security.rate_limiter import (
+    Decision,
+    Policy,
+    RateLimiter,
+    get_rate_limiter,
+    hash_identifier,
+)
 from backend.settings_service import get_setting, get_setting_bool, get_setting_int
 from backend.utils.utils import get_repos
 
@@ -70,6 +78,14 @@ GetProfile = Callable[[int], dict[str, Any] | None]
 GetResumeFile = Callable[[int], tuple[bytes, str] | None]
 GetAnswers = Callable[[int], list[dict[str, Any]]]
 LearnAnswer = Callable[[int, str, str, str | None], dict[str, Any]]
+
+# A wrong or revoked token is not a guessing risk (tokens are 256-bit) but it is load and
+# log noise, and a browser holding a revoked token retries forever. The failure limit is
+# per address, sized so one stale extension polling every few seconds does not lock out
+# valid tokens sharing its address, while a scripted guesser still gets nowhere.
+AUTH_FAILURE_IP = Policy("listener-auth-failure-ip", 120, 900)
+# Per token: a runaway or abusive client cannot monopolise the listener for everyone else.
+TOKEN_REQUESTS = Policy("listener-token-requests", 600, 60)
 
 _BEARER_PREFIX = "bearer "
 _MAX_DISCARD_BYTES = 1024 * 1024
@@ -217,7 +233,11 @@ class JobImportListener:
         get_answers: GetAnswers | None = None,
         learn_answer: LearnAnswer | None = None,
         ws_tickets: WebSocketTicketStore | None = None,
+        trusted_proxies: tuple[Network, ...] = (),
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
+        self._trusted_proxies = trusted_proxies
+        self._rate_limiter = rate_limiter
         self._host = host
         self._port = port
         self._max_bytes = max_bytes
@@ -251,6 +271,8 @@ class JobImportListener:
         get_answers = self._get_answers
         learn_answer = self._learn_answer
         ws_tickets = self._ws_tickets
+        trusted_proxies = self._trusted_proxies
+        limiter = self._rate_limiter or get_rate_limiter()
 
         class ImportRequestHandler(BaseHTTPRequestHandler):
             def log_message(self, message_format: str, *args: object) -> None:
@@ -258,8 +280,17 @@ class JobImportListener:
 
             def _authenticated_user_id(self) -> int | None:
                 """Resolve the caller, or send the error response and return None."""
+                client = resolve_client_address(
+                    self.client_address[0], self.headers.get("X-Forwarded-For"), trusted_proxies
+                )
+                failure_key = (AUTH_FAILURE_IP, client)
+                blocked = limiter.check(*failure_key)
+                if blocked.blocked:
+                    self._send_throttled(blocked)
+                    return None
                 token = bearer_token(self.headers)
                 if not token:
+                    limiter.record(*failure_key)
                     self._send_unauthorized()
                     return None
                 try:
@@ -272,9 +303,21 @@ class JobImportListener:
                     )
                     return None
                 if user_id is None:
+                    limiter.record(*failure_key)
                     self._send_unauthorized()
                     return None
+                over_rate = limiter.hit(TOKEN_REQUESTS, hash_identifier(token, casefold=False))
+                if over_rate.blocked:
+                    self._send_throttled(over_rate)
+                    return None
                 return user_id
+
+            def _send_throttled(self, decision: Decision) -> None:
+                self._send_json(
+                    {"error": "Too many requests."},
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    {"Retry-After": str(decision.retry_after)},
+                )
 
             def _send_unauthorized(self) -> None:
                 self._send_json(
@@ -601,6 +644,7 @@ def start_job_import_listener(
     get_answers: GetAnswers | None = None,
     learn_answer: LearnAnswer | None = None,
     ws_tickets: WebSocketTicketStore | None = None,
+    trusted_proxies: tuple[Network, ...] = (),
 ) -> JobImportListener | None:
     """Start the optional captured-page import listener once per process.
 
@@ -634,6 +678,7 @@ def start_job_import_listener(
             get_answers=get_answers,
             learn_answer=learn_answer,
             ws_tickets=ws_tickets,
+            trusted_proxies=trusted_proxies,
         )
         try:
             _listener.start()

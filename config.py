@@ -138,6 +138,12 @@ REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:16379/0")  # ai: clau
 # CA bundle used to verify the Redis server when REDIS_URL is rediss:// (TLS).
 REDIS_TLS_CA_FILE: str = os.getenv("REDIS_TLS_CA_FILE", "")
 
+# ─── Reverse proxy ────────────────────────────────────────────────────────────
+# Comma-separated IPs/CIDRs of the reverse proxies in front of the app. Only a
+# connection from one of these may say which client address / scheme the request
+# really had (X-Forwarded-For / -Proto). Empty = trust no proxy (app reached directly).
+TRUSTED_PROXIES: str = os.getenv("TRUSTED_PROXIES", "")
+
 # ─── Wellfound JD fetcher ─────────────────────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-08-30 — email/password/search-URL settings removed
 # with the unreachable Wellfound Playwright scan panel; only the session-file
