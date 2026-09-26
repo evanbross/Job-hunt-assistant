@@ -71,6 +71,7 @@ from .interfaces import (
     ICoverLetterPhraseRepository,
     IEmailSourceRepository,
     IEmailSubjectRuleRepository,
+    IExtensionTokenRepository,
     IImportRepairHistoryRepository,
     IJdHealthCheckResultRepository,
     IJdHealthCheckTargetRepository,
@@ -104,6 +105,7 @@ from .repositories.contacts import PostgresContactRepository
 from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseRepository
 from .repositories.email_sources import PostgresEmailSourceRepository
 from .repositories.email_subject_rules import PostgresEmailSubjectRuleRepository
+from .repositories.extension_tokens import PostgresExtensionTokenRepository
 from .repositories.import_repair_history import PostgresImportRepairHistoryRepository
 from .repositories.jd_health_check_results import PostgresJdHealthCheckResultRepository
 from .repositories.jd_health_check_targets import PostgresJdHealthCheckTargetRepository
@@ -132,6 +134,7 @@ __all__ = [
     "ICareerSiteSourceRepository",
     "IContactEmailRepository",
     "IContactRepository",
+    "IExtensionTokenRepository",
     "ICoverLetterPhraseRepository",
     "IEmailSourceRepository",
     "IEmailSubjectRuleRepository",
@@ -159,6 +162,7 @@ __all__ = [
     "PostgresCareerSiteSourceRepository",
     "PostgresContactEmailRepository",
     "PostgresContactRepository",
+    "PostgresExtensionTokenRepository",
     "PostgresCoverLetterPhraseRepository",
     "PostgresEmailSourceRepository",
     "PostgresEmailSubjectRuleRepository",
@@ -326,6 +330,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "import_repair_history": PostgresImportRepairHistoryRepository(conn),
         "contacts": PostgresContactRepository(conn),
         "contact_emails": PostgresContactEmailRepository(conn),
+        "extension_tokens": PostgresExtensionTokenRepository(conn),
         "cover_letter_phrases": PostgresCoverLetterPhraseRepository(conn),
         "jd_health_targets": PostgresJdHealthCheckTargetRepository(conn),
         "jd_health_results": PostgresJdHealthCheckResultRepository(conn),

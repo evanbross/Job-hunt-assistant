@@ -227,8 +227,7 @@ async function handleSend() {
     }
 
     btn.innerHTML = '<div class="spinner"></div>Sending to app…';
-    const headers = { 'Content-Type': 'application/json' };
-    if (settings.token) headers['X-Job-Import-Token'] = settings.token;
+    const headers = jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' });
 
     const res = await fetch(`${settings.listenerUrl}/import`, {
       method: 'POST',
@@ -237,6 +236,7 @@ async function handleSend() {
     });
 
     document.getElementById('progress-wrap').style.display = 'none';
+    jhaReportAuth(res);
 
     if (res.ok) {
       const label = currentJobCount > 0
@@ -246,6 +246,9 @@ async function handleSend() {
       btn.innerHTML = 'Open Job Hunt App';
       btn.disabled = false;
       btn.onclick = () => chrome.tabs.create({ url: settings.appUrl });
+    } else if (res.status === 401) {
+      showStatus(JHA_AUTH_ERROR_MESSAGE, 'error');
+      resetButton();
     } else {
       const data = await res.json().catch(() => ({}));
       showStatus(`Error ${res.status}: ${data.error || 'Unknown server error'}`, 'error');

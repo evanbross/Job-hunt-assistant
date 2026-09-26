@@ -75,6 +75,8 @@ from flask_cors import CORS
 import config
 from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
+from backend.extension_auth.token_service import ExtensionTokenService
+from backend.extension_auth.ws_tickets import WebSocketTicketStore
 from backend.queue_websocket import QueueWebSocketServer, start_queue_websocket_server
 from backend.scanning.import_listener import (
     JobImportListener,
@@ -455,6 +457,7 @@ from routes.career_sites import career_sites_bp
 from routes.contacts import contacts_bp
 from routes.cover_letter import cover_letter_bp
 from routes.emails import emails_bp
+from routes.extension_tokens import extension_tokens_bp
 from routes.fit import fit_bp
 from routes.greenhouse import greenhouse_bp
 from routes.import_ import import_bp, queue_import_capture
@@ -477,6 +480,7 @@ app.register_blueprint(career_sites_bp, url_prefix="/api")
 app.register_blueprint(contacts_bp, url_prefix="/api")
 app.register_blueprint(cover_letter_bp, url_prefix="/api")
 app.register_blueprint(emails_bp, url_prefix="/api")
+app.register_blueprint(extension_tokens_bp, url_prefix="/api")
 app.register_blueprint(fit_bp, url_prefix="/api")
 app.register_blueprint(greenhouse_bp, url_prefix="/api")
 app.register_blueprint(import_bp, url_prefix="/api")
@@ -493,18 +497,27 @@ app.register_blueprint(voice_bp, url_prefix="/api")
 app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /api/system/*
 
 
-def _claim_browser_capture_queue() -> list[dict]:
-    """Called from the import listener thread — opens a short-lived DB connection.
+# One ticket store shared by the listener (which issues tickets) and the queue
+# WebSocket server (which redeems them) -- both live in this process.
+_ws_tickets = WebSocketTicketStore()
 
-    STOPGAP: no Flask session exists on this thread, so user_id is resolved
-    via first_account_user_id() (the first-ever registered account) rather
-    than a real per-user identity — see that helper's docstring in
-    backend/utils/utils.py.
-    """
-    from backend.utils.utils import first_account_user_id, get_repos
 
+# ai: claude-sonnet-5 | 2026-09-26
+def _authenticate_extension_token(token: str) -> int | None:
+    """Called from the import listener thread on every request: resolve a
+    presented extension token to the user who owns it, or None."""
     with get_repos() as repos:
-        user_id = first_account_user_id(repos)
+        identity = ExtensionTokenService(repos["extension_tokens"]).authenticate(token)
+        repos["conn"].commit()
+    return identity.user_id if identity else None
+
+
+# ai: claude-sonnet-5 | 2026-09-26 -- every listener callback below receives the
+# authenticated user's id from the listener; none of them resolve a default
+# account. They run on the listener/WebSocket threads (no Flask session), so
+# each opens its own short-lived DB connection.
+def _claim_browser_capture_queue(user_id: int) -> list[dict]:
+    with get_repos() as repos:
         items = repos["browser_capture_queue"].claim_pending(
             user_id, limit=BROWSER_QUEUE_CLAIM_BATCH_SIZE
         )
@@ -513,63 +526,45 @@ def _claim_browser_capture_queue() -> list[dict]:
 
 
 # ai: claude-sonnet-5 | 2026-07-22
-def _browser_capture_queue_has_pending() -> bool:
-    """Called from the queue WebSocket server's watcher thread. STOPGAP: see
-    _claim_browser_capture_queue's docstring above."""
-    from backend.utils.utils import first_account_user_id, get_repos
-
+def _browser_capture_queue_has_pending(user_id: int) -> bool:
+    """Called from the queue WebSocket server's watcher thread."""
     with get_repos() as repos:
-        return repos["browser_capture_queue"].has_pending(first_account_user_id(repos))
+        return repos["browser_capture_queue"].has_pending(user_id)
 
 
 # Career-site auto-scheduler intentionally not started — scans are triggered
 # manually from the UI banner (see backend.scanning.schedulers.start_career_site_scheduler).
 # ai: claude-sonnet-4-6 | 2026-07-02
-def _handle_listener_capture(body: dict) -> tuple[dict, int]:
+def _handle_listener_capture(user_id: int, body: dict) -> tuple[dict, int]:
     """Routes captures from the browser extension by purpose.
 
     Closed-req checks (see routes.applications.run_req_closed_scan_task) post the
     raw captured HTML for classification rather than going through the job-import
     pipeline, which expects structured job listings.
-
-    STOPGAP: no Flask session exists on this thread, so both branches resolve
-    user_id via first_account_user_id() rather than a real per-user identity
-    — see that helper's docstring in backend/utils/utils.py.
     """
     if body.get("purpose") == "closed_req":
-        return submit_closed_req_capture(body)
-    from backend.utils.utils import first_account_user_id, get_repos
-
-    with get_repos() as repos:
-        user_id = first_account_user_id(repos)
+        return submit_closed_req_capture(user_id, body)
     return queue_import_capture(body, trigger="listener", user_id=user_id)
 
 
 # ai: claude-sonnet-5 | 2026-08-13
-# ai: claude-sonnet-5 | 2026-08-20 — STOPGAP: no Flask session on this thread,
-# see first_account_user_id()'s docstring in backend/utils/utils.py.
-def _get_application_profile_for_listener() -> dict | None:
-    """Called from the import listener thread — opens a short-lived DB connection."""
-    from backend.utils.utils import first_account_user_id, get_repos
-
+def _get_application_profile_for_listener(user_id: int) -> dict | None:
     with get_repos() as repos:
-        return repos["application_profile"].get(first_account_user_id(repos))
+        return repos["application_profile"].get(user_id)
 
 
 # ai: claude-sonnet-5 | 2026-08-13
-# ai: claude-sonnet-5 | 2026-08-20 — STOPGAP, same as above. Also note: the
-# resume PDF on disk (resume_path below) isn't per-user yet — only the DB
-# row is — so this reads the right DB row for the stopgap user but the
-# wrong file once a second real account exists. Same gap as
-# routes/settings.py's upload_resume; not fixed in this pass.
-def _get_resume_file_bytes() -> tuple[bytes, str] | None:
-    """Called from the import listener thread. Reads the resume PDF already
-    saved to disk by routes.settings.upload_resume — the DB row only holds
-    extracted text, not the file bytes (see backend/db/repositories/resumes.py)."""
-    from backend.utils.utils import first_account_user_id, get_repos
-
+# KNOWN GAP (docs/code-review-remediation-plan-2026-09-26.md, item 2): the
+# resume PDF on disk (resume_path below) isn't per-user yet -- only the DB row
+# is -- so once a second account uploads a resume this serves that user's
+# metadata with whichever file was written last. Same gap as
+# routes/settings.py's upload_resume.
+def _get_resume_file_bytes(user_id: int) -> tuple[bytes, str] | None:
+    """Reads the resume PDF already saved to disk by routes.settings.upload_resume
+    — the DB row only holds extracted text, not the file bytes (see
+    backend/db/repositories/resumes.py)."""
     with get_repos() as repos:
-        resume = repos["resume"].get_latest(first_account_user_id(repos))
+        resume = repos["resume"].get_latest(user_id)
     if resume is None:
         return None
     resume_path = config.UPLOADS_DIR / "resume.pdf"
@@ -579,27 +574,20 @@ def _get_resume_file_bytes() -> tuple[bytes, str] | None:
 
 
 # ai: claude-sonnet-5 | 2026-08-13
-# ai: claude-sonnet-5 | 2026-08-20 — STOPGAP, see first_account_user_id()'s docstring.
-def _get_application_answers_for_listener() -> list[dict]:
-    """Called from the import listener thread — opens a short-lived DB connection."""
-    from backend.utils.utils import first_account_user_id, get_repos
-
+def _get_application_answers_for_listener(user_id: int) -> list[dict]:
     with get_repos() as repos:
-        return repos["application_answers"].get_all(first_account_user_id(repos))
+        return repos["application_answers"].get_all(user_id)
 
 
 # ai: claude-sonnet-5 | 2026-08-13
-# ai: claude-sonnet-5 | 2026-08-20 — STOPGAP, see first_account_user_id()'s docstring.
 def _learn_application_answer(
-    question_text: str, answer_text: str, platform: str | None
+    user_id: int, question_text: str, answer_text: str, platform: str | None
 ) -> dict:
-    """Called from the import listener thread when the extension's autofill
-    content script learns a new free-text answer from the user."""
-    from backend.utils.utils import first_account_user_id, get_repos
-
+    """Called when the extension's autofill content script learns a new
+    free-text answer from the user."""
     with get_repos() as repos:
         answer = repos["application_answers"].upsert(
-            first_account_user_id(repos),
+            user_id,
             question_text=question_text,
             answer_text=answer_text,
             platform=platform,
@@ -638,20 +626,6 @@ def _check_redis() -> None:
         )
 
 
-def _check_import_listener_token() -> None:
-    if not config.DEFAULT_JOB_IMPORT_LISTENER_ENABLED:
-        return
-    if config.DEFAULT_JOB_IMPORT_LISTENER_TOKEN:
-        return
-    logger.warning(
-        "Import listener is enabled on %s:%s with no JOB_IMPORT_LISTENER_TOKEN set — "
-        "any local process can post import payloads. Set JOB_IMPORT_LISTENER_TOKEN to "
-        "require authentication.",
-        config.DEFAULT_JOB_IMPORT_LISTENER_HOST,
-        config.DEFAULT_JOB_IMPORT_LISTENER_PORT,
-    )
-
-
 _import_listener: JobImportListener | None = None
 _queue_ws_server: QueueWebSocketServer | None = None
 
@@ -678,17 +652,20 @@ def _init_runtime_state() -> None:
     init_db_with_retry(config.DATABASE_URL)
 
     _import_listener = start_job_import_listener(
+        _authenticate_extension_token,
         _handle_listener_capture,
         claim_queue=_claim_browser_capture_queue,
         get_profile=_get_application_profile_for_listener,
         get_resume_file=_get_resume_file_bytes,
         get_answers=_get_application_answers_for_listener,
         learn_answer=_learn_application_answer,
+        ws_tickets=_ws_tickets,
     )
-    _queue_ws_server = start_queue_websocket_server(_browser_capture_queue_has_pending)
+    _queue_ws_server = start_queue_websocket_server(
+        _ws_tickets.redeem, _browser_capture_queue_has_pending
+    )
 
     _check_redis()
-    _check_import_listener_token()
 
 
 # ─── Dev-server launcher ──────────────────────────────────────────────────────

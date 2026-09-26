@@ -47,6 +47,11 @@ server never carries queue payloads itself, only a wake-up signal, so a
 dropped connection, a missed message, or either side restarting never loses
 work: the existing HTTP polling (now on a long fallback interval) still
 covers it independently.
+
+Each connection belongs to one user: the handshake must present a single-use
+ticket (see backend/extension_auth/ws_tickets.py) that the extension obtained
+over authenticated HTTP, and a wake-up is only ever pushed to the connections
+of the user whose queue actually has pending work.
 """
 
 from __future__ import annotations
@@ -70,22 +75,31 @@ logger = logging.getLogger(__name__)
 # spent when at least one client is connected — see _watch_queue.
 _WATCH_INTERVAL_SECONDS = 3.0
 
-HasPendingCheck = Callable[[], bool]
+HasPendingCheck = Callable[[int], bool]
+RedeemTicket = Callable[[str], int | None]
 
 
 class QueueWebSocketServer:
     """Owns the background asyncio event loop and WebSocket server."""
 
     def __init__(
-        self, *, host: str, port: int, token: str, has_pending: HasPendingCheck
+        self,
+        *,
+        host: str,
+        port: int,
+        redeem_ticket: RedeemTicket,
+        has_pending: HasPendingCheck,
     ) -> None:
         self._host = host
         self._port = port
-        self._token = token
+        self._redeem_ticket = redeem_ticket
         self._has_pending = has_pending
         self._thread: threading.Thread | None = None
-        self._clients: set[ServerConnection] = set()
+        self._handshake_users: dict[ServerConnection, int] = {}
+        self._clients: dict[ServerConnection, int] = {}
         self._bound_event = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._stop_event: asyncio.Event | None = None
 
     @property
     def port(self) -> int:
@@ -101,6 +115,14 @@ class QueueWebSocketServer:
         # read the real .port right after start() returns instead of racing the
         # background thread's bind.
         self._bound_event.wait(timeout=5)
+
+    def stop(self) -> None:
+        """Close the server and end its thread (used at shutdown and by tests)."""
+        if self._loop is not None and self._stop_event is not None:
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        self._thread = None
 
     def _run(self) -> None:
         try:
@@ -132,8 +154,12 @@ class QueueWebSocketServer:
                         self._host,
                         self._port,
                     )
+                    self._loop = asyncio.get_running_loop()
+                    self._stop_event = asyncio.Event()
                     self._bound_event.set()
-                    await self._watch_queue()
+                    watcher = asyncio.create_task(self._watch_queue())
+                    await self._stop_event.wait()
+                    watcher.cancel()
                 return
             except OSError:
                 if candidate_port == 0:
@@ -147,50 +173,55 @@ class QueueWebSocketServer:
     def _process_request(
         self, connection: ServerConnection, request: Request
     ) -> Response | None:
-        if not self._token:
-            return None
         query = parse_qs(urlparse(request.path).query)
-        supplied = (query.get("token") or [""])[0].strip()
-        if supplied == self._token:
-            return None
-        return connection.respond(401, "Invalid queue listener token.")
+        ticket = (query.get("ticket") or [""])[0].strip()
+        user_id = self._redeem_ticket(ticket) if ticket else None
+        if user_id is None:
+            return connection.respond(401, "Invalid or expired queue ticket.")
+        self._handshake_users[connection] = user_id
+        return None
 
     async def _handle_client(self, connection: ServerConnection) -> None:
-        self._clients.add(connection)
+        user_id = self._handshake_users.pop(connection, None)
+        if user_id is None:
+            await connection.close(code=1008, reason="Not authenticated")
+            return
+        self._clients[connection] = user_id
         try:
             async for _ in connection:
                 pass  # Push-only channel — no inbound messages expected.
         except ConnectionClosed:
             pass
         finally:
-            self._clients.discard(connection)
+            self._clients.pop(connection, None)
 
     async def _watch_queue(self) -> None:
         """Runs for the lifetime of the server, watching for pending work."""
         loop = asyncio.get_running_loop()
         while True:
             await asyncio.sleep(_WATCH_INTERVAL_SECONDS)
-            if not self._clients:
-                continue
-            try:
-                pending = await loop.run_in_executor(None, self._has_pending)
-            except Exception as exc:
-                # Best-effort watcher — a transient DB hiccup must not kill the
-                # socket server; the next tick tries again.
-                logger.warning("Queue watcher failed to check pending state: %s", exc)
-                continue
-            if pending:
-                await self._broadcast()
+            for user_id in set(self._clients.values()):
+                try:
+                    pending = await loop.run_in_executor(None, self._has_pending, user_id)
+                except Exception as exc:
+                    # Best-effort watcher — a transient DB hiccup must not kill the
+                    # socket server; the next tick tries again.
+                    logger.warning("Queue watcher failed to check pending state: %s", exc)
+                    continue
+                if pending:
+                    await self._broadcast(user_id)
 
-    async def _broadcast(self) -> None:
+    async def _broadcast(self, user_id: int) -> None:
         dead: list[ServerConnection] = []
-        for connection in list(self._clients):
+        for connection, owner_id in list(self._clients.items()):
+            if owner_id != user_id:
+                continue
             try:
                 await connection.send('{"type": "queue-ready"}')
             except ConnectionClosed:
                 dead.append(connection)
         for connection in dead:
-            self._clients.discard(connection)
+            self._clients.pop(connection, None)
 
 
 _server_lock = threading.Lock()
@@ -198,6 +229,7 @@ _server: QueueWebSocketServer | None = None
 
 
 def start_queue_websocket_server(
+    redeem_ticket: RedeemTicket,
     has_pending: HasPendingCheck,
 ) -> QueueWebSocketServer | None:
     """Start the optional queue-ready push server once per process.
@@ -222,7 +254,7 @@ def start_queue_websocket_server(
         _server = QueueWebSocketServer(
             host=str(listener_config["host"]),
             port=int(listener_config["ws_port"]),
-            token=str(listener_config["token"]),
+            redeem_ticket=redeem_ticket,
             has_pending=has_pending,
         )
         _server.start()

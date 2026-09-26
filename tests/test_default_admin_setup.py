@@ -52,7 +52,10 @@ import pytest
 import app as app_module
 import config
 import routes.session_auth as session_auth_module
-from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
+from backend.db.repositories.user_accounts import (
+    DEFAULT_ADMIN_EMAIL,
+    DEFAULT_ADMIN_PASSWORD,
+)
 from backend.utils.utils import get_repos
 
 _NEW_PASSWORD = "a real password nobody guesses"  # noqa: S105

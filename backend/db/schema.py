@@ -185,6 +185,7 @@ _PER_USER_TABLES: tuple[str, ...] = (
     "jd_health_check_results",
     "contacts",
     "contact_emails",
+    "extension_tokens",
     "cover_letter_phrases",
 )
 
@@ -933,6 +934,10 @@ def _migrate(conn: Any) -> None:
             """
         )
         cur.execute("ALTER TABLE contacts ALTER COLUMN dedup_key SET NOT NULL")
+    # ai: claude-sonnet-5 | 2026-09-26 -- the shared static listener token was
+    # replaced by per-user extension_tokens; drop the stale system setting so
+    # an old secret isn't left sitting in the database.
+    cur.execute("DELETE FROM system_settings WHERE key = 'job_import_listener_token'")
     if not _has_unique(cur, "contacts", "contacts_user_dedup_key_key"):
         cur.execute(
             "ALTER TABLE contacts ADD CONSTRAINT contacts_user_dedup_key_key"
@@ -1550,6 +1555,23 @@ def _create_tables(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_contact_emails_contact_id
             ON contact_emails (contact_id)
+        """,
+        # ai: claude-sonnet-5 | 2026-09-26
+        # Per-user, per-device credentials for the browser extension. Only a
+        # SHA-256 hash of the token is stored (tokens are 256-bit random values,
+        # so a fast hash is sufficient); the plaintext is shown once at creation.
+        # Timestamps are UTC ISO 8601 strings.
+        """
+        CREATE TABLE IF NOT EXISTS extension_tokens (
+            id            SERIAL PRIMARY KEY,
+            token_hash    TEXT NOT NULL UNIQUE,
+            token_prefix  TEXT NOT NULL,
+            label         TEXT NOT NULL,
+            created_at    TEXT NOT NULL,
+            last_used_at  TEXT,
+            expires_at    TEXT,
+            revoked_at    TEXT
+        )
         """,
         # ai: claude-sonnet-5 | 2026-08-11
         """

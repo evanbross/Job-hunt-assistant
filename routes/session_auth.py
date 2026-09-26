@@ -65,7 +65,10 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
+from backend.db.repositories.user_accounts import (
+    DEFAULT_ADMIN_EMAIL,
+    DEFAULT_ADMIN_PASSWORD,
+)
 from backend.email.smtp_sender import send_verification_email
 from backend.settings_service import get_setting
 from backend.utils.utils import current_user_id, get_repos

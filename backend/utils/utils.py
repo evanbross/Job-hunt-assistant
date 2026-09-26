@@ -107,30 +107,6 @@ def resolve_candidate_profile_path(user_id: int, repos: dict) -> Path:
     return Path(profile_path_str) if profile_path_str else config.DEFAULT_CANDIDATE_PROFILE_PATH
 
 
-# ai: claude-sonnet-5 | 2026-08-20
-def first_account_user_id(repos: dict) -> int:
-    """STOPGAP for contexts with no Flask session: the standalone import
-    listener HTTP server (backend/scanning/import_listener.py, a separate
-    background thread/process) and Celery task bodies both need a user_id to
-    scope per-user repo calls, but have no request/session to read one from.
-
-    This resolves to "whichever account was created first" (lowest id) —
-    correct for today's single-real-user deployment, but NOT genuine
-    multi-tenant behavior: a second registered account's data would never
-    reach the listener or these tasks. Making the listener/tasks actually
-    per-user needs the browser extension to authenticate itself and each
-    Celery submit call to carry the submitting user's id — out of scope for
-    this pass; call sites using this helper are marked with a matching
-    STOPGAP comment so they're easy to find later.
-    """
-    cur = repos["conn"].cursor()
-    cur.execute("SELECT id FROM user_accounts ORDER BY id LIMIT 1")
-    row = cur.fetchone()
-    if row is None:
-        raise RuntimeError("first_account_user_id() called with no user_accounts rows")
-    return row["id"]
-
-
 # ai: claude-sonnet-5 | 2026-08-25
 _CELERY_TASK_ACTIVE_STATES: frozenset[str] = frozenset({"STARTED", "PROGRESS", "RETRY"})
 _CELERY_PENDING_GRACE_SECONDS = 30

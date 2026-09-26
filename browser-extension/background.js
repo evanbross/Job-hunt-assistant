@@ -34,6 +34,8 @@
 
 'use strict';
 
+importScripts('extension-auth.js');
+
 // ─── Queue capture state ───────────────────────────────────────────────────
 // _queueTabs: tabId → { url, siteName } — tabs currently loading for the queue.
 // _pendingCaptureTabs: Set of tabIds whose content script has been injected
@@ -148,12 +150,31 @@ connectQueueSocket();
 let _queueSocket = null;
 let _queueSocketReconnectDelayMs = 1000;
 const _QUEUE_SOCKET_MAX_RECONNECT_DELAY_MS = 30000;
+// A rejected token won't fix itself, so retry rarely rather than every backoff step.
+const _QUEUE_SOCKET_AUTH_RETRY_MS = 5 * 60 * 1000;
+let _queueSocketConnecting = false;
 
 async function connectQueueSocket() {
   if (_queueSocket && (_queueSocket.readyState === WebSocket.OPEN || _queueSocket.readyState === WebSocket.CONNECTING)) {
     return;
   }
+  // ai: claude-sonnet-5 | 2026-09-26
+  // Fetching a ticket is async, so without this guard the alarm tick and a
+  // pending reconnect timer could each pass the check above and open two sockets.
+  if (_queueSocketConnecting) return;
+  _queueSocketConnecting = true;
+  try {
+    await openQueueSocket();
+  } finally {
+    _queueSocketConnecting = false;
+  }
+}
+
+async function openQueueSocket() {
   const settings = await loadSettings();
+  // No token yet: nothing to authenticate with. The fallback alarm retries
+  // connectQueueSocket() every tick, so this starts working once one is saved.
+  if (!settings.token) return;
   let wsUrl;
   try {
     const parsed = new URL(settings.listenerUrl);
@@ -172,10 +193,35 @@ async function connectQueueSocket() {
       const wsPort = (parseInt(parsed.port, 10) || 8765) + 1;
       wsUrl = `${wsScheme}//${parsed.hostname}:${wsPort}/`;
     }
-    if (settings.token) wsUrl += `?token=${encodeURIComponent(settings.token)}`;
   } catch {
     return; // listenerUrl not configured yet
   }
+
+  // ai: claude-sonnet-5 | 2026-09-26
+  // Browsers can't attach an Authorization header to a WebSocket handshake, and
+  // putting the long-lived token in the URL would leak it into proxy logs. So
+  // trade the token (over normal HTTP) for a short-lived single-use ticket.
+  let ticket;
+  try {
+    const ticketRes = await fetch(`${settings.listenerUrl}/ws-ticket`, {
+      method: 'POST',
+      headers: jhaAuthHeaders(settings.token),
+    });
+    jhaReportAuth(ticketRes);
+    if (ticketRes.status === 401) {
+      scheduleQueueSocketReconnect(_QUEUE_SOCKET_AUTH_RETRY_MS);
+      return;
+    }
+    if (!ticketRes.ok) {
+      scheduleQueueSocketReconnect();
+      return;
+    }
+    ticket = (await ticketRes.json()).ticket;
+  } catch {
+    scheduleQueueSocketReconnect(); // listener unreachable
+    return;
+  }
+  wsUrl += `?ticket=${encodeURIComponent(ticket)}`;
 
   try {
     _queueSocket = new WebSocket(wsUrl);
@@ -203,8 +249,14 @@ async function connectQueueSocket() {
   });
 }
 
-function scheduleQueueSocketReconnect() {
+// delayMs is only a number when a caller overrides the backoff; the socket's
+// 'close' listener passes its Event instead, which falls through to the backoff.
+function scheduleQueueSocketReconnect(delayMs) {
   _queueSocket = null;
+  if (typeof delayMs === 'number') {
+    setTimeout(connectQueueSocket, delayMs);
+    return;
+  }
   setTimeout(connectQueueSocket, _queueSocketReconnectDelayMs);
   _queueSocketReconnectDelayMs = Math.min(
     _queueSocketReconnectDelayMs * 2,
@@ -219,8 +271,7 @@ async function pollQueue() {
   _queuePolling = true;
   try {
     const settings = await loadSettings();
-    const headers = {};
-    if (settings.token) headers['X-Job-Import-Token'] = settings.token;
+    const headers = jhaAuthHeaders(settings.token);
 
     let res;
     try {
@@ -228,6 +279,7 @@ async function pollQueue() {
     } catch {
       return; // JHA not running — silently skip
     }
+    jhaReportAuth(res);
     if (!res.ok) return;
 
     const data = await res.json().catch(() => ({ items: [] }));
@@ -426,8 +478,7 @@ async function postToApp(payload, tabId, isQueueCapture = false, blockedSite = n
   if (isQueueCapture && tabId != null) _pendingJobId.delete(tabId);
 
   const settings = await loadSettings();
-  const headers = { 'Content-Type': 'application/json' };
-  if (settings.token) headers['X-Job-Import-Token'] = settings.token;
+  const headers = jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' });
 
   // Inject the original queue URL so the backend marks the right item done even
   // when the page redirected to a canonical URL (e.g. WTTJ email links).
@@ -478,9 +529,12 @@ async function postToApp(payload, tabId, isQueueCapture = false, blockedSite = n
       body,
     });
     closeAndRestore();
+    jhaReportAuth(res);
     if (!isQueueCapture) {
       if (res.ok) {
         showNotification('Jobs queued for import!', true);
+      } else if (res.status === 401) {
+        showNotification(JHA_AUTH_ERROR_MESSAGE, false);
       } else {
         const data = await res.json().catch(() => ({}));
         showNotification(`Error ${res.status}: ${data.error || 'Unknown error'}`, false);
@@ -518,8 +572,8 @@ async function loadSettings() {
 
 // ─── Application autofill ──────────────────────────────────────────────────
 // ai: claude-sonnet-5 | 2026-08-13
-// The extension's only network channel to the backend is the token-authed
-// listener (same one /queue and /import already use) — see loadSettings()
+// The extension's only network channel to the backend is the listener,
+// authenticated per user with a bearer token (same one /queue and /import use) — see loadSettings()
 // above and backend/scanning/import_listener.py's extension-facing endpoints.
 
 function arrayBufferToBase64(buffer) {
@@ -533,14 +587,15 @@ function arrayBufferToBase64(buffer) {
 }
 
 async function fetchAutofillData(settings) {
-  const headers = {};
-  if (settings.token) headers['X-Job-Import-Token'] = settings.token;
+  const headers = jhaAuthHeaders(settings.token);
 
   const [profileRes, answersRes, resumeRes] = await Promise.all([
     fetch(`${settings.listenerUrl}/application-profile`, { headers }),
     fetch(`${settings.listenerUrl}/application-answers`, { headers }),
     fetch(`${settings.listenerUrl}/resume-file`, { headers }),
   ]);
+  jhaReportAuth(profileRes);
+  if (profileRes.status === 401) throw new Error(JHA_AUTH_ERROR_MESSAGE);
 
   const profileData = profileRes.ok ? await profileRes.json().catch(() => ({})) : {};
   const answersData = answersRes.ok ? await answersRes.json().catch(() => ({})) : {};
@@ -587,9 +642,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async () => {
       try {
         const settings = await loadSettings();
-        const headers = { 'Content-Type': 'application/json' };
-        if (settings.token) headers['X-Job-Import-Token'] = settings.token;
-        await fetch(`${settings.listenerUrl}/application-answers`, {
+        const headers = jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' });
+        const res = await fetch(`${settings.listenerUrl}/application-answers`, {
           method: 'POST',
           headers,
           body: JSON.stringify({
@@ -598,8 +652,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             platform: message.platform || null,
           }),
         });
+        jhaReportAuth(res);
+        if (!res.ok) {
+          // ai: claude-sonnet-5 | 2026-09-26 -- previously a failed save (stale token, server
+          // error) was silently ignored while the user believed the answer was remembered.
+          const data = await res.json().catch(() => ({}));
+          showNotification(
+            res.status === 401
+              ? JHA_AUTH_ERROR_MESSAGE
+              : `Could not save your answer (${res.status}): ${data.error || 'Unknown error'}`,
+            false
+          );
+        }
       } catch (err) {
         console.error('[JHA] learnAnswer failed:', err?.message || err);
+        showNotification('Could not save your answer — is Job Hunt App running?', false);
       }
     })();
     return false;

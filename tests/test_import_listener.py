@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -42,15 +43,40 @@ from http import HTTPStatus
 from typing import Any
 
 import pytest
+from websockets.exceptions import InvalidStatus
+from websockets.sync.client import connect
 
+import backend.queue_websocket as queue_websocket
+from backend.extension_auth.ws_tickets import WebSocketTicketStore
+from backend.queue_websocket import QueueWebSocketServer
 from backend.scanning.import_listener import (
     ImportListenerRequestParser,
     JobImportListener,
+    bearer_token,
 )
+
+USER_A_TOKEN = "jha_token-for-user-a"
+USER_B_TOKEN = "jha_token-for-user-b"
+USER_A, USER_B = 1, 2
+_TOKENS = {USER_A_TOKEN: USER_A, USER_B_TOKEN: USER_B}
+
+
+def test_bearer_token_extracts_the_credential() -> None:
+    assert bearer_token({"Authorization": "Bearer abc123"}) == "abc123"
+    assert bearer_token({"Authorization": "bearer   abc123  "}) == "abc123"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"Authorization": ""}, {"Authorization": "Basic abc"}, {"Authorization": "abc123"},
+     {"X-Job-Import-Token": "abc123"}],
+)
+def test_bearer_token_ignores_anything_but_a_bearer_header(headers: dict[str, str]) -> None:
+    assert bearer_token(headers) == ""
 
 
 def test_listener_parser_accepts_raw_html() -> None:
-    parser = ImportListenerRequestParser(token="", max_bytes=1024)
+    parser = ImportListenerRequestParser(max_bytes=1024)
 
     result = parser.parse(
         path="/import?format=mhtml&recapture_interval_days=7",
@@ -66,7 +92,7 @@ def test_listener_parser_accepts_raw_html() -> None:
 
 
 def test_listener_parser_accepts_existing_json_payload() -> None:
-    parser = ImportListenerRequestParser(token="", max_bytes=1024)
+    parser = ImportListenerRequestParser(max_bytes=1024)
     payload = {"content": "<html></html>", "format": "html"}
 
     result = parser.parse(
@@ -82,7 +108,7 @@ def test_listener_parser_accepts_existing_json_payload() -> None:
 
 
 def test_listener_parser_wraps_bookmarklet_json() -> None:
-    parser = ImportListenerRequestParser(token="", max_bytes=1024)
+    parser = ImportListenerRequestParser(max_bytes=1024)
     payload = {"jobs": [{"url": "https://jobs.lever.co/acme/123"}]}
 
     result = parser.parse(
@@ -97,21 +123,8 @@ def test_listener_parser_wraps_bookmarklet_json() -> None:
     assert json.loads(result.body["content"]) == payload
 
 
-def test_listener_parser_rejects_missing_token() -> None:
-    parser = ImportListenerRequestParser(token="secret", max_bytes=1024)
-
-    result = parser.parse(
-        path="/import",
-        headers={"Content-Type": "text/html"},
-        raw_body=b"<html></html>",
-    )
-
-    assert result.status_code == HTTPStatus.UNAUTHORIZED
-    assert result.error == "Invalid import listener token."
-
-
 def test_listener_parser_rejects_large_body() -> None:
-    parser = ImportListenerRequestParser(token="", max_bytes=5)
+    parser = ImportListenerRequestParser(max_bytes=5)
 
     result = parser.parse(
         path="/import",
@@ -124,126 +137,332 @@ def test_listener_parser_rejects_large_body() -> None:
 
 
 # ai: claude-sonnet-5 | 2026-08-13
-# The application-autofill endpoints below dispatch directly in do_GET/do_POST
-# rather than through ImportListenerRequestParser (they don't share its
-# job-capture-shaped body assumptions), so they need their own HTTP-level
-# coverage rather than parser-level tests like the ones above.
+# ai: claude-sonnet-5 | 2026-09-26 -- authentication is per-user: the listener
+# resolves the bearer token to a user id and passes it to every callback. The
+# fixture's callbacks return data derived from that id so tests can prove each
+# caller only ever sees their own.
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.learned: list[tuple[int, str, str, str | None]] = []
+        self.captured: list[tuple[int, dict[str, Any]]] = []
+        self.claimed_for: list[int] = []
+        self.auth_calls: list[str] = []
+        self.auth_failure: Exception | None = None
 
 
 @pytest.fixture
-def running_listener() -> Iterator[tuple[JobImportListener, dict[str, Any]]]:
-    learned: dict[str, Any] = {}
+def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocketTicketStore]]:
+    recorder = _Recorder()
+    tickets = WebSocketTicketStore()
 
-    def fake_learn_answer(question_text: str, answer_text: str, platform: str | None) -> dict[str, Any]:
-        learned["call"] = (question_text, answer_text, platform)
+    def authenticate(token: str) -> int | None:
+        recorder.auth_calls.append(token)
+        if recorder.auth_failure is not None:
+            raise recorder.auth_failure
+        return _TOKENS.get(token)
+
+    def fake_learn_answer(
+        user_id: int, question_text: str, answer_text: str, platform: str | None
+    ) -> dict[str, Any]:
+        recorder.learned.append((user_id, question_text, answer_text, platform))
         return {"id": 99, "question_text": question_text, "answer_text": answer_text, "platform": platform}
+
+    def fake_submit(user_id: int, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        recorder.captured.append((user_id, body))
+        return {"received": body}, 200
+
+    def fake_claim(user_id: int) -> list[dict[str, Any]]:
+        recorder.claimed_for.append(user_id)
+        return [{"url": f"https://example.com/for-user-{user_id}"}]
 
     listener = JobImportListener(
         host="127.0.0.1",
         port=0,
-        token="test-token",
         max_bytes=1_000_000,
-        submit_capture=lambda body: ({"received": body}, 200),
-        claim_queue=lambda: [],
-        get_profile=lambda: {"legal_name": "Evan Ross", "city": "Mebane, NC"},
-        get_resume_file=lambda: (b"%PDF-1.4 fake", "My Resume.pdf"),
-        get_answers=lambda: [{"id": 1, "question_text": "Security clearance?", "answer_text": "No"}],
+        authenticate=authenticate,
+        submit_capture=fake_submit,
+        claim_queue=fake_claim,
+        get_profile=lambda user_id: {"legal_name": f"User {user_id}", "city": "Mebane, NC"},
+        get_resume_file=lambda user_id: (b"%PDF-1.4 fake", f"Resume {user_id}.pdf"),
+        get_answers=lambda user_id: [
+            {"id": 1, "question_text": "Security clearance?", "answer_text": f"answer-{user_id}"}
+        ],
         learn_answer=fake_learn_answer,
+        ws_tickets=tickets,
     )
     listener.start()
     try:
-        yield listener, learned
+        yield listener, recorder, tickets
     finally:
         listener.stop()
 
 
-def _get(base: str, path: str, token: str | None = "test-token") -> tuple[int, bytes, dict[str, str]]:
-    headers = {"X-Job-Import-Token": token} if token else {}
+def _request(
+    listener: JobImportListener,
+    path: str,
+    *,
+    method: str = "GET",
+    token: str | None = USER_A_TOKEN,
+    headers: dict[str, str] | None = None,
+    body: bytes | None = None,
+) -> tuple[int, bytes, dict[str, str]]:
+    request_headers = dict(headers or {})
+    if token is not None:
+        request_headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{listener.port}{path}", data=body, headers=request_headers, method=method
+    )
     try:
-        with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers), timeout=3) as r:
-            return r.status, r.read(), dict(r.headers)
-    except urllib.error.HTTPError as e:
-        return e.code, e.read(), dict(e.headers)
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return response.status, response.read(), dict(response.headers)
+    except urllib.error.HTTPError as error:
+        return error.code, error.read(), dict(error.headers)
 
 
-def test_listener_serves_application_profile(running_listener: tuple[JobImportListener, dict]) -> None:
-    listener, _ = running_listener
-    status, body, _ = _get(f"http://127.0.0.1:{listener.port}", "/application-profile")
+def _post_json(
+    listener: JobImportListener, path: str, payload: dict[str, Any], token: str | None = USER_A_TOKEN
+) -> tuple[int, bytes, dict[str, str]]:
+    return _request(
+        listener,
+        path,
+        method="POST",
+        token=token,
+        headers={"Content-Type": "application/json"},
+        body=json.dumps(payload).encode("utf-8"),
+    )
+
+
+def test_listener_serves_application_profile_for_the_caller(running_listener: Any) -> None:
+    listener, _, _ = running_listener
+    status, body, _ = _request(listener, "/application-profile")
     assert status == HTTPStatus.OK
-    assert json.loads(body)["profile"]["legal_name"] == "Evan Ross"
+    assert json.loads(body)["profile"]["legal_name"] == "User 1"
 
 
-def test_listener_serves_application_answers(running_listener: tuple[JobImportListener, dict]) -> None:
-    listener, _ = running_listener
-    status, body, _ = _get(f"http://127.0.0.1:{listener.port}", "/application-answers")
-    assert status == HTTPStatus.OK
-    assert json.loads(body)["answers"][0]["question_text"] == "Security clearance?"
+def test_each_caller_only_receives_their_own_data(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+
+    for token, user_id in ((USER_A_TOKEN, USER_A), (USER_B_TOKEN, USER_B)):
+        _, profile, _ = _request(listener, "/application-profile", token=token)
+        _, answers, _ = _request(listener, "/application-answers", token=token)
+        _, queue, _ = _request(listener, "/queue", token=token)
+        _, _, resume_headers = _request(listener, "/resume-file", token=token)
+        assert json.loads(profile)["profile"]["legal_name"] == f"User {user_id}"
+        assert json.loads(answers)["answers"][0]["answer_text"] == f"answer-{user_id}"
+        assert json.loads(queue)["items"][0]["url"].endswith(f"user-{user_id}")
+        assert f"Resume {user_id}.pdf" in resume_headers["Content-Disposition"]
+
+    assert recorder.claimed_for == [USER_A, USER_B]
 
 
-def test_listener_serves_resume_file_as_pdf_attachment(running_listener: tuple[JobImportListener, dict]) -> None:
-    listener, _ = running_listener
-    status, body, headers = _get(f"http://127.0.0.1:{listener.port}", "/resume-file")
+def test_listener_serves_resume_file_as_pdf_attachment(running_listener: Any) -> None:
+    listener, _, _ = running_listener
+    status, body, headers = _request(listener, "/resume-file")
     assert status == HTTPStatus.OK
     assert body == b"%PDF-1.4 fake"
     assert headers["Content-Type"] == "application/pdf"
-    assert 'filename="My Resume.pdf"' in headers["Content-Disposition"]
+    assert 'filename="Resume 1.pdf"' in headers["Content-Disposition"]
 
 
-def test_listener_rejects_autofill_requests_without_token(running_listener: tuple[JobImportListener, dict]) -> None:
-    listener, _ = running_listener
-    status, _, _ = _get(f"http://127.0.0.1:{listener.port}", "/application-profile", token=None)
+_PROTECTED_REQUESTS = [
+    ("GET", "/queue"),
+    ("GET", "/application-profile"),
+    ("GET", "/application-answers"),
+    ("GET", "/resume-file"),
+    ("GET", "/anything-else"),
+    ("POST", "/import"),
+    ("POST", "/capture"),
+    ("POST", "/application-answers"),
+    ("POST", "/ws-ticket"),
+]
+
+
+@pytest.mark.parametrize(("method", "path"), _PROTECTED_REQUESTS)
+def test_every_protected_route_rejects_a_missing_token(
+    running_listener: Any, method: str, path: str
+) -> None:
+    listener, recorder, _ = running_listener
+    status, _, headers = _request(
+        listener, path, method=method, token=None, body=b"{}" if method == "POST" else None,
+        headers={"Content-Type": "application/json"},
+    )
+    assert status == HTTPStatus.UNAUTHORIZED
+    assert headers["WWW-Authenticate"] == "Bearer"
+    assert recorder.captured == [] and recorder.learned == [] and recorder.claimed_for == []
+
+
+@pytest.mark.parametrize(("method", "path"), _PROTECTED_REQUESTS)
+def test_every_protected_route_rejects_an_unknown_token(
+    running_listener: Any, method: str, path: str
+) -> None:
+    listener, _, _ = running_listener
+    status, _, _ = _request(
+        listener, path, method=method, token="jha_not-a-real-token",
+        body=b"{}" if method == "POST" else None, headers={"Content-Type": "application/json"},
+    )
     assert status == HTTPStatus.UNAUTHORIZED
 
 
-def test_listener_learn_answer_upserts_via_post(running_listener: tuple[JobImportListener, dict]) -> None:
-    listener, learned = running_listener
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{listener.port}/application-answers",
-        data=json.dumps(
-            {"question_text": "Do you need sponsorship?", "answer_text": "No", "platform": "Ashby"}
-        ).encode("utf-8"),
-        headers={"X-Job-Import-Token": "test-token", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=3) as r:
-        assert r.status == HTTPStatus.CREATED
-        data = json.loads(r.read())
-    assert data["answer"]["question_text"] == "Do you need sponsorship?"
-    assert learned["call"] == ("Do you need sponsorship?", "No", "Ashby")
-
-
-def test_listener_learn_answer_rejects_blank_fields(running_listener: tuple[JobImportListener, dict]) -> None:
-    listener, _ = running_listener
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{listener.port}/application-answers",
-        data=json.dumps({"question_text": "  ", "answer_text": ""}).encode("utf-8"),
-        headers={"X-Job-Import-Token": "test-token", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        urllib.request.urlopen(req, timeout=3)
-        assert False, "expected HTTPError"
-    except urllib.error.HTTPError as e:
-        assert e.code == HTTPStatus.BAD_REQUEST
-
-
-def test_listener_existing_queue_and_import_still_work(running_listener: tuple[JobImportListener, dict]) -> None:
-    """Regression check — the new dispatch branches in do_GET/do_POST must not
-    break the pre-existing job-capture endpoints they sit alongside."""
-    listener, _ = running_listener
-    base = f"http://127.0.0.1:{listener.port}"
-
-    status, body, _ = _get(base, "/queue")
+def test_health_check_stays_public(running_listener: Any) -> None:
+    listener, _, _ = running_listener
+    status, body, _ = _request(listener, "/health", token=None)
     assert status == HTTPStatus.OK
-    assert json.loads(body) == {"items": []}
+    assert json.loads(body) == {"status": "ok"}
 
-    req = urllib.request.Request(
-        base + "/import",
-        data=json.dumps({"content": "hi", "format": "html"}).encode("utf-8"),
-        headers={"X-Job-Import-Token": "test-token", "Content-Type": "application/json"},
-        method="POST",
+
+def test_token_in_query_string_is_not_accepted(running_listener: Any) -> None:
+    listener, _, _ = running_listener
+    status, _, _ = _request(listener, f"/application-profile?token={USER_A_TOKEN}", token=None)
+    assert status == HTTPStatus.UNAUTHORIZED
+
+
+def test_legacy_import_token_header_is_not_accepted(running_listener: Any) -> None:
+    listener, _, _ = running_listener
+    status, _, _ = _request(
+        listener, "/application-profile", token=None, headers={"X-Job-Import-Token": USER_A_TOKEN}
     )
-    with urllib.request.urlopen(req, timeout=3) as r:
-        assert r.status == HTTPStatus.OK
-        data = json.loads(r.read())
-    assert data["received"]["content"] == "hi"
+    assert status == HTTPStatus.UNAUTHORIZED
+
+
+def test_unauthenticated_request_is_rejected_before_its_body_is_read(
+    running_listener: Any,
+) -> None:
+    """An anonymous caller must not be able to make the server buffer a body."""
+    listener, _, _ = running_listener
+    connection = http.client.HTTPConnection("127.0.0.1", listener.port, timeout=3)
+    try:
+        connection.putrequest("POST", "/import")
+        connection.putheader("Content-Length", "999999999")
+        connection.endheaders()
+        assert connection.getresponse().status == HTTPStatus.UNAUTHORIZED
+    finally:
+        connection.close()
+
+
+def test_authentication_backend_failure_returns_503_not_a_default_user(
+    running_listener: Any,
+) -> None:
+    listener, recorder, _ = running_listener
+    recorder.auth_failure = RuntimeError("database down")
+    status, body, _ = _request(listener, "/application-profile")
+    assert status == HTTPStatus.SERVICE_UNAVAILABLE
+    assert "profile" not in json.loads(body)
+
+
+def test_listener_learn_answer_is_attributed_to_the_caller(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    status, body, _ = _post_json(
+        listener,
+        "/application-answers",
+        {"question_text": "Do you need sponsorship?", "answer_text": "No", "platform": "Ashby"},
+        token=USER_B_TOKEN,
+    )
+    assert status == HTTPStatus.CREATED
+    assert json.loads(body)["answer"]["question_text"] == "Do you need sponsorship?"
+    assert recorder.learned == [(USER_B, "Do you need sponsorship?", "No", "Ashby")]
+
+
+def test_listener_learn_answer_rejects_blank_fields(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    status, _, _ = _post_json(
+        listener, "/application-answers", {"question_text": "  ", "answer_text": ""}
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert recorder.learned == []
+
+
+def test_capture_is_submitted_for_the_authenticated_user(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    status, body, _ = _post_json(
+        listener, "/import", {"content": "hi", "format": "html"}, token=USER_B_TOKEN
+    )
+    assert status == HTTPStatus.OK
+    assert json.loads(body)["received"]["content"] == "hi"
+    assert recorder.captured[0][0] == USER_B
+
+
+def test_ws_ticket_is_issued_for_the_caller_and_is_single_use(running_listener: Any) -> None:
+    listener, _, tickets = running_listener
+    status, body, _ = _request(listener, "/ws-ticket", method="POST", token=USER_B_TOKEN)
+    assert status == HTTPStatus.OK
+    issued = json.loads(body)
+    assert issued["expires_in"] == tickets.ttl_seconds
+    assert tickets.redeem(issued["ticket"]) == USER_B
+    assert tickets.redeem(issued["ticket"]) is None
+
+
+def test_ws_ticket_unavailable_without_a_ticket_store() -> None:
+    listener = JobImportListener(
+        host="127.0.0.1", port=0, max_bytes=1000,
+        authenticate=lambda token: 1, submit_capture=lambda user_id, body: ({}, 200),
+    )
+    listener.start()
+    try:
+        status, _, _ = _request(listener, "/ws-ticket", method="POST", token="anything")
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+    finally:
+        listener.stop()
+
+
+# ─── Queue WebSocket: ticket-authenticated, per-user push ───────────────────────
+
+
+@pytest.fixture
+def running_ws_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[QueueWebSocketServer, WebSocketTicketStore, set[int]]]:
+    monkeypatch.setattr(queue_websocket, "_WATCH_INTERVAL_SECONDS", 0.05)
+    tickets = WebSocketTicketStore()
+    users_with_pending: set[int] = set()
+    server = QueueWebSocketServer(
+        host="127.0.0.1",
+        port=0,
+        redeem_ticket=tickets.redeem,
+        has_pending=lambda user_id: user_id in users_with_pending,
+    )
+    server.start()
+    try:
+        yield server, tickets, users_with_pending
+    finally:
+        server.stop()
+
+
+def _ws_url(server: QueueWebSocketServer, ticket: str) -> str:
+    return f"ws://127.0.0.1:{server.port}/?ticket={ticket}"
+
+
+def test_websocket_rejects_a_missing_or_unknown_ticket(running_ws_server: Any) -> None:
+    server, _, _ = running_ws_server
+    for url in (f"ws://127.0.0.1:{server.port}/", _ws_url(server, "forged")):
+        with pytest.raises(InvalidStatus) as excinfo:
+            connect(url, open_timeout=3)
+        assert excinfo.value.response.status_code == 401
+
+
+def test_websocket_ticket_cannot_be_reused(running_ws_server: Any) -> None:
+    server, tickets, _ = running_ws_server
+    ticket = tickets.issue(USER_A)
+    with connect(_ws_url(server, ticket), open_timeout=3):
+        pass
+    with pytest.raises(InvalidStatus):
+        connect(_ws_url(server, ticket), open_timeout=3)
+
+
+def test_websocket_ignores_the_long_lived_token_in_the_url(running_ws_server: Any) -> None:
+    server, _, _ = running_ws_server
+    with pytest.raises(InvalidStatus):
+        connect(f"ws://127.0.0.1:{server.port}/?token={USER_A_TOKEN}", open_timeout=3)
+
+
+def test_websocket_pushes_queue_ready_only_to_the_user_with_pending_work(
+    running_ws_server: Any,
+) -> None:
+    server, tickets, users_with_pending = running_ws_server
+    with connect(_ws_url(server, tickets.issue(USER_A)), open_timeout=3) as client_a, connect(
+        _ws_url(server, tickets.issue(USER_B)), open_timeout=3
+    ) as client_b:
+        users_with_pending.add(USER_A)
+
+        assert json.loads(client_a.recv(timeout=3)) == {"type": "queue-ready"}
+        with pytest.raises(TimeoutError):
+            client_b.recv(timeout=0.5)

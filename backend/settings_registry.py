@@ -136,16 +136,6 @@ SETTINGS: dict[str, SettingSpec] = {
         scope="system", is_secret=False, default=str(config.DEFAULT_JOB_IMPORT_LISTENER_PORT),
         label="Port", group="Import Listener", placeholder="8765",
     ),
-    # ai: claude-sonnet-5 | 2026-08-30 — not marked is_secret: the token is
-    # displayed and edited in plain text in the Import Listener tab so it can
-    # be copied into the browser extension's own settings, the same behavior
-    # it had in runtime_config.json. Encrypting it would require a
-    # leave-blank-to-keep UI this field has never had.
-    "job_import_listener_token": SettingSpec(
-        scope="system", is_secret=False, default=config.DEFAULT_JOB_IMPORT_LISTENER_TOKEN,
-        label="Optional Token", group="Import Listener",
-        help_text="If set, send it as the X-Job-Import-Token header or token query parameter.",
-    ),
     "job_import_listener_max_bytes": SettingSpec(
         scope="system", is_secret=False,
         default=str(config.DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES),

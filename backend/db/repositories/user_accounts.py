@@ -80,6 +80,16 @@ class PostgresUserAccountRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    # ai: claude-sonnet-5 | 2026-09-26
+    def list_active_user_ids(self) -> list[int]:
+        """Ids of every account that finished registration (has a password),
+        for background jobs that fan out per tenant. Pending sign-ups are
+        excluded: they have no credentials, settings, or data to act on."""
+        cur = self._execute(
+            "SELECT id FROM user_accounts WHERE password_hash IS NOT NULL ORDER BY id"
+        )
+        return [row["id"] for row in cur.fetchall()]
+
     def get_by_email(self, email: str) -> dict[str, Any] | None:
         cur = self._execute("SELECT * FROM user_accounts WHERE email = %s", [email])
         row = cur.fetchone()

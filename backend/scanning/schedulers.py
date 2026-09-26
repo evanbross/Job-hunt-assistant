@@ -31,7 +31,7 @@ from datetime import time as time_of_day
 
 import config
 from backend.settings_service import get_setting, get_setting_bool, get_setting_int
-from backend.utils.utils import first_account_user_id, get_repos
+from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,18 @@ def configure_career_site_scheduler(
     _career_scheduler_submit_run = submit_run
 
 
+# ai: claude-sonnet-5 | 2026-09-26
+def _active_user_ids() -> list[int]:
+    """Every account a scheduled tick should act for. A tick fans out per
+    tenant; a failure looking the list up skips this tick, not the thread."""
+    try:
+        with get_repos() as repos:
+            return repos["user_accounts"].list_active_user_ids()
+    except Exception:
+        logger.exception("Scheduler could not list active accounts; skipping this tick")
+        return []
+
+
 def start_career_site_scheduler() -> None:
     global _career_scheduler_started
 
@@ -71,15 +83,13 @@ def start_career_site_scheduler() -> None:
             while True:
                 interval_seconds = max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES) * 60
                 time.sleep(interval_seconds)
-                try:
-                    # STOPGAP: a scheduled tick has no acting user — resolves
-                    # to whichever account was created first. See
-                    # first_account_user_id()'s docstring in backend/utils/utils.py.
-                    with get_repos() as repos:
-                        user_id = first_account_user_id(repos)
-                    _career_scheduler_submit_run(user_id, trigger="scheduled")
-                except Exception:
-                    logger.exception("Career-site scheduler tick failed")
+                for user_id in _active_user_ids():
+                    try:
+                        _career_scheduler_submit_run(user_id, trigger="scheduled")
+                    except Exception:
+                        logger.exception(
+                            "Career-site scheduler tick failed for user %s", user_id
+                        )
 
         thread = threading.Thread(target=career_scheduler_loop, daemon=True)
         thread.start()
@@ -207,16 +217,14 @@ def start_jd_health_check_scheduler() -> None:
 
         def jd_health_scheduler_loop() -> None:
             while True:
-                try:
-                    # STOPGAP: a scheduled tick has no acting user — resolves
-                    # to whichever account was created first. See
-                    # first_account_user_id()'s docstring in backend/utils/utils.py.
-                    with get_repos() as repos:
-                        user_id = first_account_user_id(repos)
-                    if _jd_health_scheduler_should_run_now(user_id):
-                        _jd_health_scheduler_submit_run(user_id, "scheduled")
-                except Exception:
-                    logger.exception("JD health check scheduler tick failed")
+                for user_id in _active_user_ids():
+                    try:
+                        if _jd_health_scheduler_should_run_now(user_id):
+                            _jd_health_scheduler_submit_run(user_id, "scheduled")
+                    except Exception:
+                        logger.exception(
+                            "JD health check scheduler tick failed for user %s", user_id
+                        )
                 time.sleep(_JD_HEALTH_CHECK_POLL_SECONDS)
 
         thread = threading.Thread(target=jd_health_scheduler_loop, daemon=True)

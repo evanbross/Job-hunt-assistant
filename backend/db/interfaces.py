@@ -330,6 +330,24 @@ class IContactRepository(Protocol):
     def count(self, user_id: int) -> int: ...
 
 
+# ai: claude-sonnet-5 | 2026-09-26
+@runtime_checkable
+class IExtensionTokenRepository(Protocol):
+    def create(
+        self,
+        user_id: int,
+        token_hash: str,
+        token_prefix: str,
+        label: str,
+        created_at: str,
+        expires_at: str | None,
+    ) -> dict[str, Any]: ...
+    def get_active_by_hash(self, token_hash: str, now: str) -> dict[str, Any] | None: ...
+    def touch_last_used(self, token_id: int, now: str, stale_before: str) -> None: ...
+    def list_for_user(self, user_id: int) -> list[dict[str, Any]]: ...
+    def revoke(self, user_id: int, token_id: int, revoked_at: str) -> bool: ...
+
+
 # ai: claude-sonnet-5 | 2026-09-25
 @runtime_checkable
 class IContactEmailRepository(Protocol):

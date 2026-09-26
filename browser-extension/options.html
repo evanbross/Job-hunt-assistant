@@ -139,9 +139,9 @@
     <div class="hint">Where the extension POSTs captured jobs. Defaults to the app's stable Caddy name — only change this to a direct host:port if you're not running the ../infra Caddy stack.</div>
     <input type="text" id="listener-url" placeholder="http://jha-listener.localhost">
 
-    <label for="token">Auth Token (optional)</label>
-    <div class="hint">Leave blank if IMPORT_LISTENER_TOKEN is not set</div>
-    <input type="password" id="token" placeholder="Leave blank if not configured">
+    <label for="token">Extension Token</label>
+    <div class="hint">Required. Create one in Job Hunt App under Settings &gt; Browser Extension and paste it here. Each browser or computer should use its own token.</div>
+    <input type="password" id="token" placeholder="jha_...">
   </div>
 
   <div class="card">
@@ -159,6 +159,7 @@
 
   <div id="status"></div>
 
+  <script src="extension-auth.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

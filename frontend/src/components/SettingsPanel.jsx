@@ -37,6 +37,7 @@ import { apiFetch } from "../utils/apiClient.js";
 import { collectionModeLabel } from "../utils/careerSiteUtils.js";
 import { describeFetchError } from "../utils/fetchErrorUtils.js";
 import ApplicationProfilePanel from "./ApplicationProfilePanel.jsx";
+import BrowserExtensionPanel from "./BrowserExtensionPanel.jsx";
 import Modal from "./common/Modal.jsx";
 import ResumeUpload from "./ResumeUpload.jsx";
 import SetupWizardPanel from "./SetupWizardPanel.jsx";
@@ -74,6 +75,9 @@ const SETTINGS_TREE = [
     ],
   },
   { id: "fetch_queue", label: "Fetch Queue" },
+  // ai: claude-sonnet-5 | 2026-09-26 -- per-user extension tokens (replaces the
+  // shared static listener token that used to live under System > Import Listener)
+  { id: "browser_extension", label: "Browser Extension" },
   {
     id: "scoring",
     label: "Scoring",
@@ -208,6 +212,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
         {activeSection === "career_sites" && <CareerSitesSection />}
         {activeSection === "jd_health_check" && <JdHealthCheckSection />}
         {activeSection === "fetch_queue" && <FetchQueueSection />}
+        {activeSection === "browser_extension" && <BrowserExtensionPanel />}
         {activeSection === "penalties" && <PenaltiesSection />}
         {activeSection === "feedback" && <FeedbackSection />}
         {activeSection === "config" && <ConfigSection />}
@@ -1606,7 +1611,6 @@ function ImportListenerSection() {
         job_import_listener_enabled: cfg.job_import_listener_enabled === "true" ? "true" : "false",
         job_import_listener_host: cfg.job_import_listener_host,
         job_import_listener_port: String(port),
-        job_import_listener_token: cfg.job_import_listener_token || "",
         job_import_listener_max_bytes: String(maxBytes),
       }),
     });
@@ -1629,7 +1633,8 @@ function ImportListenerSection() {
     <div>
       <SectionHeader title="Import Listener" />
       <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
-        Accept captured job-board HTML or JSON from a local browser extension, bookmarklet, or script.
+        Accept captured job-board HTML or JSON from the browser extension. Every request must carry a
+        per-user extension token (created under Settings &gt; Browser Extension).
         Listener changes are saved here and take effect after restarting the app.
       </p>
 
@@ -1699,20 +1704,6 @@ function ImportListenerSection() {
             />
           </label>
         </div>
-
-        <label style={{ ...labelStyle, marginTop: "16px" }}>
-          Optional Token
-          <input
-            value={cfg.job_import_listener_token || ""}
-            onChange={(event) =>
-              setCfg({ ...cfg, job_import_listener_token: event.target.value })
-            }
-            placeholder="Leave blank to allow local requests without a token"
-          />
-          <span style={helpTextStyle}>
-            If set, send it as the X-Job-Import-Token header or token query parameter.
-          </span>
-        </label>
 
         <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <button className="btn-primary" onClick={save} disabled={saving}>

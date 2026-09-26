@@ -62,6 +62,10 @@ async function handleSave() {
     showStatus('App URL must start with http:// or https://', 'error');
     return;
   }
+  if (token && !token.startsWith('jha_')) {
+    showStatus('That does not look like an extension token (they start with "jha_").', 'error');
+    return;
+  }
 
   try {
     await chrome.storage.sync.set({ listenerUrl, token, appUrl });
@@ -73,14 +77,28 @@ async function handleSave() {
 
 async function handleTest() {
   const listenerUrl = document.getElementById('listener-url').value.trim().replace(/\/$/, '');
+  const token = document.getElementById('token').value.trim();
   showStatus('Testing connection…', 'info');
 
   try {
-    const res = await fetch(`${listenerUrl}/health`, { method: 'GET' });
-    if (res.ok) {
-      showStatus('✓ Connected — import listener is reachable.', 'success');
+    const health = await fetch(`${listenerUrl}/health`, { method: 'GET' });
+    if (!health.ok) {
+      showStatus(`Listener responded with status ${health.status}.`, 'error');
+      return;
+    }
+    // /health is public, so it can't validate the token; a read-only
+    // authenticated endpoint can.
+    const auth = await fetch(`${listenerUrl}/application-profile`, {
+      method: 'GET',
+      headers: jhaAuthHeaders(token),
+    });
+    jhaReportAuth(auth);
+    if (auth.ok) {
+      showStatus('✓ Connected — the listener is reachable and your token is valid.', 'success');
+    } else if (auth.status === 401) {
+      showStatus(token ? JHA_AUTH_ERROR_MESSAGE : 'Reachable, but no token is entered yet. Paste your extension token above.', 'error');
     } else {
-      showStatus(`Listener responded with status ${res.status}.`, 'error');
+      showStatus(`Listener responded with status ${auth.status}.`, 'error');
     }
   } catch {
     showStatus('Cannot reach the import listener. Is Job Hunt App running?', 'error');

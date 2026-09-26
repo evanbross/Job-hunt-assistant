@@ -410,17 +410,12 @@ def test_throttle_host_fetch_spaces_same_host_only(
 
 
 # ai: claude-sonnet-5 | 2026-08-20
-# multi-tenancy: every table these tests touch now has a user_id column, and
-# submit_closed_req_capture (the listener-thread path, no session) resolves
-# its actor via first_account_user_id() -- "whichever account has the lowest
-# id" (see backend/utils/utils.py's STOPGAP docstring). pg_dsn's init_db()
+# multi-tenancy: every table these tests touch now has a user_id column.
+# submit_closed_req_capture takes the acting user explicitly (the import
+# listener resolves it from the caller's extension token). pg_dsn's init_db()
 # always leaves exactly one bootstrap admin account behind (id 1, guaranteed
-# by TRUNCATE...RESTART IDENTITY), so using that same account's id everywhere
-# in this file keeps directly-parameterized calls and the STOPGAP-resolved
-# path pointed at the same owner.
-# ai: claude-sonnet-5 | 2026-08-27 -- close the connection on failure too:
-# a caller only gets `repos` back (and can close it) once this returns
-# successfully, so a raised exception here must close it itself or it leaks.
+# by TRUNCATE...RESTART IDENTITY), which _fresh_repos returns for tests that
+# need one user.
 def _fresh_repos(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, int]:
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
     repos = open_repositories(pg_dsn)
@@ -1222,11 +1217,6 @@ def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(
 ) -> None:
     """An authenticated capture showing the closure banner records the job as closed,
     even though the earlier unauthenticated fetch reported it as open."""
-    # submit_closed_req_capture has no session (the real caller is the
-    # standalone import-listener thread) and resolves its actor via the
-    # first_account_user_id() STOPGAP -- the bootstrap admin account
-    # _fresh_repos returns is exactly that account, so the job must belong
-    # to it too.
     repos, user_id = _fresh_repos(pg_dsn, monkeypatch)
     try:
         job_id = repos["jobs"].insert(
@@ -1255,6 +1245,7 @@ def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(
         repos["conn"].close()
 
     payload, status_code = submit_closed_req_capture(
+        user_id,
         {
             "content": "<html>No longer accepting applications</html>",
             "url": "https://www.linkedin.com/jobs/view/6/",
@@ -1314,6 +1305,7 @@ def test_submit_closed_req_capture_leaves_open_job_untouched(
         repos["conn"].close()
 
     payload, status_code = submit_closed_req_capture(
+        user_id,
         {
             "content": "<html>Apply now for this great role</html>",
             "url": "https://www.linkedin.com/jobs/view/7/",
@@ -1421,3 +1413,51 @@ def test_start_closed_req_scan_defaults_to_all_platforms() -> None:
     assert res.status_code == 200
     assert res.get_json()["platforms"] == sorted(_PLATFORM_LABELS)
     assert received == [(1, frozenset(_PLATFORM_LABELS))]
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def test_submit_closed_req_capture_cannot_touch_another_users_job(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capture attributed to user B must not close user A's job, even when it
+    names A's job id and shows a closure banner."""
+    repos, owner_id = _fresh_repos(pg_dsn, monkeypatch)
+    try:
+        other = repos["user_accounts"].create_pending(
+            "other@example.com", "seed-other", "2099-01-01"
+        )
+        other_id = other["id"]
+        job_id = repos["jobs"].insert(
+            owner_id,
+            {
+                "company": "Acme",
+                "job_title": "Engineer",
+                "url": "https://www.linkedin.com/jobs/view/8/",
+                "source": "LinkedIn",
+                "status": "pending_review",
+            },
+        )
+        repos["conn"].commit()
+    finally:
+        repos["conn"].close()
+
+    payload, status_code = submit_closed_req_capture(
+        other_id,
+        {
+            "content": "<html>No longer accepting applications</html>",
+            "url": "https://www.linkedin.com/jobs/view/8/",
+            "job_id": job_id,
+            "purpose": "closed_req",
+        },
+    )
+
+    assert status_code == 200
+    assert payload == {"ok": True}
+
+    repos = open_repositories(config.DATABASE_URL)
+    try:
+        untouched = repos["jobs"].get_by_id(owner_id, job_id)
+    finally:
+        repos["conn"].close()
+    assert untouched["status"] == "pending_review"
+    assert untouched["skip_reason"] != "req_closed"

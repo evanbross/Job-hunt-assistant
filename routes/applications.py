@@ -68,7 +68,6 @@ from backend.utils.stage_status_normalization import normalize_stage_status
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils.utils import (
     current_user_id,
-    first_account_user_id,
     get_repos,
     is_celery_task_active,
 )
@@ -806,7 +805,7 @@ def _record_closed_req(user_id: int, job: dict, platform_label: str, today: str)
 
 
 # ai: claude-sonnet-4-6 | 2026-07-02
-def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
+def submit_closed_req_capture(user_id: int, body: dict) -> tuple[dict, int]:
     """Handle an authenticated page capture from the browser extension's closed-req
     check queue (see run_req_closed_scan_task). The extension opens the job URL in a
     real browser tab — using the user's logged-in session for LinkedIn's "no longer
@@ -814,9 +813,8 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
     bot-detection challenge) for Wellfound — and posts back the rendered HTML.
 
     Called from app.py's _handle_listener_capture, which runs on the standalone
-    import-listener background thread — no Flask session exists there, so this
-    uses the same STOPGAP (first_account_user_id) that callback already uses
-    for the job-import path. See that helper's docstring in backend/utils/utils.py.
+    import-listener background thread — no Flask session exists there, so the
+    authenticated extension user is passed in explicitly by the listener.
     """
     content = str(body.get("content") or "")
     captured_url = str(body.get("url") or "").strip()
@@ -832,7 +830,6 @@ def submit_closed_req_capture(body: dict) -> tuple[dict, int]:
         # manages its own connection too (see its docstring), so this block must not
         # hold one open across that call.
         with get_repos() as repos:
-            user_id = first_account_user_id(repos)  # STOPGAP — see docstring above
             job = repos["jobs"].get_by_id(user_id, job_id) if job_id else None
 
         if job:
