@@ -32,30 +32,33 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import LoginPage from "./components/LoginPage.jsx";
-import CompleteSetupPage from "./components/CompleteSetupPage.jsx";
-import VerifyAccountPage from "./components/VerifyAccountPage.jsx";
-import VerifyEmailChangePage from "./components/VerifyEmailChangePage.jsx";
-import ResetPasswordPage from "./components/ResetPasswordPage.jsx";
 import { apiFetch, UNAUTHENTICATED_EVENT } from "./utils/apiClient.js";
 import JobQueue from "./components/JobQueue/index.jsx";
-import SettingsPanel from "./components/SettingsPanel.jsx";
-import EmailsPanel from "./components/EmailsPanel.jsx";
-import HistoryPanel from "./components/HistoryPanel.jsx";
-import ApplicationSheetPanel from "./components/ApplicationSheetPanel.jsx";
-import ContactsPanel from "./components/ContactsPanel.jsx";
 import GoogleConnectionMenu from "./components/GoogleConnectionMenu.jsx";
-import PhraseBookPanel from "./components/PhraseBookPanel.jsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
 import StatsBar from "./components/StatsBar.jsx";
-import Modal from "./components/common/Modal.jsx";
 import RecentChangesModal from "./components/RecentChangesModal.jsx";
-import ToptalPitchModal from "./components/common/ToptalPitchModal.jsx";
+import Modal from "./components/common/Modal.jsx";
 import MetricGrid, { MetricItem } from "./components/common/MetricGrid.jsx";
 import { ImportBreakdownDetails } from "./components/JobQueue/ImportSummaryPopup.jsx";
-import VoiceQuery from "./components/VoiceQuery/index.jsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
+
+// Everything except the default tab and the login page loads on first use, so the
+// initial bundle is what a signed-out visitor or the job queue actually needs.
+const CompleteSetupPage = lazy(() => import("./components/CompleteSetupPage.jsx"));
+const VerifyAccountPage = lazy(() => import("./components/VerifyAccountPage.jsx"));
+const VerifyEmailChangePage = lazy(() => import("./components/VerifyEmailChangePage.jsx"));
+const ResetPasswordPage = lazy(() => import("./components/ResetPasswordPage.jsx"));
+const SettingsPanel = lazy(() => import("./components/SettingsPanel.jsx"));
+const EmailsPanel = lazy(() => import("./components/EmailsPanel.jsx"));
+const HistoryPanel = lazy(() => import("./components/HistoryPanel.jsx"));
+const ApplicationSheetPanel = lazy(() => import("./components/ApplicationSheetPanel.jsx"));
+const ContactsPanel = lazy(() => import("./components/ContactsPanel.jsx"));
+const PhraseBookPanel = lazy(() => import("./components/PhraseBookPanel.jsx"));
+const ToptalPitchModal = lazy(() => import("./components/common/ToptalPitchModal.jsx"));
+const VoiceQuery = lazy(() => import("./components/VoiceQuery/index.jsx"));
 
 // ai: claude-fable-5 | 2026-07-14 — Career Sites tab removed; sites are managed in Settings
 // ai: claude-sonnet-5 | 2026-07-26 — Setup tab removed; the wizard now lives in Settings
@@ -479,15 +482,27 @@ export default function App() {
   const pathname = window.location.pathname;
   if (pathname === "/verify-account") {
     const token = new URLSearchParams(window.location.search).get("token");
-    return <VerifyAccountPage token={token} onLoginSuccess={() => setAppAuthenticated(true)} />;
+    return (
+      <Suspense fallback={null}>
+        <VerifyAccountPage token={token} onLoginSuccess={() => setAppAuthenticated(true)} />
+      </Suspense>
+    );
   }
   if (pathname === "/confirm-email-change") {
     const token = new URLSearchParams(window.location.search).get("token");
-    return <VerifyEmailChangePage token={token} />;
+    return (
+      <Suspense fallback={null}>
+        <VerifyEmailChangePage token={token} />
+      </Suspense>
+    );
   }
   if (pathname === "/reset-password") {
     const token = new URLSearchParams(window.location.search).get("token");
-    return <ResetPasswordPage token={token} onLoginSuccess={() => setAppAuthenticated(true)} />;
+    return (
+      <Suspense fallback={null}>
+        <ResetPasswordPage token={token} onLoginSuccess={() => setAppAuthenticated(true)} />
+      </Suspense>
+    );
   }
 
   if (appAuthenticated === null) return null; // session check in flight
@@ -505,7 +520,11 @@ export default function App() {
     );
   }
   if (mustCompleteSetup) {
-    return <CompleteSetupPage onComplete={() => setMustCompleteSetup(false)} />;
+    return (
+      <Suspense fallback={null}>
+        <CompleteSetupPage onComplete={() => setMustCompleteSetup(false)} />
+      </Suspense>
+    );
   }
 
   return (
@@ -536,7 +555,9 @@ export default function App() {
           </nav>
 
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
-            <VoiceQuery />
+            <Suspense fallback={null}>
+              <VoiceQuery />
+            </Suspense>
             <button
               onClick={() => setShowToptalPitch(true)}
               style={{ fontSize: "12px", padding: "5px 12px", background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "var(--radius)", cursor: "pointer" }}
@@ -623,6 +644,7 @@ export default function App() {
       {activeTab !== "settings" && <CareerSiteScanBanner />}
 
       <main style={styles.content}>
+        <Suspense fallback={<div style={{ padding: "24px", color: "var(--text-muted)" }}>Loading…</div>}>
         {activeTab === "queue" && (
           <JobQueue
             onTriageCountChange={setTriageCount}
@@ -648,6 +670,7 @@ export default function App() {
         {activeTab === "settings" && (
           <SettingsPanel initialSection={settingsInitialSection} onSetupComplete={handleSetupComplete} />
         )}
+        </Suspense>
       </main>
 
       {listenerImportState
@@ -659,13 +682,15 @@ export default function App() {
           />
         )}
 
-      {showRecentChanges && (
-        <RecentChangesModal onClose={() => setShowRecentChanges(false)} />
-      )}
+      <Suspense fallback={null}>
+        {showRecentChanges && (
+          <RecentChangesModal onClose={() => setShowRecentChanges(false)} />
+        )}
 
-      {showToptalPitch && (
-        <ToptalPitchModal onClose={() => setShowToptalPitch(false)} />
-      )}
+        {showToptalPitch && (
+          <ToptalPitchModal onClose={() => setShowToptalPitch(false)} />
+        )}
+      </Suspense>
     </div>
   );
 }

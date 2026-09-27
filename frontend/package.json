@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "lint:ci": "eslint . --max-warnings 4"
+    "lint:ci": "eslint . --max-warnings 0"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -36,10 +36,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "../utils/apiClient.js";
 import { collectionModeLabel } from "../utils/careerSiteUtils.js";
 import { describeFetchError } from "../utils/fetchErrorUtils.js";
+import { fetchSettingsSchema } from "../utils/settingsSchema.js";
 import ApplicationProfilePanel from "./ApplicationProfilePanel.jsx";
 import BrowserExtensionPanel from "./BrowserExtensionPanel.jsx";
 import Modal from "./common/Modal.jsx";
 import ResumeUpload from "./ResumeUpload.jsx";
+import { SchemaFieldGroup } from "./SchemaFields.jsx";
+import { helpTextStyle, labelStyle } from "./settingsStyles.js";
 import SetupWizardPanel from "./SetupWizardPanel.jsx";
 
 // ai: claude-sonnet-5 | 2026-08-30
@@ -2071,61 +2074,6 @@ function FeedbackSection() {
 // ── Configuration ─────────────────────────────────────────────────────────────
 
 // ── Schema-driven settings fields ───────────────────────────────────────────
-// ai: claude-sonnet-5 | 2026-08-26
-// Renders one registry-backed setting (backend/settings_registry.py, served
-// via GET /api/settings/schema) from its schema entry -- label, placeholder,
-// input type, and help text live only in the registry, never re-typed here.
-// Fields with real custom behavior (file pickers, a validated dropdown that
-// drives conditional rendering) aren't registry-backed and stay hand-written.
-function SchemaField({ spec, cfg, setCfg }) {
-  if (!spec) return null;
-  const { key, label, input_type: inputType, placeholder, is_secret: isSecret, help_text: helpText } = spec;
-
-  if (inputType === "checkbox") {
-    return (
-      <label
-        style={{ ...labelStyle, marginTop: "12px", flexDirection: "row", alignItems: "center", gap: "8px" }}
-      >
-        <input
-          type="checkbox"
-          checked={cfg[key] === "true"}
-          onChange={(e) => setCfg({ ...cfg, [key]: e.target.checked ? "true" : "false" })}
-        />
-        {label}
-      </label>
-    );
-  }
-
-  return (
-    <label style={{ ...labelStyle, marginTop: "12px" }}>
-      {label}
-      <input
-        type={inputType === "password" ? "password" : "text"}
-        value={cfg[key] || ""}
-        onChange={(e) => setCfg({ ...cfg, [key]: e.target.value })}
-        placeholder={isSecret && cfg[`${key}_set`] ? "••••••••  (set — leave blank to keep)" : placeholder}
-      />
-      {helpText && <span style={helpTextStyle}>{helpText}</span>}
-    </label>
-  );
-}
-
-// Renders every schema field in *group*, in registry declaration order.
-// Exported: CompleteSetupPage.jsx reuses this to render the SMTP/Server
-// fields during the forced default-admin setup flow, before the full
-// Settings tab (which owns this component everywhere else) is reachable.
-export function SchemaFieldGroup({ fields, group, cfg, setCfg }) {
-  return fields
-    .filter((f) => f.group === group)
-    .map((f) => <SchemaField key={f.key} spec={f} cfg={cfg} setCfg={setCfg} />);
-}
-
-export async function fetchSettingsSchema() {
-  const res = await fetch("/api/settings/schema");
-  if (!res.ok) return { user: [], system: [] };
-  return res.json();
-}
-
 function ConfigSection() {
   const [cfg, setCfg] = useState(null);
   const [schema, setSchema] = useState({ user: [], system: [] });
@@ -2742,27 +2690,6 @@ const navDividerLabel = {
   textTransform: "uppercase",
   letterSpacing: "0.06em",
   color: "var(--text-muted)",
-};
-
-export const labelStyle = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "4px",
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  fontWeight: "600",
-  textTransform: "uppercase",
-  letterSpacing: "0.04em",
-};
-
-export const helpTextStyle = {
-  color: "var(--text-muted)",
-  display: "block",
-  fontSize: "11px",
-  fontWeight: 400,
-  letterSpacing: 0,
-  marginTop: "4px",
-  textTransform: "none",
 };
 
 const sectionSubheadingStyle = {

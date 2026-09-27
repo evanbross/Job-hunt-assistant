@@ -424,3 +424,24 @@ Then remove `allow_failure` from both jobs.
 
 Not included: `ruff format --check` (the codebase is not formatted to it), branch
 protection requiring the pipeline to pass (a GitLab project setting, not a file).
+
+## Tier C progress (2026-09-26)
+
+Status: **implemented, nothing committed.** ESLint is now at 0 warnings and `lint:ci` in
+`.gitlab-ci.yml` allows none (`--max-warnings 0`).
+
+- **Lazy loading:** every tab except the job queue, plus the login-adjacent pages
+  (verify account/email, reset password, complete setup), the voice widget and the Toptal
+  modal, load on first use behind `Suspense`. Main bundle 646 kB to 445 kB (115 kB gzip);
+  Settings (104 kB) is its own chunk. `RecentChangesModal` stays eager because
+  `JobQueue` imports it statically, so lazy-loading it would only add a warning.
+- **Fast Refresh warnings:** `SchemaFieldGroup`, `fetchSettingsSchema`, and the shared
+  `labelStyle`/`helpTextStyle` moved out of `SettingsPanel.jsx` into
+  `components/SchemaFields.jsx`, `utils/settingsSchema.js` and `components/settingsStyles.js`.
+  This also stops `CompleteSetupPage` dragging the whole Settings panel into its chunk.
+- **`loadAccount` hook dependency:** `CompleteSetupPage` keeps `onComplete` in a ref so
+  `loadAccount` is a stable `useCallback` and the mount effect runs once.
+- **`learnAnswer`:** already fixed earlier (the background script reports save failures).
+- **Verified:** lint 0 problems, production build, and in the running app (signed in)
+  Settings, Contacts and Phrase Book load their chunks with no console errors. The
+  Applications and Email History tabs use the same mechanism but I did not click through them.

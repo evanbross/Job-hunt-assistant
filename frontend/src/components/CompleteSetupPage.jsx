@@ -42,10 +42,12 @@
 // section, since request-email-change can't complete without a working relay
 // and this is the earliest point in the app that's actually reachable
 // without one already working.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "../utils/apiClient.js";
 import { describeFetchError } from "../utils/fetchErrorUtils.js";
-import { SchemaFieldGroup, fetchSettingsSchema, labelStyle, helpTextStyle } from "./SettingsPanel.jsx";
+import { SchemaFieldGroup } from "./SchemaFields.jsx";
+import { fetchSettingsSchema } from "../utils/settingsSchema.js";
+import { helpTextStyle, labelStyle } from "./settingsStyles.js";
 
 const DEFAULT_ADMIN_EMAIL = "admin@localhost";
 
@@ -125,7 +127,14 @@ export default function CompleteSetupPage({ onComplete }) {
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpSaved, setSmtpSaved] = useState(false);
 
-  const loadAccount = async () => {
+  // The parent passes a fresh arrow function every render; a ref keeps loadAccount stable so
+  // the mount effect below fires once instead of on every parent render.
+  const onCompleteRef = useRef(onComplete);
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  const loadAccount = useCallback(async () => {
     try {
       const res = await apiFetch("/api/account");
       if (!res.ok) {
@@ -134,15 +143,15 @@ export default function CompleteSetupPage({ onComplete }) {
       }
       const data = await res.json();
       setAccount(data);
-      if (!data.must_complete_setup) onComplete();
+      if (!data.must_complete_setup) onCompleteRef.current();
     } catch (err) {
       setLoadError(describeFetchError(err));
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadAccount();
-  }, []);
+  }, [loadAccount]);
 
   const emailDone = account && account.email !== DEFAULT_ADMIN_EMAIL;
   const passwordDone = account && !account.password_pending_default;
