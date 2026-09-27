@@ -48,6 +48,7 @@ import pytest
 
 import config
 from backend.db import open_repositories
+from backend.db.row_level_security import set_current_user
 from backend.email.email_parser import is_email_tracking_url
 from backend.scanning.sources.wellfound_scraper import (
     _extract_listing_id,
@@ -242,6 +243,7 @@ def test_scan_enriches_wellfound_job_via_fetcher(
     try:
         account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
         repos["sources"].insert(
             user_id,
             {
@@ -275,6 +277,7 @@ def test_scan_enriches_wellfound_job_via_fetcher(
 
     repos = open_repositories(dsn)
     try:
+        set_current_user(repos["conn"].cursor(), user_id)
         jobs = repos["jobs"].get_all_ordered(user_id)
     finally:
         repos["conn"].close()

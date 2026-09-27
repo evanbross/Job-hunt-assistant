@@ -103,7 +103,7 @@ def _login(client, email: str) -> None:
 
 
 def _seed_job(user_id: int, *, dedup_key: str, url: str, title: str) -> int:
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         job_id = repos["jobs"].insert(
             user_id,
             {
@@ -173,7 +173,7 @@ def test_users_have_independent_application_profiles(client) -> None:
 
 def test_users_have_independent_resumes(client) -> None:
     user_a = _create_and_login(client, _USER_A_EMAIL)
-    with get_repos() as repos:
+    with get_repos(user_a) as repos:
         repos["resume"].insert(
             user_a, {"filename": "alice.pdf", "content": "Alice's resume text"}
         )
@@ -181,14 +181,14 @@ def test_users_have_independent_resumes(client) -> None:
     client.post("/api/logout")
 
     user_b = _create_and_login(client, _USER_B_EMAIL)
-    with get_repos() as repos:
+    with get_repos(user_b) as repos:
         latest_for_b = repos["resume"].get_latest(user_b)
     assert latest_for_b is None  # Bob has no resume of his own
 
 
 def test_users_have_independent_email_sources(client) -> None:
     user_a = _create_and_login(client, _USER_A_EMAIL)
-    with get_repos() as repos:
+    with get_repos(user_a) as repos:
         repos["sources"].insert(
             user_a,
             {

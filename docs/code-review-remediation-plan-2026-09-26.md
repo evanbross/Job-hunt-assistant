@@ -490,3 +490,109 @@ answer / capture-queue item / feedback, PUT `/applications/<id>`, POST `/emails/
   through the read-only voice-query role, whose SQL guard must scope by user.
 - `PUT /api/email-subject-rules/<id>` answers 500 when `enabled` is a JSON boolean (the
   column is an integer). The frontend sends integers, so this is only a validation gap.
+
+## Beyond the review: Postgres row-level security (2026-09-27)
+
+Status: **implemented and tested, nothing committed.**
+
+**Design** (`backend/db/row_level_security.py`): every table with a NOT NULL `user_id`
+(read from the schema, not a hardcoded list) gets `ENABLE`/`FORCE ROW LEVEL SECURITY` and
+a policy `user_id = current_setting('app.current_user_id', true)::integer`. `get_repos()`
+sets that session GUC on every connection it opens -- from an explicit `user_id` argument
+for background code (Celery tasks, the extension listener, schedulers), or from the Flask
+session for routes, with no per-route change needed -- and commits it immediately so a
+later `conn.rollback()` in the same request can't silently erase it. No identity set means
+no rows, not all rows: fail closed. `init_db()` disables RLS before migrations/seeding
+(which legitimately cross accounts) and re-arms it as its last step, every startup.
+
+**A real bug, not just defense in depth:** `routes/voice.py`'s NL-to-SQL voice query never
+scoped its generated SQL by `user_id` -- the column isn't even in `backend/sql_guard.py`'s
+`ALLOWED_COLUMNS`, so the LLM had no reason to filter by it. Any authenticated account
+could ask a question that returned another account's job data. RLS on the read-only
+`jobhunt_readonly` connection (which now also sets the session identity) closes this
+regardless of what SQL gets generated; `tests/test_row_level_security.py` proves it with
+the exact shape sql_guard allows through (a plain unfiltered `SELECT`), including through
+the real HTTP endpoint.
+
+**One exclusion:** `extension_tokens`. Authenticating a bearer token means finding which
+account it belongs to *before* any identity is known -- RLS would make that lookup
+impossible. Its own `WHERE user_id = %s` filtering (verified by the isolation matrix)
+still protects its CRUD routes.
+
+**A superuser bypasses RLS unconditionally, FORCE included** -- this is a Postgres rule
+with no code-level workaround. The default local-dev and CI Postgres role (`postgres`) is
+a superuser, which would have made every RLS policy silently inert while looking like it
+passed. Fixed by introducing `jha_test_app`, a real non-superuser role that owns the test
+database:
+- `scripts/setup_test_db.sql` creates it locally (drop-and-recreate `jha_test_db` owned by
+  it, rather than `REASSIGN OWNED BY`, which fails on a few objects the bootstrap
+  superuser owns "required by the database system"). `.env`/`.env.example`'s
+  `LOCAL_POSTGRES_USER` now points at it, not `postgres`.
+- `scripts/provision_ci_test_role.py` does the same against the `.gitlab-ci.yml` pytest
+  job's throwaway `postgres` service container, before pytest runs.
+- `tests/conftest.py`'s `pg_dsn` fixture also now points `config.POSTGRES_HOST/PORT/DB/
+  SSLMODE` at the test database (previously only `DATABASE_URL` was overridden), fixing a
+  separate pre-existing gap where `ensure_readonly_role()`'s `GRANT CONNECT ON DATABASE
+  {config.POSTGRES_DB}` always targeted the real (locally nonexistent) app database and
+  silently failed under every test file, not just this one.
+
+**Fixed elsewhere as a result:** several existing tests called `get_repos()` directly
+(outside any Flask request, with no explicit `user_id`) to seed data -- correct before RLS
+existed, now correctly refused by the fail-closed default. Updated to pass the user_id
+explicitly: `tests/test_multi_tenant_isolation.py` and the `Tenants` fixture in
+`tests/test_tenant_isolation_matrix.py`.
+
+**Not done:** row-level security does not by itself stop a row from referencing another
+account's *parent* row (e.g. a stage whose `job_id` points at someone else's job) --
+that needs a composite foreign key (`job_id, user_id` → `jobs(id, user_id)`), flagged
+already in the two-user isolation tests entry above. Also not done: applying this same
+non-superuser-role pattern to the user's real local dev database (only the throwaway test
+database was changed) -- left for the user to decide, since it touches real data ownership.
+
+## RLS rollout: fixing every other affected call site (2026-09-27)
+
+Status: **implemented and tested, nothing committed.** The full suite failed with ~100
+failures the first time RLS was armed against a real non-superuser role; all are now fixed.
+
+**Two more real production bugs found this way** (same class as the voice-query and
+closed-req-stage bugs above -- a background/listener function that already receives
+`user_id` explicitly but called `get_repos()` without passing it, so it silently ran with
+no identity once RLS was enforced):
+- `routes/scan.py`'s `run_scan_task` (the email-scan Celery task) -- 8 call sites.
+- `scripts/manage_secrets.py`'s `rotate-encryption-key` and `check-encryption` commands --
+  these read/write *every* account's encrypted secrets by design, so they now bracket
+  `rotate_all()` with `disable_for_migrations()`/`enable_and_force()` (the same pattern
+  `init_db()` uses), rather than take an identity at all.
+
+**Test fixture fallout, all fixed, no test's actual assertions changed:**
+- Repository-level unit tests that open a raw connection (`get_connection()` /
+  `open_repositories()`) and create their own account now call the new
+  `backend.db.row_level_security.set_current_user()` right after creating that account
+  (usually inside a shared `_new_user`/`_make_user_id` helper, fixing every test in the
+  file at once). Tests that operate as two different users on one connection switch the
+  identity before each user's own operation.
+- Tests that call a migration function standalone (`_migrate_legacy_*`, `_migrate`,
+  `rotate_all`) now bracket it with `disable_for_migrations()`, mirroring `init_db()`.
+- A handful of tests build a minimal Flask app and monkeypatch a route module's
+  `current_user_id` directly instead of logging in for real (an established, deliberate
+  pattern in this codebase for isolating one blueprint). `get_repos()` doesn't see that
+  monkeypatch -- it reads the actual Flask session -- so these fixtures now also set
+  `session["user_id"]`, via a `before_request` hook when the test reassigns identity
+  mid-test (`tests/test_candidate_profile.py`, `tests/test_google_tokens.py`) or a one-time
+  `session_transaction()` otherwise (`tests/test_resume_file_service.py`).
+- `tests/conftest.py`'s `pg_dsn` fixture now also points `config.POSTGRES_HOST/PORT/DB/
+  SSLMODE` at the test database, not just `DATABASE_URL` -- fixing a separate pre-existing
+  gap where `ensure_readonly_role()` always targeted the real (locally nonexistent) app
+  database and silently failed under every test file, not just the ones exercising it.
+
+**Files touched:** `app.py`, `routes/{applications,scan,voice}.py`, `backend/tasks.py`,
+`backend/cover_letter/{cover_letter_generator,cover_letter_learning}.py`,
+`backend/email/gmail_client.py`, `backend/scanning/sources/greenhouse_session_store.py`,
+`backend/scoring/fit_scorer.py`, `scripts/manage_secrets.py`, and the test files listed in
+git status. Full suite green as of this entry.
+
+**Process note:** two separate full-suite runs were interfered with by other commands I ran
+concurrently against the same shared local Postgres/venv (a `uv sync` mid-run, and an
+earlier foreground test file run) -- both produced spurious failures unrelated to this
+work. Nothing should touch the test database or the `.venv` while a background suite run
+is in flight.

@@ -29,6 +29,7 @@ import backend.crypto as crypto
 import config
 from backend.db import PostgresUserAccountRepository, get_connection
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
+from backend.db.row_level_security import disable_for_migrations
 from backend.db.schema import _migrate_legacy_greenhouse_session
 from backend.scanning.sources.greenhouse_searcher import GreenhouseSearcher
 from backend.scanning.sources.greenhouse_session_store import GreenhouseSessionStore
@@ -80,7 +81,7 @@ def test_save_load_round_trip_and_encrypted_at_rest(two_users: tuple[int, int]) 
 
     assert store.exists() is True
     assert store.load() == STATE_A
-    with get_repos() as repos:
+    with get_repos(user_a) as repos:
         cur = repos["conn"].cursor()
         cur.execute("SELECT state_encrypted FROM greenhouse_sessions WHERE user_id = %s", (user_a,))
         assert "cookie-of-user-a" not in cur.fetchone()["state_encrypted"]
@@ -198,6 +199,7 @@ def test_the_legacy_session_file_moves_to_the_first_account(pg_dsn: str, tmp_pat
         first_id = PostgresUserAccountRepository(conn).get_by_email(DEFAULT_ADMIN_EMAIL)["id"]
         later_id = _new_user(conn, "later@example.com")
 
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_greenhouse_session(conn)
 
         cur = conn.cursor()

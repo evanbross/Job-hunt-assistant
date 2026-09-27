@@ -62,11 +62,17 @@ pytest:
   variables:
     # The suite truncates every table, so it refuses non-local databases (tests/db_guard.py).
     # This job names its own throwaway Postgres service as the one extra host to accept.
-    TEST_DATABASE_URL: postgresql://postgres:ci-only-password@postgres:5432/jha_test_db?sslmode=disable
+    # jha_test_app (not the service's own superuser) is what tests actually run as -- a
+    # superuser bypasses row-level security unconditionally, which would make the RLS
+    # tests (tests/test_row_level_security.py) pass or fail regardless of whether the
+    # policies work. scripts/provision_ci_test_role.py creates it before pytest runs.
+    TEST_DATABASE_URL: postgresql://jha_test_app:ci-only-app-password@postgres:5432/jha_test_db?sslmode=disable
     TEST_DATABASE_EXTRA_HOSTS: postgres
     REDIS_URL: redis://redis:6379/0
   script:
     - uv sync --frozen
+    - uv run --frozen python scripts/provision_ci_test_role.py
+        postgresql://postgres:ci-only-password@postgres:5432/postgres ci-only-app-password
     - uv run --frozen pytest -q --junitxml=report.xml --cov=backend --cov=routes --cov-report=term --cov-report=xml
   coverage: '/^TOTAL.*\s+(\d+(?:\.\d+)?)%$/'
   artifacts:

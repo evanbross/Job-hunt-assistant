@@ -768,7 +768,7 @@ def _record_closed_req(user_id: int, job: dict, platform_label: str, today: str)
     skip the job the same way the manual triage skip button does, so it
     actually leaves the queue.
     """
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         if job.get("on_sheet"):  # ai: claude-fable-5 | 2026-07-14
             repos["stages"].insert(
                 user_id,
@@ -834,7 +834,7 @@ def submit_closed_req_capture(user_id: int, body: dict) -> tuple[dict, int]:
         # Job lookup uses its own short-lived connection; _record_closed_req below
         # manages its own connection too (see its docstring), so this block must not
         # hold one open across that call.
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             job = repos["jobs"].get_by_id(user_id, job_id) if job_id else None
 
         if job:
@@ -855,7 +855,7 @@ def submit_closed_req_capture(user_id: int, body: dict) -> tuple[dict, int]:
                 "Closed-req capture had no matching job for job_id=%s", raw_job_id
             )
 
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             repos["browser_capture_queue"].mark_done_by_urls(
                 user_id, [queue_url, captured_url]
             )
@@ -1000,7 +1000,7 @@ def run_req_closed_scan_task(
         last_remaining: int | None = None
         last_progress_at = time.monotonic()
         while True:
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 # get_all() returns newest-first, so the first row seen per job is
                 # its current recheck — older 'done' rows from earlier scan runs
                 # must not be mistaken for this batch's result.
@@ -1052,7 +1052,7 @@ def run_req_closed_scan_task(
             time.sleep(_BROWSER_DRAIN_POLL_SECONDS)
 
     try:
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             # ai: claude-fable-5 | 2026-07-16
             candidates = [
                 c for c in _closed_req_candidates(repos, user_id) if c[2] in selected
@@ -1095,7 +1095,7 @@ def run_req_closed_scan_task(
             # flag's value would actually change (see _persist_unreachable_flag).
             is_unreachable = result == "unreachable"
             if is_unreachable != bool(job.get("unreachable_since")):
-                with get_repos() as repos:
+                with get_repos(user_id) as repos:
                     _persist_unreachable_flag(repos, user_id, job, today, is_unreachable)
             job_summary = {
                 "id": job["id"],
@@ -1137,7 +1137,7 @@ def run_req_closed_scan_task(
         extension_stalled = False
         total_rechecks = len(to_browser_check)
         if to_browser_check:
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 # Prioritize jobs that have never been through an authenticated recheck
                 # (or were checked longest ago) over jobs that already got a slot in an
                 # earlier run. The batch loop below now covers the whole pool in one
@@ -1173,7 +1173,7 @@ def run_req_closed_scan_task(
             )
             for start in range(0, total_rechecks, _CLOSED_REQ_BROWSER_CHECK_CAP):
                 batch = to_browser_check[start : start + _CLOSED_REQ_BROWSER_CHECK_CAP]
-                with get_repos() as repos:
+                with get_repos(user_id) as repos:
                     for job, url, _platform, platform_label in batch:
                         new_id = repos[
                             "browser_capture_queue"

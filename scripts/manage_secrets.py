@@ -40,6 +40,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import backend.crypto as crypto  # noqa: E402
 import config  # noqa: E402
 from backend.db import get_connection  # noqa: E402
+from backend.db.row_level_security import (  # noqa: E402
+    disable_for_migrations,
+    enable_and_force,
+)
 from backend.security.key_rotation import RotationError, rotate_all  # noqa: E402
 from backend.security.rotation_plan import (  # noqa: E402
     plan_encryption_key_rotation,
@@ -112,15 +116,23 @@ def cmd_rotate_encryption(args: argparse.Namespace) -> int:
 
     conn = get_connection(config.DATABASE_URL)
     try:
-        report = rotate_all(conn, dry_run=not args.write)
-        if args.write:
-            conn.commit()
-        else:
+        # rotate_all re-encrypts every account's secrets, not just one -- the same
+        # cross-tenant access a migration needs, so it gets the same RLS-free bracket
+        # (backend/db/row_level_security.py). Always re-armed before the connection
+        # closes, success or failure, so the database is never left unprotected.
+        disable_for_migrations(conn)
+        try:
+            report = rotate_all(conn, dry_run=not args.write)
+            if args.write:
+                conn.commit()
+            else:
+                conn.rollback()
+        except RotationError as exc:
             conn.rollback()
-    except RotationError as exc:
-        conn.rollback()
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            enable_and_force(conn)
     finally:
         conn.close()
 
@@ -141,12 +153,16 @@ def cmd_check_encryption(args: argparse.Namespace) -> int:
     load_dotenv(args.env_file)
     conn = get_connection(config.DATABASE_URL)
     try:
-        report = rotate_all(conn, dry_run=True)
-    except RotationError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        disable_for_migrations(conn)  # scans every account's secrets, like a migration
+        try:
+            report = rotate_all(conn, dry_run=True)
+        except RotationError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            conn.rollback()
+            enable_and_force(conn)
     finally:
-        conn.rollback()
         conn.close()
     _print_report(report.scanned, report.rotated, "still under an older key")
     if report.total_rotated:

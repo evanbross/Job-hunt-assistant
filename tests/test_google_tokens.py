@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
-from flask import Flask
+from flask import Flask, session
 from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 
@@ -37,6 +37,7 @@ from backend.db import (
     get_connection,
 )
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
+from backend.db.row_level_security import disable_for_migrations, set_current_user
 from backend.db.schema import _migrate_legacy_google_files
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.email.google_token_store import GoogleTokenStore
@@ -89,6 +90,7 @@ def _new_user(conn: Any, email: str = "owner@example.com") -> int:
     account = PostgresUserAccountRepository(conn).create_pending(
         email, f"seed-{email}", "2099-01-01"
     )
+    set_current_user(conn.cursor(), account["id"])
     return account["id"]
 
 
@@ -120,15 +122,22 @@ def test_each_user_has_their_own_token_and_disconnect_is_scoped(pg_dsn: str) -> 
         first_id = _new_user(conn)
         second_id = _new_user(conn, "second@example.com")
         store = GoogleTokenStore(PostgresGoogleTokenRepository(conn))
+        set_current_user(conn.cursor(), first_id)
         store.save(first_id, make_credentials("first-refresh"))
+        set_current_user(conn.cursor(), second_id)
         store.save(second_id, make_credentials("second-refresh"))
 
+        set_current_user(conn.cursor(), first_id)
         assert store.load(first_id).refresh_token == "first-refresh"
+        set_current_user(conn.cursor(), second_id)
         assert store.load(second_id).refresh_token == "second-refresh"
 
+        set_current_user(conn.cursor(), first_id)
         assert store.delete(first_id) is True
         assert store.is_connected(first_id) is False
+        set_current_user(conn.cursor(), second_id)
         assert store.is_connected(second_id) is True
+        set_current_user(conn.cursor(), first_id)
         assert store.delete(first_id) is False
     finally:
         conn.close()
@@ -173,7 +182,9 @@ def two_connected_users(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[i
     try:
         first_id, second_id = _new_user(conn), _new_user(conn, "second@example.com")
         store = GoogleTokenStore(PostgresGoogleTokenRepository(conn))
+        set_current_user(conn.cursor(), first_id)
         store.save(first_id, make_credentials("first-refresh", expired=True))
+        set_current_user(conn.cursor(), second_id)
         store.save(second_id, make_credentials("second-refresh", expired=True))
         conn.commit()
     finally:
@@ -184,6 +195,7 @@ def two_connected_users(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[i
 def _stored_refresh_token(pg_dsn: str, user_id: int) -> str | None:
     conn = get_connection(pg_dsn)
     try:
+        set_current_user(conn.cursor(), user_id)
         creds = GoogleTokenStore(PostgresGoogleTokenRepository(conn)).load(user_id)
         return creds.refresh_token if creds else None
     finally:
@@ -222,7 +234,9 @@ def test_a_refresh_persists_only_for_the_calling_user(
     conn = get_connection(pg_dsn)
     try:
         store = GoogleTokenStore(PostgresGoogleTokenRepository(conn))
+        set_current_user(conn.cursor(), first_id)
         assert store.load(first_id).token == "refreshed"
+        set_current_user(conn.cursor(), second_id)
         assert store.load(second_id).token == "access-token"
     finally:
         conn.close()
@@ -262,7 +276,13 @@ def auth_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, dict
     monkeypatch.setattr("routes.auth.current_user_id", lambda: session_user["id"])
     monkeypatch.setattr(auth_routes, "_pending_auths", {})
     flask_app = Flask(__name__)
+    flask_app.secret_key = "test"
     flask_app.register_blueprint(auth_bp, url_prefix="/api")
+
+    @flask_app.before_request
+    def _sync_rls_session() -> None:
+        session["user_id"] = session_user["id"]
+
     return flask_app.test_client(), ids, session_user
 
 
@@ -287,7 +307,9 @@ def test_status_and_disconnect_only_concern_the_logged_in_user(
     conn = get_connection(pg_dsn)
     try:
         store = GoogleTokenStore(PostgresGoogleTokenRepository(conn))
+        set_current_user(conn.cursor(), ids["a"])
         store.save(ids["a"], make_credentials("a-refresh", scopes=[SEND_SCOPE]))
+        set_current_user(conn.cursor(), ids["b"])
         store.save(ids["b"], make_credentials("b-refresh", scopes=["other"]))
         conn.commit()
     finally:
@@ -381,7 +403,13 @@ def setup_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, dic
     session_user = {"id": admin}
     monkeypatch.setattr("routes.setup.current_user_id", lambda: session_user["id"])
     flask_app = Flask(__name__)
+    flask_app.secret_key = "test"
     flask_app.register_blueprint(setup_bp, url_prefix="/api")
+
+    @flask_app.before_request
+    def _sync_rls_session() -> None:
+        session["user_id"] = session_user["id"]
+
     return flask_app.test_client(), {"admin": admin, "member": member}, session_user
 
 
@@ -439,6 +467,7 @@ def test_legacy_files_move_into_the_database_and_are_renamed(
         first_id = PostgresUserAccountRepository(conn).get_by_email(DEFAULT_ADMIN_EMAIL)["id"]
         _new_user(conn, "later@example.com")
 
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_google_files(conn)
 
         assert not creds_file.exists() and not token_file.exists()
@@ -462,6 +491,7 @@ def test_legacy_migration_never_overwrites_an_existing_token_or_config(
     try:
         first_id = PostgresUserAccountRepository(conn).get_by_email(DEFAULT_ADMIN_EMAIL)["id"]
         store = GoogleTokenStore(PostgresGoogleTokenRepository(conn))
+        set_current_user(conn.cursor(), first_id)
         store.save(first_id, make_credentials("already-here"))
         cur = conn.cursor()
         cur.execute(
@@ -470,6 +500,7 @@ def test_legacy_migration_never_overwrites_an_existing_token_or_config(
             ("google_oauth_client_config", crypto.encrypt_secret('{"kept": true}')),
         )
 
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_google_files(conn)
 
         assert store.load(first_id).refresh_token == "already-here"
@@ -487,6 +518,7 @@ def test_legacy_migration_leaves_unusable_or_undecryptable_files_in_place(
     creds_file.write_text("{not json", encoding="utf-8")
     conn = get_connection(pg_dsn)
     try:
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_google_files(conn)
         assert creds_file.exists() and not token_file.exists()
 

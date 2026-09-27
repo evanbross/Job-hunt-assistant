@@ -50,6 +50,7 @@ from backend.db import (
     open_repositories,
 )
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
+from backend.db.row_level_security import disable_for_migrations, set_current_user
 from backend.db.schema import _migrate
 
 # ai: claude-sonnet-5 | 2026-07-25
@@ -60,6 +61,7 @@ def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> 
     try:
         account = PostgresUserAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
+        set_current_user(conn.cursor(), user_id)
         jobs = PostgresJobRepository(conn)
         settings = PostgresUserSettingsRepository(conn)
         career_sites = PostgresCareerSiteSourceRepository(conn)
@@ -113,6 +115,7 @@ def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None
     try:
         account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
         job_id = repos["jobs"].insert(
             user_id,
             {
@@ -176,6 +179,7 @@ def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
     try:
         account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
         repos["scanned_emails"].mark_scanned(
             user_id,
             "email-3",
@@ -229,6 +233,7 @@ def test_scanned_email_get_by_id_returns_disposition(pg_dsn: str) -> None:
     try:
         account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
         repos["scanned_emails"].mark_scanned(
             user_id,
             "email-noise-1",
@@ -258,6 +263,7 @@ def test_relevance_feedback_requires_subject_overlap_for_exact_sender(
     try:
         account = PostgresUserAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
+        set_current_user(conn.cursor(), user_id)
         feedback = PostgresRelevanceFeedbackRepository(conn)
         feedback.insert(
             user_id,
@@ -304,6 +310,7 @@ def test_jobs_url_unique_index_rejects_concurrent_duplicate_insert(
     try:
         account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
         first_id = repos["jobs"].insert(
             user_id,
             {
@@ -363,6 +370,7 @@ def test_jobs_url_unique_index_allows_multiple_empty_urls(pg_dsn: str) -> None:
     try:
         account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
         first_id = repos["jobs"].insert(
             user_id,
             {
@@ -422,6 +430,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
 
         account = PostgresUserAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
+        set_current_user(conn.cursor(), user_id)
         jobs = PostgresJobRepository(conn)
         first_id = jobs.insert(
             user_id,
@@ -450,6 +459,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         conn.commit()
 
         # Startup migration must not crash despite the pre-existing duplicate.
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate(conn)
         assert not _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
         # Both legacy rows are left alone -- _migrate() only skips the index,
@@ -458,8 +468,10 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         assert jobs.get_by_id(user_id, second_id) is not None
 
         # Once the duplicate is resolved, the next startup applies the index.
+        set_current_user(conn.cursor(), user_id)
         jobs.delete(user_id, second_id)
         conn.commit()
+        disable_for_migrations(conn)
         _migrate(conn)
         assert _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
     finally:
@@ -490,6 +502,7 @@ def test_first_account_becomes_admin_and_stays_admin_across_migrations(
         assert second is not None
         assert second["role"] == "user"
 
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate(conn)  # idempotent re-run, e.g. app restart
 
         cur.execute("SELECT role FROM user_accounts WHERE id = %s", (first["id"],))
@@ -507,6 +520,7 @@ def test_history_page_query_paginates_searches_and_batches_stages(pg_dsn: str) -
         user_id = PostgresUserAccountRepository(conn).create_pending(
             "pager@example.com", "seed-pager@example.com", "2099-01-01"
         )["id"]
+        set_current_user(conn.cursor(), user_id)
         jobs = PostgresJobRepository(conn)
         stages = PostgresApplicationStageRepository(conn)
         titles = ["Alpha 100%", "Beta", "Gamma", "Delta", "Alpha_2"]

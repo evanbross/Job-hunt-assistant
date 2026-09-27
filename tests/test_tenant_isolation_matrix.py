@@ -42,6 +42,7 @@ import pytest
 
 import app as app_module
 import config
+from backend.db.row_level_security import set_current_user
 from backend.utils.utils import get_repos
 
 _PASSWORD = "correct horse battery staple"  # noqa: S105
@@ -234,7 +235,7 @@ class Tenants:
     def seed_rows(self) -> None:
         """Give A a fresh row of every kind. The owner-control phase calls this before each
         request so an earlier control (a delete, a rejection) cannot fake a refusal in a later one."""
-        with get_repos() as repos:
+        with get_repos(self.a_id) as repos:
             job_id = repos["jobs"].insert(
                 self.a_id,
                 {
@@ -252,6 +253,7 @@ class Tenants:
         conn.autocommit = True
         try:
             cur = conn.cursor()
+            set_current_user(cur, self.a_id)
             email_id = f"{_MARKER}-gmail-{next(_SEQUENCE)}"
             cur.execute("SELECT key FROM application_stage_statuses ORDER BY key LIMIT 1")
             stage_status = cur.fetchone()[0]

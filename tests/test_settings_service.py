@@ -39,6 +39,7 @@ from __future__ import annotations
 import pytest
 
 from backend.db import open_repositories
+from backend.db.row_level_security import set_current_user
 from backend.settings_service import get_setting, is_setting_configured, set_setting
 
 
@@ -50,6 +51,7 @@ def test_user_secret_round_trips_encrypted(pg_dsn: str) -> None:
         )
         repos["conn"].commit()
         user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
 
         set_setting("anthropic_api_key", "sk-ant-real-value", user_id, repos)
         repos["conn"].commit()

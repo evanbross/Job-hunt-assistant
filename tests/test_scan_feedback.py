@@ -38,6 +38,7 @@ import pytest
 
 import config
 from backend.db import open_repositories
+from backend.db.row_level_security import set_current_user
 from backend.settings_service import set_setting
 from routes import scan
 
@@ -110,6 +111,7 @@ def test_noise_feedback_does_not_skip_entire_email(
     try:
         account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
         user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
         repos["sources"].insert(
             user_id,
             {
@@ -152,6 +154,7 @@ def test_noise_feedback_does_not_skip_entire_email(
 
     repos = open_repositories(dsn)
     try:
+        set_current_user(repos["conn"].cursor(), user_id)
         jobs = repos["jobs"].get_all_ordered(user_id)
         scanned = repos["scanned_emails"].get_scanned_metadata(user_id, "linkedin-msg-1")
     finally:

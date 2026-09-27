@@ -21,7 +21,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from flask import Flask
+from flask import Flask, session
 
 import app as app_module
 import config
@@ -35,6 +35,7 @@ from backend.db import (
     get_connection,
 )
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
+from backend.db.row_level_security import disable_for_migrations, set_current_user
 from backend.db.schema import _migrate_legacy_candidate_profiles
 from backend.scoring.fit_scorer import FitScorer
 from backend.utils.utils import (
@@ -60,6 +61,7 @@ def _new_user(conn: Any, email: str = "owner@example.com") -> int:
 def _save(pg_dsn: str, user_id: int, content: str) -> None:
     conn = get_connection(pg_dsn)
     try:
+        set_current_user(conn.cursor(), user_id)
         PostgresCandidateProfileRepository(conn).upsert(user_id, content, "2026-01-01T00:00:00+00:00")
         conn.commit()
     finally:
@@ -80,8 +82,9 @@ def test_each_user_reads_only_their_own_profile(pg_dsn: str, monkeypatch: pytest
     _save(pg_dsn, first_id, "  first user's career  ")
     _save(pg_dsn, second_id, "second user's career")
 
-    with get_repos() as repos:
+    with get_repos(first_id) as repos:
         assert get_candidate_profile(first_id, repos) == "first user's career"
+    with get_repos(second_id) as repos:
         assert get_candidate_profile(second_id, repos) == "second user's career"
 
 
@@ -99,7 +102,7 @@ def test_a_missing_or_blank_profile_raises_a_clear_error(
     if stored is not None:
         _save(pg_dsn, user_id, stored)
 
-    with get_repos() as repos, pytest.raises(CandidateProfileMissingError, match="Profile Settings"):
+    with get_repos(user_id) as repos, pytest.raises(CandidateProfileMissingError, match="Profile Settings"):
         get_candidate_profile(user_id, repos)
 
 
@@ -114,6 +117,7 @@ def test_deleting_a_user_removes_their_profile(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)
+        set_current_user(conn.cursor(), user_id)
         repo = PostgresCandidateProfileRepository(conn)
         repo.upsert(user_id, "text", "2026-01-01")
         PostgresUserAccountRepository(conn).delete(user_id)
@@ -176,8 +180,9 @@ def test_learned_rules_are_written_to_the_right_users_row(
     assert CoverLetterStyleLearner(first_id)._append_rule("Avoid clichés") is True
     assert CoverLetterStyleLearner(first_id)._append_rule("Avoid clichés") is False
 
-    with get_repos() as repos:
+    with get_repos(first_id) as repos:
         assert "Avoid clichés" in get_candidate_profile(first_id, repos)
+    with get_repos(second_id) as repos:
         assert get_candidate_profile(second_id, repos) == "second profile"
 
 
@@ -216,8 +221,17 @@ def profile_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, d
         monkeypatch.setattr(f"{module}.current_user_id", lambda: session_user["id"])
     monkeypatch.setattr("routes.settings.rescore_active_queue_jobs", fake_rescore)
     flask_app = Flask(__name__)
+    flask_app.secret_key = "test"
     flask_app.register_blueprint(settings_bp, url_prefix="/api")
     flask_app.register_blueprint(setup_bp, url_prefix="/api")
+
+    # get_repos() (backend/db/row_level_security.py) reads the real Flask session, not
+    # the current_user_id() monkeypatch above -- keep it in sync with session_user, which
+    # tests reassign to switch identity, so RLS sees whichever account is "logged in".
+    @flask_app.before_request
+    def _sync_rls_session() -> None:
+        session["user_id"] = session_user["id"]
+
     return flask_app.test_client(), ids, session_user, rescored
 
 
@@ -304,6 +318,7 @@ def test_the_shared_default_file_goes_to_the_first_account_only(
     conn = get_connection(pg_dsn)
     try:
         admin, member = _admin_and_member(conn)
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
 
         _migrate_legacy_candidate_profiles(conn)
 
@@ -324,6 +339,7 @@ def test_an_account_with_its_own_configured_path_gets_that_file(
     conn = get_connection(pg_dsn)
     try:
         admin, member = _admin_and_member(conn)
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _set_path_setting(conn, member, mine)
 
         _migrate_legacy_candidate_profiles(conn)
@@ -346,6 +362,7 @@ def test_migration_never_overwrites_a_saved_profile_and_skips_unreadable_paths(
     conn = get_connection(pg_dsn)
     try:
         admin, member = _admin_and_member(conn)
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         PostgresCandidateProfileRepository(conn).upsert(admin, "already saved", "2026-01-01")
         _set_path_setting(conn, member, tmp_path / "does-not-exist.md")
 

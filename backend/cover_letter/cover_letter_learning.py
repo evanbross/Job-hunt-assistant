@@ -143,7 +143,7 @@ class CoverLetterStyleLearner:
     # ai: claude-sonnet-5 | 2026-09-26 -- the profile is a database row now; the
     # row is locked for the read-modify-write so a concurrent edit isn't lost.
     def _append_rule(self, rule: str) -> bool:
-        with get_repos() as repos:
+        with get_repos(self._user_id) as repos:
             row = repos["candidate_profiles"].get_for_update(self._user_id)
             if row is None:
                 logger.warning(

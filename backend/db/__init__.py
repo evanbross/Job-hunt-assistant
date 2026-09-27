@@ -126,6 +126,7 @@ from .repositories.scanned_emails import PostgresScannedEmailRepository
 from .repositories.system_settings import PostgresSystemSettingsRepository
 from .repositories.user_accounts import PostgresUserAccountRepository
 from .repositories.user_settings import PostgresUserSettingsRepository
+from .row_level_security import disable_for_migrations, enable_and_force
 from .schema import _create_tables, _migrate, _seed_data
 
 __all__ = [
@@ -227,8 +228,15 @@ def init_db(dsn: str) -> None:
     conn = get_connection(dsn)
     try:
         _create_tables(conn)
+        # ai: claude-sonnet-5 | 2026-09-27 -- migrations/seeding legitimately read and
+        # write across every account (backfills, one-time seed rows) and have no single
+        # "current user" to scope to, so row-level security is off while they run. Every
+        # startup does this, not just a fresh install: a table already has RLS armed from
+        # the previous run by the time this runs again.
+        disable_for_migrations(conn)
         _migrate(conn)
         _seed_data(conn)
+        enable_and_force(conn)  # re-arm RLS for the runtime connections opened after this
         ensure_readonly_role(conn)  # ai: claude-sonnet-5 | 2026-08-03
     finally:
         conn.close()

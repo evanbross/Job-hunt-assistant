@@ -395,7 +395,7 @@ def run_import_task(
     # batch (extracted's URLs are pre-deduped by the capture analyzer).
     existing_job_by_url: dict[str, dict | None] = {}
     urls_needing_fetch: set[str] = set()
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         known_jobs: list[dict] = repos["jobs"].get_all_ordered(user_id)
         blocklist_rules: list[dict] = repos["career_rejection_rules"].get_enabled(user_id)
 
@@ -455,7 +455,7 @@ def run_import_task(
             for future in as_completed(future_to_url):
                 prefetched_jd[future_to_url[future]] = future.result()
 
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         service = ManualJobIngestService(
             user_id, repos["jobs"], repos["resume"], repos["penalties"]
         )
@@ -833,7 +833,7 @@ def _send_jd_health_check_failure_email(
     task -- only GmailClient's documented NotAuthenticatedError/HttpError
     are caught, so a missing-scope 403 surfaces as a log line, not a crash.
     """
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         notify_email = get_setting(
             "jd_health_check_notify_email", user_id, repos
         ).strip()
@@ -890,7 +890,7 @@ def run_jd_health_check_task(
     t0 = time.monotonic()
     run_at = datetime.now(UTC).isoformat(timespec="seconds")
 
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         targets = repos["jd_health_targets"].get_enabled(user_id)
 
     total = len(targets)
@@ -953,7 +953,7 @@ def run_jd_health_check_task(
             }
         )
 
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             repos["jd_health_results"].insert(user_id, result_row)
             repos["conn"].commit()
 

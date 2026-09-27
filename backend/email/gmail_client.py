@@ -85,7 +85,7 @@ class GmailClient:
     def _build_service(self) -> Any:
         # Each step opens its own short connection so none is held open across
         # the token-refresh network call below.
-        with get_repos() as repos:
+        with get_repos(self._user_id) as repos:
             creds = GoogleTokenStore(repos["google_tokens"]).load(self._user_id)
         if creds is None:
             raise NotAuthenticatedError(
@@ -96,14 +96,14 @@ class GmailClient:
             if creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
-                    with get_repos() as repos:
+                    with get_repos(self._user_id) as repos:
                         GoogleTokenStore(repos["google_tokens"]).save(self._user_id, creds)
                         repos["conn"].commit()
                 except RefreshError as exc:
                     # Covers invalid_scope (scopes changed since token was issued),
                     # revoked access, and other OAuth-level rejections.
                     # Delete the bad token so auth status correctly shows unauthenticated.
-                    with get_repos() as repos:
+                    with get_repos(self._user_id) as repos:
                         GoogleTokenStore(repos["google_tokens"]).delete(self._user_id)
                         repos["conn"].commit()
                     raise NotAuthenticatedError(

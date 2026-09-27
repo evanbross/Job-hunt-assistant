@@ -280,7 +280,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
         # just to write that email's results. known_jobs is a static snapshot for
         # the whole scan (never appended to mid-run, even in the original code),
         # so unlike career_sites.py there's no in-run dedup ordering to preserve.
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             # ai: claude-sonnet-5 | 2026-08-30 — per-user settings, formerly
             # the shared data/runtime_config.json (a multi-tenancy gap).
             lookback_days = get_setting_int(
@@ -362,7 +362,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
 
             # Primary dedup: skip if this exact Gmail message ID was already processed.
             # Uses scanned_emails table so rejected/deleted jobs are still remembered.
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 already_scanned = repos["scanned_emails"].has_been_scanned(user_id, msg_id)
                 stored = (
                     repos["scanned_emails"].get_scanned_metadata(user_id, msg_id)
@@ -434,7 +434,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 source_filters=enabled_sources,
             ):
                 source_filtered_emails += 1
-                with get_repos() as repos:
+                with get_repos(user_id) as repos:
                     repos["scanned_emails"].mark_scanned(
                         user_id,
                         msg_id,
@@ -480,7 +480,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
             if subject_rule == "blacklist":
                 acknowledgement_emails += 1
                 gmail.mark_as_read(msg_id)
-                with get_repos() as repos:
+                with get_repos(user_id) as repos:
                     repos["scanned_emails"].mark_scanned(
                         user_id,
                         msg_id,
@@ -532,7 +532,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
             # Relevance feedback can boost known-good sources after parsing.
             # It must not discard an entire message because digest emails can
             # contain several valid jobs even when one subject pattern looks noisy.
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 feedback = repos["feedback"].find_match(user_id, sender, subject)
 
             # Parse the email — returns a list (empty if not a job email)
@@ -544,7 +544,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 _update_scan(connection_warning="")
             except Exception as exc:
                 parser_error_emails += 1
-                with get_repos() as repos:
+                with get_repos(user_id) as repos:
                     repos["scanned_emails"].mark_scanned(
                         user_id,
                         msg_id,
@@ -591,7 +591,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
             if not parsed_jobs:
                 # Not a job email — mark scanned and move on
                 non_job_emails += 1
-                with get_repos() as repos:
+                with get_repos(user_id) as repos:
                     repos["scanned_emails"].mark_scanned(
                         user_id,
                         msg_id,
@@ -925,7 +925,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 )
 
             # ── Write this email's results (DB reopened only for this fast phase) ─
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 job_repo = repos["jobs"]
                 for item in jobs_to_insert:
                     job_repo.insert(user_id, item["job_data"])

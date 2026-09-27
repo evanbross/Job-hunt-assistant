@@ -34,6 +34,7 @@ from backend.db import (
     PostgresUserAccountRepository,
     get_connection,
 )
+from backend.db.row_level_security import set_current_user
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import (
     db_match_for_job,
@@ -188,6 +189,7 @@ def test_get_all_ordered_flags_both_req_closed_shapes(pg_dsn: str) -> None:
             "owner@example.com", "seed-owner@example.com", "2099-01-01"
         )
         user_id = account["id"]
+        set_current_user(conn.cursor(), user_id)
         jobs = PostgresJobRepository(conn)
         stages = PostgresApplicationStageRepository(conn)
 

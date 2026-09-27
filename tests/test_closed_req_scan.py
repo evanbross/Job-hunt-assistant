@@ -48,6 +48,7 @@ import config
 import routes.applications as applications_module  # ai: claude-fable-5 | 2026-07-17
 from backend.db import open_repositories
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
+from backend.db.row_level_security import set_current_user
 from backend.scanning.closed_req_scan_helpers import (  # ai: claude-fable-5 | 2026-07-17
     RATE_LIMIT_DEFAULT_BACKOFF_SECONDS,
     canonicalize_wttj_url,
@@ -421,10 +422,22 @@ def _fresh_repos(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, in
     repos = open_repositories(pg_dsn)
     try:
         account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)
+        set_current_user(repos["conn"].cursor(), account["id"])
+        repos["conn"].commit()
         return repos, account["id"]
     except Exception:
         repos["conn"].close()
         raise
+
+
+def _repos_as(user_id: int, dsn: str = "") -> dict:
+    """open_repositories(), with the RLS identity set to user_id -- every raw
+    verification/drain connection below needs this now that jobs/stages/the browser
+    capture queue etc. are RLS-protected (backend/db/row_level_security.py)."""
+    repos = open_repositories(dsn or config.DATABASE_URL)
+    set_current_user(repos["conn"].cursor(), user_id)
+    repos["conn"].commit()
+    return repos
 
 
 def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(
@@ -450,7 +463,7 @@ def test_record_closed_req_uses_a_stage_for_sheet_tracked_jobs(
 
     _record_closed_req(user_id, {"id": job_id, "on_sheet": 1}, "LinkedIn", "2026-07-02")
 
-    repos = open_repositories(config.DATABASE_URL)
+    repos = _repos_as(user_id)
     try:
         stages = [s for s in repos["stages"].get_all(user_id) if s["job_id"] == job_id]
         updated_job = repos["jobs"].get_by_id(user_id, job_id)
@@ -484,7 +497,7 @@ def test_record_closed_req_skips_queue_job_out_of_job_queue(
 
     _record_closed_req(user_id, job, "LinkedIn", "2026-07-02")
 
-    repos = open_repositories(config.DATABASE_URL)
+    repos = _repos_as(user_id)
     try:
         updated_job = repos["jobs"].get_by_id(user_id, job_id)
         history = [
@@ -763,7 +776,7 @@ def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
         """Stands in for the browser extension during the scan thread's drain
         sleep: claims every pending recheck, records one job closed the same
         way submit_closed_req_capture would, and marks the rows done."""
-        drain_repos = open_repositories(config.DATABASE_URL)
+        drain_repos = _repos_as(user_id)
         try:
             queue_repo = drain_repos["browser_capture_queue"]
             claimed = queue_repo.claim_pending(user_id, limit=100)
@@ -782,7 +795,7 @@ def test_run_req_closed_scan_rechecks_entire_pool_in_one_run(
     with patch("routes.applications._check_closed_req", return_value="open"):
         result = _run_req_closed_scan(user_id)
 
-    check_repos = open_repositories(config.DATABASE_URL)
+    check_repos = _repos_as(user_id)
     try:
         rows = [
             r
@@ -834,7 +847,7 @@ def test_run_req_closed_scan_sets_unreachable_since_on_direct_unreachable_result
     assert updated_job["unreachable_since"] is not None
     assert updated_job["status"] == "triage"
 
-    check_repos = open_repositories(config.DATABASE_URL)
+    check_repos = _repos_as(user_id)
     try:
         unreachable_ids = {j["id"] for j in check_repos["jobs"].get_unreachable(user_id)}
     finally:
@@ -899,7 +912,7 @@ def test_run_req_closed_scan_sets_unreachable_since_when_browser_recheck_fails(
         repos["conn"].close()
 
     def _extension_exhausts_retries(_seconds: float) -> None:
-        drain_repos = open_repositories(config.DATABASE_URL)
+        drain_repos = _repos_as(user_id)
         try:
             queue_repo = drain_repos["browser_capture_queue"]
             for item in queue_repo.claim_pending(user_id, limit=100):
@@ -912,7 +925,7 @@ def test_run_req_closed_scan_sets_unreachable_since_when_browser_recheck_fails(
     with patch("routes.applications._check_closed_req", return_value="bad_url"):
         result = _run_req_closed_scan(user_id)
 
-    check_repos = open_repositories(config.DATABASE_URL)
+    check_repos = _repos_as(user_id)
     try:
         updated_job = check_repos["jobs"].get_by_id(user_id, job_id)
     finally:
@@ -1257,7 +1270,7 @@ def test_submit_closed_req_capture_marks_closed_job_from_authenticated_html(
     assert status_code == 200
     assert payload == {"ok": True}
 
-    repos = open_repositories(config.DATABASE_URL)
+    repos = _repos_as(user_id)
     try:
         updated_job = repos["jobs"].get_by_id(user_id, job_id)
         queue_rows = [
@@ -1317,7 +1330,7 @@ def test_submit_closed_req_capture_leaves_open_job_untouched(
     assert status_code == 200
     assert payload == {"ok": True}
 
-    repos = open_repositories(config.DATABASE_URL)
+    repos = _repos_as(user_id)
     try:
         updated_job = repos["jobs"].get_by_id(user_id, job_id)
         queue_rows = [
@@ -1454,7 +1467,7 @@ def test_submit_closed_req_capture_cannot_touch_another_users_job(
     assert status_code == 200
     assert payload == {"ok": True}
 
-    repos = open_repositories(config.DATABASE_URL)
+    repos = _repos_as(owner_id)
     try:
         untouched = repos["jobs"].get_by_id(owner_id, job_id)
     finally:

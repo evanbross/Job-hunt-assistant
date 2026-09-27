@@ -31,6 +31,7 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
 from backend.db.readonly_role import get_readonly_database_url
+from backend.db.row_level_security import set_current_user
 from backend.sql_guard import MAX_ROW_LIMIT, SqlGuardError, validate_select
 from backend.utils.utils import (
     ai_error_http_status,
@@ -125,7 +126,7 @@ def _handle_sql_query(sql: str) -> ResponseReturnValue:
         return jsonify({"intent": "sql_query", "sql": sql, "error": str(exc)}), 422
 
     try:
-        columns, rows, truncated = _execute_readonly(validated_sql)
+        columns, rows, truncated = _execute_readonly(validated_sql, current_user_id())
     except psycopg2.Error as exc:
         logger.warning("Voice query SQL execution failed: %s", exc, exc_info=True)
         return jsonify(
@@ -149,19 +150,27 @@ def _handle_sql_query(sql: str) -> ResponseReturnValue:
     )
 
 
-def _execute_readonly(sql: str) -> tuple[list[str], list[dict], bool]:
+def _execute_readonly(sql: str, user_id: int) -> tuple[list[str], list[dict], bool]:
     """Runs `sql` (already validated by backend.sql_guard) against the
     SELECT-only jobhunt_readonly role, in its own short-lived connection --
     not the pooled/shared connection get_repos() uses. SET TRANSACTION READ
     ONLY is redundant with the role's grants but cheap and independent
-    defense (belt-and-suspenders per the plan's three-layer design)."""
+    defense (belt-and-suspenders per the plan's three-layer design).
+
+    The LLM-generated SQL is never told about, and never asked to filter by, `user_id`
+    (backend/sql_guard.py's ALLOWED_COLUMNS excludes it) -- row-level security is what
+    actually confines every query to the caller's own rows, by the same mechanism
+    get_repos() uses for the rest of the app (backend/db/row_level_security.py)."""
     conn = psycopg2.connect(
         get_readonly_database_url(), cursor_factory=psycopg2.extras.RealDictCursor
     )
     try:
         cur = conn.cursor()
+        # SET TRANSACTION must be the transaction's first statement -- set_current_user
+        # below runs a query (SELECT set_config(...)) and would otherwise disqualify it.
         cur.execute("SET TRANSACTION READ ONLY")
         cur.execute(f"SET LOCAL statement_timeout = '{_STATEMENT_TIMEOUT_MS}ms'")
+        set_current_user(cur, user_id)
         cur.execute(sql)
         columns = [desc.name for desc in cur.description] if cur.description else []
         rows = [dict(row) for row in cur.fetchmany(MAX_ROW_LIMIT + 1)]

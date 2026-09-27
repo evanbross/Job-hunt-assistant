@@ -44,6 +44,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import urlparse
 
 import psycopg2
 import pytest
@@ -201,11 +202,22 @@ def isolated_legacy_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 # ai: claude-sonnet-5 | 2026-07-25
 @pytest.fixture
-def pg_dsn() -> str:
+def pg_dsn(monkeypatch: pytest.MonkeyPatch) -> str:
     """Reset the local Postgres test database to a clean, freshly-seeded state
     and return its DSN. Tests must not assume any state beyond what init_db()'s
     seed data provides — every table is truncated before each test."""
     assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL, _EXTRA_TEST_DB_HOSTS)
+    # ai: claude-sonnet-5 | 2026-09-27 -- backend/db/readonly_role.py's ensure_readonly_role()
+    # (called by init_db) and get_readonly_database_url() (routes/voice.py) read these
+    # directly, separately from DATABASE_URL. Without this they target the real app
+    # database (which doesn't exist locally), so the voice-query feature's read-only role
+    # silently never gets provisioned against the test database -- see
+    # tests/test_row_level_security.py's voice-query tests, which need it.
+    parsed = urlparse(TEST_DATABASE_URL)
+    monkeypatch.setattr(config, "POSTGRES_HOST", parsed.hostname)
+    monkeypatch.setattr(config, "POSTGRES_PORT", str(parsed.port))
+    monkeypatch.setattr(config, "POSTGRES_DB", (parsed.path or "").lstrip("/"))
+    monkeypatch.setattr(config, "POSTGRES_SSLMODE", "disable")
     init_db(TEST_DATABASE_URL)
     conn = psycopg2.connect(TEST_DATABASE_URL)
     conn.autocommit = True

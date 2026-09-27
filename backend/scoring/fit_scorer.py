@@ -174,7 +174,7 @@ class FitScorer:
     def _build_system_prompt(
         self, resume_text: str, penalty_rules: list[dict], fit_feedback: list[dict]
     ) -> str:
-        with get_repos() as repos:
+        with get_repos(self._user_id) as repos:
             tz = get_setting("candidate_timezone", self._user_id, repos).strip()
             candidate_profile = get_candidate_profile(self._user_id, repos)  # ai: claude-sonnet-5 | 2026-09-01
         if tz:

@@ -103,7 +103,7 @@ class CoverLetterGenerator:
         )
 
         # ai: claude-sonnet-5 | 2026-09-01
-        with get_repos() as repos:
+        with get_repos(self._user_id) as repos:
             candidate_profile = get_candidate_profile(self._user_id, repos)
 
         # ai: claude-sonnet-4-6 | 2026-06-10

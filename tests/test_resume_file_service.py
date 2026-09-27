@@ -34,6 +34,7 @@ from backend.db import (
     PostgresUserAccountRepository,
     get_connection,
 )
+from backend.db.row_level_security import disable_for_migrations, set_current_user
 from backend.db.schema import _migrate_legacy_resume_file
 from backend.resume.resume_file_service import (
     MAX_RESUME_BYTES,
@@ -70,6 +71,7 @@ def _new_user(conn: Any, email: str = "owner@example.com") -> int:
     account = PostgresUserAccountRepository(conn).create_pending(
         email, f"seed-{email}", "2099-01-01"
     )
+    set_current_user(conn.cursor(), account["id"])
     return account["id"]
 
 
@@ -144,11 +146,15 @@ def test_each_user_only_ever_loads_their_own_file(pg_dsn: str) -> None:
         service = ResumeFileService(PostgresResumeRepository(conn))
         first_pdf, second_pdf = make_pdf("first user"), make_pdf("second user")
 
+        set_current_user(conn.cursor(), first_id)
         service.replace(first_id, "first.pdf", first_pdf, "first")
+        set_current_user(conn.cursor(), second_id)
         service.replace(second_id, "second.pdf", second_pdf, "second")
         conn.commit()
 
+        set_current_user(conn.cursor(), first_id)
         assert service.load_file(first_id) == (first_pdf, "first.pdf")
+        set_current_user(conn.cursor(), second_id)
         assert service.load_file(second_id) == (second_pdf, "second.pdf")
     finally:
         conn.close()
@@ -247,7 +253,9 @@ def _seed_two_resumes(conn: Any) -> tuple[int, int]:
     older_user, newer_user = _new_user(conn), _new_user(conn, "newer@example.com")
     repo = PostgresResumeRepository(conn)
     now = datetime.now(UTC)
+    set_current_user(conn.cursor(), older_user)
     repo.insert(older_user, {"filename": "older.pdf", "content": "o", "uploaded_at": (now - timedelta(days=5)).isoformat()})
+    set_current_user(conn.cursor(), newer_user)
     repo.insert(newer_user, {"filename": "newer.pdf", "content": "n", "uploaded_at": now.isoformat()})
     conn.commit()
     return older_user, newer_user
@@ -262,6 +270,7 @@ def test_legacy_file_is_attached_to_the_newest_resume_and_renamed(
         legacy_pdf = make_pdf("the shared file")
         (tmp_path / "resume.pdf").write_bytes(legacy_pdf)
 
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_resume_file(conn)
 
         service = ResumeFileService(PostgresResumeRepository(conn))
@@ -287,6 +296,7 @@ def test_legacy_migration_does_not_overwrite_an_existing_stored_file(
         conn.commit()
         (tmp_path / "resume.pdf").write_bytes(make_pdf("stale legacy"))
 
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_resume_file(conn)
 
         assert service.load_file(user_id) == (current, "current.pdf")
@@ -300,6 +310,7 @@ def test_legacy_file_that_is_not_a_pdf_is_left_alone(pg_dsn: str, tmp_path: Path
         _seed_two_resumes(conn)
         (tmp_path / "resume.pdf").write_bytes(b"definitely not a pdf")
 
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_resume_file(conn)
 
         assert (tmp_path / "resume.pdf").exists()
@@ -318,6 +329,7 @@ def test_legacy_migration_is_deferred_when_no_encryption_key_is_configured(
         monkeypatch.delenv("SETTINGS_ENCRYPTION_KEY")
         monkeypatch.setattr(crypto, "_fernet", None)
 
+        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_resume_file(conn)
 
         assert (tmp_path / "resume.pdf").exists()
@@ -348,9 +360,15 @@ def resume_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, in
     finally:
         conn.close()
     flask_app = Flask(__name__)
+    flask_app.secret_key = "test"
     flask_app.register_blueprint(settings_bp, url_prefix="/api")
     monkeypatch.setattr("routes.settings.current_user_id", lambda: user_id)
-    return flask_app.test_client(), user_id
+    client = flask_app.test_client()
+    # get_repos() (backend/db/row_level_security.py) reads the real Flask session, not
+    # the current_user_id() monkeypatch above.
+    with client.session_transaction() as sess:
+        sess["user_id"] = user_id
+    return client, user_id
 
 
 def _upload(client: Any, data: bytes, filename: str = "resume.pdf") -> Any:

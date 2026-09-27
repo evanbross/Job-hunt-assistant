@@ -26,6 +26,7 @@ from backend.db import (
     PostgresUserAccountRepository,
     get_connection,
 )
+from backend.db.row_level_security import set_current_user
 
 # ai: claude-sonnet-5 | 2026-07-25
 
@@ -55,6 +56,7 @@ def _new_user(conn: object, email: str = "owner@example.com") -> int:
     account = PostgresUserAccountRepository(conn).create_pending(
         email, f"seed-{email}", "2099-01-01"
     )
+    set_current_user(conn.cursor(), account["id"])
     return account["id"]
 
 
@@ -167,12 +169,15 @@ def test_update_rejects_unknown_columns_and_scopes_to_user(pg_dsn: str) -> None:
         owner_id = _new_user(conn)
         other_id = _new_user(conn, "other@example.com")
         repo = PostgresContactRepository(conn)
+        set_current_user(conn.cursor(), owner_id)
         repo.sync_import(owner_id, [_import_row()])
         contact_id = repo.get_all(owner_id)[0]["id"]
 
         with pytest.raises(ValueError, match="unknown columns"):
             repo.update(owner_id, contact_id, {"full_name": "Hacked"})
+        set_current_user(conn.cursor(), other_id)
         assert repo.update(other_id, contact_id, {"interested": True}) is False
+        set_current_user(conn.cursor(), owner_id)
         assert repo.get_all(owner_id)[0]["interested"] is False
     finally:
         conn.close()
@@ -216,15 +221,20 @@ def test_contact_email_repo_is_scoped_to_owning_user(pg_dsn: str) -> None:
         other_id = _new_user(conn, "other@example.com")
         repo = PostgresContactRepository(conn)
         email_repo = PostgresContactEmailRepository(conn)
+        set_current_user(conn.cursor(), owner_id)
         repo.sync_import(owner_id, [_import_row()])
         contact_id = repo.get_all(owner_id)[0]["id"]
 
+        set_current_user(conn.cursor(), other_id)
         assert email_repo.add(other_id, contact_id, "2026-09-01") is None
 
+        set_current_user(conn.cursor(), owner_id)
         created = email_repo.add(owner_id, contact_id, "2026-09-01")
         assert created is not None
+        set_current_user(conn.cursor(), other_id)
         assert email_repo.set_response(other_id, created["id"], "2026-09-02") is False
         assert email_repo.delete(other_id, created["id"]) is False
+        set_current_user(conn.cursor(), owner_id)
         assert email_repo.delete(owner_id, created["id"]) is True
         assert repo.list_with_emails(owner_id)[0]["emails"] == []
     finally:
@@ -255,6 +265,7 @@ def test_bulk_set_recruiter_updates_only_listed_contacts_owned_by_user(pg_dsn: s
         owner_id = _new_user(conn)
         other_id = _new_user(conn, "other@example.com")
         repo = PostgresContactRepository(conn)
+        set_current_user(conn.cursor(), owner_id)
         repo.sync_import(
             owner_id,
             [
@@ -263,10 +274,14 @@ def test_bulk_set_recruiter_updates_only_listed_contacts_owned_by_user(pg_dsn: s
                 _import_row(full_name="Cy", profile_url="https://linkedin.com/in/cy"),
             ],
         )
+        set_current_user(conn.cursor(), other_id)
         repo.sync_import(other_id, [_import_row(full_name="Theirs", profile_url="https://linkedin.com/in/t")])
+        set_current_user(conn.cursor(), owner_id)
         owner_ids = {c["full_name"]: c["id"] for c in repo.get_all(owner_id)}
+        set_current_user(conn.cursor(), other_id)
         other_contact_id = repo.get_all(other_id)[0]["id"]
 
+        set_current_user(conn.cursor(), owner_id)
         updated = repo.bulk_set_recruiter(
             owner_id, [owner_ids["Jane Doe"], owner_ids["Bob"], other_contact_id], True
         )
@@ -275,8 +290,10 @@ def test_bulk_set_recruiter_updates_only_listed_contacts_owned_by_user(pg_dsn: s
         assert updated == 2
         flags = {c["full_name"]: c["is_recruiter"] for c in repo.list_with_emails(owner_id)}
         assert flags == {"Jane Doe": True, "Bob": True, "Cy": False}
+        set_current_user(conn.cursor(), other_id)
         assert repo.list_with_emails(other_id)[0]["is_recruiter"] is False
 
+        set_current_user(conn.cursor(), owner_id)
         assert repo.bulk_set_recruiter(owner_id, [owner_ids["Bob"]], False) == 1
         assert {
             c["full_name"]: c["is_recruiter"] for c in repo.list_with_emails(owner_id)

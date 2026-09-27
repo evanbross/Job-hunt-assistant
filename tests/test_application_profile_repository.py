@@ -24,6 +24,7 @@ from backend.db import (
     PostgresUserAccountRepository,
     get_connection,
 )
+from backend.db.row_level_security import set_current_user
 
 # ai: claude-sonnet-5 | 2026-08-13
 # ai: claude-sonnet-5 | 2026-08-20 — every repo call below now takes a
@@ -34,6 +35,7 @@ from backend.db import (
 def _make_user_id(conn) -> int:
     account = PostgresUserAccountRepository(conn).create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
     conn.commit()
+    set_current_user(conn.cursor(), account["id"])
     return account["id"]
 
 
@@ -100,11 +102,15 @@ def test_profile_upsert_is_scoped_per_user(pg_dsn: str) -> None:
         user_b = account_b["id"]
 
         repo = PostgresApplicationProfileRepository(conn)
+        set_current_user(conn.cursor(), user_a)
         repo.upsert(user_a, {"legal_name": "User A"})
+        set_current_user(conn.cursor(), user_b)
         repo.upsert(user_b, {"legal_name": "User B"})
         conn.commit()
 
+        set_current_user(conn.cursor(), user_a)
         assert repo.get(user_a)["legal_name"] == "User A"
+        set_current_user(conn.cursor(), user_b)
         assert repo.get(user_b)["legal_name"] == "User B"
     finally:
         conn.close()
@@ -187,13 +193,17 @@ def test_answers_upsert_is_scoped_per_user(pg_dsn: str) -> None:
 
         repo = PostgresApplicationAnswerRepository(conn)
         # Same normalized question text for two different users must not collide.
+        set_current_user(conn.cursor(), user_a)
         repo.upsert(user_a, question_text="Do you need sponsorship?", answer_text="No")
+        set_current_user(conn.cursor(), user_b)
         repo.upsert(user_b, question_text="Do you need sponsorship?", answer_text="Yes")
         conn.commit()
 
+        set_current_user(conn.cursor(), user_a)
         assert len(repo.get_all(user_a)) == 1
-        assert len(repo.get_all(user_b)) == 1
         assert repo.get_all(user_a)[0]["answer_text"] == "No"
+        set_current_user(conn.cursor(), user_b)
+        assert len(repo.get_all(user_b)) == 1
         assert repo.get_all(user_b)[0]["answer_text"] == "Yes"
     finally:
         conn.close()

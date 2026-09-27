@@ -37,18 +37,18 @@ class GreenhouseSessionStore:
         self._user_id = user_id
 
     def exists(self) -> bool:
-        with get_repos() as repos:
+        with get_repos(self._user_id) as repos:
             return repos["greenhouse_sessions"].get(self._user_id) is not None
 
     def load(self) -> dict[str, Any] | None:
-        with get_repos() as repos:
+        with get_repos(self._user_id) as repos:
             row = repos["greenhouse_sessions"].get(self._user_id)
         if row is None:
             return None
         return json.loads(decrypt_secret(row["state_encrypted"]))
 
     def save(self, state: dict[str, Any]) -> None:
-        with get_repos() as repos:
+        with get_repos(self._user_id) as repos:
             repos["greenhouse_sessions"].upsert(
                 self._user_id,
                 encrypt_secret(json.dumps(state)),
@@ -57,7 +57,7 @@ class GreenhouseSessionStore:
             repos["conn"].commit()
 
     def clear(self) -> bool:
-        with get_repos() as repos:
+        with get_repos(self._user_id) as repos:
             removed = repos["greenhouse_sessions"].delete(self._user_id)
             repos["conn"].commit()
         return removed

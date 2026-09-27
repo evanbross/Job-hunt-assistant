@@ -28,12 +28,14 @@ from backend.db import (
     PostgresUserAccountRepository,
     get_connection,
 )
+from backend.db.row_level_security import set_current_user
 
 
 def _make_user(conn) -> int:
     account = PostgresUserAccountRepository(conn).create_pending(
         "owner@example.com", "seed-owner@example.com", "2099-01-01"
     )
+    set_current_user(conn.cursor(), account["id"])
     return account["id"]
 
 

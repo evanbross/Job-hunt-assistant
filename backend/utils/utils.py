@@ -32,16 +32,21 @@ pattern applied to other shared helpers).
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from urllib.parse import urlparse
 
-from flask import session
+import psycopg2
+from flask import has_request_context, session
 
 import config
 from backend.ai_provider import AIProviderError
 from backend.db import open_repositories
+from backend.db.row_level_security import set_current_user
+
+logger = logging.getLogger(__name__)
 
 ACTIVE_JOB_STATUSES: frozenset[str] = frozenset(
     {
@@ -61,13 +66,40 @@ FIT_PANEL_STATUSES: frozenset[str] = frozenset(
 
 
 @contextmanager
-def get_repos() -> Generator[dict, None, None]:
-    """Open a DB connection and yield repos; always closes the connection on exit."""
+def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
+    """Open a DB connection and yield repos; always closes the connection on exit.
+
+    Also sets the Postgres row-level-security identity (backend/db/row_level_security.py)
+    for this connection, so every tenant table's own RLS policy -- not just each
+    repository's WHERE clause -- is scoped to one account:
+
+    - *user_id*, when the caller already knows it (a Celery task, a scheduler tick, a
+      background listener callback -- anything running outside a Flask request).
+    - Otherwise the current Flask session's user_id, when called from inside a request
+      (nearly every route). This covers the whole routes/ surface with no per-route change.
+    - Otherwise left unset, which is fail-closed: policies deny every tenant-table row
+      rather than defaulting to unrestricted.
+
+    Committed immediately, before the caller's own queries run, so a later
+    `repos["conn"].rollback()` elsewhere in this connection's lifetime (e.g. an
+    IntegrityError retry) can't silently undo it -- only a still-uncommitted SET is
+    rolled back with the transaction that made it.
+    """
     repos = open_repositories(config.DATABASE_URL)
+    conn = repos["conn"]
+    effective_user_id = user_id
+    if effective_user_id is None and has_request_context():
+        effective_user_id = session.get("user_id")
+    try:
+        set_current_user(conn.cursor(), effective_user_id)
+        conn.commit()
+    except psycopg2.Error as exc:
+        logger.warning("Could not set the row-level-security identity: %s", exc)
+        conn.rollback()
     try:
         yield repos
     finally:
-        repos["conn"].close()
+        conn.close()
 
 
 # ai: claude-sonnet-5 | 2026-08-20

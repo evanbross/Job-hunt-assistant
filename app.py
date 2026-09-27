@@ -541,7 +541,7 @@ def _authenticate_extension_token(token: str) -> int | None:
 # account. They run on the listener/WebSocket threads (no Flask session), so
 # each opens its own short-lived DB connection.
 def _claim_browser_capture_queue(user_id: int) -> list[dict]:
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         items = repos["browser_capture_queue"].claim_pending(
             user_id, limit=BROWSER_QUEUE_CLAIM_BATCH_SIZE
         )
@@ -552,7 +552,7 @@ def _claim_browser_capture_queue(user_id: int) -> list[dict]:
 # ai: claude-sonnet-5 | 2026-07-22
 def _browser_capture_queue_has_pending(user_id: int) -> bool:
     """Called from the queue WebSocket server's watcher thread."""
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         return repos["browser_capture_queue"].has_pending(user_id)
 
 
@@ -573,7 +573,7 @@ def _handle_listener_capture(user_id: int, body: dict) -> tuple[dict, int]:
 
 # ai: claude-sonnet-5 | 2026-08-13
 def _get_application_profile_for_listener(user_id: int) -> dict | None:
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         return repos["application_profile"].get(user_id)
 
 
@@ -582,13 +582,13 @@ def _get_application_profile_for_listener(user_id: int) -> dict | None:
 # authenticated user's own resume row (backend/resume/resume_file_service.py),
 # not in a shared file, so this can only ever return that user's resume.
 def _get_resume_file_bytes(user_id: int) -> tuple[bytes, str] | None:
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         return ResumeFileService(repos["resume"]).load_file(user_id)
 
 
 # ai: claude-sonnet-5 | 2026-08-13
 def _get_application_answers_for_listener(user_id: int) -> list[dict]:
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         return repos["application_answers"].get_all(user_id)
 
 
@@ -598,7 +598,7 @@ def _learn_application_answer(
 ) -> dict:
     """Called when the extension's autofill content script learns a new
     free-text answer from the user."""
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         answer = repos["application_answers"].upsert(
             user_id,
             question_text=question_text,

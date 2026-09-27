@@ -38,6 +38,7 @@ from backend.db import (
     get_connection,
     open_repositories,
 )
+from backend.db.row_level_security import disable_for_migrations, set_current_user
 from backend.security.key_rotation import RotationError, rotate_all
 from backend.security.secrets_policy import (
     ENCRYPTION_KEY_ENV,
@@ -235,6 +236,7 @@ def _clear_seeded_secrets(pg_dsn: str) -> None:
     secret_keys = [key for key, spec in SETTINGS.items() if spec.is_secret]
     conn = get_connection(pg_dsn)
     try:
+        disable_for_migrations(conn)  # deletes across every account, like a migration
         cur = conn.cursor()
         cur.execute("DELETE FROM system_settings WHERE key = ANY(%s)", (secret_keys,))
         cur.execute("DELETE FROM user_settings WHERE key = ANY(%s)", (secret_keys,))
@@ -252,6 +254,7 @@ def _populate(pg_dsn: str) -> dict[str, int]:
         user_id = PostgresUserAccountRepository(repos["conn"]).create_pending(
             "rot@example.com", "seed-rot", "2099-01-01"
         )["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
         repos["resume"].insert(
             user_id,
             {
@@ -273,6 +276,7 @@ def _populate(pg_dsn: str) -> dict[str, int]:
 def _rotate(pg_dsn: str, *, dry_run: bool) -> Any:
     conn = get_connection(pg_dsn)
     try:
+        disable_for_migrations(conn)  # rotate_all crosses every account, like a migration
         report = rotate_all(conn, dry_run=dry_run)
         conn.commit()
         return report
@@ -302,6 +306,7 @@ def test_rotate_all_reencrypts_every_kind_of_ciphertext_and_only_those(
     _use_keys(monkeypatch, new)  # retire the old key: everything must still read
     repos = open_repositories(pg_dsn)
     try:
+        set_current_user(repos["conn"].cursor(), ids["user_id"])
         assert get_setting("anthropic_api_key", ids["user_id"], repos) == "sk-user-secret"
         assert get_setting("google_oauth_client_config", None, repos) == '{"installed": {}}'
         assert get_setting("email_lookback_days", ids["user_id"], repos) == "10"
@@ -322,6 +327,7 @@ def test_an_unreadable_value_aborts_and_the_caller_can_roll_everything_back(
     stranger = Fernet(_make_key().encode()).encrypt(b'{"cookies": []}').decode()
     conn = get_connection(pg_dsn)
     try:
+        set_current_user(conn.cursor(), ids["user_id"])
         PostgresGreenhouseSessionRepository(conn).upsert(ids["user_id"], stranger, "2026-01-01")
         conn.commit()
     finally:
@@ -330,6 +336,7 @@ def test_an_unreadable_value_aborts_and_the_caller_can_roll_everything_back(
 
     conn = get_connection(pg_dsn)
     try:
+        disable_for_migrations(conn)  # rotate_all crosses every account, like a migration
         with pytest.raises(RotationError, match="Greenhouse sessions"):
             rotate_all(conn)
         conn.rollback()
@@ -344,6 +351,7 @@ def test_an_unreadable_value_aborts_and_the_caller_can_roll_everything_back(
 def _google_token(pg_dsn: str, user_id: int) -> str:
     conn = get_connection(pg_dsn)
     try:
+        set_current_user(conn.cursor(), user_id)
         return PostgresGoogleTokenRepository(conn).get(user_id)["token_encrypted"]
     finally:
         conn.close()
@@ -355,8 +363,10 @@ def test_a_resume_row_without_a_stored_file_is_skipped(pg_dsn: str, monkeypatch:
     conn = get_connection(pg_dsn)
     try:
         user_id = PostgresUserAccountRepository(conn).create_pending("nofile@example.com", "s", "2099-01-01")["id"]
+        set_current_user(conn.cursor(), user_id)
         PostgresResumeRepository(conn).insert(user_id, {"filename": "a.pdf", "content": "t", "uploaded_at": "2026-01-01"})
         conn.commit()
+        disable_for_migrations(conn)  # rotate_all crosses every account, like a migration
         report = rotate_all(conn, dry_run=True)
     finally:
         conn.close()
@@ -433,6 +443,7 @@ def test_encryption_rotation_end_to_end(
     _use_keys(monkeypatch, new)  # old key retired: still readable
     repos = open_repositories(pg_dsn)
     try:
+        set_current_user(repos["conn"].cursor(), ids["user_id"])
         assert get_setting("anthropic_api_key", ids["user_id"], repos) == "sk-user-secret"
     finally:
         repos["conn"].close()
