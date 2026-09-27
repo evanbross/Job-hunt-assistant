@@ -85,13 +85,20 @@ def _build_test_database_url() -> str:
 
 
 TEST_DATABASE_URL = _build_test_database_url()
+# CI reaches its throwaway Postgres service by name (e.g. "postgres"), not localhost. The
+# job must name that host explicitly; the database-name and own-database checks still apply.
+_EXTRA_TEST_DB_HOSTS = frozenset(
+    host.strip().lower()
+    for host in os.environ.get("TEST_DATABASE_EXTRA_HOSTS", "").split(",")
+    if host.strip()
+)
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Abort before any test runs, so even tests that never request pg_dsn cannot be
     the first to discover the suite is pointed at a real database."""
     try:
-        assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL)
+        assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL, _EXTRA_TEST_DB_HOSTS)
     except UnsafeTestDatabaseError as exc:
         pytest.exit(str(exc), returncode=2)
 
@@ -183,7 +190,7 @@ def pg_dsn() -> str:
     """Reset the local Postgres test database to a clean, freshly-seeded state
     and return its DSN. Tests must not assume any state beyond what init_db()'s
     seed data provides — every table is truncated before each test."""
-    assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL)
+    assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL, _EXTRA_TEST_DB_HOSTS)
     init_db(TEST_DATABASE_URL)
     conn = psycopg2.connect(TEST_DATABASE_URL)
     conn.autocommit = True

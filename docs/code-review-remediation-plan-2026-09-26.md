@@ -399,3 +399,28 @@ Status: **implemented and tested, nothing committed.**
   again immediately before its `TRUNCATE`, so the destructive step cannot be reached any
   other way. Covered by `tests/test_db_guard.py`, including a child pytest run pointed at a
   remote database to prove the abort.
+
+## Item 7 progress (2026-09-26)
+
+Status: **implemented, nothing committed. The pipeline itself has not run: the repo is on
+GitLab and there is no runner here, so each command was verified locally instead.**
+
+`.gitlab-ci.yml`, run on merge requests and pushes to the default branch:
+- `ruff` (blocking): `ruff check .` from the frozen lockfile (`--frozen` fails if `uv.lock`
+  drifts from `pyproject.toml`).
+- `frontend` (blocking): `npm ci`, `npm run lint:ci`, `npm run build`. `lint:ci` is ESLint
+  with `--max-warnings 4`: the four existing warnings (Tier C) are tolerated, a fifth
+  fails. Lower the number as they are fixed.
+- `pytest` (blocking): against `postgres:17` and `redis:7` service containers, with JUnit
+  and coverage reports. The suite's database guard (item 6) only accepts local hosts, so the
+  job sets `TEST_DATABASE_EXTRA_HOSTS=postgres`: an explicit, single-host opt-in; the
+  test-name and not-the-app's-database checks still apply.
+- `pip-audit` and `npm-audit` (report only, `allow_failure`).
+
+**Audit findings today** (the reason they are not blocking yet): `cryptography` 49.0.0
+(fix 50.0.0), `pyasn1` 0.6.3 (0.6.4), `mistune` 3.3.2 (3.3.3), `anyio` 4.14.1, and 9 npm
+advisories (6 high). `cryptography` guards the settings encryption, so upgrade it first.
+Then remove `allow_failure` from both jobs.
+
+Not included: `ruff format --check` (the codebase is not formatted to it), branch
+protection requiring the pipeline to pass (a GitLab project setting, not a file).

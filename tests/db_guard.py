@@ -37,12 +37,18 @@ def _identity(url: str) -> tuple[str, int, str]:
     return (parsed.hostname or "").lower(), parsed.port or 5432, parsed.path.lstrip("/").lower()
 
 
-def assert_safe_test_database(test_url: str, app_url: str = "") -> None:
+def assert_safe_test_database(
+    test_url: str, app_url: str = "", extra_hosts: frozenset[str] = frozenset()
+) -> None:
     """Raise unless *test_url* is a local database whose name says it is for tests and
-    which is not the application's own database (*app_url*)."""
+    which is not the application's own database (*app_url*).
+
+    *extra_hosts* names additional hosts to accept, for a CI job whose throwaway Postgres
+    service is reached by service name rather than localhost. It is an explicit opt-in
+    (see TEST_DATABASE_EXTRA_HOSTS in conftest), never a wildcard."""
     host, port, name = _identity(test_url)
     problems: list[str] = []
-    if host not in _LOCAL_HOSTS:
+    if host not in _LOCAL_HOSTS | extra_hosts:
         problems.append(f"host {host or '(none)'!r} is not local")
     if "test" not in name:
         problems.append(f"database name {name or '(none)'!r} does not contain 'test'")

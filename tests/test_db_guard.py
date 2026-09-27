@@ -81,3 +81,14 @@ def test_the_suite_aborts_before_running_anything_against_a_real_database() -> N
     assert result.returncode == 2
     assert "Refusing to run the test suite" in result.stdout + result.stderr
     assert " passed" not in result.stdout
+
+
+def test_a_named_extra_host_is_accepted_but_other_checks_still_apply() -> None:
+    """CI reaches its Postgres service by name; the job opts that one host in explicitly."""
+    ci_hosts = frozenset({"postgres"})
+
+    assert_safe_test_database("postgresql://u:pw@postgres:5432/jha_test_db", APP_URL, ci_hosts)
+    with pytest.raises(UnsafeTestDatabaseError, match="not local"):
+        assert_safe_test_database("postgresql://u:pw@other-host:5432/jha_test_db", APP_URL, ci_hosts)
+    with pytest.raises(UnsafeTestDatabaseError, match="does not contain 'test'"):
+        assert_safe_test_database("postgresql://u:pw@postgres:5432/jobhunt", APP_URL, ci_hosts)
