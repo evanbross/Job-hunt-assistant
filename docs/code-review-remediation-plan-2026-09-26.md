@@ -445,3 +445,48 @@ Status: **implemented, nothing committed.** ESLint is now at 0 warnings and `lin
 - **Verified:** lint 0 problems, production build, and in the running app (signed in)
   Settings, Contacts and Phrase Book load their chunks with no console errors. The
   Applications and Email History tabs use the same mechanism but I did not click through them.
+
+## Beyond the review: two-user isolation tests (2026-09-26)
+
+Status: **implemented and tested, nothing committed.** Row-level security, the audit log
+and data lifecycle are still to do.
+
+`tests/test_tenant_isolation_matrix.py` replaces "a few resources by example" with the
+whole surface:
+- **Schema:** every table except three named shared ones has a NOT NULL `user_id` that
+  references `user_accounts` with `ON DELETE CASCADE`. A new table that forgets it fails.
+- **Coverage:** every `/api/*` route with a path parameter (59) must be in the matrix, and
+  a matrix entry for a removed route fails, so a new id route cannot ship untested.
+- **Attack:** account B calls every one of those routes on account A's resource. Each must
+  be refused (403/404), or be on a short allowlist with a stated reason. Then A's rows must
+  be unchanged **and B must own no new rows**: a row B owns that points at A's job is a
+  cross-tenant write even when A's own rows are intact.
+- **Control:** the owner is not refused on the same routes (re-seeded before each call), so
+  the attack test cannot pass because a path is wrong for everyone. Routes that would call
+  an AI provider or Google are exempt from this half.
+- **Listings:** no parameterless GET route shows A's data to B (and at least 8 do show it to A).
+- **Deletion:** deleting an account leaves no rows behind and does not touch the other account.
+
+**Bugs found and fixed**
+1. `POST /api/applications/<job_id>/stages` never checked the job belonged to the caller,
+   so any account could attach a stage to another account's job id. Now 404. (Confirmed:
+   the matrix fails again if the check is removed.)
+2. `GET /api/jd-health-check/run/<task_id>/status` answered for any Celery task id. Task
+   ids are recorded against the submitting account in Redis (`backend/security/
+   task_ownership.py`) and the route answers 404 for anyone else. It fails closed if Redis
+   is unreachable.
+
+**Allowlisted non-refusals** (safe, but they answer 200 for a resource that is not yours,
+because the SQL is scoped by `user_id` and simply matches nothing): DELETE application
+answer / capture-queue item / feedback, PUT `/applications/<id>`, POST `/emails/<id>/hide`.
+`mark-read` and `rescan` authenticate to the caller's own Google account first. Returning
+404 from the scoped-no-op routes would need the repositories to report rows affected.
+
+**Still open, found while writing this**
+- The database does not stop a row from referencing another account's parent: a composite
+  foreign key (`job_id, user_id` to `jobs(id, user_id)`, likewise contacts) would.
+  Worth doing together with row-level security.
+- The `latest_application_stage` view is not filtered by `user_id`; it is only reachable
+  through the read-only voice-query role, whose SQL guard must scope by user.
+- `PUT /api/email-subject-rules/<id>` answers 500 when `enabled` is a JSON boolean (the
+  column is an integer). The frontend sends integers, so this is only a validation gap.

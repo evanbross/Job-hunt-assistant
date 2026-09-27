@@ -381,6 +381,11 @@ def add_application_sheet_stage(job_id: int) -> ResponseReturnValue:
                     ),
                     400,
                 )
+            # ai: claude-sonnet-5 | 2026-09-26 -- without this, any account could attach a
+            # stage row to another account's job id (it would be stored under the caller's
+            # own user_id, but still reference the other account's job).
+            if not repos["jobs"].get_by_id(current_user_id(), job_id):
+                return jsonify({"error": "Job not found"}), 404
             repos["stages"].insert(
                 current_user_id(),
                 {"job_id": job_id, "status": status, "date": stage_date, "notes": notes},

@@ -54,6 +54,7 @@ from backend.scanning.schedulers import (
     configure_jd_health_check_scheduler,
     jd_health_check_should_run_now,
 )
+from backend.security.task_ownership import get_task_ownership
 from backend.tasks import run_jd_health_check_task
 from backend.utils.utils import (
     current_user_id,
@@ -97,6 +98,7 @@ def _submit_jd_health_check_run(user_id: int, triggered_by: str) -> str | None:
         ):
             return None
         task = run_jd_health_check_task.delay(user_id, triggered_by=triggered_by)
+        get_task_ownership().record(task.id, user_id)
         _jd_health_last_task_id_by_user[user_id] = task.id
         _jd_health_submitted_at_by_user[user_id] = time.monotonic()
         return task.id
@@ -217,6 +219,9 @@ def trigger_jd_health_check_run() -> ResponseReturnValue:
 
 @jd_health_check_bp.route("/jd-health-check/run/<task_id>/status")
 def jd_health_check_run_status(task_id: str) -> ResponseReturnValue:
+    # Task ids are not secrets; only the account that submitted the run may read its state.
+    if not get_task_ownership().owns(task_id, current_user_id()):
+        return jsonify({"error": "Task not found"}), 404
     result = AsyncResult(task_id, app=celery_app)
     payload: dict[str, object] = {"state": result.state}
     if result.state == "SUCCESS":

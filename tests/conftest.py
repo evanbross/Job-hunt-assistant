@@ -63,6 +63,11 @@ os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026"
 import config  # noqa: E402
 from backend.db import init_db  # noqa: E402
 from backend.security.rate_limiter import RateLimiter, set_rate_limiter  # noqa: E402
+from backend.security.task_ownership import (  # noqa: E402
+    MemoryOwnerStore,
+    TaskOwnership,
+    set_task_ownership,
+)
 from tests.db_guard import (  # noqa: E402
     UnsafeTestDatabaseError,
     assert_safe_test_database,
@@ -165,6 +170,16 @@ def isolated_rate_limiter(rate_clock: FakeClock) -> Iterator[RateLimiter]:
     set_rate_limiter(limiter)
     yield limiter
     set_rate_limiter(None)
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+@pytest.fixture(autouse=True)
+def isolated_task_ownership() -> Iterator[TaskOwnership]:
+    """Task-owner records in memory, for the same reason as the rate limiter above."""
+    ownership = TaskOwnership(MemoryOwnerStore())
+    set_task_ownership(ownership)
+    yield ownership
+    set_task_ownership(None)
 
 
 # ai: claude-sonnet-5 | 2026-09-26
