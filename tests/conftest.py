@@ -63,6 +63,10 @@ os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026"
 import config  # noqa: E402
 from backend.db import init_db  # noqa: E402
 from backend.security.rate_limiter import RateLimiter, set_rate_limiter  # noqa: E402
+from tests.db_guard import (  # noqa: E402
+    UnsafeTestDatabaseError,
+    assert_safe_test_database,
+)
 
 load_dotenv()
 
@@ -81,6 +85,15 @@ def _build_test_database_url() -> str:
 
 
 TEST_DATABASE_URL = _build_test_database_url()
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Abort before any test runs, so even tests that never request pg_dsn cannot be
+    the first to discover the suite is pointed at a real database."""
+    try:
+        assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL)
+    except UnsafeTestDatabaseError as exc:
+        pytest.exit(str(exc), returncode=2)
 
 _ALL_TABLES = (
     "job_status_history",
@@ -170,6 +183,7 @@ def pg_dsn() -> str:
     """Reset the local Postgres test database to a clean, freshly-seeded state
     and return its DSN. Tests must not assume any state beyond what init_db()'s
     seed data provides — every table is truncated before each test."""
+    assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL)
     init_db(TEST_DATABASE_URL)
     conn = psycopg2.connect(TEST_DATABASE_URL)
     conn.autocommit = True

@@ -386,3 +386,16 @@ Status: **implemented and tested, nothing committed.**
 Redis one against the real dev Redis, skipped if none), throttle sections in
 `tests/test_session_auth.py` and `tests/test_import_listener.py`. `tests/conftest.py` gives
 every test its own in-memory limiter and a controllable clock.
+
+## Item 6 progress (2026-09-26)
+
+Status: **implemented and tested, nothing committed.**
+
+- The `FitScorer` half was done during item 2 (its tests stub `_build_system_prompt` and no
+  longer read the real settings database).
+- **Guard:** `tests/db_guard.py`. `pytest_sessionstart` in `tests/conftest.py` aborts the
+  whole run (exit code 2, no test executed) unless the test database is on a local host,
+  has "test" in its name, and is not the application's own `DATABASE_URL`. `pg_dsn` checks
+  again immediately before its `TRUNCATE`, so the destructive step cannot be reached any
+  other way. Covered by `tests/test_db_guard.py`, including a child pytest run pointed at a
+  remote database to prove the abort.
