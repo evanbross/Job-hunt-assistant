@@ -35,6 +35,17 @@ const RECRUITER_FILTERS = [
   { value: "not_recruiter", label: "Not recruiters" },
 ];
 
+// ai: claude-sonnet-5 | 2026-09-28
+// Matches backend/db/repositories/contacts.py's recruiter_type CHECK
+// constraint. NULL ("") means "not a recruiter".
+const RECRUITER_TYPES = [
+  { value: "", label: "Not a recruiter" },
+  { value: "unrated", label: "Recruiter (unrated)" },
+  { value: "motion", label: "Motion (high-pressure, low-success)" },
+  { value: "moderate", label: "Moderate" },
+  { value: "high", label: "High" },
+];
+
 // ai: claude-sonnet-5 | 2026-09-25
 function emailState(contact) {
   if (contact.emails.length === 0) return "none";
@@ -64,8 +75,8 @@ function matchesFilters(contact, { search, emailFilter, recruiterFilter, interes
   if (emailFilter === "awaiting" && state !== "awaiting") return false;
   if (emailFilter === "replied" && state !== "replied") return false;
 
-  if (recruiterFilter === "recruiter" && !contact.is_recruiter) return false;
-  if (recruiterFilter === "not_recruiter" && contact.is_recruiter) return false;
+  if (recruiterFilter === "recruiter" && !contact.recruiter_type) return false;
+  if (recruiterFilter === "not_recruiter" && contact.recruiter_type) return false;
 
   const needle = search.trim().toLowerCase();
   if (!needle) return true;
@@ -98,6 +109,7 @@ export default function ContactsPanel() {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [bulkPending, setBulkPending] = useState(false);
+  const [bulkRecruiterType, setBulkRecruiterType] = useState("unrated");
 
   const loadContacts = async () => {
     try {
@@ -154,19 +166,19 @@ export default function ContactsPanel() {
   const toggleSelectAllFiltered = (checked) =>
     setSelectedIds(checked ? new Set(filtered.map((c) => c.id)) : new Set());
 
-  const bulkSetRecruiter = async (isRecruiter) => {
+  const bulkSetRecruiter = async (recruiterType) => {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
     setBulkPending(true);
     try {
       const res = await sendJson("/api/contacts/bulk-recruiter", "POST", {
         contact_ids: ids,
-        is_recruiter: isRecruiter,
+        recruiter_type: recruiterType,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const idSet = new Set(ids);
       setContacts((prev) =>
-        prev.map((c) => (idSet.has(c.id) ? { ...c, is_recruiter: isRecruiter } : c)),
+        prev.map((c) => (idSet.has(c.id) ? { ...c, recruiter_type: recruiterType } : c)),
       );
       setSelectedIds(new Set());
     } catch (e) {
@@ -341,19 +353,30 @@ export default function ContactsPanel() {
           {selectedIds.size > 0 && (
             <div style={bulkBar}>
               <strong>{selectedIds.size.toLocaleString()} selected</strong>
+              <select
+                value={bulkRecruiterType}
+                onChange={(e) => setBulkRecruiterType(e.target.value)}
+                aria-label="Recruiter type to apply to selection"
+              >
+                {RECRUITER_TYPES.filter((option) => option.value !== "").map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
               <button
                 className="btn-primary btn-sm"
                 disabled={bulkPending}
-                onClick={() => bulkSetRecruiter(true)}
+                onClick={() => bulkSetRecruiter(bulkRecruiterType)}
               >
-                Mark as recruiter
+                Set recruiter type
               </button>
               <button
                 className="btn-secondary btn-sm"
                 disabled={bulkPending}
-                onClick={() => bulkSetRecruiter(false)}
+                onClick={() => bulkSetRecruiter(null)}
               >
-                Unmark recruiter
+                Not a recruiter
               </button>
               <button
                 className="btn-secondary btn-sm"
@@ -431,16 +454,22 @@ export default function ContactsPanel() {
                           </div>
                         )}
                       </div>
-                      <label style={recruiterLabel}>
-                        <input
-                          type="checkbox"
-                          checked={contact.is_recruiter}
-                          onChange={(e) =>
-                            patchContact(contact.id, { is_recruiter: e.target.checked })
-                          }
-                        />
-                        Recruiter
-                      </label>
+                      <select
+                        value={contact.recruiter_type || ""}
+                        onChange={(e) =>
+                          patchContact(contact.id, {
+                            recruiter_type: e.target.value === "" ? null : e.target.value,
+                          })
+                        }
+                        aria-label={`Recruiter type for ${contact.full_name}`}
+                        style={{ fontSize: "12px" }}
+                      >
+                        {RECRUITER_TYPES.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
                       <div>
                         {state === "none" && <span className="badge badge-gray">Not emailed</span>}
                         {state === "awaiting" && (
@@ -521,7 +550,7 @@ const toolbar = {
 
 const rowGrid = {
   display: "grid",
-  gridTemplateColumns: "64px 70px minmax(0, 1fr) 100px 230px 70px",
+  gridTemplateColumns: "64px 70px minmax(0, 1fr) 150px 230px 70px",
   alignItems: "center",
   gap: "12px",
   padding: "10px 14px",
@@ -554,13 +583,6 @@ const headerCell = {
   color: "var(--text-muted)",
   textTransform: "uppercase",
   letterSpacing: "0.05em",
-};
-
-const recruiterLabel = {
-  display: "flex",
-  alignItems: "center",
-  gap: "6px",
-  fontSize: "13px",
 };
 
 const subtleText = {

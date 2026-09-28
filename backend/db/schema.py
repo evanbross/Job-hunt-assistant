@@ -1306,6 +1306,18 @@ def _migrate(conn: Any) -> None:
         )
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-09-28 -- recruiter_type replaces the is_recruiter
+    # checkbox with a graded scale (see docs/contacts-recruiter-classification-plan.md).
+    # NULL means "not a recruiter"; existing TRUE rows become 'unrated'.
+    cur.execute(
+        "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS recruiter_type TEXT"
+        " CHECK (recruiter_type IN ('unrated', 'motion', 'moderate', 'high'))"
+    )
+    if _has_column(cur, "contacts", "is_recruiter"):
+        cur.execute("UPDATE contacts SET recruiter_type = 'unrated' WHERE is_recruiter")
+        cur.execute("ALTER TABLE contacts DROP COLUMN is_recruiter")
+    conn.commit()
+
 
 # ai: claude-sonnet-4-6 | 2026-06-09
 _HINT_TITLE_RE = re.compile(

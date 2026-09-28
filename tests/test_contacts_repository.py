@@ -100,7 +100,7 @@ def test_sync_import_preserves_user_flags_and_keeps_acted_on_contacts(pg_dsn: st
         )
         by_name = {c["full_name"]: c["id"] for c in repo.get_all(user_id)}
         assert repo.update(user_id, by_name["Jane Doe"], {"interested": True})
-        assert repo.update(user_id, by_name["Recruiter Rita"], {"is_recruiter": True})
+        assert repo.update(user_id, by_name["Recruiter Rita"], {"recruiter_type": "unrated"})
         assert email_repo.add(user_id, by_name["Emailed Ed"], "2026-09-01T12:00:00+00:00") is not None
         conn.commit()
 
@@ -283,21 +283,21 @@ def test_bulk_set_recruiter_updates_only_listed_contacts_owned_by_user(pg_dsn: s
 
         set_current_user(conn.cursor(), owner_id)
         updated = repo.bulk_set_recruiter(
-            owner_id, [owner_ids["Jane Doe"], owner_ids["Bob"], other_contact_id], True
+            owner_id, [owner_ids["Jane Doe"], owner_ids["Bob"], other_contact_id], "unrated"
         )
         conn.commit()
 
         assert updated == 2
-        flags = {c["full_name"]: c["is_recruiter"] for c in repo.list_with_emails(owner_id)}
-        assert flags == {"Jane Doe": True, "Bob": True, "Cy": False}
+        types = {c["full_name"]: c["recruiter_type"] for c in repo.list_with_emails(owner_id)}
+        assert types == {"Jane Doe": "unrated", "Bob": "unrated", "Cy": None}
         set_current_user(conn.cursor(), other_id)
-        assert repo.list_with_emails(other_id)[0]["is_recruiter"] is False
+        assert repo.list_with_emails(other_id)[0]["recruiter_type"] is None
 
         set_current_user(conn.cursor(), owner_id)
-        assert repo.bulk_set_recruiter(owner_id, [owner_ids["Bob"]], False) == 1
+        assert repo.bulk_set_recruiter(owner_id, [owner_ids["Bob"]], None) == 1
         assert {
-            c["full_name"]: c["is_recruiter"] for c in repo.list_with_emails(owner_id)
-        }["Bob"] is False
+            c["full_name"]: c["recruiter_type"] for c in repo.list_with_emails(owner_id)
+        }["Bob"] is None
     finally:
         conn.close()
 

@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
@@ -82,6 +82,9 @@ def _normalize_utc_timestamp(value: str) -> str:
 
 UtcTimestamp = Annotated[str, AfterValidator(_normalize_utc_timestamp)]
 
+# NULL means "not a recruiter"; see docs/contacts-recruiter-classification-plan.md.
+RecruiterType = Literal["unrated", "motion", "moderate", "high"]
+
 
 # ai: claude-sonnet-5 | 2026-09-25
 class ContactUpdate(BaseModel):
@@ -92,7 +95,7 @@ class ContactUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     interested: StrictBool = False
-    is_recruiter: StrictBool = False
+    recruiter_type: RecruiterType | None = None
     email_address: str | None = None
     notes: str | None = None
 
@@ -124,7 +127,7 @@ class BulkRecruiterUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     contact_ids: list[StrictInt] = Field(min_length=1, max_length=_MAX_BULK_CONTACT_IDS)
-    is_recruiter: StrictBool
+    recruiter_type: RecruiterType | None
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -237,7 +240,7 @@ def bulk_set_recruiter() -> ResponseReturnValue:
 
     with get_repos() as repos:
         updated = repos["contacts"].bulk_set_recruiter(
-            current_user_id(), sorted(set(body.contact_ids)), body.is_recruiter
+            current_user_id(), sorted(set(body.contact_ids)), body.recruiter_type
         )
         repos["conn"].commit()
     return jsonify({"updated": updated})

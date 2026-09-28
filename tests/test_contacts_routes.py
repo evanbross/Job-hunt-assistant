@@ -56,7 +56,7 @@ class FakeContactsRepo:
     def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
         self.rows = rows or []
         self.updates: list[tuple[int, dict[str, Any]]] = []
-        self.bulk_calls: list[tuple[list[int], bool]] = []
+        self.bulk_calls: list[tuple[list[int], str | None]] = []
 
     def get_all(self, user_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.rows]
@@ -72,8 +72,10 @@ class FakeContactsRepo:
         self.updates.append((contact_id, fields))
         return any(row.get("id") == contact_id for row in self.rows)
 
-    def bulk_set_recruiter(self, user_id: int, contact_ids: list[int], is_recruiter: bool) -> int:
-        self.bulk_calls.append((contact_ids, is_recruiter))
+    def bulk_set_recruiter(
+        self, user_id: int, contact_ids: list[int], recruiter_type: str | None
+    ) -> int:
+        self.bulk_calls.append((contact_ids, recruiter_type))
         return len([row for row in self.rows if row.get("id") in contact_ids])
 
     def count(self, user_id: int) -> int:
@@ -258,20 +260,26 @@ def test_update_contact_only_writes_fields_that_were_sent(monkeypatch: pytest.Mo
     assert contacts.updates == [(1, {"interested": True})]
 
 
-def test_update_contact_can_unset_recruiter_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_update_contact_can_set_and_unset_recruiter_type(monkeypatch: pytest.MonkeyPatch) -> None:
     contacts = FakeContactsRepo([{"id": 1}])
     client = _contacts_client(monkeypatch, contacts)
 
-    response = client.patch("/api/contacts/1", json={"is_recruiter": False})
-    assert response.status_code == 200
-    assert contacts.updates == [(1, {"is_recruiter": False})]
+    set_response = client.patch("/api/contacts/1", json={"recruiter_type": "high"})
+    assert set_response.status_code == 200
+    unset_response = client.patch("/api/contacts/1", json={"recruiter_type": None})
+    assert unset_response.status_code == 200
+    assert contacts.updates == [
+        (1, {"recruiter_type": "high"}),
+        (1, {"recruiter_type": None}),
+    ]
 
 
 @pytest.mark.parametrize(
     "body",
     [
         {},
-        {"is_recruiter": "yes"},
+        {"recruiter_type": "yes"},
+        {"recruiter_type": "recruiter"},
         {"contact_type": "recruiter"},
         {"interested": "yes"},
         {"email_address": "not-an-email"},
@@ -415,23 +423,34 @@ def test_bulk_set_recruiter_dedupes_ids_and_reports_count(monkeypatch: pytest.Mo
     client = _contacts_client(monkeypatch, contacts)
 
     response = client.post(
-        "/api/contacts/bulk-recruiter", json={"contact_ids": [2, 1, 2], "is_recruiter": True}
+        "/api/contacts/bulk-recruiter", json={"contact_ids": [2, 1, 2], "recruiter_type": "unrated"}
     )
     assert response.status_code == 200
     assert response.get_json() == {"updated": 2}
-    assert contacts.bulk_calls == [([1, 2], True)]
+    assert contacts.bulk_calls == [([1, 2], "unrated")]
+
+
+def test_bulk_set_recruiter_accepts_null_to_unmark(monkeypatch: pytest.MonkeyPatch) -> None:
+    contacts = FakeContactsRepo([{"id": 1}])
+    client = _contacts_client(monkeypatch, contacts)
+
+    response = client.post(
+        "/api/contacts/bulk-recruiter", json={"contact_ids": [1], "recruiter_type": None}
+    )
+    assert response.status_code == 200
+    assert contacts.bulk_calls == [([1], None)]
 
 
 @pytest.mark.parametrize(
     "body",
     [
         {},
-        {"contact_ids": [], "is_recruiter": True},
+        {"contact_ids": [], "recruiter_type": "unrated"},
         {"contact_ids": [1]},
-        {"contact_ids": [1], "is_recruiter": "yes"},
-        {"contact_ids": ["1"], "is_recruiter": True},
-        {"contact_ids": [True], "is_recruiter": True},
-        {"contact_ids": [1], "is_recruiter": True, "interested": True},
+        {"contact_ids": [1], "recruiter_type": "yes"},
+        {"contact_ids": ["1"], "recruiter_type": "unrated"},
+        {"contact_ids": [True], "recruiter_type": "unrated"},
+        {"contact_ids": [1], "recruiter_type": "unrated", "interested": True},
     ],
 )
 def test_bulk_set_recruiter_rejects_invalid_body(

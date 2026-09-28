@@ -1,6 +1,8 @@
 # Contacts: Recruiter Classification Plan
 
-Status: **planned, not yet built** (design agreed in conversation 2026-09-26).
+Status: **build order item 1 shipped 2026-09-28** (`recruiter_type` migration,
+dropdown, bulk action, filter); items 2-4 not yet built. Design agreed in
+conversation 2026-09-26.
 Builds on the Contacts tab shipped 2026-09-25 (import, interested / recruiter
 flags, notes, outreach email log, bulk actions).
 
@@ -159,7 +161,7 @@ normalized name.
 
 ## Build order
 
-1. `recruiter_type` on contacts (migrate from `is_recruiter`), with row
+1. ✅ `recruiter_type` on contacts (migrate from `is_recruiter`), with row
    dropdown, bulk action, and filter.
 2. Companies table plus the Companies report (agency flag, workforce).
 3. Titles report with stored title rules and `decided_by` provenance.
@@ -167,6 +169,10 @@ normalized name.
 
 ## Open questions
 
-- Confirm the four recruiter type names/labels (they appear in dropdowns).
+- ~~Confirm the four recruiter type names/labels (they appear in dropdowns).~~
+  Resolved for now: shipped using the plan's own value names as labels
+  (`ContactsPanel.jsx`'s `RECRUITER_TYPES` — "Recruiter (unrated)", "Motion
+  (high-pressure, low-success)", "Moderate", "High"). Revisit if these read
+  oddly in practice.
 - Confirm title rules apply automatically on re-import (default) vs only on click.
 - Confirm the company-workforce / per-person-tier split vs a single per-person field.
