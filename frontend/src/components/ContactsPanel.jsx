@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import CompaniesReport from "./CompaniesReport.jsx";
 import ContactDetail from "./ContactDetail.jsx";
 import ContactsImport from "./ContactsImport.jsx";
 import { formatLocalDate } from "../utils/dateTimeUtils.js";
@@ -96,6 +97,7 @@ async function sendJson(url, method, body) {
 
 // ai: claude-sonnet-5 | 2026-09-25
 export default function ContactsPanel() {
+  const [view, setView] = useState("contacts"); // "contacts" | "companies"
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -288,241 +290,261 @@ export default function ContactsPanel() {
             and any replies.
           </p>
         </div>
-        {contacts.length > 0 && (
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button
+            className={view === "contacts" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
+            onClick={() => setView("contacts")}
+          >
+            Contacts
+          </button>
+          <button
+            className={view === "companies" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
+            onClick={() => setView("companies")}
+          >
+            Companies
+          </button>
+        </div>
+        {view === "contacts" && contacts.length > 0 && (
           <button className="btn-secondary btn-sm" onClick={() => setShowImport((open) => !open)}>
             {importVisible ? "Hide import" : "Import CSV"}
           </button>
         )}
       </div>
 
-      {importVisible && (
-        <div className="card" style={{ marginBottom: "16px" }}>
-          <ContactsImport onImported={loadContacts} />
-        </div>
-      )}
-
-      {loadError && <div style={{ color: "var(--red)", marginBottom: "12px" }}>{loadError}</div>}
-
-      {contacts.length > 0 && (
+      {view === "companies" ? (
+        <CompaniesReport />
+      ) : (
         <>
-          <div style={toolbar}>
-            <input
-              type="search"
-              placeholder="Search name, company, title, or notes"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              style={{ flex: "1 1 220px", minWidth: "180px" }}
-              aria-label="Search contacts"
-            />
-            <select
-              value={emailFilter}
-              onChange={(e) => setEmailFilter(e.target.value)}
-              aria-label="Filter by email status"
-            >
-              {EMAIL_FILTERS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <select
-              value={recruiterFilter}
-              onChange={(e) => setRecruiterFilter(e.target.value)}
-              aria-label="Filter by recruiter"
-            >
-              {RECRUITER_FILTERS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px" }}>
-              <input
-                type="checkbox"
-                checked={interestedOnly}
-                onChange={(e) => setInterestedOnly(e.target.checked)}
-              />
-              Interested only ({interestedCount})
-            </label>
-          </div>
-
-          <div style={{ color: "var(--text-muted)", fontSize: "12px", margin: "0 2px 8px" }}>
-            {filtered.length.toLocaleString()} of {contacts.length.toLocaleString()} contacts
-          </div>
-
-          {selectedIds.size > 0 && (
-            <div style={bulkBar}>
-              <strong>{selectedIds.size.toLocaleString()} selected</strong>
-              <select
-                value={bulkRecruiterType}
-                onChange={(e) => setBulkRecruiterType(e.target.value)}
-                aria-label="Recruiter type to apply to selection"
-              >
-                {RECRUITER_TYPES.filter((option) => option.value !== "").map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <button
-                className="btn-primary btn-sm"
-                disabled={bulkPending}
-                onClick={() => bulkSetRecruiter(bulkRecruiterType)}
-              >
-                Set recruiter type
-              </button>
-              <button
-                className="btn-secondary btn-sm"
-                disabled={bulkPending}
-                onClick={() => bulkSetRecruiter(null)}
-              >
-                Not a recruiter
-              </button>
-              <button
-                className="btn-secondary btn-sm"
-                disabled={bulkPending}
-                onClick={() => setSelectedIds(new Set())}
-              >
-                Clear selection
-              </button>
+          {importVisible && (
+            <div className="card" style={{ marginBottom: "16px" }}>
+              <ContactsImport onImported={loadContacts} />
             </div>
           )}
 
-          <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-            {visible.length > 0 && (
-              <div style={{ ...rowGrid, ...headerRow }}>
-                <label style={headerCell}>
+          {loadError && <div style={{ color: "var(--red)", marginBottom: "12px" }}>{loadError}</div>}
+
+          {contacts.length > 0 && (
+            <>
+              <div style={toolbar}>
+                <input
+                  type="search"
+                  placeholder="Search name, company, title, or notes"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  style={{ flex: "1 1 220px", minWidth: "180px" }}
+                  aria-label="Search contacts"
+                />
+                <select
+                  value={emailFilter}
+                  onChange={(e) => setEmailFilter(e.target.value)}
+                  aria-label="Filter by email status"
+                >
+                  {EMAIL_FILTERS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={recruiterFilter}
+                  onChange={(e) => setRecruiterFilter(e.target.value)}
+                  aria-label="Filter by recruiter"
+                >
+                  {RECRUITER_FILTERS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px" }}>
                   <input
                     type="checkbox"
-                    checked={allFilteredSelected}
-                    onChange={(e) => toggleSelectAllFiltered(e.target.checked)}
-                    aria-label={`Select all ${filtered.length} filtered contacts`}
+                    checked={interestedOnly}
+                    onChange={(e) => setInterestedOnly(e.target.checked)}
                   />
-                  Select
+                  Interested only ({interestedCount})
                 </label>
-                <span style={headerCell}>Interested</span>
-                <span style={headerCell}>Contact</span>
-                <span style={headerCell}>Recruiter</span>
-                <span style={headerCell}>Email status</span>
-                <span />
               </div>
-            )}
-            {visible.length === 0 ? (
-              <div style={{ padding: "18px", color: "var(--text-muted)" }}>
-                No contacts match these filters.
+    
+              <div style={{ color: "var(--text-muted)", fontSize: "12px", margin: "0 2px 8px" }}>
+                {filtered.length.toLocaleString()} of {contacts.length.toLocaleString()} contacts
               </div>
-            ) : (
-              visible.map((contact) => {
-                const state = emailState(contact);
-                const profileUrl = safeHttpUrl(contact.profile_url);
-                const expanded = expandedId === contact.id;
-                const lastSent = contact.emails.length
-                  ? contact.emails[contact.emails.length - 1].sent_at
-                  : null;
-                return (
-                  <div key={contact.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                    <div style={rowGrid}>
+    
+              {selectedIds.size > 0 && (
+                <div style={bulkBar}>
+                  <strong>{selectedIds.size.toLocaleString()} selected</strong>
+                  <select
+                    value={bulkRecruiterType}
+                    onChange={(e) => setBulkRecruiterType(e.target.value)}
+                    aria-label="Recruiter type to apply to selection"
+                  >
+                    {RECRUITER_TYPES.filter((option) => option.value !== "").map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn-primary btn-sm"
+                    disabled={bulkPending}
+                    onClick={() => bulkSetRecruiter(bulkRecruiterType)}
+                  >
+                    Set recruiter type
+                  </button>
+                  <button
+                    className="btn-secondary btn-sm"
+                    disabled={bulkPending}
+                    onClick={() => bulkSetRecruiter(null)}
+                  >
+                    Not a recruiter
+                  </button>
+                  <button
+                    className="btn-secondary btn-sm"
+                    disabled={bulkPending}
+                    onClick={() => setSelectedIds(new Set())}
+                  >
+                    Clear selection
+                  </button>
+                </div>
+              )}
+    
+              <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+                {visible.length > 0 && (
+                  <div style={{ ...rowGrid, ...headerRow }}>
+                    <label style={headerCell}>
                       <input
                         type="checkbox"
-                        checked={selectedIds.has(contact.id)}
-                        onChange={(e) => toggleSelected(contact.id, e.target.checked)}
-                        aria-label={`Select ${contact.full_name}`}
+                        checked={allFilteredSelected}
+                        onChange={(e) => toggleSelectAllFiltered(e.target.checked)}
+                        aria-label={`Select all ${filtered.length} filtered contacts`}
                       />
-                      <input
-                        type="checkbox"
-                        checked={contact.interested}
-                        onChange={(e) => patchContact(contact.id, { interested: e.target.checked })}
-                        aria-label={`Interested in ${contact.full_name}`}
-                      />
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 600 }}>
-                          {profileUrl ? (
-                            <a href={profileUrl} target="_blank" rel="noopener noreferrer">
-                              {contact.full_name}
-                            </a>
-                          ) : (
-                            contact.full_name
-                          )}
-                        </div>
-                        <div style={subtleText}>
-                          {[contact.position, contact.company_raw].filter(Boolean).join(" at ") ||
-                            "No title or company"}
-                        </div>
-                        {contact.notes && (
-                          <div style={{ ...subtleText, fontStyle: "italic" }} title={contact.notes}>
-                            {contact.notes}
-                          </div>
-                        )}
-                      </div>
-                      <select
-                        value={contact.recruiter_type || ""}
-                        onChange={(e) =>
-                          patchContact(contact.id, {
-                            recruiter_type: e.target.value === "" ? null : e.target.value,
-                          })
-                        }
-                        aria-label={`Recruiter type for ${contact.full_name}`}
-                        style={{ fontSize: "12px" }}
-                      >
-                        {RECRUITER_TYPES.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                      <div>
-                        {state === "none" && <span className="badge badge-gray">Not emailed</span>}
-                        {state === "awaiting" && (
-                          <span className="badge badge-orange">
-                            Emailed {formatLocalDate(lastSent)}
-                            {contact.emails.length > 1 ? ` (${contact.emails.length}x)` : ""} · no reply
-                          </span>
-                        )}
-                        {state === "replied" && (
-                          <span className="badge badge-green">
-                            Replied
-                            {contact.emails.length > 1 ? ` (${contact.emails.length} sent)` : ""}
-                          </span>
-                        )}
-                      </div>
-                      <button
-                        className="btn-secondary btn-xs"
-                        onClick={() => setExpandedId(expanded ? null : contact.id)}
-                        aria-expanded={expanded}
-                      >
-                        {expanded ? "Close" : "Details"}
-                      </button>
-                    </div>
-                    {expanded && (
-                      <ContactDetail
-                        contact={contact}
-                        onSaveEmailAddress={saveEmailAddress}
-                        onSaveNotes={saveNotes}
-                        onLogEmail={logEmail}
-                        onSetResponse={setResponse}
-                        onDeleteEmail={deleteEmail}
-                      />
-                    )}
+                      Select
+                    </label>
+                    <span style={headerCell}>Interested</span>
+                    <span style={headerCell}>Contact</span>
+                    <span style={headerCell}>Recruiter</span>
+                    <span style={headerCell}>Email status</span>
+                    <span />
                   </div>
-                );
-              })
-            )}
-          </div>
-
-          {filtered.length > visibleCount && (
-            <div style={{ textAlign: "center", marginTop: "12px" }}>
-              <button
-                className="btn-secondary btn-sm"
-                onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
-              >
-                Show {Math.min(PAGE_SIZE, filtered.length - visibleCount)} more
-              </button>
-            </div>
+                )}
+                {visible.length === 0 ? (
+                  <div style={{ padding: "18px", color: "var(--text-muted)" }}>
+                    No contacts match these filters.
+                  </div>
+                ) : (
+                  visible.map((contact) => {
+                    const state = emailState(contact);
+                    const profileUrl = safeHttpUrl(contact.profile_url);
+                    const expanded = expandedId === contact.id;
+                    const lastSent = contact.emails.length
+                      ? contact.emails[contact.emails.length - 1].sent_at
+                      : null;
+                    return (
+                      <div key={contact.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                        <div style={rowGrid}>
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(contact.id)}
+                            onChange={(e) => toggleSelected(contact.id, e.target.checked)}
+                            aria-label={`Select ${contact.full_name}`}
+                          />
+                          <input
+                            type="checkbox"
+                            checked={contact.interested}
+                            onChange={(e) => patchContact(contact.id, { interested: e.target.checked })}
+                            aria-label={`Interested in ${contact.full_name}`}
+                          />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600 }}>
+                              {profileUrl ? (
+                                <a href={profileUrl} target="_blank" rel="noopener noreferrer">
+                                  {contact.full_name}
+                                </a>
+                              ) : (
+                                contact.full_name
+                              )}
+                            </div>
+                            <div style={subtleText}>
+                              {[contact.position, contact.company_raw].filter(Boolean).join(" at ") ||
+                                "No title or company"}
+                            </div>
+                            {contact.notes && (
+                              <div style={{ ...subtleText, fontStyle: "italic" }} title={contact.notes}>
+                                {contact.notes}
+                              </div>
+                            )}
+                          </div>
+                          <select
+                            value={contact.recruiter_type || ""}
+                            onChange={(e) =>
+                              patchContact(contact.id, {
+                                recruiter_type: e.target.value === "" ? null : e.target.value,
+                              })
+                            }
+                            aria-label={`Recruiter type for ${contact.full_name}`}
+                            style={{ fontSize: "12px" }}
+                          >
+                            {RECRUITER_TYPES.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                          <div>
+                            {state === "none" && <span className="badge badge-gray">Not emailed</span>}
+                            {state === "awaiting" && (
+                              <span className="badge badge-orange">
+                                Emailed {formatLocalDate(lastSent)}
+                                {contact.emails.length > 1 ? ` (${contact.emails.length}x)` : ""} · no reply
+                              </span>
+                            )}
+                            {state === "replied" && (
+                              <span className="badge badge-green">
+                                Replied
+                                {contact.emails.length > 1 ? ` (${contact.emails.length} sent)` : ""}
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            className="btn-secondary btn-xs"
+                            onClick={() => setExpandedId(expanded ? null : contact.id)}
+                            aria-expanded={expanded}
+                          >
+                            {expanded ? "Close" : "Details"}
+                          </button>
+                        </div>
+                        {expanded && (
+                          <ContactDetail
+                            contact={contact}
+                            onSaveEmailAddress={saveEmailAddress}
+                            onSaveNotes={saveNotes}
+                            onLogEmail={logEmail}
+                            onSetResponse={setResponse}
+                            onDeleteEmail={deleteEmail}
+                          />
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+    
+              {filtered.length > visibleCount && (
+                <div style={{ textAlign: "center", marginTop: "12px" }}>
+                  <button
+                    className="btn-secondary btn-sm"
+                    onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
+                  >
+                    Show {Math.min(PAGE_SIZE, filtered.length - visibleCount)} more
+                  </button>
+                </div>
+              )}
+            </>
           )}
+
+          {loading && <div style={{ color: "var(--text-muted)" }}>Loading contacts…</div>}
         </>
       )}
-
-      {loading && <div style={{ color: "var(--text-muted)" }}>Loading contacts…</div>}
     </div>
   );
 }

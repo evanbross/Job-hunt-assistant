@@ -1889,6 +1889,23 @@ def _create_tables(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_contact_emails_contact_id
             ON contact_emails (contact_id)
         """,
+        # ai: claude-sonnet-5 | 2026-09-28
+        # Per-user company attributes (recruiter-classification plan, build-order
+        # item 2) -- a company only gets a row here once the user actually flags
+        # it as an agency or sets its workforce; until then the Companies report
+        # shows the defaults (not an agency, unknown workforce) with no row.
+        """
+        CREATE TABLE IF NOT EXISTS companies (
+            id                  SERIAL PRIMARY KEY,
+            user_id             INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            company_normalized  TEXT NOT NULL,
+            is_agency           BOOLEAN NOT NULL DEFAULT FALSE,
+            workforce           TEXT NOT NULL DEFAULT 'unknown'
+                CHECK (workforce IN ('unknown', 'onshore', 'offshore_hybrid')),
+            notes               TEXT,
+            UNIQUE (user_id, company_normalized)
+        )
+        """,
         # ai: claude-sonnet-5 | 2026-09-26
         # Per-user, per-device credentials for the browser extension. Only a
         # SHA-256 hash of the token is stored (tokens are 256-bit random values,

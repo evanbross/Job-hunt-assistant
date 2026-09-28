@@ -228,17 +228,32 @@ def test_get_contacts_company_map_groups_by_normalized_company(
     assert data["acme"][0]["full_name"] == "Jane Doe"
 
 
+# ai: claude-sonnet-5 | 2026-09-28
+class FakeCompanyRepo:
+    def __init__(self, report: list[dict[str, Any]] | None = None) -> None:
+        self.report_rows = report or []
+        self.upserts: list[tuple[int, str, dict[str, Any]]] = []
+
+    def report(self, user_id: int) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.report_rows]
+
+    def upsert(self, user_id: int, company_normalized: str, fields: dict[str, Any]) -> None:
+        self.upserts.append((user_id, company_normalized, fields))
+
+
 # ai: claude-sonnet-5 | 2026-09-25
 def _contacts_client(
     monkeypatch: pytest.MonkeyPatch,
     contacts: FakeContactsRepo | None = None,
     emails: FakeContactEmailsRepo | None = None,
+    companies: FakeCompanyRepo | None = None,
 ) -> Any:
     repos = {
         "conn": FakeConnection(),
         "contacts": contacts or FakeContactsRepo(),
         "contact_emails": emails or FakeContactEmailsRepo(),
         "settings": FakeSettingsRepo(),
+        "companies": companies or FakeCompanyRepo(),
     }
     return _make_app(repos, monkeypatch).test_client()
 
@@ -462,3 +477,61 @@ def test_bulk_set_recruiter_rejects_invalid_body(
     response = client.post("/api/contacts/bulk-recruiter", json=body)
     assert response.status_code == 400
     assert contacts.bulk_calls == []
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+def test_get_companies_report_returns_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    companies = FakeCompanyRepo([{"company_normalized": "acme", "contact_count": 2}])
+    client = _contacts_client(monkeypatch, companies=companies)
+
+    response = client.get("/api/contacts/companies")
+    assert response.status_code == 200
+    assert response.get_json() == {"companies": [{"company_normalized": "acme", "contact_count": 2}]}
+
+
+def test_update_company_only_writes_fields_that_were_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    companies = FakeCompanyRepo()
+    client = _contacts_client(monkeypatch, companies=companies)
+
+    response = client.patch(
+        "/api/contacts/companies", json={"company_normalized": "acme", "is_agency": True}
+    )
+    assert response.status_code == 200
+    assert companies.upserts == [(_TEST_USER_ID, "acme", {"is_agency": True})]
+
+
+def test_update_company_accepts_workforce_and_notes(monkeypatch: pytest.MonkeyPatch) -> None:
+    companies = FakeCompanyRepo()
+    client = _contacts_client(monkeypatch, companies=companies)
+
+    response = client.patch(
+        "/api/contacts/companies",
+        json={"company_normalized": "acme", "workforce": "offshore_hybrid", "notes": "  big shop  "},
+    )
+    assert response.status_code == 200
+    assert companies.upserts == [
+        (_TEST_USER_ID, "acme", {"workforce": "offshore_hybrid", "notes": "big shop"})
+    ]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"company_normalized": ""},
+        {"company_normalized": "acme"},
+        {"company_normalized": "acme", "workforce": "not-a-real-value"},
+        {"company_normalized": "acme", "is_agency": "yes"},
+        {"company_normalized": "acme", "notes": "x" * 5001},
+        {"company_normalized": "acme", "is_agency": True, "extra_field": 1},
+    ],
+)
+def test_update_company_rejects_invalid_body(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    companies = FakeCompanyRepo()
+    client = _contacts_client(monkeypatch, companies=companies)
+
+    response = client.patch("/api/contacts/companies", json=body)
+    assert response.status_code == 400
+    assert companies.upserts == []

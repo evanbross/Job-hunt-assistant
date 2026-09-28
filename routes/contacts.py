@@ -85,6 +85,19 @@ UtcTimestamp = Annotated[str, AfterValidator(_normalize_utc_timestamp)]
 # NULL means "not a recruiter"; see docs/contacts-recruiter-classification-plan.md.
 RecruiterType = Literal["unrated", "motion", "moderate", "high"]
 
+# Matches backend/db/repositories/companies.py's workforce CHECK constraint.
+CompanyWorkforce = Literal["unknown", "onshore", "offshore_hybrid"]
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+def _normalize_optional_text(value: str | None, max_length: int, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if len(value) > max_length:
+        raise ValueError(f"{field_name} are limited to {max_length} characters")
+    return value or None
+
 
 # ai: claude-sonnet-5 | 2026-09-25
 class ContactUpdate(BaseModel):
@@ -114,12 +127,7 @@ class ContactUpdate(BaseModel):
     @field_validator("notes")
     @classmethod
     def _normalize_notes(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        if len(value) > _MAX_NOTES_LENGTH:
-            raise ValueError(f"notes are limited to {_MAX_NOTES_LENGTH} characters")
-        return value or None
+        return _normalize_optional_text(value, _MAX_NOTES_LENGTH, field_name="notes")
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -128,6 +136,25 @@ class BulkRecruiterUpdate(BaseModel):
 
     contact_ids: list[StrictInt] = Field(min_length=1, max_length=_MAX_BULK_CONTACT_IDS)
     recruiter_type: RecruiterType | None
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+class CompanyUpdate(BaseModel):
+    """Partial update, same exclude_unset convention as ContactUpdate:
+    company_normalized names which company (never itself written), the rest
+    are only applied when present in the request body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    company_normalized: str = Field(min_length=1, max_length=300)
+    is_agency: StrictBool = False
+    workforce: CompanyWorkforce = "unknown"
+    notes: str | None = None
+
+    @field_validator("notes")
+    @classmethod
+    def _normalize_notes(cls, value: str | None) -> str | None:
+        return _normalize_optional_text(value, _MAX_NOTES_LENGTH, field_name="notes")
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -244,6 +271,32 @@ def bulk_set_recruiter() -> ResponseReturnValue:
         )
         repos["conn"].commit()
     return jsonify({"updated": updated})
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+@contacts_bp.route("/contacts/companies")
+def get_companies_report() -> ResponseReturnValue:
+    with get_repos() as repos:
+        companies = repos["companies"].report(current_user_id())
+    return jsonify({"companies": companies})
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+@contacts_bp.route("/contacts/companies", methods=["PATCH"])
+def update_company() -> ResponseReturnValue:
+    try:
+        update = CompanyUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return _invalid_request(exc)
+
+    fields = update.model_dump(exclude_unset=True, exclude={"company_normalized"})
+    if not fields:
+        return jsonify({"error": "No fields to update"}), 400
+
+    with get_repos() as repos:
+        repos["companies"].upsert(current_user_id(), update.company_normalized, fields)
+        repos["conn"].commit()
+    return jsonify({"ok": True})
 
 
 # ai: claude-sonnet-5 | 2026-09-25

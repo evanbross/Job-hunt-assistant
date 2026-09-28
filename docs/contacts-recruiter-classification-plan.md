@@ -1,8 +1,8 @@
 # Contacts: Recruiter Classification Plan
 
-Status: **build order item 1 shipped 2026-09-28** (`recruiter_type` migration,
-dropdown, bulk action, filter); items 2-4 not yet built. Design agreed in
-conversation 2026-09-26.
+Status: **build order items 1-2 shipped 2026-09-28** (`recruiter_type`
+migration + Contacts UI; `companies` table + Companies report); items 3-4
+not yet built. Design agreed in conversation 2026-09-26.
 Builds on the Contacts tab shipped 2026-09-25 (import, interested / recruiter
 flags, notes, outreach email log, bulk actions).
 
@@ -163,7 +163,11 @@ normalized name.
 
 1. ✅ `recruiter_type` on contacts (migrate from `is_recruiter`), with row
    dropdown, bulk action, and filter.
-2. Companies table plus the Companies report (agency flag, workforce).
+2. ✅ Companies table plus the Companies report (agency flag, workforce).
+   Report is scoped to companies with at least one recruiter-flagged
+   contact (per-title filtering isn't possible yet — that's item 3).
+   Notes field included too, even though not called out in the UI spec,
+   since it's part of the data model and otherwise unreachable.
 3. Titles report with stored title rules and `decided_by` provenance.
 4. Optional Tier 1/2 suggestions that use both reports.
 

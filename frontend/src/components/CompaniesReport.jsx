@@ -1,0 +1,266 @@
+/*!
+ * Copyright (c) 2026 ZombieTech LLC. All rights reserved.
+ *
+ * LICENSE: Personal Use Only
+ * This source code is made available for personal, non-commercial use only.
+ * You may read, study, and run this code for personal purposes.
+ * You may NOT:
+ *   - Use this code, in whole or in part, in any commercial product or service
+ *   - Sell, sublicense, or otherwise monetize this code or derivatives of it
+ *   - Redistribute this code without explicit written permission from ZombieTech LLC
+ *
+ * No warranty is provided, express or implied. Use at your own risk.
+ *
+ * Licensing inquiries: license@zombietech.biz
+ */
+
+import { useEffect, useMemo, useState } from "react";
+
+// ai: claude-sonnet-5 | 2026-09-28
+// Matches backend/db/repositories/companies.py's workforce CHECK constraint.
+const WORKFORCE_OPTIONS = [
+  { value: "unknown", label: "Unknown" },
+  { value: "onshore", label: "Onshore" },
+  { value: "offshore_hybrid", label: "Offshore hybrid" },
+];
+
+// ai: claude-sonnet-5 | 2026-09-28
+async function sendJson(url, method, body) {
+  return fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+// ai: claude-sonnet-5 | 2026-09-28
+// docs/contacts-recruiter-classification-plan.md build-order item 2: one row
+// per company that has at least one recruiter-flagged contact, with agency
+// and workforce set here and applying to everyone at that company.
+export default function CompaniesReport() {
+  const [companies, setCompanies] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [search, setSearch] = useState("");
+  const [notesDrafts, setNotesDrafts] = useState({});
+
+  const loadCompanies = async () => {
+    try {
+      const res = await fetch("/api/contacts/companies");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setCompanies(data.companies);
+      setLoadError("");
+    } catch (e) {
+      setLoadError(`Could not load companies: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadCompanies();
+  }, []);
+
+  useEffect(() => {
+    setNotesDrafts((prev) => {
+      const next = { ...prev };
+      for (const company of companies) {
+        if (!(company.company_normalized in next)) {
+          next[company.company_normalized] = company.notes || "";
+        }
+      }
+      return next;
+    });
+  }, [companies]);
+
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return companies;
+    return companies.filter((c) =>
+      [c.company_raw, c.company_normalized].some((field) =>
+        (field || "").toLowerCase().includes(needle),
+      ),
+    );
+  }, [companies, search]);
+
+  // Optimistic: flip the UI immediately, roll back only the touched fields if
+  // the server rejects the write.
+  const patchCompany = async (companyNormalized, fields) => {
+    const previous = companies.find((c) => c.company_normalized === companyNormalized);
+    if (!previous) return false;
+    const rollback = Object.fromEntries(Object.keys(fields).map((key) => [key, previous[key]]));
+    setCompanies((prev) =>
+      prev.map((c) => (c.company_normalized === companyNormalized ? { ...c, ...fields } : c)),
+    );
+    try {
+      const res = await sendJson("/api/contacts/companies", "PATCH", {
+        company_normalized: companyNormalized,
+        ...fields,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return true;
+    } catch (e) {
+      setCompanies((prev) =>
+        prev.map((c) => (c.company_normalized === companyNormalized ? { ...c, ...rollback } : c)),
+      );
+      window.alert(`Save failed: ${e.message}`);
+      return false;
+    }
+  };
+
+  const commitNotes = (companyNormalized) => {
+    const draft = (notesDrafts[companyNormalized] || "").trim();
+    const current = companies.find((c) => c.company_normalized === companyNormalized);
+    if (!current || draft === (current.notes || "")) return;
+    patchCompany(companyNormalized, { notes: draft || null });
+  };
+
+  return (
+    <div>
+      <p style={summaryStyle}>
+        Companies with at least one contact flagged as a recruiter. Flagging a company as an
+        agency or setting its workforce applies to everyone at that company.
+      </p>
+
+      {loadError && <div style={{ color: "var(--red)", marginBottom: "12px" }}>{loadError}</div>}
+
+      {!loading && companies.length > 0 && (
+        <>
+          <div style={toolbar}>
+            <input
+              type="search"
+              placeholder="Search company"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{ flex: "1 1 220px", minWidth: "180px" }}
+              aria-label="Search companies"
+            />
+          </div>
+
+          <div style={{ color: "var(--text-muted)", fontSize: "12px", margin: "0 2px 8px" }}>
+            {filtered.length.toLocaleString()} of {companies.length.toLocaleString()} companies
+          </div>
+
+          <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+            {filtered.length > 0 && (
+              <div style={{ ...rowGrid, ...headerRow }}>
+                <span style={headerCell}>Company</span>
+                <span style={headerCell}>Contacts</span>
+                <span style={headerCell}>Recruiters</span>
+                <span style={headerCell}>Agency</span>
+                <span style={headerCell}>Workforce</span>
+                <span style={headerCell}>Notes</span>
+              </div>
+            )}
+            {filtered.length === 0 ? (
+              <div style={{ padding: "18px", color: "var(--text-muted)" }}>
+                No companies match this search.
+              </div>
+            ) : (
+              filtered.map((company) => (
+                <div key={company.company_normalized} style={rowGrid}>
+                  <div style={{ fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {company.company_raw}
+                  </div>
+                  <div>{company.contact_count.toLocaleString()}</div>
+                  <div>{company.recruiter_count.toLocaleString()}</div>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <input
+                      type="checkbox"
+                      checked={company.is_agency}
+                      onChange={(e) =>
+                        patchCompany(company.company_normalized, { is_agency: e.target.checked })
+                      }
+                      aria-label={`${company.company_raw} is a recruiting agency`}
+                    />
+                    Agency
+                  </label>
+                  <select
+                    value={company.workforce}
+                    onChange={(e) =>
+                      patchCompany(company.company_normalized, { workforce: e.target.value })
+                    }
+                    aria-label={`Workforce for ${company.company_raw}`}
+                    style={{ fontSize: "12px" }}
+                  >
+                    {WORKFORCE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    value={notesDrafts[company.company_normalized] ?? ""}
+                    onChange={(e) =>
+                      setNotesDrafts((prev) => ({
+                        ...prev,
+                        [company.company_normalized]: e.target.value,
+                      }))
+                    }
+                    onBlur={() => commitNotes(company.company_normalized)}
+                    placeholder="Notes"
+                    aria-label={`Notes for ${company.company_raw}`}
+                    style={{ fontSize: "12px" }}
+                  />
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      )}
+
+      {!loading && companies.length === 0 && !loadError && (
+        <div style={{ padding: "18px", color: "var(--text-muted)" }} className="card">
+          No companies have a recruiter-flagged contact yet. Mark someone as a recruiter in the
+          Contacts list and their company will show up here.
+        </div>
+      )}
+
+      {loading && <div style={{ color: "var(--text-muted)" }}>Loading companies…</div>}
+    </div>
+  );
+}
+
+const summaryStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "2px",
+  marginBottom: "12px",
+  maxWidth: "640px",
+};
+
+const toolbar = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "10px",
+  marginBottom: "10px",
+};
+
+const rowGrid = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) 90px 100px 90px 150px minmax(120px, 220px)",
+  alignItems: "center",
+  gap: "12px",
+  padding: "10px 14px",
+  borderBottom: "1px solid var(--border)",
+};
+
+const headerRow = {
+  background: "var(--surface2)",
+  borderBottom: "1px solid var(--border)",
+  padding: "6px 14px",
+};
+
+const headerCell = {
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  fontSize: "11px",
+  fontWeight: 700,
+  color: "var(--text-muted)",
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+};
