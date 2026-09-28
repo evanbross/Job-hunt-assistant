@@ -137,6 +137,7 @@ def test_session_reports_must_complete_setup_true_for_default_admin(client) -> N
     assert client.get("/api/session").get_json() == {
         "authenticated": True,
         "must_complete_setup": True,
+        "deletion_requested_at": None,
     }
 
 
@@ -210,6 +211,7 @@ def test_completing_password_then_email_clears_gate(client, sent_emails) -> None
     assert client.get("/api/session").get_json() == {
         "authenticated": True,
         "must_complete_setup": False,
+        "deletion_requested_at": None,
     }
     assert client.get("/api/jobs").status_code == 200
 
@@ -233,6 +235,7 @@ def test_completing_email_then_password_clears_gate(client, sent_emails) -> None
     assert client.get("/api/session").get_json() == {
         "authenticated": True,
         "must_complete_setup": False,
+        "deletion_requested_at": None,
     }
     assert client.get("/api/jobs").status_code == 200
 

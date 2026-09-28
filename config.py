@@ -81,6 +81,35 @@ FLASK_PORT: int = int(os.getenv("FLASK_PORT", "5004"))
 # cookie lifetime, not credential storage (cookie flags: backend/security/session_cookies.py).
 PERMANENT_SESSION_LIFETIME_DAYS: int = 30
 
+# ─── Data lifecycle (backend/security/data_lifecycle.py) ──────────────────────
+# ai: claude-sonnet-5 | 2026-09-28
+# How long an account sits in "scheduled for deletion" (still fully usable --
+# logging in cancels nothing by itself, POST /api/account/cancel-deletion does)
+# before the sweep hard-deletes it. Every child row goes with it via each
+# table's ON DELETE CASCADE (see backend/db/row_level_security.py's docstring).
+ACCOUNT_DELETION_GRACE_DAYS: int = int(os.getenv("ACCOUNT_DELETION_GRACE_DAYS", "30"))
+# How often the background sweep (deletions past their grace period, plus the
+# retention pruning below) runs.
+DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS: float = float(
+    os.getenv("DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS", "24")
+)
+# Retention periods for tables that are purely informational logs -- pruning them
+# only shortens history a user could otherwise scroll back through, never changes
+# what the app does. Deliberately excludes anything a feature depends on for
+# correctness (scanned_emails' dedup check, job_status_history's undo, career scan
+# results the dashboard still lists) -- pruning those needs its own decision, not
+# a default here.
+AUDIT_LOG_RETENTION_DAYS: int = int(os.getenv("AUDIT_LOG_RETENTION_DAYS", "365"))
+IMPORT_REPAIR_HISTORY_RETENTION_DAYS: int = int(
+    os.getenv("IMPORT_REPAIR_HISTORY_RETENTION_DAYS", "90")
+)
+JD_HEALTH_CHECK_RESULTS_RETENTION_DAYS: int = int(
+    os.getenv("JD_HEALTH_CHECK_RESULTS_RETENTION_DAYS", "180")
+)
+CAREER_SCAN_FAILURES_RETENTION_DAYS: int = int(
+    os.getenv("CAREER_SCAN_FAILURES_RETENTION_DAYS", "90")
+)
+
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR: Path = Path(__file__).parent
 CREDENTIALS_DIR: Path = BASE_DIR / "credentials"

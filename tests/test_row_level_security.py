@@ -32,7 +32,7 @@ import pytest
 
 import app as app_module
 import config
-from backend.db.row_level_security import _tenant_tables, set_current_user
+from backend.db.row_level_security import set_current_user, tenant_tables
 from backend.utils.utils import get_repos
 from routes.voice import _execute_readonly
 
@@ -285,7 +285,7 @@ def test_every_tenant_table_is_armed_after_init_db(pg_dsn: str) -> None:
     conn = _raw_connection(pg_dsn)
     try:
         cur = conn.cursor()
-        tables = _tenant_tables(cur)
+        tables = tenant_tables(cur)
         assert "jobs" in tables and "extension_tokens" not in tables
         for table in tables:
             cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = %s", (table,))

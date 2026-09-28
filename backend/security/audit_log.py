@@ -51,6 +51,9 @@ EXTENSION_TOKEN_CREATED: Final = "extension_token_created"
 EXTENSION_TOKEN_REVOKED: Final = "extension_token_revoked"
 GOOGLE_CONNECTED: Final = "google_connected"
 GOOGLE_DISCONNECTED: Final = "google_disconnected"
+ACCOUNT_DELETION_REQUESTED: Final = "account_deletion_requested"
+ACCOUNT_DELETION_CANCELLED: Final = "account_deletion_cancelled"
+DATA_EXPORTED: Final = "data_exported"
 
 EVENTS: Final[frozenset[str]] = frozenset(
     {
@@ -66,6 +69,9 @@ EVENTS: Final[frozenset[str]] = frozenset(
         EXTENSION_TOKEN_REVOKED,
         GOOGLE_CONNECTED,
         GOOGLE_DISCONNECTED,
+        ACCOUNT_DELETION_REQUESTED,
+        ACCOUNT_DELETION_CANCELLED,
+        DATA_EXPORTED,
     }
 )
 

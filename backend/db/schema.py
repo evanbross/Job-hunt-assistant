@@ -902,6 +902,14 @@ def _migrate(conn: Any) -> None:
         "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS"
         " bootstrap_password_pending BOOLEAN NOT NULL DEFAULT FALSE"
     )
+    # ai: claude-sonnet-5 | 2026-09-28 -- set by POST /api/account/request-deletion,
+    # cleared by POST /api/account/cancel-deletion. backend/security/data_lifecycle.py's
+    # sweep hard-deletes any account still set once config.ACCOUNT_DELETION_GRACE_DAYS
+    # has passed. NULL means "not scheduled for deletion" -- the common case.
+    cur.execute(
+        "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS"
+        " deletion_requested_at TIMESTAMPTZ"
+    )
     conn.commit()
 
     # A completely empty user_accounts is possible here even when other tables

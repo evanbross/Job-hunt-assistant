@@ -634,3 +634,60 @@ losing one log entry is a much smaller problem than a broken login.
 
 **Not done:** admin-visible view across accounts; export; any UI; retaining entries past
 account deletion.
+
+## Beyond the review: data lifecycle (2026-09-28)
+
+Status: **implemented and tested, nothing committed.** This was the last item on the
+"beyond the review" list.
+
+Two design questions were decided with the user up front rather than defaulted:
+account deletion is a **soft delete with a grace period** (not immediate), and
+retention/backups includes **building automated pruning**, not just documenting Neon's
+own point-in-time recovery (which still covers infra-level backup/restore; this item is
+about the app's own data lifecycle on top of that, not a replacement for it).
+
+**Export** (`GET /api/account/export`, `backend/security/data_export.py`): every row the
+caller owns, across every RLS-tenant table plus `extension_tokens` (excluded from RLS but
+still the account's own data), as one JSON document -- the resume file included as
+base64 if one is stored. Deliberately excludes live credentials, not data: encrypted
+columns (`file_encrypted`, `token_encrypted`, `state_encrypted`, `token_hash`) are
+dropped by name, and `user_settings` rows are additionally checked against
+`backend/settings_registry.py`'s `is_secret` flag and redacted -- a secret's column name
+doesn't say so on its own. Exporting a still-usable Google refresh token or extension
+token hash alongside a data export would hand out a working credential, not a record of
+one.
+
+**Deletion** (`user_accounts.deletion_requested_at`, `POST /account/request-deletion`
+re-password-confirmed and rate-limited like change-password, `POST /account/cancel-deletion`):
+the account stays fully usable during the grace period (`config.ACCOUNT_DELETION_GRACE_DAYS`,
+default 30) -- logging in doesn't cancel anything by itself, cancelling is an explicit
+action. `GET /api/session` and `GET /api/account` expose the timestamp so a frontend could
+show a banner; no such banner was built this pass (backend/API only, matching how the
+audit log item shipped).
+
+**The sweep** (`backend/security/data_lifecycle.py`, a daemon thread mirroring
+`backend/scanning/schedulers.py`'s shape, started from `app.py` alongside the JD health
+check scheduler): once per `config.DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS` (default 24),
+hard-deletes every account past its grace period (cascades to every child row the same
+way test/admin deletion already did) and prunes four log tables past their own retention
+windows (`audit_log`, `import_repair_history`, `jd_health_check_results`,
+`career_scan_failures` -- see config.py for defaults). Both are cross-tenant admin
+operations, so both run inside the `disable_for_migrations()`/`enable_and_force()`
+RLS-free bracket the RLS item's migrations and key rotation already established, always
+re-armed before the connection closes even if the sweep raises partway through.
+
+**Retention scope was deliberately narrow.** Only tables that are purely informational
+logs are pruned -- deleting an old row there can only shorten history a user could
+otherwise scroll back through, never change what a feature does. `scanned_emails`
+(dedup check on re-scan), `job_status_history` (undo/history), `career_scan_results`
+(the dashboard still lists them), and `jobs` itself were deliberately left out: pruning
+any of those needs its own explicit decision about what breaks, not a default set here.
+
+**`backend/db/row_level_security.py`'s `_tenant_tables()` was renamed to the public
+`tenant_tables()`** so this item's export module could reuse it without importing a
+leading-underscore name from another module (PYTHON_STANDARDS.md's import rule) --
+avoided a second, duplicated "every table with a NOT NULL user_id" query.
+
+**Not done:** any frontend UI (export button, deletion banner/confirmation dialog);
+an admin-facing view of accounts pending deletion; the sweep's own metrics/alerting
+beyond a log line.

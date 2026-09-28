@@ -309,6 +309,36 @@ class PostgresUserAccountRepository(_BaseRepo):
     def delete(self, user_id: int) -> None:
         self._execute("DELETE FROM user_accounts WHERE id = %s", [user_id])
 
+    # ai: claude-sonnet-5 | 2026-09-28
+    def request_deletion(self, user_id: int) -> dict[str, Any]:
+        """Start the deletion grace period (backend/security/data_lifecycle.py sweeps
+        past it). Idempotent: re-requesting does not push the clock back out."""
+        cur = self._execute(
+            "UPDATE user_accounts SET deletion_requested_at = COALESCE(deletion_requested_at, NOW())"
+            " WHERE id = %s RETURNING *",
+            [user_id],
+        )
+        return _row_to_dict(cur.fetchone())
+
+    def cancel_deletion(self, user_id: int) -> dict[str, Any]:
+        cur = self._execute(
+            "UPDATE user_accounts SET deletion_requested_at = NULL WHERE id = %s RETURNING *",
+            [user_id],
+        )
+        return _row_to_dict(cur.fetchone())
+
+    def get_accounts_past_deletion_grace_period(self, cutoff: Any) -> list[dict[str, Any]]:
+        """Accounts whose grace period (deletion_requested_at + the configured number of
+        days) ended before *cutoff*, a UTC datetime the caller computes from `NOW()`
+        minus the grace period -- keeps the grace-period length a config value read once
+        by the caller rather than duplicated into this query."""
+        cur = self._execute(
+            "SELECT * FROM user_accounts"
+            " WHERE deletion_requested_at IS NOT NULL AND deletion_requested_at <= %s",
+            [cutoff],
+        )
+        return [_row_to_dict(row) for row in cur.fetchall()]
+
     # ai: claude-sonnet-5 | 2026-08-27
     def mark_setup_complete(self, user_id: int) -> None:
         """Clear must_complete_setup once the seeded default-admin account has

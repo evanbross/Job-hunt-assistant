@@ -69,7 +69,10 @@ from backend.db.repositories.user_accounts import (
 )
 from backend.email.smtp_sender import send_verification_email
 from backend.security.audit_log import (
+    ACCOUNT_DELETION_CANCELLED,
+    ACCOUNT_DELETION_REQUESTED,
     ACCOUNT_REGISTERED,
+    DATA_EXPORTED,
     EMAIL_CHANGE_CONFIRMED,
     EMAIL_CHANGE_REQUESTED,
     LOGIN_FAILURE,
@@ -79,6 +82,7 @@ from backend.security.audit_log import (
     PASSWORD_RESET_REQUESTED,
     record_event,
 )
+from backend.security.data_export import export_user_data
 from backend.security.rate_limiter import (
     Decision,
     Policy,
@@ -112,6 +116,7 @@ TOKEN_FAILURE_IP = Policy("token-failure-ip", 20, _WINDOW_15_MIN)
 PASSWORD_CHANGE_USER = Policy("password-change-user", 5, _WINDOW_15_MIN)
 EMAIL_CHANGE_USER = Policy("email-change-user", 5, _WINDOW_1_HOUR)
 EMAIL_CHANGE_TARGET = Policy("email-change-target", 3, _WINDOW_1_HOUR)
+ACCOUNT_DELETION_USER = Policy("account-deletion-user", 5, _WINDOW_15_MIN)
 
 _REGISTRATION_TOKEN_LIFETIME = timedelta(hours=24)
 _EMAIL_CHANGE_TOKEN_LIFETIME = timedelta(hours=1)
@@ -183,6 +188,10 @@ class ChangePasswordRequest(_NotBlankModel):
 
 class UpdateNameRequest(_NotBlankModel):
     name: str
+
+
+class RequestDeletionRequest(_NotBlankModel):
+    password: str
 
 
 _MIN_PASSWORD_LENGTH = 8
@@ -467,6 +476,8 @@ def session_status() -> ResponseReturnValue:
             # forced setup screen (app.py's _require_setup_completion enforces
             # it server-side; this is just so the UI doesn't have to guess).
             "must_complete_setup": bool(account and account.get("must_complete_setup")),
+            # Already an ISO string (see get_account()'s identical field below).
+            "deletion_requested_at": account.get("deletion_requested_at") if account else None,
         }
     )
 
@@ -490,6 +501,9 @@ def get_account() -> ResponseReturnValue:
             "password_pending_default": (
                 must_complete_setup and bool(account["bootstrap_password_pending"])
             ),
+            # Already an ISO string, not a datetime -- repos["user_accounts"].get()
+            # returns rows through _row_to_dict(), which converts timestamps itself.
+            "deletion_requested_at": account["deletion_requested_at"],
         }
     )
 
@@ -638,3 +652,60 @@ def change_password() -> ResponseReturnValue:
 
     get_rate_limiter().reset(*password_check)
     return jsonify({"status": "password_changed"})
+
+
+@session_auth_bp.route("/account/export", methods=["GET"])
+def export_account_data() -> ResponseReturnValue:
+    """Every row the logged-in account owns, as one JSON document. See
+    backend/security/data_export.py for what is (and, for live credentials,
+    deliberately is not) included."""
+    user_id = current_user_id()
+    with get_repos() as repos:
+        data = export_user_data(repos, user_id)
+        record_event(repos, user_id, DATA_EXPORTED)
+        repos["conn"].commit()
+    response = jsonify(data)
+    response.headers["Content-Disposition"] = "attachment; filename=job-hunt-assistant-export.json"
+    return response
+
+
+@session_auth_bp.route("/account/request-deletion", methods=["POST"])
+def request_account_deletion() -> ResponseReturnValue:
+    """Start the deletion grace period (config.ACCOUNT_DELETION_GRACE_DAYS -- see
+    backend/security/data_lifecycle.py's sweep). The account stays fully usable;
+    POST /account/cancel-deletion clears it any time before the sweep runs."""
+    user_id = current_user_id()
+    try:
+        body = RequestDeletionRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return jsonify({"error": "Your current password is required"}), 400
+
+    deletion_check: Check = (ACCOUNT_DELETION_USER, str(user_id))
+    if limited := _blocked([deletion_check], "Too many attempts — try again later"):
+        return limited
+
+    with get_repos() as repos:
+        account = repos["user_accounts"].get(user_id)
+        if (
+            account is None
+            or account["password_hash"] is None
+            or not check_password_hash(account["password_hash"], body.password)
+        ):
+            get_rate_limiter().record_all([deletion_check])
+            return jsonify({"error": "Current password is incorrect"}), 401
+        updated = repos["user_accounts"].request_deletion(user_id)
+        record_event(repos, user_id, ACCOUNT_DELETION_REQUESTED)
+        repos["conn"].commit()
+
+    get_rate_limiter().reset(*deletion_check)
+    return jsonify({"deletion_requested_at": updated["deletion_requested_at"]})
+
+
+@session_auth_bp.route("/account/cancel-deletion", methods=["POST"])
+def cancel_account_deletion() -> ResponseReturnValue:
+    user_id = current_user_id()
+    with get_repos() as repos:
+        repos["user_accounts"].cancel_deletion(user_id)
+        record_event(repos, user_id, ACCOUNT_DELETION_CANCELLED)
+        repos["conn"].commit()
+    return jsonify({"status": "deletion_cancelled"})

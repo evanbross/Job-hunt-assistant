@@ -89,6 +89,7 @@ from backend.security.client_ip import (
     TrustedProxyMiddleware,
     parse_trusted_proxies,
 )
+from backend.security.data_lifecycle import start_data_lifecycle_scheduler
 from backend.security.secrets_policy import InsecureSecretError
 from backend.security.session_cookies import (
     normalize_secure_mode,
@@ -970,6 +971,11 @@ if __name__ == "__main__":
     # to False) and its poll-then-submit loop is what implements "catch up on
     # next launch" for the JD parser health check.
     start_jd_health_check_scheduler()
+    # ai: claude-sonnet-5 | 2026-09-28 -- account-deletion sweep + log-table retention
+    # pruning (backend/security/data_lifecycle.py). Cross-tenant, not per-user, so it
+    # doesn't need the Celery worker or a "which accounts" fan-out like the scheduler
+    # above; started here just to keep every background daemon's startup in one place.
+    start_data_lifecycle_scheduler()
     # ai: claude-sonnet-5 | 2026-07-31
 
     def _register_with_caddy(name: str, port: int, scheme: str) -> bool:

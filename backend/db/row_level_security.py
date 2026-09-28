@@ -70,7 +70,7 @@ _POLICY_NAME = "tenant_isolation"
 _EXCLUDED_FROM_RLS: frozenset[str] = frozenset({"extension_tokens"})
 
 
-def _tenant_tables(cur: Any) -> list[str]:
+def tenant_tables(cur: Any) -> list[str]:
     """Every table with a NOT NULL `user_id` column, other than `_EXCLUDED_FROM_RLS` --
     the same test a new table has to pass in tests/test_tenant_isolation_matrix.py, read
     from the schema rather than duplicated as a hardcoded list here (a table added there
@@ -90,7 +90,7 @@ def disable_for_migrations(conn: Any) -> None:
     enabled is a no-op. Must run after tables exist but before any migration that reads or
     writes across more than one account."""
     cur = conn.cursor()
-    for table in _tenant_tables(cur):
+    for table in tenant_tables(cur):
         cur.execute(
             sql.SQL("ALTER TABLE {} DISABLE ROW LEVEL SECURITY").format(sql.Identifier(table))
         )
@@ -104,7 +104,7 @@ def enable_and_force(conn: Any) -> None:
     policies, so future schema changes don't need special-casing here."""
     cur = conn.cursor()
     condition = "user_id = NULLIF(current_setting('app.current_user_id', true), '')::integer"
-    for table in _tenant_tables(cur):
+    for table in tenant_tables(cur):
         identifier = sql.Identifier(table)
         cur.execute(sql.SQL("ALTER TABLE {} ENABLE ROW LEVEL SECURITY").format(identifier))
         cur.execute(sql.SQL("ALTER TABLE {} FORCE ROW LEVEL SECURITY").format(identifier))
@@ -124,7 +124,7 @@ def enable_and_force(conn: Any) -> None:
             sql.SQL("ALTER VIEW {} SET (security_invoker = true)").format(sql.Identifier(view))
         )
     conn.commit()
-    logger.info("Row-level security armed on %d tenant tables.", len(_tenant_tables(cur)))
+    logger.info("Row-level security armed on %d tenant tables.", len(tenant_tables(cur)))
 
 
 def set_current_user(cur: Any, user_id: int | None) -> None:

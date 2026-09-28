@@ -244,6 +244,7 @@ def test_complete_registration_with_valid_token_grants_session(client, sent_emai
     assert client.get("/api/session").get_json() == {
         "authenticated": True,
         "must_complete_setup": False,
+        "deletion_requested_at": None,
     }
 
 
@@ -424,6 +425,7 @@ def test_get_account_returns_name_and_email(client) -> None:
         "role": "user",
         "must_complete_setup": False,
         "password_pending_default": False,
+        "deletion_requested_at": None,
     }
 
 
@@ -554,6 +556,7 @@ def test_reset_password_with_valid_token_grants_session_and_replaces_password(
     assert client.get("/api/session").get_json() == {
         "authenticated": True,
         "must_complete_setup": False,
+        "deletion_requested_at": None,
     }
 
     client.post("/api/logout")
