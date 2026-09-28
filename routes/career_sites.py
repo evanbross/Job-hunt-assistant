@@ -366,7 +366,7 @@ def run_career_site_scan_task(
     # dedup against them -- preserving the original single-pass ordering even
     # though the actual DB insert now happens later.
     try:
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             source_repo = repos["career_sites"]
             resume_repo = repos["resume"]
             penalties_repo = repos["penalties"]
@@ -417,7 +417,7 @@ def run_career_site_scan_task(
         except Exception as exc:
             msg = "Career-site scan skipped: Anthropic scoring unavailable."
             logger.warning("%s %s", msg, exc)
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 repos["career_scan_failures"].insert(
                     user_id,
                     {
@@ -499,7 +499,7 @@ def run_career_site_scan_task(
                 continue
 
             if source_id is not None:
-                with get_repos() as repos:
+                with get_repos(user_id) as repos:
                     repos["career_scan_results"].delete_by_site_source_id(
                         user_id, current_source_id
                     )
@@ -525,7 +525,7 @@ def run_career_site_scan_task(
                 _update_career_scan(
                     error=f"{source_name}: {exc.__class__.__name__}: {exc}"
                 )
-                with get_repos() as repos:
+                with get_repos(user_id) as repos:
                     repos["career_scan_failures"].insert(
                         user_id,
                         {
@@ -547,7 +547,7 @@ def run_career_site_scan_task(
                 continue
 
             # ── Persist scan-only metadata (fast DB writes, nothing slow) ─────────
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 repos["career_sites"].update(
                     user_id, current_source_id, {"detected_platform": detected_platform}
                 )
@@ -555,7 +555,7 @@ def run_career_site_scan_task(
 
             adapter_failures = scanner.pop_failures()
             if adapter_failures:
-                with get_repos() as repos:
+                with get_repos(user_id) as repos:
                     for failure in adapter_failures:
                         repos["career_scan_failures"].insert(
                             user_id,
@@ -592,7 +592,7 @@ def run_career_site_scan_task(
             )
 
             # ── Batched local-job lookups (DB reads only, nothing slow) ───────────
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 site_jobs_repo = repos["jobs"]
                 local_job_by_url: dict[str, dict | None] = {}
                 for job in jobs:
@@ -836,7 +836,7 @@ def run_career_site_scan_task(
                 )
 
             # ── Write this site's results (DB reopened only for this fast phase) ──
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 site_jobs_repo = repos["jobs"]
                 results_repo = repos["career_scan_results"]
                 conn = repos["conn"]

@@ -152,7 +152,7 @@ def run_greenhouse_scan_task(self, user_id: int, search_url: str, max_jobs: int)
     try:
         # ai: claude-sonnet-5 | 2026-08-21 — greenhouse_email is now a
         # per-user setting, not a shared .env credential.
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             greenhouse_email = get_setting("greenhouse_email", user_id, repos)
         scraper = GreenhouseSearcher(
             email=greenhouse_email,
@@ -222,7 +222,7 @@ def _run_manual_login(user_id: int) -> None:
         error=None,
     )
     try:
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             greenhouse_email = get_setting("greenhouse_email", user_id, repos)
         scraper = GreenhouseSearcher(
             email=greenhouse_email,

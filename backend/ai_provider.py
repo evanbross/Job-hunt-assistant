@@ -49,6 +49,7 @@ from anthropic import Anthropic, APIConnectionError, APIStatusError
 
 import config
 from backend.db import open_repositories
+from backend.db.row_level_security import set_current_user
 from backend.settings_service import get_setting
 from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-15
     UnsafeUrlError,
@@ -93,8 +94,14 @@ class AIProviderClient:
         # get_repos — that module imports AIProviderError from this one, so
         # importing back from it here would be a circular import) so callers
         # never need to manage a repos connection just to build this client.
+        # Still has to set the row-level-security identity itself (see
+        # backend/db/row_level_security.py) the same way get_repos() would --
+        # user_settings is RLS-armed, so without this every per-account
+        # setting below (including the API key) would silently read as unset.
         repos = open_repositories(config.DATABASE_URL)
         try:
+            set_current_user(repos["conn"].cursor(), user_id)
+            repos["conn"].commit()
             self._provider = (
                 get_setting("ai_provider", user_id, repos) or config.AI_PROVIDER
             ).strip().lower()

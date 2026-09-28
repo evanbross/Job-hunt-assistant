@@ -100,7 +100,10 @@ def rotate_all(conn: Any, *, dry_run: bool = False) -> RotationReport:
                 continue
             where += f" AND {target.restrict_column} = ANY(%s)"
             params.append(list(target.restrict_values))
-        cur.execute(f"SELECT {key_list}, {target.column} AS ciphertext FROM {target.table} WHERE {where}", params)
+        cur.execute(
+            f"SELECT {key_list}, {target.column} AS ciphertext FROM {target.table} WHERE {where}",  # noqa: S608 - column/table names from encrypted_columns(), never user input
+            params,
+        )
         rows = cur.fetchall()
         report.scanned[target.label] = len(rows)
         rotated = 0

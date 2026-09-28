@@ -85,6 +85,7 @@ def test_scan_route_starts_thread_for_safe_url(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr("routes.jobanni.validate_outbound_url", lambda url: None)
     monkeypatch.setattr("routes.jobanni.threading.Thread", FakeThread)
+    monkeypatch.setattr("routes.jobanni.current_user_id", lambda: 1)
 
     client = make_client()
     response = client.post(
@@ -95,12 +96,34 @@ def test_scan_route_starts_thread_for_safe_url(monkeypatch: pytest.MonkeyPatch) 
     assert response.status_code == 200
     assert response.get_json() == {"status": "started"}
     assert len(started) == 1
-    assert started[0][1] == ("https://jobanni.example/jobs", 25)
+    assert started[0][1] == (1, "https://jobanni.example/jobs", 25)
 
 
 def test_scan_request_model_clamps_max_jobs() -> None:
     assert JobanniScanRequest.model_validate({"max_jobs": 9999}).max_jobs == 500
     assert JobanniScanRequest.model_validate({"max_jobs": -3}).max_jobs == 1
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+def test_run_scan_hands_off_to_import_task_with_the_right_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_run_scan previously called run_import_task.delay(jobs, None, body) --
+    missing user_id and the required body arg entirely (2026-09-28 code
+    review). Runs the real background-thread body (no FakeThread), so it
+    would have caught that regression."""
+    from routes.jobanni import _run_scan
+
+    calls: list[tuple] = []
+    monkeypatch.setattr("routes.jobanni.jobanni_scan", lambda **kwargs: [{"id": "job-1"}])
+    monkeypatch.setattr(
+        "routes.jobanni.run_import_task.delay",
+        lambda *args: calls.append(args) or type("T", (), {"id": "task-123"})(),
+    )
+
+    _run_scan(user_id=7, search_url="https://jobanni.example/jobs", max_jobs=10)
+
+    assert calls == [(7, [{"id": "job-1"}], None, {"import_trigger": "jobanni_scan"})]
 
 
 # ─── Scanner: fetches refuse unsafe destinations before connecting ──────────

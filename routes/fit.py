@@ -123,7 +123,7 @@ def run_re_evaluate_task(self, user_id: int) -> dict:
     # call for the whole queue. Now: read phase (below) -> release -> AI scoring
     # with no DB connection -> reopen only to write the batched updates.
     try:
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             jobs_repo = repos["jobs"]
             resume_repo = repos["resume"]
             penalties_repo = repos["penalties"]
@@ -242,7 +242,7 @@ def run_re_evaluate_task(self, user_id: int) -> dict:
             pending_updates.append((job["id"], updates))
 
         # ── Write all updates in one transaction (DB reopened, no slow work) ─────
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             jobs_repo = repos["jobs"]
             for job_id, updates in pending_updates:
                 jobs_repo.update(user_id, job_id, updates)

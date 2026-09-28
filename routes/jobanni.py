@@ -50,6 +50,7 @@ import config
 from backend.scanning.sources.jobanni_scanner import scan as jobanni_scan
 from backend.tasks import run_import_task
 from backend.utils.url_safety import UnsafeUrlError, validate_outbound_url
+from backend.utils.utils import current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ def _update(**kwargs: object) -> None:
 # ── Background scan thread ────────────────────────────────────────────────────
 
 
-def _run_scan(search_url: str, max_jobs: int) -> None:
+def _run_scan(user_id: int, search_url: str, max_jobs: int) -> None:
     _update(
         running=True,
         progress=0,
@@ -117,6 +118,7 @@ def _run_scan(search_url: str, max_jobs: int) -> None:
         _update(found=len(jobs), message=f"Queueing {len(jobs)} jobs for import…")
 
         task = run_import_task.delay(
+            user_id,
             jobs,
             None,
             {"import_trigger": "jobanni_scan"},
@@ -199,7 +201,7 @@ def start_scan() -> ResponseReturnValue:
 
     threading.Thread(
         target=_run_scan,
-        args=(search_url, max_jobs),
+        args=(current_user_id(), search_url, max_jobs),
         daemon=True,
         name="jobanni-scan",
     ).start()

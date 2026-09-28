@@ -260,7 +260,7 @@ def _dismiss_capture_queue_item(user_id: int, page_url: str | None) -> None:
     if not page_url:
         return
     try:
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             repos["browser_capture_queue"].mark_done_by_urls(user_id, [page_url])
             repos["conn"].commit()
     except Exception as exc:
@@ -518,7 +518,7 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
         ),
     )
 
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         try:
             capture_source, source_error = _resolve_capture_source(  # ai: claude-sonnet-5 | 2026-08-23
                 repos, user_id, body, analysis["source"]
@@ -601,7 +601,7 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
         + extracted_urls
     )
     try:
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             repos["browser_capture_queue"].mark_done_by_urls(user_id, urls_to_mark_done)
             repos["conn"].commit()
     except Exception as exc:

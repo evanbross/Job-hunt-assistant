@@ -1334,7 +1334,7 @@ def _run_wttj_repair(user_id: int) -> None:
         _wttj_repair_state.error = None
 
     try:
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             candidates = _wttj_repair_candidates(user_id, repos)
             # ai: claude-fable-5 | 2026-07-17 — snapshot for post-repair duplicate
             # checks; taken once here rather than per repaired row.
@@ -1407,7 +1407,7 @@ def _run_wttj_repair(user_id: int) -> None:
                     url_updates["raw_jd_snippet"] = jd_text[:6000]
                     url_updates["job_description"] = jd_text
 
-                with get_repos() as repos:
+                with get_repos(user_id) as repos:
                     repos["jobs"].update(user_id, job["id"], url_updates)
                     repos["conn"].commit()
 
@@ -1457,7 +1457,7 @@ def _run_wttj_repair(user_id: int) -> None:
             if not fix_updates:
                 continue  # title and company already match the page
 
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 repos["jobs"].update(user_id, job["id"], fix_updates)
                 repos["conn"].commit()
                 # A repaired title can reveal the row as a duplicate of an
@@ -1643,7 +1643,7 @@ def _run_rescan_broken_imports(user_id: int) -> None:
         _rescan_import_state.error = None
 
     try:
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             candidates = _rescan_import_candidates(user_id, repos)
             known_jobs = repos["jobs"].get_all_ordered(user_id)
             resume_row = repos["resume"].get_latest(user_id)
@@ -1751,7 +1751,7 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                 effective_company = str(updates.get("company", company))
 
                 if row.get("status") == "applied":
-                    with get_repos() as write_repos:
+                    with get_repos(user_id) as write_repos:
                         write_repos["jobs"].update(user_id, job_id, updates)
                         write_repos["conn"].commit()
                     applied_fixed.append(
@@ -1861,7 +1861,7 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                             "Rescan: scoring failed for job %d: %s", job_id, exc
                         )
 
-                with get_repos() as write_repos:
+                with get_repos(user_id) as write_repos:
                     write_repos["jobs"].update(user_id, job_id, updates)
                     write_repos["conn"].commit()
                     updated = write_repos["jobs"].get_by_id(user_id, job_id)
@@ -2188,7 +2188,7 @@ def _run_import_repair(user_id: int) -> None:
         _import_repair_state.error = None
 
     try:
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             candidates = _non_terminal_jobs(user_id, repos)
 
         total = len(candidates)
@@ -2224,7 +2224,7 @@ def _run_import_repair(user_id: int) -> None:
             if not warnings:
                 continue
 
-            with get_repos() as repos:
+            with get_repos(user_id) as repos:
                 updates, remaining = _attempt_import_repair(user_id, repos, job, warnings)
                 if updates:
                     repos["jobs"].update(user_id, job["id"], updates)
@@ -2269,7 +2269,7 @@ def _run_import_repair(user_id: int) -> None:
                 warning_counts[key] = warning_counts.get(key, 0) + 1
 
         run_at = datetime.now(UTC).isoformat(timespec="seconds")
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             previous = _record_repair_history(
                 user_id, repos, run_at, totals_by_source, warning_counts
             )

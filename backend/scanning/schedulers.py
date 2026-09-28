@@ -127,7 +127,7 @@ def is_jd_health_check_overdue(
 
 def jd_health_check_should_run_now(user_id: int) -> bool:
     """Read config + last-run state and decide if a scheduled run is due now."""
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         if not get_setting_bool(
             "jd_health_check_enabled", user_id, repos,
             config.DEFAULT_JD_HEALTH_CHECK_ENABLED,

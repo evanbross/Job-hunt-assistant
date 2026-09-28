@@ -111,7 +111,7 @@ _FALLBACK_QUERIES: list[str] = [
 # ai: claude-sonnet-5 | 2026-09-01
 def _generate_board_search_queries(user_id: int) -> list[str]:
     """Ask Claude to generate tailored search queries from the candidate profile."""
-    with get_repos() as repos:
+    with get_repos(user_id) as repos:
         candidate_profile = get_candidate_profile(user_id, repos)
 
     response_text = AIProviderClient(user_id).complete(
@@ -212,7 +212,7 @@ def run_board_search_task(self, user_id: int) -> dict:
         # and every AI scoring call in the loop below, which could hold it for
         # minutes. Now: read phase (this block) -> release -> network/AI work with
         # no DB connection -> reopen briefly just to insert the accepted results.
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             job_repo = repos["jobs"]
             resume_repo = repos["resume"]
             penalty_repo = repos["penalties"]
@@ -379,7 +379,7 @@ def run_board_search_task(self, user_id: int) -> dict:
 
         # ── 5. Insert accepted candidates (DB reopened only for this fast phase) ──
         jobs_added = 0
-        with get_repos() as repos:
+        with get_repos(user_id) as repos:
             job_repo = repos["jobs"]
             conn = repos["conn"]
             for job_data in to_insert:

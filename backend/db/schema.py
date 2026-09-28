@@ -1168,9 +1168,18 @@ def _migrate(conn: Any) -> None:
     cur.execute(
         "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS interested BOOLEAN NOT NULL DEFAULT FALSE"
     )
-    cur.execute(
-        "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_recruiter BOOLEAN NOT NULL DEFAULT FALSE"
-    )
+    # ai: claude-sonnet-5 | 2026-09-28 -- is_recruiter itself was retired in favor
+    # of recruiter_type (see the migration below). Only add it back as a landing
+    # spot for the legacy contact_type/is_recruiter backfill chain on an install
+    # that hasn't made it to recruiter_type yet -- once recruiter_type exists,
+    # re-adding and immediately dropping is_recruiter on every startup would
+    # leak a dropped-column attnum each time (Postgres never reclaims those),
+    # eventually hitting the 1600-column-per-table ceiling.
+    if not _has_column(cur, "contacts", "recruiter_type"):
+        cur.execute(
+            "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_recruiter"
+            " BOOLEAN NOT NULL DEFAULT FALSE"
+        )
     # ai: claude-sonnet-5 | 2026-09-26 -- resume PDFs move from the shared
     # uploads/resume.pdf into the owning user's row (encrypted at rest).
     cur.execute("ALTER TABLE resume ADD COLUMN IF NOT EXISTS file_encrypted TEXT")

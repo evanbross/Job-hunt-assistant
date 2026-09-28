@@ -10,6 +10,12 @@ credentials/wellfound_session.json
 googleusercontent.com.json
 *.apps.googleusercontent.com.json
 
+# Legacy per-user-storage migration renames the files above (and uploads/*.pdf
+# below) to <name>.migrated in place rather than deleting them -- still
+# sensitive, still must never be committed.
+credentials/*.migrated
+uploads/*.migrated
+
 # Database
 data/runtime_config.json
 data/.readonly_db_password
