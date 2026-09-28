@@ -157,6 +157,26 @@ class CompanyUpdate(BaseModel):
         return _normalize_optional_text(value, _MAX_NOTES_LENGTH, field_name="notes")
 
 
+# ai: claude-sonnet-5 | 2026-09-28
+class TitleRuleSet(BaseModel):
+    """recruiter_type absent/None means "flag this title as not a recruiter"
+    (dismiss it), matching title_rules.recruiter_type's own NULL convention --
+    the rule row still gets created either way, which is what makes the title
+    stop showing as unflagged."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    normalized_title: str = Field(max_length=300)
+    recruiter_type: RecruiterType | None = None
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+class TitleRuleUndo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    normalized_title: str = Field(max_length=300)
+
+
 # ai: claude-sonnet-5 | 2026-09-25
 class ContactEmailCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -195,7 +215,9 @@ def import_contacts() -> ResponseReturnValue:
 
     user_id = current_user_id()
     with get_repos() as repos:
-        result = ContactImportService(repos["contacts"]).import_csv(user_id, raw_bytes)
+        result = ContactImportService(repos["contacts"], repos["title_rules"]).import_csv(
+            user_id, raw_bytes
+        )
         imported_at = datetime.now(UTC).isoformat(timespec="seconds")
         repos["settings"].set(user_id, "contacts_last_imported_at", imported_at)
         repos["conn"].commit()
@@ -249,6 +271,10 @@ def update_contact(contact_id: int) -> ResponseReturnValue:
     fields = update.model_dump(exclude_unset=True)
     if not fields:
         return jsonify({"error": "No fields to update"}), 400
+    # A person editing the dropdown/checkbox is always a manual decision --
+    # never overwritten later by a title rule (see PostgresTitleRuleRepository).
+    if "recruiter_type" in fields:
+        fields["decided_by"] = "manual"
 
     with get_repos() as repos:
         if not repos["contacts"].update(current_user_id(), contact_id, fields):
@@ -297,6 +323,44 @@ def update_company() -> ResponseReturnValue:
         repos["companies"].upsert(current_user_id(), update.company_normalized, fields)
         repos["conn"].commit()
     return jsonify({"ok": True})
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+@contacts_bp.route("/contacts/titles")
+def get_titles_report() -> ResponseReturnValue:
+    with get_repos() as repos:
+        titles = repos["title_rules"].titles_report(current_user_id())
+    return jsonify({"titles": titles})
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+@contacts_bp.route("/contacts/titles/rule", methods=["POST"])
+def set_title_rule() -> ResponseReturnValue:
+    try:
+        body = TitleRuleSet.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return _invalid_request(exc)
+
+    with get_repos() as repos:
+        decided = repos["title_rules"].set_rule(
+            current_user_id(), body.normalized_title, body.recruiter_type
+        )
+        repos["conn"].commit()
+    return jsonify({"decided": decided})
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+@contacts_bp.route("/contacts/titles/rule/undo", methods=["POST"])
+def undo_title_rule() -> ResponseReturnValue:
+    try:
+        body = TitleRuleUndo.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return _invalid_request(exc)
+
+    with get_repos() as repos:
+        reset = repos["title_rules"].undo_rule(current_user_id(), body.normalized_title)
+        repos["conn"].commit()
+    return jsonify({"reset": reset})
 
 
 # ai: claude-sonnet-5 | 2026-09-25

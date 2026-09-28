@@ -37,6 +37,7 @@ def _contact_row(**overrides: object) -> dict[str, object]:
         "company_raw": "Acme Inc",
         "company_normalized": "acme",
         "position": "Engineer",
+        "normalized_title": "engineer",
         "profile_url": "https://linkedin.com/in/janedoe",
         "connected_on": "2024-01-15",
         "imported_at": datetime.now(UTC).isoformat(timespec="seconds"),

@@ -56,15 +56,19 @@ class PostgresContactRepository(_BaseRepo):
             "company_raw",
             "company_normalized",
             "position",
+            "normalized_title",
             "profile_url",
             "email_address",
             "connected_on",
             "imported_at",
         }
     )
-    # Columns the Contacts tab may edit on a single contact.
+    # Columns the Contacts tab may edit on a single contact. decided_by is
+    # never taken from client input directly (ContactUpdate has no such
+    # field) -- routes/contacts.py's update_contact() adds it itself
+    # ("manual") whenever recruiter_type is part of the same request.
     _EDITABLE_COLUMNS: frozenset[str] = frozenset(
-        {"interested", "recruiter_type", "email_address", "notes"}
+        {"interested", "recruiter_type", "email_address", "notes", "decided_by"}
     )
 
     def get_all(self, user_id: int) -> list[dict[str, Any]]:
@@ -78,8 +82,9 @@ class PostgresContactRepository(_BaseRepo):
     def list_with_emails(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
             """
-            SELECT c.id, c.full_name, c.company_raw, c.position, c.profile_url,
-                   c.connected_on, c.email_address, c.interested, c.recruiter_type, c.notes,
+            SELECT c.id, c.full_name, c.company_raw, c.position, c.normalized_title,
+                   c.profile_url, c.connected_on, c.email_address, c.interested,
+                   c.recruiter_type, c.decided_by, c.notes,
                    COALESCE(
                        json_agg(
                            json_build_object(
@@ -172,11 +177,13 @@ class PostgresContactRepository(_BaseRepo):
     def bulk_set_recruiter(
         self, user_id: int, contact_ids: list[int], recruiter_type: str | None
     ) -> int:
-        """Set recruiter_type on every listed contact the user owns; returns
-        how many rows changed (ids that don't exist or belong to someone else
-        are silently not matched)."""
+        """Set recruiter_type on every listed contact the user owns, marking
+        each one a manual decision (see _EDITABLE_COLUMNS' decided_by note);
+        returns how many rows changed (ids that don't exist or belong to
+        someone else are silently not matched)."""
         cur = self._execute(
-            "UPDATE contacts SET recruiter_type = %s WHERE user_id = %s AND id = ANY(%s)",
+            "UPDATE contacts SET recruiter_type = %s, decided_by = 'manual'"
+            " WHERE user_id = %s AND id = ANY(%s)",
             (recruiter_type, user_id, contact_ids),
         )
         return cur.rowcount

@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import CompaniesReport from "./CompaniesReport.jsx";
 import ContactDetail from "./ContactDetail.jsx";
 import ContactsImport from "./ContactsImport.jsx";
+import TitlesReport from "./TitlesReport.jsx";
 import { formatLocalDate } from "../utils/dateTimeUtils.js";
 
 const PAGE_SIZE = 100;
@@ -67,8 +68,9 @@ function safeHttpUrl(value) {
 }
 
 // ai: claude-sonnet-5 | 2026-09-25
-function matchesFilters(contact, { search, emailFilter, recruiterFilter, interestedOnly }) {
+function matchesFilters(contact, { search, emailFilter, recruiterFilter, interestedOnly, titleFilter }) {
   if (interestedOnly && !contact.interested) return false;
+  if (titleFilter !== null && contact.normalized_title !== titleFilter) return false;
 
   const state = emailState(contact);
   if (emailFilter === "emailed" && state === "none") return false;
@@ -97,7 +99,8 @@ async function sendJson(url, method, body) {
 
 // ai: claude-sonnet-5 | 2026-09-25
 export default function ContactsPanel() {
-  const [view, setView] = useState("contacts"); // "contacts" | "companies"
+  const [view, setView] = useState("contacts"); // "contacts" | "companies" | "titles"
+  const [titleFilter, setTitleFilter] = useState(null); // normalized_title, set by TitlesReport's count link
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -133,14 +136,19 @@ export default function ContactsPanel() {
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [search, emailFilter, recruiterFilter, interestedOnly]);
+  }, [search, emailFilter, recruiterFilter, interestedOnly, titleFilter]);
+
+  const viewContactsForTitle = (normalizedTitle) => {
+    setTitleFilter(normalizedTitle);
+    setView("contacts");
+  };
 
   const filtered = useMemo(
     () =>
       contacts.filter((contact) =>
-        matchesFilters(contact, { search, emailFilter, recruiterFilter, interestedOnly }),
+        matchesFilters(contact, { search, emailFilter, recruiterFilter, interestedOnly, titleFilter }),
       ),
-    [contacts, search, emailFilter, recruiterFilter, interestedOnly],
+    [contacts, search, emailFilter, recruiterFilter, interestedOnly, titleFilter],
   );
   const interestedCount = useMemo(() => contacts.filter((c) => c.interested).length, [contacts]);
 
@@ -303,6 +311,12 @@ export default function ContactsPanel() {
           >
             Companies
           </button>
+          <button
+            className={view === "titles" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
+            onClick={() => setView("titles")}
+          >
+            Titles
+          </button>
         </div>
         {view === "contacts" && contacts.length > 0 && (
           <button className="btn-secondary btn-sm" onClick={() => setShowImport((open) => !open)}>
@@ -311,10 +325,18 @@ export default function ContactsPanel() {
         )}
       </div>
 
-      {view === "companies" ? (
-        <CompaniesReport />
-      ) : (
+      {view === "companies" && <CompaniesReport />}
+      {view === "titles" && <TitlesReport onViewContactsForTitle={viewContactsForTitle} />}
+      {view === "contacts" && (
         <>
+          {titleFilter !== null && (
+            <div style={titleFilterBar}>
+              Filtered to title: <strong>{titleFilter || "(no title)"}</strong>
+              <button className="btn-secondary btn-xs" onClick={() => setTitleFilter(null)}>
+                Clear
+              </button>
+            </div>
+          )}
           {importVisible && (
             <div className="card" style={{ marginBottom: "16px" }}>
               <ContactsImport onImported={loadContacts} />
@@ -585,6 +607,18 @@ const bulkBar = {
   padding: "8px 14px",
   marginBottom: "10px",
   background: "var(--accent-light)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  fontSize: "13px",
+};
+
+const titleFilterBar = {
+  display: "flex",
+  alignItems: "center",
+  gap: "10px",
+  padding: "8px 14px",
+  marginBottom: "10px",
+  background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
   fontSize: "13px",

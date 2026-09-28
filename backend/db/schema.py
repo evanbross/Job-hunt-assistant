@@ -1327,6 +1327,45 @@ def _migrate(conn: Any) -> None:
         cur.execute("ALTER TABLE contacts DROP COLUMN is_recruiter")
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-09-28 -- Titles report + title rules (build-order
+    # item 3, docs/contacts-recruiter-classification-plan.md). normalized_title is
+    # computed in Python at import time (ContactImportService, matching
+    # company_normalized's own pattern) going forward; this backfills it once for
+    # rows imported before the column existed -- self-limiting since it only
+    # touches rows where normalized_title is still '' and never runs again for
+    # them afterward.
+    cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS normalized_title TEXT NOT NULL DEFAULT ''")
+    cur.execute(
+        "UPDATE contacts SET normalized_title = lower(regexp_replace(trim(position), '\\s+', ' ', 'g'))"
+        " WHERE normalized_title = '' AND position <> ''"
+    )
+    # decided_by distinguishes a manual per-contact choice (routes/contacts.py's
+    # update()/bulk_set_recruiter()) from one a title rule applied -- a manual
+    # choice always wins and a title rule never overwrites it (see
+    # PostgresTitleRuleRepository.set_rule). Every contact with a recruiter_type
+    # already set before this migration existed was necessarily set manually, since
+    # title rules did not exist yet to have set it any other way.
+    cur.execute(
+        "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS decided_by TEXT"
+        " CHECK (decided_by IN ('manual', 'title_rule'))"
+    )
+    cur.execute(
+        "UPDATE contacts SET decided_by = 'manual' WHERE recruiter_type IS NOT NULL AND decided_by IS NULL"
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS title_rules (
+            id                SERIAL PRIMARY KEY,
+            user_id           INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            normalized_title  TEXT NOT NULL,
+            recruiter_type    TEXT CHECK (recruiter_type IN ('unrated', 'motion', 'moderate', 'high')),
+            updated_at        TEXT NOT NULL,
+            UNIQUE (user_id, normalized_title)
+        )
+        """
+    )
+    conn.commit()
+
 
 # ai: claude-sonnet-4-6 | 2026-06-09
 _HINT_TITLE_RE = re.compile(

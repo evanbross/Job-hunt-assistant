@@ -33,6 +33,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ValidationError, model_validator
 
+from backend.contacts.title_normalization import normalize_title
 from backend.db.interfaces import ContactSyncResult
 from backend.scoring.company_matching import normalize_company_name
 
@@ -45,6 +46,12 @@ logger = logging.getLogger(__name__)
 @runtime_checkable
 class IContactRepository(Protocol):
     def sync_import(self, user_id: int, rows: list[dict[str, Any]]) -> ContactSyncResult: ...
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+@runtime_checkable
+class ITitleRuleRepository(Protocol):
+    def apply_all_rules(self, user_id: int) -> int: ...
 
 
 class LinkedInConnectionRow(BaseModel):
@@ -75,8 +82,9 @@ class ContactImportResult:
 
 
 class ContactImportService:
-    def __init__(self, contacts_repo: IContactRepository) -> None:
+    def __init__(self, contacts_repo: IContactRepository, title_rules_repo: ITitleRuleRepository) -> None:
         self._contacts_repo = contacts_repo
+        self._title_rules_repo = title_rules_repo
 
     def import_csv(self, user_id: int, raw_bytes: bytes) -> ContactImportResult:
         rows = self._parse_rows(raw_bytes)
@@ -103,6 +111,7 @@ class ContactImportService:
 
             profile_url = parsed.url.strip()
             company_normalized = normalize_company_name(parsed.company)
+            position = parsed.position.strip()
             full_name = f"{parsed.first_name.strip()} {parsed.last_name.strip()}".strip()
             # Must match the contacts.dedup_key backfill in backend/db/schema.py.
             dedup_key = profile_url or f"{full_name.lower()}|{company_normalized}"
@@ -119,7 +128,8 @@ class ContactImportService:
                     "full_name": full_name,
                     "company_raw": parsed.company.strip(),
                     "company_normalized": company_normalized,
-                    "position": parsed.position.strip(),
+                    "position": position,
+                    "normalized_title": normalize_title(position),
                     "profile_url": profile_url or None,
                     "email_address": parsed.email_address.strip() or None,
                     "connected_on": self._parse_connected_on(parsed.connected_on_raw),
@@ -128,6 +138,12 @@ class ContactImportService:
             )
 
         sync = self._contacts_repo.sync_import(user_id, to_insert)
+        # Newly-imported (or re-visible) contacts whose title matches an
+        # existing rule and have no decision yet get that rule's verdict --
+        # see PostgresTitleRuleRepository.apply_all_rules. Idempotent: a
+        # contact already decided (manually or by a prior rule pass) is
+        # untouched, so this is safe to run on every import.
+        self._title_rules_repo.apply_all_rules(user_id)
 
         skipped = sum(skipped_reasons.values())
         return ContactImportResult(

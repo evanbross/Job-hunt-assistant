@@ -64,6 +64,7 @@ class PostgresCompanyRepository(_BaseRepo):
             LEFT JOIN companies co
                 ON co.user_id = c.user_id AND co.company_normalized = c.company_normalized
             WHERE c.user_id = %s AND c.company_normalized <> ''
+            ORDER BY c.id
             """,
             (user_id,),
         )

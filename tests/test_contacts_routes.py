@@ -122,6 +122,30 @@ class FakeSettingsRepo:
         self.values[key] = value
 
 
+# ai: claude-sonnet-5 | 2026-09-28
+class FakeTitleRuleRepo:
+    def __init__(self, report: list[dict[str, Any]] | None = None) -> None:
+        self.applied_for_user_ids: list[int] = []
+        self.report_rows = report or []
+        self.set_calls: list[tuple[int, str, str | None]] = []
+        self.undo_calls: list[tuple[int, str]] = []
+
+    def apply_all_rules(self, user_id: int) -> int:
+        self.applied_for_user_ids.append(user_id)
+        return 0
+
+    def titles_report(self, user_id: int) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.report_rows]
+
+    def set_rule(self, user_id: int, normalized_title: str, recruiter_type: str | None) -> int:
+        self.set_calls.append((user_id, normalized_title, recruiter_type))
+        return 0
+
+    def undo_rule(self, user_id: int, normalized_title: str) -> int:
+        self.undo_calls.append((user_id, normalized_title))
+        return 0
+
+
 def _make_app(repos: dict, monkeypatch: pytest.MonkeyPatch) -> Flask:
     app = Flask(__name__)
     app.register_blueprint(contacts_bp, url_prefix="/api")
@@ -131,7 +155,7 @@ def _make_app(repos: dict, monkeypatch: pytest.MonkeyPatch) -> Flask:
 
 
 def test_import_contacts_missing_file_returns_400(monkeypatch: pytest.MonkeyPatch) -> None:
-    repos = {"conn": FakeConnection(), "contacts": FakeContactsRepo(), "settings": FakeSettingsRepo()}
+    repos = {"conn": FakeConnection(), "contacts": FakeContactsRepo(), "settings": FakeSettingsRepo(), "title_rules": FakeTitleRuleRepo()}
     client = _make_app(repos, monkeypatch).test_client()
 
     response = client.post("/api/contacts/import")
@@ -139,7 +163,7 @@ def test_import_contacts_missing_file_returns_400(monkeypatch: pytest.MonkeyPatc
 
 
 def test_import_contacts_wrong_extension_returns_400(monkeypatch: pytest.MonkeyPatch) -> None:
-    repos = {"conn": FakeConnection(), "contacts": FakeContactsRepo(), "settings": FakeSettingsRepo()}
+    repos = {"conn": FakeConnection(), "contacts": FakeContactsRepo(), "settings": FakeSettingsRepo(), "title_rules": FakeTitleRuleRepo()}
     client = _make_app(repos, monkeypatch).test_client()
 
     response = client.post(
@@ -151,7 +175,7 @@ def test_import_contacts_wrong_extension_returns_400(monkeypatch: pytest.MonkeyP
 
 
 def test_import_contacts_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    repos = {"conn": FakeConnection(), "contacts": FakeContactsRepo(), "settings": FakeSettingsRepo()}
+    repos = {"conn": FakeConnection(), "contacts": FakeContactsRepo(), "settings": FakeSettingsRepo(), "title_rules": FakeTitleRuleRepo()}
     client = _make_app(repos, monkeypatch).test_client()
 
     csv_bytes = (
@@ -247,6 +271,7 @@ def _contacts_client(
     contacts: FakeContactsRepo | None = None,
     emails: FakeContactEmailsRepo | None = None,
     companies: FakeCompanyRepo | None = None,
+    title_rules: FakeTitleRuleRepo | None = None,
 ) -> Any:
     repos = {
         "conn": FakeConnection(),
@@ -254,6 +279,7 @@ def _contacts_client(
         "contact_emails": emails or FakeContactEmailsRepo(),
         "settings": FakeSettingsRepo(),
         "companies": companies or FakeCompanyRepo(),
+        "title_rules": title_rules or FakeTitleRuleRepo(),
     }
     return _make_app(repos, monkeypatch).test_client()
 
@@ -284,8 +310,8 @@ def test_update_contact_can_set_and_unset_recruiter_type(monkeypatch: pytest.Mon
     unset_response = client.patch("/api/contacts/1", json={"recruiter_type": None})
     assert unset_response.status_code == 200
     assert contacts.updates == [
-        (1, {"recruiter_type": "high"}),
-        (1, {"recruiter_type": None}),
+        (1, {"recruiter_type": "high", "decided_by": "manual"}),
+        (1, {"recruiter_type": None, "decided_by": "manual"}),
     ]
 
 
@@ -301,6 +327,8 @@ def test_update_contact_can_set_and_unset_recruiter_type(monkeypatch: pytest.Mon
         {"notes": "x" * 5001},
         {"notes": 42},
         {"full_name": "Injected"},
+        {"decided_by": "manual"},
+        {"recruiter_type": "high", "decided_by": "title_rule"},
     ],
 )
 def test_update_contact_rejects_invalid_body(
@@ -466,6 +494,7 @@ def test_bulk_set_recruiter_accepts_null_to_unmark(monkeypatch: pytest.MonkeyPat
         {"contact_ids": ["1"], "recruiter_type": "unrated"},
         {"contact_ids": [True], "recruiter_type": "unrated"},
         {"contact_ids": [1], "recruiter_type": "unrated", "interested": True},
+        {"contact_ids": [1], "recruiter_type": "unrated", "decided_by": "manual"},
     ],
 )
 def test_bulk_set_recruiter_rejects_invalid_body(
@@ -535,3 +564,74 @@ def test_update_company_rejects_invalid_body(
     response = client.patch("/api/contacts/companies", json=body)
     assert response.status_code == 400
     assert companies.upserts == []
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+def test_get_titles_report_returns_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    title_rules = FakeTitleRuleRepo([{"normalized_title": "recruiter", "contact_count": 3}])
+    client = _contacts_client(monkeypatch, title_rules=title_rules)
+
+    response = client.get("/api/contacts/titles")
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "titles": [{"normalized_title": "recruiter", "contact_count": 3}]
+    }
+
+
+def test_set_title_rule_flags_a_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    title_rules = FakeTitleRuleRepo()
+    client = _contacts_client(monkeypatch, title_rules=title_rules)
+
+    response = client.post(
+        "/api/contacts/titles/rule", json={"normalized_title": "recruiter", "recruiter_type": "unrated"}
+    )
+    assert response.status_code == 200
+    assert title_rules.set_calls == [(_TEST_USER_ID, "recruiter", "unrated")]
+
+
+def test_set_title_rule_accepts_null_to_dismiss(monkeypatch: pytest.MonkeyPatch) -> None:
+    title_rules = FakeTitleRuleRepo()
+    client = _contacts_client(monkeypatch, title_rules=title_rules)
+
+    response = client.post(
+        "/api/contacts/titles/rule", json={"normalized_title": "talent manager"}
+    )
+    assert response.status_code == 200
+    assert title_rules.set_calls == [(_TEST_USER_ID, "talent manager", None)]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"normalized_title": "recruiter", "recruiter_type": "yes"},
+        {"normalized_title": "recruiter", "recruiter_type": "unrated", "extra": 1},
+    ],
+)
+def test_set_title_rule_rejects_invalid_body(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    title_rules = FakeTitleRuleRepo()
+    client = _contacts_client(monkeypatch, title_rules=title_rules)
+
+    response = client.post("/api/contacts/titles/rule", json=body)
+    assert response.status_code == 400
+    assert title_rules.set_calls == []
+
+
+def test_undo_title_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    title_rules = FakeTitleRuleRepo()
+    client = _contacts_client(monkeypatch, title_rules=title_rules)
+
+    response = client.post("/api/contacts/titles/rule/undo", json={"normalized_title": "recruiter"})
+    assert response.status_code == 200
+    assert title_rules.undo_calls == [(_TEST_USER_ID, "recruiter")]
+
+
+def test_undo_title_rule_rejects_invalid_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    title_rules = FakeTitleRuleRepo()
+    client = _contacts_client(monkeypatch, title_rules=title_rules)
+
+    response = client.post("/api/contacts/titles/rule/undo", json={})
+    assert response.status_code == 400
+    assert title_rules.undo_calls == []

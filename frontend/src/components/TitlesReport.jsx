@@ -1,0 +1,319 @@
+/*!
+ * Copyright (c) 2026 ZombieTech LLC. All rights reserved.
+ *
+ * LICENSE: Personal Use Only
+ * This source code is made available for personal, non-commercial use only.
+ * You may read, study, and run this code for personal purposes.
+ * You may NOT:
+ *   - Use this code, in whole or in part, in any commercial product or service
+ *   - Sell, sublicense, or otherwise monetize this code or derivatives of it
+ *   - Redistribute this code without explicit written permission from ZombieTech LLC
+ *
+ * No warranty is provided, express or implied. Use at your own risk.
+ *
+ * Licensing inquiries: license@zombietech.biz
+ */
+
+import { useEffect, useMemo, useState } from "react";
+
+const PAGE_SIZE = 100;
+
+// ai: claude-sonnet-5 | 2026-09-28
+// Matches backend/db/repositories/contacts.py's recruiter_type CHECK
+// constraint. Mirrors ContactsPanel.jsx's RECRUITER_TYPES.
+const RECRUITER_TYPES = [
+  { value: "unrated", label: "Unrated" },
+  { value: "motion", label: "Motion (high-pressure, low-success)" },
+  { value: "moderate", label: "Moderate" },
+  { value: "high", label: "High" },
+];
+
+const QUICK_FILTERS = ["recruit", "talent", "sourc"];
+
+// ai: claude-sonnet-5 | 2026-09-28
+async function sendJson(url, method, body) {
+  return fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+// ai: claude-sonnet-5 | 2026-09-28
+// docs/contacts-recruiter-classification-plan.md build-order item 3: one row
+// per distinct normalized title, with stored title rules a person can flag
+// or dismiss in bulk (decided_by provenance keeps this from ever overwriting
+// a manual per-contact choice -- see the backend).
+export default function TitlesReport({ onViewContactsForTitle }) {
+  const [titles, setTitles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [search, setSearch] = useState("");
+  const [unflaggedOnly, setUnflaggedOnly] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [pendingType, setPendingType] = useState({});
+  const [busyTitle, setBusyTitle] = useState(null);
+
+  const loadTitles = async () => {
+    try {
+      const res = await fetch("/api/contacts/titles");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setTitles(data.titles);
+      setLoadError("");
+    } catch (e) {
+      setLoadError(`Could not load titles: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTitles();
+  }, []);
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [search, unflaggedOnly]);
+
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return titles.filter((t) => {
+      if (unflaggedOnly && t.unflagged_count === 0) return false;
+      if (!needle) return true;
+      return t.title.toLowerCase().includes(needle);
+    });
+  }, [titles, search, unflaggedOnly]);
+
+  const visible = filtered.slice(0, visibleCount);
+
+  const applyRule = async (normalizedTitle, recruiterType) => {
+    setBusyTitle(normalizedTitle);
+    try {
+      const res = await sendJson("/api/contacts/titles/rule", "POST", {
+        normalized_title: normalizedTitle,
+        recruiter_type: recruiterType,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadTitles();
+    } catch (e) {
+      window.alert(`Could not save the rule: ${e.message}`);
+    } finally {
+      setBusyTitle(null);
+    }
+  };
+
+  const undoRule = async (normalizedTitle) => {
+    setBusyTitle(normalizedTitle);
+    try {
+      const res = await sendJson("/api/contacts/titles/rule/undo", "POST", {
+        normalized_title: normalizedTitle,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadTitles();
+    } catch (e) {
+      window.alert(`Could not undo the rule: ${e.message}`);
+    } finally {
+      setBusyTitle(null);
+    }
+  };
+
+  return (
+    <div>
+      <p style={summaryStyle}>
+        Every distinct job title among your contacts. Flag a title as a recruiter type (or
+        dismiss it as not a recruiter) to decide everyone with that title who hasn't been
+        decided individually -- a re-import applies the same decision to new connections
+        automatically.
+      </p>
+
+      {loadError && <div style={{ color: "var(--red)", marginBottom: "12px" }}>{loadError}</div>}
+
+      {!loading && titles.length > 0 && (
+        <>
+          <div style={toolbar}>
+            <input
+              type="search"
+              placeholder="Search titles"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{ flex: "1 1 220px", minWidth: "180px" }}
+              aria-label="Search titles"
+            />
+            {QUICK_FILTERS.map((word) => (
+              <button
+                key={word}
+                className={search === word ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
+                onClick={() => setSearch(search === word ? "" : word)}
+              >
+                {word}
+              </button>
+            ))}
+            <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px" }}>
+              <input
+                type="checkbox"
+                checked={unflaggedOnly}
+                onChange={(e) => setUnflaggedOnly(e.target.checked)}
+              />
+              Unflagged only
+            </label>
+          </div>
+
+          <div style={{ color: "var(--text-muted)", fontSize: "12px", margin: "0 2px 8px" }}>
+            {filtered.length.toLocaleString()} of {titles.length.toLocaleString()} titles
+          </div>
+
+          <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+            {visible.length > 0 && (
+              <div style={{ ...rowGrid, ...headerRow }}>
+                <span style={headerCell}>Title</span>
+                <span style={headerCell}>Contacts</span>
+                <span style={headerCell}>Flagged</span>
+                <span style={headerCell}>Unflagged</span>
+                <span style={headerCell}>Actions</span>
+              </div>
+            )}
+            {visible.length === 0 ? (
+              <div style={{ padding: "18px", color: "var(--text-muted)" }}>
+                No titles match this search.
+              </div>
+            ) : (
+              visible.map((t) => {
+                const busy = busyTitle === t.normalized_title;
+                return (
+                  <div key={t.normalized_title} style={rowGrid}>
+                    <div style={{ fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {t.title}
+                      {t.rule_exists && (
+                        <span style={{ ...subtleText, marginLeft: "6px" }}>
+                          (rule: {t.rule_recruiter_type || "not a recruiter"})
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      className="btn-secondary btn-xs"
+                      onClick={() => onViewContactsForTitle?.(t.normalized_title)}
+                      title="Show these contacts in the Contacts list"
+                    >
+                      {t.contact_count.toLocaleString()}
+                    </button>
+                    <div>{t.flagged_count.toLocaleString()}</div>
+                    <div>{t.unflagged_count.toLocaleString()}</div>
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                      <select
+                        value={pendingType[t.normalized_title] || "unrated"}
+                        onChange={(e) =>
+                          setPendingType((prev) => ({ ...prev, [t.normalized_title]: e.target.value }))
+                        }
+                        aria-label={`Recruiter type to flag "${t.title}" as`}
+                        style={{ fontSize: "12px" }}
+                      >
+                        {RECRUITER_TYPES.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        className="btn-primary btn-xs"
+                        disabled={busy}
+                        onClick={() =>
+                          applyRule(t.normalized_title, pendingType[t.normalized_title] || "unrated")
+                        }
+                      >
+                        Flag as recruiter
+                      </button>
+                      <button
+                        className="btn-secondary btn-xs"
+                        disabled={busy}
+                        onClick={() => applyRule(t.normalized_title, null)}
+                      >
+                        Not a recruiter
+                      </button>
+                      {t.rule_exists && (
+                        <button
+                          className="btn-secondary btn-xs"
+                          disabled={busy}
+                          onClick={() => undoRule(t.normalized_title)}
+                        >
+                          Undo rule
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {filtered.length > visibleCount && (
+            <div style={{ textAlign: "center", marginTop: "12px" }}>
+              <button
+                className="btn-secondary btn-sm"
+                onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
+              >
+                Show {Math.min(PAGE_SIZE, filtered.length - visibleCount)} more
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {!loading && titles.length === 0 && !loadError && (
+        <div style={{ padding: "18px", color: "var(--text-muted)" }} className="card">
+          No titles yet -- import contacts to see them here.
+        </div>
+      )}
+
+      {loading && <div style={{ color: "var(--text-muted)" }}>Loading titles…</div>}
+    </div>
+  );
+}
+
+const summaryStyle = {
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  marginTop: "2px",
+  marginBottom: "12px",
+  maxWidth: "640px",
+};
+
+const toolbar = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "10px",
+  marginBottom: "10px",
+};
+
+const rowGrid = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) 90px 80px 90px minmax(260px, 340px)",
+  alignItems: "center",
+  gap: "12px",
+  padding: "10px 14px",
+  borderBottom: "1px solid var(--border)",
+};
+
+const headerRow = {
+  background: "var(--surface2)",
+  borderBottom: "1px solid var(--border)",
+  padding: "6px 14px",
+};
+
+const headerCell = {
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  fontSize: "11px",
+  fontWeight: 700,
+  color: "var(--text-muted)",
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+};
+
+const subtleText = {
+  color: "var(--text-muted)",
+  fontSize: "11px",
+  fontWeight: 400,
+};

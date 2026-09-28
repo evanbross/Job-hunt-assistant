@@ -87,6 +87,7 @@ from .interfaces import (
     IResumeRepository,
     IScannedEmailRepository,
     ISystemSettingsRepository,
+    ITitleRuleRepository,
     IUserSettingsRepository,
 )
 from .readonly_role import ensure_readonly_role
@@ -128,6 +129,7 @@ from .repositories.relevance_feedback import PostgresRelevanceFeedbackRepository
 from .repositories.resumes import PostgresResumeRepository
 from .repositories.scanned_emails import PostgresScannedEmailRepository
 from .repositories.system_settings import PostgresSystemSettingsRepository
+from .repositories.title_rules import PostgresTitleRuleRepository
 from .repositories.user_accounts import PostgresUserAccountRepository
 from .repositories.user_settings import PostgresUserSettingsRepository
 from .row_level_security import disable_for_migrations, enable_and_force
@@ -164,6 +166,7 @@ __all__ = [
     "IResumeRepository",
     "IScannedEmailRepository",
     "ISystemSettingsRepository",
+    "ITitleRuleRepository",
     "IUserSettingsRepository",
     "BROWSER_QUEUE_CLAIM_BATCH_SIZE",
     "BROWSER_QUEUE_MAX_RETRIES",
@@ -197,6 +200,7 @@ __all__ = [
     "PostgresResumeRepository",
     "PostgresScannedEmailRepository",
     "PostgresSystemSettingsRepository",
+    "PostgresTitleRuleRepository",
     "PostgresUserAccountRepository",
     "PostgresUserSettingsRepository",
     "DuplicateJobUrlError",
@@ -359,6 +363,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "import_repair_history": PostgresImportRepairHistoryRepository(conn),
         "contacts": PostgresContactRepository(conn),
         "companies": PostgresCompanyRepository(conn),
+        "title_rules": PostgresTitleRuleRepository(conn),
         "contact_emails": PostgresContactEmailRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),
         "google_tokens": PostgresGoogleTokenRepository(conn),

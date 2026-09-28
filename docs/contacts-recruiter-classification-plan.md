@@ -1,8 +1,9 @@
 # Contacts: Recruiter Classification Plan
 
-Status: **build order items 1-2 shipped 2026-09-28** (`recruiter_type`
-migration + Contacts UI; `companies` table + Companies report); items 3-4
-not yet built. Design agreed in conversation 2026-09-26.
+Status: **build order items 1-3 shipped 2026-09-28** (`recruiter_type`
+migration + Contacts UI; `companies` table + Companies report; `title_rules`
++ `decided_by` provenance + Titles report); item 4 (optional Tier 1/2
+auto-suggestions) not yet built. Design agreed in conversation 2026-09-26.
 Builds on the Contacts tab shipped 2026-09-25 (import, interested / recruiter
 flags, notes, outreach email log, bulk actions).
 
@@ -168,7 +169,11 @@ normalized name.
    contact (per-title filtering isn't possible yet — that's item 3).
    Notes field included too, even though not called out in the UI spec,
    since it's part of the data model and otherwise unreachable.
-3. Titles report with stored title rules and `decided_by` provenance.
+3. ✅ Titles report with stored title rules and `decided_by` provenance.
+   Also added an "Undo rule" action (delete the rule, reset only the
+   contacts it decided) — implied by the plan's own precedence section
+   ("lets one click undo everything a rule applied") but not separately
+   spelled out under the report's UI bullets.
 4. Optional Tier 1/2 suggestions that use both reports.
 
 ## Open questions
@@ -178,5 +183,12 @@ normalized name.
   (`ContactsPanel.jsx`'s `RECRUITER_TYPES` — "Recruiter (unrated)", "Motion
   (high-pressure, low-success)", "Moderate", "High"). Revisit if these read
   oddly in practice.
-- Confirm title rules apply automatically on re-import (default) vs only on click.
+- ~~Confirm title rules apply automatically on re-import (default) vs only on
+  click.~~ Resolved: shipped as auto-apply — every CSV import (including
+  re-imports) applies all of the account's existing title rules to any
+  contact with no decision yet, right after the sync
+  (`ContactImportService.import_csv` → `PostgresTitleRuleRepository
+  .apply_all_rules`). Matches the plan's own stated intent ("lets a
+  re-import apply earlier title decisions to newly imported connections
+  automatically"); a manual per-contact decision is never touched.
 - Confirm the company-workforce / per-person-tier split vs a single per-person field.

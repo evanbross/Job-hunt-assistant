@@ -37,6 +37,7 @@ def _import_row(**overrides: object) -> dict[str, object]:
         "company_raw": "Acme Inc",
         "company_normalized": "acme",
         "position": "Recruiter",
+        "normalized_title": "recruiter",
         "profile_url": None,
         "connected_on": "2024-01-15",
         "imported_at": datetime.now(UTC).isoformat(timespec="seconds"),
