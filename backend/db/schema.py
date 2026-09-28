@@ -1892,6 +1892,25 @@ def _create_tables(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_cover_letter_phrases_tag
             ON cover_letter_phrases (tag)
         """,
+        # ai: claude-sonnet-5 | 2026-09-27 -- append-only security log (backend/security/
+        # audit_log.py); user_id NOT NULL means it follows the same account-deletion
+        # cascade as every other tenant table (a documented simplification -- a real
+        # "keep security history past account deletion" requirement belongs with the
+        # data-lifecycle/retention item, not bolted on here).
+        """
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id         BIGSERIAL PRIMARY KEY,
+            user_id    INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            event_type TEXT NOT NULL,
+            detail     TEXT,
+            ip_address TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_log_user_created
+            ON audit_log (user_id, created_at DESC)
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()

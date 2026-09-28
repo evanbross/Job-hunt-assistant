@@ -596,3 +596,41 @@ concurrently against the same shared local Postgres/venv (a `uv sync` mid-run, a
 earlier foreground test file run) -- both produced spurious failures unrelated to this
 work. Nothing should touch the test database or the `.venv` while a background suite run
 is in flight.
+
+## Beyond the review: audit log for credential/account events (2026-09-27)
+
+Status: **implemented and tested, nothing committed.**
+
+**Scope:** a per-account security log -- "could someone else be in my account" --
+not a general activity log (job imports, scans, etc. stay out of it, keeping it small
+and readable). `backend/security/audit_log.py` defines a fixed, closed set of event
+types (`EVENTS`); `record_event()` is the only writer, so a route can never introduce
+an ad hoc, unreviewed event name. Recorded: `login_success`, `login_failure` (only for
+a real account -- an unknown email has no `user_id` to attach a row to),
+`password_changed`, `password_reset_requested`/`_completed`,
+`email_change_requested`/`_confirmed`, `account_registered`,
+`extension_token_created`/`_revoked`, `google_connected`/`_disconnected`.
+
+**Storage:** new `audit_log` table (`backend/db/repositories/audit_log.py`), a plain
+tenant table -- `user_id NOT NULL ... ON DELETE CASCADE`, so it automatically gets the
+row-level-security backstop from the earlier RLS item with no special-casing, and (like
+every other table) is wiped if the account is deleted. That's a deliberate simplification
+noted here, not an oversight: a real "security history survives account deletion"
+requirement belongs with data retention/lifecycle (the next item on this list), which
+would need to decide how long to keep it and what "deleted" should mean for a log like
+this -- not bolted on ad hoc in this pass.
+
+**Read:** `GET /api/account/audit-log` returns the logged-in account's own recent events,
+newest first (`repos["audit_log"].get_recent()`, capped at 200). No admin/cross-account
+view exists yet. No frontend UI was built for it either -- this pass is the backend/API
+half; add a Settings panel section if/when it's wanted.
+
+**Write sites:** `routes/session_auth.py` (login, registration completion, password
+change/reset, email change), `routes/extension_tokens.py` (create/revoke),
+`routes/auth.py` (Google connect/disconnect). Best-effort by design: `record_event()`
+catches its own errors (a DB problem, or a test's fake `repos` dict missing the
+`"audit_log"` key) and logs a warning rather than ever failing the real action --
+losing one log entry is a much smaller problem than a broken login.
+
+**Not done:** admin-visible view across accounts; export; any UI; retaining entries past
+account deletion.

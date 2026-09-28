@@ -29,6 +29,11 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from backend.extension_auth.token_service import MAX_LABEL_LENGTH, ExtensionTokenService
+from backend.security.audit_log import (
+    EXTENSION_TOKEN_CREATED,
+    EXTENSION_TOKEN_REVOKED,
+    record_event,
+)
 from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
@@ -88,6 +93,7 @@ def create_extension_token() -> ResponseReturnValue:
                 409,
             )
         issued = service.issue(user_id, body.label, expires_in_days=body.expires_in_days)
+        record_event(repos, user_id, EXTENSION_TOKEN_CREATED, {"label": body.label})
         repos["conn"].commit()
 
     logger.info("Extension token %s issued for user %s", issued.record["id"], user_id)
@@ -106,6 +112,7 @@ def revoke_extension_token(token_id: int) -> ResponseReturnValue:
         revoked = ExtensionTokenService(repos["extension_tokens"]).revoke(user_id, token_id)
         if not revoked:
             return jsonify({"error": "Token not found"}), 404
+        record_event(repos, user_id, EXTENSION_TOKEN_REVOKED, {"token_id": token_id})
         repos["conn"].commit()
     logger.info("Extension token %s revoked for user %s", token_id, user_id)
     return jsonify({"ok": True})

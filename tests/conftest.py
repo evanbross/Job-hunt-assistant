@@ -109,6 +109,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         pytest.exit(str(exc), returncode=2)
 
 _ALL_TABLES = (
+    "audit_log",
     "job_status_history",
     "application_stages",
     "browser_capture_queue",

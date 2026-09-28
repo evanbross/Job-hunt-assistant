@@ -54,6 +54,7 @@ keeps working until the new one is confirmed.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -67,6 +68,17 @@ from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
 )
 from backend.email.smtp_sender import send_verification_email
+from backend.security.audit_log import (
+    ACCOUNT_REGISTERED,
+    EMAIL_CHANGE_CONFIRMED,
+    EMAIL_CHANGE_REQUESTED,
+    LOGIN_FAILURE,
+    LOGIN_SUCCESS,
+    PASSWORD_CHANGED,
+    PASSWORD_RESET_COMPLETED,
+    PASSWORD_RESET_REQUESTED,
+    record_event,
+)
 from backend.security.rate_limiter import (
     Decision,
     Policy,
@@ -287,6 +299,9 @@ def complete_registration() -> ResponseReturnValue:
         get_rate_limiter().record_all([token_check])
         return jsonify({"error": "This link is invalid or has expired"}), 400
 
+    with get_repos(account["id"]) as event_repos:
+        record_event(event_repos, account["id"], ACCOUNT_REGISTERED)
+        event_repos["conn"].commit()
     _start_session(account["id"])
     return jsonify({"authenticated": True})
 
@@ -335,6 +350,9 @@ def forgot_password() -> ResponseReturnValue:
             # Still fall through to the generic response below -- an SMTP
             # failure here must not be distinguishable from "no such account"
             # by an unauthenticated caller.
+        with get_repos(account["id"]) as event_repos:
+            record_event(event_repos, account["id"], PASSWORD_RESET_REQUESTED)
+            event_repos["conn"].commit()
 
     return jsonify({"status": "check_email"}), 202
 
@@ -369,6 +387,9 @@ def reset_password() -> ResponseReturnValue:
         get_rate_limiter().record_all([token_check])
         return jsonify({"error": "This link is invalid or has expired"}), 400
 
+    with get_repos(account["id"]) as event_repos:
+        record_event(event_repos, account["id"], PASSWORD_RESET_COMPLETED)
+        event_repos["conn"].commit()
     _start_session(account["id"])
     return jsonify({"authenticated": True})
 
@@ -411,11 +432,18 @@ def login() -> ResponseReturnValue:
     if not valid:
         limiter.record_all([ip_check, account_check, pair_check])
         logger.warning("Failed login attempt from %s", ip)
+        if account is not None:  # nothing to attach the event to for an unknown email
+            with get_repos(account["id"]) as event_repos:
+                record_event(event_repos, account["id"], LOGIN_FAILURE)
+                event_repos["conn"].commit()
         return jsonify({"error": "Invalid email or password"}), 401
 
     # Only the pair is cleared. Clearing the address or account counters on success would
     # let an attacker holding one valid login keep resetting the budget for guessing others.
     limiter.reset(*pair_check)
+    with get_repos(account["id"]) as event_repos:
+        record_event(event_repos, account["id"], LOGIN_SUCCESS)
+        event_repos["conn"].commit()
     _start_session(account["id"])
     return jsonify({"authenticated": True})
 
@@ -466,6 +494,25 @@ def get_account() -> ResponseReturnValue:
     )
 
 
+@session_auth_bp.route("/account/audit-log", methods=["GET"])
+def get_audit_log() -> ResponseReturnValue:
+    """The logged-in account's own security history -- login, password/email changes,
+    extension tokens, Google connect/disconnect. See backend/security/audit_log.py."""
+    with get_repos() as repos:
+        events = repos["audit_log"].get_recent(current_user_id())
+    return jsonify(
+        [
+            {
+                "event_type": row["event_type"],
+                "detail": json.loads(row["detail"]) if row["detail"] else None,
+                "ip_address": row["ip_address"],
+                "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else row["created_at"],
+            }
+            for row in events
+        ]
+    )
+
+
 @session_auth_bp.route("/account", methods=["PUT"])
 def update_account() -> ResponseReturnValue:
     try:
@@ -502,6 +549,7 @@ def request_email_change() -> ResponseReturnValue:
     token, expires_at = _new_token(_EMAIL_CHANGE_TOKEN_LIFETIME)
     with get_repos() as repos:
         repos["user_accounts"].request_email_change(user_id, new_email, token, expires_at)
+        record_event(repos, user_id, EMAIL_CHANGE_REQUESTED, {"new_email": new_email})
         repos["conn"].commit()
         app_base_url = get_setting("app_base_url", None, repos)
 
@@ -538,6 +586,9 @@ def confirm_email_change() -> ResponseReturnValue:
     if account is None:
         get_rate_limiter().record_all([token_check])
         return jsonify({"error": "This link is invalid or has expired"}), 400
+    with get_repos(account["id"]) as event_repos:
+        record_event(event_repos, account["id"], EMAIL_CHANGE_CONFIRMED, {"email": account["email"]})
+        event_repos["conn"].commit()
     return jsonify({"email": account["email"]})
 
 
@@ -576,6 +627,7 @@ def change_password() -> ResponseReturnValue:
             return jsonify({"error": "Current password is incorrect"}), 401
         new_hash = generate_password_hash(body.new_password)
         repos["user_accounts"].update_password(user_id, new_hash)
+        record_event(repos, user_id, PASSWORD_CHANGED)
         repos["conn"].commit()
         # account still holds the pre-update row -- swap in the new hash so
         # _maybe_clear_setup_gate checks against what the password now is,

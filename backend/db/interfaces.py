@@ -262,6 +262,15 @@ class ICoverLetterPhraseRepository(Protocol):
     def delete(self, user_id: int, phrase_id: int) -> None: ...
 
 
+# ai: claude-sonnet-5 | 2026-09-27
+@runtime_checkable
+class IAuditLogRepository(Protocol):
+    def insert(
+        self, user_id: int, event_type: str, detail: str | None, ip_address: str | None
+    ) -> int: ...
+    def get_recent(self, user_id: int, limit: int = 200) -> list[dict[str, Any]]: ...
+
+
 @runtime_checkable
 class IEmailSubjectRuleRepository(Protocol):
     def get_all(self, user_id: int) -> list[dict[str, Any]]: ...

@@ -61,6 +61,7 @@ from .interfaces import (
     IApplicationProfileRepository,
     IApplicationStageRepository,
     IApplicationStageStatusRepository,
+    IAuditLogRepository,
     IBrowserCaptureQueueRepository,
     ICandidateProfileRepository,
     ICareerRejectionRuleRepository,
@@ -94,6 +95,7 @@ from .repositories.application_stages import (
     PostgresApplicationStageRepository,
     PostgresApplicationStageStatusRepository,
 )
+from .repositories.audit_log import PostgresAuditLogRepository
 from .repositories.browser_capture_queue import (
     BROWSER_QUEUE_CLAIM_BATCH_SIZE,
     BROWSER_QUEUE_MAX_RETRIES,
@@ -131,6 +133,7 @@ from .schema import _create_tables, _migrate, _seed_data
 
 __all__ = [
     "IApplicationAnswerRepository",
+    "IAuditLogRepository",
     "IApplicationProfileRepository",
     "IApplicationStageRepository",
     "IApplicationStageStatusRepository",
@@ -163,6 +166,7 @@ __all__ = [
     "BROWSER_QUEUE_MAX_RETRIES",
     "PostgresApplicationAnswerRepository",
     "PostgresApplicationProfileRepository",
+    "PostgresAuditLogRepository",
     "PostgresApplicationStageRepository",
     "PostgresApplicationStageStatusRepository",
     "PostgresBrowserCaptureQueueRepository",
@@ -336,6 +340,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "user_accounts": PostgresUserAccountRepository(conn),
         "application_profile": PostgresApplicationProfileRepository(conn),
         "application_answers": PostgresApplicationAnswerRepository(conn),
+        "audit_log": PostgresAuditLogRepository(conn),
         "stages": PostgresApplicationStageRepository(conn),
         "settings": PostgresUserSettingsRepository(conn),
         "system_settings": PostgresSystemSettingsRepository(conn),

@@ -48,6 +48,11 @@ from google_auth_oauthlib.flow import Flow
 import config
 from backend.crypto import SettingsEncryptionKeyMissingError
 from backend.email.google_token_store import GoogleTokenStore
+from backend.security.audit_log import (
+    GOOGLE_CONNECTED,
+    GOOGLE_DISCONNECTED,
+    record_event,
+)
 from backend.settings_service import get_setting
 from backend.utils.utils import current_user_id, get_repos
 
@@ -198,6 +203,7 @@ def auth_google_callback() -> ResponseReturnValue:
     flow.fetch_token(code=code)  # network call: no DB connection is open here
     with get_repos() as repos:
         GoogleTokenStore(repos["google_tokens"]).save(flow_owner_id, flow.credentials)
+        record_event(repos, flow_owner_id, GOOGLE_CONNECTED)
         repos["conn"].commit()
 
     # In dev mode (no built frontend) Flask's catch-all returns JSON, so redirect
@@ -211,7 +217,9 @@ def auth_google_callback() -> ResponseReturnValue:
 @auth_bp.route("/auth/disconnect", methods=["POST"])
 def auth_disconnect() -> ResponseReturnValue:
     """Remove the caller's own stored Google token so they can re-authenticate."""
+    user_id = current_user_id()
     with get_repos() as repos:
-        GoogleTokenStore(repos["google_tokens"]).delete(current_user_id())
+        GoogleTokenStore(repos["google_tokens"]).delete(user_id)
+        record_event(repos, user_id, GOOGLE_DISCONNECTED)
         repos["conn"].commit()
     return jsonify({"status": "disconnected"})
