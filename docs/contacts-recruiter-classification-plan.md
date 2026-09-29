@@ -1,9 +1,10 @@
 # Contacts: Recruiter Classification Plan
 
-Status: **build order items 1-3 shipped 2026-09-28** (`recruiter_type`
+Status: **build order items 1-4 shipped 2026-09-28** (`recruiter_type`
 migration + Contacts UI; `companies` table + Companies report; `title_rules`
-+ `decided_by` provenance + Titles report); item 4 (optional Tier 1/2
-auto-suggestions) not yet built. Design agreed in conversation 2026-09-26.
++ `decided_by` provenance + Titles report; Tier 1 keyword + Tier 2 AI
+suggestions). The plan's full build order is complete. Design agreed in
+conversation 2026-09-26.
 Builds on the Contacts tab shipped 2026-09-25 (import, interested / recruiter
 flags, notes, outreach email log, bulk actions).
 
@@ -174,7 +175,16 @@ normalized name.
    contacts it decided) — implied by the plan's own precedence section
    ("lets one click undo everything a rule applied") but not separately
    spelled out under the report's UI bullets.
-4. Optional Tier 1/2 suggestions that use both reports.
+4. ✅ Optional Tier 1/2 suggestions. Tier 1 (keyword rules, always runs) and
+   Tier 2 (AI pass on leftovers, opt-in via a checkbox since it costs a real
+   API call) both only ever *preview* suggestions in the Titles report — a
+   suggestion becomes a real, undoable title rule only once the user reviews
+   the list and clicks apply (`POST /api/contacts/titles/suggest` then
+   `/suggest/apply`; `backend/contacts/title_suggestion_service.py`).
+   Suggested titles always use `recruiter_type='unrated'`, never a quality
+   tier, since that's the user's own judgment per the plan's data model.
+   Company-as-a-second-signal only promotes a Tier 1 "skip" (ambiguous)
+   title, never used to flag on its own, matching the spec.
 
 ## Open questions
 

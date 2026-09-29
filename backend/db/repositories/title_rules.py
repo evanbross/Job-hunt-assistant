@@ -144,3 +144,41 @@ class PostgresTitleRuleRepository(_BaseRepo):
             (user_id,),
         )
         return cur.rowcount
+
+    def titles_with_agency_company(self, user_id: int, normalized_titles: list[str]) -> set[str]:
+        """The subset of the given titles that have at least one contact at
+        a company flagged is_agency=True -- the corroborating signal
+        title_suggestion_service.py uses to promote an otherwise-ambiguous
+        Tier 1 title (docs/contacts-recruiter-classification-plan.md's
+        "company as a second signal")."""
+        if not normalized_titles:
+            return set()
+        cur = self._execute(
+            """
+            SELECT DISTINCT c.normalized_title
+            FROM contacts c
+            JOIN companies co
+                ON co.user_id = c.user_id AND co.company_normalized = c.company_normalized
+            WHERE c.user_id = %s AND c.normalized_title = ANY(%s) AND co.is_agency
+            """,
+            (user_id, normalized_titles),
+        )
+        return {row["normalized_title"] for row in cur.fetchall()}
+
+    def representative_companies(self, user_id: int, normalized_titles: list[str]) -> dict[str, str]:
+        """One example company_raw per title, for Tier 2's AI prompt context
+        (docs/contacts-recruiter-classification-plan.md: "title + company
+        only, no names"). A title with contacts at several companies gets
+        whichever one its first (lowest-id) contact belongs to."""
+        if not normalized_titles:
+            return {}
+        cur = self._execute(
+            """
+            SELECT DISTINCT ON (normalized_title) normalized_title, company_raw
+            FROM contacts
+            WHERE user_id = %s AND normalized_title = ANY(%s)
+            ORDER BY normalized_title, id
+            """,
+            (user_id, normalized_titles),
+        )
+        return {row["normalized_title"]: row["company_raw"] for row in cur.fetchall()}

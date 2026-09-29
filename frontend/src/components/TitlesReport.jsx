@@ -53,6 +53,12 @@ export default function TitlesReport({ onViewContactsForTitle }) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [pendingType, setPendingType] = useState({});
   const [busyTitle, setBusyTitle] = useState(null);
+  const [useAi, setUseAi] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestError, setSuggestError] = useState("");
+  const [suggestions, setSuggestions] = useState(null); // null = no review panel open
+  const [selectedSuggestions, setSelectedSuggestions] = useState(() => new Set());
+  const [applyingSuggestions, setApplyingSuggestions] = useState(false);
 
   const loadTitles = async () => {
     try {
@@ -118,6 +124,56 @@ export default function TitlesReport({ onViewContactsForTitle }) {
     }
   };
 
+  // ai: claude-sonnet-5 | 2026-09-28
+  // Tier 1/2 suggestions (docs/contacts-recruiter-classification-plan.md build
+  // order item 4). Nothing is applied until the user reviews this list and
+  // clicks "Flag selected as recruiters" -- see routes/contacts.py's
+  // suggest_title_rules/apply_title_suggestions.
+  const runSuggest = async () => {
+    setSuggesting(true);
+    setSuggestError("");
+    try {
+      const res = await sendJson("/api/contacts/titles/suggest", "POST", { use_ai: useAi });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setSuggestions(data.suggestions);
+      setSelectedSuggestions(new Set(data.suggestions.map((s) => s.normalized_title)));
+      if (data.ai_error) {
+        setSuggestError(`AI suggestions unavailable: ${data.ai_error}`);
+      }
+    } catch (e) {
+      setSuggestError(`Could not get suggestions: ${e.message}`);
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const toggleSuggestion = (normalizedTitle, checked) =>
+    setSelectedSuggestions((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(normalizedTitle);
+      else next.delete(normalizedTitle);
+      return next;
+    });
+
+  const applySuggestions = async () => {
+    const normalizedTitles = [...selectedSuggestions];
+    if (normalizedTitles.length === 0) return;
+    setApplyingSuggestions(true);
+    try {
+      const res = await sendJson("/api/contacts/titles/suggest/apply", "POST", {
+        normalized_titles: normalizedTitles,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSuggestions(null);
+      await loadTitles();
+    } catch (e) {
+      window.alert(`Could not apply suggestions: ${e.message}`);
+    } finally {
+      setApplyingSuggestions(false);
+    }
+  };
+
   return (
     <div>
       <p style={summaryStyle}>
@@ -128,6 +184,75 @@ export default function TitlesReport({ onViewContactsForTitle }) {
       </p>
 
       {loadError && <div style={{ color: "var(--red)", marginBottom: "12px" }}>{loadError}</div>}
+
+      {!loading && titles.length > 0 && (
+        <div style={suggestBar}>
+          <button className="btn-secondary btn-sm" disabled={suggesting} onClick={runSuggest}>
+            {suggesting ? "Checking titles…" : "Suggest recruiter titles"}
+          </button>
+          <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px" }}>
+            <input type="checkbox" checked={useAi} onChange={(e) => setUseAi(e.target.checked)} />
+            Also use AI for titles keyword rules can't decide
+          </label>
+        </div>
+      )}
+
+      {suggestError && (
+        <div style={{ color: "var(--red)", marginBottom: "12px", fontSize: "13px" }}>
+          {suggestError}
+        </div>
+      )}
+
+      {suggestions !== null && (
+        <div className="card" style={suggestPanel}>
+          {suggestions.length === 0 ? (
+            <div style={{ color: "var(--text-muted)" }}>
+              No suggestions -- every remaining title is either already decided or wasn't a
+              confident match.
+            </div>
+          ) : (
+            <>
+              <strong>
+                {suggestions.length} title{suggestions.length === 1 ? "" : "s"} suggested as
+                recruiters -- review before applying:
+              </strong>
+              <div style={{ maxHeight: "260px", overflowY: "auto", margin: "10px 0" }}>
+                {suggestions.map((s) => (
+                  <label key={s.normalized_title} style={suggestRow}>
+                    <input
+                      type="checkbox"
+                      checked={selectedSuggestions.has(s.normalized_title)}
+                      onChange={(e) => toggleSuggestion(s.normalized_title, e.target.checked)}
+                    />
+                    <span style={{ fontWeight: 600 }}>{s.title}</span>
+                    <span style={subtleText}>{s.reason}</span>
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+          <div style={{ display: "flex", gap: "8px" }}>
+            {suggestions.length > 0 && (
+              <button
+                className="btn-primary btn-sm"
+                disabled={applyingSuggestions || selectedSuggestions.size === 0}
+                onClick={applySuggestions}
+              >
+                {applyingSuggestions
+                  ? "Applying…"
+                  : `Flag ${selectedSuggestions.size} selected as recruiters`}
+              </button>
+            )}
+            <button
+              className="btn-secondary btn-sm"
+              disabled={applyingSuggestions}
+              onClick={() => setSuggestions(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {!loading && titles.length > 0 && (
         <>
@@ -284,6 +409,26 @@ const toolbar = {
   alignItems: "center",
   gap: "10px",
   marginBottom: "10px",
+};
+
+const suggestBar = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "14px",
+  marginBottom: "10px",
+};
+
+const suggestPanel = {
+  marginBottom: "16px",
+};
+
+const suggestRow = {
+  display: "flex",
+  alignItems: "center",
+  gap: "10px",
+  padding: "6px 0",
+  fontSize: "13px",
 };
 
 const rowGrid = {

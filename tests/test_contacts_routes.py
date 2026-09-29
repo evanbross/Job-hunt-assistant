@@ -635,3 +635,91 @@ def test_undo_title_rule_rejects_invalid_body(monkeypatch: pytest.MonkeyPatch) -
     response = client.post("/api/contacts/titles/rule/undo", json={})
     assert response.status_code == 400
     assert title_rules.undo_calls == []
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+def test_suggest_title_rules_returns_suggestions(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.contacts.title_suggestion_service import (
+        SuggestionResult,
+        TitleSuggestion,
+    )
+
+    captured = {}
+
+    def fake_suggest_titles(user_id, repos, *, use_ai):
+        captured["user_id"] = user_id
+        captured["use_ai"] = use_ai
+        return SuggestionResult(
+            suggestions=[TitleSuggestion("recruiter", "Recruiter", "keyword match")],
+            ai_error=None,
+        )
+
+    monkeypatch.setattr("routes.contacts.suggest_titles", fake_suggest_titles)
+    client = _contacts_client(monkeypatch)
+
+    response = client.post("/api/contacts/titles/suggest", json={"use_ai": True})
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "suggestions": [
+            {"normalized_title": "recruiter", "title": "Recruiter", "reason": "keyword match"}
+        ],
+        "ai_error": None,
+    }
+    assert captured == {"user_id": _TEST_USER_ID, "use_ai": True}
+
+
+def test_suggest_title_rules_defaults_use_ai_to_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.contacts.title_suggestion_service import SuggestionResult
+
+    captured = {}
+
+    def fake_suggest_titles(user_id, repos, *, use_ai):
+        captured["use_ai"] = use_ai
+        return SuggestionResult(suggestions=[], ai_error=None)
+
+    monkeypatch.setattr("routes.contacts.suggest_titles", fake_suggest_titles)
+    client = _contacts_client(monkeypatch)
+
+    response = client.post("/api/contacts/titles/suggest", json={})
+
+    assert response.status_code == 200
+    assert captured == {"use_ai": False}
+
+
+def test_suggest_title_rules_rejects_invalid_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _contacts_client(monkeypatch)
+
+    response = client.post("/api/contacts/titles/suggest", json={"use_ai": "yes"})
+    assert response.status_code == 400
+
+
+def test_apply_title_suggestions_calls_set_rule_for_each_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title_rules = FakeTitleRuleRepo()
+    client = _contacts_client(monkeypatch, title_rules=title_rules)
+
+    response = client.post(
+        "/api/contacts/titles/suggest/apply",
+        json={"normalized_titles": ["recruiter", "talent partner"]},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"applied": 2, "decided": 0}
+    assert title_rules.set_calls == [
+        (_TEST_USER_ID, "recruiter", "unrated"),
+        (_TEST_USER_ID, "talent partner", "unrated"),
+    ]
+
+
+@pytest.mark.parametrize("body", [{}, {"normalized_titles": []}, {"normalized_titles": [1]}])
+def test_apply_title_suggestions_rejects_invalid_body(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    title_rules = FakeTitleRuleRepo()
+    client = _contacts_client(monkeypatch, title_rules=title_rules)
+
+    response = client.post("/api/contacts/titles/suggest/apply", json=body)
+    assert response.status_code == 400
+    assert title_rules.set_calls == []

@@ -57,6 +57,7 @@ from pydantic import (
 
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.contacts_service import build_company_map
+from backend.contacts.title_suggestion_service import suggest_titles
 from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ contacts_bp = Blueprint("contacts", __name__)
 _MAX_EMAIL_ADDRESS_LENGTH = 254
 _MAX_BULK_CONTACT_IDS = 50_000
 _MAX_NOTES_LENGTH = 5000
+_MAX_BULK_TITLES = 5000
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -175,6 +177,20 @@ class TitleRuleUndo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     normalized_title: str = Field(max_length=300)
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+class TitleSuggestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    use_ai: StrictBool = False
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+class TitleSuggestApply(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    normalized_titles: list[str] = Field(min_length=1, max_length=_MAX_BULK_TITLES)
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -361,6 +377,51 @@ def undo_title_rule() -> ResponseReturnValue:
         reset = repos["title_rules"].undo_rule(current_user_id(), body.normalized_title)
         repos["conn"].commit()
     return jsonify({"reset": reset})
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+# Read-only preview -- see backend/contacts/title_suggestion_service.py.
+# Nothing is written until apply_title_suggestions() below is called with
+# the titles the user actually reviewed and accepted.
+@contacts_bp.route("/contacts/titles/suggest", methods=["POST"])
+def suggest_title_rules() -> ResponseReturnValue:
+    try:
+        body = TitleSuggestRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return _invalid_request(exc)
+
+    with get_repos() as repos:
+        result = suggest_titles(current_user_id(), repos, use_ai=body.use_ai)
+    return jsonify(
+        {
+            "suggestions": [
+                {
+                    "normalized_title": s.normalized_title,
+                    "title": s.title,
+                    "reason": s.reason,
+                }
+                for s in result.suggestions
+            ],
+            "ai_error": result.ai_error,
+        }
+    )
+
+
+# ai: claude-sonnet-5 | 2026-09-28
+@contacts_bp.route("/contacts/titles/suggest/apply", methods=["POST"])
+def apply_title_suggestions() -> ResponseReturnValue:
+    try:
+        body = TitleSuggestApply.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return _invalid_request(exc)
+
+    user_id = current_user_id()
+    decided = 0
+    with get_repos() as repos:
+        for normalized_title in body.normalized_titles:
+            decided += repos["title_rules"].set_rule(user_id, normalized_title, "unrated")
+        repos["conn"].commit()
+    return jsonify({"applied": len(body.normalized_titles), "decided": decided})
 
 
 # ai: claude-sonnet-5 | 2026-09-25
