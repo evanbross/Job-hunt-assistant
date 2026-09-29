@@ -7,22 +7,15 @@ both when items are added, finished, or reprioritized.
 
 ## Features
 
-- [ ] **"Mark as Unique" for possible_duplicate triage cards** — dismiss a
-      false-positive duplicate flag without losing the job or re-running the
-      LLM scorer.
-      - Backend: `POST /api/jobs/<id>/dismiss-duplicate` — clears
-        `duplicate_hint`, sets `status` to `pending_review` if
-        `fit_score >= 70` else `triage`. No re-scoring.
-      - Frontend: button in the triage queue (`TriagePanel.jsx`/`JobCard.jsx`),
-        shown only when `job.status === 'possible_duplicate'`. Same
-        remove-from-queue pattern as approve/skip.
-
-- [ ] **Generic-site pagination in the browser extension** — auto-paginate
-      non-Phenom-People job boards (DOM "Next page" click loop). Phenom
-      People sites (e.g. careers.cisco.com, detected via `/search-results` +
-      `eagerLoadRefineSearch`) already auto-paginate via direct HTTP fetch
-      (extension v1.2.0, 2026-06-17). The Greenhouse builder's scroll loop is
-      the reference implementation for the generic case.
+- [x] **Generic-site pagination in the browser extension** — done 2026-09-29
+      (extension v1.25.0). `buildSmartGenericPayload` now clicks through a
+      detected "Next page" control (`rel="next"`, then an aria-label match,
+      then an exact-text fallback — deliberately not a substring match, so a
+      per-card "Read more" toggle can't misfire it) after collecting each
+      page, stopping on a stall (no new jobs), no control found, or a
+      20-page cap. Scoped to AJAX-paginated sites only, same limitation
+      `buildGreenhouseSearchPayload`'s scroll loop already has — a real page
+      navigation would tear down the content-script context mid-loop.
 
 ## Configuration — eliminate `.env`
 
@@ -53,44 +46,60 @@ the more correct answer if this ever grows into multiple hosted
 instances/customers, but is more infra than a single-user, single-host,
 Neon-backed install currently needs.
 
-- [ ] **Finish decoupling SMTP from `.env`.** SMTP is already DB-backed
-      (`smtp_host`/`smtp_port`/`smtp_user`/`smtp_password`/`smtp_use_tls`/
-      `smtp_from_address` in `backend/settings_registry.py`, written via
-      Settings > System, admin-only, password encrypted) — done in `5da81dd`.
-      What's left: `config.py`'s `SMTP_*` constants still source their
-      *default* from `os.getenv(...)`, so `.env` is still technically the
-      origin of the bootstrap value. Replace those defaults with literals
-      hardcoded directly in `settings_registry.py` (e.g. `"localhost"`,
-      `"1025"` for the Mailhog dev default) so `config.py` no longer reads
-      SMTP from the environment at all.
-- [ ] **Audit remaining `.env` keys** for DB-migration candidates vs.
-      bootstrap-only values. Likely candidates (user/environment preference,
-      not bootstrapping): `EMAIL_LOOKBACK_DAYS`, `SCANNED_EMAIL_LABEL`,
-      `MOVE_SUCCESSFULLY_PROCESSED_EMAILS`, `CAREER_SITE_SCAN_INTERVAL_MINUTES`,
-      `JOBANNI_SEARCH_URL`/`JOBANNI_MAX_JOBS`, `JOB_IMPORT_LISTENER_*`,
-      `JD_HEALTH_CHECK_*`, `CANDIDATE_TIMEZONE`, `GOOGLE_SHEETS_ID`,
-      `CANDIDATE_PROFILE_PATH`/`COVER_LETTER_PROMPT_PATH`/`FIT_SCORER_PROMPT_PATH`.
-      Some of these already partially live in `data/runtime_config.json`
-      (`ai_provider`, model names, listener settings, JD health check) rather
-      than `settings_service` — decide whether to consolidate onto
-      `settings_service` too, or whether the JSON-file layer is intentional.
-      See `routes/jd_health_check.py` for an existing `get_setting` caller
-      pattern to follow.
+- [x] **Finish decoupling SMTP from `.env`.** Done 2026-09-29:
+      `smtp_host`/`smtp_port`/`smtp_user`/`smtp_password`/`smtp_use_tls`/
+      `smtp_from_address` in `backend/settings_registry.py` now use literal
+      defaults (`"localhost"`, `"1025"`, etc.) instead of `config.SMTP_*` —
+      `config.py`'s `SMTP_*` constants removed entirely, so `.env`/os.environ
+      is no longer read for SMTP at all.
+- [x] **Audit remaining `.env` keys** for DB-migration candidates vs.
+      bootstrap-only values. Done 2026-09-29. Findings:
+      - Already fully migrated to `settings_service` (stale TODO claims to
+        the contrary — `data/runtime_config.json` is a one-time legacy
+        migration bridge now, not a live config layer): `EMAIL_LOOKBACK_DAYS`,
+        `SCANNED_EMAIL_LABEL`, `MOVE_SUCCESSFULLY_PROCESSED_EMAILS`,
+        `CANDIDATE_TIMEZONE`, `JOB_IMPORT_LISTENER_*`, `JD_HEALTH_CHECK_*`,
+        `ai_provider`/`anthropic_model`/`openai_model`/`ollama_base_url`/
+        `ollama_model`.
+      - Newly migrated this session: `JOBANNI_SEARCH_URL`/`JOBANNI_MAX_JOBS`
+        → `jobanni_search_url`/`jobanni_max_jobs`, and `GREENHOUSE_SEARCH_URL`
+        → `greenhouse_search_url` (all per-user, `Job Board Credentials`
+        group). `config.py` constants removed; `routes/jobanni.py` and
+        `routes/greenhouse.py` read the setting when the request omits
+        `search_url`.
+      - Dead, removed from `.env.example`: `GOOGLE_SHEETS_ID` (config.py
+        never read it).
+      - Genuinely still `.env`-sourced but dead-in-practice:
+        `CAREER_SITE_SCAN_INTERVAL_MINUTES` — only used for status display
+        (`routes/career_sites.py`); the scheduler that would consume it for
+        actual scan timing (`start_career_site_scheduler()`) is never called
+        anywhere in the app (career-site scans are manual, from the UI
+        banner). Left as-is with a clarifying comment in `.env.example`
+        rather than removed, since the scheduler code itself is still
+        present and could be wired up later.
+      - Intentionally still file/env-based bootstrap config, not migration
+        candidates: `CANDIDATE_PROFILE_PATH` (legacy one-time migration
+        source only, already renamed to make that explicit),
+        `COVER_LETTER_PROMPT_PATH`/`FIT_SCORER_PROMPT_PATH` (editable
+        template files, not simple values).
 
 ## Code review backlog
 
-- [ ] Last full review was through `b7eda8b` (2026-08-19,
-      `docs/code-review-2026-08-19.md`). Run
-      `git log b7eda8b..HEAD --oneline` to scope the next pass — currently
-      17 commits unreviewed, including the multi-tenancy/login-gate pivot,
-      forgot-password flow, job snooze + company-history indicator, the
-      SMTP/AI-provider/scraper-credential DB migration (`5da81dd`), Kforce
-      support, and the most recent LinkedIn/Greenhouse/company-history fixes.
-- [ ] Still open from the 2026-08-19 review:
+- [x] Last full review was through `b7eda8b` (2026-08-19). A fresh full
+      review ran 2026-09-28 covering everything since
+      (`docs/code-review-2026-09-28-full.md`) — all findings fixed and
+      committed same day, including a Critical bug (`AIProviderClient` never
+      set the row-level-security identity, silently breaking every
+      AI-backed feature) found while writing regression tests for the
+      review's other fixes. Next full pass should scope from `f7e50a9`
+      forward.
+- [ ] Still open (carried over, not re-checked in the 2026-09-28 pass):
       - Inconsistent Pydantic validation across route modules (settings,
         jobs, emails, cover-letter actions hand-parse `request.get_json()`).
       - No frontend automated tests (no Vitest/RTL; `LoginPage.jsx` etc.
-        verified only via production build + manual smoke test).
+        verified only via production build + manual smoke test) — growing
+        risk given `browser-extension/content.js`'s site-specific parsers
+        (RobertHalf, Oracle Fusion, etc.) also have zero coverage.
       - Shallow generated Swagger docs.
       - No test coverage for `GET /api/jobs/company-counts` /
         `get_company_counts()`.

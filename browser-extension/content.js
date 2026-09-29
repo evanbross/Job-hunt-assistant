@@ -2192,48 +2192,112 @@
     });
   }
 
+  // ai: claude-sonnet-5 | 2026-09-29
+  // Generic click-based "Next page" pagination for AJAX-paginated job boards --
+  // sites whose Next control swaps in new results without a full page
+  // navigation. A real navigation would tear down this content-script
+  // execution context mid-loop, so those sites are out of scope here, the
+  // same limitation buildGreenhouseSearchPayload's scroll loop already has.
+  // rel="next" and an explicit aria-label are far more reliable than text
+  // matching (a "Read more" job-description toggle could otherwise match),
+  // so they're tried first; the text fallback requires an exact match, not
+  // a substring, to avoid misfiring on unrelated page chrome.
+  const _NEXT_PAGE_TEXT_RE = /^(?:next|next page|show more|load more|more results|»|›)$/i;
+
+  function isElementVisible(el) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    const style = window.getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none';
+  }
+
+  function isNextControlEnabled(el) {
+    return !el.disabled && el.getAttribute('aria-disabled') !== 'true'
+      && !el.className?.toString().toLowerCase().includes('disabled');
+  }
+
+  function findNextPageControl() {
+    const relNext = document.querySelector('a[rel="next"]');
+    if (relNext && isElementVisible(relNext) && isNextControlEnabled(relNext)) return relNext;
+
+    const ariaNext = document.querySelector(
+      'a[aria-label="Next"], a[aria-label*="next" i], button[aria-label="Next"], button[aria-label*="next" i]'
+    );
+    if (ariaNext && isElementVisible(ariaNext) && isNextControlEnabled(ariaNext)) return ariaNext;
+
+    for (const el of document.querySelectorAll('a, button')) {
+      const text = (el.innerText || el.textContent || '').trim();
+      if (_NEXT_PAGE_TEXT_RE.test(text) && isElementVisible(el) && isNextControlEnabled(el)) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  const _SMART_GENERIC_MAX_PAGES = 20;
+
   // Generic job-link harvester — works on Phenom People (Cisco), Workday, Lever,
   // and any other career-site structure the specialised builders don't cover.
-  function buildSmartGenericPayload() {
+  async function buildSmartGenericPayload() {
     const seen = new Set();
     const jobs = [];
 
-    document.querySelectorAll('a[href]').forEach(link => {
-      let u;
-      try { u = new URL(link.href); } catch { return; }
-      if (!isJobLink(u)) return;
-      const url = u.origin + u.pathname; // strip query/hash to deduplicate
-      if (seen.has(url)) return;
-      seen.add(url);
+    function collectJobLinks() {
+      document.querySelectorAll('a[href]').forEach(link => {
+        let u;
+        try { u = new URL(link.href); } catch { return; }
+        if (!isJobLink(u)) return;
+        const url = u.origin + u.pathname; // strip query/hash to deduplicate
+        if (seen.has(url)) return;
+        seen.add(url);
 
-      // Walk up to find a card-sized container (20–1500 chars of visible text).
-      let container = link.parentElement;
-      for (let d = 0; d < 8 && container && container !== document.body; d++) {
-        const len = (container.innerText || '').trim().length;
-        if (len >= 20 && len <= 1500) break;
-        container = container.parentElement;
-      }
+        // Walk up to find a card-sized container (20–1500 chars of visible text).
+        let container = link.parentElement;
+        for (let d = 0; d < 8 && container && container !== document.body; d++) {
+          const len = (container.innerText || '').trim().length;
+          if (len >= 20 && len <= 1500) break;
+          container = container.parentElement;
+        }
 
-      // Prefer Phenom People data attributes, then headings, then link text.
-      const titleEl =
-        container?.querySelector('[data-ph-at-id*="title"]') ||
-        container?.querySelector('h1,h2,h3,h4') ||
-        link;
-      const title = titleEl?.innerText?.split('\n')[0]?.trim() || '';
+        // Prefer Phenom People data attributes, then headings, then link text.
+        const titleEl =
+          container?.querySelector('[data-ph-at-id*="title"]') ||
+          container?.querySelector('h1,h2,h3,h4') ||
+          link;
+        const title = titleEl?.innerText?.split('\n')[0]?.trim() || '';
 
-      const locationEl = container?.querySelector(
-        '[data-ph-at-id*="location"], [class*="location"], [data-automation-id*="location"]'
-      );
-      const jobLocation = locationEl?.innerText?.split('\n')[0]?.trim() || '';
+        const locationEl = container?.querySelector(
+          '[data-ph-at-id*="location"], [class*="location"], [data-automation-id*="location"]'
+        );
+        const jobLocation = locationEl?.innerText?.split('\n')[0]?.trim() || '';
 
-      const cardText = container ? (container.innerText || '').trim().slice(0, 500) : '';
-      const lines = [title || url.split('/').filter(Boolean).pop()];
-      if (jobLocation) lines.push('Location: ' + jobLocation);
-      lines.push('URL: ' + link.href); // use original href so redirect params are preserved
-      if (cardText && cardText !== title) lines.push('', cardText);
+        const cardText = container ? (container.innerText || '').trim().slice(0, 500) : '';
+        const lines = [title || url.split('/').filter(Boolean).pop()];
+        if (jobLocation) lines.push('Location: ' + jobLocation);
+        lines.push('URL: ' + link.href); // use original href so redirect params are preserved
+        if (cardText && cardText !== title) lines.push('', cardText);
 
-      jobs.push({ url: link.href, job_title: title, company: '', listing_text: lines.join('\n') });
-    });
+        jobs.push({ url: link.href, job_title: title, company: '', listing_text: lines.join('\n') });
+      });
+    }
+
+    collectJobLinks();
+
+    // ai: claude-sonnet-5 | 2026-09-29
+    // Click through additional pages until a click produces no new jobs
+    // (mirrors buildGreenhouseSearchPayload's scroll-stall pattern), no
+    // Next control is found, or the page cap is hit.
+    for (let page = 1; page < _SMART_GENERIC_MAX_PAGES; page++) {
+      const nextControl = findNextPageControl();
+      if (!nextControl) break;
+
+      const prevCount = jobs.length;
+      sendProgress(`Loading more jobs... (${jobs.length} found)`, undefined);
+      nextControl.click();
+      await sleep(1200);
+      collectJobLinks();
+      if (jobs.length === prevCount) break;
+    }
 
     // ai: claude-sonnet-4-6 | 2026-07-09
     // The currently-open page can itself be a job posting (e.g. a job detail
@@ -2701,7 +2765,7 @@
           ? buildIndeedSplitListPayload()
           : buildIndeedJobPayload();
         break;
-      case 'smartGeneric':     payload = buildSmartGenericPayload(); break;
+      case 'smartGeneric':     payload = await buildSmartGenericPayload(); break;
       // ai: claude-sonnet-4-6 | 2026-06-26
       // For pages that don't match a known platform, extract body text rather
       // than sending raw HTML. The HTML import path scans for job links, which

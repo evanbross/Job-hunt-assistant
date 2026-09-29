@@ -72,9 +72,12 @@ class SettingSpec:
 
 
 # ai: claude-sonnet-5 | 2026-08-21
-# Defaults reference the existing config.py constants (themselves sourced from
-# .env) rather than re-typing the values, so there's one place a default can
-# drift instead of two copies falling out of sync.
+# ai: claude-sonnet-5 | 2026-09-29 -- most defaults below still reference the
+# existing config.py constants (themselves sourced from .env) rather than
+# re-typing the values, so there's one place a default can drift instead of
+# two copies falling out of sync. The SMTP group is the one exception: it has
+# no config.py/.env origin left at all (see the comment above it) -- its
+# defaults are literals here, on purpose, not an oversight.
 SETTINGS: dict[str, SettingSpec] = {
     # ─── System-wide (instance) — admin-only ──────────────────────────────────
     "app_base_url": SettingSpec(
@@ -86,28 +89,33 @@ SETTINGS: dict[str, SettingSpec] = {
         placeholder="http://localhost:5004",
         help_text="Used to build links in verification/password-reset emails.",
     ),
+    # ai: claude-sonnet-5 | 2026-09-29 -- literal defaults, not sourced from
+    # config.py/.env: SMTP has no environment-variable origin left at all.
+    # Mailhog (../infra's local SMTP catcher, UI at mailhog.localhost) needs
+    # zero config for local dev; production sets a real relay in
+    # Settings > System, not .env.
     "smtp_host": SettingSpec(
-        scope="system", is_secret=False, default=config.SMTP_HOST,
+        scope="system", is_secret=False, default="localhost",
         label="SMTP Host", group="SMTP",
     ),
     "smtp_port": SettingSpec(
-        scope="system", is_secret=False, default=str(config.SMTP_PORT),
+        scope="system", is_secret=False, default="1025",
         label="SMTP Port", group="SMTP",
     ),
     "smtp_user": SettingSpec(
-        scope="system", is_secret=False, default=config.SMTP_USER,
+        scope="system", is_secret=False, default="",
         label="SMTP User", group="SMTP",
     ),
     "smtp_password": SettingSpec(
-        scope="system", is_secret=True, default=config.SMTP_PASSWORD,
+        scope="system", is_secret=True, default="",
         label="SMTP Password", group="SMTP", input_type="password",
     ),
     "smtp_from_address": SettingSpec(
-        scope="system", is_secret=False, default=config.SMTP_FROM_ADDRESS,
+        scope="system", is_secret=False, default="noreply@jobhuntassistant.local",
         label="SMTP From Address", group="SMTP",
     ),
     "smtp_use_tls": SettingSpec(
-        scope="system", is_secret=False, default=str(config.SMTP_USE_TLS).lower(),
+        scope="system", is_secret=False, default="false",
         label="Use TLS", group="SMTP", input_type="checkbox",
     ),
     # ai: claude-sonnet-5 | 2026-08-26
@@ -169,6 +177,30 @@ SETTINGS: dict[str, SettingSpec] = {
         label="Greenhouse Email", group="Job Board Credentials",
         placeholder="you@example.com",
         help_text="Used by the Greenhouse board scanner — your own login, not shared with other accounts.",
+    ),
+    # ai: claude-sonnet-5 | 2026-09-29 -- literal defaults, not sourced from
+    # config.py/.env (see the comment above it): each account can search a
+    # different role/board, so this is per-user like greenhouse_email above,
+    # not a shared instance-wide value.
+    "greenhouse_search_url": SettingSpec(
+        scope="user", is_secret=False,
+        default=(
+            "https://my.greenhouse.io/jobs?query=software%20engineer"
+            "&salary=more_than_200k&work_type[]=remote"
+            "&employment_type[]=full_time&employment_type[]=contract"
+        ),
+        label="Greenhouse Default Search URL", group="Job Board Credentials",
+        help_text="Used when a Greenhouse scan is started without an explicit search_url.",
+    ),
+    "jobanni_search_url": SettingSpec(
+        scope="user", is_secret=False,
+        default="https://jobanni.com/search?q=software+engineer&location=United+States&type=remote",
+        label="Jobanni Default Search URL", group="Job Board Credentials",
+        help_text="Used when a Jobanni scan is started without an explicit search_url.",
+    ),
+    "jobanni_max_jobs": SettingSpec(
+        scope="user", is_secret=False, default="50",
+        label="Jobanni Default Max Jobs", group="Job Board Credentials",
     ),
     # ai: claude-sonnet-5 | 2026-08-30
     # Formerly stored in the single shared data/runtime_config.json (a

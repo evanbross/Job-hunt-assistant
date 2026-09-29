@@ -46,7 +46,6 @@ from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
-import config
 from backend.celery_app import celery_app
 from backend.scanning.sources.greenhouse_searcher import (
     GreenhouseLoginError,
@@ -255,14 +254,16 @@ def start_scan() -> ResponseReturnValue:
             return jsonify({"error": "Scan already running"}), 409
 
     body = request.get_json(silent=True) or {}
-    search_url = str(
-        body.get("search_url")
-        or config.GREENHOUSE_SEARCH_URL
-        or "https://my.greenhouse.io/jobs"
-    )
+    user_id = current_user_id()
+    if body.get("search_url"):
+        search_url = str(body["search_url"])
+    else:
+        with get_repos() as repos:
+            search_url = get_setting("greenhouse_search_url", user_id, repos)
+        search_url = str(search_url or "https://my.greenhouse.io/jobs")
     max_jobs = min(max(int(body.get("max_jobs") or 50), 1), 200)
 
-    task_id = _submit_greenhouse_scan(current_user_id(), search_url, max_jobs)
+    task_id = _submit_greenhouse_scan(user_id, search_url, max_jobs)
     if task_id is None:
         return jsonify({"error": "Scan already running"}), 409
 

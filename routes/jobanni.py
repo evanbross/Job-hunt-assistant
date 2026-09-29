@@ -46,11 +46,11 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 
-import config
 from backend.scanning.sources.jobanni_scanner import scan as jobanni_scan
+from backend.settings_service import get_setting, get_setting_int
 from backend.tasks import run_import_task
 from backend.utils.url_safety import UnsafeUrlError, validate_outbound_url
-from backend.utils.utils import current_user_id
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -144,31 +144,28 @@ def _run_scan(user_id: int, search_url: str, max_jobs: int) -> None:
 
 
 # ai: claude-fable-5 | 2026-07-15
+# ai: claude-sonnet-5 | 2026-09-29 -- the configured default is now the
+# account's own jobanni_search_url/jobanni_max_jobs setting, not a shared
+# .env value. Pydantic validators have no access to the caller's user_id, so
+# resolving that default moved to start_scan() itself, after validation --
+# a blank search_url / non-positive max_jobs here just means "not provided".
 class JobanniScanRequest(BaseModel):
-    """Validated body for POST /jobanni/scan. Empty/missing fields fall back
-    to the configured defaults; max_jobs is clamped to [1, 500]."""
+    """Validated body for POST /jobanni/scan. Empty/missing fields mean "use
+    the account's configured default" (filled in by start_scan());
+    max_jobs is clamped to [1, 500] when actually provided."""
 
     search_url: str = ""
     max_jobs: int = 0
 
-    @field_validator("search_url", mode="before")
+    @field_validator("search_url")
     @classmethod
-    def _normalize_search_url(cls, value: object) -> str:
-        normalized = str(value or "").strip()
-        return normalized or str(config.JOBANNI_SEARCH_URL or "").strip()
-
-    @field_validator("max_jobs", mode="before")
-    @classmethod
-    def _normalize_max_jobs(cls, value: object) -> int:
-        try:
-            return int(value or config.JOBANNI_MAX_JOBS)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("max_jobs must be an integer") from exc
+    def _strip_search_url(cls, value: str) -> str:
+        return value.strip()
 
     @field_validator("max_jobs")
     @classmethod
     def _clamp_max_jobs(cls, value: int) -> int:
-        return min(max(value, 1), 500)
+        return min(value, 500) if value > 0 else 0
 
 
 @jobanni_bp.route("/jobanni/scan", methods=["POST"])
@@ -188,20 +185,39 @@ def start_scan() -> ResponseReturnValue:
             400,
         )
 
-    if not body.search_url:
-        return jsonify({"error": "JOBANNI_SEARCH_URL not configured"}), 400
+    search_url = body.search_url
+    max_jobs = body.max_jobs
+    user_id = None
+
+    # A session/settings lookup is only ever needed to fill in a field the
+    # caller left out. When search_url was given explicitly, an unsafe one
+    # must still be rejected below without ever touching the session -- this
+    # keeps that check independent of whether the caller happens to be
+    # logged in, matching every other unsafe-URL rejection in this module.
+    if not search_url:
+        user_id = current_user_id()
+        with get_repos() as repos:
+            search_url = get_setting("jobanni_search_url", user_id, repos)
+            if not max_jobs:
+                max_jobs = get_setting_int("jobanni_max_jobs", user_id, repos, 50)
+        if not search_url:
+            return jsonify({"error": "jobanni_search_url is not configured"}), 400
 
     try:
-        validate_outbound_url(body.search_url)
+        validate_outbound_url(search_url)
     except UnsafeUrlError as exc:
         return jsonify({"error": f"search_url rejected: {exc}"}), 400
 
-    search_url = body.search_url
-    max_jobs = body.max_jobs
+    if user_id is None:
+        user_id = current_user_id()
+    if not max_jobs:
+        with get_repos() as repos:
+            max_jobs = get_setting_int("jobanni_max_jobs", user_id, repos, 50)
+    max_jobs = min(max(max_jobs, 1), 500)
 
     threading.Thread(
         target=_run_scan,
-        args=(current_user_id(), search_url, max_jobs),
+        args=(user_id, search_url, max_jobs),
         daemon=True,
         name="jobanni-scan",
     ).start()
@@ -212,6 +228,8 @@ def start_scan() -> ResponseReturnValue:
 @jobanni_bp.route("/jobanni/status", methods=["GET"])
 def scan_status() -> ResponseReturnValue:
     """Return the current Jobanni scan state."""
+    with get_repos() as repos:
+        default_search_url = get_setting("jobanni_search_url", current_user_id(), repos)
     with _lock:
         return jsonify(
             {
@@ -224,6 +242,6 @@ def scan_status() -> ResponseReturnValue:
                 "last_run_at": _state.last_run_at,
                 "last_found": _state.last_found,
                 "error": _state.error,
-                "default_search_url": config.JOBANNI_SEARCH_URL,
+                "default_search_url": default_search_url,
             }
         )

@@ -99,9 +99,74 @@ def test_scan_route_starts_thread_for_safe_url(monkeypatch: pytest.MonkeyPatch) 
     assert started[0][1] == (1, "https://jobanni.example/jobs", 25)
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+def test_scan_route_falls_back_to_the_accounts_configured_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    started: list[tuple] = []
+
+    class FakeThread:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            started.append((kwargs.get("target"), kwargs.get("args")))
+
+        def start(self) -> None:
+            pass
+
+    @contextmanager
+    def fake_get_repos():
+        yield {}
+
+    monkeypatch.setattr("routes.jobanni.validate_outbound_url", lambda url: None)
+    monkeypatch.setattr("routes.jobanni.threading.Thread", FakeThread)
+    monkeypatch.setattr("routes.jobanni.current_user_id", lambda: 1)
+    monkeypatch.setattr("routes.jobanni.get_repos", fake_get_repos)
+    monkeypatch.setattr(
+        "routes.jobanni.get_setting",
+        lambda key, user_id, repos: "https://jobanni.example/default" if key == "jobanni_search_url" else "",
+    )
+    monkeypatch.setattr(
+        "routes.jobanni.get_setting_int", lambda key, user_id, repos, default: 77
+    )
+
+    client = make_client()
+    response = client.post("/api/jobanni/scan", json={})
+
+    assert response.status_code == 200
+    assert started[0][1] == (1, "https://jobanni.example/default", 77)
+
+
+def test_scan_route_returns_400_when_no_search_url_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_get_repos():
+        yield {}
+
+    monkeypatch.setattr("routes.jobanni.current_user_id", lambda: 1)
+    monkeypatch.setattr("routes.jobanni.get_repos", fake_get_repos)
+    monkeypatch.setattr("routes.jobanni.get_setting", lambda key, user_id, repos: "")
+    monkeypatch.setattr(
+        "routes.jobanni.get_setting_int", lambda key, user_id, repos, default: default
+    )
+
+    client = make_client()
+    response = client.post("/api/jobanni/scan", json={})
+
+    assert response.status_code == 400
+
+
 def test_scan_request_model_clamps_max_jobs() -> None:
+    # ai: claude-sonnet-5 | 2026-09-29 -- 0 is the "not provided, use the
+    # account's configured default" sentinel (start_scan() fills it in from
+    # jobanni_max_jobs), not a value to clamp up to 1 here.
     assert JobanniScanRequest.model_validate({"max_jobs": 9999}).max_jobs == 500
-    assert JobanniScanRequest.model_validate({"max_jobs": -3}).max_jobs == 1
+    assert JobanniScanRequest.model_validate({"max_jobs": -3}).max_jobs == 0
+    assert JobanniScanRequest.model_validate({"max_jobs": 0}).max_jobs == 0
+    assert JobanniScanRequest.model_validate({"max_jobs": 25}).max_jobs == 25
 
 
 # ai: claude-sonnet-5 | 2026-09-28
