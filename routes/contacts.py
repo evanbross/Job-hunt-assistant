@@ -88,7 +88,9 @@ def _normalize_utc_timestamp(value: str) -> str:
 UtcTimestamp = Annotated[str, AfterValidator(_normalize_utc_timestamp)]
 
 # NULL means "not a recruiter"; see docs/contacts-recruiter-classification-plan.md.
-RecruiterType = Literal["unrated", "motion", "moderate", "high"]
+# Matches backend/db/schema.py's recruiter_type CHECK constraint.
+# ai: claude-sonnet-5 | 2026-09-30 -- was: Literal["unrated", "motion", "moderate", "high"]
+RecruiterType = Literal["unrated", "motion", "low_reliability", "high_reliability", "offshore_spam"]
 
 # Matches backend/db/repositories/companies.py's workforce CHECK constraint.
 CompanyWorkforce = Literal["unknown", "onshore", "offshore_hybrid"]

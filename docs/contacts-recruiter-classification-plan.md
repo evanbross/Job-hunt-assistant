@@ -35,8 +35,9 @@ One nullable field, so the two cannot disagree:
 | NULL | Not a recruiter |
 | `unrated` | Recruiter, quality not yet judged (what automation and title flagging set) |
 | `motion` | High-pressure, low-success American ("motion" recruiting) |
-| `moderate` | Moderate-results American |
-| `high` | High-results American |
+| `low_reliability` | Low-reliability American |
+| `high_reliability` | High-reliability American |
+| `offshore_spam` | Offshore spam |
 
 Migration: existing `is_recruiter = TRUE` becomes `unrated`; drop `is_recruiter`.
 The type is the user's own judgment and is **never chosen automatically**.
@@ -58,7 +59,7 @@ letting them drift apart (single source of truth).
 
 A recruiter's displayed/filterable label combines both:
 "Offshore hybrid" (from the company) or "American, <tier>" (from the person's
-`recruiter_type`). The `motion` / `moderate` / `high` choice is only needed for
+`recruiter_type`). The `motion` / `low_reliability` / `high_reliability` choice is only needed for
 recruiters at onshore firms, since offshore hybrid already says what matters.
 (Open option: keep a single per-person field instead of the split.)
 
@@ -191,8 +192,9 @@ normalized name.
 - ~~Confirm the four recruiter type names/labels (they appear in dropdowns).~~
   Resolved for now: shipped using the plan's own value names as labels
   (`ContactsPanel.jsx`'s `RECRUITER_TYPES` — "Recruiter (unrated)", "Motion
-  (high-pressure, low-success)", "Moderate", "High"). Revisit if these read
-  oddly in practice.
+  (high-pressure, low-success)", "Low Reliability", "High Reliability",
+  "Offshore spam"; renamed from "Moderate"/"High" 2026-09-30). Revisit if
+  these read oddly in practice.
 - ~~Confirm title rules apply automatically on re-import (default) vs only on
   click.~~ Resolved: shipped as auto-apply — every CSV import (including
   re-imports) applies all of the account's existing title rules to any

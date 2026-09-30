@@ -37,15 +37,16 @@ const RECRUITER_FILTERS = [
   { value: "not_recruiter", label: "Not recruiters" },
 ];
 
-// ai: claude-sonnet-5 | 2026-09-28
+// ai: claude-sonnet-5 | 2026-09-30
 // Matches backend/db/repositories/contacts.py's recruiter_type CHECK
 // constraint. NULL ("") means "not a recruiter".
 const RECRUITER_TYPES = [
   { value: "", label: "Not a recruiter" },
   { value: "unrated", label: "Recruiter (unrated)" },
   { value: "motion", label: "Motion (high-pressure, low-success)" },
-  { value: "moderate", label: "Moderate" },
-  { value: "high", label: "High" },
+  { value: "low_reliability", label: "Low Reliability" },
+  { value: "high_reliability", label: "High Reliability" },
+  { value: "offshore_spam", label: "Offshore spam" },
 ];
 
 // ai: claude-sonnet-5 | 2026-09-25

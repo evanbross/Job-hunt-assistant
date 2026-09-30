@@ -115,7 +115,10 @@ def test_set_rule_applies_only_to_undecided_contacts(pg_dsn: str) -> None:
             ],
         )
         decided_id = next(c["id"] for c in contacts.get_all(user_id) if c["full_name"] == "Decided")
-        assert contacts.update(user_id, decided_id, {"recruiter_type": "high", "decided_by": "manual"})
+        # ai: claude-sonnet-5 | 2026-09-30 -- was: recruiter_type "high" (renamed to "high_reliability")
+        assert contacts.update(
+            user_id, decided_id, {"recruiter_type": "high_reliability", "decided_by": "manual"}
+        )
         conn.commit()
 
         decided_count = titles.set_rule(user_id, "recruiter", "unrated")
@@ -123,7 +126,7 @@ def test_set_rule_applies_only_to_undecided_contacts(pg_dsn: str) -> None:
 
         assert decided_count == 1  # only the previously-undecided contact
         by_name = {c["full_name"]: c for c in contacts.list_with_emails(user_id)}
-        assert by_name["Decided"]["recruiter_type"] == "high"
+        assert by_name["Decided"]["recruiter_type"] == "high_reliability"
         assert by_name["Decided"]["decided_by"] == "manual"
         assert by_name["Undecided"]["recruiter_type"] == "unrated"
         assert by_name["Undecided"]["decided_by"] == "title_rule"
@@ -171,7 +174,10 @@ def test_undo_rule_resets_only_the_contacts_it_decided(pg_dsn: str) -> None:
             ],
         )
         manual_id = next(c["id"] for c in contacts.get_all(user_id) if c["full_name"] == "Manual")
-        assert contacts.update(user_id, manual_id, {"recruiter_type": "moderate", "decided_by": "manual"})
+        # ai: claude-sonnet-5 | 2026-09-30 -- was: recruiter_type "moderate" (renamed to "low_reliability")
+        assert contacts.update(
+            user_id, manual_id, {"recruiter_type": "low_reliability", "decided_by": "manual"}
+        )
         conn.commit()
         titles.set_rule(user_id, "recruiter", "unrated")
         conn.commit()
@@ -183,7 +189,7 @@ def test_undo_rule_resets_only_the_contacts_it_decided(pg_dsn: str) -> None:
         by_name = {c["full_name"]: c for c in contacts.list_with_emails(user_id)}
         assert by_name["ByRule"]["recruiter_type"] is None
         assert by_name["ByRule"]["decided_by"] is None
-        assert by_name["Manual"]["recruiter_type"] == "moderate", "manual decision must survive an undo"
+        assert by_name["Manual"]["recruiter_type"] == "low_reliability", "manual decision must survive an undo"
         assert by_name["Manual"]["decided_by"] == "manual"
         assert titles.titles_report(user_id)[0]["rule_exists"] is False
     finally:
@@ -198,7 +204,8 @@ def test_apply_all_rules_decides_new_undecided_contacts_matching_existing_rules(
         titles = PostgresTitleRuleRepository(conn)
         contacts.sync_import(user_id, [_import_row(profile_url="https://linkedin.com/in/first")])
         conn.commit()
-        titles.set_rule(user_id, "recruiter", "high")
+        # ai: claude-sonnet-5 | 2026-09-30 -- was: recruiter_type "high" (renamed to "high_reliability")
+        titles.set_rule(user_id, "recruiter", "high_reliability")
         conn.commit()
 
         # A second contact with the same title arrives later (e.g. a re-import).
@@ -212,7 +219,7 @@ def test_apply_all_rules_decides_new_undecided_contacts_matching_existing_rules(
         second = next(
             c for c in contacts.list_with_emails(user_id) if c["profile_url"].endswith("second")
         )
-        assert second["recruiter_type"] == "high"
+        assert second["recruiter_type"] == "high_reliability"
         assert second["decided_by"] == "title_rule"
     finally:
         conn.close()
@@ -229,7 +236,8 @@ def test_title_rules_are_scoped_to_the_owning_user(pg_dsn: str) -> None:
         set_current_user(conn.cursor(), owner_id)
         contacts.sync_import(owner_id, [_import_row()])
         conn.commit()
-        titles.set_rule(owner_id, "recruiter", "high")
+        # ai: claude-sonnet-5 | 2026-09-30 -- was: recruiter_type "high" (renamed to "high_reliability")
+        titles.set_rule(owner_id, "recruiter", "high_reliability")
         conn.commit()
 
         set_current_user(conn.cursor(), other_id)

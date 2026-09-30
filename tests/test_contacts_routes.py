@@ -305,12 +305,13 @@ def test_update_contact_can_set_and_unset_recruiter_type(monkeypatch: pytest.Mon
     contacts = FakeContactsRepo([{"id": 1}])
     client = _contacts_client(monkeypatch, contacts)
 
-    set_response = client.patch("/api/contacts/1", json={"recruiter_type": "high"})
+    # ai: claude-sonnet-5 | 2026-09-30 -- was: recruiter_type "high" (renamed to "high_reliability")
+    set_response = client.patch("/api/contacts/1", json={"recruiter_type": "high_reliability"})
     assert set_response.status_code == 200
     unset_response = client.patch("/api/contacts/1", json={"recruiter_type": None})
     assert unset_response.status_code == 200
     assert contacts.updates == [
-        (1, {"recruiter_type": "high", "decided_by": "manual"}),
+        (1, {"recruiter_type": "high_reliability", "decided_by": "manual"}),
         (1, {"recruiter_type": None, "decided_by": "manual"}),
     ]
 
@@ -328,7 +329,7 @@ def test_update_contact_can_set_and_unset_recruiter_type(monkeypatch: pytest.Mon
         {"notes": 42},
         {"full_name": "Injected"},
         {"decided_by": "manual"},
-        {"recruiter_type": "high", "decided_by": "title_rule"},
+        {"recruiter_type": "high_reliability", "decided_by": "title_rule"},  # ai: claude-sonnet-5 | 2026-09-30
     ],
 )
 def test_update_contact_rejects_invalid_body(

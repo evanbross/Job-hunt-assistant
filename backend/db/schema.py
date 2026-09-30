@@ -169,6 +169,21 @@ def _has_index(cur: Any, table: str, index_name: str) -> bool:
     return cur.fetchone() is not None
 
 
+# ai: claude-sonnet-5 | 2026-09-30
+def _check_constraint_allows(cur: Any, table: str, constraint_name: str, value: str) -> bool:
+    """True if the named CHECK constraint's current definition already lists
+    value as an allowed literal -- used to gate a one-time value-set swap
+    (recruiter_type's 'moderate'/'high' -> 'low_reliability'/'high_reliability'
+    + 'offshore_spam' rename below) so it only runs once per install."""
+    cur.execute(
+        "SELECT pg_get_constraintdef(oid) AS condef FROM pg_constraint"
+        " WHERE conrelid = %s::regclass AND conname = %s",
+        (table, constraint_name),
+    )
+    row = cur.fetchone()
+    return row is not None and value in row["condef"]
+
+
 # ai: claude-sonnet-5 | 2026-08-20
 # Tables that get a plain `user_id` FK + backfill + index in _migrate() below.
 # Excludes tables needing bespoke handling because a *bare* ADD COLUMN isn't
@@ -1320,7 +1335,8 @@ def _migrate(conn: Any) -> None:
     # NULL means "not a recruiter"; existing TRUE rows become 'unrated'.
     cur.execute(
         "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS recruiter_type TEXT"
-        " CHECK (recruiter_type IN ('unrated', 'motion', 'moderate', 'high'))"
+        " CHECK (recruiter_type IN ('unrated', 'motion', 'low_reliability',"
+        " 'high_reliability', 'offshore_spam'))"
     )
     if _has_column(cur, "contacts", "is_recruiter"):
         cur.execute("UPDATE contacts SET recruiter_type = 'unrated' WHERE is_recruiter")
@@ -1358,12 +1374,42 @@ def _migrate(conn: Any) -> None:
             id                SERIAL PRIMARY KEY,
             user_id           INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
             normalized_title  TEXT NOT NULL,
-            recruiter_type    TEXT CHECK (recruiter_type IN ('unrated', 'motion', 'moderate', 'high')),
+            recruiter_type    TEXT CHECK (recruiter_type IN ('unrated', 'motion', 'low_reliability',
+                                  'high_reliability', 'offshore_spam')),
             updated_at        TEXT NOT NULL,
             UNIQUE (user_id, normalized_title)
         )
         """
     )
+    conn.commit()
+
+    # ai: claude-sonnet-5 | 2026-09-30 -- recruiter_type quality tiers relabeled:
+    # 'moderate' -> 'low_reliability', 'high' -> 'high_reliability', plus a new
+    # 'offshore_spam' tier. 'unrated' and 'motion' are unchanged. Gated on the
+    # live CHECK constraint rather than a column-existence check since both
+    # columns already existed under the old value set -- see
+    # _check_constraint_allows() above. A fresh install creates both columns
+    # with the new CHECK directly (above), so this block is a no-op for it.
+    if not _check_constraint_allows(cur, "contacts", "contacts_recruiter_type_check", "offshore_spam"):
+        cur.execute("UPDATE contacts SET recruiter_type = 'low_reliability' WHERE recruiter_type = 'moderate'")
+        cur.execute("UPDATE contacts SET recruiter_type = 'high_reliability' WHERE recruiter_type = 'high'")
+        cur.execute("ALTER TABLE contacts DROP CONSTRAINT IF EXISTS contacts_recruiter_type_check")
+        cur.execute(
+            "ALTER TABLE contacts ADD CONSTRAINT contacts_recruiter_type_check"
+            " CHECK (recruiter_type IN ('unrated', 'motion', 'low_reliability',"
+            " 'high_reliability', 'offshore_spam'))"
+        )
+    if not _check_constraint_allows(
+        cur, "title_rules", "title_rules_recruiter_type_check", "offshore_spam"
+    ):
+        cur.execute("UPDATE title_rules SET recruiter_type = 'low_reliability' WHERE recruiter_type = 'moderate'")
+        cur.execute("UPDATE title_rules SET recruiter_type = 'high_reliability' WHERE recruiter_type = 'high'")
+        cur.execute("ALTER TABLE title_rules DROP CONSTRAINT IF EXISTS title_rules_recruiter_type_check")
+        cur.execute(
+            "ALTER TABLE title_rules ADD CONSTRAINT title_rules_recruiter_type_check"
+            " CHECK (recruiter_type IN ('unrated', 'motion', 'low_reliability',"
+            " 'high_reliability', 'offshore_spam'))"
+        )
     conn.commit()
 
 
