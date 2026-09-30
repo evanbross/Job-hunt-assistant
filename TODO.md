@@ -16,6 +16,16 @@ or reprioritized.
       20-page cap. Scoped to AJAX-paginated sites only, same limitation
       `buildGreenhouseSearchPayload`'s scroll loop already has — a real page
       navigation would tear down the content-script context mid-loop.
+- [x] **Semi-automated LinkedIn workforce lookup in the Companies report** —
+      done 2026-09-30 (commit `6d5a2e9`). "Open next unclassified on
+      LinkedIn (N)" button opens a plain LinkedIn company search in a new
+      tab for the user to read and judge themselves, instead of automated
+      scraping — avoids the account-restriction and data-reliability risks
+      discussed for `docs/contacts-recruiter-classification-plan.md`'s
+      Tier 3 idea. A company drops out of the queue on its own as soon as
+      its workforce dropdown is set to anything other than "Unknown."
+      Tested end-to-end in the browser against the real Contacts/Companies
+      data.
 
 ## Configuration — eliminate `.env`
 
