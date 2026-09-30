@@ -145,3 +145,58 @@ Neon-backed install currently needs.
       - Shallow generated Swagger docs.
       - No test coverage for `GET /api/jobs/company-counts` /
         `get_company_counts()`.
+
+## Data quality / known issues
+
+- [x] **Duplicate `(user_id, url)` job rows cleaned up.** Done 2026-09-30.
+      217 of 221 duplicate-URL groups merged (445 rows deleted), reassigning
+      `application_stages`/`job_status_history`/`browser_capture_queue` rows
+      and repointing `duplicate_of_id` references to the survivor before
+      deleting losers. 4 groups deliberately left unmerged:
+      - A Greenhouse search-results URL and a Glassdoor "recruiter matches"
+        redirect URL — each shared by genuinely *different* jobs, not
+        duplicates; the capture step grabbed a generic/search link instead
+        of the specific job page. `JOBS_URL_UNIQUE_INDEX`
+        (`backend/db/schema.py`) can't be created while these exist, and
+        likely never can as a plain per-URL constraint without a fix to stop
+        the scraper from saving a generic link as a job's URL in the first
+        place.
+      - A LinkedIn "saved job reminder" URL and a second LinkedIn job URL
+        (`.../jobs/view/4472284063/`) — see the JYMBII mis-pairing bug below;
+        these are a symptom of it, not independent duplicates, so merging
+        them would have wrongly conflated distinct real jobs.
+- [x] **Fixed: digest email parser reused one fallback URL across distinct
+      jobs.** Done 2026-09-30 (commit `e2c4626`). `fallback_job_url()` in
+      `backend/email/email_parser.py` scanned the whole email body for the
+      first job-board-shaped URL whenever the LLM left a job's `url` empty —
+      called once per job, so every URL-less job in one digest email
+      collided on the same salvaged URL. Fixed by tracking URLs already
+      handed out within a single `parse()` call (`used_urls`) and skipping
+      them; a later job is left with an empty URL (low certainty) rather
+      than a wrong, confident duplicate. Regression tests added in
+      `tests/test_email_parser_normalization.py`.
+- [ ] **Unresolved: LinkedIn JYMBII digest parser occasionally mis-pairs a
+      job's title/company text with a *different* job's URL.** Found
+      2026-09-30 while investigating two leftover duplicate-URL rows (jobs
+      5297/5310, `.../jobs/view/4472284063/`). Both came through
+      `_parse_linkedin_jymbii_jobs()` (confirmed via its hardcoded
+      `certainty_reason` string) with title "Backend Software Engineer
+      (Java, API)" / company "Wiraa" — consistent with the LinkedIn page's
+      own chrome at that URL ("No longer accepting applications," "Report
+      this job," "Referrals... at Wiraa by 2x"), so likely correct — but the
+      `job_description`/`raw_jd_snippet` body contains an unrelated Coinbase
+      "Staff Software Engineer / Agentic AI" JD paragraph, and each row's
+      `capture_label` (= its originating email's subject) names a third,
+      also-unrelated company ("Radar", "Thyme Care"). Root cause suspected
+      in `_HTMLTextExtractor` (`backend/email/gmail_client.py`) — a
+      stack-based href/anchor-text pairing that's vulnerable to
+      malformed/overlapping `<a>` tags in LinkedIn's auto-generated email
+      HTML — but not reproducible or fixable with confidence since raw email
+      bodies aren't retained (`scanned_emails.raw_body`). Affects ~2 rows out
+      of ~4400; the fit scorer's own reasoning already catches the resulting
+      title/description mismatch and triages both low, so practical impact
+      is cosmetic only. Deliberately left unfixed (both the extractor and
+      the 2 affected rows) — not reproducible, too rare to justify a
+      speculative change to shared HTML-parsing code every email source
+      depends on. Revisit only if it recurs with retained raw content to
+      test a fix against.
