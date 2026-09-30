@@ -374,6 +374,80 @@ def test_parser_detokenizes_url_when_llm_drops_brackets() -> None:
     assert jobs[0]["url"] == "https://jobs.example.com/postings/123"
 
 
+# ai: claude-sonnet-5 | 2026-09-30
+class TwoJobsMissingUrlClient:
+    """Simulates an LLM response for a digest email where two distinct jobs
+    were both extracted without a "url" field."""
+
+    def complete(
+        self,
+        *,
+        messages: list[AIMessage],
+        system: str,
+        max_tokens: int,
+        json_response: bool,
+    ) -> str:
+        return json.dumps(
+            [
+                {
+                    "company": "Acme",
+                    "job_title": "Backend Engineer",
+                    "url": "",
+                    "source": "LinkedIn",
+                    "certainty_level": "low",
+                    "certainty_score": 60,
+                    "certainty_reason": "test",
+                },
+                {
+                    "company": "Roebling",
+                    "job_title": "Senior Software Engineer",
+                    "url": "",
+                    "source": "LinkedIn",
+                    "certainty_level": "low",
+                    "certainty_score": 60,
+                    "certainty_reason": "test",
+                },
+            ]
+        )
+
+
+# ai: claude-sonnet-5 | 2026-09-30
+def test_parser_gives_distinct_fallback_urls_to_different_digest_jobs() -> None:
+    """Regression test: a digest email listing several jobs where the LLM left
+    every "url" field empty must not get the SAME salvaged fallback URL for
+    each job -- that previously glued unrelated jobs (different companies) onto
+    one identical URL, making them look like the same job everywhere
+    downstream (duplicate detection, the jobs.url per-user unique index)."""
+    client = TwoJobsMissingUrlClient()
+    parser = EmailParser(1, client=client)
+    body = (
+        "Apply to Backend Engineer at Acme: https://www.linkedin.com/jobs/view/1111111111/\n"
+        "Apply to Senior Software Engineer at Roebling: https://www.linkedin.com/jobs/view/2222222222/"
+    )
+
+    jobs = parser.parse("Job alert", "jobs@example.com", body)
+
+    assert [j["url"] for j in jobs] == [
+        "https://www.linkedin.com/jobs/view/1111111111/",
+        "https://www.linkedin.com/jobs/view/2222222222/",
+    ]
+
+
+# ai: claude-sonnet-5 | 2026-09-30
+def test_parser_leaves_second_job_urlless_when_body_has_only_one_candidate() -> None:
+    """When the body only contains one recognizable job-board URL, the second
+    job missing a "url" must be left empty rather than reusing the first job's
+    URL -- an empty, low-certainty URL is safer than a wrong, confident one."""
+    client = TwoJobsMissingUrlClient()
+    parser = EmailParser(1, client=client)
+    body = "Apply to Backend Engineer at Acme: https://www.linkedin.com/jobs/view/1111111111/"
+
+    jobs = parser.parse("Job alert", "jobs@example.com", body)
+
+    assert jobs[0]["url"] == "https://www.linkedin.com/jobs/view/1111111111/"
+    assert jobs[1]["url"] == ""
+
+
 def test_parser_resolves_sendgrid_tracking_urls_for_wttj_emails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

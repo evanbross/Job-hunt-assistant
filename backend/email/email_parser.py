@@ -317,6 +317,7 @@ class EmailParser:
             return []
 
         jobs: list[ParsedJob] = []
+        used_urls: set[str] = set()
         for item in result:
             if not isinstance(item, dict):
                 continue
@@ -355,12 +356,21 @@ class EmailParser:
                 if resolved != raw_url:
                     item["url"] = resolved
                     logger.debug("Resolved tracking URL %s → %s", raw_url, resolved)
+            # ai: claude-sonnet-5 | 2026-09-30
             # If the LLM left the URL empty, try to salvage one directly from
-            # the email body using known job-board URL patterns.
-            if not item.get("url"):
-                fallback = fallback_job_url(body_snippet)
+            # the email body using known job-board URL patterns. In a digest
+            # with several such jobs, fallback_job_url() must not hand out the
+            # same match twice -- that previously glued unrelated jobs (e.g.
+            # different companies in one LinkedIn digest) onto one identical
+            # URL, which then made them look like the same job everywhere
+            # downstream (duplicate detection, the jobs.url unique index).
+            if item.get("url"):
+                used_urls.add(item["url"])
+            else:
+                fallback = fallback_job_url(body_snippet, exclude=used_urls)
                 if fallback:
                     item["url"] = fallback
+                    used_urls.add(fallback)
                     logger.debug("URL fallback: extracted %s from email body", fallback)
             # ai: claude-sonnet-5 | 2026-09-12
             # A job with neither a title nor a URL carries no identifying signal
@@ -708,15 +718,22 @@ def is_email_tracking_url(url: str) -> bool:
     return any(frag in host for frag in _TRACKING_DOMAIN_FRAGMENTS)
 
 
-def fallback_job_url(body_snippet: str) -> str:
-    """Return the first recognizable job-board URL found in the email body.
+# ai: claude-sonnet-5 | 2026-09-30
+def fallback_job_url(body_snippet: str, *, exclude: set[str] | None = None) -> str:
+    """Return the first recognizable job-board URL found in the email body
+    that isn't already in `exclude`.
 
-    Used when the LLM extraction left the URL field empty.
+    Used when the LLM extraction left the URL field empty. `exclude` lets
+    EmailParser.parse() track which fallback URLs it has already handed out
+    to an earlier job in the same digest, so two different jobs can never be
+    assigned the identical fallback (see the call site's comment).
     """
+    exclude = exclude or set()
     for pattern in _JOBBOARD_URL_FALLBACK_RES:
-        m = pattern.search(body_snippet)
-        if m:
-            return m.group(0).rstrip(".,;)")
+        for m in pattern.finditer(body_snippet):
+            candidate = m.group(0).rstrip(".,;)")
+            if candidate not in exclude:
+                return candidate
     return ""
 
 
