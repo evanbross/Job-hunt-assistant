@@ -43,6 +43,8 @@ export default function CompaniesReport() {
   const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
   const [notesDrafts, setNotesDrafts] = useState({});
+  const [highlighted, setHighlighted] = useState(null);
+  const [skipped, setSkipped] = useState(() => new Set());
 
   const loadCompanies = async () => {
     try {
@@ -83,6 +85,29 @@ export default function CompaniesReport() {
       ),
     );
   }, [companies, search]);
+
+  const unclassifiedCount = useMemo(
+    () => filtered.filter((c) => c.workforce === "unknown").length,
+    [filtered],
+  );
+
+  // ai: claude-sonnet-5 | 2026-09-30
+  // Semi-automated workforce lookup: opens a LinkedIn company search in a new
+  // tab for the user to read themselves and judge -- no automated scraping or
+  // navigation of linkedin.com, since that risks the user's real account
+  // (see docs/contacts-recruiter-classification-plan.md's Tier 3 discussion).
+  // A company drops out of the queue on its own once its workforce is set;
+  // `skipped` only covers "I looked, still don't know" for this session.
+  const openNextUnclassified = () => {
+    const target = filtered.find(
+      (c) => c.workforce === "unknown" && !skipped.has(c.company_normalized),
+    );
+    if (!target) return;
+    const url = `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(target.company_raw)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+    setHighlighted(target.company_normalized);
+    setSkipped((prev) => new Set(prev).add(target.company_normalized));
+  };
 
   // Optimistic: flip the UI immediately, roll back only the touched fields if
   // the server rejects the write.
@@ -136,6 +161,14 @@ export default function CompaniesReport() {
               style={{ flex: "1 1 220px", minWidth: "180px" }}
               aria-label="Search companies"
             />
+            <button
+              type="button"
+              onClick={openNextUnclassified}
+              disabled={unclassifiedCount === 0}
+              title="Opens the company's LinkedIn search in a new tab for you to check yourself -- nothing is scraped automatically"
+            >
+              Open next unclassified on LinkedIn ({unclassifiedCount})
+            </button>
           </div>
 
           <div style={{ color: "var(--text-muted)", fontSize: "12px", margin: "0 2px 8px" }}>
@@ -159,7 +192,14 @@ export default function CompaniesReport() {
               </div>
             ) : (
               filtered.map((company) => (
-                <div key={company.company_normalized} style={rowGrid}>
+                <div
+                  key={company.company_normalized}
+                  style={
+                    company.company_normalized === highlighted
+                      ? { ...rowGrid, ...highlightedRow }
+                      : rowGrid
+                  }
+                >
                   <div style={{ fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
                     {company.company_raw}
                   </div>
@@ -246,6 +286,11 @@ const rowGrid = {
   gap: "12px",
   padding: "10px 14px",
   borderBottom: "1px solid var(--border)",
+};
+
+const highlightedRow = {
+  background: "var(--surface2)",
+  boxShadow: "inset 3px 0 0 var(--accent, #4a90d9)",
 };
 
 const headerRow = {
