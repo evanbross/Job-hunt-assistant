@@ -51,7 +51,7 @@ from urllib.request import Request
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from backend.celery_app import celery_app
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, DuplicateJobUrlError
@@ -69,6 +69,7 @@ from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils.utils import (
     current_user_id,
     get_repos,
+    invalid_request_response,
     is_celery_task_active,
 )
 
@@ -78,20 +79,34 @@ logger = logging.getLogger(__name__)
 applications_bp = Blueprint("applications", __name__)
 
 
+# ai: claude-sonnet-5 | 2026-09-29
 # ai: claude-sonnet-5 | 2026-08-13 — inlined from backend/utils/utils.py: this
 # blueprint is its only consumer (FLASK_STANDARDS.md's shared-helper rule
 # only applies to helpers used by two or more blueprints).
-def _tracking_payload() -> dict[str, str]:
-    data = request.get_json(silent=True) or {}
-    return {
-        "company": str(data.get("company") or "").strip(),
-        "status": str(data.get("status") or "").strip(),
-        "source": str(data.get("source") or "").strip(),
-        "date": str(data.get("date") or "").strip(),
-        "job_title": str(data.get("job_title") or "").strip(),
-        "url": str(data.get("url") or "").strip(),
-        "notes": str(data.get("notes") or "").strip(),
-    }
+class TrackingPayloadRequest(BaseModel):
+    """Shared body shape for POST /applications and PUT /applications/<id>.
+    extra="ignore" (not "forbid" like most other models converted this
+    session): both call sites hand the whole edited row object from the
+    frontend's editingRows/rowData state straight through, which may carry
+    extra bookkeeping keys (row_number, id) beyond these seven -- silently
+    dropping them matches the original hand-parsed route exactly."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    company: str = ""
+    status: str = ""
+    source: str = ""
+    date: str = ""
+    job_title: str = ""
+    url: str = ""
+    notes: str = ""
+
+    @field_validator(
+        "company", "status", "source", "date", "job_title", "url", "notes", mode="before"
+    )
+    @classmethod
+    def _stringify_and_strip(cls, value: object) -> str:
+        return str(value or "").strip()
 
 _CLOSED_REQ_FETCH_TIMEOUT_SECONDS = 15
 _CLOSED_REQ_FETCH_MAX_BYTES = 2_000_000
@@ -281,7 +296,11 @@ def get_application_sheet() -> ResponseReturnValue:
 @applications_bp.route("/applications", methods=["POST"])
 def add_application_sheet_row() -> ResponseReturnValue:
     """Insert a new job application row into the database."""
-    row = _tracking_payload()
+    try:
+        body = TrackingPayloadRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    row = body.model_dump()
     if not row["company"] and not row["job_title"]:
         return jsonify({"error": "company or job_title is required"}), 400
     # ai: claude-fable-5 | 2026-07-14
@@ -330,7 +349,11 @@ def add_application_sheet_row() -> ResponseReturnValue:
 @applications_bp.route("/applications/<int:job_id>", methods=["PUT"])
 def update_application_sheet_row(job_id: int) -> ResponseReturnValue:
     """Update an existing job application row in the database."""
-    row = _tracking_payload()
+    try:
+        body = TrackingPayloadRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    row = body.model_dump()
     if not row["company"] and not row["job_title"]:
         return jsonify({"error": "company or job_title is required"}), 400
     fields: dict = {
@@ -358,13 +381,37 @@ def update_application_sheet_row(job_id: int) -> ResponseReturnValue:
     return jsonify({"status": "ok"})
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class AddApplicationSheetStageRequest(BaseModel):
+    """status is normalized via normalize_stage_status() and checked against
+    the DB-loaded stage_statuses allowlist in the route -- see
+    routes/jobs.py's AddApplicationStageRequest for why that can't be a
+    fixed Pydantic enum."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: object = None
+    date: str = ""
+    notes: str = ""
+
+    @field_validator("date", "notes", mode="before")
+    @classmethod
+    def _stringify_and_strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
 @applications_bp.route("/applications/<int:job_id>/stages", methods=["POST"])
 def add_application_sheet_stage(job_id: int) -> ResponseReturnValue:
     """Add a stage entry to an application."""
-    data = request.get_json(silent=True) or {}
-    status = normalize_stage_status(data.get("status"))
-    stage_date = str(data.get("date") or "").strip()
-    notes = str(data.get("notes") or "").strip()
+    try:
+        body = AddApplicationSheetStageRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    status = normalize_stage_status(body.status)
+    stage_date = body.date
+    notes = body.notes
     if not status:
         return jsonify({"error": "status is required"}), 400
     if not stage_date:

@@ -119,6 +119,39 @@ def test_sync_import_preserves_user_flags_and_keeps_acted_on_contacts(pg_dsn: st
         conn.close()
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+def test_sync_import_keeps_a_manual_not_a_recruiter_decision(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        repo.sync_import(
+            user_id,
+            [
+                _import_row(),
+                _import_row(full_name="Dismissed Dan", profile_url="https://linkedin.com/in/dan"),
+                _import_row(full_name="Untouched Ursula", profile_url="https://linkedin.com/in/u"),
+            ],
+        )
+        by_name = {c["full_name"]: c["id"] for c in repo.get_all(user_id)}
+        # recruiter_type stays NULL -- the manual decision was "not a recruiter",
+        # so decided_by is the only thing distinguishing it from an untouched row.
+        assert repo.update(
+            user_id, by_name["Dismissed Dan"], {"recruiter_type": None, "decided_by": "manual"}
+        )
+        conn.commit()
+
+        # Re-import with none of the three people in the file except Jane.
+        result = repo.sync_import(user_id, [_import_row(position="Changed")])
+        conn.commit()
+
+        assert result.removed == 1
+        names = {c["full_name"] for c in repo.get_all(user_id)}
+        assert names == {"Jane Doe", "Dismissed Dan"}
+    finally:
+        conn.close()
+
+
 def test_sync_import_blank_email_does_not_erase_a_typed_email(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:

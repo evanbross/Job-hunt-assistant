@@ -46,7 +46,13 @@ from typing import Any
 
 import anthropic
 from flask import Blueprint, jsonify, request
-from pydantic import ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 import config
 from backend.candidate_profile_service import (
@@ -56,7 +62,7 @@ from backend.candidate_profile_service import (
 from backend.email.google_token_store import GoogleTokenStore
 from backend.settings_service import get_setting, is_setting_configured, set_setting
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
-from backend.utils.utils import current_user_id, get_repos
+from backend.utils.utils import current_user_id, get_repos, invalid_request_response
 
 logger = logging.getLogger(__name__)
 
@@ -141,33 +147,51 @@ def _check_ai_provider_done(
 # ─── Test AI connection ───────────────────────────────────────────────────────
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class SetupTestAiRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    provider: str = "anthropic"
+    api_key: str = ""
+    model: str = ""
+    base_url: str = ""
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _normalize_provider(cls, value: object) -> str:
+        return str(value or "anthropic").strip().lower()
+
+    @field_validator("api_key", "model", "base_url", mode="before")
+    @classmethod
+    def _stringify_and_strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
 @setup_bp.route("/setup/test-ai", methods=["POST"])
 def setup_test_ai() -> Any:
     """Test that the provided AI credentials are reachable."""
-    data: dict[str, object] = request.get_json() or {}
-    provider = str(data.get("provider") or "anthropic").strip().lower()
+    try:
+        body = SetupTestAiRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
-    if provider == "anthropic":
-        api_key = str(data.get("api_key") or "").strip()
-        if not api_key:
+    if body.provider == "anthropic":
+        if not body.api_key:
             return jsonify({"ok": False, "message": "API key is required"})
-        return _test_anthropic(api_key)
+        return _test_anthropic(body.api_key)
 
-    if provider == "openai":
-        api_key = str(data.get("api_key") or "").strip()
-        model = str(data.get("model") or config.OPENAI_MODEL).strip()
-        if not api_key:
+    if body.provider == "openai":
+        model = body.model or config.OPENAI_MODEL
+        if not body.api_key:
             return jsonify({"ok": False, "message": "API key is required"})
-        return _test_openai(api_key, model)
+        return _test_openai(body.api_key, model)
 
-    if provider == "ollama":
-        base_url = (
-            str(data.get("base_url") or config.OLLAMA_BASE_URL).strip().rstrip("/")
-        )
-        model = str(data.get("model") or config.OLLAMA_MODEL).strip()
+    if body.provider == "ollama":
+        base_url = (body.base_url or config.OLLAMA_BASE_URL).rstrip("/")
+        model = body.model or config.OLLAMA_MODEL
         return _test_ollama(base_url, model)
 
-    return jsonify({"ok": False, "message": f"Unknown provider: {provider}"}), 400
+    return jsonify({"ok": False, "message": f"Unknown provider: {body.provider}"}), 400
 
 
 def _test_anthropic(api_key: str) -> Any:
@@ -252,6 +276,35 @@ def _test_ollama(base_url: str, model: str) -> Any:
 # ─── Upload Google credentials ────────────────────────────────────────────────
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class GoogleCredentialsUpload(BaseModel):
+    """Only checks the shape needed to store the file usefully -- the raw
+    request body (not this model) is what actually gets persisted, since a
+    real Google OAuth credentials.json may carry other fields beyond
+    installed/web that must round-trip unchanged."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    installed: dict[str, object] | None = None
+    web: dict[str, object] | None = None
+
+    @model_validator(mode="after")
+    def _validate_oauth_block(self) -> "GoogleCredentialsUpload":
+        block = self.installed or self.web
+        if not block:
+            raise ValueError(
+                "Invalid credentials file. Expected an OAuth2 desktop or web app "
+                "credentials JSON downloaded from Google Cloud Console."
+            )
+        required_fields = {"client_id", "client_secret", "redirect_uris"}
+        missing = required_fields - set(block.keys())
+        if missing:
+            raise ValueError(
+                f"Credentials file is missing required fields: {', '.join(sorted(missing))}"
+            )
+        return self
+
+
 @setup_bp.route("/setup/upload-credentials", methods=["POST"])
 def setup_upload_credentials() -> Any:
     """Save the app-wide Google OAuth client config (admin only).
@@ -264,38 +317,16 @@ def setup_upload_credentials() -> Any:
     if not account or account.get("role") != "admin":
         return jsonify({"error": "Admin access required"}), 403
 
-    data: dict[str, object] = request.get_json() or {}
-    if not data:
+    raw_data: dict[str, object] = request.get_json(silent=True) or {}
+    if not raw_data:
         return jsonify({"error": "No data provided"}), 400
-
-    installed: dict[str, object] | None = data.get("installed") or data.get("web")  # type: ignore[assignment]
-    if not installed or not isinstance(installed, dict):
-        return (
-            jsonify(
-                {
-                    "error": (
-                        "Invalid credentials file. Expected an OAuth2 desktop or web app "
-                        "credentials JSON downloaded from Google Cloud Console."
-                    )
-                }
-            ),
-            400,
-        )
-
-    required_fields = {"client_id", "client_secret", "redirect_uris"}
-    missing = required_fields - set(installed.keys())
-    if missing:
-        return (
-            jsonify(
-                {
-                    "error": f"Credentials file is missing required fields: {', '.join(sorted(missing))}"
-                }
-            ),
-            400,
-        )
+    try:
+        GoogleCredentialsUpload.model_validate(raw_data)
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     with get_repos() as repos:
-        set_setting("google_oauth_client_config", json.dumps(data), None, repos)
+        set_setting("google_oauth_client_config", json.dumps(raw_data), None, repos)
         repos["conn"].commit()
     logger.info("Google OAuth client config saved to system settings")
 

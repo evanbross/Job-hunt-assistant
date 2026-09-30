@@ -609,15 +609,20 @@ _listener: JobImportListener | None = None
 # authentication is per-user (backend/extension_auth).
 def get_job_import_listener_config() -> dict[str, Any]:
     """Return listener settings from system_settings, falling back to the
-    registry's bootstrap defaults for anything never explicitly configured."""
+    registry's bootstrap defaults for anything never explicitly configured.
+
+    config.JOB_IMPORT_LISTENER_HOST_OVERRIDE, when set, always wins over the
+    DB value -- see that setting's comment in config.py for why a plain
+    JOB_IMPORT_LISTENER_HOST env var isn't enough for a container
+    deployment."""
     with get_repos() as repos:
         enabled = get_setting_bool(
             "job_import_listener_enabled", None, repos,
             config.DEFAULT_JOB_IMPORT_LISTENER_ENABLED,
         )
-        host = get_setting("job_import_listener_host", None, repos) or (
-            config.DEFAULT_JOB_IMPORT_LISTENER_HOST
-        )
+        host = config.JOB_IMPORT_LISTENER_HOST_OVERRIDE or get_setting(
+            "job_import_listener_host", None, repos
+        ) or config.DEFAULT_JOB_IMPORT_LISTENER_HOST
         port = get_setting_int(
             "job_import_listener_port", None, repos,
             config.DEFAULT_JOB_IMPORT_LISTENER_PORT,

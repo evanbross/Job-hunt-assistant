@@ -40,13 +40,19 @@ it automatically."""
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from backend.celery_app import celery_app
 from backend.scanning.jd_health_check_targets import PLATFORM_CHOICES
@@ -56,9 +62,11 @@ from backend.scanning.schedulers import (
 )
 from backend.security.task_ownership import get_task_ownership
 from backend.tasks import run_jd_health_check_task
+from backend.utils.url_safety import UnsafeUrlError, validate_outbound_url
 from backend.utils.utils import (
     current_user_id,
     get_repos,
+    invalid_request_response,
     is_celery_task_active,
     parse_bool,
 )
@@ -111,31 +119,130 @@ def get_jd_health_check_targets() -> ResponseReturnValue:
     return jsonify(rows)
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class JdHealthCheckTargetCreate(BaseModel):
+    """POST /jd-health-check/targets body. url is checked with
+    validate_outbound_url at save time -- these targets feed the same
+    CareerSiteScanner fetch path (via safe_urlopen) as routes/career_sites.py,
+    so this is the same fail-fast layered defense added there."""
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    platform: str = ""
+    label: str = ""
+    url: str = ""
+    enabled: bool = True
+
+    @field_validator("platform", mode="before")
+    @classmethod
+    def _validate_platform(cls, value: object) -> str:
+        value = str(value or "").strip().lower()
+        if value not in PLATFORM_CHOICES:
+            raise ValueError(
+                f"platform must be one of: {', '.join(sorted(PLATFORM_CHOICES))}"
+            )
+        return value
+
+    @field_validator("label", "url", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def _require_label_and_url(self) -> "JdHealthCheckTargetCreate":
+        if not self.label or not self.url:
+            raise ValueError("label and url are required")
+        return self
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str) -> str:
+        if not value:
+            return value
+        try:
+            validate_outbound_url(value)
+        except UnsafeUrlError as exc:
+            raise ValueError(f"url rejected: {exc}") from exc
+        return value
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _parse_enabled(cls, value: object) -> bool:
+        try:
+            return parse_bool(value, default=True)
+        except ValueError:
+            raise ValueError("enabled must be a boolean value") from None
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class JdHealthCheckTargetUpdate(BaseModel):
+    """Partial update, exclude_unset -- see CareerSiteUpdate in
+    routes/career_sites.py for why an explicit null still counts as
+    "present"."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    platform: str | None = None
+    label: str | None = None
+    url: str | None = None
+    enabled: bool | None = None
+
+    @field_validator("platform", mode="before")
+    @classmethod
+    def _validate_platform(cls, value: object) -> str:
+        value = str(value or "").strip().lower()
+        if value not in PLATFORM_CHOICES:
+            raise ValueError(
+                f"platform must be one of: {', '.join(sorted(PLATFORM_CHOICES))}"
+            )
+        return value
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _validate_label(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("label cannot be empty")
+        return value
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _validate_url(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("url cannot be empty")
+        try:
+            validate_outbound_url(value)
+        except UnsafeUrlError as exc:
+            raise ValueError(f"url rejected: {exc}") from exc
+        return value
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _parse_enabled(cls, value: object) -> bool:
+        try:
+            return parse_bool(value, default=True)
+        except ValueError:
+            raise ValueError("enabled must be a boolean value") from None
+
+
 @jd_health_check_bp.route("/jd-health-check/targets", methods=["POST"])
 def create_jd_health_check_target() -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    platform = (data.get("platform") or "").strip().lower()
-    label = (data.get("label") or "").strip()
-    url = (data.get("url") or "").strip()
-
-    if platform not in PLATFORM_CHOICES:
-        return jsonify(
-            {"error": f"platform must be one of: {', '.join(sorted(PLATFORM_CHOICES))}"}
-        ), 400
-    if not label or not url:
-        return jsonify({"error": "label and url are required"}), 400
-    if not re.match(r"^https?://", url, re.IGNORECASE):
-        return jsonify({"error": "url must start with http:// or https://"}), 400
-
     try:
-        enabled = 1 if parse_bool(data.get("enabled"), default=True) else 0
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        body = JdHealthCheckTargetCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     user_id = current_user_id()
     with get_repos() as repos:
         target_id = repos["jd_health_targets"].insert(
-            user_id, {"platform": platform, "label": label, "url": url, "enabled": enabled}
+            user_id,
+            {
+                "platform": body.platform,
+                "label": body.label,
+                "url": body.url,
+                "enabled": 1 if body.enabled else 0,
+            },
         )
         row = repos["jd_health_targets"].get_by_id(user_id, target_id)
         repos["conn"].commit()
@@ -144,33 +251,14 @@ def create_jd_health_check_target() -> ResponseReturnValue:
 
 @jd_health_check_bp.route("/jd-health-check/targets/<int:target_id>", methods=["PUT"])
 def update_jd_health_check_target(target_id: int) -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    fields: dict[str, object] = {}
+    try:
+        body = JdHealthCheckTargetUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
-    if "platform" in data:
-        platform = (data.get("platform") or "").strip().lower()
-        if platform not in PLATFORM_CHOICES:
-            return jsonify(
-                {"error": f"platform must be one of: {', '.join(sorted(PLATFORM_CHOICES))}"}
-            ), 400
-        fields["platform"] = platform
-    if "label" in data:
-        label = (data.get("label") or "").strip()
-        if not label:
-            return jsonify({"error": "label cannot be empty"}), 400
-        fields["label"] = label
-    if "url" in data:
-        url = (data.get("url") or "").strip()
-        if not url:
-            return jsonify({"error": "url cannot be empty"}), 400
-        if not re.match(r"^https?://", url, re.IGNORECASE):
-            return jsonify({"error": "url must start with http:// or https://"}), 400
-        fields["url"] = url
-    if "enabled" in data:
-        try:
-            fields["enabled"] = 1 if parse_bool(data.get("enabled"), default=True) else 0
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+    fields = body.model_dump(exclude_unset=True)
+    if "enabled" in fields:
+        fields["enabled"] = 1 if fields["enabled"] else 0
 
     user_id = current_user_id()
     with get_repos() as repos:

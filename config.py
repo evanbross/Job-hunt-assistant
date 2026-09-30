@@ -72,6 +72,16 @@ SESSION_COOKIE_SECURE_MODE: str = os.getenv("SESSION_COOKIE_SECURE", "auto")
 FLASK_HOST: str = os.getenv("FLASK_HOST", "127.0.0.1")
 FLASK_PORT: int = int(os.getenv("FLASK_PORT", "5004"))
 
+# ai: claude-sonnet-5 | 2026-09-29
+# Deliberately a separate variable from FLASK_HOST above, not a fallback for
+# it. FLASK_HOST is a bootstrap default that only takes effect while
+# system_settings has no flask_host row yet -- an existing DB migrated from
+# desktop/local use already has one (127.0.0.1), so setting FLASK_HOST in a
+# container's environment silently does nothing once that row exists. This
+# one, when non-empty, wins unconditionally over whatever is persisted in
+# the DB -- see _resolve_flask_bind() in app.py.
+FLASK_BIND_HOST_OVERRIDE: str = os.getenv("FLASK_BIND_HOST_OVERRIDE", "")
+
 # ─── App login (single-owner session gate) ────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-08-20
 # Gates the whole /api/* surface (see app.py's _require_app_login). The
@@ -282,6 +292,13 @@ DEFAULT_JOB_IMPORT_LISTENER_ENABLED: bool = os.getenv(
 DEFAULT_JOB_IMPORT_LISTENER_HOST: str = os.getenv(
     "JOB_IMPORT_LISTENER_HOST", "127.0.0.1"
 )
+# ai: claude-sonnet-5 | 2026-09-29
+# Same override pattern as FLASK_BIND_HOST_OVERRIDE above: DEFAULT_JOB_IMPORT_LISTENER_HOST
+# is only a first-run bootstrap default for the DB-persisted job_import_listener_host
+# setting, so it has no effect on an already-migrated DB. This one wins
+# unconditionally -- see get_job_import_listener_config() in
+# backend/scanning/import_listener.py.
+JOB_IMPORT_LISTENER_HOST_OVERRIDE: str = os.getenv("JOB_IMPORT_LISTENER_HOST_OVERRIDE", "")
 DEFAULT_JOB_IMPORT_LISTENER_PORT: int = int(
     os.getenv("JOB_IMPORT_LISTENER_PORT", "8765")
 )

@@ -51,6 +51,14 @@ from urllib.request import Request  # ai: claude-fable-5 | 2026-07-17
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 from googleapiclient.errors import HttpError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 import config
 from backend.db import DuplicateJobUrlError
@@ -100,6 +108,7 @@ from backend.utils.utils import (
     ai_error_http_status,
     current_user_id,
     get_repos,
+    invalid_request_response,
     safe_error_message,
 )
 
@@ -123,20 +132,164 @@ _VALID_MISMATCH_REASONS = frozenset(
 )
 
 
-def _validated_job_patch_fields(
-    body: dict[str, object],
-) -> tuple[dict[str, str], str | None]:
-    allowed = {"company", "job_title", "url"}
-    fields = {
-        k: str(v).strip()
-        for k, v in body.items()
-        if k in allowed and isinstance(v, str)
-    }
-    if "url" in fields and fields["url"]:
-        parsed = urlparse(fields["url"])
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return {}, "url must start with http:// or https://"
-    return fields, None
+# ai: claude-sonnet-5 | 2026-09-29
+class ManualJobCreate(BaseModel):
+    """POST /jobs/manual body. Either listing_text or source_url must be
+    given -- ManualJobIngestService can work from a pasted description or a
+    fetchable public URL, but not neither."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    listing_text: str = ""
+    source_url: str = ""
+    source_name: str = ""
+    company_override: str = ""
+    job_title_override: str = ""
+
+    @field_validator(
+        "listing_text",
+        "source_url",
+        "source_name",
+        "company_override",
+        "job_title_override",
+    )
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _require_text_or_url(self) -> "ManualJobCreate":
+        if not self.listing_text and not self.source_url:
+            raise ValueError("Job listing text or a public job URL is required.")
+        return self
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class JobPatchRequest(BaseModel):
+    """Partial update for PATCH /jobs/<id>. Only fields explicitly present in
+    the request body are applied (see model_dump(exclude_unset=True) below),
+    each stripped of surrounding whitespace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    company: str | None = None
+    job_title: str | None = None
+    url: str | None = None
+
+    @field_validator("company", "job_title", "url")
+    @classmethod
+    def _strip(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url_scheme(cls, value: str | None) -> str | None:
+        if value:
+            parsed = urlparse(value)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("url must start with http:// or https://")
+        return value
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class SkipJobRequest(BaseModel):
+    """POST /jobs/<id>/skip body. An unrecognized reason falls back to
+    "other" rather than a 400 (the frontend always sends one of a fixed
+    picklist, so this only ever fires for a stale client build); the same
+    reasoning applies to mismatch_reasons entries outside the allowlist --
+    they're dropped rather than rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = "other"
+    feedback: str | None = None
+    mismatch_reasons: list[str] = Field(default_factory=list)
+
+    @field_validator("reason")
+    @classmethod
+    def _normalize_reason(cls, value: str) -> str:
+        return value if value in VALID_SKIP_REASONS else "other"
+
+    @field_validator("feedback")
+    @classmethod
+    def _normalize_feedback(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("mismatch_reasons")
+    @classmethod
+    def _filter_mismatch_reasons(cls, value: list[str]) -> list[str]:
+        return [
+            item.strip()
+            for item in value
+            if item.strip() in _VALID_MISMATCH_REASONS
+        ]
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class SnoozeJobRequest(BaseModel):
+    """POST /jobs/<id>/snooze body. A missing/unparsable days falls back to
+    config.DEFAULT_SNOOZE_DAYS silently (matches the pre-Pydantic behavior);
+    a successfully-parsed value outside [1, 365] is a real 400 instead."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: int = Field(default_factory=lambda: config.DEFAULT_SNOOZE_DAYS)
+
+    @field_validator("days", mode="before")
+    @classmethod
+    def _default_on_bad_value(cls, value: object) -> object:
+        if value is None:
+            return config.DEFAULT_SNOOZE_DAYS
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return config.DEFAULT_SNOOZE_DAYS
+
+    @field_validator("days")
+    @classmethod
+    def _validate_range(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("days must be at least 1")
+        if value > 365:
+            raise ValueError("days must be at most 365")
+        return value
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class SubjectPatternRequest(BaseModel):
+    """Shared body shape for the approve/reject triage actions: an optional
+    Gmail search-style subject pattern recorded alongside sender feedback."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject_pattern: str = ""
+
+    @field_validator("subject_pattern")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class AddApplicationStageRequest(BaseModel):
+    """POST /jobs/<id>/stages body. status is normalized via
+    normalize_stage_status() and checked against the DB-loaded
+    stage_statuses allowlist in the route -- that allowlist is
+    admin-editable at runtime, so it can't be a fixed Pydantic enum here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str | None = None
+    date: str | None = None
+    notes: str | None = None
+
+    @field_validator("notes")
+    @classmethod
+    def _blank_to_none(cls, value: str | None) -> str | None:
+        return value or None
 
 
 # ─── Job routes ───────────────────────────────────────────────────────────────
@@ -218,18 +371,10 @@ def get_job(job_id: int) -> ResponseReturnValue:
 @jobs_bp.route("/jobs/manual", methods=["POST"])
 def create_manual_job() -> ResponseReturnValue:
     user_id = current_user_id()
-    body = request.get_json(silent=True) or {}
-    listing_text = str(body.get("listing_text") or "").strip()
-    source_url = str(body.get("source_url") or "").strip()
-    source_name = str(body.get("source_name") or "").strip()
-    company_override = str(body.get("company_override") or "").strip()
-    job_title_override = str(body.get("job_title_override") or "").strip()
-
-    if not listing_text and not source_url:
-        return (
-            jsonify({"error": "Job listing text or a public job URL is required."}),
-            400,
-        )
+    try:
+        body = ManualJobCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     try:
         with get_repos() as repos:
@@ -241,11 +386,11 @@ def create_manual_job() -> ResponseReturnValue:
                 repos["penalties"],
             )
             result = service.ingest(
-                listing_text,
-                source_url=source_url,
-                source_name=source_name,
-                company_override=company_override,
-                job_title_override=job_title_override,
+                body.listing_text,
+                source_url=body.source_url,
+                source_name=body.source_name,
+                company_override=body.company_override,
+                job_title_override=body.job_title_override,
                 sheet_jobs=known_jobs,
             )
             repos["conn"].commit()
@@ -289,10 +434,11 @@ def create_manual_job() -> ResponseReturnValue:
 @jobs_bp.route("/jobs/<int:job_id>", methods=["PATCH"])
 def patch_job(job_id: int) -> ResponseReturnValue:
     user_id = current_user_id()
-    body = request.get_json(silent=True) or {}
-    fields, validation_error = _validated_job_patch_fields(body)
-    if validation_error:
-        return jsonify({"error": validation_error}), 400
+    try:
+        patch = JobPatchRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    fields = patch.model_dump(exclude_unset=True)
     if not fields:
         return jsonify({"error": "No valid fields to update"}), 400
     try:
@@ -402,17 +548,10 @@ def patch_job(job_id: int) -> ResponseReturnValue:
 @jobs_bp.route("/jobs/<int:job_id>/skip", methods=["POST"])
 def skip_job(job_id: int) -> ResponseReturnValue:
     user_id = current_user_id()
-    body = request.get_json(silent=True) or {}
-    reason = body.get("reason", "other")
-    if reason not in VALID_SKIP_REASONS:  # ai: claude-fable-5 | 2026-07-16
-        reason = "other"
-    feedback = (body.get("feedback") or "").strip() or None
-    mismatch_reasons_raw = body.get("mismatch_reasons") or []
-    mismatch_reasons = [
-        str(item).strip()
-        for item in mismatch_reasons_raw
-        if str(item).strip() in _VALID_MISMATCH_REASONS
-    ]
+    try:
+        body = SkipJobRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(user_id, job_id)
@@ -420,11 +559,11 @@ def skip_job(job_id: int) -> ResponseReturnValue:
             return jsonify({"error": "Job not found"}), 404
 
         from_status = str(job.get("status") or "")
-        updates: dict = {"status": "skipped", "skip_reason": reason}
-        if feedback:
-            updates["skip_feedback"] = feedback
-        if reason == "not_a_fit" and mismatch_reasons:
-            updates["skip_mismatch_reasons"] = "|".join(mismatch_reasons)
+        updates: dict = {"status": "skipped", "skip_reason": body.reason}
+        if body.feedback:
+            updates["skip_feedback"] = body.feedback
+        if body.reason == "not_a_fit" and body.mismatch_reasons:
+            updates["skip_mismatch_reasons"] = "|".join(body.mismatch_reasons)
         repos["jobs"].update(user_id, job_id, updates)
         maybe_mark_source_email_read(user_id, job, repos["jobs"])
         repos["job_status_history"].insert(
@@ -725,17 +864,12 @@ def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
 
 @jobs_bp.route("/jobs/<int:job_id>/snooze", methods=["POST"])
 def snooze_job(job_id: int) -> ResponseReturnValue:
-    body = request.get_json(silent=True) or {}
     try:
-        days = int(body.get("days", config.DEFAULT_SNOOZE_DAYS))
-    except (TypeError, ValueError):
-        days = config.DEFAULT_SNOOZE_DAYS
-    if days < 1:
-        return jsonify({"error": "days must be at least 1"}), 400
-    if days > 365:
-        return jsonify({"error": "days must be at most 365"}), 400
+        body = SnoozeJobRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
-    snoozed_until = (datetime.now(UTC).date() + timedelta(days=days)).isoformat()
+    snoozed_until = (datetime.now(UTC).date() + timedelta(days=body.days)).isoformat()
 
     user_id = current_user_id()
     with get_repos() as repos:
@@ -753,14 +887,18 @@ def snooze_job(job_id: int) -> ResponseReturnValue:
 def approve_triage_job(job_id: int) -> ResponseReturnValue:
     """Move a triage job to pending_review; score it if not already scored."""
     user_id = current_user_id()
+    try:
+        body = SubjectPatternRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
-        body = request.get_json(silent=True) or {}
         sender = job.get("sender_email", "")
-        subject_pattern = body.get("subject_pattern", "")
+        subject_pattern = body.subject_pattern
         if sender:
             repos["feedback"].insert(
                 user_id,
@@ -984,77 +1122,6 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
     return jsonify(updated_job)
 
 
-@jobs_bp.route("/jobs/<int:job_id>/description", methods=["POST"])
-def update_job_description(job_id: int) -> ResponseReturnValue:
-    """Replace a job's description with pasted text and re-score the job."""
-    user_id = current_user_id()
-    body = request.get_json(silent=True) or {}
-    description = str(body.get("description") or "").strip()
-    if not description:
-        return jsonify({"error": "Description text is required"}), 400
-    if len(description) < 80:
-        return (
-            jsonify(
-                {"error": "Paste a more complete job description before re-evaluating."}
-            ),
-            400,
-        )
-
-    with get_repos() as repos:
-        job = repos["jobs"].get_by_id(user_id, job_id)
-        if not job:
-            return jsonify({"error": "Job not found"}), 404
-
-        resume_row = repos["resume"].get_latest(user_id)
-        resume_text = str(resume_row.get("content") or "") if resume_row else ""
-        penalty_rules = repos["penalties"].get_enabled(user_id)
-        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
-    # Connection released before AI scoring
-
-    try:
-        score_result = FitScorer(user_id).score(
-            job_title=job.get("job_title") or "",
-            company=job.get("company") or "",
-            email_body=description,
-            resume_text=resume_text,
-            penalty_rules=penalty_rules,
-            fit_feedback=fit_feedback,
-        )
-    except Exception as exc:
-        logger.warning("description update: scoring failed for job %d: %s", job_id, exc)
-        return jsonify(
-            {"error": safe_error_message(exc, "Scoring failed")}
-        ), ai_error_http_status(exc)
-
-    fit_score = score_result["score"]
-    current_status = job.get("status", "triage")
-    if current_status not in {"possible_duplicate", "skipped", "applied"}:
-        current_status = "pending_review" if fit_score >= 70 else "triage"
-
-    with get_repos() as repos:
-        # ai: claude-sonnet-4-6 | 2026-06-26
-        # Clear certainty fields: they describe ingestion-time certainty and are
-        # stale once the user supplies a complete description directly.
-        repos["jobs"].update(
-            user_id,
-            job_id,
-            {
-                "raw_jd_snippet": description[:6000],
-                "fit_score": fit_score,
-                "fit_reasoning": score_result["reasoning"],
-                "salary_min": score_result["salary_min"],
-                "salary_max": score_result["salary_max"],
-                "status": current_status,
-                JobColumns.CERTAINTY_LEVEL: None,
-                JobColumns.CERTAINTY_SCORE: None,
-                JobColumns.CERTAINTY_REASON: None,
-            },
-        )
-        updated_job = repos["jobs"].get_by_id(user_id, job_id)
-        repos["conn"].commit()
-    return jsonify(updated_job)
-
-
 @jobs_bp.route("/jobs/<int:job_id>/reprocess", methods=["POST"])
 def reprocess_job(job_id: int) -> ResponseReturnValue:
     """Re-fetch the original email from Gmail and re-run the parser.
@@ -1135,14 +1202,18 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
 def reject_triage_job(job_id: int) -> ResponseReturnValue:
     """Mark as irrelevant, save feedback pattern, and delete the job record."""
     user_id = current_user_id()
+    try:
+        body = SubjectPatternRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
-        body = request.get_json(silent=True) or {}
         sender = job.get("sender_email", "")
-        subject_pattern = body.get("subject_pattern", "")
+        subject_pattern = body.subject_pattern
         if sender:
             repos["feedback"].insert(
                 user_id,
@@ -1163,10 +1234,13 @@ def reject_triage_job(job_id: int) -> ResponseReturnValue:
 
 @jobs_bp.route("/jobs/<int:job_id>/stages", methods=["POST"])
 def add_application_stage(job_id: int) -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    status = normalize_stage_status(data.get("status"))
-    stage_date = data.get("date") or datetime.now(UTC).date().isoformat()
-    notes = data.get("notes") or None
+    try:
+        body = AddApplicationStageRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    status = normalize_stage_status(body.status)
+    stage_date = body.date or datetime.now(UTC).date().isoformat()
+    notes = body.notes
 
     user_id = current_user_id()
     with get_repos() as repos:

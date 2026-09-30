@@ -2216,18 +2216,45 @@
       && !el.className?.toString().toLowerCase().includes('disabled');
   }
 
+  // ai: claude-sonnet-5 | 2026-09-29
+  // An <a> whose href resolves to a different document (cross-origin, or a
+  // different path/query on this origin) triggers a real page navigation on
+  // click, which unloads this content script before buildSmartGenericPayload
+  // ever resolves -- rel="next" in particular is commonly used for ordinary
+  // paginated navigation, not AJAX. A hash-only or javascript:/empty href
+  // can't navigate away, so those are still safe to click.
+  function isNavigatingAnchor(el) {
+    if (el.tagName !== 'A') return false;
+    const href = el.getAttribute('href');
+    if (href == null) return false;
+    const trimmed = href.trim();
+    if (trimmed === '' || trimmed === '#' || /^javascript:/i.test(trimmed)) return false;
+    let target;
+    try {
+      target = new URL(href, location.href);
+    } catch {
+      return true;
+    }
+    if (target.origin !== location.origin) return true;
+    return target.pathname !== location.pathname || target.search !== location.search;
+  }
+
+  function isSafeToClick(el) {
+    return isElementVisible(el) && isNextControlEnabled(el) && !isNavigatingAnchor(el);
+  }
+
   function findNextPageControl() {
     const relNext = document.querySelector('a[rel="next"]');
-    if (relNext && isElementVisible(relNext) && isNextControlEnabled(relNext)) return relNext;
+    if (relNext && isSafeToClick(relNext)) return relNext;
 
     const ariaNext = document.querySelector(
       'a[aria-label="Next"], a[aria-label*="next" i], button[aria-label="Next"], button[aria-label*="next" i]'
     );
-    if (ariaNext && isElementVisible(ariaNext) && isNextControlEnabled(ariaNext)) return ariaNext;
+    if (ariaNext && isSafeToClick(ariaNext)) return ariaNext;
 
     for (const el of document.querySelectorAll('a, button')) {
       const text = (el.innerText || el.textContent || '').trim();
-      if (_NEXT_PAGE_TEXT_RE.test(text) && isElementVisible(el) && isNextControlEnabled(el)) {
+      if (_NEXT_PAGE_TEXT_RE.test(text) && isSafeToClick(el)) {
         return el;
       }
     }

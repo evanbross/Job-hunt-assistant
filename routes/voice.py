@@ -29,6 +29,7 @@ import psycopg2
 import psycopg2.extras
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from backend.db.readonly_role import get_readonly_database_url
 from backend.db.row_level_security import set_current_user
@@ -36,6 +37,7 @@ from backend.sql_guard import MAX_ROW_LIMIT, SqlGuardError, validate_select
 from backend.utils.utils import (
     ai_error_http_status,
     current_user_id,
+    invalid_request_response,
     safe_error_message,
 )
 from backend.voice.voice_actions import VOICE_ACTIONS
@@ -49,14 +51,30 @@ _MAX_QUERY_TEXT_LENGTH = 500
 _STATEMENT_TIMEOUT_MS = 5000
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class VoiceQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    text: str = ""
+
+    @field_validator("text")
+    @classmethod
+    def _validate_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("text is required")
+        if len(value) > _MAX_QUERY_TEXT_LENGTH:
+            raise ValueError("text is too long")
+        return value
+
+
 @voice_bp.route("/voice/query", methods=["POST"])
 def voice_query() -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    text = str(data.get("text") or "").strip()
-    if not text:
-        return jsonify({"error": "text is required"}), 400
-    if len(text) > _MAX_QUERY_TEXT_LENGTH:
-        return jsonify({"error": "text is too long"}), 400
+    try:
+        body = VoiceQueryRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    text = body.text
 
     try:
         intent = classify(text, current_user_id())

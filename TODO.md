@@ -1,9 +1,9 @@
 # TODO
 
 Working backlog for JobHuntAssistant. Mirrored in Claude's session memory
-(`project_planned_work.md`, `project_planned_extension_pagination.md`,
-`project_planned_env_to_db_config.md`, `project_last_code_review.md`) — update
-both when items are added, finished, or reprioritized.
+(`project_planned_extension_pagination.md`, `project_planned_env_to_db_config.md`,
+`project_last_code_review.md`) — update both when items are added, finished,
+or reprioritized.
 
 ## Features
 
@@ -93,9 +93,51 @@ Neon-backed install currently needs.
       AI-backed feature) found while writing regression tests for the
       review's other fixes. Next full pass should scope from `f7e50a9`
       forward.
+- [x] **Inconsistent Pydantic validation across route modules.** Done
+      2026-09-29: converted every hand-parsed `request.get_json()` route
+      across `jobs.py`, `fit.py`, `career_sites.py`, `jd_health_check.py`,
+      `cover_letter.py`, `applications.py`, `emails.py`, `settings.py`,
+      `setup.py`, `import_.py`, `toptal.py`, `voice.py`, `browser_capture.py`
+      to a Pydantic model, using a new shared `invalid_request_response()`
+      helper (`backend/utils/utils.py`) for the 400 response — surfaces a
+      single hand-written validator's own message directly, falls back to a
+      sanitized field-list for everything else. Found and fixed along the way:
+      - **Dead route**: `routes/jobs.py::update_job_description` and
+        `routes/fit.py::save_job_description` both registered
+        `POST /jobs/<id>/description` — Flask/Werkzeug always dispatched to
+        `fit.py`'s (registered first in `app.py`), so `jobs.py`'s was
+        unreachable (and would have written to the wrong column,
+        `raw_jd_snippet` instead of `job_description`, even if it ran).
+        Deleted; `fit.py`'s version is now Pydantic-validated and tested
+        (it previously had zero test coverage despite being the live route).
+      - **SSRF fail-fast gap**: `routes/career_sites.py` and
+        `routes/jd_health_check.py` accepted a career-site/canary `url` with
+        no `validate_outbound_url` check — not an open vulnerability
+        (`CareerSiteScanner` already SSRF-checks via `safe_urlopen` at actual
+        fetch time), but an unsafe URL was only ever rejected on the next
+        scan instead of immediately at save time. Added the same
+        `validate_outbound_url` check `routes/jobanni.py` already used.
+      - **Crash-to-400**: `routes/settings.py`'s `create_penalty`/
+        `update_penalty` called `int(penalty_points)` with no try/except —
+        a non-numeric value raised an uncaught `ValueError`/`TypeError` (500)
+        instead of a clean validation error. Fixed as part of the conversion.
+      - Deliberately **not** converted, with reasons left in-code:
+        `routes/import_.py::import_and_queue_all_jobs` (forwards its body to
+        `queue_import_capture()`, also called from a non-Flask listener
+        thread with a raw dict — the browser extension's live capture
+        payload shape isn't fully enumerable, so strict validation risks
+        silently breaking a legitimate capture); `routes/settings.py`'s
+        `update_system_settings` (already validates against the live
+        `SYSTEM_SETTING_KEYS` set from `settings_registry.py` — a
+        `RootModel` wrapper would just re-implement the same check with no
+        real benefit).
+      - `routes/settings.py::update_config`'s `ollama_base_url` handling
+        (SSRF check via a raw `session.get("user_id")` peek so it still runs
+        with no logged-in session, matching `routes/jobanni.py`'s pattern
+        from the earlier config-migration session) was deliberately left
+        hand-parsed rather than folded into the Pydantic model — verified
+        via `tests/test_ssrf_protection.py`, unchanged and still passing.
 - [ ] Still open (carried over, not re-checked in the 2026-09-28 pass):
-      - Inconsistent Pydantic validation across route modules (settings,
-        jobs, emails, cover-letter actions hand-parse `request.get_json()`).
       - No frontend automated tests (no Vitest/RTL; `LoginPage.jsx` etc.
         verified only via production build + manual smoke test) — growing
         risk given `browser-extension/content.js`'s site-specific parsers

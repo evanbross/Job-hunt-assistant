@@ -45,6 +45,13 @@ import time
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
@@ -59,11 +66,14 @@ from backend.scoring.job_validator import SCORING_FAILED_WARNING, remove_import_
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     FIT_PANEL_STATUSES,
+    ChatMessage,
     ai_error_http_status,
     current_user_id,
     get_candidate_profile,
     get_repos,
+    invalid_request_response,
     is_celery_task_active,
+    parse_chat_messages,
     safe_error_message,
 )
 
@@ -358,8 +368,109 @@ def get_triage_jobs() -> ResponseReturnValue:
     return jsonify(jobs)
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class FitChatRequest(BaseModel):
+    """POST /jobs/<id>/fit-chat body. See backend.utils.utils.parse_chat_messages
+    for the shared messages-list validation this and every other AI chat
+    route reuse."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    messages: list[ChatMessage] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_messages(cls, data: object) -> object:
+        if isinstance(data, dict):
+            data.setdefault("messages", [])
+        return data
+
+    @field_validator("messages", mode="before")
+    @classmethod
+    def _parse_messages(cls, value: object) -> list[ChatMessage]:
+        return parse_chat_messages(value)
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class FitClassificationUpdate(BaseModel):
+    """POST /jobs/<id>/fit-classification body."""
+
+    # validate_default=True: a missing fit_score/status/fit_reasoning is
+    # exactly as invalid as an explicit bad one (empty string fails the same
+    # "required" checks below), so the field validators must run against the
+    # defaults too -- by default pydantic skips validating an unused default.
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    fit_score: int | None = None
+    status: str = ""
+    fit_reasoning: str = ""
+
+    @field_validator("fit_score", mode="before")
+    @classmethod
+    def _coerce_score(cls, value: object) -> object:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise ValueError("fit_score must be an integer from 0 to 100") from None
+
+    @field_validator("fit_score")
+    @classmethod
+    def _validate_score_range(cls, value: int) -> int:
+        if value < 0 or value > 100:
+            raise ValueError("fit_score must be an integer from 0 to 100")
+        return value
+
+    @field_validator("status", "fit_reasoning", mode="before")
+    @classmethod
+    def _stringify(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, value: str) -> str:
+        if value not in FIT_PANEL_STATUSES:
+            raise ValueError(
+                f"status must be one of: {', '.join(sorted(FIT_PANEL_STATUSES))}"
+            )
+        return value
+
+    @field_validator("fit_reasoning")
+    @classmethod
+    def _require_reasoning(cls, value: str) -> str:
+        if not value:
+            raise ValueError("fit_reasoning is required")
+        return value
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class JobDescriptionUpdate(BaseModel):
+    """POST /jobs/<id>/description body."""
+
+    # validate_default=True: a missing description is exactly as invalid as
+    # a too-short one, so the length check below must run against the
+    # default too -- see FitClassificationUpdate's model_config for why.
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    description: str = ""
+
+    @field_validator("description")
+    @classmethod
+    def _validate_length(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 80:
+            raise ValueError(
+                "Description is too short to be useful (minimum 80 characters)"
+            )
+        return value
+
+
 @fit_bp.route("/jobs/<int:job_id>/fit-chat", methods=["POST"])
 def fit_chat(job_id: int) -> ResponseReturnValue:
+    try:
+        body = FitChatRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
     user_id = current_user_id()
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(user_id, job_id)
@@ -370,26 +481,7 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    body = request.get_json(silent=True) or {}
-    messages_raw = body.get("messages", [])
-    if not isinstance(messages_raw, list) or not messages_raw:
-        return jsonify({"error": "No messages provided"}), 400
-
-    messages: list[dict[str, str]] = []
-    for message in messages_raw[-12:]:
-        if not isinstance(message, dict):
-            continue
-        role = message.get("role")
-        content = message.get("content")
-        if (
-            role in {"user", "assistant"}
-            and isinstance(content, str)
-            and content.strip()
-        ):
-            messages.append({"role": role, "content": content.strip()[:4000]})
-
-    if not messages:
-        return jsonify({"error": "No valid messages provided"}), 400
+    messages = body.messages
 
     resume_text = ""
     if resume:
@@ -420,10 +512,7 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
     try:
         reply_text = AIProviderClient(user_id).complete(
             system=system_prompt,
-            messages=[
-                AIMessage(role=message["role"], content=message["content"])
-                for message in messages
-            ],
+            messages=[AIMessage(role=m.role, content=m.content) for m in messages],
             max_tokens=1000,
         )
     except Exception as exc:
@@ -465,27 +554,10 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
 
 @fit_bp.route("/jobs/<int:job_id>/fit-classification", methods=["POST"])
 def update_fit_classification(job_id: int) -> ResponseReturnValue:
-    body = request.get_json(silent=True) or {}
     try:
-        fit_score = int(body.get("fit_score"))
-    except (TypeError, ValueError):
-        return jsonify({"error": "fit_score must be an integer from 0 to 100"}), 400
-
-    status = str(body.get("status") or "").strip()
-    fit_reasoning = str(body.get("fit_reasoning") or "").strip()
-    if fit_score < 0 or fit_score > 100:
-        return jsonify({"error": "fit_score must be an integer from 0 to 100"}), 400
-    if status not in FIT_PANEL_STATUSES:
-        return (
-            jsonify(
-                {
-                    "error": f"status must be one of: {', '.join(sorted(FIT_PANEL_STATUSES))}"
-                }
-            ),
-            400,
-        )
-    if not fit_reasoning:
-        return jsonify({"error": "fit_reasoning is required"}), 400
+        body = FitClassificationUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     user_id = current_user_id()
     with get_repos() as repos:
@@ -494,11 +566,11 @@ def update_fit_classification(job_id: int) -> ResponseReturnValue:
             return jsonify({"error": "Job not found"}), 404
 
         updates: dict[str, object] = {
-            "fit_score": fit_score,
-            "fit_reasoning": fit_reasoning[:2000],
-            "status": status,
+            "fit_score": body.fit_score,
+            "fit_reasoning": body.fit_reasoning[:2000],
+            "status": body.status,
         }
-        if status == "skipped":
+        if body.status == "skipped":
             updates["skip_reason"] = "not_a_fit"
         repos["jobs"].update(user_id, job_id, updates)
         updated_job = repos["jobs"].get_by_id(user_id, job_id)
@@ -568,17 +640,11 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
 
 @fit_bp.route("/jobs/<int:job_id>/description", methods=["POST"])
 def save_job_description(job_id: int) -> ResponseReturnValue:
-    body = request.get_json(silent=True) or {}
-    description = str(body.get("description") or "").strip()
-    if len(description) < 80:
-        return (
-            jsonify(
-                {
-                    "error": "Description is too short to be useful (minimum 80 characters)"
-                }
-            ),
-            400,
-        )
+    try:
+        body = JobDescriptionUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    description = body.description
 
     user_id = current_user_id()
     with get_repos() as repos:

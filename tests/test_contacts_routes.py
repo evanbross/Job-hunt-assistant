@@ -637,24 +637,31 @@ def test_undo_title_rule_rejects_invalid_body(monkeypatch: pytest.MonkeyPatch) -
     assert title_rules.undo_calls == []
 
 
-# ai: claude-sonnet-5 | 2026-09-28
+# ai: claude-sonnet-5 | 2026-09-29
 def test_suggest_title_rules_returns_suggestions(monkeypatch: pytest.MonkeyPatch) -> None:
     from backend.contacts.title_suggestion_service import (
         SuggestionResult,
         TitleSuggestion,
+        TitleSuggestionPrep,
     )
 
     captured = {}
 
-    def fake_suggest_titles(user_id, repos, *, use_ai):
-        captured["user_id"] = user_id
-        captured["use_ai"] = use_ai
+    def fake_prepare(user_id, repos, *, use_ai):
+        captured["prepare_user_id"] = user_id
+        captured["prepare_use_ai"] = use_ai
+        return TitleSuggestionPrep(suggestions=[], leftovers=[], companies={})
+
+    def fake_finish(user_id, prep, *, use_ai):
+        captured["finish_user_id"] = user_id
+        captured["finish_use_ai"] = use_ai
         return SuggestionResult(
             suggestions=[TitleSuggestion("recruiter", "Recruiter", "keyword match")],
             ai_error=None,
         )
 
-    monkeypatch.setattr("routes.contacts.suggest_titles", fake_suggest_titles)
+    monkeypatch.setattr("routes.contacts.prepare_title_suggestions", fake_prepare)
+    monkeypatch.setattr("routes.contacts.finish_title_suggestions", fake_finish)
     client = _contacts_client(monkeypatch)
 
     response = client.post("/api/contacts/titles/suggest", json={"use_ai": True})
@@ -666,25 +673,38 @@ def test_suggest_title_rules_returns_suggestions(monkeypatch: pytest.MonkeyPatch
         ],
         "ai_error": None,
     }
-    assert captured == {"user_id": _TEST_USER_ID, "use_ai": True}
+    assert captured == {
+        "prepare_user_id": _TEST_USER_ID,
+        "prepare_use_ai": True,
+        "finish_user_id": _TEST_USER_ID,
+        "finish_use_ai": True,
+    }
 
 
 def test_suggest_title_rules_defaults_use_ai_to_false(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.contacts.title_suggestion_service import SuggestionResult
+    from backend.contacts.title_suggestion_service import (
+        SuggestionResult,
+        TitleSuggestionPrep,
+    )
 
     captured = {}
 
-    def fake_suggest_titles(user_id, repos, *, use_ai):
-        captured["use_ai"] = use_ai
+    def fake_prepare(user_id, repos, *, use_ai):
+        captured["prepare_use_ai"] = use_ai
+        return TitleSuggestionPrep(suggestions=[], leftovers=[], companies={})
+
+    def fake_finish(user_id, prep, *, use_ai):
+        captured["finish_use_ai"] = use_ai
         return SuggestionResult(suggestions=[], ai_error=None)
 
-    monkeypatch.setattr("routes.contacts.suggest_titles", fake_suggest_titles)
+    monkeypatch.setattr("routes.contacts.prepare_title_suggestions", fake_prepare)
+    monkeypatch.setattr("routes.contacts.finish_title_suggestions", fake_finish)
     client = _contacts_client(monkeypatch)
 
     response = client.post("/api/contacts/titles/suggest", json={})
 
     assert response.status_code == 200
-    assert captured == {"use_ai": False}
+    assert captured == {"prepare_use_ai": False, "finish_use_ai": False}
 
 
 def test_suggest_title_rules_rejects_invalid_body(monkeypatch: pytest.MonkeyPatch) -> None:

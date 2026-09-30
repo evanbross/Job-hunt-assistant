@@ -32,6 +32,18 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
+# ai: claude-sonnet-5 | 2026-09-29
+"""PATCH /jobs/<id> and POST /jobs/<id>/return-to-queue route tests.
+
+Despite the filename, this file no longer covers a /description route:
+routes/jobs.py's update_job_description was dead code (routes/fit.py's
+save_job_description registers the identical POST /jobs/<id>/description
+path first, so Flask/Werkzeug always dispatched there in the real app --
+this file's own test only passed because it registered jobs_bp in
+isolation, never alongside fit_bp). Removed 2026-09-29; see
+tests/test_fit_routes.py for the route that's actually live.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -160,65 +172,6 @@ class FakeStageStatusesRepo:
             {"key": "job_filled", "is_terminal": True},
             {"key": "skipped", "is_terminal": True},
         ]
-
-
-class FakeFitScorer:
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def score(
-        self,
-        job_title: str,
-        company: str,
-        email_body: str,
-        resume_text: str,
-        penalty_rules: list[dict[str, Any]],
-        fit_feedback: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        assert "full job description" in email_body
-        return {
-            "score": 86,
-            "reasoning": f"{job_title} at {company} is relevant.",
-            "salary_min": None,
-            "salary_max": None,
-        }
-
-
-def test_update_job_description_replaces_text_and_rescores(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    jobs_repo = FakeJobsRepo()
-    repos = {
-        "conn": FakeConnection(),
-        "jobs": jobs_repo,
-        "resume": FakeResumeRepo(),
-        "penalties": FakePenaltyRepo(),
-    }
-
-    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
-    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
-    monkeypatch.setattr("routes.jobs.FitScorer", FakeFitScorer)
-
-    app = Flask(__name__)
-    app.register_blueprint(jobs_bp, url_prefix="/api")
-    client = app.test_client()
-
-    response = client.post(
-        "/api/jobs/7/description",
-        json={
-            "description": (
-                "This is a full job description with enough detail about platform "
-                "engineering, user workflows, product growth, maintainability, and "
-                "technical debt prevention."
-            )
-        },
-    )
-
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data["fit_score"] == 86
-    assert data["status"] == "pending_review"
-    assert "full job description" in data["raw_jd_snippet"]
 
 
 def test_patch_job_rechecks_duplicate_after_company_edit(

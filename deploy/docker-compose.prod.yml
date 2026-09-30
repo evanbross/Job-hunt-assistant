@@ -91,8 +91,15 @@ services:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
       REDIS_TLS_CA_FILE: /tls/ca.crt
       # Bind inside the container network; Caddy is the only thing that reaches these.
+      # FLASK_HOST/JOB_IMPORT_LISTENER_HOST only seed system_settings on a brand-new
+      # DB (ON CONFLICT DO NOTHING) -- a DB migrated from desktop/local use already
+      # has 127.0.0.1 persisted there, which those two would then silently do nothing
+      # against. The _OVERRIDE variables force the bind unconditionally regardless of
+      # what's in the DB; see FLASK_BIND_HOST_OVERRIDE's comment in config.py.
       FLASK_HOST: 0.0.0.0
       JOB_IMPORT_LISTENER_HOST: 0.0.0.0
+      FLASK_BIND_HOST_OVERRIDE: 0.0.0.0
+      JOB_IMPORT_LISTENER_HOST_OVERRIDE: 0.0.0.0
       APP_ENV: production
       # The one proxy allowed to say which client address/scheme a request had
       # (X-Forwarded-For / -Proto). Must equal Caddy's pinned address on `edge`.

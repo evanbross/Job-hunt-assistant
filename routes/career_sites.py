@@ -37,7 +37,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import secrets
 import threading
 import time
@@ -47,6 +46,13 @@ from urllib.parse import urlparse
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 import config
 from backend.celery_app import celery_app
@@ -74,9 +80,11 @@ from backend.scoring.job_validator import (
     import_warnings_to_json,
     normalize_and_validate,
 )
+from backend.utils.url_safety import UnsafeUrlError, validate_outbound_url
 from backend.utils.utils import (
     current_user_id,
     get_repos,
+    invalid_request_response,
     is_celery_task_active,
     parse_bool,
     parse_positive_int,
@@ -995,38 +1003,138 @@ def get_career_sites() -> ResponseReturnValue:
     return jsonify(rows)
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class CareerSiteCreate(BaseModel):
+    """POST /career-sites body. url is checked with validate_outbound_url at
+    save time -- a fail-fast defense-in-depth layer alongside the SSRF
+    protection CareerSiteScanner already applies via safe_urlopen at actual
+    fetch time (backend/scanning/career_site_scanner.py); this only makes an
+    already-doomed URL fail immediately instead of on the next scan."""
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    name: str = ""
+    url: str = ""
+    enabled: bool = True
+    collection_mode: str = "automatic"
+    recapture_interval_days: int = 4
+
+    @field_validator("name", "url", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def _require_name_and_url(self) -> "CareerSiteCreate":
+        if not self.name or not self.url:
+            raise ValueError("name and url are required")
+        return self
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url_safety(cls, value: str) -> str:
+        if not value:
+            return value
+        try:
+            validate_outbound_url(value)
+        except UnsafeUrlError as exc:
+            raise ValueError(f"url rejected: {exc}") from exc
+        return value
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _parse_enabled(cls, value: object) -> bool:
+        try:
+            return parse_bool(value, default=True)
+        except ValueError:
+            raise ValueError("enabled must be a boolean value") from None
+
+    @field_validator("collection_mode", mode="before")
+    @classmethod
+    def _validate_collection_mode(cls, value: object) -> str:
+        return _parse_collection_mode(value)
+
+    @field_validator("recapture_interval_days", mode="before")
+    @classmethod
+    def _parse_recapture_interval(cls, value: object) -> int:
+        return parse_positive_int(value, default=4, field_name="recapture_interval_days")
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class CareerSiteUpdate(BaseModel):
+    """PUT /career-sites/<id> body. Only fields explicitly present in the
+    request body are applied (see model_dump(exclude_unset=True)) -- but an
+    explicit null still counts as "present" and is processed the same as any
+    other value (parse_bool/parse_positive_int/_parse_collection_mode all
+    treat None as "use the default"), matching the original hand-parsed
+    route's behavior exactly. url gets the same validate_outbound_url check
+    as CareerSiteCreate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    url: str | None = None
+    enabled: bool | None = None
+    collection_mode: str | None = None
+    recapture_interval_days: int | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _validate_name(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("name cannot be empty")
+        return value
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _validate_url(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("url cannot be empty")
+        try:
+            validate_outbound_url(value)
+        except UnsafeUrlError as exc:
+            raise ValueError(f"url rejected: {exc}") from exc
+        return value
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _parse_enabled(cls, value: object) -> bool:
+        try:
+            return parse_bool(value, default=True)
+        except ValueError:
+            raise ValueError("enabled must be a boolean value") from None
+
+    @field_validator("collection_mode", mode="before")
+    @classmethod
+    def _validate_collection_mode(cls, value: object) -> str:
+        return _parse_collection_mode(value)
+
+    @field_validator("recapture_interval_days", mode="before")
+    @classmethod
+    def _parse_recapture_interval(cls, value: object) -> int:
+        return parse_positive_int(value, default=4, field_name="recapture_interval_days")
+
+
 @career_sites_bp.route("/career-sites", methods=["POST"])
 def create_career_site() -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    url = (data.get("url") or "").strip()
     try:
-        enabled = 1 if parse_bool(data.get("enabled"), default=True) else 0
-        collection_mode = _parse_collection_mode(data.get("collection_mode"))
-        recapture_interval_days = parse_positive_int(
-            data.get("recapture_interval_days"),
-            default=4,
-            field_name="recapture_interval_days",
-        )
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    if not name or not url:
-        return jsonify({"error": "name and url are required"}), 400
-    if not re.match(r"^https?://", url, re.IGNORECASE):
-        return jsonify({"error": "url must start with http:// or https://"}), 400
+        body = CareerSiteCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     user_id = current_user_id()
     with get_repos() as repos:
         source_id = repos["career_sites"].insert(
             user_id,
             {
-                "name": name,
-                "url": url,
-                "enabled": enabled,
-                "collection_mode": collection_mode,
-                "detected_platform": platform_for_site_url(url),
-                "recapture_interval_days": recapture_interval_days,
+                "name": body.name,
+                "url": body.url,
+                "enabled": 1 if body.enabled else 0,
+                "collection_mode": body.collection_mode,
+                "detected_platform": platform_for_site_url(body.url),
+                "recapture_interval_days": body.recapture_interval_days,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             },
         )
@@ -1037,44 +1145,14 @@ def create_career_site() -> ResponseReturnValue:
 
 @career_sites_bp.route("/career-sites/<int:source_id>", methods=["PUT"])
 def update_career_site(source_id: int) -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    fields: dict[str, object] = {}
+    try:
+        body = CareerSiteUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
-    if "name" in data:
-        name = (data.get("name") or "").strip()
-        if not name:
-            return jsonify({"error": "name cannot be empty"}), 400
-        fields["name"] = name
-    if "url" in data:
-        url = (data.get("url") or "").strip()
-        if not url:
-            return jsonify({"error": "url cannot be empty"}), 400
-        if not re.match(r"^https?://", url, re.IGNORECASE):
-            return jsonify({"error": "url must start with http:// or https://"}), 400
-        fields["url"] = url
-    if "enabled" in data:
-        try:
-            fields["enabled"] = (
-                1 if parse_bool(data.get("enabled"), default=True) else 0
-            )
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-    if "collection_mode" in data:
-        try:
-            fields["collection_mode"] = _parse_collection_mode(
-                data.get("collection_mode")
-            )
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-    if "recapture_interval_days" in data:
-        try:
-            fields["recapture_interval_days"] = parse_positive_int(
-                data.get("recapture_interval_days"),
-                default=4,
-                field_name="recapture_interval_days",
-            )
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+    fields = body.model_dump(exclude_unset=True)
+    if "enabled" in fields:
+        fields["enabled"] = 1 if fields["enabled"] else 0
 
     user_id = current_user_id()
     with get_repos() as repos:
@@ -1309,24 +1387,71 @@ def get_career_rejection_rules() -> ResponseReturnValue:
     return jsonify(rows)
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class CareerRejectionRuleCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    rule_text: str = ""
+    enabled: bool = True
+
+    @field_validator("rule_text", mode="before")
+    @classmethod
+    def _require_rule_text(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("rule_text is required")
+        return value
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _parse_enabled(cls, value: object) -> bool:
+        try:
+            return parse_bool(value, default=True)
+        except ValueError:
+            raise ValueError("enabled must be a boolean value") from None
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class CareerRejectionRuleUpdate(BaseModel):
+    """Partial update, exclude_unset -- see CareerSiteUpdate's docstring for
+    why an explicit null still counts as "present"."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_text: str | None = None
+    enabled: bool | None = None
+
+    @field_validator("rule_text", mode="before")
+    @classmethod
+    def _validate_rule_text(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("rule_text cannot be empty")
+        return value
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _parse_enabled(cls, value: object) -> bool:
+        try:
+            return parse_bool(value, default=True)
+        except ValueError:
+            raise ValueError("enabled must be a boolean value") from None
+
+
 @career_sites_bp.route("/career-rejection-rules", methods=["POST"])
 def create_career_rejection_rule() -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    rule_text = (data.get("rule_text") or "").strip()
-    if not rule_text:
-        return jsonify({"error": "rule_text is required"}), 400
     try:
-        enabled = 1 if parse_bool(data.get("enabled"), default=True) else 0
-    except ValueError:
-        return jsonify({"error": "enabled must be a boolean value"}), 400
+        body = CareerRejectionRuleCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     user_id = current_user_id()
     with get_repos() as repos:
         row_id = repos["career_rejection_rules"].insert(
             user_id,
             {
-                "rule_text": rule_text,
-                "enabled": enabled,
+                "rule_text": body.rule_text,
+                "enabled": 1 if body.enabled else 0,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
             },
@@ -1338,21 +1463,14 @@ def create_career_rejection_rule() -> ResponseReturnValue:
 
 @career_sites_bp.route("/career-rejection-rules/<int:rule_id>", methods=["PUT"])
 def update_career_rejection_rule(rule_id: int) -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    fields: dict[str, object] = {}
+    try:
+        body = CareerRejectionRuleUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
-    if "rule_text" in data:
-        rule_text = (data.get("rule_text") or "").strip()
-        if not rule_text:
-            return jsonify({"error": "rule_text cannot be empty"}), 400
-        fields["rule_text"] = rule_text
-    if "enabled" in data:
-        try:
-            fields["enabled"] = (
-                1 if parse_bool(data.get("enabled"), default=True) else 0
-            )
-        except ValueError:
-            return jsonify({"error": "enabled must be a boolean value"}), 400
+    fields = body.model_dump(exclude_unset=True)
+    if "enabled" in fields:
+        fields["enabled"] = 1 if fields["enabled"] else 0
     fields["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
 
     user_id = current_user_id()
@@ -1378,14 +1496,35 @@ def delete_career_rejection_rule(rule_id: int) -> ResponseReturnValue:
     return jsonify({"status": "ok"})
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class CareerScanResultReject(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    reason: str = ""
+    add_as_rule: bool = False
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _require_reason(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("reason is required")
+        return value
+
+    @field_validator("add_as_rule", mode="before")
+    @classmethod
+    def _coerce_bool(cls, value: object) -> bool:
+        return bool(value)
+
+
 @career_sites_bp.route("/career-scan/results/<int:row_id>/reject", methods=["POST"])
 def reject_career_scan_result(row_id: int) -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    reason = (data.get("reason") or "").strip()
-    add_as_rule = bool(data.get("add_as_rule"))
-
-    if not reason:
-        return jsonify({"error": "reason is required"}), 400
+    try:
+        body = CareerScanResultReject.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    reason = body.reason
+    add_as_rule = body.add_as_rule
 
     user_id = current_user_id()
     with get_repos() as repos:
@@ -1422,27 +1561,41 @@ def reject_career_scan_result(row_id: int) -> ResponseReturnValue:
     return jsonify({"row": updated_row, "created_rule": created_rule})
 
 
+_CAREER_SCAN_RESULT_TRACKING_STATUSES = {
+    "Applied": "manual_applied",
+    "Employer Rejected": "employer_rejected",
+}
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class CareerScanResultTrackingStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    status: str = ""
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _validate_status(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if value not in _CAREER_SCAN_RESULT_TRACKING_STATUSES:
+            raise ValueError(
+                "status must be one of: "
+                f"{', '.join(sorted(_CAREER_SCAN_RESULT_TRACKING_STATUSES))}"
+            )
+        return value
+
+
 @career_sites_bp.route(
     "/career-scan/results/<int:row_id>/tracking-status", methods=["POST"]
 )
 def set_career_scan_result_tracking_status(row_id: int) -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    status = (data.get("status") or "").strip()
-    _VALID_STATUSES = {"Applied", "Employer Rejected"}
-    if status not in _VALID_STATUSES:
-        return (
-            jsonify(
-                {
-                    "error": f"status must be one of: {', '.join(sorted(_VALID_STATUSES))}"
-                }
-            ),
-            400,
+    try:
+        body = CareerScanResultTrackingStatusUpdate.model_validate(
+            request.get_json(silent=True) or {}
         )
-
-    _SOURCE_MAP = {
-        "Applied": "manual_applied",
-        "Employer Rejected": "employer_rejected",
-    }
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    status = body.status
 
     try:
         user_id = current_user_id()
@@ -1455,7 +1608,7 @@ def set_career_scan_result_tracking_status(row_id: int) -> ResponseReturnValue:
                 row_id,
                 {
                     "tracking_status": status,
-                    "tracking_source": _SOURCE_MAP[status],
+                    "tracking_source": _CAREER_SCAN_RESULT_TRACKING_STATUSES[status],
                 },
             )
             updated = repos["career_scan_results"].get_by_id(user_id, row_id)

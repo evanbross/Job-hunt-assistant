@@ -858,12 +858,16 @@ def _resolve_flask_bind() -> tuple[str, int]:
     .env-sourced config.FLASK_HOST/FLASK_PORT bootstrap defaults if the DB
     isn't reachable yet -- this runs before any socket is open, so a DB
     outage must degrade gracefully rather than block startup entirely.
+
+    config.FLASK_BIND_HOST_OVERRIDE, when set, always wins over the DB value
+    -- a container deployment needs a way to force the bind host that
+    doesn't silently no-op against an already-migrated DB the way FLASK_HOST
+    does (see that setting's comment in config.py).
     """
     try:
         with get_repos() as repos:
             host = get_setting("flask_host", None, repos)
             port = int(get_setting("flask_port", None, repos))
-        return host, port
     except (psycopg2.OperationalError, OSError, ValueError) as exc:
         logger.warning(
             "Could not read flask_host/flask_port from system_settings (%s) — "
@@ -872,7 +876,17 @@ def _resolve_flask_bind() -> tuple[str, int]:
             config.FLASK_HOST,
             config.FLASK_PORT,
         )
-        return config.FLASK_HOST, config.FLASK_PORT
+        host, port = config.FLASK_HOST, config.FLASK_PORT
+
+    if config.FLASK_BIND_HOST_OVERRIDE:
+        logger.info(
+            "FLASK_BIND_HOST_OVERRIDE=%s overrides the persisted/bootstrap host %s",
+            config.FLASK_BIND_HOST_OVERRIDE,
+            host,
+        )
+        host = config.FLASK_BIND_HOST_OVERRIDE
+
+    return host, port
 
 
 def _port_is_free(port: int) -> bool:

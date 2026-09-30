@@ -38,10 +38,18 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from backend.db.job_columns import JobColumns
 from backend.email.classification import email_date_from_message, get_subject_rule_match
@@ -61,7 +69,12 @@ from backend.scoring.job_validator import (
     normalize_and_validate,
 )
 from backend.settings_service import get_setting
-from backend.utils.utils import current_user_id, get_repos, safe_error_message
+from backend.utils.utils import (
+    current_user_id,
+    get_repos,
+    invalid_request_response,
+    safe_error_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +83,6 @@ emails_bp = Blueprint("emails", __name__)
 _EMAIL_SOURCE_MATCH_TYPES = {"sender_domain", "sender_email", "subject_contains"}
 _EMAIL_SOURCE_SUBJECT_FILTER_MODES = {"", "contains", "starts_with"}
 _EMAIL_SOURCE_SUBJECT_FILTER_MATCH_MODES = {"text", "glob", "regex"}
-_EMAIL_SOURCE_ALLOWED_FIELDS = {
-    "name",
-    "match_type",
-    "match_value",
-    "subject_filter_mode",
-    "subject_filter_value",
-    "subject_filter_match_mode",
-    "enabled",
-}
 
 _ACTIVE_RESCAN_STATUSES: tuple[str, ...] = (
     "pending_review",
@@ -175,11 +179,42 @@ def get_scanned_emails() -> ResponseReturnValue:
     return jsonify(emails)
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class SetEmailHiddenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hidden: bool = True
+
+    @field_validator("hidden", mode="before")
+    @classmethod
+    def _coerce(cls, value: object) -> bool:
+        return bool(value)
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class EmailIdsRequest(BaseModel):
+    """Shared body shape for routes that take a list of Gmail message ids."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email_ids: list[Any]
+
+    @field_validator("email_ids", mode="before")
+    @classmethod
+    def _require_list(cls, value: object) -> object:
+        if not isinstance(value, list):
+            raise ValueError("email_ids must be a list")
+        return value
+
+
 @emails_bp.route("/emails/<email_id>/hide", methods=["POST"])
 def set_email_hidden(email_id: str) -> ResponseReturnValue:
     """Set or clear the hidden flag on a scanned email."""
-    data = request.get_json(silent=True) or {}
-    hidden = bool(data.get("hidden", True))
+    try:
+        body = SetEmailHiddenRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    hidden = body.hidden
     with get_repos() as repos:
         repos["scanned_emails"].set_hidden(current_user_id(), email_id, hidden)
         repos["conn"].commit()
@@ -207,15 +242,15 @@ def mark_email_read(email_id: str) -> ResponseReturnValue:
 @emails_bp.route("/emails/move-scanned", methods=["POST"])
 def move_scanned_emails() -> ResponseReturnValue:
     """Move selected Gmail messages out of the inbox and into the scanned label."""
-    data = request.get_json(silent=True) or {}
-    raw_email_ids = data.get("email_ids")
-    if not isinstance(raw_email_ids, list):
-        return jsonify({"error": "email_ids must be a list"}), 400
+    try:
+        body = EmailIdsRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     email_ids = list(
         dict.fromkeys(
             str(email_id).split(":")[0].strip()
-            for email_id in raw_email_ids
+            for email_id in body.email_ids
             if str(email_id).strip()
         )
     )
@@ -267,13 +302,13 @@ def move_scanned_emails() -> ResponseReturnValue:
 @emails_bp.route("/emails/clean", methods=["POST"])
 def clean_displayed_emails() -> ResponseReturnValue:
     """Hide displayed emails that no longer exist in Gmail inbox or are already read."""
-    data = request.get_json(silent=True) or {}
-    raw_email_ids = data.get("email_ids")
-    if not isinstance(raw_email_ids, list):
-        return jsonify({"error": "email_ids must be a list"}), 400
+    try:
+        body = EmailIdsRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     email_ids = [
-        str(email_id).strip() for email_id in raw_email_ids if str(email_id).strip()
+        str(email_id).strip() for email_id in body.email_ids if str(email_id).strip()
     ]
     if not email_ids:
         return jsonify({"checked": 0, "hidden": 0, "hidden_email_ids": []})
@@ -644,16 +679,25 @@ def get_sources() -> ResponseReturnValue:
 
 @emails_bp.route("/sources", methods=["POST"])
 def create_source() -> ResponseReturnValue:
-    data = request.get_json()
-    if not data or not all(k in data for k in ("name", "match_type", "match_value")):
-        return jsonify({"error": "name, match_type, and match_value are required"}), 400
-    source_payload, error_response = _email_source_payload(data)
-    if error_response is not None:
-        return error_response
+    try:
+        body = EmailSourceCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     user_id = current_user_id()
     with get_repos() as repos:
-        source_id = repos["sources"].insert(user_id, source_payload)
+        source_id = repos["sources"].insert(
+            user_id,
+            {
+                "name": body.name,
+                "match_type": body.match_type,
+                "match_value": body.match_value,
+                "subject_filter_mode": body.subject_filter_mode,
+                "subject_filter_value": body.subject_filter_value,
+                "subject_filter_match_mode": body.subject_filter_match_mode,
+                "enabled": 1 if body.enabled else 0,
+            },
+        )
         source = repos["sources"].get_by_id(user_id, source_id)
         repos["conn"].commit()
     return jsonify(source), 201
@@ -661,13 +705,16 @@ def create_source() -> ResponseReturnValue:
 
 @emails_bp.route("/sources/<int:source_id>", methods=["PUT"])
 def update_source(source_id: int) -> ResponseReturnValue:
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "No data provided"}), 400
+    try:
+        body = EmailSourceUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
-    updates, error_response = _email_source_payload(data, partial=True)
-    if error_response is not None:
-        return error_response
+    updates = body.model_dump(exclude_unset=True)
+    if "enabled" in updates:
+        updates["enabled"] = 1 if updates["enabled"] else 0
+    if not updates:
+        return jsonify({"error": "No data provided"}), 400
 
     user_id = current_user_id()
     with get_repos() as repos:
@@ -692,73 +739,173 @@ def delete_source(source_id: int) -> ResponseReturnValue:
     return jsonify({"status": "ok"})
 
 
-def _email_source_payload(
-    data: dict,
-    *,
-    partial: bool = False,
-) -> tuple[dict[str, object], object | None]:
-    updates = {
-        key: value for key, value in data.items() if key in _EMAIL_SOURCE_ALLOWED_FIELDS
-    }
+# ai: claude-sonnet-5 | 2026-09-29
+class EmailSourceCreate(BaseModel):
+    """POST /sources body."""
 
-    for field_name in ("name", "match_type", "match_value"):
-        if not partial or field_name in updates:
-            value = str(updates.get(field_name) or "").strip()
-            if not value:
-                return {}, (jsonify({"error": f"{field_name} is required"}), 400)
-            updates[field_name] = value
+    model_config = ConfigDict(extra="forbid", validate_default=True)
 
-    if "match_type" in updates:
-        match_type = str(updates["match_type"]).strip()
-        if match_type not in _EMAIL_SOURCE_MATCH_TYPES:
-            return {}, (jsonify({"error": "match_type is invalid"}), 400)
-        updates["match_type"] = match_type
+    name: str = ""
+    match_type: str = ""
+    match_value: str = ""
+    subject_filter_mode: str = ""
+    subject_filter_value: str = ""
+    subject_filter_match_mode: str = "text"
+    enabled: bool = True
 
-    if (
-        not partial
-        or "subject_filter_mode" in updates
-        or "subject_filter_value" in updates
-    ):
-        mode = str(updates.get("subject_filter_mode") or "").strip()
-        value = str(updates.get("subject_filter_value") or "").strip()
-        if mode not in _EMAIL_SOURCE_SUBJECT_FILTER_MODES:
-            return {}, (jsonify({"error": "subject_filter_mode is invalid"}), 400)
+    @field_validator("name", mode="before")
+    @classmethod
+    def _require_name(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("name is required")
+        return value
+
+    @field_validator("match_value", mode="before")
+    @classmethod
+    def _require_match_value(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("match_value is required")
+        return value
+
+    @field_validator("match_type", mode="before")
+    @classmethod
+    def _validate_match_type(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("match_type is required")
+        if value not in _EMAIL_SOURCE_MATCH_TYPES:
+            raise ValueError("match_type is invalid")
+        return value
+
+    @field_validator("subject_filter_mode", mode="before")
+    @classmethod
+    def _validate_filter_mode(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if value not in _EMAIL_SOURCE_SUBJECT_FILTER_MODES:
+            raise ValueError("subject_filter_mode is invalid")
+        return value
+
+    @field_validator("subject_filter_value", mode="before")
+    @classmethod
+    def _strip_filter_value(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def _validate_filter_mode_value_pair(self) -> "EmailSourceCreate":
+        if self.subject_filter_mode and not self.subject_filter_value:
+            raise ValueError(
+                "subject_filter_value is required when a subject filter is selected"
+            )
+        if self.subject_filter_value and not self.subject_filter_mode:
+            raise ValueError(
+                "subject_filter_mode is required when a subject filter value is provided"
+            )
+        return self
+
+    @field_validator("subject_filter_match_mode", mode="before")
+    @classmethod
+    def _validate_match_mode(cls, value: object) -> str:
+        value = str(value or "text").strip()
+        if value not in _EMAIL_SOURCE_SUBJECT_FILTER_MATCH_MODES:
+            raise ValueError("subject_filter_match_mode must be text, glob, or regex")
+        return value
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _coerce_enabled(cls, value: object) -> bool:
+        return bool(value)
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class EmailSourceUpdate(BaseModel):
+    """PUT /sources/<id> body. Partial update, exclude_unset.
+
+    Preserves an existing quirk from the hand-written route this replaces:
+    the subject_filter_mode/value cross-check only fires when at least one
+    of the pair is present in this specific request, and treats whichever
+    member of the pair wasn't also sent as "" -- not the value already
+    stored in the database. Left as-is (not this pass's scope to fix)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    match_type: str | None = None
+    match_value: str | None = None
+    subject_filter_mode: str | None = None
+    subject_filter_value: str | None = None
+    subject_filter_match_mode: str | None = None
+    enabled: bool | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _validate_name(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("name is required")
+        return value
+
+    @field_validator("match_value", mode="before")
+    @classmethod
+    def _validate_match_value(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("match_value is required")
+        return value
+
+    @field_validator("match_type", mode="before")
+    @classmethod
+    def _validate_match_type(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("match_type is required")
+        if value not in _EMAIL_SOURCE_MATCH_TYPES:
+            raise ValueError("match_type is invalid")
+        return value
+
+    @field_validator("subject_filter_mode", mode="before")
+    @classmethod
+    def _validate_filter_mode(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if value not in _EMAIL_SOURCE_SUBJECT_FILTER_MODES:
+            raise ValueError("subject_filter_mode is invalid")
+        return value
+
+    @field_validator("subject_filter_value", mode="before")
+    @classmethod
+    def _strip_filter_value(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def _validate_filter_mode_value_pair(self) -> "EmailSourceUpdate":
+        fields_set = self.model_fields_set
+        if (
+            "subject_filter_mode" not in fields_set
+            and "subject_filter_value" not in fields_set
+        ):
+            return self
+        mode = self.subject_filter_mode or ""
+        value = self.subject_filter_value or ""
         if mode and not value:
-            return {}, (
-                jsonify(
-                    {
-                        "error": "subject_filter_value is required when a subject filter is selected"
-                    }
-                ),
-                400,
+            raise ValueError(
+                "subject_filter_value is required when a subject filter is selected"
             )
         if value and not mode:
-            return {}, (
-                jsonify(
-                    {
-                        "error": "subject_filter_mode is required when a subject filter value is provided"
-                    }
-                ),
-                400,
+            raise ValueError(
+                "subject_filter_mode is required when a subject filter value is provided"
             )
-        updates["subject_filter_mode"] = mode
-        updates["subject_filter_value"] = value
+        return self
 
-    if not partial or "subject_filter_match_mode" in updates:
-        match_mode = str(updates.get("subject_filter_match_mode") or "text").strip()
-        if match_mode not in _EMAIL_SOURCE_SUBJECT_FILTER_MATCH_MODES:
-            return {}, (
-                jsonify(
-                    {"error": "subject_filter_match_mode must be text, glob, or regex"}
-                ),
-                400,
-            )
-        updates["subject_filter_match_mode"] = match_mode
+    @field_validator("subject_filter_match_mode", mode="before")
+    @classmethod
+    def _validate_match_mode(cls, value: object) -> str:
+        value = str(value or "text").strip()
+        if value not in _EMAIL_SOURCE_SUBJECT_FILTER_MATCH_MODES:
+            raise ValueError("subject_filter_match_mode must be text, glob, or regex")
+        return value
 
-    if not partial and "enabled" not in updates:
-        updates["enabled"] = 1
-
-    if "enabled" in updates:
-        updates["enabled"] = 1 if bool(updates["enabled"]) else 0
-
-    return updates, None
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _coerce_enabled(cls, value: object) -> bool:
+        return bool(value)

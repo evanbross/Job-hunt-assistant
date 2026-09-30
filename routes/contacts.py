@@ -57,8 +57,11 @@ from pydantic import (
 
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.contacts_service import build_company_map
-from backend.contacts.title_suggestion_service import suggest_titles
-from backend.utils.utils import current_user_id, get_repos
+from backend.contacts.title_suggestion_service import (
+    finish_title_suggestions,
+    prepare_title_suggestions,
+)
+from backend.utils.utils import current_user_id, get_repos, invalid_request_response
 
 logger = logging.getLogger(__name__)
 
@@ -210,13 +213,6 @@ class ContactEmailResponseUpdate(BaseModel):
     response_received_at: UtcTimestamp | None
 
 
-# ai: claude-sonnet-5 | 2026-09-25
-def _invalid_request(exc: ValidationError) -> ResponseReturnValue:
-    # Field paths only -- exc.errors() also echoes the rejected input values.
-    fields = sorted({".".join(str(part) for part in err["loc"]) for err in exc.errors()})
-    return jsonify({"error": "Invalid request", "fields": fields}), 400
-
-
 # ai: claude-sonnet-5 | 2026-07-25
 @contacts_bp.route("/contacts/import", methods=["POST"])
 def import_contacts() -> ResponseReturnValue:
@@ -282,7 +278,7 @@ def update_contact(contact_id: int) -> ResponseReturnValue:
     try:
         update = ContactUpdate.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return _invalid_request(exc)
+        return invalid_request_response(exc)
 
     fields = update.model_dump(exclude_unset=True)
     if not fields:
@@ -305,7 +301,7 @@ def bulk_set_recruiter() -> ResponseReturnValue:
     try:
         body = BulkRecruiterUpdate.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return _invalid_request(exc)
+        return invalid_request_response(exc)
 
     with get_repos() as repos:
         updated = repos["contacts"].bulk_set_recruiter(
@@ -329,7 +325,7 @@ def update_company() -> ResponseReturnValue:
     try:
         update = CompanyUpdate.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return _invalid_request(exc)
+        return invalid_request_response(exc)
 
     fields = update.model_dump(exclude_unset=True, exclude={"company_normalized"})
     if not fields:
@@ -355,7 +351,7 @@ def set_title_rule() -> ResponseReturnValue:
     try:
         body = TitleRuleSet.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return _invalid_request(exc)
+        return invalid_request_response(exc)
 
     with get_repos() as repos:
         decided = repos["title_rules"].set_rule(
@@ -371,7 +367,7 @@ def undo_title_rule() -> ResponseReturnValue:
     try:
         body = TitleRuleUndo.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return _invalid_request(exc)
+        return invalid_request_response(exc)
 
     with get_repos() as repos:
         reset = repos["title_rules"].undo_rule(current_user_id(), body.normalized_title)
@@ -388,10 +384,13 @@ def suggest_title_rules() -> ResponseReturnValue:
     try:
         body = TitleSuggestRequest.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return _invalid_request(exc)
+        return invalid_request_response(exc)
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        result = suggest_titles(current_user_id(), repos, use_ai=body.use_ai)
+        prep = prepare_title_suggestions(user_id, repos, use_ai=body.use_ai)
+    # Connection released before the Tier 2 AI call
+    result = finish_title_suggestions(user_id, prep, use_ai=body.use_ai)
     return jsonify(
         {
             "suggestions": [
@@ -413,7 +412,7 @@ def apply_title_suggestions() -> ResponseReturnValue:
     try:
         body = TitleSuggestApply.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return _invalid_request(exc)
+        return invalid_request_response(exc)
 
     user_id = current_user_id()
     decided = 0
@@ -430,7 +429,7 @@ def log_contact_email(contact_id: int) -> ResponseReturnValue:
     try:
         body = ContactEmailCreate.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return _invalid_request(exc)
+        return invalid_request_response(exc)
 
     sent_at = body.sent_at or datetime.now(UTC).isoformat(timespec="seconds")
     with get_repos() as repos:
@@ -447,7 +446,7 @@ def update_contact_email_response(email_id: int) -> ResponseReturnValue:
     try:
         body = ContactEmailResponseUpdate.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return _invalid_request(exc)
+        return invalid_request_response(exc)
 
     with get_repos() as repos:
         if not repos["contact_emails"].set_response(

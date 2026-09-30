@@ -36,10 +36,13 @@ import logging
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Literal
 from urllib.parse import urlparse
 
 import psycopg2
-from flask import has_request_context, session
+from flask import has_request_context, jsonify, session
+from flask.typing import ResponseReturnValue
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 import config
 from backend.ai_provider import AIProviderError
@@ -47,6 +50,10 @@ from backend.db import open_repositories
 from backend.db.row_level_security import set_current_user
 
 logger = logging.getLogger(__name__)
+
+_MAX_CHAT_MESSAGES = 12
+_MAX_CHAT_MESSAGE_LENGTH = 4000
+_MAX_RAW_CHAT_MESSAGES = 200
 
 ACTIVE_JOB_STATUSES: frozenset[str] = frozenset(
     {
@@ -225,6 +232,78 @@ def ai_error_http_status(exc: BaseException, fallback_status: int = 500) -> int:
     if isinstance(status_code, int) and 400 <= status_code <= 599:
         return 502
     return fallback_status
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class ChatMessage(BaseModel):
+    """One well-formed turn in an AI chat transcript."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    role: Literal["user", "assistant"]
+    content: str
+
+    @field_validator("content")
+    @classmethod
+    def _validate_content(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("content must not be blank")
+        if len(value) > _MAX_CHAT_MESSAGE_LENGTH:
+            raise ValueError(
+                f"content exceeds the maximum length of {_MAX_CHAT_MESSAGE_LENGTH} characters"
+            )
+        return value
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+def parse_chat_messages(raw: object) -> list[ChatMessage]:
+    """Validate a chat request's raw `messages` list into well-formed
+    ChatMessage turns, keeping only the most recent _MAX_CHAT_MESSAGES.
+
+    Intended as a pydantic `field_validator(..., mode="before")` for every AI
+    chat route's `messages` field (fit-chat, pitch/cover-letter/resume-tailor
+    chat, Toptal bio chat). A malformed entry -- wrong shape, wrong role,
+    blank content -- is dropped rather than rejecting the whole request (the
+    frontend always sends a well-formed transcript, so this tolerates a
+    stray bad entry, not attacker input), but an oversized or entirely
+    invalid payload is still rejected outright rather than silently reaching
+    the AI provider as an empty conversation.
+    """
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("No messages provided")
+    if len(raw) > _MAX_RAW_CHAT_MESSAGES:
+        raise ValueError(f"Too many messages (maximum {_MAX_RAW_CHAT_MESSAGES})")
+    result: list[ChatMessage] = []
+    for item in raw[-_MAX_CHAT_MESSAGES:]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            result.append(ChatMessage.model_validate(item))
+        except ValidationError:
+            continue
+    if not result:
+        raise ValueError("No valid messages provided")
+    return result
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+def invalid_request_response(exc: ValidationError) -> ResponseReturnValue:
+    """Sanitized 400 for a route's pydantic.ValidationError.
+
+    A single hand-written business-rule check (a field_validator or
+    model_validator that raises ValueError("some friendly message")) surfaces
+    that exact message -- it was written for the end user, same as the
+    hand-parsed checks this replaces. Anything else (missing/extra fields,
+    type coercion failures, multiple errors at once) falls back to field
+    paths only; exc.errors() also echoes the rejected input values, which
+    isn't safe to expose as-is."""
+    errors = exc.errors()
+    if len(errors) == 1 and errors[0]["type"] == "value_error":
+        original = errors[0].get("ctx", {}).get("error")
+        return jsonify({"error": str(original) if original else errors[0]["msg"]}), 400
+    fields = sorted({".".join(str(part) for part in err["loc"]) for err in errors})
+    return jsonify({"error": "Invalid request", "fields": fields}), 400
 
 
 def is_trusted_api_write_origin(

@@ -179,15 +179,23 @@ async function openQueueSocket() {
   try {
     const parsed = new URL(settings.listenerUrl);
     const wsScheme = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-    // ai: claude-sonnet-5 | 2026-08-07
-    // The backend registers the queue-ready push server under its own Caddy name
-    // (jha-listener-ws.localhost, one "-ws" suffix past jha-listener.localhost)
-    // rather than a fixed port offset, since the listener's actual port can now
-    // shift on conflict (see backend/import_listener.py). Only fall back to the
-    // legacy "one port above the HTTP listener" convention when listenerUrl is a
-    // raw host:port — i.e. Caddy's dev-infra stack isn't in use.
-    if (parsed.hostname !== 'localhost' && parsed.hostname.endsWith('.localhost')) {
-      const wsHost = parsed.hostname.replace(/\.localhost$/, '-ws.localhost');
+    // ai: claude-sonnet-5 | 2026-09-29
+    // The backend registers the queue-ready push server under its own Caddy name --
+    // one "-ws" inserted after the first label -- rather than a fixed port offset,
+    // since the listener's actual port can now shift on conflict (see
+    // backend/import_listener.py). Dev-infra uses jha-listener.localhost ->
+    // jha-listener-ws.localhost; the hosted deploy/Caddyfile uses
+    // listener.<APP_DOMAIN> -> listener-ws.<APP_DOMAIN> -- same transform, just a
+    // different domain suffix, so both are handled by inserting "-ws" after the
+    // first label of any domain-shaped hostname rather than special-casing
+    // ".localhost" alone. Only fall back to the legacy "one port above the HTTP
+    // listener" convention when listenerUrl's host is a bare "localhost" or a raw
+    // IP address (Tailscale/LAN access straight to the Flask process, no Caddy).
+    const isRawIPv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(parsed.hostname);
+    const isProxiedDomain = parsed.hostname !== 'localhost' && !isRawIPv4 && parsed.hostname.includes('.');
+    if (isProxiedDomain) {
+      const dot = parsed.hostname.indexOf('.');
+      const wsHost = `${parsed.hostname.slice(0, dot)}-ws${parsed.hostname.slice(dot)}`;
       wsUrl = `${wsScheme}//${wsHost}/`;
     } else {
       const wsPort = (parseInt(parsed.port, 10) || 8765) + 1;

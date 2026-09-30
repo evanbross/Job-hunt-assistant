@@ -40,9 +40,10 @@ import logging
 from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, request
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from backend.db import BROWSER_QUEUE_MAX_RETRIES
-from backend.utils.utils import current_user_id, get_repos
+from backend.utils.utils import current_user_id, get_repos, invalid_request_response
 
 logger = logging.getLogger(__name__)
 
@@ -61,21 +62,45 @@ def list_queue() -> tuple:
         return jsonify({"error": "Could not retrieve queue."}), 500
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class EnqueueUrlRequest(BaseModel):
+    """POST /browser-capture-queue body. Only checked for a valid http/https
+    scheme -- these URLs are never fetched server-side (they're pushed to
+    the browser extension via WebSocket, which opens them in the user's own
+    browser tab, same trust model as clicking a link), so
+    backend.utils.url_safety's SSRF checks don't apply here."""
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    url: str = ""
+    site_name: str = ""
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("url is required")
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("url must be a valid http/https URL")
+        return value
+
+    @field_validator("site_name")
+    @classmethod
+    def _strip_site_name(cls, value: str) -> str:
+        return value.strip()
+
+
 @browser_capture_bp.route("/browser-capture-queue", methods=["POST"])
 def enqueue_url() -> tuple:
-    body = request.get_json(silent=True) or {}
-    raw_url: str = str(body.get("url") or "").strip()
-    site_name: str = str(body.get("site_name") or "").strip()
+    try:
+        body = EnqueueUrlRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
-    if not raw_url:
-        return jsonify({"error": "url is required"}), 400
-
-    parsed = urlparse(raw_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return jsonify({"error": "url must be a valid http/https URL"}), 400
-
-    if not site_name:
-        site_name = parsed.netloc
+    raw_url = body.url
+    site_name = body.site_name or urlparse(raw_url).netloc
 
     try:
         with get_repos() as repos:

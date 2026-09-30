@@ -23,7 +23,19 @@ import pytest
 
 from backend.ai_provider import AIProviderError
 from backend.contacts import title_suggestion_service
-from backend.contacts.title_suggestion_service import suggest_titles
+from backend.contacts.title_suggestion_service import (
+    finish_title_suggestions,
+    prepare_title_suggestions,
+)
+
+
+def suggest_titles(user_id, repos, *, use_ai):
+    """Test-only helper mirroring the old single-call API: prepare and
+    finish back to back. Production code (routes/contacts.py) calls these
+    separately so the DB connection is released before the AI call -- see
+    prepare_title_suggestions()'s docstring."""
+    prep = prepare_title_suggestions(user_id, repos, use_ai=use_ai)
+    return finish_title_suggestions(user_id, prep, use_ai=use_ai)
 
 # ai: claude-sonnet-5 | 2026-09-28
 
@@ -135,6 +147,29 @@ class _FakeAIClient:
         _FakeAIClient.calls.append(messages[0].content)
         labels = _FakeAIClient.labels_by_call.pop(0)
         return json.dumps([{"label": label} for label in labels])
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+def test_finish_title_suggestions_needs_no_repos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for the pooled-connection-during-AI-call finding: the
+    repos dict must be discardable after prepare_title_suggestions() returns
+    -- finish_title_suggestions() takes no repos argument at all, so there is
+    nothing left to hold a DB connection open across the Tier 2 AI request."""
+    repos = {
+        "title_rules": FakeTitleRuleRepo(
+            [_title_row("growth lead"), _title_row("account executive")]
+        )
+    }
+    prep = prepare_title_suggestions(_USER_ID, repos, use_ai=True)
+    del repos  # nothing below this line may touch it
+
+    _FakeAIClient.labels_by_call = [["recruiter", "unsure"]]
+    _FakeAIClient.calls = []
+    monkeypatch.setattr(title_suggestion_service, "AIProviderClient", _FakeAIClient)
+
+    result = finish_title_suggestions(_USER_ID, prep, use_ai=True)
+
+    assert [s.normalized_title for s in result.suggestions] == ["growth lead"]
 
 
 def test_uses_ai_for_leftovers_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:

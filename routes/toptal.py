@@ -47,13 +47,17 @@ import re
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.utils.utils import (
+    ChatMessage,
     ai_error_http_status,
     current_user_id,
     get_candidate_profile,
     get_repos,
+    invalid_request_response,
+    parse_chat_messages,
     safe_error_message,
 )
 
@@ -61,13 +65,48 @@ logger = logging.getLogger(__name__)
 toptal_bp = Blueprint("toptal", __name__)
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class ToptalBioRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    job_description: str = ""
+
+    @field_validator("job_description")
+    @classmethod
+    def _require_description(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("job_description is required")
+        return value
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class ToptalBioChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    messages: list[ChatMessage] = Field(default_factory=list)
+    job_description: str = ""
+    current_bio: str = ""
+
+    @field_validator("messages", mode="before")
+    @classmethod
+    def _parse_messages(cls, value: object) -> list[ChatMessage]:
+        return parse_chat_messages(value)
+
+    @field_validator("job_description", "current_bio")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
+
 @toptal_bp.route("/toptal/bio", methods=["POST"])
 def generate_toptal_bio() -> ResponseReturnValue:
     """Generate a short third-person bio for a pasted Toptal job description."""
-    body = request.get_json(silent=True) or {}
-    job_description = (body.get("job_description") or "").strip()
-    if not job_description:
-        return jsonify({"error": "job_description is required"}), 400
+    try:
+        body = ToptalBioRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    job_description = body.job_description
 
     # ai: claude-sonnet-5 | 2026-09-01
     user_id = current_user_id()
@@ -102,13 +141,13 @@ def generate_toptal_bio() -> ResponseReturnValue:
 @toptal_bp.route("/toptal/bio/chat", methods=["POST"])
 def toptal_bio_chat() -> ResponseReturnValue:
     """AI chat for refining a Toptal client pitch."""
-    body = request.get_json(silent=True) or {}
-    messages: list[dict] = body.get("messages", [])
-    job_description = (body.get("job_description") or "").strip()
-    current_bio = (body.get("current_bio") or "").strip()
-
-    if not messages:
-        return jsonify({"error": "No messages provided"}), 400
+    try:
+        body = ToptalBioChatRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    messages = body.messages
+    job_description = body.job_description
+    current_bio = body.current_bio
 
     # ai: claude-sonnet-5 | 2026-09-01
     user_id = current_user_id()
@@ -138,17 +177,7 @@ def toptal_bio_chat() -> ResponseReturnValue:
     try:
         reply_text = AIProviderClient(user_id).complete(
             system=system_prompt,
-            messages=[
-                AIMessage(
-                    role=str(message.get("role") or ""),
-                    content=str(message.get("content") or ""),
-                )
-                for message in messages
-                if isinstance(message, dict)
-                and message.get("role") in {"user", "assistant"}
-                and isinstance(message.get("content"), str)
-                and str(message.get("content") or "").strip()
-            ],
+            messages=[AIMessage(role=m.role, content=m.content) for m in messages],
             max_tokens=600,
         )
     except Exception as exc:

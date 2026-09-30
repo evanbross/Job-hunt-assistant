@@ -123,17 +123,43 @@ class AIProviderClient:
             repos["conn"].close()
 
         self._openai_api_key = openai_api_key
-        self._anthropic_client: Anthropic | None = (
-            Anthropic(
-                api_key=anthropic_api_key,
-                http_client=httpx.Client(
-                    verify=ssl.create_default_context(),
-                    timeout=httpx.Timeout(120.0),
-                ),
-            )
+        # ai: claude-sonnet-5 | 2026-09-29
+        # Keep our own reference to the httpx.Client (rather than only the
+        # Anthropic SDK object wrapping it) so close() has something concrete
+        # to release -- the Anthropic SDK exposes no close()/context-manager
+        # of its own for a caller-supplied http_client.
+        self._http_client: httpx.Client | None = (
+            httpx.Client(verify=ssl.create_default_context(), timeout=httpx.Timeout(120.0))
             if anthropic_api_key
             else None
         )
+        self._anthropic_client: Anthropic | None = (
+            Anthropic(api_key=anthropic_api_key, http_client=self._http_client)
+            if anthropic_api_key
+            else None
+        )
+
+    def close(self) -> None:
+        """Release the pooled Anthropic HTTP client. Idempotent -- safe to
+        call more than once, including from __del__ as a GC-timing safety
+        net for the many call sites that construct a short-lived client
+        inline (e.g. AIProviderClient(user_id).complete(...)) without a
+        `with` block."""
+        if self._http_client is not None:
+            self._http_client.close()
+            self._http_client = None
+
+    def __enter__(self) -> "AIProviderClient":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:  # ai: claude-sonnet-5 | 2026-09-29 -- __del__ must never raise
+            pass
 
     def complete(
         self,

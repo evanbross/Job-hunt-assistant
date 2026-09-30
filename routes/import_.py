@@ -47,6 +47,7 @@ from typing import Any
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from backend.celery_app import celery_app
 from backend.scanning.captured_page_import_service import CapturedPageImportService
@@ -61,6 +62,7 @@ from backend.tasks import run_import_task
 from backend.utils.utils import (
     current_user_id,
     get_repos,
+    invalid_request_response,
     parse_positive_int,
     safe_error_message,
 )
@@ -616,11 +618,26 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
 # ai: claude-sonnet-4-6 | 2026-06-20
 # ai: claude-sonnet-5 | 2026-08-12 — accepts an optional import_id to clear one
 # stuck import without disturbing any other imports currently in flight.
+# ai: claude-sonnet-5 | 2026-09-29
+class ResetImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    import_id: str = ""
+
+    @field_validator("import_id", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
 @import_bp.route("/import/reset", methods=["POST"])
 def reset_import() -> ResponseReturnValue:
     """Force-clear a stuck import (or, without import_id, all tracked imports)."""
-    body = request.get_json(silent=True) or {}
-    import_id = str(body.get("import_id") or request.args.get("import_id") or "").strip()
+    try:
+        body = ResetImportRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    import_id = body.import_id or request.args.get("import_id", "").strip()
     with _imports_lock:
         if import_id:
             _active_imports.pop(import_id, None)
@@ -681,17 +698,44 @@ def delete_unknown_companies() -> ResponseReturnValue:
             return jsonify({"error": "Delete failed"}), 500
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class ExtractJobUrlsRequest(BaseModel):
+    """POST /import/job-urls body. content/format/url are all optional --
+    CapturedPageImportService.analyze_capture does its own validation and
+    raises ValueError for anything it can't work with."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    content: str = ""
+    format: str = "auto"
+    url: str | None = None
+
+    @field_validator("content", "format", mode="before")
+    @classmethod
+    def _stringify(cls, value: object) -> str:
+        return str(value or "")
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _strip_url(cls, value: object) -> str | None:
+        value = str(value or "").strip()
+        return value or None
+
+
 @import_bp.route("/import/job-urls", methods=["POST"])
 def extract_imported_job_urls() -> ResponseReturnValue:
-    body = request.get_json(silent=True) or {}
-    dump_import_capture(body)
-    raw_content = str(body.get("content") or "")
-    content_format = str(body.get("format") or "auto")
+    raw_body = request.get_json(silent=True) or {}
+    try:
+        body = ExtractJobUrlsRequest.model_validate(raw_body)
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    dump_import_capture(raw_body)
+    raw_content = body.content
+    content_format = body.format
 
     try:
-        page_url = str(body.get("url") or "").strip() or None
         analysis = CapturedPageImportService().analyze_capture(
-            raw_content, content_format, base_url=page_url
+            raw_content, content_format, base_url=body.url
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

@@ -201,3 +201,74 @@ def test_prompt_blocks_fall_back_to_snippet_and_omit_missing_sections() -> None:
     job_block, resume_block = job_and_resume_prompt_blocks({}, {"content": RESUME_TEXT})
     assert job_block == ""
     assert RESUME_TEXT in resume_block
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+# Validation-error paths for the Pydantic conversion -- the happy paths above
+# already cover prompt content, these cover the 2026-09-29 cleanup itself.
+
+
+def test_cover_letter_chat_rejects_empty_messages(client: Any) -> None:
+    res = client.post(
+        "/api/jobs/7/cover-letter/chat", json={"messages": [], "cover_letter": "x"}
+    )
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "No messages provided"
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+def test_cover_letter_chat_rejects_all_malformed_messages(client: Any) -> None:
+    res = client.post(
+        "/api/jobs/7/cover-letter/chat", json={"messages": ["invalid"], "cover_letter": "x"}
+    )
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "No valid messages provided"
+
+
+def test_pitch_chat_rejects_all_malformed_messages(client: Any) -> None:
+    res = client.post(
+        "/api/jobs/7/pitch/chat", json={"type": "why_fit", "messages": ["invalid"]}
+    )
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "No valid messages provided"
+
+
+def test_resume_tailor_chat_rejects_all_malformed_messages(client: Any) -> None:
+    res = client.post(
+        "/api/jobs/7/resume-tailor/chat", json={"analysis": "x", "messages": ["invalid"]}
+    )
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "No valid messages provided"
+
+
+def test_pitch_chat_rejects_invalid_type(client: Any) -> None:
+    res = client.post(
+        "/api/jobs/7/pitch/chat",
+        json={"type": "why_not", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "type must be 'why_company' or 'why_fit'"
+
+
+def test_pitch_chat_rejects_missing_messages(client: Any) -> None:
+    res = client.post("/api/jobs/7/pitch/chat", json={"type": "why_fit"})
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "No messages provided"
+
+
+def test_resume_tailor_chat_rejects_missing_messages(client: Any) -> None:
+    res = client.post("/api/jobs/7/resume-tailor/chat", json={"analysis": "x"})
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "No messages provided"
+
+
+def test_generate_pitch_rejects_invalid_type(client: Any) -> None:
+    res = client.post("/api/jobs/7/pitch", json={"type": "bogus"})
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "type must be 'why_company' or 'why_fit'"
+
+
+def test_generate_pitch_rejects_missing_type(client: Any) -> None:
+    res = client.post("/api/jobs/7/pitch", json={})
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "type must be 'why_company' or 'why_fit'"

@@ -112,8 +112,9 @@ class PostgresContactRepository(_BaseRepo):
         Rows already present (same dedup_key) are refreshed in place, keeping
         the user's interested/recruiter_type/notes/email history; new rows are
         added. Contacts absent from the file are removed only if the user
-        never acted on them -- anyone flagged, marked recruiter, noted, or
-        emailed is kept."""
+        never acted on them -- anyone flagged, marked recruiter, manually
+        decided "not a recruiter" (decided_by='manual'), noted, or emailed is
+        kept."""
         for row in rows:
             unknown = set(row.keys()) - self._IMPORT_COLUMNS
             if unknown:
@@ -142,6 +143,10 @@ class PostgresContactRepository(_BaseRepo):
                 [(user_id, *(row.get(col) for col in columns)) for row in rows],
             )
 
+        # ai: claude-sonnet-5 | 2026-09-29
+        # decided_by IS NULL excludes a manual "not a recruiter" call
+        # (recruiter_type NULL, decided_by='manual') from being swept up here --
+        # without it, that decision looked identical to an untouched contact.
         removed_cur = self._execute(
             """
             DELETE FROM contacts c
@@ -149,6 +154,7 @@ class PostgresContactRepository(_BaseRepo):
               AND NOT (c.dedup_key = ANY(%s))
               AND NOT c.interested
               AND c.recruiter_type IS NULL
+              AND c.decided_by IS NULL
               AND c.notes IS NULL
               AND NOT EXISTS (SELECT 1 FROM contact_emails e WHERE e.contact_id = c.id)
             """,

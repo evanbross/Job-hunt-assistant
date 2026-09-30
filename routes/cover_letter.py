@@ -40,11 +40,20 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import docx
 import fitz
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.cover_letter.cover_letter_generator import CoverLetterGenerator
@@ -53,10 +62,13 @@ from backend.cover_letter.phrase_book import format_phrase_book_section
 from backend.cover_letter.resume_tailor import ResumeTailoringGenerator
 from backend.scoring.jd_enrichment import job_description_text
 from backend.utils.utils import (
+    ChatMessage,
     ai_error_http_status,
     current_user_id,
     get_candidate_profile,
     get_repos,
+    invalid_request_response,
+    parse_chat_messages,
     safe_error_message,
 )
 
@@ -108,23 +120,45 @@ def generate_cover_letter(job_id: int) -> ResponseReturnValue:
     return jsonify({"cover_letter": cover_letter})
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class LearnCoverLetterStyleRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    draft: str = ""
+    final: str = ""
+    chat_messages: list[Any] = Field(default_factory=list)
+
+    @field_validator("draft", "final", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("chat_messages", mode="before")
+    @classmethod
+    def _ensure_list(cls, value: object) -> list:
+        return value if isinstance(value, list) else []
+
+    @model_validator(mode="after")
+    def _require_draft_and_final(self) -> "LearnCoverLetterStyleRequest":
+        if not self.draft or not self.final:
+            raise ValueError("draft and final text are required")
+        return self
+
+
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter/learn", methods=["POST"])
 def learn_cover_letter_style(job_id: int) -> ResponseReturnValue:
     """Silently distill generalizable style rules from an edited cover letter
     and append them to the candidate profile for future generations."""
-    body = request.get_json(silent=True) or {}
-    draft = str(body.get("draft") or "").strip()
-    final = str(body.get("final") or "").strip()
-    chat_messages = body.get("chat_messages")
-    if not isinstance(chat_messages, list):
-        chat_messages = []
-
-    if not draft or not final:
-        return jsonify({"error": "draft and final text are required"}), 400
+    try:
+        body = LearnCoverLetterStyleRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     try:
         applied = CoverLetterStyleLearner(current_user_id()).learn_from_edit(
-            draft, final, chat_messages
+            body.draft, body.final, body.chat_messages
         )
     except Exception as exc:
         logger.warning(
@@ -135,18 +169,58 @@ def learn_cover_letter_style(job_id: int) -> ResponseReturnValue:
     return jsonify({"applied": applied})
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class SaveCoverLetterRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore", validate_default=True)
+
+    text: str = ""
+    job_title: str = "Cover Letter"
+    company: str = ""
+    label: str = "Cover Letter"
+    format: str = "docx"
+    folder: str | None = None
+
+    @field_validator("text")
+    @classmethod
+    def _require_text(cls, value: str) -> str:
+        if not value:
+            raise ValueError("No text provided")
+        return value
+
+    @field_validator("text", "company", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("job_title", "label", mode="before")
+    @classmethod
+    def _default_if_blank(cls, value: object) -> str:
+        return str(value or "").strip() or "Cover Letter"
+
+    @field_validator("format", mode="before")
+    @classmethod
+    def _lower_format(cls, value: object) -> str:
+        return str(value or "docx").lower()
+
+    @field_validator("folder", mode="before")
+    @classmethod
+    def _strip_folder(cls, value: object) -> str | None:
+        value = str(value or "").strip()
+        return value or None
+
+
 @cover_letter_bp.route("/cover-letter/save", methods=["POST"])
 def save_cover_letter() -> ResponseReturnValue:
-    body = request.get_json(silent=True) or {}
-    text = (body.get("text") or "").strip()
-    job_title = (body.get("job_title") or "Cover Letter").strip()
-    company = (body.get("company") or "").strip()
-    label = (body.get("label") or "Cover Letter").strip()
-    file_format = (body.get("format") or "docx").lower()
-    folder_override = (body.get("folder") or "").strip() or None
-
-    if not text:
-        return jsonify({"error": "No text provided"}), 400
+    try:
+        body = SaveCoverLetterRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    text = body.text
+    job_title = body.job_title
+    company = body.company
+    label = body.label
+    file_format = body.format
+    folder_override = body.folder
 
     # ai: claude-fable-5 | 2026-07-13
     if folder_override:
@@ -249,13 +323,33 @@ def save_cover_letter() -> ResponseReturnValue:
     return jsonify({"path": str(path), "filename": filename, "folder": str(folder)})
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class PitchGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore", validate_default=True)
+
+    type: str = ""
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("type")
+    @classmethod
+    def _validate_type(cls, value: str) -> str:
+        if value not in ("why_company", "why_fit"):
+            raise ValueError("type must be 'why_company' or 'why_fit'")
+        return value
+
+
 @cover_letter_bp.route("/jobs/<int:job_id>/pitch", methods=["POST"])
 def generate_pitch(job_id: int) -> ResponseReturnValue:
     """Generate a short 2-paragraph pitch: why-company or why-fit."""
-    body = request.get_json(silent=True) or {}
-    pitch_type = str(body.get("type") or "").strip()
-    if pitch_type not in ("why_company", "why_fit"):
-        return jsonify({"error": "type must be 'why_company' or 'why_fit'"}), 400
+    try:
+        body = PitchGenerateRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    pitch_type = body.type
 
     user_id = current_user_id()
     with get_repos() as repos:
@@ -334,9 +428,40 @@ def generate_pitch(job_id: int) -> ResponseReturnValue:
     return jsonify({"text": text.strip()})
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class PitchChatRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore", validate_default=True)
+
+    messages: list[ChatMessage] = Field(default_factory=list)
+    current_text: str = ""
+    type: str = ""
+
+    @field_validator("messages", mode="before")
+    @classmethod
+    def _parse_messages(cls, value: object) -> list[ChatMessage]:
+        return parse_chat_messages(value)
+
+    @field_validator("current_text", "type", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("type")
+    @classmethod
+    def _validate_type(cls, value: str) -> str:
+        if value not in ("why_company", "why_fit"):
+            raise ValueError("type must be 'why_company' or 'why_fit'")
+        return value
+
+
 @cover_letter_bp.route("/jobs/<int:job_id>/pitch/chat", methods=["POST"])
 def pitch_chat(job_id: int) -> ResponseReturnValue:
     """AI chat for refining a why-company or why-fit pitch."""
+    try:
+        body = PitchChatRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
     user_id = current_user_id()
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(user_id, job_id)
@@ -347,16 +472,9 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    body = request.get_json(silent=True) or {}
-    messages: list[dict] = body.get("messages", [])
-    current_text = (body.get("current_text") or "").strip()
-    pitch_type = str(body.get("type") or "").strip()
-
-    if pitch_type not in ("why_company", "why_fit"):
-        return jsonify({"error": "type must be 'why_company' or 'why_fit'"}), 400
-
-    if not messages:
-        return jsonify({"error": "No messages provided"}), 400
+    messages = body.messages
+    current_text = body.current_text
+    pitch_type = body.type
 
     company = job.get("company") or "the company"
     job_title = job.get("job_title") or "the position"
@@ -388,17 +506,7 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
     try:
         reply_text = AIProviderClient(user_id).complete(
             system=system_prompt,
-            messages=[
-                AIMessage(
-                    role=str(message.get("role") or ""),
-                    content=str(message.get("content") or ""),
-                )
-                for message in messages
-                if isinstance(message, dict)
-                and message.get("role") in {"user", "assistant"}
-                and isinstance(message.get("content"), str)
-                and str(message.get("content") or "").strip()
-            ],
+            messages=[AIMessage(role=m.role, content=m.content) for m in messages],
             max_tokens=800,
         )
     except Exception as exc:
@@ -423,8 +531,31 @@ def pitch_chat(job_id: int) -> ResponseReturnValue:
     return jsonify({"reply": reply_text, "updated_pitch": updated_pitch})
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class CoverLetterChatRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore", validate_default=True)
+
+    messages: list[ChatMessage] = Field(default_factory=list)
+    cover_letter: str = ""
+
+    @field_validator("messages", mode="before")
+    @classmethod
+    def _parse_messages(cls, value: object) -> list[ChatMessage]:
+        return parse_chat_messages(value)
+
+    @field_validator("cover_letter", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
 @cover_letter_bp.route("/jobs/<int:job_id>/cover-letter/chat", methods=["POST"])
 def cover_letter_chat(job_id: int) -> ResponseReturnValue:
+    try:
+        body = CoverLetterChatRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
     user_id = current_user_id()
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(user_id, job_id)
@@ -435,12 +566,8 @@ def cover_letter_chat(job_id: int) -> ResponseReturnValue:
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    body = request.get_json(silent=True) or {}
-    messages: list[dict] = body.get("messages", [])
-    cover_letter = (body.get("cover_letter") or "").strip()
-
-    if not messages:
-        return jsonify({"error": "No messages provided"}), 400
+    messages = body.messages
+    cover_letter = body.cover_letter
 
     company = job.get("company") or "the company"
     job_title = job.get("job_title") or "the position"
@@ -467,17 +594,7 @@ def cover_letter_chat(job_id: int) -> ResponseReturnValue:
     try:
         reply_text = AIProviderClient(user_id).complete(
             system=system_prompt,
-            messages=[
-                AIMessage(
-                    role=str(message.get("role") or ""),
-                    content=str(message.get("content") or ""),
-                )
-                for message in messages
-                if isinstance(message, dict)
-                and message.get("role") in {"user", "assistant"}
-                and isinstance(message.get("content"), str)
-                and str(message.get("content") or "").strip()
-            ],
+            messages=[AIMessage(role=m.role, content=m.content) for m in messages],
             max_tokens=1200,
         )
     except Exception as exc:
@@ -528,8 +645,31 @@ def generate_resume_tailor(job_id: int) -> ResponseReturnValue:
     return jsonify({"analysis": analysis})
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class ResumeTailorChatRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore", validate_default=True)
+
+    messages: list[ChatMessage] = Field(default_factory=list)
+    analysis: str = ""
+
+    @field_validator("messages", mode="before")
+    @classmethod
+    def _parse_messages(cls, value: object) -> list[ChatMessage]:
+        return parse_chat_messages(value)
+
+    @field_validator("analysis", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
 @cover_letter_bp.route("/jobs/<int:job_id>/resume-tailor/chat", methods=["POST"])
 def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
+    try:
+        body = ResumeTailorChatRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(current_user_id(), job_id)
         resume_row = repos["resume"].get_latest(current_user_id())  # ai: claude-fable-5 | 2026-07-13
@@ -538,12 +678,8 @@ def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    body = request.get_json(silent=True) or {}
-    messages: list[dict] = body.get("messages", [])
-    current_analysis = (body.get("analysis") or "").strip()
-
-    if not messages:
-        return jsonify({"error": "No messages provided"}), 400
+    messages = body.messages
+    current_analysis = body.analysis
 
     company = job.get("company") or "the company"
     job_title = job.get("job_title") or "the position"
@@ -572,17 +708,7 @@ def resume_tailor_chat(job_id: int) -> ResponseReturnValue:
     try:
         reply_text = AIProviderClient(current_user_id()).complete(
             system=system_prompt,
-            messages=[
-                AIMessage(
-                    role=str(message.get("role") or ""),
-                    content=str(message.get("content") or ""),
-                )
-                for message in messages
-                if isinstance(message, dict)
-                and message.get("role") in {"user", "assistant"}
-                and isinstance(message.get("content"), str)
-                and str(message.get("content") or "").strip()
-            ],
+            messages=[AIMessage(role=m.role, content=m.content) for m in messages],
             max_tokens=1400,
         )
     except Exception as exc:
@@ -620,23 +746,76 @@ def get_phrase_book() -> ResponseReturnValue:
     return jsonify(rows)
 
 
+# ai: claude-sonnet-5 | 2026-09-29
+class PhraseBookEntryCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore", validate_default=True)
+
+    tag: str = ""
+    label: str = ""
+    phrase_text: str = ""
+
+    @field_validator("tag", "label", "phrase_text", mode="before")
+    @classmethod
+    def _strip(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def _require_all(self) -> "PhraseBookEntryCreate":
+        if not self.tag or not self.label or not self.phrase_text:
+            raise ValueError("tag, label, and phrase_text are required")
+        return self
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+class PhraseBookEntryUpdate(BaseModel):
+    """Partial update, exclude_unset."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    tag: str | None = None
+    label: str | None = None
+    phrase_text: str | None = None
+
+    @field_validator("tag", mode="before")
+    @classmethod
+    def _validate_tag(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("tag cannot be empty")
+        return value
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _validate_label(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("label cannot be empty")
+        return value
+
+    @field_validator("phrase_text", mode="before")
+    @classmethod
+    def _validate_phrase_text(cls, value: object) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("phrase_text cannot be empty")
+        return value
+
+
 @cover_letter_bp.route("/phrase-book", methods=["POST"])
 def create_phrase_book_entry() -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    tag = (data.get("tag") or "").strip()
-    label = (data.get("label") or "").strip()
-    phrase_text = (data.get("phrase_text") or "").strip()
-    if not tag or not label or not phrase_text:
-        return jsonify({"error": "tag, label, and phrase_text are required"}), 400
+    try:
+        body = PhraseBookEntryCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
     user_id = current_user_id()
     with get_repos() as repos:
         row_id = repos["cover_letter_phrases"].insert(
             user_id,
             {
-                "tag": tag,
-                "label": label,
-                "phrase_text": phrase_text,
+                "tag": body.tag,
+                "label": body.label,
+                "phrase_text": body.phrase_text,
                 "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
             },
@@ -648,24 +827,12 @@ def create_phrase_book_entry() -> ResponseReturnValue:
 
 @cover_letter_bp.route("/phrase-book/<int:phrase_id>", methods=["PUT"])
 def update_phrase_book_entry(phrase_id: int) -> ResponseReturnValue:
-    data = request.get_json(silent=True) or {}
-    fields: dict[str, object] = {}
+    try:
+        body = PhraseBookEntryUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
 
-    if "tag" in data:
-        tag = (data.get("tag") or "").strip()
-        if not tag:
-            return jsonify({"error": "tag cannot be empty"}), 400
-        fields["tag"] = tag
-    if "label" in data:
-        label = (data.get("label") or "").strip()
-        if not label:
-            return jsonify({"error": "label cannot be empty"}), 400
-        fields["label"] = label
-    if "phrase_text" in data:
-        phrase_text = (data.get("phrase_text") or "").strip()
-        if not phrase_text:
-            return jsonify({"error": "phrase_text cannot be empty"}), 400
-        fields["phrase_text"] = phrase_text
+    fields = body.model_dump(exclude_unset=True)
     fields["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
 
     user_id = current_user_id()

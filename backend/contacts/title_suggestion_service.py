@@ -54,14 +54,33 @@ class SuggestionResult:
     ai_error: str | None = None
 
 
-# ai: claude-sonnet-5 | 2026-09-28
-def suggest_titles(user_id: int, repos: dict[str, Any], *, use_ai: bool) -> SuggestionResult:
-    """Suggest recruiter titles among this account's currently-unflagged,
-    undecided titles. Tier 1 (keyword match, always runs) flags high-confidence
-    titles outright and promotes an ambiguous title only when at least one of
-    its contacts is at an agency-flagged company. Tier 2 (use_ai=True) sends
-    whatever's left over -- title + one example company, no names -- to the
-    account's configured AI provider in batches."""
+# ai: claude-sonnet-5 | 2026-09-29
+@dataclass(frozen=True)
+class TitleSuggestionPrep:
+    """Tier 1's output plus everything Tier 2 needs, computed entirely from
+    repository reads. Deliberately holds no repos/connection reference --
+    see prepare_title_suggestions()."""
+
+    suggestions: list[TitleSuggestion]
+    leftovers: list[dict[str, Any]]
+    companies: dict[str, str]
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+def prepare_title_suggestions(
+    user_id: int, repos: dict[str, Any], *, use_ai: bool
+) -> TitleSuggestionPrep:
+    """Run Tier 1 (keyword match, always) among this account's currently-
+    unflagged, undecided titles, promoting an ambiguous title only when at
+    least one of its contacts is at an agency-flagged company; also loads
+    the representative-company lookup Tier 2 needs if use_ai is set.
+
+    This does only repository reads, so the caller should run it inside its
+    own `with get_repos()` block and release the connection before calling
+    finish_title_suggestions() with the result -- the Tier 2 AI request that
+    follows can take as long as the provider's timeout, and must not hold a
+    pooled DB connection for that whole time (see the project's connection-
+    lifetime-vs-slow-external-work rule)."""
     report = repos["title_rules"].titles_report(user_id)
     candidates = [
         t
@@ -93,19 +112,31 @@ def suggest_titles(user_id: int, repos: dict[str, Any], *, use_ai: bool) -> Sugg
                     )
                 )
 
-    ai_error: str | None = None
+    companies: dict[str, str] = {}
     if use_ai and leftovers:
-        ai_suggestions, ai_error = _classify_leftovers_via_ai(user_id, repos, leftovers)
-        suggestions.extend(ai_suggestions)
+        companies = repos["title_rules"].representative_companies(
+            user_id, [t["normalized_title"] for t in leftovers]
+        )
 
-    return SuggestionResult(suggestions=suggestions, ai_error=ai_error)
+    return TitleSuggestionPrep(suggestions=suggestions, leftovers=leftovers, companies=companies)
+
+
+# ai: claude-sonnet-5 | 2026-09-29
+def finish_title_suggestions(
+    user_id: int, prep: TitleSuggestionPrep, *, use_ai: bool
+) -> SuggestionResult:
+    """Run Tier 2's AI classification (if requested) on prepare_title_suggestions()'s
+    output. Call after releasing the DB connection prepare_title_suggestions()
+    was given -- this makes the provider request with no repos in scope."""
+    if not use_ai or not prep.leftovers:
+        return SuggestionResult(suggestions=prep.suggestions, ai_error=None)
+    ai_suggestions, ai_error = _classify_leftovers_via_ai(user_id, prep.leftovers, prep.companies)
+    return SuggestionResult(suggestions=prep.suggestions + ai_suggestions, ai_error=ai_error)
 
 
 def _classify_leftovers_via_ai(
-    user_id: int, repos: dict[str, Any], leftovers: list[dict[str, Any]]
+    user_id: int, leftovers: list[dict[str, Any]], companies: dict[str, str]
 ) -> tuple[list[TitleSuggestion], str | None]:
-    normalized_titles = [t["normalized_title"] for t in leftovers]
-    companies = repos["title_rules"].representative_companies(user_id, normalized_titles)
     client = AIProviderClient(user_id)
 
     suggestions: list[TitleSuggestion] = []
