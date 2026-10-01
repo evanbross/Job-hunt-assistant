@@ -3,8 +3,9 @@
 Status: **build order items 1-4 shipped 2026-09-28** (`recruiter_type`
 migration + Contacts UI; `companies` table + Companies report; `title_rules`
 + `decided_by` provenance + Titles report; Tier 1 keyword + Tier 2 AI
-suggestions). The plan's full build order is complete. Design agreed in
-conversation 2026-09-26.
+suggestions); **item 5 shipped 2026-09-30** (semi-automated LinkedIn
+workforce lookup, superseding Tier 3). The plan's full build order is
+complete. Design agreed in conversation 2026-09-26.
 Builds on the Contacts tab shipped 2026-09-25 (import, interested / recruiter
 flags, notes, outreach email log, bulk actions).
 
@@ -156,6 +157,16 @@ If ever pursued, throttling design:
 - Resumable queue in the backend, following the existing extension
   `browser_capture_queue` pattern.
 
+**Superseded 2026-09-30 by a simpler, zero-risk alternative:** rather than
+Tier 3's automated-but-throttled profile visiting, the Companies report got
+an "Open next unclassified on LinkedIn (N)" button that opens a plain
+LinkedIn company search in a new tab for the user to read and judge
+themselves — see build order item 5 below. No automated navigation of
+linkedin.com, so neither the account-restriction risk nor the data-reliability
+risk (LinkedIn's workforce-location data being unstructured/unreliable to
+parse) applies. Tier 3 as originally specified (unattended profile visiting)
+remains unbuilt and is not currently planned.
+
 ## Follow-up idea (not in scope yet)
 
 Job cards could show "posted via agency: X (offshore hybrid)" when a job's
@@ -186,6 +197,13 @@ normalized name.
    tier, since that's the user's own judgment per the plan's data model.
    Company-as-a-second-signal only promotes a Tier 1 "skip" (ambiguous)
    title, never used to flag on its own, matching the spec.
+5. ✅ Semi-automated workforce lookup, done 2026-09-30 (commit `6d5a2e9`).
+   The Companies report's "Open next unclassified on LinkedIn (N)" button
+   opens a plain LinkedIn company search for the next company with
+   `workforce = 'unknown'` in a new tab and highlights that row, so the
+   user can read the result themselves and set the dropdown — see the
+   superseded-Tier-3 note above. A company drops out of the queue
+   automatically once its workforce is no longer "Unknown."
 
 ## Open questions
 
