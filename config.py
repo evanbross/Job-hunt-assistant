@@ -381,9 +381,18 @@ CANDIDATE PROFILE:
 {{RESUME_SECTION}}
 
 SCORING INSTRUCTIONS:
-- Score the job 0-100 based on fit with the candidate's skills and preferences.
-- 90-100: Near-perfect match; strong skills overlap, no office requirement stated or remote explicitly confirmed, senior level.
-- 70-89: Good match; most skills apply, location ambiguous with some uncertainty, or minor level mismatch.
+- Score the job 0-100 based on fit with the candidate's skills and preferences. Use the
+  full range — don't default to the high-70s for "basically fine but one thing is
+  unstated"; a job with no real downside belongs in the 90s even if every detail isn't
+  spelled out explicitly.
+- 90-100: Excellent match. Skills overlap strongly across the core requirements, and
+  there is no real negative signal on location or level (no explicit on-site/hybrid
+  requirement, no junior/entry framing, no excluded-location conflict). Benign unknowns
+  that don't point toward a problem — remote status inferred rather than stated outright,
+  one nice-to-have skill not mentioned — do NOT by themselves cap the score below 90.
+- 70-89: Good match. Most skills apply, but there is at least one real, non-trivial
+  concern: a meaningful skills gap, genuine location/remote ambiguity that could
+  plausibly cut either way, or a borderline level mismatch.
 - 40-69: Partial match; some relevant skills, ambiguous location, or level concerns.
 - 0-39: Poor match; wrong skills, explicitly on-site/hybrid required, or wrong level.
 {{TIMEZONE_NOTE}}
@@ -435,6 +444,16 @@ SCORING INSTRUCTIONS:
   variant of "Senior" — score it as a level mismatch for a senior candidate
   the same way you would an unqualified "Software Engineer" or "Software
   Engineer I" posting, regardless of how many skills otherwise match.
+- IMPORTANT — interview process signal: if the posting or company description mentions
+  a hiring process built around a phone/technical screen and/or behavioral interview
+  followed by live pair programming with an engineer, treat this as a positive signal
+  and apply a small-to-moderate bonus (a few points) on top of the skills-based score.
+  This reflects a hiring process that judges reasoning and collaboration through a human,
+  not just raw output — treat it as a sign of a more thoughtful engineering org. Do NOT
+  penalize postings that are simply silent on interview process; this is a bonus for an
+  explicitly-stated pairing/behavioral process, not a default assumption. Automated
+  timed-assessment platforms (e.g. HackerRank, Codility) are handled separately via
+  penalty rules — do not double-count them here.
 - When past rejection feedback includes structured mismatch reasons, treat them as high-signal preferences.
 - If the text states an annual USD compensation range or figure (e.g. "$110k-$120k",
   "$150,000 - $180,000", "base salary of $140,000"), extract it into salary_min/salary_max.
