@@ -43,12 +43,15 @@ import pytest
 from flask import Flask
 
 from backend.scoring.job_validator import SCORING_FAILED_WARNING
-from routes.fit import fit_bp
+from routes.fit import fit_bp, run_re_evaluate_task
 
 
 def make_fake_get_repos(repos: dict) -> Any:
     @contextmanager
-    def fake() -> Iterator[dict[str, Any]]:
+    def fake(*_args: Any, **_kwargs: Any) -> Iterator[dict[str, Any]]:
+        # *_args/**_kwargs absorb the optional user_id positional arg that
+        # run_re_evaluate_task passes (get_repos(user_id)) vs. the no-arg
+        # get_repos() every other route in this file calls.
         try:
             yield repos
         finally:
@@ -397,3 +400,84 @@ def test_fit_chat_rejects_all_malformed_messages() -> None:
 
     assert response.status_code == 400
     assert response.get_json()["error"] == "No valid messages provided"
+
+
+# ai: claude-sonnet-5 | 2026-10-01
+class FakeReEvaluateJobsRepo:
+    """Bulk-queue fake for run_re_evaluate_task: tracks jobs by id across its
+    read phase (get_by_statuses/get_all_ordered) and write phase (update)."""
+
+    def __init__(self, jobs: list[dict[str, Any]]) -> None:
+        self.jobs_by_id: dict[int, dict[str, Any]] = {j["id"]: dict(j) for j in jobs}
+        self.updates_by_id: dict[int, dict[str, Any]] = {}
+
+    def get_by_statuses(
+        self, user_id: int, statuses: list[str], exclude_snoozed: bool = False
+    ) -> list[dict[str, Any]]:
+        assert user_id == _FAKE_USER_ID
+        return [dict(j) for j in self.jobs_by_id.values() if j["status"] in statuses]
+
+    def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _FAKE_USER_ID
+        return [dict(j) for j in self.jobs_by_id.values()]
+
+    def get_not_a_fit_with_feedback(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _FAKE_USER_ID
+        return []
+
+    def update(self, user_id: int, job_id: int, fields: dict[str, Any]) -> None:
+        assert user_id == _FAKE_USER_ID
+        self.jobs_by_id[job_id].update(fields)
+        self.updates_by_id[job_id] = fields
+
+
+# ai: claude-sonnet-5 | 2026-10-01
+# Regression test for the bug surfaced by a real re-evaluate run: without the
+# is_near_certain_duplicate gate, run_re_evaluate_task routed every duplicate
+# match (even an exact URL match against a job already marked "applied") to
+# possible_duplicate, forcing manual review of a job that should auto-skip --
+# exactly like scan.py/jobs.py/emails.py already do on import.
+def test_re_evaluate_queue_auto_skips_exact_url_duplicate_of_applied_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = FakeConnection()
+    jobs_repo = FakeReEvaluateJobsRepo(
+        [
+            {
+                "id": 1,
+                "company": "Acme",
+                "job_title": "Platform Engineer",
+                "url": "https://boards.greenhouse.io/acme/jobs/12345",
+                "status": "applied",
+                "fit_score": 80,
+            },
+            {
+                "id": 2,
+                "company": "Acme",
+                "job_title": "Platform Engineer",
+                "url": "https://boards.greenhouse.io/acme/jobs/12345",
+                "status": "triage",
+                "fit_score": 55,
+                "raw_jd_snippet": "Full enough platform engineering job description.",
+                "import_warnings": None,
+            },
+        ]
+    )
+    repos = {
+        "conn": conn,
+        "jobs": jobs_repo,
+        "resume": FakeResumeRepo(),
+        "penalties": FakePenaltyRepo(),
+    }
+
+    monkeypatch.setattr("routes.fit.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.fit.FitScorer", FakeFitScorer)
+
+    result = run_re_evaluate_task.apply(args=(_FAKE_USER_ID,)).result
+
+    rescored_job = jobs_repo.jobs_by_id[2]
+    assert rescored_job["status"] == "skipped"
+    assert rescored_job["duplicate_of_id"] == 1
+    assert "Acme" in rescored_job["duplicate_hint"]
+    assert result["result"]["db_matches"] == 1
+    assert conn.committed

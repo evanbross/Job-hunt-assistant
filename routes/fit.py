@@ -59,6 +59,7 @@ from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import (
     db_match_for_job,
     dismissed_duplicate_ids,
+    is_near_certain_duplicate,
 )
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_enrichment import scoring_text_for_job
@@ -183,10 +184,10 @@ def run_re_evaluate_task(self, user_id: int) -> dict:
             # ai: claude-sonnet-4-6 | 2026-06-09
             (
                 tracked_status,
-                _tracking_source,
+                tracking_source,
                 duplicate_hint,
                 duplicate_of_id,
-                _match_scores,
+                match_scores,
             ) = db_match_for_job(
                 job_title=title,
                 company=company,
@@ -199,7 +200,19 @@ def run_re_evaluate_task(self, user_id: int) -> dict:
                 # dismissed via /dismiss-duplicate, silently undoing that call.
                 dismissed_ids=dismissed_duplicate_ids(job),
             )
-            if duplicate_hint:
+            # ai: claude-sonnet-5 | 2026-10-01
+            # Match scan.py/jobs.py/emails.py: a near-certain duplicate (exact
+            # URL/job-id match, or a fuzzy match clearing both auto-reject
+            # thresholds) auto-skips instead of resurfacing for manual review.
+            # Without this gate every duplicate match -- including an exact
+            # URL match against a job already marked "applied" -- landed in
+            # possible_duplicate and had to be dismissed by hand on every run.
+            if duplicate_hint and is_near_certain_duplicate(tracking_source, match_scores):
+                updates["duplicate_hint"] = duplicate_hint
+                updates["duplicate_of_id"] = duplicate_of_id
+                updates["status"] = "skipped"
+                db_matches += 1
+            elif duplicate_hint:
                 updates["duplicate_hint"] = duplicate_hint
                 updates["duplicate_of_id"] = duplicate_of_id
                 updates["status"] = "possible_duplicate"
