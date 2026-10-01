@@ -99,7 +99,11 @@ SETTINGS: dict[str, SettingSpec] = {
         label="SMTP Host", group="SMTP",
     ),
     "smtp_port": SettingSpec(
-        scope="system", is_secret=False, default="1025",
+        # ai: claude-sonnet-5 | 2026-09-30 -- was 1025: ../infra's Mailhog now
+        # publishes on host port 11025 (another local process already held
+        # 1025 on this machine). Mailhog's container-internal port is still
+        # 1025; only the host-side mapping changed.
+        scope="system", is_secret=False, default="11025",
         label="SMTP Port", group="SMTP",
     ),
     "smtp_user": SettingSpec(
