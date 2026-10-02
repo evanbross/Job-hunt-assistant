@@ -55,6 +55,27 @@ function emailState(contact) {
   return contact.emails.some((email) => email.response_received_at) ? "replied" : "awaiting";
 }
 
+// ai: claude-sonnet-5 | 2026-10-02
+const EMAIL_STATE_RANK = { none: 0, awaiting: 1, replied: 2 };
+
+// Recruiter column sorts by RECRUITER_TYPES' declared order (not-a-recruiter,
+// then unrated/motion/low/high/offshore), not raw alphabetical enum text --
+// alphabetical would scatter related tiers apart (e.g. "high_reliability"
+// and "low_reliability" don't sort next to "motion").
+const RECRUITER_RANK = Object.fromEntries(RECRUITER_TYPES.map((t, i) => [t.value, i]));
+
+// ai: claude-sonnet-5 | 2026-10-02
+// Column sort-key config for the contacts table header. Each getValue()
+// return must be directly comparable with < / > (numbers or lowercased
+// strings) -- see toggleSort/sortedContacts below.
+const SORT_COLUMNS = [
+  { key: "interested", label: "Want to Email", getValue: (c) => (c.interested ? 1 : 0) },
+  { key: "name", label: "Contact", getValue: (c) => (c.full_name || "").toLowerCase() },
+  { key: "recruiter", label: "Recruiter", getValue: (c) => RECRUITER_RANK[c.recruiter_type || ""] ?? 0 },
+  { key: "sent_email", label: "Sent Email", getValue: (c) => (c.emails.length > 0 ? 1 : 0) },
+  { key: "email_status", label: "Email status", getValue: (c) => EMAIL_STATE_RANK[emailState(c)] },
+];
+
 // ai: claude-sonnet-5 | 2026-09-25
 // Profile URLs come from the imported CSV, so only http(s) may become a link
 // target -- a `javascript:` value in the file must never reach an href.
@@ -116,6 +137,8 @@ export default function ContactsPanel() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [bulkPending, setBulkPending] = useState(false);
   const [bulkRecruiterType, setBulkRecruiterType] = useState("unrated");
+  const [sortKey, setSortKey] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
 
   const loadContacts = async () => {
     try {
@@ -152,6 +175,30 @@ export default function ContactsPanel() {
     [contacts, search, emailFilter, recruiterFilter, interestedOnly, titleFilter],
   );
   const interestedCount = useMemo(() => contacts.filter((c) => c.interested).length, [contacts]);
+
+  // ai: claude-sonnet-5 | 2026-10-02
+  // Clicking a sortable column header sets it as the sort key; clicking the
+  // same header again flips direction instead of re-selecting it.
+  const toggleSort = (key) => {
+    setSortKey((prevKey) => {
+      setSortDir((prevDir) => (prevKey === key ? (prevDir === "asc" ? "desc" : "asc") : "asc"));
+      return key;
+    });
+  };
+
+  const sorted = useMemo(() => {
+    if (!sortKey) return filtered;
+    const column = SORT_COLUMNS.find((c) => c.key === sortKey);
+    if (!column) return filtered;
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      const av = column.getValue(a);
+      const bv = column.getValue(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return a.full_name.localeCompare(b.full_name) || a.id - b.id;
+    });
+  }, [filtered, sortKey, sortDir]);
 
   // ai: claude-sonnet-5 | 2026-09-25
   // A bulk action must only ever touch rows the user can currently see in the
@@ -286,7 +333,7 @@ export default function ContactsPanel() {
   };
 
   const importVisible = showImport || (!loading && !loadError && contacts.length === 0);
-  const visible = filtered.slice(0, visibleCount);
+  const visible = sorted.slice(0, visibleCount);
 
   return (
     <div>
@@ -385,7 +432,7 @@ export default function ContactsPanel() {
                     checked={interestedOnly}
                     onChange={(e) => setInterestedOnly(e.target.checked)}
                   />
-                  Interested only ({interestedCount})
+                  Want to email only ({interestedCount})
                 </label>
               </div>
     
@@ -432,30 +479,39 @@ export default function ContactsPanel() {
               )}
     
               <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-                {visible.length > 0 && (
-                  <div style={{ ...rowGrid, ...headerRow }}>
-                    <label style={headerCell}>
-                      <input
-                        type="checkbox"
-                        checked={allFilteredSelected}
-                        onChange={(e) => toggleSelectAllFiltered(e.target.checked)}
-                        aria-label={`Select all ${filtered.length} filtered contacts`}
-                      />
-                      Select
-                    </label>
-                    <span style={headerCell}>Interested</span>
-                    <span style={headerCell}>Contact</span>
-                    <span style={headerCell}>Recruiter</span>
-                    <span style={headerCell}>Email status</span>
-                    <span />
-                  </div>
-                )}
-                {visible.length === 0 ? (
-                  <div style={{ padding: "18px", color: "var(--text-muted)" }}>
-                    No contacts match these filters.
-                  </div>
-                ) : (
-                  visible.map((contact) => {
+                <div style={scrollArea}>
+                  {visible.length > 0 && (
+                    <div style={{ ...rowGrid, ...headerRow, ...stickyHeader }}>
+                      <label style={headerCell}>
+                        <input
+                          type="checkbox"
+                          checked={allFilteredSelected}
+                          onChange={(e) => toggleSelectAllFiltered(e.target.checked)}
+                          aria-label={`Select all ${filtered.length} filtered contacts`}
+                        />
+                        Select
+                      </label>
+                      {SORT_COLUMNS.map((column) => (
+                        <button
+                          key={column.key}
+                          type="button"
+                          onClick={() => toggleSort(column.key)}
+                          style={sortHeaderCell}
+                          aria-label={`Sort by ${column.label}`}
+                        >
+                          {column.label}
+                          {sortKey === column.key && (sortDir === "asc" ? " ▲" : " ▼")}
+                        </button>
+                      ))}
+                      <span />
+                    </div>
+                  )}
+                  {visible.length === 0 ? (
+                    <div style={{ padding: "18px", color: "var(--text-muted)" }}>
+                      No contacts match these filters.
+                    </div>
+                  ) : (
+                    visible.map((contact) => {
                     const state = emailState(contact);
                     const profileUrl = safeHttpUrl(contact.profile_url);
                     const expanded = expandedId === contact.id;
@@ -475,7 +531,7 @@ export default function ContactsPanel() {
                             type="checkbox"
                             checked={contact.interested}
                             onChange={(e) => patchContact(contact.id, { interested: e.target.checked })}
-                            aria-label={`Interested in ${contact.full_name}`}
+                            aria-label={`Want to email ${contact.full_name}`}
                           />
                           <div style={{ minWidth: 0 }}>
                             <div style={{ fontWeight: 600 }}>
@@ -513,6 +569,24 @@ export default function ContactsPanel() {
                               </option>
                             ))}
                           </select>
+                          <div
+                            style={{ textAlign: "center" }}
+                            title={
+                              lastSent
+                                ? `Last sent ${formatLocalDate(lastSent)}`
+                                : "No email logged yet"
+                            }
+                          >
+                            {contact.emails.length > 0 ? (
+                              <span aria-label={`Email sent to ${contact.full_name}`} style={{ color: "var(--green)" }}>
+                                ✓
+                              </span>
+                            ) : (
+                              <span aria-label={`No email sent to ${contact.full_name}`} style={{ color: "var(--text-muted)" }}>
+                                —
+                              </span>
+                            )}
+                          </div>
                           <div>
                             {state === "none" && <span className="badge badge-gray">Not emailed</span>}
                             {state === "awaiting" && (
@@ -550,8 +624,9 @@ export default function ContactsPanel() {
                     );
                   })
                 )}
+                </div>
               </div>
-    
+
               {filtered.length > visibleCount && (
                 <div style={{ textAlign: "center", marginTop: "12px" }}>
                   <button
@@ -595,10 +670,26 @@ const toolbar = {
 
 const rowGrid = {
   display: "grid",
-  gridTemplateColumns: "64px 70px minmax(0, 1fr) 150px 230px 70px",
+  gridTemplateColumns: "64px 90px minmax(0, 1fr) 150px 90px 230px 70px",
   alignItems: "center",
   gap: "12px",
   padding: "10px 14px",
+};
+
+// ai: claude-sonnet-5 | 2026-10-02
+// Keeps the header row fixed at the top of its own scroll container while
+// the contact rows scroll underneath it. Needs a solid background (inherited
+// from headerRow) so scrolled-under rows don't show through.
+const scrollArea = {
+  maxHeight: "65vh",
+  overflowY: "auto",
+  overflowX: "hidden",
+};
+
+const stickyHeader = {
+  position: "sticky",
+  top: 0,
+  zIndex: 1,
 };
 
 const bulkBar = {
@@ -640,6 +731,19 @@ const headerCell = {
   color: "var(--text-muted)",
   textTransform: "uppercase",
   letterSpacing: "0.05em",
+};
+
+// ai: claude-sonnet-5 | 2026-10-02 — sortable column header, styled to match
+// headerCell but as a real <button> so it's keyboard/focus accessible.
+const sortHeaderCell = {
+  ...headerCell,
+  background: "none",
+  border: "none",
+  padding: 0,
+  margin: 0,
+  cursor: "pointer",
+  textAlign: "left",
+  fontFamily: "inherit",
 };
 
 const subtleText = {
