@@ -34,6 +34,12 @@ class JobColumns:
     # holds a synthetic "source:date:token"-shaped dedup key instead.
     DEDUP_KEY = "dedup_key"
     COMPANY = "company"
+    # ai: claude-sonnet-5 | 2026-10-01 — kept in sync by PostgresJobRepository's
+    # insert()/update() whenever COMPANY is written (normalize_company_name()),
+    # mirroring contacts.company_normalized's pattern. Lets get_by_company()/
+    # get_company_counts() filter in SQL instead of fetching every job for the
+    # user and comparing in Python, which no longer scales past a few thousand rows.
+    COMPANY_NORMALIZED = "company_normalized"
     JOB_TITLE = "job_title"
     URL = "url"
     SOURCE = "source"

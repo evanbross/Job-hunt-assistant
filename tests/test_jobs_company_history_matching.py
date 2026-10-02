@@ -27,8 +27,10 @@ from backend.db import (
     PostgresJobRepository,
     PostgresUserAccountRepository,
     get_connection,
+    init_db,
 )
 from backend.db.row_level_security import set_current_user
+from backend.scoring.company_matching import normalize_company_name
 
 
 def _make_user(conn) -> int:
@@ -80,5 +82,35 @@ def test_get_company_counts_groups_across_corporate_suffix(pg_dsn: str) -> None:
 
         assert counts["seeq"] == 2
         assert counts["acme"] == 1
+    finally:
+        conn.close()
+
+
+# ai: claude-sonnet-5 | 2026-10-01
+# The one-time backfill in backend/db/schema.py's _migrate() calls
+# normalize_company_name() directly (no second, SQL-regex reimplementation of
+# the same logic -- an earlier version of this migration did exactly that and
+# was replaced). This exercises the real migration path end-to-end: a row
+# written before company_normalized existed (simulated here by inserting
+# around the repository, which would otherwise derive it itself) must get
+# backfilled correctly the next time init_db() runs.
+def test_migration_backfills_company_normalized_for_legacy_rows(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user(conn)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO jobs (user_id, company, job_title, status)"
+            " VALUES (%s, %s, %s, %s) RETURNING id",
+            (user_id, "Seeq Corporation", "Legacy Row", "triage"),
+        )
+        job_id = cur.fetchone()["id"]
+        conn.commit()
+
+        init_db(pg_dsn)
+
+        cur.execute("SELECT company_normalized FROM jobs WHERE id = %s", (job_id,))
+        row = cur.fetchone()
+        assert row["company_normalized"] == normalize_company_name("Seeq Corporation")
     finally:
         conn.close()

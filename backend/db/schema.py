@@ -64,6 +64,7 @@ from backend.db.repositories.user_accounts import (
     generate_bootstrap_password,
 )
 from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
+from backend.scoring.company_matching import normalize_company_name
 from backend.settings_registry import SETTINGS
 from backend.utils.stage_status_normalization import normalize_stage_status
 
@@ -1410,6 +1411,37 @@ def _migrate(conn: Any) -> None:
             " CHECK (recruiter_type IN ('unrated', 'motion', 'low_reliability',"
             " 'high_reliability', 'offshore_spam'))"
         )
+    conn.commit()
+
+    # ai: claude-sonnet-5 | 2026-10-01
+    # jobs.company_normalized mirrors contacts.company_normalized's pattern
+    # (normalize_company_name(), kept in sync by PostgresJobRepository's
+    # insert()/update() going forward). get_by_company()/get_company_counts()
+    # used to SELECT * every job for the user and compare in Python -- at a
+    # few thousand jobs that became a multi-minute Company History dialog load
+    # (confirmed: 4399 rows / 500s on a real account). The one-time backfill
+    # below calls normalize_company_name() directly rather than carrying a
+    # second (SQL regex) implementation of the same corporate-suffix-stripping
+    # logic -- a prior version of this migration did exactly that, which is
+    # the "more than one of these is asking for trouble" mistake this comment
+    # is here to not repeat.
+    cur.execute(
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS company_normalized TEXT NOT NULL DEFAULT ''"
+    )
+    cur.execute(
+        "SELECT id, company FROM jobs"
+        " WHERE company_normalized = '' AND company IS NOT NULL AND TRIM(company) != ''"
+    )
+    stale_rows = cur.fetchall()
+    if stale_rows:
+        cur.executemany(
+            "UPDATE jobs SET company_normalized = %s WHERE id = %s",
+            [(normalize_company_name(row["company"]), row["id"]) for row in stale_rows],
+        )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_user_company_normalized"
+        " ON jobs (user_id, company_normalized)"
+    )
     conn.commit()
 
 

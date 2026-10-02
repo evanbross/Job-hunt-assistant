@@ -257,6 +257,24 @@ class PostgresJobRepository(_BaseRepo):
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     # ai: claude-sonnet-5 | 2026-09-19
+    # ai: claude-sonnet-5 | 2026-10-01 — filters via the company_normalized column
+    # (kept in sync by insert()/update() above) instead of fetching every job for
+    # the user and comparing in Python. On a real account with 4399 jobs that used
+    # to take ~500s (full SELECT * transfer dominated by job_description/
+    # raw_jd_snippet/url text) for a single Company History dialog open.
+    _COMPANY_HISTORY_COLUMNS: tuple[str, ...] = (
+        "id",
+        "company",
+        "job_title",
+        "status",
+        "source",
+        "url",
+        "notes",
+        "date_found",
+        "duplicate_of_id",
+        "skip_reason",
+    )
+
     def get_by_company(self, user_id: int, company: str) -> list[dict[str, Any]]:
         """Return all jobs whose company matches, newest first.
 
@@ -264,32 +282,31 @@ class PostgresJobRepository(_BaseRepo):
         like "Corp"/"Corporation"/"Inc" and non-alphanumerics) rather than a plain
         LOWER(TRIM()) comparison, so e.g. "Seeq" and "Seeq Corporation" are treated
         as the same employer. See get_company_counts below, which must use the same
-        normalization so the two agree on what counts as a match."""
+        normalization so the two agree on what counts as a match. Only selects the
+        columns the Company History dialog actually displays (see JobCard.jsx /
+        jobToHistoryRow) rather than every column, to keep the transfer small."""
         target = normalize_company_name(company)
         cur = self._execute(
-            "SELECT * FROM jobs WHERE user_id = %s AND TRIM(COALESCE(company, '')) != ''"
-            " ORDER BY id DESC",
-            (user_id,),
+            f"SELECT {', '.join(self._COMPANY_HISTORY_COLUMNS)} FROM jobs"
+            " WHERE user_id = %s AND company_normalized = %s ORDER BY id DESC",
+            (user_id, target),
         )
-        rows = [_row_to_dict(r) for r in cur.fetchall()]
-        return [row for row in rows if normalize_company_name(row.get("company")) == target]
+        return [_row_to_dict(r) for r in cur.fetchall()]
 
     # ai: claude-sonnet-5 | 2026-09-19
     def get_company_counts(self, user_id: int) -> dict[str, int]:
         """Total job count per normalized company name (see normalize_company_name),
         across every status. Used by the frontend to gray out the Company History
-        button when a job is the only one on record for its company — the same
-        normalization get_by_company uses, so the counts agree with what that lookup
-        would return."""
+        button when a job is the only one on record for its company — grouping by
+        the same company_normalized column get_by_company filters on, so the counts
+        always agree with what that lookup would return."""
         cur = self._execute(
-            "SELECT company FROM jobs WHERE user_id = %s AND TRIM(COALESCE(company, '')) != ''",
+            "SELECT company_normalized, count(*) AS cnt FROM jobs"
+            " WHERE user_id = %s AND TRIM(COALESCE(company, '')) != ''"
+            " GROUP BY company_normalized",
             (user_id,),
         )
-        counts: dict[str, int] = {}
-        for row in cur.fetchall():
-            key = normalize_company_name(row["company"])
-            counts[key] = counts.get(key, 0) + 1
-        return counts
+        return {row["company_normalized"]: row["cnt"] for row in cur.fetchall()}
 
     _MISSING_COMPANY_SQL: str = (
         "COALESCE(TRIM(LOWER(company)), '') IN ('', 'unknown', 'unknown company', 'null', 'none')"
@@ -343,6 +360,14 @@ class PostgresJobRepository(_BaseRepo):
         unknown = set(job.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
+        # ai: claude-sonnet-5 | 2026-10-01
+        # Derive company_normalized here -- the one place every insert path
+        # (email scan, manual paste, browser extension, career-site import,
+        # applications-sheet "add row") funnels through -- instead of relying
+        # on each caller to remember it. See get_by_company()/get_company_counts()
+        # below, which depend on this column staying in sync with `company`.
+        if JobColumns.COMPANY in job:
+            job = {**job, JobColumns.COMPANY_NORMALIZED: normalize_company_name(job.get(JobColumns.COMPANY))}
         columns = ["user_id", *job.keys()]
         placeholders = ", ".join(["%s"] * len(columns))
         try:
@@ -376,6 +401,12 @@ class PostgresJobRepository(_BaseRepo):
         unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to update unknown columns: {unknown}")
+        # ai: claude-sonnet-5 | 2026-10-01 — see insert()'s matching comment.
+        if JobColumns.COMPANY in fields:
+            fields = {
+                **fields,
+                JobColumns.COMPANY_NORMALIZED: normalize_company_name(fields.get(JobColumns.COMPANY)),
+            }
         set_clause = ", ".join(f"{k} = %s" for k in fields)
         self._execute(
             f"UPDATE jobs SET {set_clause} WHERE id = %s AND user_id = %s",
