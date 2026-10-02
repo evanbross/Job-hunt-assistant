@@ -67,6 +67,7 @@ from backend.scoring.job_validator import SCORING_FAILED_WARNING, remove_import_
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     FIT_PANEL_STATUSES,
+    USER_COMMITTED_JOB_STATUSES,
     ChatMessage,
     ai_error_http_status,
     current_user_id,
@@ -268,6 +269,17 @@ def run_re_evaluate_task(self, user_id: int) -> dict:
         with get_repos(user_id) as repos:
             jobs_repo = repos["jobs"]
             for job_id, updates in pending_updates:
+                # ai: claude-sonnet-5 | 2026-10-01
+                # A run spans up to ~90 minutes across ~1000+ jobs (see job
+                # 4676/5376 incident), so re-check each job's live status right
+                # before writing it -- `updates` was computed from a snapshot
+                # read at the top of this task and must not revert a status
+                # the user committed to (/apply, /skip) while this job's turn
+                # was still queued up.
+                if "status" in updates:
+                    current = jobs_repo.get_by_id(user_id, job_id)
+                    if current and current.get("status") in USER_COMMITTED_JOB_STATUSES:
+                        updates = {k: v for k, v in updates.items() if k != "status"}
                 jobs_repo.update(user_id, job_id, updates)
             repos["conn"].commit()
 
@@ -624,13 +636,20 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
         ), ai_error_http_status(exc)
 
     score = int(result["score"])
-    current_status = str(job.get("status") or "")
-    if current_status in {"possible_duplicate", "skipped", "applied"}:
-        new_status = current_status
-    else:
-        new_status = "pending_review" if score >= 70 else "triage"
 
     with get_repos() as repos:
+        # ai: claude-sonnet-5 | 2026-10-01
+        # Re-check status fresh instead of using the `job` snapshot read
+        # before the (slow) AI scoring call above -- a concurrent /apply or
+        # /skip on this same job during that call must win, not get silently
+        # reverted by a status this request computed from stale data.
+        current = repos["jobs"].get_by_id(user_id, job_id)
+        current_status = str((current or {}).get("status") or "")
+        if current_status in {"possible_duplicate", *USER_COMMITTED_JOB_STATUSES}:
+            new_status = current_status
+        else:
+            new_status = "pending_review" if score >= 70 else "triage"
+
         repos["jobs"].update(
             user_id,
             job_id,
@@ -695,9 +714,18 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
         ), ai_error_http_status(exc)
 
     score = int(result["score"])
-    new_status = "pending_review" if score >= 70 else "triage"
 
     with get_repos() as repos:
+        # ai: claude-sonnet-5 | 2026-10-01
+        # Same stale-status guard as re_evaluate_job_fit: re-check fresh
+        # instead of trusting a status computed before the AI scoring call.
+        current = repos["jobs"].get_by_id(user_id, job_id)
+        current_status = str((current or {}).get("status") or "")
+        if current_status in {"possible_duplicate", *USER_COMMITTED_JOB_STATUSES}:
+            new_status = current_status
+        else:
+            new_status = "pending_review" if score >= 70 else "triage"
+
         repos["jobs"].update(
             user_id,
             job_id,

@@ -71,6 +71,18 @@ FIT_PANEL_STATUSES: frozenset[str] = frozenset(
     }
 )
 
+# ai: claude-sonnet-5 | 2026-10-01
+# Statuses set by a direct, deliberate user action (Mark Applied / Skip) that a
+# later request must never silently overwrite with a status recomputed from a
+# stale pre-action snapshot (duplicate-dismiss re-scoring, bulk re-evaluate).
+# See dismiss_duplicate and run_re_evaluate_task for the race this guards.
+USER_COMMITTED_JOB_STATUSES: frozenset[str] = frozenset(
+    {
+        "applied",
+        "skipped",
+    }
+)
+
 
 @contextmanager
 def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:

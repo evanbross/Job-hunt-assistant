@@ -142,3 +142,75 @@ def test_dismiss_duplicate_resolves_when_two_jobs_fuzzy_match(
     assert second_data["duplicate_of_id"] is None
     assert second_data["duplicate_hint"] is None
     assert json.loads(second_data["dismissed_duplicate_ids"]) == [2, 3]
+
+
+# ai: claude-sonnet-5 | 2026-10-01
+class FakeRaceJobsRepo(FakeMultiJobsRepo):
+    """Simulates a concurrent /apply landing between dismiss_duplicate's initial
+    read and its pre-write re-check: the second get_by_id call (the guard) sees
+    status="applied" even though the first call (read at the top) still saw the
+    pre-race status."""
+
+    def __init__(self, rows: list[dict[str, Any]], race_job_id: int) -> None:
+        super().__init__(rows)
+        self._race_job_id = race_job_id
+        self._get_by_id_calls = 0
+
+    def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
+        if job_id == self._race_job_id:
+            self._get_by_id_calls += 1
+            if self._get_by_id_calls == 2 and job_id in self.rows:
+                # Mutate the backing row itself (not a returned copy) so the
+                # "concurrent apply" is visible both to this call's return
+                # value and to the test's later assertion on jobs_repo.rows.
+                self.rows[job_id]["status"] = "applied"
+        return super().get_by_id(user_id, job_id)
+
+
+def test_dismiss_duplicate_does_not_clobber_concurrent_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the job 4676/5376 incident: dismiss_duplicate must not
+    overwrite a status set by a concurrent /apply that lands mid-request. The
+    stored `status` must stay untouched -- the route should short-circuit on its
+    pre-write re-check and return the already-applied job as-is."""
+    jobs_repo = FakeRaceJobsRepo(
+        [
+            {
+                "id": 1,
+                "company": "Hatch",
+                "job_title": "Staff Backend Engineer",
+                "url": "https://www.linkedin.com/jobs/view/4437928307/",
+                "status": "possible_duplicate",
+                "duplicate_of_id": 2,
+                "duplicate_hint": 'Already tracked as "Staff Backend Engineer" at Hatch.',
+                "fit_score": 85,
+                "dismissed_duplicate_ids": None,
+            },
+            {
+                "id": 2,
+                "company": "Hatch",
+                "job_title": "Staff Backend Engineer",
+                "url": "https://www.linkedin.com/jobs/view/4437928307/?variant=2",
+                "status": "skipped",
+                "duplicate_of_id": 1,
+                "duplicate_hint": None,
+                "fit_score": None,
+                "dismissed_duplicate_ids": None,
+            },
+        ],
+        race_job_id=1,
+    )
+    repos = {"conn": FakeConnection(), "jobs": jobs_repo}
+    monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.jobs.current_user_id", lambda: _TEST_USER_ID)
+
+    app = Flask(__name__)
+    app.register_blueprint(jobs_bp, url_prefix="/api")
+    client = app.test_client()
+
+    response = client.post("/api/jobs/1/dismiss-duplicate")
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "applied"
+    assert jobs_repo.rows[1]["status"] == "applied"

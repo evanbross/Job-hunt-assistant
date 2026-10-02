@@ -421,6 +421,11 @@ class FakeReEvaluateJobsRepo:
         assert user_id == _FAKE_USER_ID
         return [dict(j) for j in self.jobs_by_id.values()]
 
+    def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
+        assert user_id == _FAKE_USER_ID
+        job = self.jobs_by_id.get(job_id)
+        return dict(job) if job is not None else None
+
     def get_not_a_fit_with_feedback(self, user_id: int) -> list[dict[str, Any]]:
         assert user_id == _FAKE_USER_ID
         return []
@@ -481,3 +486,62 @@ def test_re_evaluate_queue_auto_skips_exact_url_duplicate_of_applied_job(
     assert "Acme" in rescored_job["duplicate_hint"]
     assert result["result"]["db_matches"] == 1
     assert conn.committed
+
+
+# ai: claude-sonnet-5 | 2026-10-01
+class FakeReEvaluateJobsRepoWithRace(FakeReEvaluateJobsRepo):
+    """Simulates a concurrent /apply landing on job `race_job_id` sometime after
+    this task's read phase but before its write phase gets to that job -- the
+    write-phase guard's get_by_id call must see "applied", even though the read
+    phase (get_by_statuses/get_all_ordered, called earlier) still saw the
+    pre-race status and scored/queued an update accordingly."""
+
+    def __init__(self, jobs: list[dict[str, Any]], race_job_id: int) -> None:
+        super().__init__(jobs)
+        self._race_job_id = race_job_id
+
+    def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
+        if job_id == self._race_job_id and job_id in self.jobs_by_id:
+            # Mutate the backing row itself (not a returned copy) so the
+            # "concurrent apply" is visible both to this call's return value
+            # and to the test's later assertion on jobs_repo.jobs_by_id.
+            self.jobs_by_id[job_id]["status"] = "applied"
+        return super().get_by_id(user_id, job_id)
+
+
+def test_re_evaluate_queue_does_not_clobber_status_applied_mid_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the job 4676/5376 incident at the bulk-task level: a
+    job re-scored to a new status must not have that status written if the user
+    marked it applied while this (potentially ~90-minute) run was in progress --
+    the write-phase guard must preserve "applied" instead."""
+    conn = FakeConnection()
+    jobs_repo = FakeReEvaluateJobsRepoWithRace(
+        [
+            {
+                "id": 7,
+                "company": "Acme",
+                "job_title": "Platform Engineer",
+                "url": "https://boards.greenhouse.io/acme/jobs/999",
+                "status": "triage",
+                "fit_score": 40,
+                "raw_jd_snippet": "Full enough platform engineering job description.",
+                "import_warnings": None,
+            }
+        ],
+        race_job_id=7,
+    )
+    repos = {
+        "conn": conn,
+        "jobs": jobs_repo,
+        "resume": FakeResumeRepo(),
+        "penalties": FakePenaltyRepo(),
+    }
+
+    monkeypatch.setattr("routes.fit.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.fit.FitScorer", FakeFitScorer)
+
+    run_re_evaluate_task.apply(args=(_FAKE_USER_ID,)).result
+
+    assert jobs_repo.jobs_by_id[7]["status"] == "applied"

@@ -105,6 +105,7 @@ from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-17
     safe_urlopen,
 )
 from backend.utils.utils import (
+    USER_COMMITTED_JOB_STATUSES,
     ai_error_http_status,
     current_user_id,
     get_repos,
@@ -534,9 +535,15 @@ def patch_job(job_id: int) -> ResponseReturnValue:
                         "pending_review" if fit_score >= 70 else "triage"
                     )
 
-                if duplicate_updates:
-                    repos["jobs"].update(user_id, job_id, duplicate_updates)
-                    updated_job = repos["jobs"].get_by_id(user_id, job_id)
+                # ai: claude-sonnet-5 | 2026-10-01
+                # Same SELECT-then-write race as dismiss_duplicate: don't let
+                # a duplicate recompute from the stale `updated_job` snapshot
+                # above clobber a status the user committed to concurrently.
+                if duplicate_updates and updated_job.get("status") not in USER_COMMITTED_JOB_STATUSES:
+                    current = repos["jobs"].get_by_id(user_id, job_id)
+                    if current and current.get("status") not in USER_COMMITTED_JOB_STATUSES:
+                        repos["jobs"].update(user_id, job_id, duplicate_updates)
+                        updated_job = repos["jobs"].get_by_id(user_id, job_id)
 
             repos["conn"].commit()
     except Exception as exc:
@@ -855,6 +862,17 @@ def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
                 "duplicate_of_id": None,
                 "dismissed_duplicate_ids": json.dumps(dismissed_ids),
             }
+
+        # ai: claude-sonnet-5 | 2026-10-01
+        # SELECT-then-write race guard: db_match_for_job above can take long
+        # enough (DB round trip + fuzzy matching) for a concurrent /apply or
+        # /skip on this same job to land first. Re-check right before writing
+        # so this request can't clobber a status the user deliberately set in
+        # the meantime -- this is exactly how job 4676/5376 silently reverted
+        # from "applied" back to "pending_review" with no audit trail.
+        current = repos["jobs"].get_by_id(user_id, job_id)
+        if current and current.get("status") in USER_COMMITTED_JOB_STATUSES:
+            return jsonify(current)
 
         repos["jobs"].update(user_id, job_id, updates)
         updated_job = repos["jobs"].get_by_id(user_id, job_id)
