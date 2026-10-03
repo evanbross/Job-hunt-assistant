@@ -69,6 +69,8 @@ const RECRUITER_RANK = Object.fromEntries(RECRUITER_TYPES.map((t, i) => [t.value
 // return must be directly comparable with < / > (numbers or lowercased
 // strings) -- see toggleSort/sortedContacts below.
 const SORT_COLUMNS = [
+  // ai: gpt-5 | 2026-10-03
+  { key: "outreach_score", label: "Priority", getValue: (c) => c.outreach_score ?? 0 },
   { key: "interested", label: "Want to Email", getValue: (c) => (c.interested ? 1 : 0) },
   { key: "name", label: "Contact", getValue: (c) => (c.full_name || "").toLowerCase() },
   { key: "recruiter", label: "Recruiter", getValue: (c) => RECRUITER_RANK[c.recruiter_type || ""] ?? 0 },
@@ -137,8 +139,9 @@ export default function ContactsPanel() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [bulkPending, setBulkPending] = useState(false);
   const [bulkRecruiterType, setBulkRecruiterType] = useState("unrated");
-  const [sortKey, setSortKey] = useState(null);
-  const [sortDir, setSortDir] = useState("asc");
+  // ai: gpt-5 | 2026-10-03
+  const [sortKey, setSortKey] = useState("outreach_score");
+  const [sortDir, setSortDir] = useState("desc");
 
   const loadContacts = async () => {
     try {
@@ -239,6 +242,8 @@ export default function ContactsPanel() {
         prev.map((c) => (idSet.has(c.id) ? { ...c, recruiter_type: recruiterType } : c)),
       );
       setSelectedIds(new Set());
+      // ai: gpt-5 | 2026-10-03
+      await loadContacts();
     } catch (e) {
       window.alert(`Bulk update failed: ${e.message}`);
     } finally {
@@ -259,6 +264,8 @@ export default function ContactsPanel() {
     try {
       const res = await sendJson(`/api/contacts/${contactId}`, "PATCH", fields);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // ai: gpt-5 | 2026-10-03
+      await loadContacts();
       return true;
     } catch (e) {
       replaceContact(contactId, rollback);
@@ -290,6 +297,8 @@ export default function ContactsPanel() {
             : c,
         ),
       );
+      // ai: gpt-5 | 2026-10-03
+      await loadContacts();
     } catch (e) {
       window.alert(`Could not log the email: ${e.message}`);
     }
@@ -313,6 +322,8 @@ export default function ContactsPanel() {
             : c,
         ),
       );
+      // ai: gpt-5 | 2026-10-03
+      await loadContacts();
     } catch (e) {
       window.alert(`Could not update the reply: ${e.message}`);
     }
@@ -327,6 +338,8 @@ export default function ContactsPanel() {
           c.id === contactId ? { ...c, emails: c.emails.filter((e) => e.id !== emailId) } : c,
         ),
       );
+      // ai: gpt-5 | 2026-10-03
+      await loadContacts();
     } catch (e) {
       window.alert(`Could not remove the email: ${e.message}`);
     }
@@ -527,6 +540,13 @@ export default function ContactsPanel() {
                             onChange={(e) => toggleSelected(contact.id, e.target.checked)}
                             aria-label={`Select ${contact.full_name}`}
                           />
+                          {/* ai: gpt-5 | 2026-10-03 */}
+                          <div
+                            style={{ fontWeight: 700, textAlign: "center" }}
+                            title="Weighted outreach priority (company, role, relationship, and engagement)"
+                          >
+                            {contact.outreach_score?.toFixed(1) ?? "—"}
+                          </div>
                           <input
                             type="checkbox"
                             checked={contact.interested}
@@ -670,7 +690,8 @@ const toolbar = {
 
 const rowGrid = {
   display: "grid",
-  gridTemplateColumns: "64px 90px minmax(0, 1fr) 150px 90px 230px 70px",
+  // ai: gpt-5 | 2026-10-03
+  gridTemplateColumns: "64px 72px 90px minmax(0, 1fr) 150px 90px 230px 70px",
   alignItems: "center",
   gap: "12px",
   padding: "10px 14px",

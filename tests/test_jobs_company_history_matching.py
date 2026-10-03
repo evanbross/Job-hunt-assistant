@@ -86,6 +86,27 @@ def test_get_company_counts_groups_across_corporate_suffix(pg_dsn: str) -> None:
         conn.close()
 
 
+# ai: gpt-5 | 2026-10-03
+def test_get_outreach_company_relevance_uses_latest_stage_view_schema(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user(conn)
+        repo = PostgresJobRepository(conn)
+        repo.insert(user_id, {"company": "Acme", "job_title": "Active", "status": "triage"})
+        repo.insert(user_id, {"company": "Seeq", "job_title": "Past", "status": "applied"})
+        conn.commit()
+
+        relevance = repo.get_outreach_company_relevance(
+            user_id,
+            frozenset({"pending_review", "triage", "possible_duplicate"}),
+            {"rejected", "job_filled", "req_closed", "ghosted"},
+        )
+
+        assert relevance == {"acme": 10.0, "seeq": 5.0}
+    finally:
+        conn.close()
+
+
 # ai: claude-sonnet-5 | 2026-10-01
 # The one-time backfill in backend/db/schema.py's _migrate() calls
 # normalize_company_name() directly (no second, SQL-regex reimplementation of

@@ -57,11 +57,17 @@ from pydantic import (
 
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.contacts_service import build_company_map
+from backend.contacts.outreach_scoring import score_contact
 from backend.contacts.title_suggestion_service import (
     finish_title_suggestions,
     prepare_title_suggestions,
 )
-from backend.utils.utils import current_user_id, get_repos, invalid_request_response
+from backend.utils.utils import (
+    ACTIVE_JOB_STATUSES,
+    current_user_id,
+    get_repos,
+    invalid_request_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -269,8 +275,20 @@ def get_contacts_company_map() -> ResponseReturnValue:
 # ai: claude-sonnet-5 | 2026-09-25
 @contacts_bp.route("/contacts")
 def list_contacts() -> ResponseReturnValue:
+    # ai: gpt-5 | 2026-10-03
+    user_id = current_user_id()
     with get_repos() as repos:
-        contacts = repos["contacts"].list_with_emails(current_user_id())
+        contacts = repos["contacts"].list_with_emails(user_id)
+        # ai: gpt-5 | 2026-10-03
+        terminal_statuses = {
+            status["key"] for status in repos["stage_statuses"].get_all() if status["is_terminal"]
+        }
+        company_relevance = repos["jobs"].get_outreach_company_relevance(
+            user_id, ACTIVE_JOB_STATUSES, terminal_statuses
+        )
+    # ai: gpt-5 | 2026-10-02
+    for contact in contacts:
+        contact["outreach_score"] = score_contact(contact, company_relevance)
     return jsonify({"contacts": contacts})
 
 

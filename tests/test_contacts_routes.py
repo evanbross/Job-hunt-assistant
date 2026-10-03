@@ -82,6 +82,20 @@ class FakeContactsRepo:
         return len(self.rows)
 
 
+# ai: gpt-5 | 2026-10-02
+class FakeJobsRepo:
+    def get_outreach_company_relevance(
+        self, user_id: int, active_statuses: frozenset[str], terminal_statuses: set[str]
+    ) -> dict[str, float]:
+        return {}
+
+
+# ai: gpt-5 | 2026-10-02
+class FakeStageStatusesRepo:
+    def get_all(self) -> list[dict[str, object]]:
+        return [{"key": "rejected", "is_terminal": True}]
+
+
 class FakeContactEmailsRepo:
     def __init__(
         self, contact_ids: set[int] | None = None, email_ids: set[int] | None = None
@@ -280,6 +294,8 @@ def _contacts_client(
         "settings": FakeSettingsRepo(),
         "companies": companies or FakeCompanyRepo(),
         "title_rules": title_rules or FakeTitleRuleRepo(),
+        "jobs": FakeJobsRepo(),
+        "stage_statuses": FakeStageStatusesRepo(),
     }
     return _make_app(repos, monkeypatch).test_client()
 
@@ -289,7 +305,10 @@ def test_list_contacts_returns_rows(monkeypatch: pytest.MonkeyPatch) -> None:
 
     response = client.get("/api/contacts")
     assert response.status_code == 200
-    assert response.get_json() == {"contacts": [{"id": 1, "full_name": "Jane Doe"}]}
+    # ai: gpt-5 | 2026-10-03
+    assert response.get_json() == {
+        "contacts": [{"id": 1, "full_name": "Jane Doe", "outreach_score": 0.0}]
+    }
 
 
 def test_update_contact_only_writes_fields_that_were_sent(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -81,8 +81,10 @@ class PostgresContactRepository(_BaseRepo):
     # ai: claude-sonnet-5 | 2026-09-25
     def list_with_emails(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
+            # ai: gpt-5 | 2026-10-03
             """
-            SELECT c.id, c.full_name, c.company_raw, c.position, c.normalized_title,
+            SELECT c.id, c.full_name, c.company_raw, c.company_normalized,
+                   c.position, c.normalized_title,
                    c.profile_url, c.connected_on, c.email_address, c.interested,
                    c.recruiter_type, c.decided_by, c.notes,
                    COALESCE(

@@ -308,6 +308,33 @@ class PostgresJobRepository(_BaseRepo):
         )
         return {row["company_normalized"]: row["cnt"] for row in cur.fetchall()}
 
+    # ai: gpt-5 | 2026-10-03
+    def get_outreach_company_relevance(
+        self, user_id: int, active_statuses: frozenset[str], terminal_stage_statuses: set[str]
+    ) -> dict[str, float]:
+        """Return one active/past outreach tier per company without loading job bodies."""
+        cur = self._execute(
+            """
+            SELECT j.company_normalized,
+                   BOOL_OR(
+                       j.status = ANY(%s)
+                       OR (
+                           latest.latest_status IS NOT NULL
+                           AND NOT (latest.latest_status = ANY(%s))
+                       )
+                   ) AS has_active_job
+            FROM jobs j
+            LEFT JOIN latest_application_stage latest ON latest.job_id = j.id
+            WHERE j.user_id = %s AND j.company_normalized <> ''
+            GROUP BY j.company_normalized
+            """,
+            (list(active_statuses), list(terminal_stage_statuses), user_id),
+        )
+        return {
+            row["company_normalized"]: 10.0 if row["has_active_job"] else 5.0
+            for row in cur.fetchall()
+        }
+
     _MISSING_COMPANY_SQL: str = (
         "COALESCE(TRIM(LOWER(company)), '') IN ('', 'unknown', 'unknown company', 'null', 'none')"
     )
