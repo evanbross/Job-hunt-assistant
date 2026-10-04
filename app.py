@@ -83,7 +83,10 @@ from backend.scanning.import_listener import (
     JobImportListener,
     start_job_import_listener,
 )
-from backend.scanning.schedulers import start_jd_health_check_scheduler
+from backend.scanning.schedulers import (
+    start_career_site_scheduler,
+    start_jd_health_check_scheduler,
+)
 from backend.security.client_ip import (
     Network,
     TrustedProxyMiddleware,
@@ -557,8 +560,8 @@ def _browser_capture_queue_has_pending(user_id: int) -> bool:
         return repos["browser_capture_queue"].has_pending(user_id)
 
 
-# Career-site auto-scheduler intentionally not started — scans are triggered
-# manually from the UI banner (see backend.scanning.schedulers.start_career_site_scheduler).
+# Career-site scans are scheduled at startup in the main block below. Keeping
+# listener callbacks independent avoids coupling extension traffic to scheduler state.
 # ai: claude-sonnet-4-6 | 2026-07-02
 def _handle_listener_capture(user_id: int, body: dict) -> tuple[dict, int]:
     """Routes captures from the browser extension by purpose.
@@ -984,6 +987,10 @@ if __name__ == "__main__":
     # this one is actually started: it's opt-in (jd_health_check_enabled defaults
     # to False) and its poll-then-submit loop is what implements "catch up on
     # next launch" for the JD parser health check.
+    # ai: gpt-5 | 2026-10-04
+    # The career-site scheduler is daily by default and its scheduled task sends
+    # the account owner a detailed per-board result email on completion.
+    start_career_site_scheduler()
     start_jd_health_check_scheduler()
     # ai: claude-sonnet-5 | 2026-09-28 -- account-deletion sweep + log-table retention
     # pruning (backend/security/data_lifecycle.py). Cross-tenant, not per-user, so it

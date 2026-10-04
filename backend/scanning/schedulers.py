@@ -79,10 +79,9 @@ def start_career_site_scheduler() -> None:
         if _career_scheduler_submit_run is None:
             raise RuntimeError("Career-site scheduler has not been configured.")
 
+        # ai: gpt-5 | 2026-10-04
         def career_scheduler_loop() -> None:
             while True:
-                interval_seconds = max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES) * 60
-                time.sleep(interval_seconds)
                 for user_id in _active_user_ids():
                     try:
                         _career_scheduler_submit_run(user_id, trigger="scheduled")
@@ -90,6 +89,8 @@ def start_career_site_scheduler() -> None:
                         logger.exception(
                             "Career-site scheduler tick failed for user %s", user_id
                         )
+                interval_seconds = max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES) * 60
+                time.sleep(interval_seconds)
 
         thread = threading.Thread(target=career_scheduler_loop, daemon=True)
         thread.start()

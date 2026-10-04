@@ -40,6 +40,7 @@ import logging
 import secrets
 import threading
 import time
+from collections import Counter
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
@@ -65,6 +66,7 @@ from backend.db import (
     IResumeRepository,
 )
 from backend.db.job_columns import JobColumns
+from backend.scanning.career_scan_digest import send_career_scan_digest
 from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.scanning.platform_detection import platform_for_site_url
 from backend.scanning.schedulers import configure_career_site_scheduler
@@ -319,6 +321,7 @@ def run_career_site_scan_task(
         "last_run_at": None,
         "last_trigger": trigger,
         "errors": [],
+        "site_reports": [],  # ai: gpt-5 | 2026-10-04
     }
 
     def _update_career_scan(
@@ -362,6 +365,15 @@ def run_career_site_scan_task(
             state["errors"].append(error)  # type: ignore[union-attr]
         self.update_state(state="PROGRESS", meta=dict(state))
 
+    # ai: gpt-5 | 2026-10-04
+    def _send_scheduled_digest() -> None:
+        if trigger != "scheduled":
+            return
+        try:
+            send_career_scan_digest(user_id, state)
+        except Exception:
+            logger.exception("Could not send scheduled career scan digest")
+
     # ai: claude-sonnet-5 | 2026-08-19
     # Restructured per Dev-Standards PYTHON_STANDARDS.md "Connection Lifetime vs.
     # Slow External Work" -- the connection used to stay open for the entire scan:
@@ -400,6 +412,7 @@ def run_career_site_scan_task(
                     message="No career-site URLs are enabled.",
                     last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
                 )
+                _send_scheduled_digest()
                 return dict(state)
 
             resume_row = resume_repo.get_latest(user_id)
@@ -445,6 +458,22 @@ def run_career_site_scan_task(
                 last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
                 error=str(exc),
             )
+            state["site_reports"] = [
+                {
+                    "site_name": source["name"],
+                    "site_url": source["url"],
+                    "success": False,
+                    "postings": 0,
+                    "new": 0,
+                    "duplicates": 0,
+                    "ignored": 0,
+                    "ignored_reasons": {},
+                    "parse_failures": [],
+                    "error": msg,
+                }
+                for source in target_sources
+            ]
+            _send_scheduled_digest()
             return dict(state)
         scanner = CareerSiteScanner()
         dedup_checker = DuplicateChecker()
@@ -469,6 +498,19 @@ def run_career_site_scan_task(
             source_name = source["name"]
             source_url = source["url"]
             detected_platform = "generic"
+            # ai: gpt-5 | 2026-10-04
+            site_report: dict[str, object] = {
+                "site_name": source_name,
+                "site_url": source_url,
+                "success": False,
+                "postings": 0,
+                "new": 0,
+                "duplicates": 0,
+                "ignored": 0,
+                "ignored_reasons": {},
+                "parse_failures": [],
+                "error": None,
+            }
             logger.info(
                 "Career-site scan [%d/%d]: %s (%s)",
                 idx + 1,
@@ -501,6 +543,10 @@ def run_career_site_scan_task(
                         f"and capture jobs manually with the browser extension"
                     )
                 )
+                site_report["error"] = (
+                    "Blocks automated scanning; use the browser extension."
+                )
+                state["site_reports"].append(site_report)  # type: ignore[union-attr]
                 scanned_sites += 1
                 progress = 20 + int((scanned_sites / source_count) * 75)
                 _update_career_scan(progress=progress, sites_scanned=scanned_sites)
@@ -533,6 +579,8 @@ def run_career_site_scan_task(
                 _update_career_scan(
                     error=f"{source_name}: {exc.__class__.__name__}: {exc}"
                 )
+                site_report["error"] = f"{exc.__class__.__name__}: {exc}"
+                state["site_reports"].append(site_report)  # type: ignore[union-attr]
                 with get_repos(user_id) as repos:
                     repos["career_scan_failures"].insert(
                         user_id,
@@ -561,7 +609,9 @@ def run_career_site_scan_task(
                 )
                 repos["conn"].commit()
 
+            # ai: gpt-5 | 2026-10-04
             adapter_failures = scanner.pop_failures()
+            site_report["postings"] = len(jobs)
             if adapter_failures:
                 with get_repos(user_id) as repos:
                     for failure in adapter_failures:
@@ -584,6 +634,10 @@ def run_career_site_scan_task(
                         )
                         repos["conn"].commit()
                 for failure in adapter_failures:
+                    site_report["parse_failures"].append(  # type: ignore[union-attr]
+                        f"[{failure['stage']}] {failure['error_type']}: "
+                        f"{failure['error_message']}"
+                    )
                     _update_career_scan(
                         error=(
                             f"{source_name} ({failure['platform']}): "
@@ -612,6 +666,10 @@ def run_career_site_scan_task(
 
             # ── Dedup, blocklist, and AI scoring (no DB connection held) ──────────
             site_results: list[dict] = []
+            # ai: gpt-5 | 2026-10-04
+            site_new_count = 0
+            site_duplicate_count = 0
+            site_ignored_reasons: Counter[str] = Counter()
             for job in jobs:
                 sheet_status: str | None = None
                 tracking_source: str | None = None
@@ -727,8 +785,19 @@ def run_career_site_scan_task(
                         rejection_reason = hybrid_note
                         rejection_source = "mongodb_hybrid"
                         listing_filtered = True
+                # ai: gpt-5 | 2026-10-04
                 if listing_filtered:
                     listings_filtered_total += 1
+                    ignored_reason = str(
+                        rejection_reason
+                        or tracking_status
+                        or "Previously dismissed or filtered"
+                    )
+                    site_ignored_reasons[ignored_reason] += 1
+                elif tracking_source in {"db_url", "db_fuzzy"} or local_job is not None:
+                    site_duplicate_count += 1
+                else:
+                    site_new_count += 1
 
                 if listing_filtered:
                     match_score = None
@@ -940,6 +1009,17 @@ def run_career_site_scan_task(
                     )
 
             scanned_sites += 1
+            # ai: gpt-5 | 2026-10-04
+            site_report.update(
+                {
+                    "success": True,
+                    "new": site_new_count,
+                    "duplicates": site_duplicate_count,
+                    "ignored": sum(site_ignored_reasons.values()),
+                    "ignored_reasons": dict(site_ignored_reasons),
+                }
+            )
+            state["site_reports"].append(site_report)  # type: ignore[union-attr]
             progress = 20 + int((scanned_sites / source_count) * 75)
             _update_career_scan(
                 progress=progress,
@@ -976,6 +1056,7 @@ def run_career_site_scan_task(
             listings_evaluated=listings_evaluated_total,
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
+        _send_scheduled_digest()
         return dict(state)
     except Exception as exc:
         # ai: claude-sonnet-5 | 2026-08-20
@@ -987,6 +1068,7 @@ def run_career_site_scan_task(
             message="Career-site scan failed with an error.",
             last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
+        _send_scheduled_digest()
         return dict(state)
 
 

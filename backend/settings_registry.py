@@ -230,6 +230,20 @@ SETTINGS: dict[str, SettingSpec] = {
         default=str(config.DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS).lower(),
         label="Move Scanned Emails", group="Email", input_type="checkbox",
     ),
+    # ai: gpt-5 | 2026-10-04
+    "career_scan_digest_enabled": SettingSpec(
+        scope="user", is_secret=False, default="true",
+        label="Daily Scan Report", group="Email", input_type="checkbox",
+        help_text="Email a per-board summary after each automatic daily career-site scan.",
+    ),
+    "career_scan_digest_notify_email": SettingSpec(
+        scope="user", is_secret=False, default="",
+        label="Scan Report Email", group="Email", placeholder="you@example.com",
+        help_text="Optional. Defaults to the email address on your account.",
+    ),
+    "career_scan_digest_last_sent_date": SettingSpec(
+        scope="user", is_secret=False, default="", label="", group="Email", hidden=True,
+    ),
     "candidate_timezone": SettingSpec(
         scope="user", is_secret=False, default=config.DEFAULT_CANDIDATE_TIMEZONE,
         label="Your Timezone", group="Career Profile",

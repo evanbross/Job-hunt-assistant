@@ -125,20 +125,34 @@ def send_verification_email(to: str, link: str, purpose: str) -> None:
     if purpose not in _SUBJECTS:
         raise ValueError(f"Unknown verification purpose: {purpose!r}")
 
+    send_email(
+        to=to,
+        subject=_SUBJECTS[purpose],
+        body_text=_BODIES[purpose].format(link=link),
+    )
+    logger.info("Sent %s verification email to %s", purpose, to)
+
+
+# ai: gpt-5 | 2026-10-04
+def send_email(*, to: str, subject: str, body_text: str) -> None:
+    """Send a plain-text system email through the configured SMTP relay."""
     smtp_settings = _load_smtp_settings()
 
     message = EmailMessage()
-    message["Subject"] = _SUBJECTS[purpose]
+    message["Subject"] = subject
     message["From"] = smtp_settings["from_address"]
     message["To"] = to
-    message.set_content(_BODIES[purpose].format(link=link))
+    message.set_content(body_text)
 
-    with smtplib.SMTP(
-        smtp_settings["host"], int(smtp_settings["port"]), timeout=10
-    ) as smtp:
-        if smtp_settings["use_tls"].lower() == "true":
-            smtp.starttls()
-        if smtp_settings["user"]:
-            smtp.login(smtp_settings["user"], smtp_settings["password"])
-        smtp.send_message(message)
-    logger.info("Sent %s verification email to %s", purpose, to)
+    try:
+        with smtplib.SMTP(
+            smtp_settings["host"], int(smtp_settings["port"]), timeout=10
+        ) as smtp:
+            if smtp_settings["use_tls"].lower() == "true":
+                smtp.starttls()
+            if smtp_settings["user"]:
+                smtp.login(smtp_settings["user"], smtp_settings["password"])
+            smtp.send_message(message)
+    except (OSError, smtplib.SMTPException, ValueError):
+        logger.exception("SMTP delivery failed for %s", to)
+        raise

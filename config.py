@@ -282,9 +282,10 @@ BOARD_SEARCH_MIN_SCORE: int = int(os.getenv("BOARD_SEARCH_MIN_SCORE", "40"))
 # Number of days a snoozed job/triage card stays hidden from the queue when no
 # explicit "days" value is provided (POST /api/jobs/<id>/snooze).
 DEFAULT_SNOOZE_DAYS: int = int(os.getenv("DEFAULT_SNOOZE_DAYS", "4"))
-# Minutes between automatic career-site scans while the app is running.
-CAREER_SITE_SCAN_INTERVAL_MINUTES: int = int(
-    os.getenv("CAREER_SITE_SCAN_INTERVAL_MINUTES", "30")
+# Minutes between automatic career-site scans while the app is running. The
+# default is daily so each scheduled run maps to one daily email report.
+CAREER_SITE_SCAN_INTERVAL_MINUTES: int = int(  # ai: gpt-5 | 2026-10-04
+    os.getenv("CAREER_SITE_SCAN_INTERVAL_MINUTES", "1440")
 )
 DEFAULT_JOB_IMPORT_LISTENER_ENABLED: bool = os.getenv(
     "JOB_IMPORT_LISTENER_ENABLED", "true"
