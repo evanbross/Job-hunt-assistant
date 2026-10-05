@@ -516,9 +516,21 @@ def run_career_site_scan_task(
         # Sites that bot-block automated scanning entirely — no headless or
         # server-side fetch gets past them, so they're excluded from the
         # background scanner and captured manually via the browser extension
-        # instead (see WELLFOUND capture support in browser-extension/content.js).
+        # instead (see WELLFOUND capture support in browser-extension/content.js;
+        # Workday pages are covered by the extension's generic ATS job-link
+        # harvester, content.js:2277).
         # ai: claude-sonnet-5 | 2026-08-30
-        _MANUAL_CAPTURE_ONLY_HOSTS = frozenset({"wellfound.com", "www.wellfound.com"})
+        # ai: claude-sonnet-5 | 2026-10-05 -- shipt.wd1.myworkdayjobs.com added.
+        # Confirmed by direct testing: this tenant's Cloudflare-fronted Workday
+        # CXS "/jobs" search endpoint returns a generic HTTP_400 for every
+        # request from Python's urllib (urllib.request + certifi-backed ssl
+        # context), including the exact session-cookie/payload shape a real
+        # browser sends and that curl successfully replays -- a TLS/HTTP
+        # client fingerprint block, not a missing cookie or wrong payload, so
+        # there is no header/cookie fix available from pure-Python code here.
+        _MANUAL_CAPTURE_ONLY_HOSTS = frozenset(
+            {"wellfound.com", "www.wellfound.com", "shipt.wd1.myworkdayjobs.com"}
+        )
 
         for idx, source in enumerate(target_sources):
             current_source_id = source["id"]
