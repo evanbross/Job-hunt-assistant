@@ -126,7 +126,7 @@ def test_create_career_site_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     assert data["name"] == "Beta Co"
     assert data["enabled"] == 1
     assert data["collection_mode"] == "automatic"
-    assert data["recapture_interval_days"] == 4
+    assert data["recapture_interval_days"] == 7
 
 
 def test_create_career_site_rejects_missing_url(monkeypatch: pytest.MonkeyPatch) -> None:

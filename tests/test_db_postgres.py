@@ -174,6 +174,130 @@ def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None
         repos["conn"].close()
 
 
+# ai: claude-sonnet-5 | 2026-10-05
+def test_get_due_automatic_filters_enabled_automatic_and_overdue(pg_dsn: str) -> None:
+    """Weekly scheduled career-site scans (routes/career_sites.py) must only
+    see enabled, collection_mode='automatic' sites that are actually overdue
+    for recapture -- not manual sites, not disabled sites, and not sites
+    recaptured within their recapture_interval_days window. NULL
+    last_captured_at (never captured) counts as overdue."""
+    repos = open_repositories(pg_dsn)
+    try:
+        account = repos["user_accounts"].create_pending(
+            "due-automatic@example.com", "seed-due-automatic@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
+
+        overdue_id = repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "Overdue Automatic",
+                "url": "https://overdue.example/careers",
+                "enabled": 1,
+                "collection_mode": "automatic",
+                "last_captured_at": (datetime.now(UTC) - timedelta(days=8)).isoformat(
+                    timespec="seconds"
+                ),
+                "recapture_interval_days": 7,
+            },
+        )
+        never_captured_id = repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "Never Captured Automatic",
+                "url": "https://never.example/careers",
+                "enabled": 1,
+                "collection_mode": "automatic",
+                "recapture_interval_days": 7,
+            },
+        )
+        repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "Fresh Automatic",
+                "url": "https://fresh.example/careers",
+                "enabled": 1,
+                "collection_mode": "automatic",
+                "last_captured_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "recapture_interval_days": 7,
+            },
+        )
+        repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "Overdue Manual",
+                "url": "https://manual.example/careers",
+                "enabled": 1,
+                "collection_mode": "manual",
+                "last_captured_at": (datetime.now(UTC) - timedelta(days=8)).isoformat(
+                    timespec="seconds"
+                ),
+                "recapture_interval_days": 7,
+            },
+        )
+        disabled_id = repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "Overdue Disabled",
+                "url": "https://disabled.example/careers",
+                "enabled": 0,
+                "collection_mode": "automatic",
+                "last_captured_at": (datetime.now(UTC) - timedelta(days=8)).isoformat(
+                    timespec="seconds"
+                ),
+                "recapture_interval_days": 7,
+            },
+        )
+        repos["conn"].commit()
+
+        due_ids = {site["id"] for site in repos["career_sites"].get_due_automatic(user_id)}
+
+        assert due_ids == {overdue_id, never_captured_id}
+        assert disabled_id not in due_ids
+    finally:
+        repos["conn"].close()
+
+
+# ai: claude-sonnet-5 | 2026-10-05
+def test_claim_for_scan_is_atomic_and_single_winner(pg_dsn: str) -> None:
+    """claim_for_scan() is the cross-process guard against the same site
+    being scanned (and AI-scored) twice concurrently -- e.g. two orphaned
+    app processes both running the scheduled-scan loop. The first caller to
+    claim an overdue site wins and stamps last_captured_at; a second caller
+    racing against the same site must see it as no-longer-due and lose."""
+    repos = open_repositories(pg_dsn)
+    try:
+        account = repos["user_accounts"].create_pending(
+            "claim-for-scan@example.com", "seed-claim-for-scan@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
+
+        source_id = repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "Contested Site",
+                "url": "https://contested.example/careers",
+                "enabled": 1,
+                "collection_mode": "automatic",
+                "recapture_interval_days": 7,
+            },
+        )
+        repos["conn"].commit()
+
+        first_claim = repos["career_sites"].claim_for_scan(user_id, source_id)
+        second_claim = repos["career_sites"].claim_for_scan(user_id, source_id)
+        repos["conn"].commit()
+
+        assert first_claim is True
+        assert second_claim is False
+        assert repos["career_sites"].get_by_id(user_id, source_id)["last_captured_at"]
+        assert repos["career_sites"].get_due_automatic(user_id) == []
+    finally:
+        repos["conn"].close()
+
+
 def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:

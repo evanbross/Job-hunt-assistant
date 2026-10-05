@@ -676,7 +676,8 @@ def _migrate(conn: Any) -> None:
         ("collection_mode", "TEXT DEFAULT 'automatic'"),
         ("detected_platform", "TEXT"),
         ("last_captured_at", "TEXT"),
-        ("recapture_interval_days", "INTEGER DEFAULT 4"),
+        # ai: claude-sonnet-5 | 2026-10-05 -- weekly, not every-4-days, default
+        ("recapture_interval_days", "INTEGER DEFAULT 7"),
     ]:
         cur.execute(
             f"ALTER TABLE career_site_sources ADD COLUMN IF NOT EXISTS {col} {defn}"
@@ -1817,7 +1818,7 @@ def _create_tables(conn: Any) -> None:
             collection_mode         TEXT DEFAULT 'automatic',
             detected_platform       TEXT,
             last_captured_at        TEXT,
-            recapture_interval_days INTEGER DEFAULT 4,
+            recapture_interval_days INTEGER DEFAULT 7,
             created_at              TEXT DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
         )
         """,

@@ -118,7 +118,21 @@ def _submit_career_scan(
 ) -> str | None:
     """Dispatch a career-site scan for user_id unless one is already active
     for that user. Returns the new task id, or None if a scan was already
-    running for this user."""
+    running for this user.
+
+    ai: claude-sonnet-5 | 2026-10-05 -- a "scheduled" tick used to
+    unconditionally dispatch a full scan of every automatic site on every
+    app-process start (see the 2026-10-04 credit-burn incident). Weekly
+    per-site cadence is now enforced by career_site_sources.recapture_interval_days
+    (get_due_automatic), so a scheduled tick with nothing due is a true no-op --
+    skip the Celery dispatch entirely rather than running an empty scan and
+    emailing a digest with nothing in it. Manual triggers (source_id given, or
+    the "scan all" button) are untouched -- explicit user action always runs.
+    """
+    if trigger == "scheduled" and source_id is None:
+        with get_repos(user_id) as repos:
+            if not repos["career_sites"].get_due_automatic(user_id):
+                return None
     with _career_scan_lock:
         existing = _career_scan_last_task_id_by_user.get(user_id)
         submitted_at = _career_scan_submitted_at_by_user.get(user_id)
@@ -404,12 +418,25 @@ def run_career_site_scan_task(
                     )
                     return dict(state)
             else:
-                target_sources = source_repo.get_enabled(user_id)
+                # ai: claude-sonnet-5 | 2026-10-05 -- a scheduled tick only
+                # touches sites actually overdue for recapture (weekly, per
+                # career_site_sources.recapture_interval_days); an explicit
+                # "scan all" button click always runs every enabled automatic
+                # site regardless of when it last ran.
+                target_sources = (
+                    source_repo.get_due_automatic(user_id)
+                    if trigger == "scheduled"
+                    else source_repo.get_enabled(user_id)
+                )
 
             if not target_sources:
                 _update_career_scan(
                     progress=100,
-                    message="No career-site URLs are enabled.",
+                    message=(
+                        "No career sites are due for recapture."
+                        if trigger == "scheduled"
+                        else "No career-site URLs are enabled."
+                    ),
                     last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
                 )
                 _send_scheduled_digest()
@@ -552,6 +579,46 @@ def run_career_site_scan_task(
                 _update_career_scan(progress=progress, sites_scanned=scanned_sites)
                 continue
 
+            # ai: claude-sonnet-5 | 2026-10-05
+            # Claim the site before scanning it so a second concurrent "scheduled"
+            # run (e.g. an orphaned app process plus a freshly started one -- see
+            # the 2026-10-04 credit-burn incident) can't also scan+score it: the
+            # atomic claim_for_scan() update only succeeds if the site is still
+            # overdue, so whichever run gets there first wins and the other skips
+            # it. Manual triggers (explicit "scan this site"/"scan all" clicks)
+            # always run, so they just stamp last_captured_at unconditionally --
+            # this also fixes last_captured_at never being updated by an actual
+            # scan (it was previously only ever set by the "dismiss reminder"
+            # banner action and at site-creation time).
+            if trigger == "scheduled":
+                with get_repos(user_id) as repos:
+                    claimed = repos["career_sites"].claim_for_scan(
+                        user_id, current_source_id
+                    )
+                    repos["conn"].commit()
+                if not claimed:
+                    logger.info(
+                        "Skipping %s (%s) -- already captured by another run",
+                        source_name,
+                        source_url,
+                    )
+                    scanned_sites += 1
+                    progress = 20 + int((scanned_sites / source_count) * 75)
+                    _update_career_scan(progress=progress, sites_scanned=scanned_sites)
+                    continue
+            else:
+                with get_repos(user_id) as repos:
+                    repos["career_sites"].update(
+                        user_id,
+                        current_source_id,
+                        {
+                            "last_captured_at": datetime.now(UTC).isoformat(
+                                timespec="seconds"
+                            )
+                        },
+                    )
+                    repos["conn"].commit()
+
             if source_id is not None:
                 with get_repos(user_id) as repos:
                     repos["career_scan_results"].delete_by_site_source_id(
@@ -656,12 +723,20 @@ def run_career_site_scan_task(
             # ── Batched local-job lookups (DB reads only, nothing slow) ───────────
             with get_repos(user_id) as repos:
                 site_jobs_repo = repos["jobs"]
+                career_results_repo = repos["career_scan_results"]
                 local_job_by_url: dict[str, dict | None] = {}
+                # ai: claude-sonnet-5 | 2026-10-05 -- a job_url already scored in
+                # any previous scan (this site or another) must not be re-sent
+                # to the AI scorer every run; see the scoring loop below.
+                prior_scan_by_url: dict[str, dict | None] = {}
                 for job in jobs:
                     job_url_stripped = (job.get("job_url") or "").strip()
                     if job_url_stripped:
                         local_job_by_url[job_url_stripped] = (
                             site_jobs_repo.get_by_url(user_id, job["job_url"])
+                        )
+                        prior_scan_by_url[job_url_stripped] = (
+                            career_results_repo.get_by_job_url(user_id, job_url_stripped)
                         )
 
             # ── Dedup, blocklist, and AI scoring (no DB connection held) ──────────
@@ -799,9 +874,21 @@ def run_career_site_scan_task(
                 else:
                     site_new_count += 1
 
+                prior_scan = prior_scan_by_url.get(current_job_url)
                 if listing_filtered:
                     match_score = None
                     match_reasoning = "Filtered before scoring."
+                    listings_evaluated_total += 1
+                elif prior_scan is not None and prior_scan.get("match_score") is not None:
+                    # ai: claude-sonnet-5 | 2026-10-05 -- this exact listing was
+                    # already AI-scored in a previous scan (this site or another
+                    # one it also appeared on); reuse that score instead of
+                    # paying for another AI call every time the site is rescanned.
+                    # A prior row with match_score IS NULL (a past scoring
+                    # failure, or a row that was filtered then) is deliberately
+                    # NOT reused here -- it still falls through to a fresh score.
+                    match_score = prior_scan["match_score"]
+                    match_reasoning = prior_scan["match_reasoning"]
                     listings_evaluated_total += 1
                 else:
                     try:
@@ -1099,7 +1186,7 @@ class CareerSiteCreate(BaseModel):
     url: str = ""
     enabled: bool = True
     collection_mode: str = "automatic"
-    recapture_interval_days: int = 4
+    recapture_interval_days: int = 7
 
     @field_validator("name", "url", mode="before")
     @classmethod
@@ -1139,7 +1226,7 @@ class CareerSiteCreate(BaseModel):
     @field_validator("recapture_interval_days", mode="before")
     @classmethod
     def _parse_recapture_interval(cls, value: object) -> int:
-        return parse_positive_int(value, default=4, field_name="recapture_interval_days")
+        return parse_positive_int(value, default=7, field_name="recapture_interval_days")
 
 
 # ai: claude-sonnet-5 | 2026-09-29
@@ -1196,7 +1283,7 @@ class CareerSiteUpdate(BaseModel):
     @field_validator("recapture_interval_days", mode="before")
     @classmethod
     def _parse_recapture_interval(cls, value: object) -> int:
-        return parse_positive_int(value, default=4, field_name="recapture_interval_days")
+        return parse_positive_int(value, default=7, field_name="recapture_interval_days")
 
 
 @career_sites_bp.route("/career-sites", methods=["POST"])

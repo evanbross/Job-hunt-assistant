@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from ..base import _BaseRepo
@@ -74,6 +75,54 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
+
+    # ai: claude-sonnet-5 | 2026-10-05
+    # Scheduled scans (backend/scanning/schedulers.py) must only touch sites
+    # that are actually overdue for recapture -- otherwise every app restart
+    # re-scans and re-scores every automatic site from scratch, regardless of
+    # how recently that happened (see the 2026-10-04 credit-burn incident).
+    # NULL last_captured_at counts as due (never captured yet).
+    def get_due_automatic(self, user_id: int) -> list[dict[str, Any]]:
+        cur = self._execute(
+            """
+            SELECT * FROM career_site_sources
+            WHERE user_id = %s
+              AND enabled = 1
+              AND COALESCE(collection_mode, 'automatic') = 'automatic'
+              AND (
+                  last_captured_at IS NULL
+                  OR last_captured_at::timestamptz
+                      + (recapture_interval_days || ' days')::interval <= NOW()
+              )
+            ORDER BY last_captured_at ASC NULLS FIRST, name
+            """,
+            (user_id,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    # ai: claude-sonnet-5 | 2026-10-05
+    # Atomic claim/dequeue pattern (PYTHON_STANDARDS.md "SELECT-then-Write Race
+    # Conditions") so two concurrent scan runs (e.g. an orphaned app process
+    # plus a fresh one) can't both scan+score the same site: whichever call
+    # reaches this UPDATE first wins the row and stamps last_captured_at: the
+    # second call's WHERE no longer matches (the site is no longer overdue),
+    # so it returns no row and the caller must skip that site.
+    def claim_for_scan(self, user_id: int, source_id: int) -> bool:
+        cur = self._execute(
+            """
+            UPDATE career_site_sources
+            SET last_captured_at = %s
+            WHERE id = %s AND user_id = %s
+              AND (
+                  last_captured_at IS NULL
+                  OR last_captured_at::timestamptz
+                      + (recapture_interval_days || ' days')::interval <= NOW()
+              )
+            RETURNING id
+            """,
+            (datetime.now(UTC).isoformat(timespec="seconds"), source_id, user_id),
+        )
+        return cur.fetchone() is not None
 
     def get_due_recapture(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
