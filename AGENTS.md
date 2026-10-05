@@ -41,3 +41,13 @@ Key files:
 - `config.py` — constants and runtime config helpers
 - `frontend/src/App.jsx` — main React shell
 - `frontend/src/components/` — tab panels
+
+## Browser Extension Verification
+
+- Before handing off changes under `browser-extension/`, recursively verify that the
+  unpacked-extension directory contains no Chrome-reserved file or directory names
+  beginning with `_`, especially Python-generated `__pycache__` directories. Remove
+  disposable generated artifacts before telling the user to reload the extension.
+- Run Python utilities that live under `browser-extension/` with bytecode generation
+  disabled (`python -B` or `PYTHONDONTWRITEBYTECODE=1`) so verification does not make
+  the unpacked extension unloadable.
