@@ -55,6 +55,18 @@
     return _NON_JOB_HOSTS.some(blocked => host === blocked || host.endsWith(`.${blocked}`));
   }
 
+  // ai: claude-sonnet-5 | 2026-10-05
+  // Exact-or-subdomain host match, same shape as isBlockedHost's own check
+  // above. A plain host.includes('jobgether.com') also matches
+  // "notjobgether.com" or "jobgether.com.evil.example" -- low-severity here
+  // (worst case is scraping garbage off an unrelated page into the user's
+  // own import pipeline, nothing executes), but still worth getting right
+  // the same way isBlockedHost already does, with one shared helper instead
+  // of each call site repeating its own loose check.
+  function isHostOrSubdomain(host, domain) {
+    return host === domain || host.endsWith(`.${domain}`);
+  }
+
   // ─── Page Detection ────────────────────────────────────────────────────────
 
   function detectPage() {
@@ -165,9 +177,21 @@
       return { site: 'Greenhouse', type: 'greenhouseSearch', jobCount: count, description: `${count}+ jobs (auto-scrolls to load all)` };
     }
 
-    // ai: claude-sonnet-5 | 2026-07-23
-    if (host.includes('jobgether.com') && /^\/offer\//.test(path)) {
-      return { site: 'Jobgether', type: 'jobgetherJob', jobCount: 1, description: 'Single job listing' };
+    // ai: gpt-5 | 2026-10-04
+    // ai: claude-sonnet-5 | 2026-10-05 -- exact-or-subdomain match (see isHostOrSubdomain)
+    if (isHostOrSubdomain(host, 'jobgether.com')) {
+      if (/^\/offer\//.test(path)) {
+        return { site: 'Jobgether', type: 'jobgetherJob', jobCount: 1, description: 'Single job listing' };
+      }
+      if (/^\/talent\/matches\/?$/.test(path)) {
+        const count = collectJobgetherMatchLinks().length;
+        return {
+          site: 'Jobgether Matches',
+          type: 'jobgetherMatches',
+          jobCount: count,
+          description: `${count} visible job matches`,
+        };
+      }
     }
 
     // ai: claude-sonnet-4-6 | 2026-06-20
@@ -2647,6 +2671,49 @@
 
   // ─── Jobgether ─────────────────────────────────────────────────────────────
 
+  // ai: gpt-5 | 2026-10-04
+  function collectJobgetherMatchLinks() {
+    const matches = new Map();
+    document.querySelectorAll('a[href*="/offer/"]').forEach(link => {
+      let offerUrl;
+      try { offerUrl = new URL(link.href, location.href); } catch { return; }
+      if (!isHostOrSubdomain(offerUrl.hostname, 'jobgether.com') || !/^\/offer\//.test(offerUrl.pathname)) return;
+      const canonicalUrl = offerUrl.origin + offerUrl.pathname;
+      if (!matches.has(canonicalUrl)) matches.set(canonicalUrl, link);
+    });
+    return [...matches.entries()].map(([url, link]) => ({ url, link }));
+  }
+
+  // ai: gpt-5 | 2026-10-04
+  function buildJobgetherMatchesPayload() {
+    const jobs = collectJobgetherMatchLinks().map(({ url, link }) => {
+      let card = link.closest('article, li, [role="listitem"]');
+      if (!card) {
+        card = link.parentElement;
+        for (let depth = 0; depth < 6 && card && card !== document.body; depth++) {
+          const textLength = (card.innerText || '').trim().length;
+          if (textLength >= 30 && textLength <= 2000) break;
+          card = card.parentElement;
+        }
+      }
+
+      const cardText = (card?.innerText || link.innerText || '').trim().slice(0, 2000);
+      const heading = card?.querySelector('h1, h2, h3, h4, [role="heading"]');
+      const title = (heading?.innerText || link.innerText || '').split('\n')[0].trim();
+      const scoreMatch = cardText.match(/\b(\d{1,3})\s*%\s*(?:match)?\b/i);
+      const lines = [title || url.split('/').pop(), `URL: ${url}`];
+      if (scoreMatch) lines.push(`Your match score: ${scoreMatch[1]}%`);
+      if (cardText) lines.push('', cardText);
+      return { url, job_title: title, company: '', listing_text: lines.join('\n') };
+    });
+
+    if (jobs.length === 0) return buildHtmlPayload();
+    return JSON.stringify({
+      jobs,
+      source: { url: location.href, name: 'Jobgether Matches', platform: 'jobgether' },
+    });
+  }
+
   // ai: claude-sonnet-5 | 2026-07-23
   // The match-score widget (button#mobile-match-feedback, data-match-score="N")
   // renders client-side after initial paint, so the button may not exist yet
@@ -2780,6 +2847,7 @@
       case 'kforceSearch':     payload = await buildKforceSearchPayload(options); break;
       case 'jobanni':          payload = await buildJobanniPayload(); break;
       case 'jobgetherJob':     payload = await buildJobgetherJobPayload(); break;
+      case 'jobgetherMatches': payload = buildJobgetherMatchesPayload(); break;
       case 'oracleHcmJob':     payload = buildOracleHcmJobPayload(); break;
       case 'oracleHcmSplit':
         payload = options.captureMode === 'list'

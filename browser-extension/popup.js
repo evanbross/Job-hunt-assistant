@@ -180,7 +180,11 @@ function setCaptureMode(mode) {
 }
 
 function applyScanResult(result) {
-  if (!result) { showNoAccess(); return; }
+  // ai: claude-sonnet-5 | 2026-10-05 -- sendToTab() now resolves {error} on a
+  // transport failure (timeout/lastError) instead of null; detectPage()'s own
+  // response never carries an `error` field, so this still can't misfire on a
+  // genuine scan result.
+  if (!result || result.error) { showNoAccess(); return; }
 
   lastScanResult = result;
   currentJobCount = result.jobCount ?? 0;
@@ -220,7 +224,7 @@ async function handleSend() {
     };
     const buildResult = await sendToTab({ action: 'build', options: buildOptions });
     if (!buildResult?.payload) {
-      showStatus('Failed to capture jobs from this page.', 'error');
+      showStatus(buildResult?.error || 'Failed to capture jobs from this page.', 'error');
       resetButton();
       isSending = false;
       return;
@@ -341,10 +345,18 @@ function resetButton() {
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
-function sendToTab(message) {
+// ai: gpt-5 | 2026-10-04
+function sendToTab(message, timeoutMs = 30000) {
   return new Promise(resolve => {
+    const timeoutId = setTimeout(() => {
+      resolve({ error: 'Capture timed out while building the payload. Reload the page and try again.' });
+    }, timeoutMs);
     chrome.tabs.sendMessage(activeTabId, message, response => {
-      if (chrome.runtime.lastError) { resolve(null); return; }
+      clearTimeout(timeoutId);
+      if (chrome.runtime.lastError) {
+        resolve({ error: `Extension could not read this tab: ${chrome.runtime.lastError.message}` });
+        return;
+      }
       resolve(response);
     });
   });
