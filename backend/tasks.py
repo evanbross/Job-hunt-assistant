@@ -781,6 +781,7 @@ def run_import_task(
             failed,
         )
         return {
+            "total": total,  # ai: gpt-5 | 2026-10-04
             "queued": queued,
             "skipped": skipped,
             "repaired": repaired,

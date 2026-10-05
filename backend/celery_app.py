@@ -92,7 +92,10 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     task_track_started=True,
-    result_expires=3600,
+    # ai: gpt-5 | 2026-10-04
+    # A large captured page is split into bounded tasks. Early batch results must
+    # remain available until the logical import aggregates its final batch.
+    result_expires=86400,
     # threads pool works on Windows and is well-suited for I/O-bound tasks
     # (HTTP fetches + Claude API calls).  On Linux the default prefork pool
     # gives true process-level isolation; pass --pool=prefork there instead.

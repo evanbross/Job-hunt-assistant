@@ -70,9 +70,13 @@ from backend.utils.utils import (
 logger = logging.getLogger(__name__)
 
 import_bp = Blueprint("import_", __name__)
-_STUCK_TASK_TIMEOUT_SECONDS = (
-    900  # 15 minutes — tasks stuck PENDING/STARTED longer than this are auto-cleared
-)
+_IMPORT_BATCH_SIZE = 20
+# ai: claude-sonnet-5 | 2026-10-05 -- restored (the batching rewrite dropped
+# this entirely, leaving a dead/stuck worker polling as "running" forever;
+# see _stale_task_ids below). 15 minutes, same threshold the single-task
+# version used -- long enough for a real batch to finish, short enough that
+# a dead worker doesn't look "running" indefinitely.
+_STUCK_TASK_TIMEOUT_SECONDS = 900
 
 
 # ─── Active task tracking ─────────────────────────────────────────────────────
@@ -109,6 +113,7 @@ class ImportProgressState:
     capture_source: dict[str, Any] | None = None
     steps: list[dict[str, str]] = field(default_factory=list)
     task_id: str | None = None  # ai: claude-sonnet-5 | 2026-08-12 — set once the Celery task is dispatched
+    task_ids: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -125,6 +130,7 @@ class ImportProgressState:
             "capture_source": self.capture_source,
             "steps": self.steps or _import_steps(self.phase, self.running),
             "task_id": self.task_id,
+            "task_ids": self.task_ids,
         }
 
 
@@ -242,19 +248,70 @@ def _capture_source_suggestions(
     return []
 
 
-# ai: claude-sonnet-4-6 | 2026-06-20
-# ai: claude-sonnet-4-6 | 2026-06-20
-def _is_task_stale(started_at: str) -> bool:
-    """Return True if started_at is more than _STUCK_TASK_TIMEOUT_SECONDS ago."""
+# ai: gpt-5 | 2026-10-04
+def _import_batches(extracted: list[dict]) -> list[list[dict]]:
+    """Split one captured page into worker-sized units while preserving order."""
+    return [
+        extracted[index : index + _IMPORT_BATCH_SIZE]
+        for index in range(0, len(extracted), _IMPORT_BATCH_SIZE)
+    ]
+
+
+# ai: claude-sonnet-5 | 2026-10-05
+# Extra allowance per batch beyond the first, on top of _STUCK_TASK_TIMEOUT_SECONDS
+# -- a worker processing many batches mostly sequentially (low concurrency)
+# can legitimately take well past 15 minutes on a large import without
+# anything actually being stuck; a flat 15-minute-from-dispatch threshold
+# would misreport that as dead.
+_STUCK_TASK_PER_BATCH_GRACE_SECONDS = 120
+
+
+def _is_task_stale(started_at: str, batch_count: int = 1) -> bool:
+    """Return True if started_at is older than the batch-scaled stale threshold.
+
+    Celery reports PENDING both for genuinely queued work and for an
+    unknown/expired task id, so a stopped worker, lost broker message, or
+    expired result-backend entry otherwise leaves a batch looking "queued"
+    forever. started_at is the whole import's dispatch time (all batches are
+    submitted together), so this is the same age check the pre-batching
+    single-task version used, scaled up for imports with many batches.
+    """
     if not started_at:
         return False
     try:
         started_dt = datetime.fromisoformat(started_at)
-        return (
-            datetime.now(UTC) - started_dt
-        ).total_seconds() > _STUCK_TASK_TIMEOUT_SECONDS
     except (ValueError, TypeError):
         return False
+    threshold = _STUCK_TASK_TIMEOUT_SECONDS + max(0, batch_count - 1) * (
+        _STUCK_TASK_PER_BATCH_GRACE_SECONDS
+    )
+    return (datetime.now(UTC) - started_dt).total_seconds() > threshold
+
+
+# ai: gpt-5 | 2026-10-04
+def _aggregate_batch_results(batch_results: list[dict]) -> dict[str, Any]:
+    """Combine completed Celery batch results into one logical import result."""
+    count_keys = ("queued", "skipped", "repaired", "enriched", "filtered", "failed")
+    detail_keys = (
+        "queued_details",
+        "skipped_details",
+        "repaired_details",
+        "enriched_details",
+        "filtered_details",
+        "failures",
+    )
+    combined: dict[str, Any] = {key: 0 for key in count_keys}
+    combined.update({key: [] for key in detail_keys})
+    for result in batch_results:
+        for key in count_keys:
+            combined[key] += int(result.get(key) or 0)
+        for key in detail_keys:
+            value = result.get(key)
+            if isinstance(value, list):
+                combined[key].extend(value)
+        if result.get("capture_source") is not None:
+            combined["capture_source"] = result["capture_source"]
+    return combined
 
 
 def _dismiss_capture_queue_item(user_id: int, page_url: str | None) -> None:
@@ -570,23 +627,92 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
             capture_source=capture_source,
         ),
     )
-    task = run_import_task.delay(user_id, extracted, capture_source, body)
-    with _imports_lock:
-        state = _active_imports.get(import_id)
-        if state is not None:
-            state.task_id = task.id
     # ai: claude-sonnet-4-6 | 2026-06-26
     _source_label = (
         (capture_source or {}).get("name")
         or (capture_source or {}).get("url")
         or "(unknown source)"
     )
+
+    # ai: gpt-5 | 2026-10-04
+    # One captured page remains one logical import, while worker-sized tasks
+    # bound per-task network and LLM work. Worker concurrency supplies backpressure.
+    batches = _import_batches(extracted)
+    task_body = {
+        key: body[key]
+        for key in ("queue_url", "url", "import_trigger", "recapture_interval_days")
+        if key in body
+    }
+    # ai: claude-sonnet-5 | 2026-10-05
+    # Dispatch one batch at a time (not a list comprehension that only records
+    # IDs after every .delay() succeeds) so a broker failure partway through
+    # never leaves already-accepted batches running with no tracked task_ids
+    # -- the old all-or-nothing version returned an untracked 500 from this
+    # route while those batches kept processing (and writing jobs) in the
+    # background, and /import/status had nothing to poll because task_ids was
+    # still empty. Each accepted id is recorded into the tracked import state
+    # immediately, so even a partial failure leaves /import/status able to
+    # report on whatever did get queued.
+    tasks: list[Any] = []
+    dispatch_error: Exception | None = None
+    for batch in batches:
+        try:
+            task = run_import_task.delay(user_id, batch, capture_source, task_body)
+        except Exception as exc:  # noqa: BLE001 -- broker/connection failure, not enumerable
+            dispatch_error = exc
+            break
+        tasks.append(task)
+        task_ids = [t.id for t in tasks]
+        with _imports_lock:
+            state = _active_imports.get(import_id)
+            if state is not None:
+                state.task_id = task_ids[0]
+                state.task_ids = task_ids
+
+    if dispatch_error is not None:
+        for task in tasks:
+            try:
+                task.revoke()
+            except Exception:
+                logger.warning(
+                    "Could not revoke already-dispatched import batch %s", task.id
+                )
+        logger.error(
+            "IMPORT DISPATCH FAILED  trigger=%s  source=%s  urls=%d  "
+            "dispatched_batches=%d/%d  error=%s",
+            trigger,
+            _source_label,
+            len(extracted),
+            len(tasks),
+            len(batches),
+            dispatch_error,
+        )
+        message = (
+            f"Failed to queue batch {len(tasks) + 1} of {len(batches)}: "
+            f"{dispatch_error}. {len(tasks)} batch(es) were already queued and "
+            "may still complete in the background; do not resubmit this page "
+            "until you've confirmed whether its jobs were imported."
+        )
+        with _imports_lock:
+            state = _active_imports.get(import_id)
+            if state is not None:
+                state.running = False
+                state.phase = "error"
+                state.message = message
+        return {
+            "error": message,
+            "task_ids": [t.id for t in tasks],
+            "import_id": import_id,
+        }, 502
+
+    task_ids = [task.id for task in tasks]
     logger.info(
-        "IMPORT QUEUED  trigger=%s  source=%s  urls=%d  task=%s",
+        "IMPORT QUEUED  trigger=%s  source=%s  urls=%d  batches=%d  tasks=%s",
         trigger,
         _source_label,
         len(extracted),
-        task.id,
+        len(batches),
+        ",".join(task_ids),
     )
 
     # ai: claude-sonnet-4-6 | 2026-06-21
@@ -609,7 +735,14 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
     except Exception as exc:
         logger.warning("Failed to mark browser capture queue items done: %s", exc)
 
-    return {"status": "started", "task_id": task.id, "import_id": import_id}, 202
+    return {
+        "status": "started",
+        "task_id": task_ids[0],
+        "task_ids": task_ids,
+        "batch_count": len(batches),
+        "batch_size": _IMPORT_BATCH_SIZE,
+        "import_id": import_id,
+    }, 202
 
 
 # ─── Import routes ────────────────────────────────────────────────────────────
@@ -773,6 +906,7 @@ def _idle_status_payload() -> dict[str, Any]:
         "steps": _import_steps("idle", False),
         "import_id": None,
         "task_id": None,
+        "task_ids": [],
     }
 
 
@@ -793,70 +927,73 @@ def import_status() -> ResponseReturnValue:
     key, tracked = found
     trigger = tracked.trigger
     started_at = tracked.started_at
-    task_id = tracked.task_id
+    task_ids = tracked.task_ids or ([tracked.task_id] if tracked.task_id else [])
 
-    if not task_id:
+    if not task_ids:
         # Still in the synchronous receiving/filtering/source-resolution phase
         # that runs before the Celery task exists.
         return jsonify(tracked.as_dict())
 
-    result = AsyncResult(task_id, app=celery_app)
-    state = result.state
+    # ai: gpt-5 | 2026-10-04
+    results = [AsyncResult(task_id, app=celery_app) for task_id in task_ids]
+    completed = [result for result in results if result.state == "SUCCESS"]
+    failed_results = [result for result in results if result.state in {"FAILURE", "REVOKED"}]
+    active = next((result for result in results if result.state == "PROGRESS"), None)
+    # ai: claude-sonnet-5 | 2026-10-05
+    # Restored stale-task handling (see _is_task_stale) -- the batching
+    # rewrite dropped it, leaving a dead worker's batches in PENDING/STARTED
+    # forever with nothing in the result backend to ever move them to
+    # SUCCESS/FAILURE, so this status route would report "running" forever.
+    # Celery uses PENDING for both "genuinely queued" and "unknown task id",
+    # so this is also the only signal available for a lost broker message.
+    is_stale = _is_task_stale(started_at, len(results))
+    stale_results = (
+        [result for result in results if result.state in {"PENDING", "STARTED"}]
+        if is_stale
+        else []
+    )
+    pending_count = sum(
+        result.state in {"PENDING", "STARTED"} for result in results
+    ) - len(stale_results)
+    completed_payloads = [
+        result.result for result in completed if isinstance(result.result, dict)
+    ]
+    aggregate = _aggregate_batch_results(completed_payloads)
+    unfinished_count = len(failed_results) + len(stale_results)
 
-    if state in ("PENDING", "STARTED"):
-        # ai: claude-sonnet-4-6 | 2026-06-20
-        # Auto-clear tasks that have been stuck PENDING/STARTED for over 15 minutes;
-        # the Celery worker likely died without updating the result backend.
-        if _is_task_stale(started_at):
-            logger.warning(
-                "Auto-clearing stuck import task %s (started %s)", task_id, started_at
-            )
-            with _imports_lock:
-                _active_imports.pop(key, None)
-            return jsonify(
-                {
-                    "running": False,
-                    "phase": "error",
-                    "progress": 0,
-                    "message": "Import task timed out and was cleared automatically. You may start a new import.",
-                    "total": 0,
-                    "result": None,
-                    "current_job_url": "",
-                    "current_platform": "",
-                    "trigger": trigger,
-                    "started_at": started_at,
-                    "capture_source": None,
-                    "steps": _import_steps("error", False),
-                    "import_id": key,
-                    "task_id": task_id,
-                }
-            )
-        # ai: claude-sonnet-4-6 | 2026-06-21
-        # Log when stuck in PENDING/STARTED > 15s; fires roughly every 30s so
-        # it's visible without flooding the log. Most likely cause: worker not running.
+    if stale_results:
         try:
-            if started_at:
-                elapsed = (
-                    datetime.now(UTC) - datetime.fromisoformat(started_at)
-                ).total_seconds()
-                if elapsed > 15 and int(elapsed) % 30 < 3:
-                    logger.warning(
-                        "import_status: task=%s stuck in %s for %.0fs — "
-                        "worker may not be running (check: celery -A backend.celery_app worker)",
-                        task_id[:12],
-                        state,
-                        elapsed,
-                    )
+            elapsed = (datetime.now(UTC) - datetime.fromisoformat(started_at)).total_seconds()
         except (ValueError, TypeError):
-            pass
-        meta = result.info if isinstance(result.info, dict) else {}
+            elapsed = 0.0
+        if int(elapsed) % 30 < 3:
+            logger.warning(
+                "import_status: import=%s has %d/%d batch(es) stuck in "
+                "PENDING/STARTED for %.0fs -- worker may not be running "
+                "(check: celery -A backend.celery_app worker)",
+                key,
+                len(stale_results),
+                len(results),
+                elapsed,
+            )
+
+    if len(completed) + unfinished_count < len(results):
+        meta = active.info if active is not None and isinstance(active.info, dict) else {}
+        completed_jobs = sum(int(payload.get("total") or 0) for payload in completed_payloads)
+        active_total = int(meta.get("total") or 0)
+        active_fraction = (int(meta.get("progress") or 0) / 100) * active_total
+        overall_progress = round(((completed_jobs + active_fraction) / tracked.total) * 100)
+        batch_number = len(completed) + unfinished_count + (1 if active else 0)
+        message = str(meta.get("message") or "")
+        if not message:
+            message = f"Waiting for an available worker slot ({pending_count} batch(es) queued)…"
         return jsonify(
             {
                 "running": True,
                 "phase": meta.get("phase", "processing"),
-                "progress": meta.get("progress", 0),
-                "message": meta.get("message", "Starting…"),
-                "total": meta.get("total", 0),
+                "progress": overall_progress,
+                "message": f"Batch {max(batch_number, 1)} of {len(results)}: {message}",
+                "total": tracked.total,
                 "result": None,
                 "current_job_url": meta.get("current_job_url", ""),
                 "current_platform": meta.get("current_platform", ""),
@@ -864,73 +1001,59 @@ def import_status() -> ResponseReturnValue:
                 "started_at": started_at,
                 "capture_source": meta.get("capture_source"),
                 "steps": _import_steps(str(meta.get("phase", "processing")), True),
-                "queued": meta.get("queued", 0),
-                "skipped": meta.get("skipped", 0),
-                "repaired": meta.get("repaired", 0),
-                "enriched": meta.get("enriched", 0),
-                "failed": meta.get("failed", 0),
+                "queued": aggregate["queued"] + int(meta.get("queued") or 0),
+                "skipped": aggregate["skipped"] + int(meta.get("skipped") or 0),
+                "repaired": aggregate["repaired"] + int(meta.get("repaired") or 0),
+                "enriched": aggregate["enriched"] + int(meta.get("enriched") or 0),
+                "failed": aggregate["failed"] + int(meta.get("failed") or 0),
                 "import_id": key,
-                "task_id": task_id,
+                "task_id": active.id if active is not None else task_ids[0],
+                "task_ids": task_ids,
+                "completed_batches": len(completed),
+                "batch_count": len(results),
             }
         )
 
-    if state == "PROGRESS":
-        meta = result.info or {}
-        return jsonify(
-            {
-                "running": True,
-                "phase": meta.get("phase", "processing"),
-                "progress": meta.get("progress", 0),
-                "message": meta.get("message", ""),
-                "total": meta.get("total", 0),
-                "result": None,
-                "current_job_url": meta.get("current_job_url", ""),
-                "current_platform": meta.get("current_platform", ""),
-                "trigger": trigger,
-                "started_at": started_at,
-                "capture_source": meta.get("capture_source"),
-                "steps": _import_steps(str(meta.get("phase", "processing")), True),
-                "queued": meta.get("queued", 0),
-                "skipped": meta.get("skipped", 0),
-                "repaired": meta.get("repaired", 0),
-                "enriched": meta.get("enriched", 0),
-                "failed": meta.get("failed", 0),
-                "import_id": key,
-                "task_id": task_id,
-            }
-        )
-
-    if state == "SUCCESS":
-        task_result = result.result if isinstance(result.result, dict) else {}
+    if not unfinished_count:
         return jsonify(
             {
                 "running": False,
                 "phase": "done",
                 "progress": 100,
                 "message": "Import complete",
-                "total": 0,
-                "result": result.result,
+                "total": tracked.total,
+                "result": aggregate,
                 "current_job_url": "",
                 "current_platform": "",
                 "trigger": trigger,
                 "started_at": started_at,
-                "capture_source": task_result.get("capture_source"),
+                "capture_source": aggregate.get("capture_source"),
                 "steps": _import_steps("done", False),
                 "import_id": key,
-                "task_id": task_id,
+                "task_id": task_ids[0],
+                "task_ids": task_ids,
+                "completed_batches": len(completed),
+                "batch_count": len(results),
             }
         )
 
-    # FAILURE or REVOKED
-    err = str(result.result) if result.result else "Import failed"
+    err_parts = []
+    if failed_results:
+        err_parts.append(f"{len(failed_results)} failed")
+    if stale_results:
+        err_parts.append(
+            f"{len(stale_results)} timed out after "
+            f"{_STUCK_TASK_TIMEOUT_SECONDS // 60} minutes with no worker response"
+        )
+    err = f"{' and '.join(err_parts)} of {len(results)} import batches."
     return jsonify(
         {
             "running": False,
             "phase": "error",
             "progress": 0,
             "message": err,
-            "total": 0,
-            "result": None,
+            "total": tracked.total,
+            "result": aggregate,
             "current_job_url": "",
             "current_platform": "",
             "trigger": trigger,
@@ -938,6 +1061,9 @@ def import_status() -> ResponseReturnValue:
             "capture_source": None,
             "steps": _import_steps("error", False),
             "import_id": key,
-            "task_id": task_id,
+            "task_id": task_ids[0],
+            "task_ids": task_ids,
+            "completed_batches": len(completed),
+            "batch_count": len(results),
         }
     )
