@@ -99,6 +99,21 @@ class FakeJobsRepo:
         assert job_id == self.row["id"]
         self.row.update(fields)
 
+    # ai: claude-sonnet-5 | 2026-10-05
+    def update_if_status_not_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        excluded_statuses: object,
+    ) -> dict[str, Any] | None:
+        assert user_id == _TEST_USER_ID
+        assert job_id == self.row["id"]
+        if self.row["status"] in excluded_statuses:
+            return None
+        self.row.update(fields)
+        return dict(self.row)
+
     def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]:
         assert user_id == _TEST_USER_ID
         return [dict(self.row)]

@@ -69,6 +69,21 @@ class FakeMultiJobsRepo:
         assert user_id == _TEST_USER_ID
         self.rows[job_id].update(fields)
 
+    # ai: claude-sonnet-5 | 2026-10-05
+    def update_if_status_not_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        excluded_statuses: object,
+    ) -> dict[str, Any] | None:
+        assert user_id == _TEST_USER_ID
+        row = self.rows.get(job_id)
+        if row is None or row["status"] in excluded_statuses:
+            return None
+        row.update(fields)
+        return dict(row)
+
     def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]:
         assert user_id == _TEST_USER_ID
         return [dict(row) for row in self.rows.values()]
@@ -147,24 +162,34 @@ def test_dismiss_duplicate_resolves_when_two_jobs_fuzzy_match(
 # ai: claude-sonnet-5 | 2026-10-01
 class FakeRaceJobsRepo(FakeMultiJobsRepo):
     """Simulates a concurrent /apply landing between dismiss_duplicate's initial
-    read and its pre-write re-check: the second get_by_id call (the guard) sees
-    status="applied" even though the first call (read at the top) still saw the
-    pre-race status."""
+    read (get_by_id, at the top of the route) and its atomic write
+    (update_if_status_not_in): the write must see status="applied" even though
+    the earlier read still saw the pre-race status.
+
+    ai: claude-sonnet-5 | 2026-10-05 -- the mutation moved from get_by_id's
+    second call to update_if_status_not_in's first call: the route's former
+    separate pre-write get_by_id re-check (the thing that used to be "the
+    second get_by_id call") no longer exists -- update_if_status_not_in is
+    now the single statement that must observe the race.
+    """
 
     def __init__(self, rows: list[dict[str, Any]], race_job_id: int) -> None:
         super().__init__(rows)
         self._race_job_id = race_job_id
-        self._get_by_id_calls = 0
 
-    def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
-        if job_id == self._race_job_id:
-            self._get_by_id_calls += 1
-            if self._get_by_id_calls == 2 and job_id in self.rows:
-                # Mutate the backing row itself (not a returned copy) so the
-                # "concurrent apply" is visible both to this call's return
-                # value and to the test's later assertion on jobs_repo.rows.
-                self.rows[job_id]["status"] = "applied"
-        return super().get_by_id(user_id, job_id)
+    def update_if_status_not_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        excluded_statuses: object,
+    ) -> dict[str, Any] | None:
+        if job_id == self._race_job_id and job_id in self.rows:
+            # Mutate the backing row itself (not a returned copy) so the
+            # "concurrent apply" is visible both to this call's return
+            # value and to the test's later assertion on jobs_repo.rows.
+            self.rows[job_id]["status"] = "applied"
+        return super().update_if_status_not_in(user_id, job_id, fields, excluded_statuses)
 
 
 def test_dismiss_duplicate_does_not_clobber_concurrent_apply(

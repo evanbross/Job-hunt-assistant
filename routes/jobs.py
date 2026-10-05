@@ -536,14 +536,18 @@ def patch_job(job_id: int) -> ResponseReturnValue:
                     )
 
                 # ai: claude-sonnet-5 | 2026-10-01
-                # Same SELECT-then-write race as dismiss_duplicate: don't let
-                # a duplicate recompute from the stale `updated_job` snapshot
-                # above clobber a status the user committed to concurrently.
+                # ai: claude-sonnet-5 | 2026-10-05 -- the get_by_id() re-check
+                # below was itself racy against the write two lines later;
+                # update_if_status_not_in makes the check-and-write atomic.
+                # The outer `updated_job.get("status")` check above is now
+                # just a cheap pre-filter (it can be stale), not what makes
+                # this safe.
                 if duplicate_updates and updated_job.get("status") not in USER_COMMITTED_JOB_STATUSES:
-                    current = repos["jobs"].get_by_id(user_id, job_id)
-                    if current and current.get("status") not in USER_COMMITTED_JOB_STATUSES:
-                        repos["jobs"].update(user_id, job_id, duplicate_updates)
-                        updated_job = repos["jobs"].get_by_id(user_id, job_id)
+                    result = repos["jobs"].update_if_status_not_in(
+                        user_id, job_id, duplicate_updates, USER_COMMITTED_JOB_STATUSES
+                    )
+                    if result is not None:
+                        updated_job = result
 
             repos["conn"].commit()
     except Exception as exc:
@@ -864,18 +868,21 @@ def dismiss_duplicate(job_id: int) -> ResponseReturnValue:
             }
 
         # ai: claude-sonnet-5 | 2026-10-01
-        # SELECT-then-write race guard: db_match_for_job above can take long
-        # enough (DB round trip + fuzzy matching) for a concurrent /apply or
-        # /skip on this same job to land first. Re-check right before writing
-        # so this request can't clobber a status the user deliberately set in
-        # the meantime -- this is exactly how job 4676/5376 silently reverted
-        # from "applied" back to "pending_review" with no audit trail.
-        current = repos["jobs"].get_by_id(user_id, job_id)
-        if current and current.get("status") in USER_COMMITTED_JOB_STATUSES:
+        # ai: claude-sonnet-5 | 2026-10-05 -- the get_by_id() re-check here
+        # was itself racy against the update() a few lines later (same class
+        # of bug the comment below describes); update_if_status_not_in makes
+        # the check-and-write one atomic statement instead of two.
+        # db_match_for_job above can take long enough (DB round trip + fuzzy
+        # matching) for a concurrent /apply or /skip on this same job to land
+        # first -- this is exactly how job 4676/5376 silently reverted from
+        # "applied" back to "pending_review" with no audit trail.
+        updated_job = repos["jobs"].update_if_status_not_in(
+            user_id, job_id, updates, USER_COMMITTED_JOB_STATUSES
+        )
+        if updated_job is None:
+            current = repos["jobs"].get_by_id(user_id, job_id)
+            repos["conn"].commit()
             return jsonify(current)
-
-        repos["jobs"].update(user_id, job_id, updates)
-        updated_job = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     return jsonify(updated_job)
 

@@ -65,6 +65,7 @@ from .interfaces import (
     IBrowserCaptureQueueRepository,
     ICandidateProfileRepository,
     ICareerRejectionRuleRepository,
+    ICareerScanDigestLogRepository,
     ICareerScanFailureRepository,
     ICareerScanResultRepository,
     ICareerSiteSourceRepository,
@@ -105,6 +106,7 @@ from .repositories.browser_capture_queue import (
 )
 from .repositories.candidate_profiles import PostgresCandidateProfileRepository
 from .repositories.career_rejection_rules import PostgresCareerRejectionRuleRepository
+from .repositories.career_scan_digest_log import PostgresCareerScanDigestLogRepository
 from .repositories.career_scan_failures import PostgresCareerScanFailureRepository
 from .repositories.career_scan_results import PostgresCareerScanResultRepository
 from .repositories.career_site_sources import PostgresCareerSiteSourceRepository
@@ -144,6 +146,7 @@ __all__ = [
     "ICandidateProfileRepository",
     "IBrowserCaptureQueueRepository",
     "ICareerRejectionRuleRepository",
+    "ICareerScanDigestLogRepository",
     "ICareerScanFailureRepository",
     "ICareerScanResultRepository",
     "ICareerSiteSourceRepository",
@@ -178,6 +181,7 @@ __all__ = [
     "PostgresBrowserCaptureQueueRepository",
     "PostgresCandidateProfileRepository",
     "PostgresCareerRejectionRuleRepository",
+    "PostgresCareerScanDigestLogRepository",
     "PostgresCareerScanFailureRepository",
     "PostgresCareerScanResultRepository",
     "PostgresCareerSiteSourceRepository",
@@ -355,6 +359,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "career_sites": PostgresCareerSiteSourceRepository(conn),
         "career_scan_results": PostgresCareerScanResultRepository(conn),
         "career_scan_failures": PostgresCareerScanFailureRepository(conn),
+        "career_scan_digest_log": PostgresCareerScanDigestLogRepository(conn),
         "career_rejection_rules": PostgresCareerRejectionRuleRepository(conn),
         "email_subject_rules": PostgresEmailSubjectRuleRepository(conn),
         "stage_statuses": PostgresApplicationStageStatusRepository(conn),

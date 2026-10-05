@@ -98,6 +98,21 @@ class FakeJobsRepo:
         assert job_id == self.row["id"]
         self.row.update(fields)
 
+    # ai: claude-sonnet-5 | 2026-10-05
+    def update_if_status_not_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        excluded_statuses: object,
+    ) -> dict[str, Any] | None:
+        assert user_id == _FAKE_USER_ID
+        assert job_id == self.row["id"]
+        if self.row["status"] in excluded_statuses:
+            return None
+        self.row.update(fields)
+        return dict(self.row)
+
     def get_not_a_fit_with_feedback(self, user_id: int) -> list[dict[str, Any]]:
         assert user_id == _FAKE_USER_ID
         return []
@@ -435,6 +450,22 @@ class FakeReEvaluateJobsRepo:
         self.jobs_by_id[job_id].update(fields)
         self.updates_by_id[job_id] = fields
 
+    # ai: claude-sonnet-5 | 2026-10-05
+    def update_if_status_not_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        excluded_statuses: object,
+    ) -> dict[str, Any] | None:
+        assert user_id == _FAKE_USER_ID
+        job = self.jobs_by_id.get(job_id)
+        if job is None or job["status"] in excluded_statuses:
+            return None
+        job.update(fields)
+        self.updates_by_id[job_id] = fields
+        return dict(job)
+
 
 # ai: claude-sonnet-5 | 2026-10-01
 # Regression test for the bug surfaced by a real re-evaluate run: without the
@@ -492,21 +523,33 @@ def test_re_evaluate_queue_auto_skips_exact_url_duplicate_of_applied_job(
 class FakeReEvaluateJobsRepoWithRace(FakeReEvaluateJobsRepo):
     """Simulates a concurrent /apply landing on job `race_job_id` sometime after
     this task's read phase but before its write phase gets to that job -- the
-    write-phase guard's get_by_id call must see "applied", even though the read
-    phase (get_by_statuses/get_all_ordered, called earlier) still saw the
-    pre-race status and scored/queued an update accordingly."""
+    write-phase guard's atomic update_if_status_not_in call must see "applied",
+    even though the read phase (get_by_statuses/get_all_ordered, called earlier)
+    still saw the pre-race status and scored/queued an update accordingly.
+
+    ai: claude-sonnet-5 | 2026-10-05 -- the mutation moved here from get_by_id:
+    the write phase no longer calls get_by_id at all (that was itself the
+    SELECT-then-write race being fixed); update_if_status_not_in is the single
+    statement that must observe the race now.
+    """
 
     def __init__(self, jobs: list[dict[str, Any]], race_job_id: int) -> None:
         super().__init__(jobs)
         self._race_job_id = race_job_id
 
-    def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
+    def update_if_status_not_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        excluded_statuses: object,
+    ) -> dict[str, Any] | None:
         if job_id == self._race_job_id and job_id in self.jobs_by_id:
             # Mutate the backing row itself (not a returned copy) so the
             # "concurrent apply" is visible both to this call's return value
             # and to the test's later assertion on jobs_repo.jobs_by_id.
             self.jobs_by_id[job_id]["status"] = "applied"
-        return super().get_by_id(user_id, job_id)
+        return super().update_if_status_not_in(user_id, job_id, fields, excluded_statuses)
 
 
 def test_re_evaluate_queue_does_not_clobber_status_applied_mid_run(

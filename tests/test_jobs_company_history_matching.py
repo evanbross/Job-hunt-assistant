@@ -24,6 +24,7 @@ normalize_company_name() instead of a plain LOWER(TRIM()) comparison."""
 from __future__ import annotations
 
 from backend.db import (
+    PostgresApplicationStageRepository,
     PostgresJobRepository,
     PostgresUserAccountRepository,
     get_connection,
@@ -38,6 +39,15 @@ def _make_user(conn) -> int:
         "owner@example.com", "seed-owner@example.com", "2099-01-01"
     )
     set_current_user(conn.cursor(), account["id"])
+    conn.commit()
+    return account["id"]
+
+
+# ai: claude-sonnet-5 | 2026-10-05
+def _new_other_user(conn) -> int:
+    account = PostgresUserAccountRepository(conn).create_pending(
+        "other@example.com", "seed-other@example.com", "2099-01-01"
+    )
     return account["id"]
 
 
@@ -103,6 +113,83 @@ def test_get_outreach_company_relevance_uses_latest_stage_view_schema(pg_dsn: st
         )
 
         assert relevance == {"acme": 10.0, "seeq": 5.0}
+    finally:
+        conn.close()
+
+
+# ai: claude-sonnet-5 | 2026-10-05
+def test_get_outreach_company_relevance_through_the_latest_stage_view_and_tenants(
+    pg_dsn: str,
+) -> None:
+    """Regression coverage for the 2026-10-05 review finding "new job-company
+    SQL lacks a real-schema contract test" -- the test above never actually
+    joins a real application_stages row through the latest_application_stage
+    view (its one non-active job has no stage history at all), so a broken
+    join, a wrong column, or a cross-tenant leak through the view could pass
+    every existing test. This drives get_outreach_company_relevance() itself
+    through four distinct cases plus a second tenant, against the real schema."""
+    active_statuses = frozenset({"pending_review", "triage", "possible_duplicate"})
+    terminal_stage_statuses = {"rejected", "job_filled", "req_closed", "ghosted"}
+
+    conn = get_connection(pg_dsn)
+    try:
+        owner_id = _make_user(conn)
+        repo = PostgresJobRepository(conn)
+        stages_repo = PostgresApplicationStageRepository(conn)
+
+        # Active via job.status alone -- no stage history needed.
+        repo.insert(owner_id, {"company": "Delta", "job_title": "Via Status", "status": "triage"})
+
+        # Active via a NON-terminal stage, even though job.status itself
+        # isn't in active_statuses -- this is the join the narrower test
+        # above never exercises (its one non-active job has no stages at all).
+        active_via_stage_id = repo.insert(
+            owner_id, {"company": "Acme", "job_title": "Via Stage", "status": "applied"}
+        )
+        stages_repo.insert(
+            owner_id, {"job_id": active_via_stage_id, "status": "eval_1", "date": "2026-10-01"}
+        )
+
+        # NOT active: job.status isn't active AND its latest stage is terminal.
+        terminal_id = repo.insert(
+            owner_id, {"company": "Beta", "job_title": "Terminal Stage", "status": "applied"}
+        )
+        stages_repo.insert(
+            owner_id, {"job_id": terminal_id, "status": "rejected", "date": "2026-10-01"}
+        )
+
+        # NOT active: job.status isn't active and there is no stage history
+        # at all (latest.latest_status IS NULL) -- the "missing-stage" case.
+        repo.insert(owner_id, {"company": "Gamma", "job_title": "No Stage", "status": "applied"})
+        conn.commit()
+
+        relevance = repo.get_outreach_company_relevance(
+            owner_id, active_statuses, terminal_stage_statuses
+        )
+
+        assert relevance == {
+            "delta": 10.0,
+            "acme": 10.0,
+            "beta": 5.0,
+            "gamma": 5.0,
+        }
+
+        # Cross-tenant: a second account with a job at a company of the SAME
+        # name ("Acme") and no stage history must get its own 5.0 -- never
+        # blended with or leaked from owner_id's 10.0 "Acme" row above,
+        # whether through the jobs table filter or through the view join.
+        other_id = _new_other_user(conn)
+        set_current_user(conn.cursor(), other_id)
+        conn.commit()
+        other_repo = PostgresJobRepository(conn)
+        other_repo.insert(other_id, {"company": "Acme", "job_title": "Other Tenant", "status": "applied"})
+        conn.commit()
+
+        other_relevance = other_repo.get_outreach_company_relevance(
+            other_id, active_statuses, terminal_stage_statuses
+        )
+
+        assert other_relevance == {"acme": 5.0}
     finally:
         conn.close()
 

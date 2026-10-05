@@ -241,9 +241,6 @@ SETTINGS: dict[str, SettingSpec] = {
         label="Scan Report Email", group="Email", placeholder="you@example.com",
         help_text="Optional. Defaults to the email address on your account.",
     ),
-    "career_scan_digest_last_sent_date": SettingSpec(
-        scope="user", is_secret=False, default="", label="", group="Email", hidden=True,
-    ),
     "candidate_timezone": SettingSpec(
         scope="user", is_secret=False, default=config.DEFAULT_CANDIDATE_TIMEZONE,
         label="Your Timezone", group="Career Profile",

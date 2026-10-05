@@ -82,22 +82,19 @@ def test_digest_uses_account_email_when_no_override(
         yield {
             "settings": object(),
             "user_accounts": FakeAccountsRepository(),
+            "career_scan_digest_log": FakeDigestLogRepository(),
             "conn": FakeConnection(),
         }
 
     def fake_get_setting(
         key: str, user_id: int | None, repos: dict[str, Any]
     ) -> str:
-        assert key in {
-            "career_scan_digest_notify_email",
-            "career_scan_digest_last_sent_date",
-        }
+        assert key == "career_scan_digest_notify_email"
         return ""
 
     monkeypatch.setattr(career_scan_digest, "get_repos", fake_get_repos)
     monkeypatch.setattr(career_scan_digest, "get_setting", fake_get_setting)
     monkeypatch.setattr(career_scan_digest, "get_setting_bool", lambda *args, **kwargs: True)
-    monkeypatch.setattr(career_scan_digest, "set_setting", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         career_scan_digest,
         "send_email",
@@ -129,3 +126,60 @@ class FakeAccountsRepository:
 class FakeConnection:
     def commit(self) -> None:
         pass
+
+
+# ai: claude-sonnet-5 | 2026-10-05
+class FakeDigestLogRepository:
+    """Models career_scan_digest_log.claim()'s real behavior: the first
+    claim for a given (user_id, report_date) wins, every later one loses --
+    exactly what the UNIQUE(user_id, report_date) constraint enforces for
+    real in Postgres."""
+
+    def __init__(self) -> None:
+        self.claimed: set[tuple[int, str]] = set()
+
+    def claim(self, user_id: int, report_date: str) -> bool:
+        key = (user_id, report_date)
+        if key in self.claimed:
+            return False
+        self.claimed.add(key)
+        return True
+
+
+# ai: claude-sonnet-5 | 2026-10-05
+# Regression coverage for the 2026-10-05 review finding "digest
+# deduplication is a non-atomic check-send-mark sequence" -- the old
+# check-then-send-then-mark let two concurrent scheduled runs both pass the
+# check and send duplicate emails for the same day.
+def test_digest_is_not_sent_twice_for_the_same_report_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[dict[str, str]] = []
+    digest_log = FakeDigestLogRepository()
+
+    @contextmanager
+    def fake_get_repos(user_id: int):
+        yield {
+            "user_accounts": FakeAccountsRepository(),
+            "career_scan_digest_log": digest_log,
+            "conn": FakeConnection(),
+        }
+
+    monkeypatch.setattr(career_scan_digest, "get_repos", fake_get_repos)
+    monkeypatch.setattr(career_scan_digest, "get_setting", lambda *a, **k: "")
+    monkeypatch.setattr(career_scan_digest, "get_setting_bool", lambda *a, **k: True)
+    monkeypatch.setattr(career_scan_digest, "send_email", lambda **kwargs: sent.append(kwargs))
+
+    state = {
+        "last_run_at": "2026-10-05T03:15:00+00:00",
+        "jobs_found": 0,
+        "listings_filtered": 0,
+        "site_reports": [],
+    }
+
+    # Two scheduled runs for the same day (e.g. an orphaned app process plus
+    # a fresh one) both call this -- only the first must actually send.
+    career_scan_digest.send_career_scan_digest(7, state)
+    career_scan_digest.send_career_scan_digest(7, state)
+
+    assert len(sent) == 1

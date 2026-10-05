@@ -270,17 +270,30 @@ def run_re_evaluate_task(self, user_id: int) -> dict:
             jobs_repo = repos["jobs"]
             for job_id, updates in pending_updates:
                 # ai: claude-sonnet-5 | 2026-10-01
-                # A run spans up to ~90 minutes across ~1000+ jobs (see job
-                # 4676/5376 incident), so re-check each job's live status right
-                # before writing it -- `updates` was computed from a snapshot
-                # read at the top of this task and must not revert a status
-                # the user committed to (/apply, /skip) while this job's turn
-                # was still queued up.
+                # ai: claude-sonnet-5 | 2026-10-05 -- was get_by_id() then a
+                # separate update(), leaving a window where a concurrent
+                # /apply or /skip landing in between gets silently clobbered
+                # (confirmed: job 4676/5376 reverted from "applied" back to
+                # "pending_review" with no audit trail). update_if_status_not_in
+                # makes the check-and-write one atomic statement: if the job's
+                # live status is already user-committed, the write is rejected
+                # outright and the non-status fields (score, dedup hints) are
+                # applied separately instead of silently dropping the status
+                # change and writing everything in one shot regardless.
                 if "status" in updates:
-                    current = jobs_repo.get_by_id(user_id, job_id)
-                    if current and current.get("status") in USER_COMMITTED_JOB_STATUSES:
-                        updates = {k: v for k, v in updates.items() if k != "status"}
-                jobs_repo.update(user_id, job_id, updates)
+                    if (
+                        jobs_repo.update_if_status_not_in(
+                            user_id, job_id, updates, USER_COMMITTED_JOB_STATUSES
+                        )
+                        is None
+                    ):
+                        non_status_updates = {
+                            k: v for k, v in updates.items() if k != "status"
+                        }
+                        if non_status_updates:
+                            jobs_repo.update(user_id, job_id, non_status_updates)
+                else:
+                    jobs_repo.update(user_id, job_id, updates)
             repos["conn"].commit()
 
         result_summary = {
@@ -639,33 +652,33 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
 
     with get_repos() as repos:
         # ai: claude-sonnet-5 | 2026-10-01
-        # Re-check status fresh instead of using the `job` snapshot read
-        # before the (slow) AI scoring call above -- a concurrent /apply or
-        # /skip on this same job during that call must win, not get silently
-        # reverted by a status this request computed from stale data.
-        current = repos["jobs"].get_by_id(user_id, job_id)
-        current_status = str((current or {}).get("status") or "")
-        if current_status in {"possible_duplicate", *USER_COMMITTED_JOB_STATUSES}:
-            new_status = current_status
-        else:
-            new_status = "pending_review" if score >= 70 else "triage"
-
-        repos["jobs"].update(
-            user_id,
-            job_id,
-            {
-                "fit_score": score,
-                "fit_reasoning": result["reasoning"],
-                "salary_min": result["salary_min"],
-                "salary_max": result["salary_max"],
-                "status": new_status,
-                # ai: claude-sonnet-5 | 2026-09-21
-                "import_warnings": remove_import_warning(
-                    job.get("import_warnings"), SCORING_FAILED_WARNING
-                ),
-            },
+        # ai: claude-sonnet-5 | 2026-10-05 -- was a get_by_id() status check
+        # followed by a separate update(), leaving the same SELECT-then-write
+        # race the 2026-10-01 comment above was trying to close: a concurrent
+        # /apply or /skip could still land between the check and the write.
+        # update_if_status_not_in makes it one atomic statement -- a
+        # possible_duplicate/user-committed status can never be clobbered by
+        # this write no matter the timing, and the score/reasoning fields
+        # still get persisted via the fallback plain update below.
+        protected_statuses = {"possible_duplicate", *USER_COMMITTED_JOB_STATUSES}
+        fields = {
+            "fit_score": score,
+            "fit_reasoning": result["reasoning"],
+            "salary_min": result["salary_min"],
+            "salary_max": result["salary_max"],
+            "status": "pending_review" if score >= 70 else "triage",
+            # ai: claude-sonnet-5 | 2026-09-21
+            "import_warnings": remove_import_warning(
+                job.get("import_warnings"), SCORING_FAILED_WARNING
+            ),
+        }
+        updated_job = repos["jobs"].update_if_status_not_in(
+            user_id, job_id, fields, protected_statuses
         )
-        updated_job = repos["jobs"].get_by_id(user_id, job_id)
+        if updated_job is None:
+            non_status_fields = {k: v for k, v in fields.items() if k != "status"}
+            repos["jobs"].update(user_id, job_id, non_status_fields)
+            updated_job = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     return jsonify(updated_job)
 
@@ -717,30 +730,28 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
 
     with get_repos() as repos:
         # ai: claude-sonnet-5 | 2026-10-01
-        # Same stale-status guard as re_evaluate_job_fit: re-check fresh
-        # instead of trusting a status computed before the AI scoring call.
-        current = repos["jobs"].get_by_id(user_id, job_id)
-        current_status = str((current or {}).get("status") or "")
-        if current_status in {"possible_duplicate", *USER_COMMITTED_JOB_STATUSES}:
-            new_status = current_status
-        else:
-            new_status = "pending_review" if score >= 70 else "triage"
-
-        repos["jobs"].update(
-            user_id,
-            job_id,
-            {
-                "fit_score": score,
-                "fit_reasoning": result["reasoning"],
-                "salary_min": result["salary_min"],
-                "salary_max": result["salary_max"],
-                "status": new_status,
-                # ai: claude-sonnet-5 | 2026-09-21
-                "import_warnings": remove_import_warning(
-                    job.get("import_warnings"), SCORING_FAILED_WARNING
-                ),
-            },
+        # ai: claude-sonnet-5 | 2026-10-05 -- same atomic fix as
+        # re_evaluate_job_fit: update_if_status_not_in closes the
+        # SELECT-then-write window the old get_by_id()-then-update() left
+        # open between the status check and the write.
+        protected_statuses = {"possible_duplicate", *USER_COMMITTED_JOB_STATUSES}
+        fields = {
+            "fit_score": score,
+            "fit_reasoning": result["reasoning"],
+            "salary_min": result["salary_min"],
+            "salary_max": result["salary_max"],
+            "status": "pending_review" if score >= 70 else "triage",
+            # ai: claude-sonnet-5 | 2026-09-21
+            "import_warnings": remove_import_warning(
+                job.get("import_warnings"), SCORING_FAILED_WARNING
+            ),
+        }
+        updated_job = repos["jobs"].update_if_status_not_in(
+            user_id, job_id, fields, protected_statuses
         )
-        updated_job = repos["jobs"].get_by_id(user_id, job_id)
+        if updated_job is None:
+            non_status_fields = {k: v for k, v in fields.items() if k != "status"}
+            repos["jobs"].update(user_id, job_id, non_status_fields)
+            updated_job = repos["jobs"].get_by_id(user_id, job_id)
         repos["conn"].commit()
     return jsonify(updated_job)

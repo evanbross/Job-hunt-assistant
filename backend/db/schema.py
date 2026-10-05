@@ -214,6 +214,7 @@ _PER_USER_TABLES: tuple[str, ...] = (
     "contact_emails",
     "extension_tokens",
     "cover_letter_phrases",
+    "career_scan_digest_log",
 )
 
 
@@ -1047,6 +1048,17 @@ def _migrate(conn: Any) -> None:
         )
         cur.execute(f"ALTER TABLE {table} ALTER COLUMN user_id SET NOT NULL")
         cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_user_id ON {table} (user_id)")
+    conn.commit()
+
+    # ai: claude-sonnet-5 | 2026-10-05
+    # career_scan_digest_log's user_id only exists after the retrofit loop
+    # above, so this uniqueness constraint -- the thing that actually makes
+    # claim() atomic -- has to be added as its own step afterward.
+    if not _has_unique(cur, "career_scan_digest_log", "career_scan_digest_log_user_date_key"):
+        cur.execute(
+            "ALTER TABLE career_scan_digest_log ADD CONSTRAINT"
+            " career_scan_digest_log_user_date_key UNIQUE (user_id, report_date)"
+        )
     conn.commit()
 
     # ai: claude-sonnet-5 | 2026-08-20
@@ -1905,6 +1917,22 @@ def _create_tables(conn: Any) -> None:
             enabled    INTEGER DEFAULT 1,
             created_at TEXT NOT NULL,
             updated_at TEXT
+        )
+        """,
+        # ai: claude-sonnet-5 | 2026-10-05
+        # One row per (account, report_date) a digest was actually sent for --
+        # see backend/scanning/career_scan_digest.py's claim() call. Replaces
+        # the old "career_scan_digest_last_sent_date" setting, whose
+        # check-then-send-then-mark sequence let two concurrent scheduled
+        # runs both pass the check and send duplicate emails. A plain INSERT
+        # that relies on the (user_id, report_date) UNIQUE constraint (added
+        # below, once user_id exists) to reject a second claim is atomic in a
+        # way a separate read-then-write never is.
+        """
+        CREATE TABLE IF NOT EXISTS career_scan_digest_log (
+            id          SERIAL PRIMARY KEY,
+            report_date TEXT NOT NULL,
+            sent_at     TEXT NOT NULL
         )
         """,
         """

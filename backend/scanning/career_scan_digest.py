@@ -23,7 +23,7 @@ from collections import Counter
 from typing import Any
 
 from backend.email.smtp_sender import send_email
-from backend.settings_service import get_setting, get_setting_bool, set_setting
+from backend.settings_service import get_setting, get_setting_bool
 from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
@@ -91,8 +91,18 @@ def format_career_scan_digest(state: dict[str, Any]) -> str:
 
 
 # ai: gpt-5 | 2026-10-04
+# ai: claude-sonnet-5 | 2026-10-05
 def send_career_scan_digest(user_id: int, state: dict[str, Any]) -> None:
-    """Send a completed scheduled scan report to its account owner."""
+    """Send a completed scheduled scan report to its account owner.
+
+    Idempotent per (user_id, report_date) via career_scan_digest_log.claim():
+    the old version checked a "last sent date" setting, released the DB
+    connection, sent the email, then wrote the setting back -- two scheduled
+    runs (e.g. an orphaned app process plus a fresh one) could both pass the
+    check before either wrote the mark, and both send. claim() is a single
+    atomic INSERT guarded by a UNIQUE(user_id, report_date) constraint, so
+    only the first caller for a given date ever reaches send_email().
+    """
     last_run_at = str(state.get("last_run_at") or "")
     report_date = last_run_at[:10] if last_run_at else "today"
     with get_repos(user_id) as repos:
@@ -103,9 +113,11 @@ def send_career_scan_digest(user_id: int, state: dict[str, Any]) -> None:
         configured_recipient = get_setting(
             "career_scan_digest_notify_email", user_id, repos
         ).strip()
-        if get_setting("career_scan_digest_last_sent_date", user_id, repos) == report_date:
-            return
         account = repos["user_accounts"].get(user_id)
+        claimed = repos["career_scan_digest_log"].claim(user_id, report_date)
+        repos["conn"].commit()
+    if not claimed:
+        return
 
     recipient = configured_recipient or str((account or {}).get("email") or "").strip()
     if not recipient or recipient.endswith("@localhost"):
@@ -120,9 +132,4 @@ def send_career_scan_digest(user_id: int, state: dict[str, Any]) -> None:
         subject=f"Job-board scan report — {report_date}",
         body_text=format_career_scan_digest(state),
     )
-    with get_repos(user_id) as repos:
-        set_setting(
-            "career_scan_digest_last_sent_date", report_date, user_id, repos
-        )
-        repos["conn"].commit()
     logger.info("Sent career scan digest for user %s to %s", user_id, recipient)

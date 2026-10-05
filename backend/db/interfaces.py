@@ -37,6 +37,7 @@ services depend on instead of concrete Postgres repository classes."""
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -76,6 +77,13 @@ class IJobRepository(Protocol):
     def get_unreachable(self, user_id: int) -> list[dict[str, Any]]: ...
     def insert(self, user_id: int, job: dict[str, Any]) -> int: ...
     def update(self, user_id: int, job_id: int, fields: dict[str, Any]) -> None: ...
+    def update_if_status_not_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        excluded_statuses: Collection[str],
+    ) -> dict[str, Any] | None: ...
     def delete(self, user_id: int, job_id: int) -> None: ...
     def delete_email_sourced(self, user_id: int) -> None: ...
 
@@ -266,6 +274,12 @@ class ICoverLetterPhraseRepository(Protocol):
     def insert(self, user_id: int, row: dict[str, Any]) -> int: ...
     def update(self, user_id: int, phrase_id: int, fields: dict[str, Any]) -> None: ...
     def delete(self, user_id: int, phrase_id: int) -> None: ...
+
+
+# ai: claude-sonnet-5 | 2026-10-05
+@runtime_checkable
+class ICareerScanDigestLogRepository(Protocol):
+    def claim(self, user_id: int, report_date: str) -> bool: ...
 
 
 # ai: claude-sonnet-5 | 2026-09-27

@@ -298,6 +298,100 @@ def test_claim_for_scan_is_atomic_and_single_winner(pg_dsn: str) -> None:
         repos["conn"].close()
 
 
+# ai: claude-sonnet-5 | 2026-10-05
+def test_update_if_status_not_in_rejects_when_status_is_excluded(pg_dsn: str) -> None:
+    """Regression coverage for the 2026-10-05 review finding "the new
+    stale-status guards still have a SELECT-then-write race" -- routes/fit.py
+    and routes/jobs.py used to do get_by_id() then a separate update(),
+    leaving a window where a concurrent /apply or /skip could land in
+    between and get silently overwritten (confirmed incident: job 4676/5376
+    reverted from "applied" back to "pending_review"). update_if_status_not_in
+    makes the check-and-write one atomic statement; this executes it against
+    the real schema, not a fake, per TESTING_STANDARDS.md."""
+    repos = open_repositories(pg_dsn)
+    try:
+        account = repos["user_accounts"].create_pending(
+            "status-guard@example.com", "seed-status-guard@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
+        # is_local=false still only survives a later rollback if committed
+        # now (see row_level_security.py's set_current_user docstring) --
+        # this test's first update_if_status_not_in call below rolls back
+        # nothing itself, but matches the safe pattern get_repos() uses.
+        repos["conn"].commit()
+
+        job_id = repos["jobs"].insert(
+            user_id,
+            {
+                "dedup_key": "status-guard-1",
+                "company": "Acme",
+                "job_title": "Senior Engineer",
+                "url": "https://example.com/jobs/status-guard-1",
+                "source": "manual",
+                "status": "applied",
+                "date_found": "2026-10-05",
+            },
+        )
+        repos["conn"].commit()
+
+        # The job is already "applied" (a user-committed status) -- a
+        # re-score computed from stale data must not be allowed to revert it.
+        blocked = repos["jobs"].update_if_status_not_in(
+            user_id, job_id, {"status": "triage", "fit_score": 40}, {"applied", "skipped"}
+        )
+        repos["conn"].commit()
+
+        assert blocked is None
+        assert repos["jobs"].get_by_id(user_id, job_id)["status"] == "applied"
+
+        # A job NOT in the excluded set is updated normally, and the row
+        # comes back directly from RETURNING * -- no second SELECT needed.
+        allowed = repos["jobs"].update_if_status_not_in(
+            user_id, job_id, {"status": "triage", "fit_score": 40}, {"possible_duplicate"}
+        )
+        repos["conn"].commit()
+
+        assert allowed is not None
+        assert allowed["status"] == "triage"
+        assert allowed["fit_score"] == 40
+    finally:
+        repos["conn"].close()
+
+
+# ai: claude-sonnet-5 | 2026-10-05
+def test_career_scan_digest_log_claim_is_atomic_and_single_winner(pg_dsn: str) -> None:
+    """Regression coverage for the 2026-10-05 review finding "digest
+    deduplication is a non-atomic check-send-mark sequence" -- claim() relies
+    on the UNIQUE(user_id, report_date) constraint added in schema.py to
+    reject a second claim for the same date; this executes it against the
+    real schema, not a fake."""
+    repos = open_repositories(pg_dsn)
+    try:
+        account = repos["user_accounts"].create_pending(
+            "digest-claim@example.com", "seed-digest-claim@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
+        # Must commit now: claim()'s UniqueViolation handling rolls back the
+        # connection, and is_local=false's session-level SET only survives a
+        # later rollback if it was committed first (row_level_security.py's
+        # set_current_user docstring).
+        repos["conn"].commit()
+
+        first_claim = repos["career_scan_digest_log"].claim(user_id, "2026-10-05")
+        second_claim = repos["career_scan_digest_log"].claim(user_id, "2026-10-05")
+        # A different report_date for the same user must still be claimable.
+        third_claim = repos["career_scan_digest_log"].claim(user_id, "2026-10-06")
+        repos["conn"].commit()
+
+        assert first_claim is True
+        assert second_claim is False
+        assert third_claim is True
+    finally:
+        repos["conn"].close()
+
+
 def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:
