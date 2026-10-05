@@ -49,6 +49,8 @@ from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 from urllib.response import addinfourl
 
+import certifi
+
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 _DEFAULT_ALLOWED_PORTS = frozenset({80, 443})
 
@@ -175,7 +177,14 @@ def safe_urlopen(
             allow_loopback=allow_loopback, allowed_ports=allowed_ports
         ),
     ]
-    if not verify_ssl:
+    # ai: gpt-5 | 2026-10-04
+    # Python 3.14 on Windows may resolve OpenSSL's default CA path to a stale
+    # machine-wide bundle. Use certifi explicitly so verified requests have a
+    # current, deterministic trust store across launcher and worker processes.
+    if verify_ssl:
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        handlers.append(HTTPSHandler(context=ctx))
+    else:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE

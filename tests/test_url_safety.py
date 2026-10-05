@@ -42,6 +42,7 @@ from urllib.request import Request
 
 import pytest
 
+import backend.utils.url_safety as url_safety
 from backend.utils.url_safety import (
     UnsafeUrlError,
     _ValidatingRedirectHandler,
@@ -145,3 +146,37 @@ def test_safe_urlopen_blocks_before_any_network_call(
     req = Request("http://localhost:11434/api/tags", method="GET")
     with pytest.raises(UnsafeUrlError):
         safe_urlopen(req, timeout=1)
+
+
+# ai: gpt-5 | 2026-10-04
+def test_safe_urlopen_uses_certifi_for_verified_https(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("93.184.216.34"))
+    context = object()
+    opened: dict[str, object] = {}
+
+    monkeypatch.setattr(url_safety.certifi, "where", lambda: "current-ca.pem")
+
+    def fake_create_default_context(*, cafile: str) -> object:
+        assert cafile == "current-ca.pem"
+        return context
+
+    class FakeHttpsHandler:
+        def __init__(self, *, context: object) -> None:
+            opened["context"] = context
+
+    class FakeOpener:
+        def open(self, request: Request, *, timeout: float) -> str:
+            assert request.full_url == "https://example.com/jobs"
+            assert timeout == 3
+            return "response"
+
+    monkeypatch.setattr(url_safety.ssl, "create_default_context", fake_create_default_context)
+    monkeypatch.setattr(url_safety, "HTTPSHandler", FakeHttpsHandler)
+    monkeypatch.setattr(url_safety, "build_opener", lambda *_handlers: FakeOpener())
+
+    response = safe_urlopen(Request("https://example.com/jobs"), timeout=3)
+
+    assert response == "response"
+    assert opened["context"] is context
