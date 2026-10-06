@@ -798,7 +798,8 @@ def _migrate(conn: Any) -> None:
             error_msg   TEXT NOT NULL DEFAULT '',
             retry_count INTEGER NOT NULL DEFAULT 0,
             purpose     TEXT NOT NULL DEFAULT 'import',
-            job_id      INTEGER
+            job_id      INTEGER,
+            source_id   INTEGER
         )
     """)
     cur.execute(
@@ -817,6 +818,13 @@ def _migrate(conn: Any) -> None:
     )
     cur.execute(
         "ALTER TABLE browser_capture_queue" " ADD COLUMN IF NOT EXISTS job_id INTEGER"
+    )
+    # ai: claude-sonnet-5 | 2026-10-06 -- source_id ties a queue row back to the
+    # career_site_sources row it was enqueued for (automatic_browser collection
+    # mode), so the completed capture's import can resolve capture_source_id
+    # directly instead of guessing the source from the captured URL.
+    cur.execute(
+        "ALTER TABLE browser_capture_queue" " ADD COLUMN IF NOT EXISTS source_id INTEGER"
     )
 
     # ai: claude-sonnet-5 | 2026-08-12
@@ -1980,7 +1988,8 @@ def _create_tables(conn: Any) -> None:
             error_msg   TEXT NOT NULL DEFAULT '',
             retry_count INTEGER NOT NULL DEFAULT 0,
             purpose     TEXT NOT NULL DEFAULT 'import',
-            job_id      INTEGER
+            job_id      INTEGER,
+            source_id   INTEGER
         )
         """,
         """
@@ -2102,6 +2111,18 @@ def _create_tables(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_audit_log_user_created
             ON audit_log (user_id, created_at DESC)
+        """,
+        # ai: claude-sonnet-5 | 2026-10-05 -- every jobs query filters on
+        # (user_id, status) (get_all_by_status/get_by_statuses/get_page_by_statuses
+        # in backend/db/repositories/jobs.py), but the only existing index on
+        # jobs is user_id alone. On a single-user instance user_id matches every
+        # row, so that index is non-selective and every queue/triage fetch falls
+        # back to a full sequential scan -- cost grows linearly with total jobs
+        # rows, which only ever grows since skipped/applied history is kept
+        # forever for duplicate detection (see handleRescanAll's confirm text).
+        """
+        CREATE INDEX IF NOT EXISTS idx_jobs_user_status
+            ON jobs (user_id, status)
         """,
     ]:
         cur.execute(stmt)

@@ -97,7 +97,7 @@ logger = logging.getLogger(__name__)
 
 career_sites_bp = Blueprint("career_sites", __name__)
 
-_CAREER_SITE_COLLECTION_MODES = frozenset({"automatic", "manual"})
+_CAREER_SITE_COLLECTION_MODES = frozenset({"automatic", "automatic_browser", "manual"})
 
 
 # ai: claude-sonnet-5 | 2026-08-20
@@ -190,7 +190,7 @@ def _tracking_status_for_career_job(
 def _parse_collection_mode(value: object, *, default: str = "automatic") -> str:
     mode = str(value or default).strip().lower()
     if mode not in _CAREER_SITE_COLLECTION_MODES:
-        raise ValueError("collection_mode must be automatic or manual")
+        raise ValueError("collection_mode must be automatic, automatic_browser, or manual")
     return mode
 
 
@@ -514,11 +514,10 @@ def run_career_site_scan_task(
         source_count = len(target_sources)
 
         # Sites that bot-block automated scanning entirely — no headless or
-        # server-side fetch gets past them, so they're excluded from the
-        # background scanner and captured manually via the browser extension
-        # instead (see WELLFOUND capture support in browser-extension/content.js;
-        # Workday pages are covered by the extension's generic ATS job-link
-        # harvester, content.js:2277).
+        # server-side fetch gets past them. These are routed to a real browser
+        # capture instead of a direct fetch below (see WELLFOUND capture
+        # support in browser-extension/content.js; Workday pages are covered
+        # by the extension's generic ATS job-link harvester, content.js:2277).
         # ai: claude-sonnet-5 | 2026-08-30
         # ai: claude-sonnet-5 | 2026-10-05 -- shipt.wd1.myworkdayjobs.com added.
         # Confirmed by direct testing: this tenant's Cloudflare-fronted Workday
@@ -528,6 +527,10 @@ def run_career_site_scan_task(
         # browser sends and that curl successfully replays -- a TLS/HTTP
         # client fingerprint block, not a missing cookie or wrong payload, so
         # there is no header/cookie fix available from pure-Python code here.
+        # ai: claude-sonnet-5 | 2026-10-06 -- kept as a defensive fallback
+        # alongside the explicit collection_mode == "automatic_browser" check
+        # below, for a source that targets one of these hosts but hasn't been
+        # switched to that mode yet.
         _MANUAL_CAPTURE_ONLY_HOSTS = frozenset(
             {"wellfound.com", "www.wellfound.com", "shipt.wd1.myworkdayjobs.com"}
         )
@@ -570,21 +573,42 @@ def run_career_site_scan_task(
                 _host = urlparse(source_url).hostname or ""
             except Exception:
                 _host = ""
-            if _host in _MANUAL_CAPTURE_ONLY_HOSTS:
-                logger.info(
-                    "Skipping %s (%s) — bot-blocks automated scanning; capture via the browser extension instead",
-                    source_name,
-                    source_url,
-                )
-                _update_career_scan(
-                    error=(
-                        f"{source_name}: blocks automated scanning — visit the site "
-                        f"and capture jobs manually with the browser extension"
+            # ai: claude-sonnet-5 | 2026-10-06 -- automatic_browser sources (and
+            # the defensive host fallback above) can't be fetched server-side at
+            # all, so route them to the browser extension instead of skipping
+            # outright. enqueue_for_source() dedupes against an already
+            # pending/processing row for this source, so a source that's still
+            # waiting on a capture from an earlier tick is a no-op here, not a
+            # duplicate tab. last_captured_at is deliberately NOT stamped here —
+            # that only happens once the capture actually completes and is
+            # imported (see _record_capture_source in backend/tasks.py, driven
+            # by the capture_source_id this enqueue attaches), so a source whose
+            # capture never arrives (e.g. Chrome wasn't open) stays due on the
+            # next tick instead of silently going stale.
+            if (
+                source.get("collection_mode") == "automatic_browser"
+                or _host in _MANUAL_CAPTURE_ONLY_HOSTS
+            ):
+                with get_repos(user_id) as repos:
+                    queued_id = repos["browser_capture_queue"].enqueue_for_source(
+                        user_id, source_url, source_name, current_source_id
                     )
-                )
-                site_report["error"] = (
-                    "Blocks automated scanning; use the browser extension."
-                )
+                    repos["conn"].commit()
+                if queued_id is not None:
+                    logger.info(
+                        "Queued %s (%s) for browser capture (queue id %d)",
+                        source_name,
+                        source_url,
+                        queued_id,
+                    )
+                    site_report["error"] = "Queued for browser capture."
+                else:
+                    logger.info(
+                        "%s (%s) already queued for browser capture",
+                        source_name,
+                        source_url,
+                    )
+                    site_report["error"] = "Already queued for browser capture."
                 state["site_reports"].append(site_report)  # type: ignore[union-attr]
                 scanned_sites += 1
                 progress = 20 + int((scanned_sites / source_count) * 75)
@@ -1390,7 +1414,7 @@ def run_career_scan_for_site(source_id: int) -> ResponseReturnValue:
         existing = repos["career_sites"].get_by_id(user_id, source_id)
     if not existing:
         return jsonify({"error": "Career site not found"}), 404
-    if (existing.get("collection_mode") or "automatic") != "automatic":
+    if (existing.get("collection_mode") or "automatic") == "manual":
         return (
             jsonify({"error": "This career site is marked for manual collection."}),
             400,

@@ -70,7 +70,7 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
         cur = self._execute(
             "SELECT * FROM career_site_sources"
             " WHERE user_id = %s AND enabled = 1"
-            " AND COALESCE(collection_mode, 'automatic') = 'automatic'"
+            " AND COALESCE(collection_mode, 'automatic') IN ('automatic', 'automatic_browser')"
             " ORDER BY name",
             (user_id,),
         )
@@ -88,7 +88,7 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             SELECT * FROM career_site_sources
             WHERE user_id = %s
               AND enabled = 1
-              AND COALESCE(collection_mode, 'automatic') = 'automatic'
+              AND COALESCE(collection_mode, 'automatic') IN ('automatic', 'automatic_browser')
               AND (
                   last_captured_at IS NULL
                   OR last_captured_at::timestamptz

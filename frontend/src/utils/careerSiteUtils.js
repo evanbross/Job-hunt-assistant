@@ -33,7 +33,9 @@
  */
 
 export function collectionModeLabel(mode) {
-  return mode === "manual" ? "Manual capture" : "App scan";
+  if (mode === "manual") return "Manual capture";
+  if (mode === "automatic_browser") return "App scan (browser)";
+  return "App scan (direct)";
 }
 
 export function isManualCollectionSite(site) {

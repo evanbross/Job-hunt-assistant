@@ -67,6 +67,14 @@ const _previousTabs = new Map();
 // and postToApp can route closed-req checks differently from job imports.
 const _pendingPurpose = new Map();
 const _pendingJobId = new Map();
+// ai: claude-sonnet-5 | 2026-10-06
+// _pendingSourceId: tabId → career_site_sources id, preserved across the
+// _queueTabs delete (same reason as the maps above) so postToApp can tag the
+// captured payload with capture_source_id — see backend/db/repositories/
+// browser_capture_queue.py's enqueue_for_source and routes/import_.py's
+// _resolve_capture_source, which resolves that id directly instead of
+// guessing the source from the captured URL.
+const _pendingSourceId = new Map();
 let _queuePolling = false;
 
 // ─── Alarm setup ──────────────────────────────────────────────────────────
@@ -326,6 +334,7 @@ async function pollQueue() {
             siteName: item.site_name || '',
             purpose,
             jobId: item.job_id ?? null,
+            sourceId: item.source_id ?? null,
           });
           if (previousTabId) _previousTabs.set(tab.id, previousTabId);
         }
@@ -380,6 +389,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // and postToApp know this is a closed-req check rather than a job import.
   _pendingPurpose.set(tabId, info.purpose || 'import');
   if (info.jobId != null) _pendingJobId.set(tabId, info.jobId);
+  if (info.sourceId != null) _pendingSourceId.set(tabId, info.sourceId);
   _queueTabs.delete(tabId);
   _pendingCaptureTabs.add(tabId);
   // ai: claude-sonnet-4-6 | 2026-06-21
@@ -394,11 +404,20 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // so every Wellfound closed-req check silently came back "open" (verified: zero
   // Wellfound jobs were ever marked req_closed despite confirmed-closed listings).
   const isWellfound = (tab.url || '').includes('wellfound.com');
+  // ai: claude-sonnet-5 | 2026-10-06
+  // automatic_browser career-site sources pointed at a LinkedIn saved search
+  // (/jobs/search/, /jobs/collections/, /jobs/search-results/) land on the
+  // same client-rendered card list buildLinkedInSearchPayload() reads
+  // synchronously — no poll/wait built into that builder, unlike
+  // buildLinkedInSearchDetailPayload()'s waitForLinkedInDetailRender. Give it
+  // the same settle delay as the other client-rendered SPAs above rather than
+  // risk an empty or partial capture on a cold page load.
+  const isLinkedInSearch = /linkedin\.com\/jobs\/(search|collections|search-results)/.test(tab.url || '');
   // ai: claude-sonnet-4-6 | 2026-07-02
   // LinkedIn's closure banner can finish rendering just after status: complete —
   // a short settle delay avoids capturing before it mounts.
   const isClosedReqCheck = info.purpose === 'closed_req';
-  if (isWttj || isWellfound) {
+  if (isWttj || isWellfound || isLinkedInSearch) {
     scheduleQueueCapture(tabId, 5000);
   } else if (isClosedReqCheck) {
     scheduleQueueCapture(tabId, 1500);
@@ -437,6 +456,7 @@ async function triggerQueueCapture(tabId) {
     _pendingQueueUrls.delete(tabId);
     _pendingPurpose.delete(tabId);
     _pendingJobId.delete(tabId);
+    _pendingSourceId.delete(tabId);
     const previousTabId = _previousTabs.get(tabId);
     _previousTabs.delete(tabId);
     chrome.tabs.remove(tabId).catch(() => {});
@@ -484,6 +504,9 @@ async function postToApp(payload, tabId, isQueueCapture = false, blockedSite = n
   if (isQueueCapture && tabId != null) _pendingPurpose.delete(tabId);
   const jobId = isQueueCapture && tabId != null ? _pendingJobId.get(tabId) : null;
   if (isQueueCapture && tabId != null) _pendingJobId.delete(tabId);
+  // ai: claude-sonnet-5 | 2026-10-06
+  const sourceId = isQueueCapture && tabId != null ? _pendingSourceId.get(tabId) : null;
+  if (isQueueCapture && tabId != null) _pendingSourceId.delete(tabId);
 
   const settings = await loadSettings();
   const headers = jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' });
@@ -506,6 +529,18 @@ async function postToApp(payload, tabId, isQueueCapture = false, blockedSite = n
       const parsed = JSON.parse(body);
       parsed.purpose = purpose;
       if (jobId != null) parsed.job_id = jobId;
+      body = JSON.stringify(parsed);
+    } catch { /* leave body unchanged */ }
+  }
+  // ai: claude-sonnet-5 | 2026-10-06
+  // Tag an automatic_browser capture with the career_site_sources id it was
+  // enqueued for, so the backend resolves capture_source_id directly (see
+  // routes/import_.py's _resolve_capture_source) instead of guessing the
+  // source from the captured URL and potentially creating a duplicate entry.
+  if (sourceId != null && payload) {
+    try {
+      const parsed = JSON.parse(body);
+      parsed.capture_source_id = sourceId;
       body = JSON.stringify(parsed);
     } catch { /* leave body unchanged */ }
   }

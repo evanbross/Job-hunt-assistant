@@ -115,6 +115,36 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         )
         return cur.fetchone()["id"]
 
+    # ai: claude-sonnet-5 | 2026-10-06
+    def enqueue_for_source(
+        self, user_id: int, url: str, site_name: str, source_id: int
+    ) -> int | None:
+        """Insert a queue row tied to a career_site_sources row (automatic_browser
+        collection mode), unless one is already pending/processing for that source.
+
+        Dedupes by source_id rather than URL: an automatic_browser source's url
+        can carry a changing currentJobId (LinkedIn search links) or other
+        volatile query params, so a URL-based dedupe would not reliably collapse
+        repeat enqueue attempts the way it does for enqueue()'s single-job case.
+        Returns None if a matching in-flight row already exists.
+        """
+        existing = self._execute(
+            "SELECT id FROM browser_capture_queue"
+            " WHERE user_id = %s AND source_id = %s"
+            " AND status IN ('pending', 'processing')",
+            (user_id, source_id),
+        ).fetchone()
+        if existing:
+            return None
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        cur = self._execute(
+            "INSERT INTO browser_capture_queue"
+            " (user_id, url, site_name, status, purpose, source_id, created_at, updated_at)"
+            " VALUES (%s, %s, %s, 'pending', 'import', %s, %s, %s) RETURNING id",
+            (user_id, url, site_name, source_id, now, now),
+        )
+        return cur.fetchone()["id"]
+
     # ai: claude-sonnet-5 | 2026-07-23
     def claim_pending(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]:
         now = datetime.now(UTC).isoformat(timespec="seconds")
@@ -144,7 +174,7 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
             "   WHERE user_id = %s AND status = 'pending' ORDER BY created_at LIMIT %s"
             "   FOR UPDATE SKIP LOCKED"
             " )"
-            " RETURNING id, url, site_name, purpose, job_id",
+            " RETURNING id, url, site_name, purpose, job_id, source_id",
             (now, user_id, limit),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]

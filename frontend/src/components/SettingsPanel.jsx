@@ -1173,7 +1173,8 @@ function CareerSitesSection() {
             </label>
             <label style={labelStyle}>Collection
               <select value={form.collection_mode} onChange={(e) => setForm({ ...form, collection_mode: e.target.value })}>
-                <option value="automatic">App can scan automatically</option>
+                <option value="automatic">App fetches the URL directly</option>
+                <option value="automatic_browser">App captures via browser extension</option>
                 <option value="manual">I collect manually</option>
               </select>
             </label>
