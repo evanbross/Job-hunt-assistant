@@ -37,8 +37,9 @@ from __future__ import annotations
 from typing import Any
 
 from backend.scanning.import_repair import (  # ai: claude-fable-5 | 2026-07-17
+    job_posting_title_company_from_html,
+    jobgether_company_repair_updates,
     repair_existing_job_company,
-    wttj_page_title_company,
     wttj_title_repair_updates,
 )
 
@@ -114,7 +115,7 @@ _WTTJ_PAGE_HTML = (
 
 
 def test_wttj_page_title_company_reads_json_ld() -> None:
-    title, company = wttj_page_title_company(_WTTJ_PAGE_HTML)
+    title, company = job_posting_title_company_from_html(_WTTJ_PAGE_HTML)
     assert title == "Senior Fullstack Software Engineer (Digital Storefront)"
     assert company == "Toast"
 
@@ -126,11 +127,11 @@ def test_wttj_page_title_company_handles_graph_container() -> None:
         '"hiringOrganization":{"@type":"Organization","name":"Acme"}}]}'
         "</script>"
     )
-    assert wttj_page_title_company(html) == ("Staff Engineer", "Acme")
+    assert job_posting_title_company_from_html(html) == ("Staff Engineer", "Acme")
 
 
 def test_wttj_page_title_company_returns_empty_without_job_posting() -> None:
-    assert wttj_page_title_company("<html><body>404</body></html>") == ("", "")
+    assert job_posting_title_company_from_html("<html><body>404</body></html>") == ("", "")
 
 
 def test_wttj_title_repair_replaces_salary_line_title() -> None:
@@ -222,6 +223,59 @@ def test_wttj_title_repair_reports_missing_job_posting_data() -> None:
     updates, problem = wttj_title_repair_updates(
         {"id": 4, "company": "Toast", "job_title": "Salary: $125-254K"},
         "<html><body>page without JSON-LD</body></html>",
+    )
+    assert updates == {}
+    assert problem == "no JobPosting data on page"
+
+
+# ── Jobgether company repair from live offer-page JSON-LD ─────────────────────
+# ai: claude-sonnet-5 | 2026-10-06
+
+_JOBGETHER_PAGE_HTML = (
+    "<html><head><script type=\"application/ld+json\">"
+    '{"@context":"https://schema.org","@type":"JobPosting",'
+    '"title":"Staff Software Engineer - Files Platform",'
+    '"hiringOrganization":{"@type":"Organization","name":"Addepar",'
+    '"sameAs":"https://addepar.com/"}}'
+    "</script></head><body>job page</body></html>"
+)
+
+
+def test_jobgether_repair_fills_placeholder_board_name_company() -> None:
+    """Production regression: jobs 5500/5761 (and 284 others) were stored with
+    company="Jobgether" — the aggregator's own domain, mistaken for the
+    employer's careers domain by a since-fixed URL fallback."""
+    updates, problem = jobgether_company_repair_updates(
+        {"id": 5500, "company": "Jobgether", "job_title": "Staff Software Engineer"},
+        _JOBGETHER_PAGE_HTML,
+    )
+    assert problem == ""
+    assert updates == {"company": "Addepar"}
+
+
+def test_jobgether_repair_fills_blank_company() -> None:
+    updates, _ = jobgether_company_repair_updates(
+        {"id": 1, "company": "", "job_title": "Staff Software Engineer"},
+        _JOBGETHER_PAGE_HTML,
+    )
+    assert updates == {"company": "Addepar"}
+
+
+def test_jobgether_repair_does_not_touch_already_corrected_company() -> None:
+    """Job 5752 was manually corrected to "Instacart" — a repair pass must
+    never churn a value the user has already fixed by hand."""
+    updates, problem = jobgether_company_repair_updates(
+        {"id": 5752, "company": "Instacart", "job_title": "Staff Software Engineer"},
+        _JOBGETHER_PAGE_HTML,
+    )
+    assert updates == {}
+    assert problem == ""
+
+
+def test_jobgether_repair_reports_missing_job_posting_data() -> None:
+    updates, problem = jobgether_company_repair_updates(
+        {"id": 2, "company": "Jobgether", "job_title": "X"},
+        "<html><body>listing has expired</body></html>",
     )
     assert updates == {}
     assert problem == "no JobPosting data on page"

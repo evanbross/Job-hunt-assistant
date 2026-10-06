@@ -215,13 +215,17 @@ def _iter_ld_nodes(data: object) -> Iterator[dict[str, Any]]:
 
 
 # ai: claude-fable-5 | 2026-07-17
-def wttj_page_title_company(page_html: str) -> tuple[str, str]:
-    """Return (job_title, company) from a WTTJ job page's JSON-LD JobPosting.
+# ai: claude-sonnet-5 | 2026-10-06 — renamed from wttj_page_title_company: the
+# parsing is generic schema.org JobPosting extraction, not WTTJ-specific, and
+# is now also used for Jobgether pages (see jobgether_company_repair_updates).
+def job_posting_title_company_from_html(page_html: str) -> tuple[str, str]:
+    """Return (job_title, company) from a job page's JSON-LD JobPosting block.
 
-    WTTJ server-renders a schema.org JobPosting block on every live job page;
-    its 'title' and 'hiringOrganization.name' are the posting's authoritative
-    values, unlike email-derived guesses. Returns ("", "") when no JobPosting
-    block is present (e.g. a removed listing or an error page).
+    Several sites (WTTJ, Jobgether, ...) server-render a schema.org JobPosting
+    block on every live job page; its 'title' and 'hiringOrganization.name'
+    are the posting's authoritative values, unlike email- or listing-derived
+    guesses. Returns ("", "") when no JobPosting block is present (e.g. a
+    removed listing or an error page).
     """
     for raw_block in _LD_JSON_SCRIPT_RE.findall(page_html):
         try:
@@ -276,7 +280,7 @@ def wttj_title_repair_updates(
     short-vs-long variant like "Virta" → "Virta Health") — never changed to a
     different company.
     """
-    page_title, page_company = wttj_page_title_company(page_html)
+    page_title, page_company = job_posting_title_company_from_html(page_html)
     if not page_title:
         return {}, "no JobPosting data on page"
     row_company = str(job.get("company") or "").strip()
@@ -296,3 +300,43 @@ def wttj_title_repair_updates(
     if page_company and page_company != row_company:
         updates["company"] = page_company
     return updates, ""
+
+
+# ai: claude-sonnet-5 | 2026-10-06
+def is_jobgether_placeholder_company(value: object) -> bool:
+    """True when a stored company is the literal board name "Jobgether".
+
+    Caused by a now-fixed fallback (backend/utils/company_urls.py
+    company_from_career_domain) that mistook jobgether.com's own domain for
+    the employer's careers domain whenever the captured listing had no usable
+    company text (jobs 5500, 5761 and 282 others captured 2026-07-03 through
+    2026-10-04). Checked separately from is_missing_company() so the repair
+    below treats this known-bad value the same as a blank one, without
+    touching any company the user has since corrected by hand (job 5752).
+    """
+    return str(value or "").strip().casefold() == "jobgether"
+
+
+# ai: claude-sonnet-5 | 2026-10-06
+def jobgether_company_repair_updates(
+    job: dict[str, Any], page_html: str
+) -> tuple[dict[str, Any], str]:
+    """Compute a company repair for a Jobgether job row from its live offer page.
+
+    Unlike the WTTJ repair above, a Jobgether row's URL is the offer page
+    itself (not a redirect/tracking link that could land on a different
+    company's posting), so there is no mis-attributed-URL case to guard
+    against — the page is always authoritative for its own row. Only fills in
+    a blank or known-placeholder ("Jobgether") company; a company already
+    filled in some other way is left untouched.
+
+    Returns (updates, problem). A non-empty problem string means the page had
+    no JobPosting data (e.g. the listing has been taken down).
+    """
+    _page_title, page_company = job_posting_title_company_from_html(page_html)
+    if not page_company:
+        return {}, "no JobPosting data on page"
+    current_company = str(job.get("company") or "").strip()
+    if not (is_missing_company(current_company) or is_jobgether_placeholder_company(current_company)):
+        return {}, ""
+    return {"company": page_company}, ""

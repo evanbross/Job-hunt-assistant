@@ -112,6 +112,15 @@ _KNOWN_JOB_BOARD_HOSTS: frozenset[str] = frozenset(
         "recruitee.com",
         "applytojob.com",
         "personio.com",
+        # ai: claude-sonnet-5 | 2026-10-06
+        # Jobgether is an aggregator (jobgether.com/offer/...), not an employer's
+        # own careers domain. Without this exclusion, jobs captured via the
+        # extension's matches-list flow (which sends company: '' because the
+        # list view hides employer names) fell through to this function and
+        # it parsed "jobgether.com" itself into "Jobgether" as the company
+        # (jobs 5500, 5761) whenever the AI parser also failed to find a real
+        # company in the listing text.
+        "jobgether.com",
     }
 )
 
