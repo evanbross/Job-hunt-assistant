@@ -407,8 +407,19 @@
     return { site: location.hostname, type: 'html', jobCount: 0, description: 'Will send page HTML for parsing' };
   }
 
+  // ai: claude-sonnet-5 | 2026-10-06
+  // LinkedIn's 2026-10 search-page redesign (confirmed live) dropped
+  // data-job-id/data-occludable-job-id and real <a href="/jobs/view/<id>/">
+  // links from the left-rail cards entirely -- each card is now a non-anchor
+  // div[role="button"] whose only id is componentkey="job-card-component-ref-<id>".
+  // Keep the old attribute/href checks too so this doesn't regress if LinkedIn
+  // reverts or A/B-tests the older markup for some accounts.
   function countLinkedInJobs() {
     const ids = new Set();
+    document.querySelectorAll('[componentkey^="job-card-component-ref-"]').forEach(el => {
+      const m = el.getAttribute('componentkey').match(/job-card-component-ref-(\d+)/);
+      if (m) ids.add(m[1]);
+    });
     document.querySelectorAll('[data-job-id], [data-occludable-job-id]').forEach(el => {
       const id = el.getAttribute('data-job-id') || el.getAttribute('data-occludable-job-id');
       if (id && /^\d{8,}/.test(id)) ids.add(id);
@@ -756,18 +767,30 @@
     return buildLinkedInJobPayload(url);
   }
 
+  // ai: claude-sonnet-5 | 2026-10-06
+  // Same 2026-10 redesign as countLinkedInJobs above: title/company classes
+  // are now atomic/hashed per build (e.g. "dj9lz8") and unusable as selectors.
+  // Confirmed live: every card's innerText renders a hidden a11y-label line
+  // first ("Selected, <title>" or "<title> (Verified job)" or a plain
+  // duplicate), then the real visible title line, then the company line --
+  // so title/company are read positionally (lines[1]/lines[2]) once the old
+  // classed selectors come up empty, rather than guessing new class names
+  // that will just get re-hashed on LinkedIn's next deploy.
   function buildLinkedInSearchPayload() {
     const jobIds = new Set();
     const jobs = [];
 
     const cardElements = document.querySelectorAll(
+      '[componentkey^="job-card-component-ref-"][role="button"], ' +
       '[data-view-name="job-card"], [data-job-id], [data-occludable-job-id], ' +
       '.job-card-list__container, .job-card-container'
     );
 
     cardElements.forEach(card => {
+      const componentKeyId = card.getAttribute('componentkey')?.match(/job-card-component-ref-(\d+)/)?.[1];
       const linkEl = card.querySelector('a[href*="/view/"]');
-      const id = card.getAttribute('data-job-id') ||
+      const id = componentKeyId ||
+                 card.getAttribute('data-job-id') ||
                  card.getAttribute('data-occludable-job-id') ||
                  linkEl?.href.match(/\/view\/(\d+)/)?.[1];
       if (!id || jobIds.has(id)) return;
@@ -782,8 +805,9 @@
       );
 
       const url = `https://www.linkedin.com/jobs/view/${id}/`;
-      const title = titleEl ? titleEl.innerText.trim() : 'Unknown Title';
-      const company = companyEl ? companyEl.innerText.trim() : '';
+      const textLines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+      const title = titleEl?.innerText.trim() || textLines[1] || textLines[0] || 'Unknown Title';
+      const company = companyEl?.innerText.trim() || textLines[2] || '';
 
       jobs.push({
         url,
@@ -804,6 +828,18 @@
     }
 
     return JSON.stringify({ jobs });
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-06
+  // Independent of the card-level componentkey/innerText extraction above --
+  // reads the "X results" / "99+ results" text LinkedIn renders above the
+  // list (confirmed live), so a future redesign that breaks the card
+  // selectors again doesn't also break this count. Used by listCaptureWarning
+  // in buildPayload to detect that failure mode instead of silently
+  // capturing a near-empty list again.
+  function linkedInStatedResultCount() {
+    const m = document.body.innerText.match(/([\d,]+)\+?\s+results?\b/i);
+    return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
   }
 
   // ai: claude-sonnet-5 | 2026-08-11
@@ -2811,16 +2847,47 @@
     }
   }
 
+  // ai: claude-sonnet-5 | 2026-10-06
+  // Sanity check for split-view "list" mode captures (LinkedIn/Indeed/Insight
+  // Global/Oracle): a DOM redesign can silently defeat the card-level
+  // extraction selectors while a lone leftover element (e.g. the open detail
+  // pane's own link) still yields a non-zero, plausible-looking result -- see
+  // the 2026-10-06 LinkedIn break in project memory "split-view-capture-mode",
+  // where "All results" mode captured only the single expanded job instead of
+  // ~25, with no error anywhere in the chain. Comparing the extracted count
+  // against an independent, non-card-based expected count (where the site
+  // renders one) catches that failure mode. The >=3/<=1 thresholds are
+  // deliberately loose so this doesn't flag Oracle's legitimate partial
+  // captures from virtual scrolling (buildOracleHcmSplitListPayload can
+  // genuinely return fewer than the total "OPEN JOBS" count) -- only a
+  // near-total collapse (0 or 1 captured when several were expected) warns.
+  function listCaptureWarning(jobsJson, expectedCount) {
+    if (expectedCount == null || expectedCount <= 0) return null;
+    let n;
+    try { n = JSON.parse(jobsJson).jobs.length; } catch { return null; }
+    if (n === 0) {
+      return `Captured 0 jobs, but the page reports ${expectedCount}. The site's layout may have changed — check it manually before relying on this capture.`;
+    }
+    if (n <= 1 && expectedCount >= 3) {
+      return `Captured only ${n} job, but the page reports ${expectedCount}. The site's layout may have changed and this capture is likely missing most of the list.`;
+    }
+    return null;
+  }
+
   async function buildPayload(options = {}) {
     const page = detectPage();
     let payload;
+    let warning = null;
     switch (page.type) {
       case 'blocked':          payload = null; break;
       case 'linkedInJob':      payload = await buildLinkedInJobPayload(); break;
       case 'linkedInSearch':
-        payload = options.captureMode === 'detail'
-          ? await buildLinkedInSearchDetailPayload()
-          : buildLinkedInSearchPayload();
+        if (options.captureMode === 'detail') {
+          payload = await buildLinkedInSearchDetailPayload();
+        } else {
+          payload = buildLinkedInSearchPayload();
+          warning = listCaptureWarning(payload, linkedInStatedResultCount());
+        }
         break;
       case 'wellfoundJob':     payload = buildWellfoundJobPayload(); break;
       case 'wellfoundSearch':  payload = await buildWellfoundSearchPayload(); break;
@@ -2839,9 +2906,12 @@
       case 'phenomSearch':     payload = await buildPhenomSearchPayload(); break;
       case 'insightGlobalSearch': payload = await buildInsightGlobalSearchPayload(); break;
       case 'insightGlobalSplit':
-        payload = options.captureMode === 'detail'
-          ? buildInsightGlobalSplitDetailPayload()
-          : await buildInsightGlobalSplitListPayload(options);
+        if (options.captureMode === 'detail') {
+          payload = buildInsightGlobalSplitDetailPayload();
+        } else {
+          payload = await buildInsightGlobalSplitListPayload(options);
+          warning = listCaptureWarning(payload, insightGlobalTotalHits());
+        }
         break;
       case 'kforceJob':        payload = buildKforceJobPayload(); break;
       case 'kforceSearch':     payload = await buildKforceSearchPayload(options); break;
@@ -2850,15 +2920,29 @@
       case 'jobgetherMatches': payload = buildJobgetherMatchesPayload(); break;
       case 'oracleHcmJob':     payload = buildOracleHcmJobPayload(); break;
       case 'oracleHcmSplit':
-        payload = options.captureMode === 'list'
-          ? buildOracleHcmSplitListPayload()
-          : buildOracleHcmJobPayload();
+        if (options.captureMode === 'list') {
+          payload = buildOracleHcmSplitListPayload();
+          warning = listCaptureWarning(payload, oracleHcmTotalHits());
+        } else {
+          payload = buildOracleHcmJobPayload();
+        }
         break;
       case 'indeedJob':        payload = buildIndeedJobPayload(); break;
       case 'indeedSplit':
-        payload = options.captureMode === 'list'
-          ? buildIndeedSplitListPayload()
-          : buildIndeedJobPayload();
+        if (options.captureMode === 'list') {
+          payload = buildIndeedSplitListPayload();
+          // ai: claude-sonnet-5 | 2026-10-06
+          // Indeed's results page has no independent "X jobs" count text
+          // (confirmed live, 2026-10-06) -- this reuses the same
+          // .job_seen_beacon selector detectPage()'s cardCount already uses,
+          // so unlike the other three split-view sites above, it can't catch
+          // a full selector rename (both counts would collapse together, as
+          // happened with LinkedIn pre-fix). It only catches an extraction
+          // bug within an otherwise-intact card set.
+          warning = listCaptureWarning(payload, document.querySelectorAll('.job_seen_beacon').length);
+        } else {
+          payload = buildIndeedJobPayload();
+        }
         break;
       case 'smartGeneric':     payload = await buildSmartGenericPayload(); break;
       // ai: claude-sonnet-4-6 | 2026-06-26
@@ -2868,7 +2952,7 @@
       // enough content to extract the description.
       default:                 payload = await buildGenericJobPagePayload(); break;
     }
-    return withExtensionVersion(payload);
+    return { payload: withExtensionVersion(payload), warning };
   }
 
   // ai: claude-sonnet-5 | 2026-08-12
@@ -2922,7 +3006,7 @@
 
     if (message.action === 'build') {
       buildPayload(message.options || {})
-        .then(payload => sendResponse({ payload }))
+        .then(result => sendResponse(result))
         .catch(err => sendResponse({ error: String(err) }));
       return true; // keep channel open for async response
     }
@@ -2936,7 +3020,7 @@
         return false;
       }
       buildPayload()
-        .then(payload => chrome.runtime.sendMessage({ action: 'payloadReady', payload }))
+        .then(({ payload, warning }) => chrome.runtime.sendMessage({ action: 'payloadReady', payload, warning }))
         .catch(() => chrome.runtime.sendMessage({ action: 'payloadReady', payload: null }));
       return false;
     }

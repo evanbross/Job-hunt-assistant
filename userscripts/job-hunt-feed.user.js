@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-09-21.01
+// @version      2026-10-06.01
 // @match        https://jobs.ashbyhq.com/vanta/*
 // @match        https://discord.com/careehrs*
 // @match        https://job-boards.greenhouse.io/*/jobs/*
@@ -149,6 +149,16 @@
                         /\/jobs\/search-results/.test(window.location.pathname);
         if (isSearch && window.location.hostname.includes('linkedin.com')) {
             const jobIds = new Set();
+
+            // ai: claude-sonnet-5 | 2026-10-06
+            // LinkedIn's 2026-10 search-page redesign (confirmed live) dropped
+            // data-job-id/data-occludable-job-id and real <a href="/jobs/view/<id>/">
+            // links from the left-rail cards entirely -- each card's only id is now
+            // componentkey="job-card-component-ref-<id>" on a non-anchor div[role="button"].
+            document.querySelectorAll('[componentkey^="job-card-component-ref-"]').forEach(el => {
+                const m = el.getAttribute('componentkey').match(/job-card-component-ref-(\d+)/);
+                if (m) jobIds.add(m[1]);
+            });
 
             // 1. Aggressive Attribute Crawl: find anything that looks like a Job ID
             // LinkedIn uses data-job-id, data-occludable-job-id, and others for virtualized lists.
@@ -405,12 +415,21 @@
         });
     }
 
+    // ai: claude-sonnet-5 | 2026-10-06
+    // Same 2026-10 redesign as updateBtnText above: title/company classes are
+    // now atomic/hashed per build and unusable as selectors. Confirmed live:
+    // every card's innerText renders a hidden a11y-label line first
+    // ("Selected, <title>" / "<title> (Verified job)" / a plain duplicate),
+    // then the real visible title line, then the company line -- so
+    // title/company fall back to reading those lines positionally
+    // (lines[1]/lines[2]) when the old classed selectors come up empty.
     function buildLinkedInSearchPayload() {
         const jobIds = new Set();
         const jobs = [];
 
         // Target specifically the left-side scrolling cards
         const cardElements = document.querySelectorAll(
+            '[componentkey^="job-card-component-ref-"][role="button"], ' +
             '[data-view-name="job-card"], ' +
             '[data-job-id], ' +
             '[data-occludable-job-id], ' +
@@ -419,7 +438,9 @@
         );
 
         cardElements.forEach(card => {
-            const id = card.getAttribute('data-job-id') ||
+            const componentKeyId = card.getAttribute('componentkey')?.match(/job-card-component-ref-(\d+)/)?.[1];
+            const id = componentKeyId ||
+                       card.getAttribute('data-job-id') ||
                        card.getAttribute('data-occludable-job-id') ||
                        (card.querySelector('a[href*="/view/"]') ? card.querySelector('a[href*="/view/"]').href.match(/\/view\/(\d+)/)[1] : null);
 
@@ -440,9 +461,10 @@
                 '.job-card-container__company-link'
             );
 
+            const textLines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
             const url = `https://www.linkedin.com/jobs/view/${id}/`;
-            const title = titleEl ? titleEl.innerText.trim() : 'Unknown Title';
-            const company = companyEl ? companyEl.innerText.trim() : '';
+            const title = titleEl?.innerText.trim() || textLines[1] || textLines[0] || 'Unknown Title';
+            const company = companyEl?.innerText.trim() || textLines[2] || '';
             const metadata = card.innerText.trim();
 
             jobs.push({

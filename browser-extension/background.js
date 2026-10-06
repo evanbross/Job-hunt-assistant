@@ -487,10 +487,10 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   const tabId = sender.tab?.id;
   const isQueueCapture = tabId !== undefined && _pendingCaptureTabs.has(tabId);
   if (isQueueCapture) _pendingCaptureTabs.delete(tabId);
-  postToApp(message.payload, tabId, isQueueCapture, message.blocked ? message.site : null);
+  postToApp(message.payload, tabId, isQueueCapture, message.blocked ? message.site : null, message.warning);
 });
 
-async function postToApp(payload, tabId, isQueueCapture = false, blockedSite = null) {
+async function postToApp(payload, tabId, isQueueCapture = false, blockedSite = null, warning = null) {
   // ai: claude-sonnet-4-6 | 2026-06-21
   // Read and immediately delete the original queue URL before any await so it
   // is not lost if another tab finishes concurrently and reuses the same tabId.
@@ -575,7 +575,13 @@ async function postToApp(payload, tabId, isQueueCapture = false, blockedSite = n
     jhaReportAuth(res);
     if (!isQueueCapture) {
       if (res.ok) {
-        showNotification('Jobs queued for import!', true);
+        // ai: claude-sonnet-5 | 2026-10-06
+        // The context-menu flow POSTs immediately with no confirmation step
+        // (unlike the popup's "Send anyway" gate), so a listCaptureWarning
+        // from content.js's buildPayload can only be surfaced after the fact
+        // — still worth it so a near-empty split-view capture gets noticed
+        // instead of silently sitting in the import queue looking fine.
+        showNotification(warning ? `Jobs queued — but ${warning}` : 'Jobs queued for import!', true);
       } else if (res.status === 401) {
         showNotification(JHA_AUTH_ERROR_MESSAGE, false);
       } else {

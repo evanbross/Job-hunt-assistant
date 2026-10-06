@@ -48,6 +48,12 @@ let fullDescSettings = null;
 let activeFullDescPrefix = 'kforce';
 let lastScanResult = null;
 let currentCaptureMode = null;
+// ai: claude-sonnet-5 | 2026-10-06
+// Set to the buildResult the user has explicitly chosen to send despite its
+// listCaptureWarning (see handleSend's "Send anyway" gate). Cleared on any
+// mode/page change so a stale ack can't silently wave through a *different*
+// warning later.
+let pendingWarningAck = null;
 
 // Receives progress messages from content script during long builds (e.g. Wellfound).
 chrome.runtime.onMessage.addListener(msg => {
@@ -172,6 +178,7 @@ function refreshFullDescUI() {
 
 function setCaptureMode(mode) {
   currentCaptureMode = mode;
+  pendingWarningAck = null; // a different mode means a different (re-)build next send
   document.getElementById('capture-mode-list').classList.toggle('active', mode === 'list');
   document.getElementById('capture-mode-detail').classList.toggle('active', mode === 'detail');
   currentJobCount = mode === 'detail' ? 1 : (lastScanResult?.jobCount ?? 0);
@@ -186,6 +193,7 @@ function applyScanResult(result) {
   // genuine scan result.
   if (!result || result.error) { showNoAccess(); return; }
 
+  pendingWarningAck = null;
   lastScanResult = result;
   currentJobCount = result.jobCount ?? 0;
 
@@ -210,25 +218,53 @@ async function handleSend() {
 
   const btn = document.getElementById('send-btn');
   btn.disabled = true;
-  btn.innerHTML = '<div class="spinner"></div>Building payload…';
   hideStatus();
   document.getElementById('progress-wrap').style.display = 'none';
 
   try {
     const settings = await loadSettings();
-    const prefix = lastScanResult ? fullDescOptInFor(lastScanResult, currentCaptureMode) : null;
-    const buildOptions = {
-      captureMode: currentCaptureMode,
-      fetchFullDescriptions: prefix ? !!settings[`${prefix}FullDescriptions`] : false,
-      fetchCap: prefix ? clampFetchCap(settings[`${prefix}FetchCap`]) : 25,
-    };
-    const buildResult = await sendToTab({ action: 'build', options: buildOptions });
+
+    // ai: claude-sonnet-5 | 2026-10-06
+    // Reuse the already-built (and already-warned-about) payload on the
+    // "Send anyway" click instead of rebuilding — the user is confirming
+    // *this* capture, and a rebuild could pick up further page changes
+    // without re-showing the warning for them.
+    let buildResult = pendingWarningAck;
+    if (!buildResult) {
+      btn.innerHTML = '<div class="spinner"></div>Building payload…';
+      const prefix = lastScanResult ? fullDescOptInFor(lastScanResult, currentCaptureMode) : null;
+      const buildOptions = {
+        captureMode: currentCaptureMode,
+        fetchFullDescriptions: prefix ? !!settings[`${prefix}FullDescriptions`] : false,
+        fetchCap: prefix ? clampFetchCap(settings[`${prefix}FetchCap`]) : 25,
+      };
+      buildResult = await sendToTab({ action: 'build', options: buildOptions });
+    }
+
     if (!buildResult?.payload) {
+      pendingWarningAck = null;
       showStatus(buildResult?.error || 'Failed to capture jobs from this page.', 'error');
       resetButton();
       isSending = false;
       return;
     }
+
+    // ai: claude-sonnet-5 | 2026-10-06
+    // A list-mode split-view capture (LinkedIn/Indeed/Insight Global/Oracle)
+    // that extracted far fewer jobs than the page itself reports is usually a
+    // DOM redesign silently defeating the card selectors again (see the
+    // 2026-10-06 LinkedIn break in project memory "split-view-capture-mode")
+    // rather than a genuinely short result set. Pause for an explicit second
+    // click instead of importing a likely-degraded capture unnoticed.
+    if (buildResult.warning && pendingWarningAck !== buildResult) {
+      pendingWarningAck = buildResult;
+      showStatus('⚠ ' + buildResult.warning, 'warning');
+      btn.innerHTML = 'Send anyway';
+      btn.disabled = false;
+      isSending = false;
+      return;
+    }
+    pendingWarningAck = null;
 
     btn.innerHTML = '<div class="spinner"></div>Sending to app…';
     const headers = jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' });
@@ -243,8 +279,17 @@ async function handleSend() {
     jhaReportAuth(res);
 
     if (res.ok) {
-      const label = currentJobCount > 0
-        ? `${currentJobCount} job${currentJobCount !== 1 ? 's' : ''} queued for import!`
+      // ai: claude-sonnet-5 | 2026-10-06
+      // currentJobCount is the scan-time estimate (e.g. "25 jobs visible");
+      // when a listCaptureWarning fired, the actual payload can hold far
+      // fewer, so prefer the real count straight from what was just sent.
+      let sentCount = currentJobCount;
+      try {
+        const parsedJobs = JSON.parse(buildResult.payload).jobs;
+        if (Array.isArray(parsedJobs)) sentCount = parsedJobs.length;
+      } catch { /* fall back to currentJobCount */ }
+      const label = sentCount > 0
+        ? `${sentCount} job${sentCount !== 1 ? 's' : ''} queued for import!`
         : 'Page sent for import!';
       showStatus('✓ ' + label, 'success');
       btn.innerHTML = 'Open Job Hunt App';
