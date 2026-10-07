@@ -14,16 +14,26 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import CompaniesReport from "./CompaniesReport.tsx";
-import ContactDetail from "./ContactDetail.jsx";
-import ContactsImport from "./ContactsImport.jsx";
+import ContactDetail from "./ContactDetail.tsx";
+import ContactsImport from "./ContactsImport.tsx";
 import TitlesReport from "./TitlesReport.tsx";
-import { formatLocalDate } from "../utils/dateTimeUtils.js";
+import { formatLocalDate } from "../utils/dateTimeUtils.ts";
+import type { Contact, ContactsListResponse } from "../types/contacts.ts";
+import type { RecruiterType } from "../types/contacts.ts";
 
 const PAGE_SIZE = 100;
 
-const EMAIL_FILTERS = [
+type View = "contacts" | "companies" | "titles";
+type EmailFilter = "all" | "emailed" | "not_emailed" | "awaiting" | "replied";
+type RecruiterFilter = "all" | "recruiter" | "not_recruiter";
+type EmailState = "none" | "awaiting" | "replied";
+type SortDir = "asc" | "desc";
+
+const EMAIL_FILTERS: { value: EmailFilter; label: string }[] = [
   { value: "all", label: "All contacts" },
   { value: "emailed", label: "Emailed" },
   { value: "not_emailed", label: "Not emailed" },
@@ -31,7 +41,7 @@ const EMAIL_FILTERS = [
   { value: "replied", label: "Replied" },
 ];
 
-const RECRUITER_FILTERS = [
+const RECRUITER_FILTERS: { value: RecruiterFilter; label: string }[] = [
   { value: "all", label: "Recruiters and others" },
   { value: "recruiter", label: "Recruiters only" },
   { value: "not_recruiter", label: "Not recruiters" },
@@ -40,7 +50,7 @@ const RECRUITER_FILTERS = [
 // ai: claude-sonnet-5 | 2026-09-30
 // Matches backend/db/repositories/contacts.py's recruiter_type CHECK
 // constraint. NULL ("") means "not a recruiter".
-const RECRUITER_TYPES = [
+const RECRUITER_TYPES: { value: RecruiterType | ""; label: string }[] = [
   { value: "", label: "Not a recruiter" },
   { value: "unrated", label: "Recruiter (unrated)" },
   { value: "motion", label: "Motion (high-pressure, low-success)" },
@@ -50,25 +60,33 @@ const RECRUITER_TYPES = [
 ];
 
 // ai: claude-sonnet-5 | 2026-09-25
-function emailState(contact) {
+function emailState(contact: Contact): EmailState {
   if (contact.emails.length === 0) return "none";
   return contact.emails.some((email) => email.response_received_at) ? "replied" : "awaiting";
 }
 
 // ai: claude-sonnet-5 | 2026-10-02
-const EMAIL_STATE_RANK = { none: 0, awaiting: 1, replied: 2 };
+const EMAIL_STATE_RANK: Record<EmailState, number> = { none: 0, awaiting: 1, replied: 2 };
 
 // Recruiter column sorts by RECRUITER_TYPES' declared order (not-a-recruiter,
 // then unrated/motion/low/high/offshore), not raw alphabetical enum text --
 // alphabetical would scatter related tiers apart (e.g. "high_reliability"
 // and "low_reliability" don't sort next to "motion").
-const RECRUITER_RANK = Object.fromEntries(RECRUITER_TYPES.map((t, i) => [t.value, i]));
+const RECRUITER_RANK: Record<string, number> = Object.fromEntries(
+  RECRUITER_TYPES.map((t, i) => [t.value, i]),
+);
+
+interface SortColumn {
+  key: string;
+  label: string;
+  getValue: (c: Contact) => number | string;
+}
 
 // ai: claude-sonnet-5 | 2026-10-02
 // Column sort-key config for the contacts table header. Each getValue()
 // return must be directly comparable with < / > (numbers or lowercased
 // strings) -- see toggleSort/sortedContacts below.
-const SORT_COLUMNS = [
+const SORT_COLUMNS: SortColumn[] = [
   // ai: gpt-5 | 2026-10-03
   { key: "outreach_score", label: "Priority", getValue: (c) => c.outreach_score ?? 0 },
   { key: "interested", label: "Want to Email", getValue: (c) => (c.interested ? 1 : 0) },
@@ -81,7 +99,7 @@ const SORT_COLUMNS = [
 // ai: claude-sonnet-5 | 2026-09-25
 // Profile URLs come from the imported CSV, so only http(s) may become a link
 // target -- a `javascript:` value in the file must never reach an href.
-function safeHttpUrl(value) {
+function safeHttpUrl(value?: string | null): string | null {
   if (!value) return null;
   try {
     const parsed = new URL(value);
@@ -91,8 +109,16 @@ function safeHttpUrl(value) {
   }
 }
 
+interface FilterState {
+  search: string;
+  emailFilter: EmailFilter;
+  recruiterFilter: RecruiterFilter;
+  interestedOnly: boolean;
+  titleFilter: string | null;
+}
+
 // ai: claude-sonnet-5 | 2026-09-25
-function matchesFilters(contact, { search, emailFilter, recruiterFilter, interestedOnly, titleFilter }) {
+function matchesFilters(contact: Contact, { search, emailFilter, recruiterFilter, interestedOnly, titleFilter }: FilterState): boolean {
   if (interestedOnly && !contact.interested) return false;
   if (titleFilter !== null && contact.normalized_title !== titleFilter) return false;
 
@@ -113,7 +139,7 @@ function matchesFilters(contact, { search, emailFilter, recruiterFilter, interes
 }
 
 // ai: claude-sonnet-5 | 2026-09-25
-async function sendJson(url, method, body) {
+async function sendJson(url: string, method: string, body?: unknown): Promise<Response> {
   return fetch(url, {
     method,
     headers: { "Content-Type": "application/json" },
@@ -121,37 +147,39 @@ async function sendJson(url, method, body) {
   });
 }
 
+type ContactPatchFields = Partial<Pick<Contact, "email_address" | "notes" | "interested" | "recruiter_type">>;
+
 // ai: claude-sonnet-5 | 2026-09-25
 export default function ContactsPanel() {
-  const [view, setView] = useState("contacts"); // "contacts" | "companies" | "titles"
-  const [titleFilter, setTitleFilter] = useState(null); // normalized_title, set by TitlesReport's count link
-  const [contacts, setContacts] = useState([]);
+  const [view, setView] = useState<View>("contacts");
+  const [titleFilter, setTitleFilter] = useState<string | null>(null); // normalized_title, set by TitlesReport's count link
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [showImport, setShowImport] = useState(false);
-  const [expandedId, setExpandedId] = useState(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const [search, setSearch] = useState("");
-  const [emailFilter, setEmailFilter] = useState("all");
-  const [recruiterFilter, setRecruiterFilter] = useState("all");
+  const [emailFilter, setEmailFilter] = useState<EmailFilter>("all");
+  const [recruiterFilter, setRecruiterFilter] = useState<RecruiterFilter>("all");
   const [interestedOnly, setInterestedOnly] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
   const [bulkPending, setBulkPending] = useState(false);
-  const [bulkRecruiterType, setBulkRecruiterType] = useState("unrated");
+  const [bulkRecruiterType, setBulkRecruiterType] = useState<RecruiterType>("unrated");
   // ai: gpt-5 | 2026-10-03
   const [sortKey, setSortKey] = useState("outreach_score");
-  const [sortDir, setSortDir] = useState("desc");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const loadContacts = async () => {
     try {
       const res = await fetch("/api/contacts");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data: ContactsListResponse = await res.json();
       setContacts(data.contacts);
       setLoadError("");
     } catch (e) {
-      setLoadError(`Could not load contacts: ${e.message}`);
+      setLoadError(`Could not load contacts: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setLoading(false);
     }
@@ -165,7 +193,7 @@ export default function ContactsPanel() {
     setVisibleCount(PAGE_SIZE);
   }, [search, emailFilter, recruiterFilter, interestedOnly, titleFilter]);
 
-  const viewContactsForTitle = (normalizedTitle) => {
+  const viewContactsForTitle = (normalizedTitle: string) => {
     setTitleFilter(normalizedTitle);
     setView("contacts");
   };
@@ -182,7 +210,7 @@ export default function ContactsPanel() {
   // ai: claude-sonnet-5 | 2026-10-02
   // Clicking a sortable column header sets it as the sort key; clicking the
   // same header again flips direction instead of re-selecting it.
-  const toggleSort = (key) => {
+  const toggleSort = (key: string) => {
     setSortKey((prevKey) => {
       setSortDir((prevDir) => (prevKey === key ? (prevDir === "asc" ? "desc" : "asc") : "asc"));
       return key;
@@ -216,7 +244,7 @@ export default function ContactsPanel() {
 
   const allFilteredSelected = filtered.length > 0 && selectedIds.size === filtered.length;
 
-  const toggleSelected = (contactId, checked) =>
+  const toggleSelected = (contactId: number, checked: boolean) =>
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (checked) next.add(contactId);
@@ -224,10 +252,10 @@ export default function ContactsPanel() {
       return next;
     });
 
-  const toggleSelectAllFiltered = (checked) =>
+  const toggleSelectAllFiltered = (checked: boolean) =>
     setSelectedIds(checked ? new Set(filtered.map((c) => c.id)) : new Set());
 
-  const bulkSetRecruiter = async (recruiterType) => {
+  const bulkSetRecruiter = async (recruiterType: RecruiterType | null) => {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
     setBulkPending(true);
@@ -245,21 +273,23 @@ export default function ContactsPanel() {
       // ai: gpt-5 | 2026-10-03
       await loadContacts();
     } catch (e) {
-      window.alert(`Bulk update failed: ${e.message}`);
+      window.alert(`Bulk update failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBulkPending(false);
     }
   };
 
-  const replaceContact = (contactId, changes) =>
+  const replaceContact = (contactId: number, changes: Partial<Contact>) =>
     setContacts((prev) => prev.map((c) => (c.id === contactId ? { ...c, ...changes } : c)));
 
   // Optimistic: flip the UI immediately, roll back only the touched fields if
   // the server rejects the write.
-  const patchContact = async (contactId, fields) => {
+  const patchContact = async (contactId: number, fields: ContactPatchFields): Promise<boolean> => {
     const previous = contacts.find((c) => c.id === contactId);
     if (!previous) return false;
-    const rollback = Object.fromEntries(Object.keys(fields).map((key) => [key, previous[key]]));
+    const rollback: ContactPatchFields = Object.fromEntries(
+      Object.keys(fields).map((key) => [key, previous[key as keyof ContactPatchFields]]),
+    );
     replaceContact(contactId, fields);
     try {
       const res = await sendJson(`/api/contacts/${contactId}`, "PATCH", fields);
@@ -269,18 +299,18 @@ export default function ContactsPanel() {
       return true;
     } catch (e) {
       replaceContact(contactId, rollback);
-      window.alert(`Save failed: ${e.message}`);
+      window.alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     }
   };
 
-  const saveEmailAddress = (contactId, value) =>
+  const saveEmailAddress = (contactId: number, value: string) =>
     patchContact(contactId, { email_address: value === "" ? null : value });
 
-  const saveNotes = (contactId, value) =>
+  const saveNotes = (contactId: number, value: string) =>
     patchContact(contactId, { notes: value === "" ? null : value });
 
-  const logEmail = async (contactId, sentAt) => {
+  const logEmail = async (contactId: number, sentAt: string) => {
     try {
       const res = await sendJson(`/api/contacts/${contactId}/emails`, "POST", { sent_at: sentAt });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -300,11 +330,11 @@ export default function ContactsPanel() {
       // ai: gpt-5 | 2026-10-03
       await loadContacts();
     } catch (e) {
-      window.alert(`Could not log the email: ${e.message}`);
+      window.alert(`Could not log the email: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
-  const setResponse = async (contactId, emailId, receivedAt) => {
+  const setResponse = async (contactId: number, emailId: number, receivedAt: string | null) => {
     try {
       const res = await sendJson(`/api/contact-emails/${emailId}`, "PATCH", {
         response_received_at: receivedAt,
@@ -325,11 +355,11 @@ export default function ContactsPanel() {
       // ai: gpt-5 | 2026-10-03
       await loadContacts();
     } catch (e) {
-      window.alert(`Could not update the reply: ${e.message}`);
+      window.alert(`Could not update the reply: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
-  const deleteEmail = async (contactId, emailId) => {
+  const deleteEmail = async (contactId: number, emailId: number) => {
     try {
       const res = await sendJson(`/api/contact-emails/${emailId}`, "DELETE");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -341,7 +371,7 @@ export default function ContactsPanel() {
       // ai: gpt-5 | 2026-10-03
       await loadContacts();
     } catch (e) {
-      window.alert(`Could not remove the email: ${e.message}`);
+      window.alert(`Could not remove the email: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -419,7 +449,7 @@ export default function ContactsPanel() {
                 />
                 <select
                   value={emailFilter}
-                  onChange={(e) => setEmailFilter(e.target.value)}
+                  onChange={(e) => setEmailFilter(e.target.value as EmailFilter)}
                   aria-label="Filter by email status"
                 >
                   {EMAIL_FILTERS.map((option) => (
@@ -430,7 +460,7 @@ export default function ContactsPanel() {
                 </select>
                 <select
                   value={recruiterFilter}
-                  onChange={(e) => setRecruiterFilter(e.target.value)}
+                  onChange={(e) => setRecruiterFilter(e.target.value as RecruiterFilter)}
                   aria-label="Filter by recruiter"
                 >
                   {RECRUITER_FILTERS.map((option) => (
@@ -448,17 +478,17 @@ export default function ContactsPanel() {
                   Want to email only ({interestedCount})
                 </label>
               </div>
-    
+
               <div style={{ color: "var(--text-muted)", fontSize: "12px", margin: "0 2px 8px" }}>
                 {filtered.length.toLocaleString()} of {contacts.length.toLocaleString()} contacts
               </div>
-    
+
               {selectedIds.size > 0 && (
                 <div style={bulkBar}>
                   <strong>{selectedIds.size.toLocaleString()} selected</strong>
                   <select
                     value={bulkRecruiterType}
-                    onChange={(e) => setBulkRecruiterType(e.target.value)}
+                    onChange={(e) => setBulkRecruiterType(e.target.value as RecruiterType)}
                     aria-label="Recruiter type to apply to selection"
                   >
                     {RECRUITER_TYPES.filter((option) => option.value !== "").map((option) => (
@@ -490,7 +520,7 @@ export default function ContactsPanel() {
                   </button>
                 </div>
               )}
-    
+
               <div className="card" style={{ padding: 0, overflow: "hidden" }}>
                 <div style={scrollArea}>
                   {visible.length > 0 && (
@@ -549,7 +579,7 @@ export default function ContactsPanel() {
                           </div>
                           <input
                             type="checkbox"
-                            checked={contact.interested}
+                            checked={!!contact.interested}
                             onChange={(e) => patchContact(contact.id, { interested: e.target.checked })}
                             aria-label={`Want to email ${contact.full_name}`}
                           />
@@ -577,7 +607,7 @@ export default function ContactsPanel() {
                             value={contact.recruiter_type || ""}
                             onChange={(e) =>
                               patchContact(contact.id, {
-                                recruiter_type: e.target.value === "" ? null : e.target.value,
+                                recruiter_type: e.target.value === "" ? null : (e.target.value as RecruiterType),
                               })
                             }
                             aria-label={`Recruiter type for ${contact.full_name}`}
@@ -667,20 +697,20 @@ export default function ContactsPanel() {
   );
 }
 
-const titleStyle = {
+const titleStyle: CSSProperties = {
   fontSize: "18px",
   fontWeight: 700,
   lineHeight: 1.2,
 };
 
-const summaryStyle = {
+const summaryStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   marginTop: "2px",
   maxWidth: "640px",
 };
 
-const toolbar = {
+const toolbar: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   alignItems: "center",
@@ -688,7 +718,7 @@ const toolbar = {
   marginBottom: "10px",
 };
 
-const rowGrid = {
+const rowGrid: CSSProperties = {
   display: "grid",
   // ai: gpt-5 | 2026-10-03
   gridTemplateColumns: "64px 72px 90px minmax(0, 1fr) 150px 90px 230px 70px",
@@ -701,19 +731,19 @@ const rowGrid = {
 // Keeps the header row fixed at the top of its own scroll container while
 // the contact rows scroll underneath it. Needs a solid background (inherited
 // from headerRow) so scrolled-under rows don't show through.
-const scrollArea = {
+const scrollArea: CSSProperties = {
   maxHeight: "65vh",
   overflowY: "auto",
   overflowX: "hidden",
 };
 
-const stickyHeader = {
+const stickyHeader: CSSProperties = {
   position: "sticky",
   top: 0,
   zIndex: 1,
 };
 
-const bulkBar = {
+const bulkBar: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "10px",
@@ -725,7 +755,7 @@ const bulkBar = {
   fontSize: "13px",
 };
 
-const titleFilterBar = {
+const titleFilterBar: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "10px",
@@ -737,13 +767,13 @@ const titleFilterBar = {
   fontSize: "13px",
 };
 
-const headerRow = {
+const headerRow: CSSProperties = {
   background: "var(--surface2)",
   borderBottom: "1px solid var(--border)",
   padding: "6px 14px",
 };
 
-const headerCell = {
+const headerCell: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "6px",
@@ -756,7 +786,7 @@ const headerCell = {
 
 // ai: claude-sonnet-5 | 2026-10-02 — sortable column header, styled to match
 // headerCell but as a real <button> so it's keyboard/focus accessible.
-const sortHeaderCell = {
+const sortHeaderCell: CSSProperties = {
   ...headerCell,
   background: "none",
   border: "none",
@@ -767,7 +797,7 @@ const sortHeaderCell = {
   fontFamily: "inherit",
 };
 
-const subtleText = {
+const subtleText: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   whiteSpace: "nowrap",

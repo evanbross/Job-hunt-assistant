@@ -29,7 +29,7 @@ const PAGE_SIZE = 100;
 
 // ai: claude-sonnet-5 | 2026-09-30
 // Matches backend/db/repositories/contacts.py's recruiter_type CHECK
-// constraint. Mirrors ContactsPanel.jsx's RECRUITER_TYPES.
+// constraint. Mirrors ContactsPanel.tsx's RECRUITER_TYPES.
 const RECRUITER_TYPES: { value: RecruiterType; label: string }[] = [
   { value: "unrated", label: "Unrated" },
   { value: "motion", label: "Motion (high-pressure, low-success)" },

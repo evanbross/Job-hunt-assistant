@@ -55,7 +55,7 @@ const SettingsPanel = lazy(() => import("./components/SettingsPanel.jsx"));
 const EmailsPanel = lazy(() => import("./components/EmailsPanel.jsx"));
 const HistoryPanel = lazy(() => import("./components/HistoryPanel.tsx"));
 const ApplicationSheetPanel = lazy(() => import("./components/ApplicationSheetPanel.jsx"));
-const ContactsPanel = lazy(() => import("./components/ContactsPanel.jsx"));
+const ContactsPanel = lazy(() => import("./components/ContactsPanel.tsx"));
 const PhraseBookPanel = lazy(() => import("./components/PhraseBookPanel.jsx"));
 const ToptalPitchModal = lazy(() => import("./components/common/ToptalPitchModal.jsx"));
 const VoiceQuery = lazy(() => import("./components/VoiceQuery/index.jsx"));

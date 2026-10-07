@@ -119,7 +119,7 @@ export interface CompaniesReportResponse {
 
 // ai: claude-sonnet-5 | 2026-10-07
 // Matches backend/db/repositories/contacts.py's recruiter_type CHECK
-// constraint (mirrored by ContactsPanel.jsx's RECRUITER_TYPES).
+// constraint (mirrored by ContactsPanel.tsx's RECRUITER_TYPES).
 export type RecruiterType =
   | "unrated"
   | "motion"
