@@ -196,6 +196,22 @@ export interface ReEvaluatePopupState {
   error?: string;
 }
 
+/**
+ * One row of GET /api/jobs/status-history (backend/db/repositories/
+ * job_status_history.py's get_recent, joined with jobs.job_title/company).
+ */
+export interface JobStatusHistoryEntry {
+  id: number;
+  job_id: number;
+  from_status: string;
+  to_status: string;
+  changed_at: string;
+  trigger: string;
+  extra_data?: string | null;
+  job_title?: string | null;
+  company?: string | null;
+}
+
 /** Result summary of POST /api/jobs/re-evaluate-all (routes/fit.py's bulk re-evaluate task). */
 export interface ReEvaluateAllSummary {
   evaluated: number;

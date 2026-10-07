@@ -5,10 +5,14 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useState } from "react";
-import Modal from "./common/Modal.jsx";
+import type { CSSProperties } from "react";
+import Modal from "./common/Modal.tsx";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { JobStatusHistoryEntry } from "../types/jobs.ts";
 
-const STATUS_LABELS = {
+const STATUS_LABELS: Record<string, string> = {
   pending_review: "Queue",
   triage: "Triage",
   applied: "Applied",
@@ -16,7 +20,7 @@ const STATUS_LABELS = {
   possible_duplicate: "Duplicate",
 };
 
-const TRIGGER_LABELS = {
+const TRIGGER_LABELS: Record<string, string> = {
   apply: "Marked applied",
   skip: "Skipped",
   approve: "Approved from triage",
@@ -24,15 +28,15 @@ const TRIGGER_LABELS = {
   patch: "Status edited",
 };
 
-function statusLabel(s) {
+function statusLabel(s: string): string {
   return STATUS_LABELS[s] || s;
 }
 
-function triggerLabel(t) {
+function triggerLabel(t: string): string {
   return TRIGGER_LABELS[t] || t;
 }
 
-function timeAgo(iso) {
+function timeAgo(iso?: string | null): string {
   if (!iso) return "";
   const diffMs = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diffMs / 60000);
@@ -43,33 +47,40 @@ function timeAgo(iso) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+interface RecentChangesModalProps {
+  onClose: () => void;
+  trigger?: string | null;
+  title?: string;
+  subtitle?: string;
+}
+
 export default function RecentChangesModal({
   onClose,
   trigger = null,
   title = "Recent Status Changes",
   subtitle = "Undo an accidental status change. Only the most recent 30 changes are shown.",
-}) {
-  const [entries, setEntries] = useState(null);
-  const [undoing, setUndoing] = useState(null);
+}: RecentChangesModalProps) {
+  const [entries, setEntries] = useState<JobStatusHistoryEntry[] | null>(null);
+  const [undoing, setUndoing] = useState<number | null>(null);
 
   useEffect(() => {
     const query = trigger ? `limit=30&trigger=${encodeURIComponent(trigger)}` : "limit=30";
     fetch(`/api/jobs/status-history?${query}`)
       .then((r) => r.json())
-      .then((data) => setEntries(Array.isArray(data) ? data : []))
+      .then((data: JobStatusHistoryEntry[]) => setEntries(Array.isArray(data) ? data : []))
       .catch(() => setEntries([]));
   }, [trigger]);
 
-  const undo = async (entry) => {
+  const undo = async (entry: JobStatusHistoryEntry) => {
     setUndoing(entry.id);
     const res = await fetch(`/api/jobs/status-history/${entry.id}/undo`, { method: "POST" });
     setUndoing(null);
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(data.error || `Undo failed (${res.status})`);
       return;
     }
-    setEntries((prev) => prev.filter((e) => e.id !== entry.id));
+    setEntries((prev) => (prev ? prev.filter((e) => e.id !== entry.id) : prev));
   };
 
   return (
@@ -129,8 +140,8 @@ export default function RecentChangesModal({
   );
 }
 
-function chipStyle(variant) {
-  const base = {
+function chipStyle(variant: "accent" | "gray"): CSSProperties {
+  const base: CSSProperties = {
     display: "inline-block",
     padding: "1px 6px",
     borderRadius: "4px",
