@@ -5,7 +5,12 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
-export default function VoiceAssistantButton({ onClick }) {
+// ai: claude-sonnet-5 | 2026-10-07
+interface VoiceAssistantButtonProps {
+  onClick: () => void;
+}
+
+export default function VoiceAssistantButton({ onClick }: VoiceAssistantButtonProps) {
   return (
     <button
       onClick={onClick}

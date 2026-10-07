@@ -5,10 +5,12 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useCallback, useState } from "react";
-import { describeFetchError } from "../../utils/fetchErrorUtils.js";
-import VoiceAssistantButton from "./VoiceAssistantButton.jsx";
-import VoiceQueryPanel from "./VoiceQueryPanel.jsx";
+import { describeFetchError } from "../../utils/fetchErrorUtils.ts";
+import VoiceAssistantButton from "./VoiceAssistantButton.tsx";
+import VoiceQueryPanel from "./VoiceQueryPanel.tsx";
+import type { VoiceQueryResult } from "../../types/voice.ts";
 
 // Mounted once in App.jsx's sticky header. Modal (used by VoiceQueryPanel)
 // renders via `position: fixed; inset: 0`, so it overlays the full page
@@ -18,9 +20,9 @@ export default function VoiceQuery() {
   const [open, setOpen] = useState(false);
   const [querying, setQuerying] = useState(false);
   const [transcript, setTranscript] = useState("");
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState<VoiceQueryResult | null>(null);
 
-  const runQuery = useCallback(async (text) => {
+  const runQuery = useCallback(async (text: string) => {
     setTranscript(text);
     setResult(null);
     setQuerying(true);
@@ -30,7 +32,7 @@ export default function VoiceQuery() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: VoiceQueryResult = await res.json().catch(() => ({}));
       if (!res.ok && !data.intent) {
         setResult({ error: data.error || `Voice query failed (${res.status})` });
         return;

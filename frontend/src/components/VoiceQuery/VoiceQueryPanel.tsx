@@ -5,8 +5,18 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useRef, useState } from "react";
-import Modal from "../common/Modal.jsx";
+import Modal from "../common/Modal.tsx";
+import type { VoiceQueryResult } from "../../types/voice.ts";
+
+interface VoiceQueryPanelProps {
+  transcript: string;
+  querying: boolean;
+  result: VoiceQueryResult | null;
+  onSubmit: (text: string) => void;
+  onClose: () => void;
+}
 
 // ai: claude-sonnet-5 | 2026-08-04
 // Text input, not a mic button that starts browser speech recognition --
@@ -16,9 +26,9 @@ import Modal from "../common/Modal.jsx";
 // tool (Vibe Type, Windows/Dragon dictation, etc.) or the keyboard, with no
 // dependency on that service at all -- the backend endpoint only ever
 // wanted a text string regardless of how it was produced.
-export default function VoiceQueryPanel({ transcript, querying, result, onSubmit, onClose }) {
+export default function VoiceQueryPanel({ transcript, querying, result, onSubmit, onClose }: VoiceQueryPanelProps) {
   const [value, setValue] = useState("");
-  const inputRef = useRef(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -115,7 +125,7 @@ export default function VoiceQueryPanel({ transcript, querying, result, onSubmit
 
           {result.truncated && (
             <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "8px" }}>
-              Showing the first {result.rows.length} results.
+              Showing the first {result.rows?.length} results.
             </p>
           )}
 
@@ -130,7 +140,12 @@ export default function VoiceQueryPanel({ transcript, querying, result, onSubmit
   );
 }
 
-function ResultTable({ columns, rows }) {
+interface ResultTableProps {
+  columns: string[];
+  rows: Record<string, unknown>[];
+}
+
+function ResultTable({ columns, rows }: ResultTableProps) {
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
