@@ -32,17 +32,21 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 // ai: claude-sonnet-4-6 | 2026-06-20
 import { useCallback, useEffect, useRef, useState } from "react";
-import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
+import type { CSSProperties } from "react";
+import { formatLocalDateTime } from "../utils/dateTimeUtils.ts";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { SimpleScanStatus } from "../types/scanning.ts";
 
 const POLL_INTERVAL_MS = 1500;
 
 export default function JobanniScanPanel() {
-  const [status, setStatus] = useState(null);
+  const [status, setStatus] = useState<SimpleScanStatus | null>(null);
   const [maxJobs, setMaxJobs] = useState("50");
   const [searchUrl, setSearchUrl] = useState("");
-  const pollRef = useRef(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   // Track whether we've pre-filled the search URL from config yet.
   const prefilled = useRef(false);
 
@@ -50,7 +54,7 @@ export default function JobanniScanPanel() {
     try {
       const res = await fetch("/api/jobanni/status");
       if (!res.ok) return;
-      const data = await res.json();
+      const data: SimpleScanStatus = await res.json();
       setStatus(data);
       if (!prefilled.current && data.default_search_url) {
         setSearchUrl(data.default_search_url);
@@ -91,7 +95,7 @@ export default function JobanniScanPanel() {
       body: JSON.stringify({ max_jobs: jobs, search_url: searchUrl.trim() }),
     });
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(`Could not start scan: ${data.error || res.status}`);
       return;
     }
@@ -105,7 +109,7 @@ export default function JobanniScanPanel() {
     0,
     Math.min(
       100,
-      status?.total > 0 ? Math.round((status.progress / status.total) * 100) : 0
+      status && status.total > 0 ? Math.round((status.progress / status.total) * 100) : 0
     )
   );
 
@@ -154,7 +158,7 @@ export default function JobanniScanPanel() {
         />
       </div>
 
-      {running && (
+      {running && status && (
         <div style={styles.progressWrap}>
           <div style={styles.progressHeader}>
             <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>
@@ -198,7 +202,7 @@ export default function JobanniScanPanel() {
   );
 }
 
-const styles = {
+const styles: Record<string, CSSProperties> = {
   panel: {
     background: "var(--surface)",
     border: "1px solid var(--border)",

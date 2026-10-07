@@ -119,6 +119,26 @@ export interface ScanStatus {
   current_job_title: string;
 }
 
+// ai: claude-sonnet-5 | 2026-10-07
+// Shared shape for the small scraper panels (Jobanni, Greenhouse) whose
+// GET /<source>/status routes (routes/jobanni.py's scan_status,
+// routes/greenhouse.py's scan_status) all jsonify the same
+// running/progress/total/message/found/task_id/last_run_at/last_found/error
+// fields. default_search_url is Jobanni-only (it echoes the account's
+// configured default so the panel can pre-fill the input).
+export interface SimpleScanStatus {
+  running: boolean;
+  progress: number;
+  total: number;
+  message: string;
+  found: number;
+  task_id: string | null;
+  last_run_at: string | null;
+  last_found: number;
+  error: string | null;
+  default_search_url?: string;
+}
+
 /** POST /api/emails/<id>/rescan response (routes/emails.py's rescan_email). */
 export interface RescanEmailResponse {
   message?: string;

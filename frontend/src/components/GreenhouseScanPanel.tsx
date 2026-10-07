@@ -32,21 +32,25 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useCallback, useEffect, useRef, useState } from "react";
-import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
+import type { CSSProperties } from "react";
+import { formatLocalDateTime } from "../utils/dateTimeUtils.ts";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { SimpleScanStatus } from "../types/scanning.ts";
 
 const POLL_INTERVAL_MS = 1500;
 
 export default function GreenhouseScanPanel() {
-  const [status, setStatus] = useState(null);
+  const [status, setStatus] = useState<SimpleScanStatus | null>(null);
   const [maxJobs, setMaxJobs] = useState("50");
-  const pollRef = useRef(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch("/api/greenhouse/status");
       if (!res.ok) return;
-      const data = await res.json();
+      const data: SimpleScanStatus = await res.json();
       setStatus(data);
     } catch {
       /* no-op — backend may not be up yet */
@@ -79,7 +83,7 @@ export default function GreenhouseScanPanel() {
       body: JSON.stringify({ max_jobs: jobs }),
     });
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(`Could not start scan: ${data.error || res.status}`);
       return;
     }
@@ -91,7 +95,7 @@ export default function GreenhouseScanPanel() {
   const handleBrowserLogin = async () => {
     const res = await fetch("/api/greenhouse/browser-login", { method: "POST" });
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(`Could not open browser: ${data.error || res.status}`);
       return;
     }
@@ -111,9 +115,9 @@ export default function GreenhouseScanPanel() {
   };
 
   const running = !!status?.running;
-  const loginInProgress = running && status?.message?.includes("Browser open");
+  const loginInProgress = running && !!status?.message?.includes("Browser open");
   const safeProgress = Math.max(0, Math.min(100,
-    status?.total > 0 ? Math.round((status.progress / status.total) * 100) : 0
+    status && status.total > 0 ? Math.round((status.progress / status.total) * 100) : 0
   ));
 
   return (
@@ -159,7 +163,7 @@ export default function GreenhouseScanPanel() {
         </div>
       )}
 
-      {running && !loginInProgress && (
+      {running && !loginInProgress && status && (
         <div style={styles.progressWrap}>
           <div style={styles.progressHeader}>
             <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>
@@ -218,7 +222,7 @@ export default function GreenhouseScanPanel() {
   );
 }
 
-const styles = {
+const styles: Record<string, CSSProperties> = {
   panel: {
     background: "var(--surface)",
     border: "1px solid var(--border)",
