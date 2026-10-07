@@ -89,3 +89,40 @@ export interface CareerScanResult {
   scanned_at: string;
   posted_at?: string | null;
 }
+
+// ai: claude-sonnet-5 | 2026-10-07
+/** One row of GET /api/career-scan/failures (career_scan_failures table). */
+export interface CareerScanFailure {
+  id: number;
+  site_source_id: number | null;
+  site_name: string | null;
+  site_url: string | null;
+  platform: string;
+  error_message: string;
+  trigger: string | null;
+  occurred_at: string;
+}
+
+/** One row of GET /api/career-rejection-rules (career_rejection_rules table). */
+export interface CareerRejectionRule {
+  id: number;
+  rule_text: string;
+  enabled: number | boolean;
+  created_at: string;
+  updated_at: string | null;
+}
+
+/** Response body of POST /api/career-scan/results/<id>/reject. */
+export interface CareerScanResultRejectResponse {
+  row: CareerScanResult;
+  created_rule: CareerRejectionRule | null;
+}
+
+/** Response body of POST /api/career-scan/results/re-evaluate. */
+export interface CareerScanReEvaluateSummary {
+  evaluated: number;
+  rescored: number;
+  failed: number;
+  db_matches: number;
+  rejected_by_rule: number;
+}

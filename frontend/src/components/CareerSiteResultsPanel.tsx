@@ -32,55 +32,91 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useRef, useState } from "react";
-import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
-import Modal from "./common/Modal.jsx";
-import StatusBadge from "./common/StatusBadge.jsx";
-import { scoreTone } from "../utils/fitScoringUtils.js";
-import { statusTone } from "../utils/jobQueueUtils.js";
-import { collectionModeLabel, isManualCollectionSite } from "../utils/careerSiteUtils.js";
-import { CareerScanProgressPopup, CareerScanSummaryPopup } from "./common/CareerScanModals.jsx";
+import type { CSSProperties } from "react";
+import { formatLocalDateTime } from "../utils/dateTimeUtils.ts";
+import Modal from "./common/Modal.tsx";
+import StatusBadge from "./common/StatusBadge.tsx";
+import { scoreTone } from "../utils/fitScoringUtils.ts";
+import { statusTone } from "../utils/jobQueueUtils.ts";
+import { collectionModeLabel, isManualCollectionSite } from "../utils/careerSiteUtils.ts";
+import { CareerScanProgressPopup, CareerScanSummaryPopup } from "./common/CareerScanModals.tsx";
+import type { ApiErrorBody } from "../types/common.ts";
+import type {
+  CareerRejectionRule,
+  CareerScanFailure,
+  CareerScanReEvaluateSummary,
+  CareerScanResult,
+  CareerScanResultRejectResponse,
+  CareerScanStatus,
+  CareerSite,
+} from "../types/careerSites.ts";
 
-function getMatchLevel(score) {
-  if (score >= 85) return { key: "ideal", label: "Ideal Match" };
-  if (score >= 70) return { key: "high", label: "High Match" };
-  if (score >= 40) return { key: "medium", label: "Medium Match" };
+type MatchLevelKey = "ideal" | "high" | "medium" | "low";
+
+interface MatchLevel {
+  key: MatchLevelKey;
+  label: string;
+}
+
+function getMatchLevel(score?: number | null): MatchLevel {
+  if (score != null && score >= 85) return { key: "ideal", label: "Ideal Match" };
+  if (score != null && score >= 70) return { key: "high", label: "High Match" };
+  if (score != null && score >= 40) return { key: "medium", label: "Medium Match" };
   return { key: "low", label: "Low Match" };
 }
 
+interface SiteFormState {
+  name: string;
+  url: string;
+  enabled: boolean;
+  collection_mode: string;
+  recapture_interval_days: string;
+}
+
+const EMPTY_SITE_FORM: SiteFormState = { name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" };
+
+interface RuleFormState {
+  rule_text: string;
+  enabled: boolean;
+}
+
+const EMPTY_RULE_FORM: RuleFormState = { rule_text: "", enabled: true };
+
 export default function CareerSiteResultsPanel() {
-  const [rows, setRows] = useState([]);
-  const [failures, setFailures] = useState([]);
-  const [sites, setSites] = useState([]);
-  const [rejectionRules, setRejectionRules] = useState([]);
+  const [rows, setRows] = useState<CareerScanResult[]>([]);
+  const [failures, setFailures] = useState<CareerScanFailure[]>([]);
+  const [sites, setSites] = useState<CareerSite[]>([]);
+  const [rejectionRules, setRejectionRules] = useState<CareerRejectionRule[]>([]);
   const [showSiteForm, setShowSiteForm] = useState(false);
-  const [siteForm, setSiteForm] = useState({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
-  const [editingSiteId, setEditingSiteId] = useState(null);
+  const [siteForm, setSiteForm] = useState<SiteFormState>(EMPTY_SITE_FORM);
+  const [editingSiteId, setEditingSiteId] = useState<number | null>(null);
   const [showRuleForm, setShowRuleForm] = useState(false);
-  const [ruleForm, setRuleForm] = useState({ rule_text: "", enabled: true });
-  const [editingRuleId, setEditingRuleId] = useState(null);
+  const [ruleForm, setRuleForm] = useState<RuleFormState>(EMPTY_RULE_FORM);
+  const [editingRuleId, setEditingRuleId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState(null);
+  const [status, setStatus] = useState<CareerScanStatus | null>(null);
   const [running, setRunning] = useState(false);
   const [scanPopupTitle, setScanPopupTitle] = useState("Career-site scan");
-  const [scanSummary, setScanSummary] = useState(null);
-  const [selectedFailure, setSelectedFailure] = useState(null);
-  const [bookmarkletSite, setBookmarkletSite] = useState(null);
-  const [selectedJobId, setSelectedJobId] = useState(null);
+  const [scanSummary, setScanSummary] = useState<CareerScanStatus | null>(null);
+  const [selectedFailure, setSelectedFailure] = useState<CareerScanFailure | null>(null);
+  const [bookmarkletSite, setBookmarkletSite] = useState<CareerSite | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [addRejectRule, setAddRejectRule] = useState(true);
   const [rejectingJob, setRejectingJob] = useState(false);
-  const [markingJobId, setMarkingJobId] = useState(null);
+  const [markingJobId, setMarkingJobId] = useState<string | null>(null);
   const [reEvaluating, setReEvaluating] = useState(false);
-  const [reEvaluateSummary, setReEvaluateSummary] = useState(null);
-  const pollRef = useRef(null);
+  const [reEvaluateSummary, setReEvaluateSummary] = useState<CareerScanReEvaluateSummary | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const fetchRows = async () => {
     setLoading(true);
     try {
       const res = await fetch("/api/career-scan/results");
       const data = await res.json();
-      const normalizedRows = Array.isArray(data) ? [...data] : [];
+      const normalizedRows: CareerScanResult[] = Array.isArray(data) ? [...data] : [];
       normalizedRows.sort((a, b) => {
         const aScore = typeof a?.match_score === "number" ? a.match_score : -1;
         const bScore = typeof b?.match_score === "number" ? b.match_score : -1;
@@ -92,9 +128,9 @@ export default function CareerSiteResultsPanel() {
     }
   };
 
-  const fetchStatus = async () => {
+  const fetchStatus = async (): Promise<CareerScanStatus> => {
     const res = await fetch("/api/career-scan/status");
-    const data = await res.json();
+    const data: CareerScanStatus = await res.json();
     setStatus(data);
     setRunning(Boolean(data.running));
     return data;
@@ -171,7 +207,7 @@ export default function CareerSiteResultsPanel() {
     setScanSummary(null);
     const res = await fetch("/api/career-scan/run", { method: "POST" });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(`Scan failed (${res.status}): ${err.error || "Unknown error"}`);
       return;
     }
@@ -180,13 +216,13 @@ export default function CareerSiteResultsPanel() {
     pollRef.current = setInterval(pollStatus, 1500);
   };
 
-  const runScanForSite = async (siteId) => {
+  const runScanForSite = async (siteId: number) => {
     const site = sites.find((siteRow) => siteRow.id === siteId);
     setScanPopupTitle(site?.name ? `Rescanning ${site.name}` : "Rescanning Career Site");
     setScanSummary(null);
     const res = await fetch(`/api/career-sites/${siteId}/scan`, { method: "POST" });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(`Scan failed (${res.status}): ${err.error || "Unknown error"}`);
       return;
     }
@@ -199,7 +235,7 @@ export default function CareerSiteResultsPanel() {
     if (!window.confirm("Delete all career-site scan results?")) return;
     const res = await fetch("/api/career-scan/results", { method: "DELETE" });
     if (!res.ok) {
-      alert("Failed to clear results");
+      window.alert("Failed to clear results");
       return;
     }
     await fetchRows();
@@ -209,10 +245,10 @@ export default function CareerSiteResultsPanel() {
     setReEvaluating(true);
     setReEvaluateSummary(null);
     const res = await fetch("/api/career-scan/results/re-evaluate", { method: "POST" });
-    const data = await res.json();
+    const data: CareerScanReEvaluateSummary & ApiErrorBody = await res.json();
     setReEvaluating(false);
     if (!res.ok) {
-      alert(data.error || "Failed to re-evaluate career-site results");
+      window.alert(data.error || "Failed to re-evaluate career-site results");
       return;
     }
     setReEvaluateSummary(data);
@@ -221,11 +257,11 @@ export default function CareerSiteResultsPanel() {
 
   const startCreateSite = () => {
     setEditingSiteId(null);
-    setSiteForm({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
+    setSiteForm(EMPTY_SITE_FORM);
     setShowSiteForm(true);
   };
 
-  const startEditSite = (site) => {
+  const startEditSite = (site: CareerSite) => {
     setEditingSiteId(site.id);
     setSiteForm({
       name: site.name || "",
@@ -241,7 +277,7 @@ export default function CareerSiteResultsPanel() {
     if (!siteForm.name.trim() || !siteForm.url.trim()) return;
     const intervalDays = parseInt(siteForm.recapture_interval_days, 10);
     if (!Number.isFinite(intervalDays) || intervalDays < 1) {
-      alert("Reminder interval must be a positive number of days.");
+      window.alert("Reminder interval must be a positive number of days.");
       return;
     }
     const endpoint = editingSiteId ? `/api/career-sites/${editingSiteId}` : "/api/career-sites";
@@ -258,36 +294,36 @@ export default function CareerSiteResultsPanel() {
       }),
     });
     if (!res.ok) {
-      const err = await res.json();
-      alert(err.error || "Failed to save site");
+      const err: ApiErrorBody = await res.json();
+      window.alert(err.error || "Failed to save site");
       return;
     }
     setShowSiteForm(false);
     setEditingSiteId(null);
-    setSiteForm({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
+    setSiteForm(EMPTY_SITE_FORM);
     await fetchSites();
   };
 
-  const deleteSite = async (siteId) => {
+  const deleteSite = async (siteId: number) => {
     if (!window.confirm("Delete this career site?")) return;
     const res = await fetch(`/api/career-sites/${siteId}`, { method: "DELETE" });
     if (!res.ok) {
-      const err = await res.json();
-      alert(err.error || "Failed to delete site");
+      const err: ApiErrorBody = await res.json();
+      window.alert(err.error || "Failed to delete site");
       return;
     }
     await fetchSites();
   };
 
-  const toggleSiteEnabled = async (site) => {
+  const toggleSiteEnabled = async (site: CareerSite) => {
     const res = await fetch(`/api/career-sites/${site.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: !site.enabled }),
     });
     if (!res.ok) {
-      const err = await res.json();
-      alert(err.error || "Failed to update site");
+      const err: ApiErrorBody = await res.json();
+      window.alert(err.error || "Failed to update site");
       return;
     }
     await fetchSites();
@@ -304,10 +340,10 @@ export default function CareerSiteResultsPanel() {
         add_as_rule: !!addRejectRule,
       }),
     });
-    const data = await res.json();
+    const data: CareerScanResultRejectResponse & ApiErrorBody = await res.json();
     setRejectingJob(false);
     if (!res.ok) {
-      alert(data.error || "Failed to reject job");
+      window.alert(data.error || "Failed to reject job");
       return;
     }
     setRejectReason("");
@@ -318,7 +354,7 @@ export default function CareerSiteResultsPanel() {
     }
   };
 
-  const markJobStatus = async (rowId, status) => {
+  const markJobStatus = async (rowId: number, status: string) => {
     setMarkingJobId(`${rowId}:${status}`);
     const res = await fetch(`/api/career-scan/results/${rowId}/tracking-status`, {
       method: "POST",
@@ -327,7 +363,7 @@ export default function CareerSiteResultsPanel() {
     });
     setMarkingJobId(null);
     if (!res.ok) {
-      const err = await res.json();
+      const err: ApiErrorBody = await res.json();
       window.alert(err.error || "Failed to update status");
       return;
     }
@@ -336,11 +372,11 @@ export default function CareerSiteResultsPanel() {
 
   const startCreateRule = () => {
     setEditingRuleId(null);
-    setRuleForm({ rule_text: "", enabled: true });
+    setRuleForm(EMPTY_RULE_FORM);
     setShowRuleForm(true);
   };
 
-  const startEditRule = (rule) => {
+  const startEditRule = (rule: CareerRejectionRule) => {
     setEditingRuleId(rule.id);
     setRuleForm({ rule_text: rule.rule_text || "", enabled: !!rule.enabled });
     setShowRuleForm(true);
@@ -358,37 +394,37 @@ export default function CareerSiteResultsPanel() {
         enabled: !!ruleForm.enabled,
       }),
     });
-    const data = await res.json();
+    const data: ApiErrorBody = await res.json();
     if (!res.ok) {
-      alert(data.error || "Failed to save rule");
+      window.alert(data.error || "Failed to save rule");
       return;
     }
     setShowRuleForm(false);
     setEditingRuleId(null);
-    setRuleForm({ rule_text: "", enabled: true });
+    setRuleForm(EMPTY_RULE_FORM);
     await fetchRejectionRules();
   };
 
-  const toggleRuleEnabled = async (rule) => {
+  const toggleRuleEnabled = async (rule: CareerRejectionRule) => {
     const res = await fetch(`/api/career-rejection-rules/${rule.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: !rule.enabled }),
     });
-    const data = await res.json();
+    const data: ApiErrorBody = await res.json();
     if (!res.ok) {
-      alert(data.error || "Failed to update rule");
+      window.alert(data.error || "Failed to update rule");
       return;
     }
     await fetchRejectionRules();
   };
 
-  const deleteRule = async (ruleId) => {
+  const deleteRule = async (ruleId: number) => {
     if (!window.confirm("Delete this global JD filter rule?")) return;
     const res = await fetch(`/api/career-rejection-rules/${ruleId}`, { method: "DELETE" });
-    const data = await res.json();
+    const data: ApiErrorBody = await res.json();
     if (!res.ok) {
-      alert(data.error || "Failed to delete rule");
+      window.alert(data.error || "Failed to delete rule");
       return;
     }
     await fetchRejectionRules();
@@ -773,7 +809,7 @@ export default function CareerSiteResultsPanel() {
                 onClick={() => {
                   setShowRuleForm(false);
                   setEditingRuleId(null);
-                  setRuleForm({ rule_text: "", enabled: true });
+                  setRuleForm(EMPTY_RULE_FORM);
                 }}
               >
                 Cancel
@@ -884,14 +920,19 @@ export default function CareerSiteResultsPanel() {
   );
 }
 
-function isRejectedCareerRow(row) {
+function isRejectedCareerRow(row: CareerScanResult): boolean {
   return ["career_rule", "manual_reject", "manual_applied", "employer_rejected", "db_rejected"].includes(
-    row?.tracking_source
+    row?.tracking_source || ""
   );
 }
 
 
-function BookmarkletModal({ site, onClose }) {
+interface BookmarkletModalProps {
+  site: CareerSite;
+  onClose: () => void;
+}
+
+function BookmarkletModal({ site, onClose }: BookmarkletModalProps) {
   const [copied, setCopied] = useState(false);
   const bookmarklet = buildCaptureBookmarklet(site);
   const isWellfound = isWellfoundSite(site);
@@ -962,7 +1003,12 @@ function BookmarkletModal({ site, onClose }) {
   );
 }
 
-function FailureDetailsModal({ failure, onClose }) {
+interface FailureDetailsModalProps {
+  failure: CareerScanFailure;
+  onClose: () => void;
+}
+
+function FailureDetailsModal({ failure, onClose }: FailureDetailsModalProps) {
   return (
     <Modal
       title="Failure Details"
@@ -992,7 +1038,7 @@ function FailureDetailsModal({ failure, onClose }) {
   );
 }
 
-function DetailCell({ label, value }) {
+function DetailCell({ label, value }: { label: string; value: string | number | null | undefined }) {
   return (
     <div>
       <div style={detailLabelStyle}>{label}</div>
@@ -1001,8 +1047,20 @@ function DetailCell({ label, value }) {
   );
 }
 
-function groupRowsBySiteAndMatch(rows) {
-  const siteMap = new Map();
+interface SiteGroup {
+  siteKey: string;
+  siteLabel: string;
+  jobs: CareerScanResult[];
+  matchGroups: { key: MatchLevelKey; label: string; jobs: CareerScanResult[] }[];
+}
+
+function groupRowsBySiteAndMatch(rows: CareerScanResult[]): SiteGroup[] {
+  const siteMap = new Map<string, {
+    siteKey: string;
+    siteLabel: string;
+    jobs: CareerScanResult[];
+    matchGroups: Record<MatchLevelKey, { key: MatchLevelKey; label: string; jobs: CareerScanResult[] }>;
+  }>();
 
   rows.forEach((row) => {
     const siteLabel = row.site_name || row.site_url || "Unknown Site";
@@ -1024,6 +1082,7 @@ function groupRowsBySiteAndMatch(rows) {
     }
 
     const siteGroup = siteMap.get(siteKey);
+    if (!siteGroup) return;
     siteGroup.jobs.push(row);
     siteGroup.matchGroups[matchLevel.key].jobs.push(row);
   });
@@ -1032,24 +1091,24 @@ function groupRowsBySiteAndMatch(rows) {
     siteKey: siteGroup.siteKey,
     siteLabel: siteGroup.siteLabel,
     jobs: siteGroup.jobs,
-    matchGroups: ["ideal", "high", "medium", "low"]
+    matchGroups: (["ideal", "high", "medium", "low"] as MatchLevelKey[])
       .map((key) => siteGroup.matchGroups[key])
       .filter((group) => group.jobs.length > 0),
   }));
 }
 
-function isWellfoundSite(site) {
+function isWellfoundSite(site?: CareerSite | null): boolean {
   const value = `${site?.url || ""} ${site?.detected_platform || ""}`.toLowerCase();
   return value.includes("wellfound");
 }
 
-function buildCaptureBookmarklet(site) {
+function buildCaptureBookmarklet(site?: CareerSite | null): string {
   const sourceName = JSON.stringify(site?.name || "Captured Job Board");
   const script = `(()=>{const SOURCE_NAME=${sourceName};const SUPPORTED=[["greenhouse.io","Greenhouse"],["lever.co","Lever"],["ashbyhq.com","Ashby"],["myworkdayjobs.com","Workday"],["wellfound.com","Wellfound"]];const platformFor=(host)=>{const row=SUPPORTED.find(([suffix])=>host.includes(suffix));return row?row[1]:"";};const clean=(value)=>(value||"").replace(/\\s+/g," ").trim();const titleCaseSlug=(slug)=>clean(slug.replace(/-/g," ").replace(/\\b\\w/g,(char)=>char.toUpperCase()));const cleanCompany=(value)=>{let company=clean(value);["Actively Hiring","Promoted","Recently Funded","Employees"].some((marker)=>{const index=company.indexOf(marker);if(index>0){company=company.slice(0,index).trim();return true;}return false;});return company;};const normalize=(href)=>{try{const u=new URL(href,location.href);const platform=platformFor(u.hostname.toLowerCase());if(!platform)return null;if(platform==="Wellfound"){const existing=u.searchParams.get("job_listing_slug");const match=u.pathname.match(/^\\/jobs\\/(\\d+[-/][^/?#]+)/);const slug=existing||(match&&match[1]);if(!slug)return null;return{url:u.origin+"/jobs?job_listing_slug="+encodeURIComponent(slug),platform};}u.hash="";return{url:u.href,platform};}catch{return null;}};const companyFromTitle=(title)=>{const match=clean(title).match(/\\bat\\s+(.+)$/i);return match?cleanCompany(match[1]):"";};const companyFromUrl=(node)=>{const href=node&&node.getAttribute("href");if(!href)return"";try{const parts=new URL(href,location.href).pathname.split("/").filter(Boolean);return parts[0]==="company"&&parts[1]?titleCaseSlug(parts[1]):"";}catch{return"";}};const wellfoundCompany=(anchor,title)=>{const card=anchor.closest('[data-test="StartupResult"]')||anchor.closest('[data-testid="startup-card"]')||anchor.closest("article")||anchor.closest("li");const companyLink=card&&card.querySelector('a[href*="/company/"]');const heading=companyLink&&companyLink.querySelector("h1,h2,h3");const company=cleanCompany((heading&&heading.textContent)||companyFromUrl(companyLink));return company||companyFromTitle(title);};const rows=[];const seen=new Set();document.querySelectorAll("a[href]").forEach((anchor)=>{const normalized=normalize(anchor.getAttribute("href"));if(!normalized||seen.has(normalized.url))return;const text=(anchor.innerText||anchor.textContent||"").split(/\\n+/).map(clean).filter(Boolean);if(normalized.platform==="Wellfound"&&!text.length)return;const title=text[0]||clean(anchor.getAttribute("aria-label"))||document.title||"";const company=normalized.platform==="Wellfound"?wellfoundCompany(anchor,title):"";const listing=[title,company?"Company: "+company:"","URL: "+normalized.url,...text.slice(1)].filter(Boolean).join("\\n");seen.add(normalized.url);rows.push({url:normalized.url,platform:normalized.platform,company,job_title:title,listing_text:listing});});if(!rows.length){alert("No supported job links found on this page.");return;}const payload={captured_at:new Date().toISOString(),source:{name:SOURCE_NAME,url:location.href,platform:platformFor(location.hostname.toLowerCase())},jobs:rows};const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="job-capture-"+new Date().toISOString().slice(0,10)+".json";document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);})();`;
   return `javascript:${script}`;
 }
 
-const tdStyle = {
+const tdStyle: CSSProperties = {
   padding: "10px 12px",
   borderBottom: "1px solid var(--border)",
   color: "var(--text)",
@@ -1057,7 +1116,7 @@ const tdStyle = {
   fontSize: "12px",
 };
 
-const thStyle = {
+const thStyle: CSSProperties = {
   ...tdStyle,
   color: "var(--text-muted)",
   fontWeight: "600",
@@ -1069,7 +1128,7 @@ const thStyle = {
   whiteSpace: "nowrap",
 };
 
-const progressBox = {
+const progressBox: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-lg)",
@@ -1078,7 +1137,7 @@ const progressBox = {
   boxShadow: "var(--shadow-sm)",
 };
 
-const detailLabelStyle = {
+const detailLabelStyle: CSSProperties = {
   fontSize: "11px",
   color: "var(--text-muted)",
   textTransform: "uppercase",
@@ -1086,7 +1145,7 @@ const detailLabelStyle = {
   marginBottom: "3px",
 };
 
-const detailValueBlockStyle = {
+const detailValueBlockStyle: CSSProperties = {
   fontSize: "12px",
   whiteSpace: "pre-wrap",
   wordBreak: "break-word",
@@ -1096,18 +1155,18 @@ const detailValueBlockStyle = {
   padding: "8px 10px",
 };
 
-const treeGroupStyle = {
+const treeGroupStyle: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
   background: "var(--surface2)",
 };
 
-const treeSubgroupStyle = {
+const treeSubgroupStyle: CSSProperties = {
   borderLeft: "2px solid var(--border)",
   paddingLeft: "10px",
 };
 
-const treeSiteSummaryStyle = {
+const treeSiteSummaryStyle: CSSProperties = {
   cursor: "pointer",
   listStyle: "none",
   display: "flex",
@@ -1119,7 +1178,7 @@ const treeSiteSummaryStyle = {
   fontWeight: 700,
 };
 
-const treeMatchSummaryStyle = {
+const treeMatchSummaryStyle: CSSProperties = {
   cursor: "pointer",
   listStyle: "none",
   display: "flex",
@@ -1131,19 +1190,19 @@ const treeMatchSummaryStyle = {
   fontWeight: 600,
 };
 
-const treeChildrenStyle = {
+const treeChildrenStyle: CSSProperties = {
   display: "grid",
   gap: "8px",
   padding: "0 12px 12px 12px",
 };
 
-const treeCountStyle = {
+const treeCountStyle: CSSProperties = {
   fontSize: "11px",
   color: "var(--text-muted)",
   fontWeight: 500,
 };
 
-const treeJobRowStyle = {
+const treeJobRowStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "center",
