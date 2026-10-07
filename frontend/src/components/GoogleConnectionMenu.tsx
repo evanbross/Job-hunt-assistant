@@ -14,23 +14,30 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
+
+interface GoogleConnectionMenuProps {
+  onReconnect: () => void;
+  onDisconnect: () => void;
+}
 
 // ai: claude-sonnet-5 | 2026-09-25
 /**
  * Header "Connected" pill that opens a small menu with the two Google-account
  * actions (reconnect / disconnect), replacing the separate Reconnect button.
  */
-export default function GoogleConnectionMenu({ onReconnect, onDisconnect }) {
+export default function GoogleConnectionMenu({ onReconnect, onDisconnect }: GoogleConnectionMenuProps) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return undefined;
-    const closeOnOutsideClick = (event) => {
-      if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false);
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
     };
-    const closeOnEscape = (event) => {
+    const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
     };
     document.addEventListener("mousedown", closeOnOutsideClick);
@@ -41,7 +48,7 @@ export default function GoogleConnectionMenu({ onReconnect, onDisconnect }) {
     };
   }, [open]);
 
-  const choose = (action) => {
+  const choose = (action: () => void) => {
     setOpen(false);
     action();
   };
@@ -83,7 +90,7 @@ export default function GoogleConnectionMenu({ onReconnect, onDisconnect }) {
   );
 }
 
-const triggerStyle = {
+const triggerStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "6px",
@@ -97,7 +104,7 @@ const triggerStyle = {
   cursor: "pointer",
 };
 
-const dotStyle = {
+const dotStyle: CSSProperties = {
   width: "7px",
   height: "7px",
   borderRadius: "50%",
@@ -106,7 +113,7 @@ const dotStyle = {
   boxShadow: "0 0 6px #4ade80",
 };
 
-const menuStyle = {
+const menuStyle: CSSProperties = {
   position: "absolute",
   top: "calc(100% + 6px)",
   right: 0,
@@ -121,7 +128,7 @@ const menuStyle = {
   zIndex: 200,
 };
 
-const itemStyle = {
+const itemStyle: CSSProperties = {
   textAlign: "left",
   fontSize: "13px",
   padding: "7px 10px",

@@ -14,7 +14,10 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
+import type { JobStats } from "../types/jobs.ts";
 
 const POLL_MS = 60_000;
 
@@ -23,7 +26,7 @@ const styles = {
     borderTop: "1px solid rgba(255,255,255,0.1)",
     background: "rgba(0,0,0,0.12)",
     padding: "0 28px",
-  },
+  } as CSSProperties,
   inner: {
     display: "flex",
     alignItems: "center",
@@ -32,7 +35,7 @@ const styles = {
     margin: "0 auto",
     minHeight: "30px",
     flexWrap: "wrap",
-  },
+  } as CSSProperties,
   item: {
     display: "flex",
     alignItems: "center",
@@ -41,8 +44,8 @@ const styles = {
     fontSize: "11px",
     color: "rgba(255,255,255,0.7)",
     whiteSpace: "nowrap",
-  },
-  num: (tone) => ({
+  } as CSSProperties,
+  num: (tone?: string): CSSProperties => ({
     fontWeight: "700",
     fontSize: "12px",
     color:
@@ -56,10 +59,17 @@ const styles = {
     color: "rgba(255,255,255,0.2)",
     margin: "0 2px 0 0",
     userSelect: "none",
-  },
+  } as CSSProperties,
 };
 
-function StatItem({ value, label, tone, showSep }) {
+interface StatItemProps {
+  value?: number | null;
+  label: string;
+  tone?: string;
+  showSep: boolean;
+}
+
+function StatItem({ value, label, tone, showSep }: StatItemProps) {
   return (
     <>
       {showSep && <span style={styles.sep}>·</span>}
@@ -72,14 +82,14 @@ function StatItem({ value, label, tone, showSep }) {
 }
 
 export default function StatsBar() {
-  const [stats, setStats] = useState(null);
-  const intervalRef = useRef(null);
+  const [stats, setStats] = useState<JobStats | null>(null);
+  const intervalRef = useRef<number | undefined>(undefined);
 
   const fetchStats = async () => {
     try {
       const res = await fetch("/api/jobs/stats");
       if (!res.ok) return;
-      const data = await res.json();
+      const data: JobStats = await res.json();
       setStats(data);
     } catch {
       /* no-op */
@@ -88,7 +98,7 @@ export default function StatsBar() {
 
   useEffect(() => {
     fetchStats();
-    intervalRef.current = setInterval(fetchStats, POLL_MS);
+    intervalRef.current = window.setInterval(fetchStats, POLL_MS);
     return () => clearInterval(intervalRef.current);
   }, []);
 

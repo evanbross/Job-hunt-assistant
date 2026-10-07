@@ -179,6 +179,18 @@ export interface JobCardUndoEdit {
   type: "url" | "description";
 }
 
+/** GET /api/jobs/stats (routes/jobs.py's get_job_stats, via jobs repo's get_stats). */
+export interface JobStats {
+  total: number;
+  unique_jobs: number;
+  duplicates: number;
+  applied: number;
+  in_queue: number;
+  in_triage: number;
+  rejected: number;
+  ghosted: number;
+}
+
 /** POST /api/jobs/manual response (routes/jobs.py's create_manual_job). */
 export interface ManualJobCreateResponse {
   job: Job;

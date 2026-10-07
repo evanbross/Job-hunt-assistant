@@ -32,7 +32,20 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import { helpTextStyle, labelStyle } from "./settingsStyles.js";
+// ai: claude-sonnet-5 | 2026-10-07
+import { helpTextStyle, labelStyle } from "./settingsStyles.ts";
+import type { SettingSchemaField } from "../types/settings.ts";
+
+/** Settings-tab config draft: registry key -> current string value (every
+ * registry-backed setting round-trips as a string, including "true"/"false"
+ * checkboxes — see SettingsPanel, the sole owner of this shape's semantics). */
+export type SettingsConfigDraft = Record<string, string>;
+
+interface SchemaFieldProps {
+  spec?: SettingSchemaField | null;
+  cfg: SettingsConfigDraft;
+  setCfg: (cfg: SettingsConfigDraft) => void;
+}
 
 // ai: claude-sonnet-5 | 2026-08-26
 // Renders one registry-backed setting (backend/settings_registry.py, served
@@ -40,7 +53,7 @@ import { helpTextStyle, labelStyle } from "./settingsStyles.js";
 // input type, and help text live only in the registry, never re-typed here.
 // Fields with real custom behavior (file pickers, a validated dropdown that
 // drives conditional rendering) aren't registry-backed and stay hand-written.
-function SchemaField({ spec, cfg, setCfg }) {
+function SchemaField({ spec, cfg, setCfg }: SchemaFieldProps) {
   if (!spec) return null;
   const { key, label, input_type: inputType, placeholder, is_secret: isSecret, help_text: helpText } = spec;
 
@@ -73,11 +86,18 @@ function SchemaField({ spec, cfg, setCfg }) {
   );
 }
 
+interface SchemaFieldGroupProps {
+  fields: SettingSchemaField[];
+  group: string;
+  cfg: SettingsConfigDraft;
+  setCfg: (cfg: SettingsConfigDraft) => void;
+}
+
 // Renders every schema field in *group*, in registry declaration order.
 // Exported: CompleteSetupPage.jsx reuses this to render the SMTP/Server
 // fields during the forced default-admin setup flow, before the full
 // Settings tab (which owns this component everywhere else) is reachable.
-export function SchemaFieldGroup({ fields, group, cfg, setCfg }) {
+export function SchemaFieldGroup({ fields, group, cfg, setCfg }: SchemaFieldGroupProps) {
   return fields
     .filter((f) => f.group === group)
     .map((f) => <SchemaField key={f.key} spec={f} cfg={cfg} setCfg={setCfg} />);

@@ -33,15 +33,16 @@
  */
 
 // ai: claude-sonnet-5 | 2026-08-13
-import PhraseBookManager from "./common/PhraseBookManager.jsx";
+import type { CSSProperties } from "react";
+import PhraseBookManager from "./common/PhraseBookManager.tsx";
 
-const titleStyle = {
+const titleStyle: CSSProperties = {
   fontSize: "18px",
   fontWeight: 700,
   lineHeight: 1.2,
 };
 
-const summaryStyle = {
+const summaryStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   marginTop: "2px",
