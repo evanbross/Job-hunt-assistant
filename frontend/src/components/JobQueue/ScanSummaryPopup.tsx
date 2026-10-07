@@ -32,15 +32,19 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useState } from "react";
-import Modal from "../common/Modal.jsx";
-import MetricGrid, { MetricItem } from "../common/MetricGrid.jsx";
-import { formatLocalDateTime } from "../../utils/dateTimeUtils.js";
-import { formatJobTitles, formatScanAction, formatScanDisposition } from "../../utils/jobQueueUtils.js";
-import { formatEmailJobDetails } from "./helpers.jsx";
-import MoveEmailsStatusDialog from "./MoveEmailsStatusDialog.jsx";
+import type { CSSProperties } from "react";
+import Modal from "../common/Modal.tsx";
+import MetricGrid, { MetricItem } from "../common/MetricGrid.tsx";
+import { formatLocalDateTime } from "../../utils/dateTimeUtils.ts";
+import { formatJobTitles, formatScanAction, formatScanDisposition } from "../../utils/jobQueueUtils.ts";
+import { formatEmailJobDetails } from "./helpers.tsx";
+import MoveEmailsStatusDialog from "./MoveEmailsStatusDialog.tsx";
+import type { ApiErrorBody } from "../../types/common.ts";
+import type { MoveScannedEmailsResponse, ScanSummary } from "../../types/scanning.ts";
 
-const emailReportHeaderStyle = {
+const emailReportHeaderStyle: CSSProperties = {
   position: "sticky",
   top: 0,
   zIndex: 1,
@@ -55,14 +59,19 @@ const emailReportHeaderStyle = {
   whiteSpace: "nowrap",
 };
 
-const emailReportCellStyle = {
+const emailReportCellStyle: CSSProperties = {
   padding: "8px 10px",
   borderBottom: "1px solid var(--border)",
   color: "var(--text-muted)",
   verticalAlign: "top",
 };
 
-export default function ScanSummaryPopup({ summary, onClose }) {
+interface ScanSummaryPopupProps {
+  summary: ScanSummary;
+  onClose: () => void;
+}
+
+export default function ScanSummaryPopup({ summary, onClose }: ScanSummaryPopupProps) {
   const {
     emails_scanned = 0,
     new_jobs = 0,
@@ -110,14 +119,14 @@ export default function ScanSummaryPopup({ summary, onClose }) {
     { label: "Scoring Failed", value: scoring_failed_jobs, tone: "red" },
   ].filter((item) => item.value > 0);
 
-  const [selectedEmailIds, setSelectedEmailIds] = useState(() => moveEligibleEmails.map((email) => email.email_id));
+  const [selectedEmailIds, setSelectedEmailIds] = useState<string[]>(() => moveEligibleEmails.map((email) => email.email_id));
   const [movingEmails, setMovingEmails] = useState(false);
-  const [moveResult, setMoveResult] = useState(null);
+  const [moveResult, setMoveResult] = useState<MoveScannedEmailsResponse | null>(null);
   const [moveStatusOpen, setMoveStatusOpen] = useState(false);
   const selectedCount = selectedEmailIds.length;
   const movedEmailIds = Array.isArray(moveResult?.email_ids) ? moveResult.email_ids : [];
 
-  const toggleEmail = (emailId) => {
+  const toggleEmail = (emailId: string) => {
     setSelectedEmailIds((currentIds) =>
       currentIds.includes(emailId)
         ? currentIds.filter((currentId) => currentId !== emailId)
@@ -136,12 +145,12 @@ export default function ScanSummaryPopup({ summary, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email_ids: selectedEmailIds }),
       });
-      const data = await res.json();
+      const data: MoveScannedEmailsResponse & ApiErrorBody = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to move emails");
       setMoveResult(data);
       setSelectedEmailIds([]);
     } catch (error) {
-      window.alert(`Failed to move emails: ${error.message}`);
+      window.alert(`Failed to move emails: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setMovingEmails(false);
     }
@@ -256,7 +265,7 @@ export default function ScanSummaryPopup({ summary, onClose }) {
                   const moveEligible = email.disposition === "job_created" && email.gmail_action === "eligible to move";
                   const wasMoved = movedEmailIds.includes(email.email_id);
                   const actionLabel = wasMoved
-                    ? `moved to ${moveResult.label}`
+                    ? `moved to ${moveResult?.label}`
                     : formatScanAction(email.gmail_action);
                   return (
                     <tr key={email.email_id}>

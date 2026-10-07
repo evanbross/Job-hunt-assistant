@@ -32,10 +32,23 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import JobCard from "../JobCard.jsx";
-import { TriageCard, DuplicateCard } from "../TriagePanel.jsx";
+// ai: claude-sonnet-5 | 2026-10-07
+import JobCard from "../JobCard.tsx";
+import { TriageCard, DuplicateCard } from "../TriagePanel.tsx";
+import type { ApplicationHistoryRow, CompanyJobCounts, Job } from "../../types/jobs.ts";
+import type { ContactsByCompany } from "../../types/contacts.ts";
+import type { QueueHandlers, TriageHandlers } from "../../types/jobQueue.ts";
 
-export default function renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts) {
+export default function renderJobOrTriageCard(
+  job: Job,
+  queueHandlers: QueueHandlers,
+  triageHandlers: TriageHandlers,
+  allSheetRows: ApplicationHistoryRow[] | null,
+  onNavigateToJobCard: ((id: number | null, status: string) => void) | null | undefined,
+  contactsByCompany: ContactsByCompany | undefined,
+  defaultSnoozeDays: number,
+  companyJobCounts: CompanyJobCounts | null | undefined,
+) {
   if (job.status === "pending_review") {
     return (
       <JobCard

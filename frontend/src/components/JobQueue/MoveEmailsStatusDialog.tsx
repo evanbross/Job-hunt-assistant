@@ -32,30 +32,37 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import Modal from "../common/Modal.jsx";
-import MetricGrid, { MetricItem } from "../common/MetricGrid.jsx";
+// ai: claude-sonnet-5 | 2026-10-07
+import Modal from "../common/Modal.tsx";
 
-export default function ReEvaluateSummaryPopup({ summary, onClose }) {
-  const evaluated = summary.evaluated ?? 0;
-  const rescored = summary.rescored ?? 0;
-  const duplicates = summary.db_matches ?? 0;
-  const moved = summary.status_changed ?? 0;
-  const failed = summary.failed ?? 0;
+interface MoveEmailsStatusDialogProps {
+  label: string;
+  moving: boolean;
+  moved: number;
+  onClose: () => void;
+}
 
+export default function MoveEmailsStatusDialog({ label, moving, moved, onClose }: MoveEmailsStatusDialogProps) {
+  const movedCount = Number(moved) || 0;
   return (
     <Modal
-      title="Re-evaluation complete"
-      subtitle={`Re-evaluated ${evaluated} active job${evaluated === 1 ? "" : "s"}.`}
+      title={moving ? "Moving emails" : "Emails moved"}
+      subtitle={moving
+        ? "Moving selected emails to the scanned folder..."
+        : movedCount > 0
+          ? `Moved ${movedCount} email${movedCount === 1 ? "" : "s"} to ${label}.`
+          : `Move request completed for ${label}.`}
       onClose={onClose}
-      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
-      maxWidth="520px"
+      showCloseButton={!moving}
+      footer={!moving && <button className="btn-secondary" onClick={onClose}>Close</button>}
+      maxWidth="420px"
     >
-      <MetricGrid>
-        <MetricItem label="rescored" value={rescored} tone="green" />
-        {duplicates > 0 && <MetricItem label="duplicates flagged" value={duplicates} />}
-        {moved > 0 && <MetricItem label="moved" value={moved} tone="yellow" />}
-        {failed > 0 && <MetricItem label="failed" value={failed} tone="red" />}
-      </MetricGrid>
+      {moving && (
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-muted)", fontSize: "14px" }}>
+          <span className="inline-spinner" style={{ color: "var(--accent)" }} />
+          <span>Waiting for Gmail to finish the move...</span>
+        </div>
+      )}
     </Modal>
   );
 }

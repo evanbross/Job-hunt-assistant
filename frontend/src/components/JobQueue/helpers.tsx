@@ -32,14 +32,17 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import { compareByDateFoundDesc, compareNullableScores } from "../../utils/triagePanelUtils.js";
-import { formatScanDisposition } from "../../utils/jobQueueUtils.js";
+// ai: claude-sonnet-5 | 2026-10-07
+import { compareByDateFoundDesc, compareNullableScores } from "../../utils/triagePanelUtils.ts";
+import { formatScanDisposition } from "../../utils/jobQueueUtils.ts";
+import type { Job } from "../../types/jobs.ts";
+import type { ScanEmailReportRow, ScanJobDetail } from "../../types/scanning.ts";
 
-export function sortJobList(list, sortKey) {
+export function sortJobList(list: Job[], sortKey: string): Job[] {
   return [...list].sort((a, b) => {
     if (sortKey === "date_desc" || sortKey === "date_asc") {
-      const da = new Date(a.date_found || 0);
-      const db = new Date(b.date_found || 0);
+      const da = new Date(a.date_found || 0).getTime();
+      const db = new Date(b.date_found || 0).getTime();
       return sortKey === "date_desc" ? db - da : da - db;
     }
     if (sortKey === "fit_desc_date_desc" || sortKey === "fit_desc_date_asc") {
@@ -64,11 +67,11 @@ export function sortJobList(list, sortKey) {
   });
 }
 
-export function readStoredViewPref(key, fallback) {
+export function readStoredViewPref(key: string, fallback: string): string {
   try { return window.localStorage.getItem(key) || fallback; } catch { return fallback; }
 }
 
-export function formatEmailJobDetails(email) {
+export function formatEmailJobDetails(email?: Partial<ScanEmailReportRow> | null) {
   if (Array.isArray(email?.job_details) && email.job_details.length > 0) {
     return formatJobDetails(email.job_details);
   }
@@ -87,7 +90,7 @@ export function formatEmailJobDetails(email) {
   return "—";
 }
 
-export function formatJobDetails(jobDetails) {
+export function formatJobDetails(jobDetails?: ScanJobDetail[] | null) {
   if (!Array.isArray(jobDetails) || jobDetails.length === 0) return "—";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "6px", minWidth: "220px" }}>

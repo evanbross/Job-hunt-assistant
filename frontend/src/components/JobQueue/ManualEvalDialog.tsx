@@ -32,8 +32,10 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useState } from "react";
-import Modal from "../common/Modal.jsx";
+import Modal from "../common/Modal.tsx";
+import type { Job } from "../../types/jobs.ts";
 
 const EVAL_PHASES = [
   "Parsing job description…",
@@ -43,7 +45,13 @@ const EVAL_PHASES = [
   "Finalizing evaluation…",
 ];
 
-export default function ManualEvalDialog({ submitting, result, onClose }) {
+interface ManualEvalDialogProps {
+  submitting: boolean;
+  result: Job | null;
+  onClose: () => void;
+}
+
+export default function ManualEvalDialog({ submitting, result, onClose }: ManualEvalDialogProps) {
   const [phaseIndex, setPhaseIndex] = useState(0);
 
   useEffect(() => {

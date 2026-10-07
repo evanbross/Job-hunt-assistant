@@ -32,29 +32,36 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-// ai: claude-sonnet-5 | 2026-07-10
-import Modal from "../common/Modal.jsx";
+// ai: claude-sonnet-5 | 2026-10-07
+import Modal from "../common/Modal.tsx";
+import type { ImportRepairResult, RepairJobSummary } from "../../types/importing.ts";
 
-export default function RescanImportDialog({ result, onClose }) {
-  const unskipped = result.unskipped ?? [];
-  const stillDuplicate = result.still_duplicate ?? [];
-  const rescored = result.rescored ?? [];
-  const appliedFixed = result.applied_fixed ?? [];
-  const urlOnly = result.url_only ?? [];
+interface ImportRepairDialogProps {
+  result: ImportRepairResult;
+  onClose: () => void;
+}
+
+interface OutcomeItem extends RepairJobSummary {
+  outcome: string;
+}
+
+export default function ImportRepairDialog({ result, onClose }: ImportRepairDialogProps) {
+  const titleOrCompanyFixed = result.title_or_company_fixed ?? [];
+  const urlFixed = result.url_fixed ?? [];
+  const jdQueued = result.jd_queued ?? [];
   const unresolved = result.unresolved ?? [];
+  const patterns = result.patterns ?? [];
   const running = !!result.running;
   const progress = result.total ? Math.round((result.progress / result.total) * 100) : 0;
-  const title = running ? "Rescanning Broken Imports…" : "Broken-Import Rescan Complete";
+  const title = running ? "Repairing Import Issues…" : "Import Issue Repair Complete";
   const subtitle = result.error
-    ? `Rescan failed: ${result.error}`
-    : result.message || (running ? "Rescanning…" : "Done.");
-  const allItems = [
-    ...unskipped.map((j) => ({ ...j, outcome: "unskipped" })),
-    ...rescored.map((j) => ({ ...j, outcome: `scored ${j.fit_score}` })),
-    ...stillDuplicate.map((j) => ({ ...j, outcome: j.status })),
-    ...appliedFixed.map((j) => ({ ...j, outcome: "url fixed" })),
-    ...urlOnly.map((j) => ({ ...j, outcome: "url only" })),
-    ...unresolved.map((j) => ({ ...j, outcome: j.reason || "unresolved" })),
+    ? `Repair failed: ${result.error}`
+    : result.message || (running ? "Repairing…" : "Done.");
+  const allItems: OutcomeItem[] = [
+    ...titleOrCompanyFixed.map((j) => ({ ...j, outcome: "title/company" })),
+    ...urlFixed.map((j) => ({ ...j, outcome: "url" })),
+    ...jdQueued.map((j) => ({ ...j, outcome: "jd queued" })),
+    ...unresolved.map((j) => ({ ...j, outcome: (j.warnings || []).join(", ") || "unresolved" })),
   ];
   return (
     <Modal
@@ -81,25 +88,44 @@ export default function RescanImportDialog({ result, onClose }) {
         </>
       )}
       <div className="metric-grid" style={{ marginTop: running ? "14px" : "0" }}>
-        <div className="metric-item"><div className="metric-value" style={{ color: "var(--green)" }}>{unskipped.length}</div><div className="metric-label">unskipped (real jobs)</div></div>
-        <div className="metric-item"><div className="metric-value">{rescored.length}</div><div className="metric-label">re-scored</div></div>
-        <div className="metric-item"><div className="metric-value" style={{ color: "var(--text-muted)" }}>{stillDuplicate.length}</div><div className="metric-label">still a duplicate</div></div>
-        <div className="metric-item"><div className="metric-value" style={{ color: unresolved.length > 0 ? "var(--orange)" : undefined }}>{unresolved.length}</div><div className="metric-label">needs manual review</div></div>
+        <div className="metric-item"><div className="metric-value" style={{ color: "var(--green)" }}>{titleOrCompanyFixed.length}</div><div className="metric-label">title/company fixed</div></div>
+        <div className="metric-item"><div className="metric-value" style={{ color: "var(--green)" }}>{urlFixed.length}</div><div className="metric-label">URL fixed</div></div>
+        <div className="metric-item"><div className="metric-value">{jdQueued.length}</div><div className="metric-label">JD queued for capture</div></div>
+        <div className="metric-item"><div className="metric-value" style={{ color: unresolved.length > 0 ? "var(--orange)" : undefined }}>{unresolved.length}</div><div className="metric-label">still unresolved</div></div>
       </div>
 
+      {!running && patterns.length > 0 && (
+        <div style={{ marginTop: "16px" }}>
+          <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
+            Systemic patterns detected
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            {patterns.map((p) => (
+              <div key={`${p.source}-${p.warning_code}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", background: "var(--surface2)", border: "1px solid var(--orange)", borderRadius: "var(--radius)", padding: "8px 12px", fontSize: "12px" }}>
+                <span><strong>{p.source}</strong> — {p.warning_code.replace(/_/g, " ")}</span>
+                <span style={{ color: "var(--orange)", fontWeight: 700, flexShrink: 0 }}>{p.count} of {p.total} ({p.percent}%)</span>
+              </div>
+            ))}
+          </div>
+          <p style={{ margin: "8px 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+            These recur often enough to suggest a systemic parser/scraper gap for that source — see
+            docs/import_repair_findings.md for the full writeup.
+          </p>
+        </div>
+      )}
+
       {allItems.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "380px", overflowY: "auto", marginTop: "14px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "340px", overflowY: "auto", marginTop: "14px" }}>
           {allItems.map((job) => (
             <div key={`${job.id}-${job.outcome}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "8px 12px" }}>
               <div style={{ minWidth: 0, fontSize: "13px" }}>
                 <span style={{ fontWeight: 600 }}>{job.job_title || "Untitled"}</span>
                 {job.company && <span style={{ color: "var(--text-muted)" }}> at {job.company}</span>}
-                {job.url && <div style={{ color: "var(--text-muted)", fontSize: "11px", overflowWrap: "anywhere" }}>{job.url}</div>}
               </div>
               <span style={{
                 flexShrink: 0, fontSize: "11px", fontWeight: 700, padding: "2px 8px", borderRadius: "999px",
                 background: "var(--surface)",
-                color: job.outcome === "unskipped" || job.outcome === "url fixed" || job.outcome.startsWith("scored") ? "var(--green)" : job.outcome === "possible_duplicate" || job.outcome === "skipped" ? "var(--text-muted)" : "var(--orange)",
+                color: job.outcome === "title/company" || job.outcome === "url" ? "var(--green)" : job.outcome === "jd queued" ? "var(--text-muted)" : "var(--orange)",
                 border: "1px solid var(--border)",
               }}>{job.outcome}</span>
             </div>

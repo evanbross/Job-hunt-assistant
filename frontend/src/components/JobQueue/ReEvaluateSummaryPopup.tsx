@@ -32,44 +32,37 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import Modal from "../common/Modal.jsx";
+// ai: claude-sonnet-5 | 2026-10-07
+import Modal from "../common/Modal.tsx";
+import MetricGrid, { MetricItem } from "../common/MetricGrid.tsx";
+import type { ReEvaluateAllSummary } from "../../types/jobs.ts";
 
-export default function FixCompaniesDialog({ progress, onClose }) {
-  const { totalFixed, remaining, done, error } = progress;
-  const footer = done && (
-    <button type="button" className="btn-secondary" onClick={onClose}>
-      Close
-    </button>
-  );
+interface ReEvaluateSummaryPopupProps {
+  summary: Partial<ReEvaluateAllSummary>;
+  onClose: () => void;
+}
+
+export default function ReEvaluateSummaryPopup({ summary, onClose }: ReEvaluateSummaryPopupProps) {
+  const evaluated = summary.evaluated ?? 0;
+  const rescored = summary.rescored ?? 0;
+  const duplicates = summary.db_matches ?? 0;
+  const moved = summary.status_changed ?? 0;
+  const failed = summary.failed ?? 0;
 
   return (
     <Modal
-      title="Fix Unknown Companies"
-      subtitle={done ? (error ? "Stopped — check server log." : "Complete") : "Running…"}
+      title="Re-evaluation complete"
+      subtitle={`Re-evaluated ${evaluated} active job${evaluated === 1 ? "" : "s"}.`}
       onClose={onClose}
-      showCloseButton={done}
-      footer={footer}
-      maxWidth="420px"
+      footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
+      maxWidth="520px"
     >
-      <div style={{ fontSize: "14px", color: "var(--text)", lineHeight: 1.6 }}>
-        {!done ? (
-          <p style={{ margin: 0 }}>
-            {totalFixed > 0 ? `Fixed ${totalFixed} so far` : "Searching…"}
-            {remaining !== null ? ` · ${remaining} remaining` : ""}
-          </p>
-        ) : error ? (
-          <p style={{ margin: 0, color: "var(--red)" }}>An error occurred. {totalFixed > 0 && `${totalFixed} fixed before the error.`}</p>
-        ) : (
-          <p style={{ margin: 0 }}>
-            {totalFixed > 0
-              ? `Fixed ${totalFixed} company name${totalFixed !== 1 ? "s" : ""}.`
-              : "No fixable jobs found."}
-            {remaining > 0
-              ? ` ${remaining} could not be repaired automatically.`
-              : totalFixed > 0 ? " All unknown companies resolved." : ""}
-          </p>
-        )}
-      </div>
+      <MetricGrid>
+        <MetricItem label="rescored" value={rescored} tone="green" />
+        {duplicates > 0 && <MetricItem label="duplicates flagged" value={duplicates} />}
+        {moved > 0 && <MetricItem label="moved" value={moved} tone="yellow" />}
+        {failed > 0 && <MetricItem label="failed" value={failed} tone="red" />}
+      </MetricGrid>
     </Modal>
   );
 }

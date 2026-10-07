@@ -14,10 +14,13 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useState } from "react";
-import StatusBadge from "../common/StatusBadge.jsx";
+import type { CSSProperties } from "react";
+import StatusBadge from "../common/StatusBadge.tsx";
+import type { Job } from "../../types/jobs.ts";
 
-const cardStyle = {
+const cardStyle: CSSProperties = {
   alignItems: "flex-start",
   background: "var(--surface)",
   border: "1px solid var(--border)",
@@ -29,11 +32,18 @@ const cardStyle = {
   padding: "14px 16px",
 };
 
-function formatSince(dateStr) {
+function formatSince(dateStr?: string | null): string {
   if (!dateStr) return "";
   const parsed = new Date(dateStr);
   if (Number.isNaN(parsed.getTime())) return dateStr;
   return parsed.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+interface UnreachablePanelProps {
+  jobs: Job[];
+  loading: boolean;
+  onNavigateToJobCard: (id: number | null, status: string) => void;
+  onCleared: (jobId: number) => void;
 }
 
 // ai: claude-sonnet-5 | 2026-08-09
@@ -41,10 +51,10 @@ function formatSince(dateStr) {
 // current pipeline status (queue/triage/possible duplicate/applied) — the
 // Job Queue's own search box only ever looks within one status at a time,
 // which is why previously-unreachable jobs couldn't be found there.
-export default function UnreachablePanel({ jobs, loading, onNavigateToJobCard, onCleared }) {
-  const [clearingId, setClearingId] = useState(null);
+export default function UnreachablePanel({ jobs, loading, onNavigateToJobCard, onCleared }: UnreachablePanelProps) {
+  const [clearingId, setClearingId] = useState<number | null>(null);
 
-  const handleClear = async (jobId) => {
+  const handleClear = async (jobId: number) => {
     setClearingId(jobId);
     try {
       const res = await fetch(`/api/jobs/${jobId}/clear-unreachable`, { method: "POST" });
@@ -101,7 +111,7 @@ export default function UnreachablePanel({ jobs, loading, onNavigateToJobCard, o
           <div style={{ display: "flex", flexDirection: "column", gap: "6px", flexShrink: 0 }}>
             <button
               className="btn-secondary"
-              onClick={() => onNavigateToJobCard(job.id, job.status)}
+              onClick={() => onNavigateToJobCard(job.id, job.status || "")}
               style={{ fontSize: "12px", padding: "6px 12px", whiteSpace: "nowrap" }}
             >
               View Card

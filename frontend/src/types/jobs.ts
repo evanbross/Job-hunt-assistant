@@ -196,6 +196,15 @@ export interface ReEvaluatePopupState {
   error?: string;
 }
 
+/** Result summary of POST /api/jobs/re-evaluate-all (routes/fit.py's bulk re-evaluate task). */
+export interface ReEvaluateAllSummary {
+  evaluated: number;
+  rescored: number;
+  failed: number;
+  db_matches: number;
+  status_changed: number;
+}
+
 /** TriagePanel's client-side "description updated" popup state. */
 export interface DescriptionUpdatePopupState {
   company: string;

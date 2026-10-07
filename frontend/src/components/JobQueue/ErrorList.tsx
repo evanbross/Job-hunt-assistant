@@ -32,29 +32,48 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import Modal from "../common/Modal.jsx";
+// ai: claude-sonnet-5 | 2026-10-07
+export interface ScanErrorEntry {
+  message: string;
+  email_id?: string | null;
+}
 
-export default function MoveEmailsStatusDialog({ label, moving, moved, onClose }) {
-  const movedCount = Number(moved) || 0;
+interface ErrorListProps {
+  errors?: (string | ScanErrorEntry)[] | null;
+  onNavigateToEmails?: ((emailId: string) => void) | null;
+}
+
+export default function ErrorList({ errors, onNavigateToEmails }: ErrorListProps) {
+  if (!errors?.length) return null;
   return (
-    <Modal
-      title={moving ? "Moving emails" : "Emails moved"}
-      subtitle={moving
-        ? "Moving selected emails to the scanned folder..."
-        : movedCount > 0
-          ? `Moved ${movedCount} email${movedCount === 1 ? "" : "s"} to ${label}.`
-          : `Move request completed for ${label}.`}
-      onClose={onClose}
-      showCloseButton={!moving}
-      footer={!moving && <button className="btn-secondary" onClick={onClose}>Close</button>}
-      maxWidth="420px"
-    >
-      {moving && (
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-muted)", fontSize: "14px" }}>
-          <span className="inline-spinner" style={{ color: "var(--accent)" }} />
-          <span>Waiting for Gmail to finish the move...</span>
-        </div>
-      )}
-    </Modal>
+    <ul style={{ marginTop: "8px", fontSize: "11px", color: "var(--red)", paddingLeft: "16px" }}>
+      {errors.map((e, i) => {
+        const message = typeof e === "string" ? e : e.message;
+        const emailId = typeof e === "object" ? e.email_id : null;
+        return (
+          <li key={i} style={{ marginBottom: "3px" }}>
+            {message}
+            {emailId && onNavigateToEmails && (
+              <button
+                onClick={() => onNavigateToEmails(emailId)}
+                style={{
+                  marginLeft: "8px",
+                  fontSize: "10px",
+                  padding: "1px 7px",
+                  borderRadius: "4px",
+                  border: "1px solid var(--red)",
+                  background: "transparent",
+                  color: "var(--red)",
+                  cursor: "pointer",
+                  verticalAlign: "middle",
+                }}
+              >
+                View email →
+              </button>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

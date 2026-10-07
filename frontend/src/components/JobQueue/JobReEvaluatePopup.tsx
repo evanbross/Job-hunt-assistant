@@ -32,11 +32,29 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import Modal from "../common/Modal.jsx";
-import { fitReasoningBullets, reasoningWithoutPenaltySummary, scoreLabel } from "../../utils/fitScoringUtils.js";
-import { dispositionLabel, scoreDeltaLabel } from "../../utils/jobQueueUtils.js";
+// ai: claude-sonnet-5 | 2026-10-07
+import Modal from "../common/Modal.tsx";
+import { fitReasoningBullets, reasoningWithoutPenaltySummary, scoreLabel } from "../../utils/fitScoringUtils.ts";
+import { dispositionLabel, scoreDeltaLabel } from "../../utils/jobQueueUtils.ts";
 
-export default function JobReEvaluatePopup({ popup, onClose }) {
+export interface JobReEvaluatePopupState {
+  jobTitle?: string | null;
+  company?: string | null;
+  phase: "running" | "error" | "done";
+  fitReasoning?: string | null;
+  status?: string | null;
+  heading?: string | null;
+  error?: string | null;
+  previousScore?: number | null;
+  newScore?: number | null;
+}
+
+interface JobReEvaluatePopupProps {
+  popup: JobReEvaluatePopupState;
+  onClose: () => void;
+}
+
+export default function JobReEvaluatePopup({ popup, onClose }: JobReEvaluatePopupProps) {
   const title = popup.jobTitle || "Job";
   const companyText = popup.company ? ` at ${popup.company}` : "";
   const isRunning = popup.phase === "running";

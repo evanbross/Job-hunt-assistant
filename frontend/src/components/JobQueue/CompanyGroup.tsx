@@ -32,10 +32,15 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useState } from "react";
-import renderJobOrTriageCard from "./renderJobOrTriageCard.jsx";
+import type { CSSProperties } from "react";
+import renderJobOrTriageCard from "./renderJobOrTriageCard.tsx";
+import type { ApplicationHistoryRow, CompanyJobCounts, Job } from "../../types/jobs.ts";
+import type { ContactsByCompany } from "../../types/contacts.ts";
+import type { TriageHandlers } from "../../types/jobQueue.ts";
 
-const companyGroupStyle = {
+const companyGroupStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-lg)",
@@ -43,7 +48,7 @@ const companyGroupStyle = {
   overflow: "hidden",
 };
 
-const companyGroupHeaderStyle = {
+const companyGroupHeaderStyle: CSSProperties = {
   alignItems: "center",
   cursor: "pointer",
   display: "flex",
@@ -52,10 +57,27 @@ const companyGroupHeaderStyle = {
   userSelect: "none",
 };
 
+interface CompanyGroupProps {
+  company: string;
+  jobs: Job[];
+  triageHandlers: TriageHandlers;
+  allSheetRows: ApplicationHistoryRow[] | null;
+  contactsByCompany?: ContactsByCompany;
+  companyJobCounts?: CompanyJobCounts | null;
+  onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
+  onQueueApprove: (jobId: number) => Promise<void>;
+  onQueueReEvaluate?: ((job: Job) => Promise<void>) | null;
+  onQueueSkip: (jobId: number, reason: string, feedback: string, mismatchReasons: string[]) => Promise<void>;
+  onQueueSnooze: (jobId: number, days: number) => Promise<void>;
+  onQueueRescanEmail?: ((job: Job) => Promise<void>) | null;
+  onQueueUpdate: (jobId: number, updatedJob: Job, originalJob: Job) => void;
+  defaultSnoozeDays: number;
+}
+
 export default function CompanyGroup({
   company, jobs, triageHandlers, allSheetRows, contactsByCompany, companyJobCounts, onNavigateToJobCard,
   onQueueApprove, onQueueReEvaluate, onQueueSkip, onQueueSnooze, onQueueRescanEmail, onQueueUpdate, defaultSnoozeDays,
-}) {
+}: CompanyGroupProps) {
   const [open, setOpen] = useState(false);
   const queueCount = jobs.filter((j) => j.status === "pending_review").length;
   const triageCount = jobs.filter((j) => j.status !== "pending_review").length;

@@ -32,9 +32,23 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import Modal from "../common/Modal.jsx";
+// ai: claude-sonnet-5 | 2026-10-07
+import type { ReactNode } from "react";
+import Modal from "../common/Modal.tsx";
 
-export default function ProgressPopup({ title, message, progress, connectionWarning, currentEmailSender, currentEmailSubject, currentEmailId, currentJobTitle, children }) {
+interface ProgressPopupProps {
+  title: string;
+  message?: string | null;
+  progress?: number | null;
+  connectionWarning?: string | null;
+  currentEmailSender?: string | null;
+  currentEmailSubject?: string | null;
+  currentEmailId?: string | null;
+  currentJobTitle?: string | null;
+  children?: ReactNode;
+}
+
+export default function ProgressPopup({ title, message, progress, connectionWarning, currentEmailSender, currentEmailSubject, currentEmailId, currentJobTitle, children }: ProgressPopupProps) {
   const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
   return (
     <Modal

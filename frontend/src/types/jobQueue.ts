@@ -32,37 +32,36 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-export default function ErrorList({ errors, onNavigateToEmails }) {
-  if (!errors?.length) return null;
-  return (
-    <ul style={{ marginTop: "8px", fontSize: "11px", color: "var(--red)", paddingLeft: "16px" }}>
-      {errors.map((e, i) => {
-        const message = typeof e === "string" ? e : e.message;
-        const emailId = typeof e === "object" ? e.email_id : null;
-        return (
-          <li key={i} style={{ marginBottom: "3px" }}>
-            {message}
-            {emailId && onNavigateToEmails && (
-              <button
-                onClick={() => onNavigateToEmails(emailId)}
-                style={{
-                  marginLeft: "8px",
-                  fontSize: "10px",
-                  padding: "1px 7px",
-                  borderRadius: "4px",
-                  border: "1px solid var(--red)",
-                  background: "transparent",
-                  color: "var(--red)",
-                  cursor: "pointer",
-                  verticalAlign: "middle",
-                }}
-              >
-                View email →
-              </button>
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
+// ai: claude-sonnet-5 | 2026-10-07
+// Client-side handler bundles JobQueue/index.tsx builds and hands down through
+// CompanyGroup -> renderJobOrTriageCard to JobCard / TriageCard / DuplicateCard.
+// Not a backend shape; grouped here because both CompanyGroup.tsx and
+// renderJobOrTriageCard.tsx need the exact same two interfaces.
+import type { Job } from "./jobs.ts";
+
+export interface QueueHandlers {
+  onApprove: (jobId: number) => Promise<void>;
+  onReEvaluate?: ((job: Job) => Promise<void>) | null;
+  onSkip: (jobId: number, reason: string, feedback: string, mismatchReasons: string[]) => Promise<void>;
+  onSnooze: (jobId: number, days: number) => Promise<void>;
+  onRescanEmail?: ((job: Job) => Promise<void>) | null;
+  onUpdate: (jobId: number, updatedJob: Job, originalJob: Job) => void;
 }
+
+export interface TriageHandlers {
+  approve: (job: Job) => Promise<void>;
+  skip: (job: Pick<Job, "id">, reason: string, feedback: string, mismatchReasons: string[]) => Promise<void>;
+  markUnique: (job: Pick<Job, "id">) => Promise<void>;
+  markApplied: (job: Pick<Job, "id">) => Promise<void>;
+  reEvaluateFit: (job: Job) => Promise<Job | undefined>;
+  refreshFromUrl: (job: Job) => Promise<void>;
+  reprocessed: (job: Job, updated: Job) => void;
+  rescanEmail: (job: Job) => Promise<void>;
+  snooze: (jobId: number, days: number) => Promise<void>;
+  descriptionUpdated: (
+    job: Job,
+    updated: Job,
+    previous: { previousScore?: number | null; previousStatus?: string | null },
+  ) => void;
+}
+

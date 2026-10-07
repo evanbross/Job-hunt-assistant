@@ -32,10 +32,17 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import Modal from "../common/Modal.jsx";
-import MetricGrid, { MetricItem } from "../common/MetricGrid.jsx";
+// ai: claude-sonnet-5 | 2026-10-07
+import Modal from "../common/Modal.tsx";
+import MetricGrid, { MetricItem } from "../common/MetricGrid.tsx";
+import type { ImportFailureDetail, ImportOutcomeDetail, ImportSummary } from "../../types/importing.ts";
 
-export default function ImportSummaryPopup({ summary, onClose }) {
+interface ImportSummaryPopupProps {
+  summary: ImportSummary;
+  onClose: () => void;
+}
+
+export default function ImportSummaryPopup({ summary, onClose }: ImportSummaryPopupProps) {
   const { queued, skipped, repaired = 0, enriched = 0, failed } = summary;
   const sourceName = summary.capture_source?.name;
 
@@ -60,8 +67,28 @@ export default function ImportSummaryPopup({ summary, onClose }) {
   );
 }
 
-export function ImportBreakdownDetails({ summary, compact = false }) {
-  const sections = [
+interface ImportBreakdownRow extends ImportOutcomeDetail {
+  action: string;
+}
+
+interface ImportBreakdownFailureRow extends ImportFailureDetail {
+  action: string;
+}
+
+interface ImportBreakdownSection {
+  key: string;
+  title: string;
+  tone: string;
+  rows: (ImportBreakdownRow | ImportBreakdownFailureRow)[];
+}
+
+interface ImportBreakdownDetailsProps {
+  summary: ImportSummary;
+  compact?: boolean;
+}
+
+export function ImportBreakdownDetails({ summary, compact = false }: ImportBreakdownDetailsProps) {
+  const sections: ImportBreakdownSection[] = [
     {
       key: "queued",
       title: "Queued",
@@ -130,10 +157,10 @@ export function ImportBreakdownDetails({ summary, compact = false }) {
                   </div>
                   <div style={{ color: section.tone, overflowWrap: "anywhere" }}>
                     {row.reason}
-                    {row.error_type && ` (${row.error_type}${row.stage ? ` during ${row.stage}` : ""})`}
+                    {"error_type" in row && row.error_type && ` (${row.error_type}${row.stage ? ` during ${row.stage}` : ""})`}
                   </div>
                   {/* ai: claude-sonnet-5 | 2026-07-30 */}
-                  {row.captured_text && (
+                  {"captured_text" in row && row.captured_text && (
                     <pre
                       style={{
                         margin: "4px 0 0",
@@ -163,9 +190,14 @@ export function ImportBreakdownDetails({ summary, compact = false }) {
   );
 }
 
-function normalizeImportOutcomeDetails(summary, key, expectedCount, fallback) {
-  const rows = Array.isArray(summary?.[key]) ? summary[key] : [];
-  const normalized = rows.map((row) => ({
+function normalizeImportOutcomeDetails(
+  summary: ImportSummary,
+  key: "queued_details" | "skipped_details" | "repaired_details" | "enriched_details",
+  expectedCount: number,
+  fallback: { action: string; reason: string },
+): ImportBreakdownRow[] {
+  const rows = Array.isArray(summary?.[key]) ? summary[key] ?? [] : [];
+  const normalized: ImportBreakdownRow[] = rows.map((row) => ({
     url: row?.url || "",
     platform: row?.platform || "",
     job_title: row?.job_title || "",
@@ -188,10 +220,10 @@ function normalizeImportOutcomeDetails(summary, key, expectedCount, fallback) {
   return normalized;
 }
 
-function normalizeImportFailures(summary) {
+function normalizeImportFailures(summary: ImportSummary): ImportFailureDetail[] {
   const failures = Array.isArray(summary?.failures) ? summary.failures : [];
   const failedCount = Number(summary?.failed) || 0;
-  const normalized = failures.map((failure) => ({
+  const normalized: ImportFailureDetail[] = failures.map((failure) => ({
     url: failure?.url || "",
     platform: failure?.platform || "",
     job_title: failure?.job_title || "",
@@ -214,7 +246,7 @@ function normalizeImportFailures(summary) {
   return normalized;
 }
 
-function failureLabel(failure) {
+function failureLabel(failure: ImportBreakdownRow | ImportBreakdownFailureRow): string {
   const title = failure.job_title || "Imported job";
   const company = failure.company ? ` at ${failure.company}` : "";
   const source = failure.platform ? `${failure.platform}: ` : "";
