@@ -32,6 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
