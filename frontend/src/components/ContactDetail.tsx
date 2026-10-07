@@ -14,12 +14,24 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useState } from "react";
+import type { CSSProperties } from "react";
 import {
   formatLocalDateTime,
   localInputToUtcIso,
   toLocalDateTimeInputValue,
-} from "../utils/dateTimeUtils.js";
+} from "../utils/dateTimeUtils.ts";
+import type { Contact, ContactEmail } from "../types/contacts.ts";
+
+interface ContactDetailProps {
+  contact: Contact;
+  onSaveEmailAddress: (contactId: number, address: string) => Promise<boolean>;
+  onSaveNotes: (contactId: number, notes: string) => Promise<boolean>;
+  onLogEmail: (contactId: number, sentAtUtc: string) => Promise<void>;
+  onSetResponse: (contactId: number, emailId: number, responseReceivedAt: string | null) => Promise<void>;
+  onDeleteEmail: (contactId: number, emailId: number) => Promise<void>;
+}
 
 // ai: claude-sonnet-5 | 2026-09-25
 /**
@@ -34,13 +46,13 @@ export default function ContactDetail({
   onLogEmail,
   onSetResponse,
   onDeleteEmail,
-}) {
+}: ContactDetailProps) {
   const [addressDraft, setAddressDraft] = useState(contact.email_address || "");
   const [notesDraft, setNotesDraft] = useState(contact.notes || "");
   const [sentAtInput, setSentAtInput] = useState(toLocalDateTimeInputValue());
   const [pending, setPending] = useState(false);
 
-  const run = async (action) => {
+  const run = async (action: () => Promise<unknown>) => {
     setPending(true);
     try {
       await action();
@@ -76,7 +88,7 @@ export default function ContactDetail({
     run(() => onLogEmail(contact.id, sentAtUtc));
   };
 
-  const handleDelete = (email) => {
+  const handleDelete = (email: ContactEmail) => {
     if (!window.confirm(`Remove the email logged on ${formatLocalDateTime(email.sent_at)}?`)) return;
     run(() => onDeleteEmail(contact.id, email.id));
   };
@@ -182,19 +194,19 @@ export default function ContactDetail({
   );
 }
 
-const detailBox = {
+const detailBox: CSSProperties = {
   padding: "12px 14px 14px 44px",
   background: "var(--surface2)",
   borderTop: "1px solid var(--border)",
 };
 
-const fieldRow = {
+const fieldRow: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "10px",
 };
 
-const fieldLabel = {
+const fieldLabel: CSSProperties = {
   fontSize: "12px",
   fontWeight: 700,
   color: "var(--text-muted)",
@@ -203,7 +215,7 @@ const fieldLabel = {
   minWidth: "90px",
 };
 
-const emailRow = {
+const emailRow: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "10px",

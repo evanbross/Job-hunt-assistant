@@ -35,10 +35,12 @@
 // ai: claude-sonnet-5 | 2026-08-21 — registration is email-verified now:
 // "Create account" submits an email only and shows a "check your email"
 // message. The password is set later, on /verify-account (see
-// VerifyAccountPage.jsx), after the emailed link is followed.
+// VerifyAccountPage.tsx), after the emailed link is followed.
 import { useState } from "react";
-import { apiFetch } from "../utils/apiClient.js";
-import { describeFetchError } from "../utils/fetchErrorUtils.js";
+import type { CSSProperties } from "react";
+import { apiFetch } from "../utils/apiClient.ts";
+import { describeFetchError } from "../utils/fetchErrorUtils.ts";
+import type { ApiErrorBody } from "../types/common.ts";
 
 const styles = {
   wrap: {
@@ -47,34 +49,34 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     background: "var(--bg, #f4f5fb)",
-  },
+  } as CSSProperties,
   card: {
     width: "320px",
     background: "var(--card-bg, #fff)",
     borderRadius: "var(--radius, 8px)",
     boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
     padding: "32px 28px",
-  },
+  } as CSSProperties,
   logo: {
     fontSize: "20px",
     fontWeight: "700",
     marginBottom: "4px",
-  },
+  } as CSSProperties,
   sub: {
     fontSize: "13px",
     color: "var(--text-muted, #777)",
     marginBottom: "22px",
-  },
+  } as CSSProperties,
   field: {
     marginBottom: "14px",
-  },
+  } as CSSProperties,
   label: {
     display: "block",
     fontSize: "12px",
     fontWeight: "600",
     marginBottom: "5px",
     color: "var(--text, #333)",
-  },
+  } as CSSProperties,
   input: {
     width: "100%",
     padding: "9px 11px",
@@ -82,32 +84,38 @@ const styles = {
     border: "1px solid var(--border, #ccc)",
     borderRadius: "var(--radius, 8px)",
     boxSizing: "border-box",
-  },
+  } as CSSProperties,
   error: {
     color: "var(--red, #d33)",
     fontSize: "13px",
     marginBottom: "14px",
-  },
+  } as CSSProperties,
   success: {
     color: "var(--green, #1a8a4a)",
     fontSize: "13px",
     lineHeight: "1.5",
-  },
+  } as CSSProperties,
   toggle: {
     marginTop: "16px",
     fontSize: "13px",
     textAlign: "center",
     color: "var(--text-muted, #777)",
-  },
+  } as CSSProperties,
   toggleLink: {
     color: "var(--accent, #4a5cf7)",
     cursor: "pointer",
     fontWeight: "600",
-  },
+  } as CSSProperties,
 };
 
-export default function LoginPage({ onLoginSuccess }) {
-  const [mode, setMode] = useState("login"); // "login" | "create" | "check_email" | "forgot" | "forgot_sent"
+type LoginMode = "login" | "create" | "check_email" | "forgot" | "forgot_sent";
+
+interface LoginPageProps {
+  onLoginSuccess: () => void;
+}
+
+export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
+  const [mode, setMode] = useState<LoginMode>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -116,13 +124,13 @@ export default function LoginPage({ onLoginSuccess }) {
   const isCreate = mode === "create";
   const isForgot = mode === "forgot";
 
-  const switchMode = (nextMode) => {
+  const switchMode = (nextMode: LoginMode) => {
     setMode(nextMode);
     setError("");
     setPassword("");
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (submitting) return;
     setSubmitting(true);
@@ -138,7 +146,7 @@ export default function LoginPage({ onLoginSuccess }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(isCreate || isForgot ? { email } : { email, password }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(data.error || `Request failed (HTTP ${res.status})`);
         return;

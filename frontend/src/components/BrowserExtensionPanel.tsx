@@ -14,9 +14,13 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useState } from "react";
-import { apiFetch } from "../utils/apiClient.js";
-import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
+import type { CSSProperties } from "react";
+import { apiFetch } from "../utils/apiClient.ts";
+import { formatLocalDateTime } from "../utils/dateTimeUtils.ts";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { CreateExtensionTokenResponse, ExtensionToken, ExtensionTokensListResponse } from "../types/extensionAuth.ts";
 
 const EXPIRY_OPTIONS = [
   { value: "", label: "Never expires" },
@@ -26,7 +30,7 @@ const EXPIRY_OPTIONS = [
 ];
 
 // ai: claude-sonnet-5 | 2026-09-26
-function tokenStatus(token) {
+function tokenStatus(token: ExtensionToken): { label: string; className: string } {
   if (token.revoked_at) return { label: "Revoked", className: "badge-gray" };
   if (token.expires_at && new Date(token.expires_at) <= new Date()) {
     return { label: "Expired", className: "badge-orange" };
@@ -41,24 +45,24 @@ function tokenStatus(token) {
  * its short prefix is available, so a lost token is replaced, not recovered.
  */
 export default function BrowserExtensionPanel() {
-  const [tokens, setTokens] = useState([]);
+  const [tokens, setTokens] = useState<ExtensionToken[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [label, setLabel] = useState("");
   const [expiresInDays, setExpiresInDays] = useState("");
   const [creating, setCreating] = useState(false);
-  const [newToken, setNewToken] = useState(null);
+  const [newToken, setNewToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   const loadTokens = async () => {
     try {
       const res = await apiFetch("/api/extension-tokens");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data: ExtensionTokensListResponse = await res.json();
       setTokens(data.tokens);
       setLoadError("");
     } catch (e) {
-      setLoadError(`Could not load tokens: ${e.message}`);
+      setLoadError(`Could not load tokens: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setLoading(false);
     }
@@ -83,7 +87,7 @@ export default function BrowserExtensionPanel() {
           expires_in_days: expiresInDays === "" ? null : Number(expiresInDays),
         }),
       });
-      const data = await res.json();
+      const data: CreateExtensionTokenResponse & ApiErrorBody = await res.json();
       if (!res.ok) {
         window.alert(data.error || `Could not create the token (HTTP ${res.status})`);
         return;
@@ -94,13 +98,13 @@ export default function BrowserExtensionPanel() {
       setExpiresInDays("");
       await loadTokens();
     } catch (e) {
-      window.alert(`Could not create the token: ${e.message}`);
+      window.alert(`Could not create the token: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setCreating(false);
     }
   };
 
-  const revokeToken = async (token) => {
+  const revokeToken = async (token: ExtensionToken) => {
     if (!window.confirm(`Revoke "${token.label}"? Any browser using it will stop working until you give it a new token.`)) {
       return;
     }
@@ -109,11 +113,12 @@ export default function BrowserExtensionPanel() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await loadTokens();
     } catch (e) {
-      window.alert(`Could not revoke the token: ${e.message}`);
+      window.alert(`Could not revoke the token: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
   const copyToken = async () => {
+    if (!newToken) return;
     try {
       await navigator.clipboard.writeText(newToken);
       setCopied(true);
@@ -230,14 +235,14 @@ export default function BrowserExtensionPanel() {
   );
 }
 
-const helpText = {
+const helpText: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   marginBottom: "14px",
   maxWidth: "640px",
 };
 
-const newTokenBox = {
+const newTokenBox: CSSProperties = {
   background: "var(--green-light)",
   border: "1px solid var(--green)",
   borderRadius: "var(--radius)",
@@ -246,7 +251,7 @@ const newTokenBox = {
   fontSize: "13px",
 };
 
-const tokenCode = {
+const tokenCode: CSSProperties = {
   flex: 1,
   minWidth: 0,
   overflowWrap: "anywhere",
@@ -257,7 +262,7 @@ const tokenCode = {
   userSelect: "all",
 };
 
-const createRow = {
+const createRow: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   alignItems: "flex-end",
@@ -265,7 +270,7 @@ const createRow = {
   marginBottom: "18px",
 };
 
-const fieldLabel = {
+const fieldLabel: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: "4px",
@@ -274,9 +279,9 @@ const fieldLabel = {
   color: "var(--text-muted)",
 };
 
-const tableStyle = { width: "100%", borderCollapse: "collapse", fontSize: "13px" };
+const tableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: "13px" };
 
-const thStyle = {
+const thStyle: CSSProperties = {
   textAlign: "left",
   padding: "6px 8px",
   fontSize: "11px",
@@ -287,4 +292,4 @@ const thStyle = {
   borderBottom: "1px solid var(--border)",
 };
 
-const tdStyle = { padding: "8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
+const tdStyle: CSSProperties = { padding: "8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
