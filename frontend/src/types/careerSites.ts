@@ -47,6 +47,8 @@ export interface CareerSite {
   last_captured_at?: string | null;
   recapture_interval_days: number;
   created_at?: string | null;
+  /** Only present on GET /api/career-sites/recapture-due rows (computed column). */
+  next_capture_due_at?: string | null;
 }
 
 export interface CareerScanStatus {

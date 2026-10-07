@@ -92,3 +92,27 @@ export interface ContactsImportSummary {
   skipped: number;
   total_rows: number;
 }
+
+// ai: claude-sonnet-5 | 2026-10-07
+// Matches backend/db/repositories/companies.py's workforce CHECK constraint.
+export type CompanyWorkforce = "unknown" | "onshore" | "offshore_hybrid";
+
+/**
+ * One row of GET /api/contacts/companies (routes/contacts.py's
+ * get_companies_report, backed by CompaniesRepository.report) -- one row per
+ * distinct company with at least one recruiter-flagged contact.
+ */
+export interface CompanyReportRow {
+  company_normalized: string;
+  company_raw: string;
+  contact_count: number;
+  recruiter_count: number;
+  is_agency: boolean;
+  workforce: CompanyWorkforce;
+  notes: string | null;
+}
+
+/** Response body of GET /api/contacts/companies. */
+export interface CompaniesReportResponse {
+  companies: CompanyReportRow[];
+}

@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import CompaniesReport from "./CompaniesReport.jsx";
+import CompaniesReport from "./CompaniesReport.tsx";
 import ContactDetail from "./ContactDetail.jsx";
 import ContactsImport from "./ContactsImport.jsx";
 import TitlesReport from "./TitlesReport.jsx";

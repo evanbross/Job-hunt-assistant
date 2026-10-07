@@ -32,21 +32,27 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { parseUtcTimestamp } from "../utils/dateTimeUtils.js";
-import { isManualCollectionSite } from "../utils/careerSiteUtils.js";
-import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
-import { CareerScanProgressPopup, CareerScanSummaryPopup } from "./common/CareerScanModals.jsx";
+import type { CSSProperties } from "react";
+import { parseUtcTimestamp } from "../utils/dateTimeUtils.ts";
+import { isManualCollectionSite } from "../utils/careerSiteUtils.ts";
+import { readStoredPref, writeStoredPref } from "../utils/storedPreference.ts";
+import { CareerScanProgressPopup, CareerScanSummaryPopup } from "./common/CareerScanModals.tsx";
+import type { CareerSite, CareerScanStatus } from "../types/careerSites.ts";
+import type { ApiErrorBody } from "../types/common.ts";
 
 const SORT_STORAGE_KEY = "jha.careerSiteScanBanner.sort";
 const COLLAPSED_STORAGE_KEY = "jha.careerSiteScanBanner.collapsed";
 
-const SORT_OPTIONS = [
+type SortKey = "name" | "age";
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: "name", label: "Name" },
   { key: "age", label: "Time since last scanned" },
 ];
 
-function formatAge(isoTimestamp) {
+function formatAge(isoTimestamp?: string | null): string {
   if (!isoTimestamp) return "never scanned";
   const parsed = parseUtcTimestamp(isoTimestamp);
   if (!parsed) return "never scanned";
@@ -58,7 +64,7 @@ function formatAge(isoTimestamp) {
 }
 
 // ai: claude-sonnet-5 | 2026-07-21
-function sortDueSites(sites, sortBy) {
+function sortDueSites(sites: CareerSite[], sortBy: SortKey): CareerSite[] {
   const sorted = [...sites];
   if (sortBy === "age") {
     sorted.sort((a, b) => {
@@ -73,14 +79,14 @@ function sortDueSites(sites, sortBy) {
 }
 
 export default function CareerSiteScanBanner() {
-  const [dueSites, setDueSites] = useState([]);
-  const [scanStatus, setScanStatus] = useState(null);
+  const [dueSites, setDueSites] = useState<CareerSite[]>([]);
+  const [scanStatus, setScanStatus] = useState<CareerScanStatus | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [scanSummary, setScanSummary] = useState(null);
-  const [sortBy, setSortBy] = useState(() => readStoredPref(SORT_STORAGE_KEY, "name"));
+  const [scanSummary, setScanSummary] = useState<CareerScanStatus | null>(null);
+  const [sortBy, setSortBy] = useState<SortKey>(() => readStoredPref(SORT_STORAGE_KEY, "name") as SortKey);
   const [collapsed, setCollapsed] = useState(() => readStoredPref(COLLAPSED_STORAGE_KEY) === "true");
-  const pollRef = useRef(null);
-  const duePollRef = useRef(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const duePollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   useEffect(() => {
     writeStoredPref(SORT_STORAGE_KEY, sortBy);
@@ -94,7 +100,7 @@ export default function CareerSiteScanBanner() {
     try {
       const res = await fetch("/api/career-sites/recapture-due");
       if (res.ok) {
-        const sites = await res.json();
+        const sites: CareerSite[] = await res.json();
         setDueSites(sites);
       }
     } catch {
@@ -108,7 +114,7 @@ export default function CareerSiteScanBanner() {
     try {
       const res = await fetch("/api/career-scan/status");
       if (!res.ok) return;
-      const data = await res.json();
+      const data: CareerScanStatus = await res.json();
       setScanStatus(data);
       if (!data.running) {
         setScanning(false);
@@ -145,10 +151,10 @@ export default function CareerSiteScanBanner() {
     };
   }, [scanning, fetchScanStatus, fetchDueSites]);
 
-  const handleScan = async (siteId) => {
+  const handleScan = async (siteId: number) => {
     const res = await fetch(`/api/career-sites/${siteId}/scan`, { method: "POST" });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(`Scan failed: ${err.error || res.status}`);
       return;
     }
@@ -156,15 +162,15 @@ export default function CareerSiteScanBanner() {
     setScanStatus(null);
   };
 
-  const handleOpenSite = (site) => {
+  const handleOpenSite = (site: CareerSite) => {
     if (!site?.url) return;
     window.open(site.url, "_blank", "noopener,noreferrer");
   };
 
-  const handleDismiss = async (siteId) => {
+  const handleDismiss = async (siteId: number) => {
     const res = await fetch(`/api/career-sites/${siteId}/dismiss-recapture`, { method: "POST" });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(`Dismiss failed: ${err.error || res.status}`);
       return;
     }
@@ -202,7 +208,7 @@ export default function CareerSiteScanBanner() {
                     <label style={sortLabelStyle}>Sort:</label>
                     <select
                       value={sortBy}
-                      onChange={(e) => setSortBy(e.target.value)}
+                      onChange={(e) => setSortBy(e.target.value as SortKey)}
                       style={sortSelectStyle}
                     >
                       {SORT_OPTIONS.map((opt) => (
@@ -262,28 +268,28 @@ export default function CareerSiteScanBanner() {
   );
 }
 
-const bannerWrapStyle = {
+const bannerWrapStyle: CSSProperties = {
   maxWidth: "1200px",
   margin: "0 auto",
   width: "100%",
   padding: "12px 28px 0 28px",
 };
 
-const bannerInnerStyle = {
+const bannerInnerStyle: CSSProperties = {
   background: "var(--accent-light)",
   border: "1px solid rgba(74,92,247,0.25)",
   borderRadius: "var(--radius)",
   padding: "12px 16px",
 };
 
-const headerRowStyle = {
+const headerRowStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
   marginBottom: "10px",
 };
 
-const labelStyle = {
+const labelStyle: CSSProperties = {
   fontSize: "12px",
   fontWeight: 700,
   color: "var(--accent)",
@@ -291,7 +297,7 @@ const labelStyle = {
   letterSpacing: "0.04em",
 };
 
-const siteListStyle = {
+const siteListStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: "6px",
@@ -299,20 +305,20 @@ const siteListStyle = {
   overflowY: "auto",
 };
 
-const headerControlsStyle = {
+const headerControlsStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "8px",
   flexShrink: 0,
 };
 
-const sortLabelStyle = {
+const sortLabelStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   whiteSpace: "nowrap",
 };
 
-const sortSelectStyle = {
+const sortSelectStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -323,19 +329,19 @@ const sortSelectStyle = {
   width: "fit-content",
 };
 
-const collapseBtnStyle = {
+const collapseBtnStyle: CSSProperties = {
   flexShrink: 0,
   padding: "3px 12px",
   fontSize: "12px",
 };
 
-const siteRowStyle = {
+const siteRowStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "10px",
 };
 
-const siteNameStyle = {
+const siteNameStyle: CSSProperties = {
   fontSize: "13px",
   fontWeight: 600,
   color: "var(--text)",
@@ -346,15 +352,14 @@ const siteNameStyle = {
   whiteSpace: "nowrap",
 };
 
-const siteAgeStyle = {
+const siteAgeStyle: CSSProperties = {
   fontSize: "12px",
   color: "var(--text-muted)",
   flexShrink: 0,
 };
 
-const scanBtnStyle = {
+const scanBtnStyle: CSSProperties = {
   flexShrink: 0,
   padding: "3px 12px",
   fontSize: "12px",
 };
-

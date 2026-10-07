@@ -14,18 +14,25 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
+import type {
+  CompaniesReportResponse,
+  CompanyReportRow,
+  CompanyWorkforce,
+} from "../types/contacts.ts";
 
 // ai: claude-sonnet-5 | 2026-09-28
 // Matches backend/db/repositories/companies.py's workforce CHECK constraint.
-const WORKFORCE_OPTIONS = [
+const WORKFORCE_OPTIONS: { value: CompanyWorkforce; label: string }[] = [
   { value: "unknown", label: "Unknown" },
   { value: "onshore", label: "Onshore" },
   { value: "offshore_hybrid", label: "Offshore hybrid" },
 ];
 
 // ai: claude-sonnet-5 | 2026-09-28
-async function sendJson(url, method, body) {
+async function sendJson(url: string, method: string, body?: unknown): Promise<Response> {
   return fetch(url, {
     method,
     headers: { "Content-Type": "application/json" },
@@ -33,28 +40,30 @@ async function sendJson(url, method, body) {
   });
 }
 
+type CompanyPatchFields = Partial<Pick<CompanyReportRow, "is_agency" | "workforce" | "notes">>;
+
 // ai: claude-sonnet-5 | 2026-09-28
 // docs/contacts-recruiter-classification-plan.md build-order item 2: one row
 // per company that has at least one recruiter-flagged contact, with agency
 // and workforce set here and applying to everyone at that company.
 export default function CompaniesReport() {
-  const [companies, setCompanies] = useState([]);
+  const [companies, setCompanies] = useState<CompanyReportRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
-  const [notesDrafts, setNotesDrafts] = useState({});
-  const [highlighted, setHighlighted] = useState(null);
-  const [skipped, setSkipped] = useState(() => new Set());
+  const [notesDrafts, setNotesDrafts] = useState<Record<string, string>>({});
+  const [highlighted, setHighlighted] = useState<string | null>(null);
+  const [skipped, setSkipped] = useState<Set<string>>(() => new Set());
 
   const loadCompanies = async () => {
     try {
       const res = await fetch("/api/contacts/companies");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data: CompaniesReportResponse = await res.json();
       setCompanies(data.companies);
       setLoadError("");
     } catch (e) {
-      setLoadError(`Could not load companies: ${e.message}`);
+      setLoadError(`Could not load companies: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setLoading(false);
     }
@@ -111,10 +120,12 @@ export default function CompaniesReport() {
 
   // Optimistic: flip the UI immediately, roll back only the touched fields if
   // the server rejects the write.
-  const patchCompany = async (companyNormalized, fields) => {
+  const patchCompany = async (companyNormalized: string, fields: CompanyPatchFields) => {
     const previous = companies.find((c) => c.company_normalized === companyNormalized);
     if (!previous) return false;
-    const rollback = Object.fromEntries(Object.keys(fields).map((key) => [key, previous[key]]));
+    const rollback: CompanyPatchFields = Object.fromEntries(
+      Object.keys(fields).map((key) => [key, previous[key as keyof CompanyPatchFields]]),
+    );
     setCompanies((prev) =>
       prev.map((c) => (c.company_normalized === companyNormalized ? { ...c, ...fields } : c)),
     );
@@ -129,12 +140,12 @@ export default function CompaniesReport() {
       setCompanies((prev) =>
         prev.map((c) => (c.company_normalized === companyNormalized ? { ...c, ...rollback } : c)),
       );
-      window.alert(`Save failed: ${e.message}`);
+      window.alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     }
   };
 
-  const commitNotes = (companyNormalized) => {
+  const commitNotes = (companyNormalized: string) => {
     const draft = (notesDrafts[companyNormalized] || "").trim();
     const current = companies.find((c) => c.company_normalized === companyNormalized);
     if (!current || draft === (current.notes || "")) return;
@@ -219,7 +230,9 @@ export default function CompaniesReport() {
                   <select
                     value={company.workforce}
                     onChange={(e) =>
-                      patchCompany(company.company_normalized, { workforce: e.target.value })
+                      patchCompany(company.company_normalized, {
+                        workforce: e.target.value as CompanyWorkforce,
+                      })
                     }
                     aria-label={`Workforce for ${company.company_raw}`}
                     style={{ fontSize: "12px" }}
@@ -263,7 +276,7 @@ export default function CompaniesReport() {
   );
 }
 
-const summaryStyle = {
+const summaryStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   marginTop: "2px",
@@ -271,7 +284,7 @@ const summaryStyle = {
   maxWidth: "640px",
 };
 
-const toolbar = {
+const toolbar: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   alignItems: "center",
@@ -279,7 +292,7 @@ const toolbar = {
   marginBottom: "10px",
 };
 
-const rowGrid = {
+const rowGrid: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(0, 1fr) 90px 100px 90px 150px minmax(120px, 220px)",
   alignItems: "center",
@@ -288,18 +301,18 @@ const rowGrid = {
   borderBottom: "1px solid var(--border)",
 };
 
-const highlightedRow = {
+const highlightedRow: CSSProperties = {
   background: "var(--surface2)",
   boxShadow: "inset 3px 0 0 var(--accent, #4a90d9)",
 };
 
-const headerRow = {
+const headerRow: CSSProperties = {
   background: "var(--surface2)",
   borderBottom: "1px solid var(--border)",
   padding: "6px 14px",
 };
 
-const headerCell = {
+const headerCell: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "6px",

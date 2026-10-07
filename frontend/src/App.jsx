@@ -37,7 +37,7 @@ import LoginPage from "./components/LoginPage.jsx";
 import { apiFetch, UNAUTHENTICATED_EVENT } from "./utils/apiClient.js";
 import JobQueue from "./components/JobQueue/index.jsx";
 import GoogleConnectionMenu from "./components/GoogleConnectionMenu.jsx";
-import CareerSiteScanBanner from "./components/CareerSiteScanBanner.jsx";
+import CareerSiteScanBanner from "./components/CareerSiteScanBanner.tsx";
 import StatsBar from "./components/StatsBar.jsx";
 import RecentChangesModal from "./components/RecentChangesModal.jsx";
 import Modal from "./components/common/Modal.jsx";
