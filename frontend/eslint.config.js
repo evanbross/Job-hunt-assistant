@@ -3,18 +3,18 @@ import globals from "globals";
 import react from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
+import tseslint from "typescript-eslint";
 
-export default [
+export default tseslint.config(
   { ignores: ["dist"] },
   {
-    files: ["**/*.{js,jsx}"],
+    files: ["**/*.{ts,tsx}"],
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       ecmaVersion: 2020,
       globals: globals.browser,
       parserOptions: {
-        ecmaVersion: "latest",
         ecmaFeatures: { jsx: true },
-        sourceType: "module",
       },
     },
     plugins: {
@@ -23,7 +23,6 @@ export default [
       "react-refresh": reactRefresh,
     },
     rules: {
-      ...js.configs.recommended.rules,
       ...reactHooks.configs.recommended.rules,
       // jsx-uses-vars tells no-unused-vars that <Foo /> counts as a
       // reference to Foo — without it, every component only used in JSX
@@ -35,4 +34,14 @@ export default [
       ],
     },
   },
-];
+  {
+    // eslint.config.js itself and vite.config.ts stay plain JS/TS tooling
+    // files, not part of the React src tree.
+    files: ["eslint.config.js"],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.node,
+      sourceType: "module",
+    },
+  },
+);
