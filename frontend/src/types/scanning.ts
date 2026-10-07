@@ -36,6 +36,7 @@
 // Mirrors the email-scan `summary` dict built in routes/scan.py's
 // run_scan_task (the `_update_scan(..., summary={...})` call) and
 // _email_report_row()/the job_details.append(...) block feeding it.
+import type { Job } from "./jobs.ts";
 export interface ScanJobDetail {
   company: string;
   job_title: string;
@@ -96,6 +97,33 @@ export interface ScanSummary {
   email_report: ScanEmailReportRow[];
   sources_with_jobs: number;
   by_source: ScanBySourceCount[];
+}
+
+/**
+ * GET /api/scan/status (routes/scan.py's scan_status) — email-scan task
+ * progress, including the final ScanSummary once `summary` is populated.
+ */
+export interface ScanStatus {
+  running: boolean;
+  progress: number;
+  message: string;
+  jobs_found: number;
+  jobs_processed: number;
+  errors: string[];
+  summary: ScanSummary | null;
+  connection_warning: string;
+  failed: boolean;
+  current_email_sender: string;
+  current_email_subject: string;
+  current_email_id: string;
+  current_job_title: string;
+}
+
+/** POST /api/emails/<id>/rescan response (routes/emails.py's rescan_email). */
+export interface RescanEmailResponse {
+  message?: string;
+  error?: string;
+  jobs?: Job[];
 }
 
 /** POST /api/emails/move-scanned response (routes/emails.py's move_scanned_emails). */

@@ -47,6 +47,8 @@ export interface JobReEvaluatePopupState {
   error?: string | null;
   previousScore?: number | null;
   newScore?: number | null;
+  /** Set by JobQueue/index.tsx callers so onClose can scroll back to the card. */
+  jobId?: number | null;
 }
 
 interface JobReEvaluatePopupProps {

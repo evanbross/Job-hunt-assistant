@@ -98,6 +98,17 @@ export interface ImportRepairResult extends RepairProgressBase {
   patterns: ImportRepairPattern[];
 }
 
+/** POST /api/repair/fix-unknown-companies response (routes/import_.py's fix_unknown_companies). */
+export interface FixUnknownCompaniesResponse {
+  fixed: number;
+  remaining: number;
+}
+
+/** POST /api/repair/delete-unknown-companies response (routes/import_.py's delete_unknown_companies). */
+export interface DeleteUnknownCompaniesResponse {
+  deleted: number;
+}
+
 /** FixCompaniesDialog's local progress-popup state (JobQueue/index.tsx), not a
  * single backend payload — polled and assembled client-side from
  * /api/jobs/fix-unknown-companies/status. */
@@ -105,7 +116,7 @@ export interface FixCompaniesProgress {
   totalFixed: number;
   remaining: number | null;
   done: boolean;
-  error: boolean;
+  error?: boolean;
 }
 
 /** One row of GET /api/import/*'s queued_details/skipped_details/etc. and the
@@ -138,6 +149,51 @@ export interface ImportCaptureSource {
   url?: string;
 }
 
+/** One suggestion from _capture_source_suggestions, offered when a bulk
+ * import can't tell which saved career site a captured page belongs to. */
+export interface CaptureSourceSuggestion {
+  id?: number;
+  name?: string;
+  url?: string;
+  detected_platform?: string;
+}
+
+/** 409 error body from POST /api/import/queue-all when the capture source is ambiguous or missing. */
+export interface ImportSourceRequiredError {
+  error?: string;
+  source_required?: boolean;
+  source_match_required?: boolean;
+  suggestions?: CaptureSourceSuggestion[];
+}
+
+/**
+ * POST /api/import/queue-all's full response surface across every status
+ * code (routes/import_.py's queue_import_capture): a 409 source-required
+ * error, a 202 "dispatched" ack carrying import_id, or (less commonly) a
+ * synchronous ImportSummary when there was nothing to dispatch. Modeled as
+ * one interface with every field optional, rather than a discriminated
+ * union, because the caller (JobQueue/index.tsx) branches on `res.status`/
+ * `res.ok` rather than a shared tag field the backend doesn't send.
+ */
+export interface ImportQueueAllResponse {
+  error?: string;
+  source_required?: boolean;
+  source_match_required?: boolean;
+  suggestions?: CaptureSourceSuggestion[];
+  import_id?: string;
+  queued?: number;
+  skipped?: number;
+  repaired?: number;
+  enriched?: number;
+  failed?: number;
+  capture_source?: ImportCaptureSource | null;
+  queued_details?: ImportOutcomeDetail[];
+  skipped_details?: ImportOutcomeDetail[];
+  repaired_details?: ImportOutcomeDetail[];
+  enriched_details?: ImportOutcomeDetail[];
+  failures?: ImportFailureDetail[];
+}
+
 /** Bulk-import result summary (routes/import_.py's aggregated `combined` dict). */
 export interface ImportSummary {
   queued: number;
@@ -151,4 +207,23 @@ export interface ImportSummary {
   repaired_details?: ImportOutcomeDetail[];
   enriched_details?: ImportOutcomeDetail[];
   failures?: ImportFailureDetail[];
+}
+
+/** GET /api/import/status (routes/import_.py's per-import tracked state). */
+export interface ImportStatus {
+  running: boolean;
+  phase: string;
+  progress: number;
+  message: string;
+  total: number;
+  result: ImportSummary | null;
+  current_job_url: string;
+  current_platform: string;
+  trigger?: string;
+  started_at?: string;
+  capture_source?: ImportCaptureSource | null;
+  steps?: unknown;
+  import_id?: string | null;
+  task_id?: string | null;
+  task_ids?: string[];
 }

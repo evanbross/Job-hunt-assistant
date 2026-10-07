@@ -179,6 +179,13 @@ export interface JobCardUndoEdit {
   type: "url" | "description";
 }
 
+/** POST /api/jobs/manual response (routes/jobs.py's create_manual_job). */
+export interface ManualJobCreateResponse {
+  job: Job;
+  parsed_job_count: number;
+  duplicate?: boolean;
+}
+
 /**
  * TriagePanel/JobCard's client-side "re-evaluate / re-fetch" progress-popup
  * state, assembled from the Job fields of whichever /re-evaluate-fit or
@@ -194,6 +201,9 @@ export interface ReEvaluatePopupState {
   newScore?: number | null;
   status?: string | null;
   error?: string;
+  /** Set only by JobQueue/index.tsx's handleTriageRefreshFromUrl, so its
+   * onClose handler can scroll back to the affected card. */
+  jobId?: number;
 }
 
 /**
@@ -219,6 +229,14 @@ export interface ReEvaluateAllSummary {
   failed: number;
   db_matches: number;
   status_changed: number;
+}
+
+/** GET /api/jobs/re-evaluate/status (routes/fit.py's re_evaluate_status). */
+export interface ReEvaluateStatus {
+  running: boolean;
+  progress: number;
+  message: string;
+  result: ReEvaluateAllSummary | null;
 }
 
 /** TriagePanel's client-side "description updated" popup state. */

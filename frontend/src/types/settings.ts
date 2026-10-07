@@ -51,3 +51,15 @@ export interface SettingsSchema {
   user: SettingSchemaField[];
   system: SettingSchemaField[];
 }
+
+/**
+ * GET /api/config (routes/settings.py's get_config) assembles its response
+ * from the full settings registry at runtime, so its exact key set is only
+ * known there — this lists the one field callers outside SettingsPanel
+ * actually read, plus an index signature for the rest rather than guessing
+ * every registry key here.
+ */
+export interface AppConfigResponse {
+  default_snooze_days?: number;
+  [key: string]: unknown;
+}

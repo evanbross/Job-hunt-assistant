@@ -41,7 +41,7 @@ import type { QueueHandlers, TriageHandlers } from "../../types/jobQueue.ts";
 
 export default function renderJobOrTriageCard(
   job: Job,
-  queueHandlers: QueueHandlers,
+  queueHandlers: QueueHandlers | null,
   triageHandlers: TriageHandlers,
   allSheetRows: ApplicationHistoryRow[] | null,
   onNavigateToJobCard: ((id: number | null, status: string) => void) | null | undefined,
@@ -50,17 +50,21 @@ export default function renderJobOrTriageCard(
   companyJobCounts: CompanyJobCounts | null | undefined,
 ) {
   if (job.status === "pending_review") {
+    // queueHandlers is only ever null for callers that never render a
+    // pending_review job through this path (e.g. the triage-only view) — see
+    // types/jobQueue.ts's QueueHandlers.
+    const handlers = queueHandlers!;
     return (
       <JobCard
         key={job.id}
         job={job}
-        onApprove={queueHandlers.onApprove}
-        onReEvaluate={queueHandlers.onReEvaluate}
-        onSkip={queueHandlers.onSkip}
-        onSnooze={queueHandlers.onSnooze}
-        onRescanEmail={queueHandlers.onRescanEmail}
+        onApprove={handlers.onApprove}
+        onReEvaluate={handlers.onReEvaluate}
+        onSkip={handlers.onSkip}
+        onSnooze={handlers.onSnooze}
+        onRescanEmail={handlers.onRescanEmail}
         onNavigateToJobCard={onNavigateToJobCard}
-        onUpdate={(jobId, updatedJob) => queueHandlers.onUpdate(jobId, updatedJob, job)}
+        onUpdate={(jobId, updatedJob) => handlers.onUpdate(jobId, updatedJob, job)}
         contactsByCompany={contactsByCompany}
         companyJobCounts={companyJobCounts}
         defaultSnoozeDays={defaultSnoozeDays}

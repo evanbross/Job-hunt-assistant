@@ -66,7 +66,7 @@ interface CompanyGroupProps {
   companyJobCounts?: CompanyJobCounts | null;
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
   onQueueApprove: (jobId: number) => Promise<void>;
-  onQueueReEvaluate?: ((job: Job) => Promise<void>) | null;
+  onQueueReEvaluate?: ((job: Job) => Promise<unknown>) | null;
   onQueueSkip: (jobId: number, reason: string, feedback: string, mismatchReasons: string[]) => Promise<void>;
   onQueueSnooze: (jobId: number, days: number) => Promise<void>;
   onQueueRescanEmail?: ((job: Job) => Promise<void>) | null;

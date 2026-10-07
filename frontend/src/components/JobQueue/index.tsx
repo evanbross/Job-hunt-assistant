@@ -32,37 +32,71 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import JobCard from "../JobCard.jsx";
-import { ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "../TriagePanel.jsx";
-import { jobMatchesSearch } from "../../utils/jobSearchUtils.js";
-import { contactsMatchKey } from "../../utils/contactsUtils.js";
-import ReqClosedDialog from "../common/ReqClosedDialog.jsx";
-import { emailIdForRescan, extractSender, extractSubjectWords } from "../../utils/triagePanelUtils.js";
-import { applicationRowFromSheet } from "../../utils/sheetUtils.js";
-import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../../utils/reqClosedScanStorage.js";
-import { readStoredPref, writeStoredPref } from "../../utils/storedPreference.js";
-import { runBatchRefreshFromUrls } from "../../utils/batchRefreshFromUrls.js";
-import { sortJobList, readStoredViewPref } from "./helpers.jsx";
-import FixCompaniesDialog from "./FixCompaniesDialog.jsx";
-import ProgressPopup from "./ProgressPopup.jsx";
-import ErrorList from "./ErrorList.jsx";
-import ImportSummaryPopup, { ImportBreakdownDetails } from "./ImportSummaryPopup.jsx";
-import ReEvaluateSummaryPopup from "./ReEvaluateSummaryPopup.jsx";
-import JobReEvaluatePopup from "./JobReEvaluatePopup.jsx";
-import ScanSummaryPopup from "./ScanSummaryPopup.jsx";
-import ManualEvalDialog from "./ManualEvalDialog.jsx";
-import WttjRepairDialog from "./WttjRepairDialog.jsx";
-import ImportRepairDialog from "./ImportRepairDialog.jsx";
-import RescanImportDialog from "./RescanImportDialog.jsx";
-import CompanyGroup from "./CompanyGroup.jsx";
-import renderJobOrTriageCard from "./renderJobOrTriageCard.jsx";
-import RecentChangesModal from "../RecentChangesModal.jsx";
-import UnreachablePanel from "./UnreachablePanel.jsx";
+import type { CSSProperties } from "react";
+import JobCard from "../JobCard.tsx";
+import { ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "../TriagePanel.tsx";
+import { jobMatchesSearch } from "../../utils/jobSearchUtils.ts";
+import { contactsMatchKey } from "../../utils/contactsUtils.ts";
+import ReqClosedDialog from "../common/ReqClosedDialog.tsx";
+import { emailIdForRescan, extractSender, extractSubjectWords } from "../../utils/triagePanelUtils.ts";
+import { applicationRowFromSheet } from "../../utils/sheetUtils.ts";
+import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../../utils/reqClosedScanStorage.ts";
+import { readStoredPref, writeStoredPref } from "../../utils/storedPreference.ts";
+import { runBatchRefreshFromUrls } from "../../utils/batchRefreshFromUrls.ts";
+import { sortJobList, readStoredViewPref } from "./helpers.tsx";
+import FixCompaniesDialog from "./FixCompaniesDialog.tsx";
+import ProgressPopup from "./ProgressPopup.tsx";
+import ErrorList from "./ErrorList.tsx";
+import ImportSummaryPopup, { ImportBreakdownDetails } from "./ImportSummaryPopup.tsx";
+import ReEvaluateSummaryPopup from "./ReEvaluateSummaryPopup.tsx";
+import JobReEvaluatePopup from "./JobReEvaluatePopup.tsx";
+import type { JobReEvaluatePopupState } from "./JobReEvaluatePopup.tsx";
+import ScanSummaryPopup from "./ScanSummaryPopup.tsx";
+import ManualEvalDialog from "./ManualEvalDialog.tsx";
+import WttjRepairDialog from "./WttjRepairDialog.tsx";
+import ImportRepairDialog from "./ImportRepairDialog.tsx";
+import RescanImportDialog from "./RescanImportDialog.tsx";
+import CompanyGroup from "./CompanyGroup.tsx";
+import renderJobOrTriageCard from "./renderJobOrTriageCard.tsx";
+import RecentChangesModal from "../RecentChangesModal.tsx";
+import UnreachablePanel from "./UnreachablePanel.tsx";
+import type { ApiErrorBody } from "../../types/common.ts";
+import type { ContactsByCompany } from "../../types/contacts.ts";
+import type { BoardSearchStatus } from "../../types/boardSearch.ts";
+import type {
+  ApplicationHistoryRow,
+  BatchRefreshPopupState,
+  CompanyJobCounts,
+  DescriptionUpdatePopupState,
+  Job,
+  ManualJobCreateResponse,
+  ReEvaluateAllSummary,
+  ReEvaluatePopupState,
+  ReEvaluateStatus,
+  RefreshFromUrlResponse,
+} from "../../types/jobs.ts";
+import type {
+  CaptureSourceSuggestion,
+  FixCompaniesProgress,
+  FixUnknownCompaniesResponse,
+  DeleteUnknownCompaniesResponse,
+  ImportQueueAllResponse,
+  ImportRepairResult,
+  ImportStatus,
+  ImportSummary,
+  RescanImportResult,
+  WttjRepairResult,
+} from "../../types/importing.ts";
+import type { AppConfigResponse } from "../../types/settings.ts";
+import type { RescanEmailResponse, ScanStatus, ScanSummary } from "../../types/scanning.ts";
+import type { ReqClosedScanResult, ReqClosedScanStatus } from "../../types/applications.ts";
+import type { QueueHandlers, TriageHandlers } from "../../types/jobQueue.ts";
 
 const JOB_QUEUE_SEARCH_STORAGE_KEY = "jha.jobQueue.search";
 
-const progressBox = {
+const progressBox: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-lg)",
@@ -71,19 +105,19 @@ const progressBox = {
   boxShadow: "var(--shadow-sm)",
 };
 
-const modeToggleStyle = {
+const modeToggleStyle: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   gap: "8px",
   marginBottom: "12px",
 };
 
-const modeButtonStyle = {
+const modeButtonStyle: CSSProperties = {
   padding: "7px 14px",
   fontSize: "13px",
 };
 
-const inputStyle = {
+const inputStyle: CSSProperties = {
   width: "100%",
   minWidth: 0,
   padding: "10px 12px",
@@ -93,7 +127,7 @@ const inputStyle = {
   color: "var(--text)",
 };
 
-const queueSearchInputStyle = {
+const queueSearchInputStyle: CSSProperties = {
   ...inputStyle,
   background: "var(--surface)",
   flex: "1 1 260px",
@@ -101,7 +135,7 @@ const queueSearchInputStyle = {
   maxWidth: "420px",
 };
 
-const textareaStyle = {
+const textareaStyle: CSSProperties = {
   width: "100%",
   minHeight: "180px",
   resize: "vertical",
@@ -115,7 +149,7 @@ const textareaStyle = {
   lineHeight: 1.5,
 };
 
-const popupBackdropStyle = {
+const popupBackdropStyle: CSSProperties = {
   position: "fixed",
   inset: 0,
   zIndex: 1000,
@@ -126,7 +160,7 @@ const popupBackdropStyle = {
   background: "rgba(0, 0, 0, 0.55)",
 };
 
-const importDialogPanelStyle = {
+const importDialogPanelStyle: CSSProperties = {
   width: "min(920px, 100%)",
   maxHeight: "90vh",
   overflowY: "auto",
@@ -137,7 +171,7 @@ const importDialogPanelStyle = {
   padding: "18px",
 };
 
-const popupHeaderStyle = {
+const popupHeaderStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "flex-start",
@@ -145,19 +179,19 @@ const popupHeaderStyle = {
   marginBottom: "14px",
 };
 
-const popupTitleStyle = {
+const popupTitleStyle: CSSProperties = {
   color: "var(--text)",
   fontSize: "18px",
   fontWeight: 700,
 };
 
-const popupSubtitleStyle = {
+const popupSubtitleStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "13px",
   marginTop: "4px",
 };
 
-const inlineImportProgressStyle = {
+const inlineImportProgressStyle: CSSProperties = {
   padding: "10px 12px",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -166,14 +200,14 @@ const inlineImportProgressStyle = {
   fontSize: "13px",
 };
 
-const inlineImportSuccessStyle = {
+const inlineImportSuccessStyle: CSSProperties = {
   padding: "10px 12px",
   border: "1px solid rgba(76,175,129,0.3)",
   borderRadius: "var(--radius)",
   background: "rgba(76,175,129,0.12)",
 };
 
-const backToTopButtonStyle = {
+const backToTopButtonStyle: CSSProperties = {
   position: "fixed",
   bottom: "28px",
   right: "28px",
@@ -197,7 +231,9 @@ const VIEW_MODE_STORAGE_KEY = "jha.jobQueue.viewMode";
 const SORT_STORAGE_KEY = "jha.jobQueue.sort";
 const SEARCH_ALL_FIELDS_KEY = "jha.jobQueue.searchAllFields";
 
-const VIEW_MODES = [
+type ViewMode = "queue" | "triage" | "both" | "company" | "unreachable";
+
+const VIEW_MODES: { key: ViewMode; label: string }[] = [
   { key: "queue", label: "Job Queue" },
   { key: "triage", label: "Triage" },
   { key: "both", label: "Jobs & Triage" },
@@ -216,6 +252,34 @@ const SORT_OPTIONS = [
   { key: "company_asc", label: "Company A–Z" },
 ];
 
+interface ImportPayloadFields {
+  capture_source_id?: number;
+  capture_source_name?: string;
+  capture_source_url?: string;
+  capture_source_query?: string;
+}
+
+interface CaptureWatchState {
+  active: boolean;
+  seenRunning: boolean;
+  timeoutId: number | null;
+}
+
+interface ScrollAnchor {
+  jobId: number;
+  top: number;
+}
+
+interface JobQueueProps {
+  onTriageCountChange: (count: number) => void;
+  isAuthenticated: boolean;
+  onNavigateToEmails?: ((emailId: string) => void) | null;
+  onNavigateToHistory: () => void;
+  focusJobId?: number | null;
+  requestedViewMode?: ViewMode | null;
+  onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
+}
+
 export default function JobQueue({
   onTriageCountChange,
   isAuthenticated,
@@ -224,98 +288,98 @@ export default function JobQueue({
   focusJobId,
   requestedViewMode,
   onNavigateToJobCard,
-}) {
-  const [jobs, setJobs] = useState([]);
+}: JobQueueProps) {
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [searchText, setSearchText] = useState(() => readStoredPref(JOB_QUEUE_SEARCH_STORAGE_KEY));
   const [debouncedSearchText, setDebouncedSearchText] = useState(searchText);
   const [searchAllFields, setSearchAllFields] = useState(() => readStoredViewPref(SEARCH_ALL_FIELDS_KEY, "false") === "true");
-  const [viewMode, setViewMode] = useState(() => readStoredViewPref(VIEW_MODE_STORAGE_KEY, "queue"));
+  const [viewMode, setViewMode] = useState<ViewMode>(() => readStoredViewPref(VIEW_MODE_STORAGE_KEY, "queue") as ViewMode);
   const [sortBy, setSortBy] = useState(() => {
     const stored = readStoredViewPref(SORT_STORAGE_KEY, "date_desc");
     return stored === "fit_desc" ? "fit_desc_date_desc" : stored; // ai: claude-sonnet-5 | 2026-09-20 migrate old stored sort key
   });
-  const [triageJobs, setTriageJobs] = useState([]);
+  const [triageJobs, setTriageJobs] = useState<Job[]>([]);
   const [triageLoading, setTriageLoading] = useState(false);
-  const [unreachableJobs, setUnreachableJobs] = useState([]);
+  const [unreachableJobs, setUnreachableJobs] = useState<Job[]>([]);
   const [unreachableLoading, setUnreachableLoading] = useState(false);
-  const [allSheetRows, setAllSheetRows] = useState(null);
+  const [allSheetRows, setAllSheetRows] = useState<ApplicationHistoryRow[] | null>(null);
   // ai: claude-sonnet-5 | 2026-07-25
-  const [contactsByCompany, setContactsByCompany] = useState({});
+  const [contactsByCompany, setContactsByCompany] = useState<ContactsByCompany>({});
   // ai: claude-sonnet-5 | 2026-08-19
-  const [companyJobCounts, setCompanyJobCounts] = useState(null);
+  const [companyJobCounts, setCompanyJobCounts] = useState<CompanyJobCounts | null>(null);
   // ai: claude-sonnet-5 | 2026-08-11
   const [defaultSnoozeDays, setDefaultSnoozeDays] = useState(4);
-  const [triageReEvaluatePopup, setTriageReEvaluatePopup] = useState(null);
-  const [triageBatchRefreshPopup, setTriageBatchRefreshPopup] = useState(null);
-  const [queueUnratedRefreshPopup, setQueueUnratedRefreshPopup] = useState(null);
-  const [triageDescriptionUpdatePopup, setTriageDescriptionUpdatePopup] = useState(null);
+  const [triageReEvaluatePopup, setTriageReEvaluatePopup] = useState<ReEvaluatePopupState | null>(null);
+  const [triageBatchRefreshPopup, setTriageBatchRefreshPopup] = useState<BatchRefreshPopupState | null>(null);
+  const [queueUnratedRefreshPopup, setQueueUnratedRefreshPopup] = useState<BatchRefreshPopupState | null>(null);
+  const [triageDescriptionUpdatePopup, setTriageDescriptionUpdatePopup] = useState<DescriptionUpdatePopupState | null>(null);
   const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
   // ai: claude-sonnet-5 | 2026-07-26
   const [showOnlyWithContacts, setShowOnlyWithContacts] = useState(false);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
-  const [scanState, setScanState] = useState(null);
-  const [scanSummary, setScanSummary] = useState(null);
+  const [scanState, setScanState] = useState<ScanStatus | null>(null);
+  const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
   const [rescanAllRunning, setRescanAllRunning] = useState(false);
   const [boardSearching, setBoardSearching] = useState(false);
-  const [boardState, setBoardState] = useState(null);
+  const [boardState, setBoardState] = useState<BoardSearchStatus | null>(null);
   // ai: claude-sonnet-4-6 | 2026-06-25
   const [reqClosedScanning, setReqClosedScanning] = useState(false);
-  const [reqClosedDialog, setReqClosedDialog] = useState(null);
+  const [reqClosedDialog, setReqClosedDialog] = useState<ReqClosedScanResult | null>(null);
   const [reEvaluating, setReEvaluating] = useState(false);
   const [reEvaluateProgress, setReEvaluateProgress] = useState(0);
   const [reEvaluateMessage, setReEvaluateMessage] = useState("");
-  const [reEvaluateSummary, setReEvaluateSummary] = useState(null);
-  const [jobReEvaluatePopup, setJobReEvaluatePopup] = useState(null);
+  const [reEvaluateSummary, setReEvaluateSummary] = useState<ReEvaluateAllSummary | null>(null);
+  const [jobReEvaluatePopup, setJobReEvaluatePopup] = useState<JobReEvaluatePopupState | null>(null);
   const [manualListingText, setManualListingText] = useState("");
   const [manualSourceUrl, setManualSourceUrl] = useState("");
   const [manualSourceName, setManualSourceName] = useState("");
   const [manualCompanyOverride, setManualCompanyOverride] = useState("");
   const [manualJobTitleOverride, setManualJobTitleOverride] = useState("");
   const [manualSubmitting, setManualSubmitting] = useState(false);
-  const [manualResult, setManualResult] = useState(null);
+  const [manualResult, setManualResult] = useState<Job | null>(null);
   const [importContent, setImportContent] = useState("");
   const [importRecaptureIntervalDays, setImportRecaptureIntervalDays] = useState("4");
   const [importSubmitting, setImportSubmitting] = useState(false);
-  const [importSummary, setImportSummary] = useState(null);
-  const [importState, setImportState] = useState(null);
+  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
+  const [importState, setImportState] = useState<ImportStatus | null>(null);
   const [importPanelOpen, setImportPanelOpen] = useState(false);
-  const [importMode, setImportMode] = useState("text");
+  const [importMode, setImportMode] = useState<"text" | "html">("text");
   const [moreToolsOpen, setMoreToolsOpen] = useState(false);
   const [showRecentlyApplied, setShowRecentlyApplied] = useState(false);
   const [fixingCompanies, setFixingCompanies] = useState(false);
-  const [fixProgress, setFixProgress] = useState(null);
+  const [fixProgress, setFixProgress] = useState<FixCompaniesProgress | null>(null);
   const [deletingUnknownCompanies, setDeletingUnknownCompanies] = useState(false);
   const [wttjRepairRunning, setWttjRepairRunning] = useState(false);
-  const [wttjRepairDialog, setWttjRepairDialog] = useState(null);
+  const [wttjRepairDialog, setWttjRepairDialog] = useState<WttjRepairResult | null>(null);
   const [importRepairRunning, setImportRepairRunning] = useState(false);
-  const [importRepairDialog, setImportRepairDialog] = useState(null);
+  const [importRepairDialog, setImportRepairDialog] = useState<ImportRepairResult | null>(null);
   // ai: claude-sonnet-5 | 2026-07-10
   const [rescanImportRunning, setRescanImportRunning] = useState(false);
-  const [rescanImportDialog, setRescanImportDialog] = useState(null);
+  const [rescanImportDialog, setRescanImportDialog] = useState<RescanImportResult | null>(null);
   const [showBackToTop, setShowBackToTop] = useState(false);
-  const pollRef = useRef(null);
-  const boardPollRef = useRef(null);
-  const reqClosedPollRef = useRef(null);
+  const pollRef = useRef<number | undefined>(undefined);
+  const boardPollRef = useRef<number | undefined>(undefined);
+  const reqClosedPollRef = useRef<number | undefined>(undefined);
   const reqClosedDismissedRef = useRef(false);
   const reqClosedBrowserDoneRef = useRef(0);
-  const wttjRepairPollRef = useRef(null);
+  const wttjRepairPollRef = useRef<number | undefined>(undefined);
   const wttjRepairDismissedRef = useRef(false);
-  const importRepairPollRef = useRef(null);
+  const importRepairPollRef = useRef<number | undefined>(undefined);
   const importRepairDismissedRef = useRef(false);
-  const rescanImportPollRef = useRef(null);
+  const rescanImportPollRef = useRef<number | undefined>(undefined);
   const rescanImportDismissedRef = useRef(false);
-  const importPollRef = useRef(null);
+  const importPollRef = useRef<number | undefined>(undefined);
   // ai: claude-sonnet-4-6 | 2026-06-27
   // Tracks whether we are watching for a browser-capture-queue import to finish.
   // seenRunning: import was observed in the running state at least once.
   // timeoutId: fallback timeout that cancels the watch after 5 minutes.
-  const captureWatchRef = useRef({ active: false, seenRunning: false, timeoutId: null });
-  const reEvalPollRef = useRef(null);
-  const reEvaluateResetTimeoutRef = useRef(null);
-  const scrollAnchorRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const moreToolsRef = useRef(null);
+  const captureWatchRef = useRef<CaptureWatchState>({ active: false, seenRunning: false, timeoutId: null });
+  const reEvalPollRef = useRef<number | undefined>(undefined);
+  const reEvaluateResetTimeoutRef = useRef<number | undefined>(undefined);
+  const scrollAnchorRef = useRef<ScrollAnchor | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const moreToolsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     writeStoredPref(JOB_QUEUE_SEARCH_STORAGE_KEY, searchText);
@@ -358,7 +422,7 @@ export default function JobQueue({
     setTriageLoading(true);
     try {
       const res = await fetch("/api/jobs/triage");
-      const data = await res.json();
+      const data: Job[] = await res.json();
       const list = Array.isArray(data) ? data : [];
       setTriageJobs(list);
       onTriageCountChange(list.length);
@@ -379,7 +443,7 @@ export default function JobQueue({
     setUnreachableLoading(true);
     try {
       const res = await fetch("/api/jobs/unreachable");
-      const data = await res.json();
+      const data: Job[] = await res.json();
       setUnreachableJobs(Array.isArray(data) ? data : []);
     } catch {
       /* no-op */
@@ -421,8 +485,8 @@ export default function JobQueue({
   useEffect(() => {
     fetch("/api/config")
       .then((res) => res.json())
-      .then((data) => {
-        const days = parseInt(data?.default_snooze_days, 10);
+      .then((data: AppConfigResponse) => {
+        const days = parseInt(String(data?.default_snooze_days ?? ""), 10);
         if (Number.isFinite(days) && days >= 1) setDefaultSnoozeDays(days);
       })
       .catch(() => {});
@@ -431,7 +495,7 @@ export default function JobQueue({
   const fetchJobs = useCallback(async () => {
     try {
       const res = await fetch("/api/jobs");
-      const data = await res.json();
+      const data: Job[] = await res.json();
       setJobs(Array.isArray(data) ? data : []);
     } catch {
       /* no-op */
@@ -450,7 +514,7 @@ export default function JobQueue({
       clearInterval(reqClosedPollRef.current);
       clearInterval(wttjRepairPollRef.current);
       clearTimeout(reEvaluateResetTimeoutRef.current);
-      clearTimeout(captureWatchRef.current.timeoutId);
+      clearTimeout(captureWatchRef.current.timeoutId ?? undefined);
     };
   }, [fetchJobs]);
 
@@ -458,14 +522,14 @@ export default function JobQueue({
   // A rescan can delete this job (and any digest siblings) and create a
   // different number of replacement rows, so there's no single "updated job"
   // to swap in — a full reload of both lists is the only correct outcome.
-  const handleRescanEmail = async (job) => {
+  const handleRescanEmail = async (job: Job) => {
     const emailId = emailIdForRescan(job);
     if (!emailId) return;
     try {
       const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/rescan`, {
         method: "POST",
       });
-      const data = await res.json().catch(() => ({}));
+      const data: RescanEmailResponse = await res.json().catch(() => ({}));
       if (!res.ok) {
         window.alert(data.error || "Failed to rescan email");
         return;
@@ -477,10 +541,10 @@ export default function JobQueue({
     }
   };
 
-  const pollScanStatus = async (onDone) => {
+  const pollScanStatus = async (onDone?: () => void) => {
     try {
       const res = await fetch("/api/scan/status");
-      const state = await res.json();
+      const state: ScanStatus = await res.json();
       setScanState(state);
 
       if (!state.running) {
@@ -490,7 +554,7 @@ export default function JobQueue({
         await fetchJobs();
         try {
           const t = await fetch("/api/jobs/triage");
-          const td = await t.json();
+          const td: Job[] = await t.json();
           onTriageCountChange(Array.isArray(td) ? td.length : 0);
         } catch {
           /* no-op */
@@ -515,14 +579,14 @@ export default function JobQueue({
 
     const res = await fetch("/api/scan", { method: "POST" });
     if (!res.ok) {
-      const err = await res.json();
+      const err: ApiErrorBody = await res.json();
       alert(err.error || "Failed to start scan");
       return;
     }
 
     setScanning(true);
     clearInterval(pollRef.current);
-    pollRef.current = setInterval(() => pollScanStatus(() => setScanning(false)), 1200);
+    pollRef.current = window.setInterval(() => pollScanStatus(() => setScanning(false)), 1200);
   };
 
   const handleRescanAll = async () => {
@@ -540,7 +604,7 @@ export default function JobQueue({
 
     const res = await fetch("/api/emails/rescan-all", { method: "POST" });
     if (!res.ok) {
-      const err = await res.json();
+      const err: ApiErrorBody = await res.json();
       alert(err.error || "Failed to start rescan");
       return;
     }
@@ -548,7 +612,7 @@ export default function JobQueue({
     setRescanAllRunning(true);
     setScanState(null);
     clearInterval(pollRef.current);
-    pollRef.current = setInterval(
+    pollRef.current = window.setInterval(
       () => pollScanStatus(() => setRescanAllRunning(false)),
       1200
     );
@@ -564,10 +628,10 @@ export default function JobQueue({
       while (lastFixed !== 0) {
         const res = await fetch("/api/repair/fix-unknown-companies", { method: "POST" });
         if (!res.ok) {
-          setFixProgress((p) => ({ ...p, done: true, error: true }));
+          setFixProgress((p) => (p ? { ...p, done: true, error: true } : p));
           break;
         }
-        const data = await res.json();
+        const data: FixUnknownCompaniesResponse = await res.json();
         totalFixed += data.fixed;
         remaining = data.remaining;
         lastFixed = data.fixed;
@@ -576,7 +640,7 @@ export default function JobQueue({
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
       await fetchJobs();
-      setFixProgress((p) => ({ ...p, done: true }));
+      setFixProgress((p) => (p ? { ...p, done: true } : p));
     } finally {
       setFixingCompanies(false);
     }
@@ -589,11 +653,11 @@ export default function JobQueue({
     try {
       const res = await fetch("/api/repair/delete-unknown-companies", { method: "POST" });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         window.alert(`Delete failed: ${data.error || res.status}`);
         return;
       }
-      const data = await res.json();
+      const data: DeleteUnknownCompaniesResponse = await res.json();
       await fetchJobs();
       if (data.deleted > 0) {
         window.alert(`Deleted ${data.deleted} job${data.deleted === 1 ? "" : "s"} with unknown company.`);
@@ -605,17 +669,17 @@ export default function JobQueue({
     }
   };
 
-  const handleApprove = async (jobId) => {
+  const handleApprove = async (jobId: number) => {
     const res = await fetch(`/api/jobs/${jobId}/apply`, { method: "POST" });
     if (!res.ok) {
-      const err = await res.json();
+      const err: ApiErrorBody = await res.json();
       alert(err.error || "Failed to approve job");
       return;
     }
     setJobs((prev) => prev.filter((j) => j.id !== jobId));
   };
 
-  const handleSkip = async (jobId, reason = "other", feedback = "", mismatchReasons = []) => {
+  const handleSkip = async (jobId: number, reason = "other", feedback = "", mismatchReasons: string[] = []) => {
     const res = await fetch(`/api/jobs/${jobId}/skip`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -631,17 +695,17 @@ export default function JobQueue({
   // (or "Possible Duplicate") back onto the queue/triage list. The job being
   // restored is usually NOT in `jobs` yet (it was hidden while skipped), so a
   // full refetch is needed rather than an in-place list update.
-  const handleDismissDuplicate = async (jobId) => {
+  const handleDismissDuplicate = async (jobId: number) => {
     const res = await fetch(`/api/jobs/${jobId}/dismiss-duplicate`, { method: "POST" });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to restore job");
       return;
     }
     await fetchJobs();
   };
 
-  const handleSnooze = async (jobId, days) => {
+  const handleSnooze = async (jobId: number, days: number) => {
     const res = await fetch(`/api/jobs/${jobId}/snooze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -652,7 +716,7 @@ export default function JobQueue({
     }
   };
 
-  const handleJobReEvaluate = async (job) => {
+  const handleJobReEvaluate = async (job: Job) => {
     setJobReEvaluatePopup({
       company: job.company || "",
       jobTitle: job.job_title || "",
@@ -665,8 +729,8 @@ export default function JobQueue({
     // response) must also surface the error popup, not just a !res.ok JSON error.
     // Previously these threw before the popup was set, so the caller's catch block
     // swallowed them silently and the button just re-enabled with no feedback.
-    let res;
-    let data;
+    let res: Response;
+    let data: Job & ApiErrorBody;
     try {
       res = await fetch(`/api/jobs/${job.id}/re-evaluate-fit`, { method: "POST" });
       data = await res.json();
@@ -718,7 +782,7 @@ export default function JobQueue({
   const updateTriageCount = async () => {
     try {
       const t = await fetch("/api/jobs/triage");
-      const td = await t.json();
+      const td: Job[] = await t.json();
       const list = Array.isArray(td) ? td : [];
       onTriageCountChange(list.length);
       setTriageJobs(list);
@@ -729,8 +793,8 @@ export default function JobQueue({
 
   // ── Triage handlers ───────────────────────────────────────────────────────────
 
-  const handleTriageApprove = async (job) => {
-    const senderEmail = extractSender(job.raw_jd_snippet, job);
+  const handleTriageApprove = async (job: Job) => {
+    const senderEmail = extractSender(job.raw_jd_snippet || "", job);
     const subjectPattern = extractSubjectWords(job.job_title || "");
     const res = await fetch(`/api/jobs/${job.id}/approve`, {
       method: "POST",
@@ -744,12 +808,12 @@ export default function JobQueue({
         return updated;
       });
     } else {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to approve");
     }
   };
 
-  const handleTriageSkip = async (job, reason, feedback = "", mismatchReasons = []) => {
+  const handleTriageSkip = async (job: Pick<Job, "id">, reason: string, feedback = "", mismatchReasons: string[] = []) => {
     const res = await fetch(`/api/jobs/${job.id}/skip`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -762,7 +826,7 @@ export default function JobQueue({
         return updated;
       });
     } else {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to skip job");
     }
   };
@@ -770,18 +834,18 @@ export default function JobQueue({
   // ai: claude-sonnet-4-6 | 2026-06-26
   // Keep the card on screen: transition it from possible_duplicate to a normal
   // triage or queue card rather than removing it entirely.
-  const handleTriageMarkUnique = async (job) => {
+  const handleTriageMarkUnique = async (job: Pick<Job, "id">) => {
     const res = await fetch(`/api/jobs/${job.id}/dismiss-duplicate`, { method: "POST" });
     if (res.ok) {
-      const updated = await res.json();
-      handleTriageReprocessed(job, updated);
+      const updated: Job = await res.json();
+      handleTriageReprocessed(job as Job, updated);
     } else {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to mark job as unique");
     }
   };
 
-  const handleTriageMarkApplied = async (job) => {
+  const handleTriageMarkApplied = async (job: Pick<Job, "id">) => {
     const res = await fetch(`/api/jobs/${job.id}/apply`, { method: "POST" });
     if (res.ok) {
       setTriageJobs((prev) => {
@@ -790,13 +854,13 @@ export default function JobQueue({
         return updated;
       });
     } else {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to mark job as applied");
     }
   };
 
   // ai: claude-sonnet-5 | 2026-09-14
-  const handleTriageSnooze = async (jobId, days) => {
+  const handleTriageSnooze = async (jobId: number, days: number) => {
     const res = await fetch(`/api/jobs/${jobId}/snooze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -809,7 +873,7 @@ export default function JobQueue({
         return updated;
       });
     } else {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to snooze job");
     }
   };
@@ -819,9 +883,9 @@ export default function JobQueue({
   // re-evaluate) can cross the pending_review threshold. It must move into
   // the queue list, not just be dropped from triageJobs — otherwise it
   // vanishes from the page until a full reload re-fetches both lists.
-  const handleTriageReprocessed = (job, updated) => {
+  const handleTriageReprocessed = (job: Job, updated: Job) => {
     const triageStatuses = new Set(["triage", "possible_duplicate"]);
-    if (triageStatuses.has(updated.status)) {
+    if (triageStatuses.has(updated.status || "")) {
       setTriageJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
       return;
     }
@@ -839,7 +903,7 @@ export default function JobQueue({
     }
   };
 
-  const handleTriageDescriptionUpdated = (job, updated, previous) => {
+  const handleTriageDescriptionUpdated = (job: Job, updated: Job, previous: { previousScore?: number | null; previousStatus?: string | null }) => {
     captureScrollAnchor(job.id);
     setTriageDescriptionUpdatePopup({
       company: updated.company || job.company || "",
@@ -852,7 +916,7 @@ export default function JobQueue({
     handleTriageReprocessed(job, updated);
   };
 
-  const handleTriageRefreshFromUrl = async (job) => {
+  const handleTriageRefreshFromUrl = async (job: Job) => {
     setTriageReEvaluatePopup({
       action: "Re-fetch",
       runningText: "Fetching job details and scoring…",
@@ -863,7 +927,7 @@ export default function JobQueue({
     });
     try {
       const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
-      const data = await res.json();
+      const data: RefreshFromUrlResponse & ApiErrorBody = await res.json();
       if (!res.ok) {
         setTriageReEvaluatePopup({
           action: "Re-fetch",
@@ -875,7 +939,7 @@ export default function JobQueue({
         });
         return;
       }
-      if (data.queued_for_browser_capture) {
+      if ("queued_for_browser_capture" in data && data.queued_for_browser_capture) {
         setTriageReEvaluatePopup({
           action: "Re-fetch",
           company: job.company || "",
@@ -892,26 +956,27 @@ export default function JobQueue({
           seenRunning: false,
           timeoutId: window.setTimeout(stopBrowserCaptureWatch, 300_000),
         };
-        importPollRef.current = setInterval(pollBrowserCaptureStatus, 5000);
+        importPollRef.current = window.setInterval(pollBrowserCaptureStatus, 5000);
         return;
       }
       // ai: claude-sonnet-4-6 | 2026-06-26
+      const updatedJob = data as Job;
       setTriageReEvaluatePopup({
         action: "Re-fetch",
-        company: data.company || job.company || "",
+        company: updatedJob.company || job.company || "",
         jobId: job.id,
-        jobTitle: data.job_title || job.job_title || "",
-        newScore: data.fit_score,
+        jobTitle: updatedJob.job_title || job.job_title || "",
+        newScore: updatedJob.fit_score,
         phase: "done",
         previousScore: job.fit_score,
-        status: data.status,
+        status: updatedJob.status,
       });
-      handleTriageReprocessed(job, data);
+      handleTriageReprocessed(job, updatedJob);
     } catch (err) {
       setTriageReEvaluatePopup({
         action: "Re-fetch",
         company: job.company || "",
-        error: err.message || "Failed to re-fetch job",
+        error: err instanceof Error ? err.message : "Failed to re-fetch job",
         jobTitle: job.job_title || "",
         phase: "error",
         previousScore: job.fit_score,
@@ -919,7 +984,7 @@ export default function JobQueue({
     }
   };
 
-  const handleTriageReEvaluateFit = async (job) => {
+  const handleTriageReEvaluateFit = async (job: Job): Promise<Job | undefined> => {
     setTriageReEvaluatePopup({
       company: job.company || "",
       jobTitle: job.job_title || "",
@@ -928,7 +993,7 @@ export default function JobQueue({
     });
     try {
       const res = await fetch(`/api/jobs/${job.id}/re-evaluate-fit`, { method: "POST" });
-      const data = await res.json();
+      const data: Job & ApiErrorBody = await res.json();
       if (!res.ok) {
         setTriageReEvaluatePopup({
           company: job.company || "",
@@ -950,7 +1015,7 @@ export default function JobQueue({
       handleTriageReprocessed(job, data);
       return data;
     } catch (err) {
-      if (err.message && !triageReEvaluatePopup) {
+      if (err instanceof Error && err.message && !triageReEvaluatePopup) {
         setTriageReEvaluatePopup({
           company: job.company || "",
           error: err.message,
@@ -968,9 +1033,9 @@ export default function JobQueue({
     if (refreshable.length === 0) return;
 
     let nextJobs = [...triageJobs];
-    await runBatchRefreshFromUrls(refreshable, setTriageBatchRefreshPopup, (job, data) => {
+    await runBatchRefreshFromUrls(refreshable, setTriageBatchRefreshPopup as React.Dispatch<React.SetStateAction<BatchRefreshPopupState>>, (job, data) => {
       const triageStatuses = new Set(["triage", "possible_duplicate"]);
-      if (triageStatuses.has(data.status)) {
+      if (triageStatuses.has(data.status || "")) {
         nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
       } else {
         nextJobs = nextJobs.filter((item) => item.id !== job.id);
@@ -995,7 +1060,7 @@ export default function JobQueue({
     let triageSource = triageJobs;
     try {
       const res = await fetch("/api/jobs/triage");
-      const data = await res.json();
+      const data: Job[] = await res.json();
       if (Array.isArray(data)) {
         triageSource = data;
         setTriageJobs(data);
@@ -1012,7 +1077,7 @@ export default function JobQueue({
     }
 
     let nextJobs = [...jobs];
-    await runBatchRefreshFromUrls(refreshable, setQueueUnratedRefreshPopup, (job, data) => {
+    await runBatchRefreshFromUrls(refreshable, setQueueUnratedRefreshPopup as React.Dispatch<React.SetStateAction<BatchRefreshPopupState>>, (job, data) => {
       if (data.status === "pending_review") {
         nextJobs = nextJobs.some((item) => item.id === data.id)
           ? nextJobs.map((item) => (item.id === data.id ? data : item))
@@ -1039,15 +1104,15 @@ export default function JobQueue({
     try {
       const res = await fetch("/api/jobs/re-evaluate", { method: "POST" });
       if (!res.ok) {
-        const data = await res.json();
+        const data: ApiErrorBody = await res.json();
         window.alert(data.error || "Failed to re-evaluate jobs");
         setReEvaluating(false);
         return;
       }
-      reEvalPollRef.current = setInterval(async () => {
+      reEvalPollRef.current = window.setInterval(async () => {
         try {
           const statusRes = await fetch("/api/jobs/re-evaluate/status");
-          const state = await statusRes.json();
+          const state: ReEvaluateStatus = await statusRes.json();
           setReEvaluateProgress(state.progress);
           setReEvaluateMessage(state.message);
           if (!state.running) {
@@ -1055,7 +1120,7 @@ export default function JobQueue({
             if (state.result) setReEvaluateSummary(state.result);
             await fetchJobs();
             await updateTriageCount();
-            reEvaluateResetTimeoutRef.current = setTimeout(() => {
+            reEvaluateResetTimeoutRef.current = window.setTimeout(() => {
               setReEvaluating(false);
               setReEvaluateProgress(0);
             }, 350);
@@ -1088,7 +1153,7 @@ export default function JobQueue({
     setReqClosedDialog({ setup: true });
   };
 
-  const startReqClosedScan = async (platforms) => {
+  const startReqClosedScan = async (platforms: string[]) => {
     reqClosedDismissedRef.current = false;
     reqClosedBrowserDoneRef.current = 0;
     const res = await fetch("/api/applications/scan-closed-reqs", {
@@ -1096,22 +1161,27 @@ export default function JobQueue({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ platforms }),
     });
-    const data = await res.json().catch(() => ({}));
+    const data: ApiErrorBody = await res.json().catch(() => ({}));
     if (!res.ok) {
       window.alert(data.error || `Scan failed (${res.status})`);
       return;
     }
     setReqClosedScanning(true);
-    setReqClosedDialog({ running: true, progress: 0, total: 0, marked: [], errors: [] });
+    setReqClosedDialog({
+      running: true, progress: 0, total: 0, message: "", marked: [], errors: [],
+      checked: 0, kept_count: 0, closed_count: 0, bad_url_count: 0, unreachable_count: 0,
+      browser_checks_queued: 0, browser_checks_total: 0, browser_checks_done: 0,
+      current_platform: "", current_company: "", current_job_title: "", last_run_at: null, error: null,
+    });
     setReqClosedDialogVisible(true);
     clearInterval(reqClosedPollRef.current);
-    reqClosedPollRef.current = setInterval(pollReqClosedStatus, 2000);
+    reqClosedPollRef.current = window.setInterval(pollReqClosedStatus, 2000);
   };
 
   const pollReqClosedStatus = async () => {
     try {
       const res = await fetch("/api/applications/scan-closed-reqs/status");
-      const data = await res.json();
+      const data: ReqClosedScanStatus = await res.json();
       if (!reqClosedDismissedRef.current) {
         setReqClosedDialog(data);
       }
@@ -1148,7 +1218,7 @@ export default function JobQueue({
       try {
         const res = await fetch("/api/applications/scan-closed-reqs/status");
         if (!res.ok) return;
-        const data = await res.json();
+        const data: ReqClosedScanStatus = await res.json();
         if (cancelled) return;
         const browserDraining = (data.browser_queue?.remaining ?? 0) > 0;
         if (!data.running && !browserDraining) {
@@ -1160,7 +1230,7 @@ export default function JobQueue({
         setReqClosedScanning(!!data.running);
         setReqClosedDialog(data);
         clearInterval(reqClosedPollRef.current);
-        reqClosedPollRef.current = setInterval(pollReqClosedStatus, 2000);
+        reqClosedPollRef.current = window.setInterval(pollReqClosedStatus, 2000);
       } catch {
         /* leave the persisted flag as-is; try again on the next mount */
       }
@@ -1174,21 +1244,24 @@ export default function JobQueue({
     setMoreToolsOpen(false);
     wttjRepairDismissedRef.current = false;
     const res = await fetch("/api/jobs/repair-wttj-urls", { method: "POST" });
-    const data = await res.json().catch(() => ({}));
+    const data: ApiErrorBody = await res.json().catch(() => ({}));
     if (!res.ok) {
       window.alert(data.error || `Repair failed to start (${res.status})`);
       return;
     }
     setWttjRepairRunning(true);
-    setWttjRepairDialog({ running: true, progress: 0, total: 0, repaired: [], url_only: [], failed: [], skipped: [] });
+    setWttjRepairDialog({
+      running: true, progress: 0, total: 0, message: "", current_company: "", current_title: "", error: null,
+      repaired: [], url_only: [], title_fixed: [], failed: [], skipped: [],
+    });
     clearInterval(wttjRepairPollRef.current);
-    wttjRepairPollRef.current = setInterval(pollWttjRepairStatus, 2500);
+    wttjRepairPollRef.current = window.setInterval(pollWttjRepairStatus, 2500);
   };
 
   const pollWttjRepairStatus = async () => {
     try {
       const res = await fetch("/api/jobs/repair-wttj-urls/status");
-      const data = await res.json();
+      const data: WttjRepairResult = await res.json();
       if (!wttjRepairDismissedRef.current) setWttjRepairDialog(data);
       if (!data.running) {
         clearInterval(wttjRepairPollRef.current);
@@ -1207,24 +1280,24 @@ export default function JobQueue({
     setMoreToolsOpen(false);
     importRepairDismissedRef.current = false;
     const res = await fetch("/api/jobs/repair-import-issues", { method: "POST" });
-    const data = await res.json().catch(() => ({}));
+    const data: ApiErrorBody = await res.json().catch(() => ({}));
     if (!res.ok) {
       window.alert(data.error || `Repair failed to start (${res.status})`);
       return;
     }
     setImportRepairRunning(true);
     setImportRepairDialog({
-      running: true, progress: 0, total: 0,
+      running: true, progress: 0, total: 0, message: "", current_company: "", current_title: "", error: null,
       title_or_company_fixed: [], url_fixed: [], jd_queued: [], unresolved: [], patterns: [],
     });
     clearInterval(importRepairPollRef.current);
-    importRepairPollRef.current = setInterval(pollImportRepairStatus, 2500);
+    importRepairPollRef.current = window.setInterval(pollImportRepairStatus, 2500);
   };
 
   const pollImportRepairStatus = async () => {
     try {
       const res = await fetch("/api/jobs/repair-import-issues/status");
-      const data = await res.json();
+      const data: ImportRepairResult = await res.json();
       if (!importRepairDismissedRef.current) setImportRepairDialog(data);
       if (!data.running) {
         clearInterval(importRepairPollRef.current);
@@ -1243,25 +1316,25 @@ export default function JobQueue({
     setMoreToolsOpen(false);
     rescanImportDismissedRef.current = false;
     const res = await fetch("/api/jobs/rescan-broken-imports", { method: "POST" });
-    const data = await res.json().catch(() => ({}));
+    const data: ApiErrorBody = await res.json().catch(() => ({}));
     if (!res.ok) {
       window.alert(data.error || `Rescan failed to start (${res.status})`);
       return;
     }
     setRescanImportRunning(true);
     setRescanImportDialog({
-      running: true, progress: 0, total: 0,
+      running: true, progress: 0, total: 0, message: "", current_company: "", current_title: "", error: null,
       unskipped: [], still_duplicate: [], rescored: [], applied_fixed: [], url_only: [], unresolved: [],
     });
     clearInterval(rescanImportPollRef.current);
-    rescanImportPollRef.current = setInterval(pollRescanImportStatus, 2500);
+    rescanImportPollRef.current = window.setInterval(pollRescanImportStatus, 2500);
   };
 
   // ai: claude-sonnet-5 | 2026-07-10
   const pollRescanImportStatus = async () => {
     try {
       const res = await fetch("/api/jobs/rescan-broken-imports/status");
-      const data = await res.json();
+      const data: RescanImportResult = await res.json();
       if (!rescanImportDismissedRef.current) setRescanImportDialog(data);
       if (!data.running) {
         clearInterval(rescanImportPollRef.current);
@@ -1278,18 +1351,18 @@ export default function JobQueue({
   const startBoardSearch = async () => {
     const res = await fetch("/api/board-search", { method: "POST" });
     if (!res.ok) {
-      const err = await res.json();
+      const err: ApiErrorBody = await res.json();
       alert(err.error || "Failed to start board search");
       return;
     }
     setBoardSearching(true);
-    boardPollRef.current = setInterval(pollBoardStatus, 1500);
+    boardPollRef.current = window.setInterval(pollBoardStatus, 1500);
   };
 
   const pollBoardStatus = async () => {
     try {
       const res = await fetch("/api/board-search/status");
-      const state = await res.json();
+      const state: BoardSearchStatus = await res.json();
       setBoardState(state);
       if (!state.running) {
         clearInterval(boardPollRef.current);
@@ -1297,7 +1370,7 @@ export default function JobQueue({
         await fetchJobs();
         try {
           const t = await fetch("/api/jobs/triage");
-          const td = await t.json();
+          const td: Job[] = await t.json();
           onTriageCountChange(Array.isArray(td) ? td.length : 0);
         } catch { /* no-op */ }
       }
@@ -1307,7 +1380,7 @@ export default function JobQueue({
     }
   };
 
-  const pollImportStatus = async (importId) => {
+  const pollImportStatus = async (importId?: string | null) => {
     try {
       // ai: claude-sonnet-5 | 2026-08-12
       // Scope the poll to this specific import so it isn't confused with another
@@ -1315,7 +1388,7 @@ export default function JobQueue({
       // concurrently alongside it — see routes/import_.py's per-import tracking.
       const query = importId ? `?import_id=${encodeURIComponent(importId)}` : "";
       const res = await fetch(`/api/import/status${query}`);
-      const state = await res.json();
+      const state: ImportStatus = await res.json();
       setImportState(state);
       if (!state.running) {
         clearInterval(importPollRef.current);
@@ -1342,7 +1415,7 @@ export default function JobQueue({
   // Stops automatically after 5 minutes via the captureWatchRef.timeoutId fallback.
   const stopBrowserCaptureWatch = () => {
     clearInterval(importPollRef.current);
-    clearTimeout(captureWatchRef.current.timeoutId);
+    clearTimeout(captureWatchRef.current.timeoutId ?? undefined);
     captureWatchRef.current = { active: false, seenRunning: false, timeoutId: null };
   };
 
@@ -1353,7 +1426,7 @@ export default function JobQueue({
     }
     try {
       const res = await fetch("/api/import/status");
-      const state = await res.json();
+      const state: ImportStatus = await res.json();
       setImportState(state);
       if (state.running) {
         captureWatchRef.current.seenRunning = true;
@@ -1377,7 +1450,7 @@ export default function JobQueue({
   // etc.) don't re-run the filter+sort chain on every render.
   // ai: claude-sonnet-5 | 2026-07-26
   const jobHasContact = useCallback(
-    (job) => (contactsByCompany[contactsMatchKey(job.company)] ?? []).length > 0,
+    (job: Job) => (contactsByCompany[contactsMatchKey(job.company)] ?? []).length > 0,
     [contactsByCompany],
   );
 
@@ -1438,7 +1511,7 @@ export default function JobQueue({
   // of two. Each group's display label is its most common raw spelling.
   const companiesMap = useMemo(
     () => viewMode === "company"
-      ? combinedJobs.reduce((acc, job) => {
+      ? combinedJobs.reduce<Record<string, { jobs: Job[]; labelCounts: Record<string, number> }>>((acc, job) => {
           const rawCompany = String(job.company || "").trim() || "Unknown Company";
           const key = contactsMatchKey(rawCompany) || "unknown-company";
           if (!acc[key]) acc[key] = { jobs: [], labelCounts: {} };
@@ -1450,8 +1523,8 @@ export default function JobQueue({
     [viewMode, combinedJobs],
   );
   const companiesList = useMemo(
-    () => Object.values(companiesMap)
-      .map((group) => [
+    (): [string, Job[]][] => Object.values(companiesMap)
+      .map((group): [string, Job[]] => [
         Object.entries(group.labelCounts).sort((a, b) => b[1] - a[1])[0][0],
         group.jobs,
       ])
@@ -1479,7 +1552,7 @@ export default function JobQueue({
   // ai: claude-sonnet-4-6 | 2026-06-26
   // After a re-evaluate popup closes, scroll to the updated card. Re-sorting
   // can move it out of the visible area, so the user needs a nudge to find it.
-  const scrollToUpdatedCard = useCallback((jobId) => {
+  const scrollToUpdatedCard = useCallback((jobId?: number | null) => {
     if (!jobId) return;
     window.setTimeout(() => {
       const el = document.getElementById(`job-card-${jobId}`)
@@ -1490,7 +1563,7 @@ export default function JobQueue({
 
   // Re-sorting after a re-evaluation can move a job card to a new position;
   // record its viewport offset beforehand so we can scroll back to it.
-  const captureScrollAnchor = useCallback((jobId) => {
+  const captureScrollAnchor = useCallback((jobId: number) => {
     const el = document.getElementById(`job-card-${jobId}`)
              || document.getElementById(`triage-card-${jobId}`);
     if (!el) return;
@@ -1528,7 +1601,7 @@ export default function JobQueue({
           job_title_override: manualJobTitleOverride,
         }),
       });
-      const data = await res.json();
+      const data: ManualJobCreateResponse & ApiErrorBody = await res.json();
       if (!res.ok) {
         window.alert(data.error || "Failed to evaluate pasted job");
         return;
@@ -1562,7 +1635,7 @@ export default function JobQueue({
     }
   };
 
-  const handleImportFileChange = async (event) => {
+  const handleImportFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
@@ -1587,7 +1660,7 @@ export default function JobQueue({
         return;
       }
     } catch (e) {
-      window.alert("Force reset failed: " + (e?.message || e));
+      window.alert("Force reset failed: " + (e instanceof Error ? e.message : String(e)));
       return;
     }
     clearInterval(importPollRef.current);
@@ -1595,13 +1668,13 @@ export default function JobQueue({
     setImportState(null);
   };
 
-  const buildImportPayload = (sourceFields = {}) => ({
+  const buildImportPayload = (sourceFields: ImportPayloadFields = {}) => ({
     content: importContent,
     recapture_interval_days: parseInt(importRecaptureIntervalDays, 10),
     ...sourceFields,
   });
 
-  const sourceFieldsFromSuggestion = (suggestion) => {
+  const sourceFieldsFromSuggestion = (suggestion: CaptureSourceSuggestion): ImportPayloadFields => {
     if (suggestion.id) {
       return { capture_source_id: suggestion.id };
     }
@@ -1611,7 +1684,7 @@ export default function JobQueue({
     };
   };
 
-  const promptForSourceFields = async (errorData) => {
+  const promptForSourceFields = async (errorData: ImportQueueAllResponse): Promise<ImportPayloadFields | null> => {
     const suggestions = Array.isArray(errorData.suggestions) ? errorData.suggestions : [];
     if (errorData.source_match_required && suggestions.length > 0) {
       const suggestion = suggestions[0];
@@ -1631,13 +1704,13 @@ export default function JobQueue({
     return { capture_source_query: sourceText.trim() };
   };
 
-  const submitImportPayload = async (sourceFields = {}) => {
+  const submitImportPayload = async (sourceFields: ImportPayloadFields = {}): Promise<{ res: Response; data: ImportQueueAllResponse }> => {
     const res = await fetch("/api/import/queue-all", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(buildImportPayload(sourceFields)),
     });
-    const data = await res.json();
+    const data: ImportQueueAllResponse = await res.json();
     return { res, data };
   };
 
@@ -1676,10 +1749,10 @@ export default function JobQueue({
         const importId = data.import_id;
         clearInterval(importPollRef.current);
         pollImportStatus(importId);
-        importPollRef.current = setInterval(() => pollImportStatus(importId), 1200);
+        importPollRef.current = window.setInterval(() => pollImportStatus(importId), 1200);
       } else {
         // Synchronous result (e.g. no URLs found)
-        setImportSummary(data);
+        setImportSummary(data as ImportSummary);
         setImportSubmitting(false);
         await fetchJobs();
         await updateTriageCount();
@@ -1702,8 +1775,8 @@ export default function JobQueue({
 
   useEffect(() => {
     if (!moreToolsOpen) return;
-    const handleOutsideClick = (e) => {
-      if (moreToolsRef.current && !moreToolsRef.current.contains(e.target)) {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (moreToolsRef.current && !moreToolsRef.current.contains(e.target as Node)) {
         setMoreToolsOpen(false);
       }
     };
@@ -1711,7 +1784,7 @@ export default function JobQueue({
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [moreToolsOpen]);
 
-  const triageHandlers = {
+  const triageHandlers: TriageHandlers = {
     approve: handleTriageApprove,
     skip: handleTriageSkip,
     markUnique: handleTriageMarkUnique,
@@ -2590,7 +2663,7 @@ export default function JobQueue({
         <UnreachablePanel
           jobs={filteredUnreachableJobs}
           loading={unreachableLoading}
-          onNavigateToJobCard={onNavigateToJobCard}
+          onNavigateToJobCard={onNavigateToJobCard || (() => {})}
           onCleared={(jobId) => setUnreachableJobs((prev) => prev.filter((j) => j.id !== jobId))}
         />
       ) : viewMode === "both" ? (
@@ -2625,7 +2698,7 @@ export default function JobQueue({
               setJobs((prev) => prev.filter((j) => j.id !== jobId));
               updateTriageCount();
             },
-          }, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))
+          } satisfies QueueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))
         )
       ) : (
         /* viewMode === "queue" */

@@ -41,7 +41,7 @@ import type { Job } from "./jobs.ts";
 
 export interface QueueHandlers {
   onApprove: (jobId: number) => Promise<void>;
-  onReEvaluate?: ((job: Job) => Promise<void>) | null;
+  onReEvaluate?: ((job: Job) => Promise<unknown>) | null;
   onSkip: (jobId: number, reason: string, feedback: string, mismatchReasons: string[]) => Promise<void>;
   onSnooze: (jobId: number, days: number) => Promise<void>;
   onRescanEmail?: ((job: Job) => Promise<void>) | null;

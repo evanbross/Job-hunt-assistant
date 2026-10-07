@@ -81,7 +81,7 @@ import type { SkipReason } from "../types/triage.ts";
 interface JobCardProps {
   job: Job;
   onApprove: (jobId: number) => Promise<void>;
-  onReEvaluate?: ((job: Job) => Promise<void>) | null;
+  onReEvaluate?: ((job: Job) => Promise<unknown>) | null;
   onSkip: (jobId: number, reason: string, feedback: string, mismatchReasons: string[]) => Promise<void>;
   onSnooze: (jobId: number, days: number) => Promise<void>;
   onUpdate?: ((jobId: number, updatedJob: Job) => void) | null;
