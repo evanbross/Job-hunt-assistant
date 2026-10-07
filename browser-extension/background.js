@@ -77,6 +77,26 @@ const _pendingJobId = new Map();
 const _pendingSourceId = new Map();
 let _queuePolling = false;
 
+// ─── Queue-ready WebSocket push ────────────────────────────────────────────
+// Holds a WebSocket open to the backend (see backend/queue_websocket.py) so new
+// queue work triggers an immediate pollQueue() instead of waiting for the
+// fallback alarm below. The socket is purely a wake-up signal — /queue (via
+// pollQueue) remains the single source of truth for what to actually do, so a
+// dropped connection never loses work, only adds latency up to the fallback
+// alarm's period.
+// ai: claude-sonnet-5 | 2026-10-07
+// Moved above the alarm setup/connectQueueSocket() call sites below: this used
+// to sit after them, so the bare top-level `connectQueueSocket();` call hit
+// `_queueSocket`'s temporal dead zone on every service-worker start
+// (`ReferenceError: Cannot access '_queueSocket' before initialization`) —
+// `let`/`const` declarations aren't hoisted with a value, only functions are.
+let _queueSocket = null;
+let _queueSocketReconnectDelayMs = 1000;
+const _QUEUE_SOCKET_MAX_RECONNECT_DELAY_MS = 30000;
+// A rejected token won't fix itself, so retry rarely rather than every backoff step.
+const _QUEUE_SOCKET_AUTH_RETRY_MS = 5 * 60 * 1000;
+let _queueSocketConnecting = false;
+
 // ─── Alarm setup ──────────────────────────────────────────────────────────
 // Alarms survive service-worker dormancy; re-register on each startup in case
 // the worker was killed after the last `onInstalled` fired.
@@ -147,20 +167,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // ai: claude-sonnet-5 | 2026-07-22
 chrome.runtime.onStartup.addListener(() => connectQueueSocket());
 connectQueueSocket();
-
-// ─── Queue-ready WebSocket push ────────────────────────────────────────────
-// Holds a WebSocket open to the backend (see backend/queue_websocket.py) so new
-// queue work triggers an immediate pollQueue() instead of waiting for the
-// fallback alarm above. The socket is purely a wake-up signal — /queue (via
-// pollQueue) remains the single source of truth for what to actually do, so a
-// dropped connection never loses work, only adds latency up to the fallback
-// alarm's period.
-let _queueSocket = null;
-let _queueSocketReconnectDelayMs = 1000;
-const _QUEUE_SOCKET_MAX_RECONNECT_DELAY_MS = 30000;
-// A rejected token won't fix itself, so retry rarely rather than every backoff step.
-const _QUEUE_SOCKET_AUTH_RETRY_MS = 5 * 60 * 1000;
-let _queueSocketConnecting = false;
 
 async function connectQueueSocket() {
   if (_queueSocket && (_queueSocket.readyState === WebSocket.OPEN || _queueSocket.readyState === WebSocket.CONNECTING)) {

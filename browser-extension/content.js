@@ -475,24 +475,43 @@
     return [...seen];
   }
 
-  // ai: claude-sonnet-4-6 | 2026-07-06
-  // window.__appData.jobBoard.jobPostings is SSR'd into the initial HTML on the
-  // Ashby company job-board page (unlike window.__appData.posting on a single job
-  // page, which fills in later), so it's available synchronously here. The board
-  // itself is just that full org-wide array client-filtered by URL query params —
-  // mirror those filters so the count matches what's actually on screen.
+  // ai: claude-sonnet-5 | 2026-10-07
+  // Ashby reshaped jobBoard.jobPostings since this was written: `isListed` is
+  // gone entirely (the array itself now only contains public postings, so that
+  // check was silently filtering out every single one) and there's no flat
+  // `departmentId`/departmentName on a posting anymore -- only `teamId`, with
+  // teams forming a parent/child hierarchy. The `?departmentId=` URL param
+  // actually refers to a root team (parentTeamId === null), so matching it
+  // means walking a posting's team up to its root, not comparing a field that
+  // no longer exists. Confirmed live against jobs.ashbyhq.com/vanta: without
+  // this fix every board/filtered-board page reports 0 jobs and the popup
+  // falls back to the generic "Send Page to App" button instead of listing
+  // individual jobs.
+  function resolveAshbyRootTeam(teams, teamId) {
+    const byId = new Map(teams.map(t => [t.id, t]));
+    let team = byId.get(teamId);
+    const seen = new Set();
+    while (team?.parentTeamId && !seen.has(team.id)) {
+      seen.add(team.id);
+      team = byId.get(team.parentTeamId);
+    }
+    return team;
+  }
+
   function getAshbyBoardJobs() {
     const postings = window.__appData?.jobBoard?.jobPostings || [];
+    const teams = window.__appData?.jobBoard?.teams || [];
     const params = new URLSearchParams(location.search);
     const departmentId = params.get('departmentId');
     const locationId = params.get('locationId');
     const teamId = params.get('teamId');
+    const employmentType = params.get('employmentType');
     const workplaceType = params.get('workplaceType');
     return postings.filter(p => {
-      if (!p.isListed) return false;
-      if (departmentId && p.departmentId !== departmentId) return false;
+      if (departmentId && resolveAshbyRootTeam(teams, p.teamId)?.id !== departmentId) return false;
       if (locationId && p.locationId !== locationId) return false;
       if (teamId && p.teamId !== teamId) return false;
+      if (employmentType && p.employmentType !== employmentType) return false;
       if (workplaceType && p.workplaceType !== workplaceType) return false;
       return true;
     });
@@ -1232,10 +1251,16 @@
     const slug = location.pathname.split('/').filter(Boolean)[0] || '';
     const company = window.__appData?.organization?.name
       || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const teams = window.__appData?.jobBoard?.teams || [];
+    const teamById = new Map(teams.map(t => [t.id, t]));
 
     const jobs = getAshbyBoardJobs().map(p => {
       const url = `https://jobs.ashbyhq.com/${slug}/${p.id}`;
-      const meta = [p.departmentExternalName || p.departmentName, p.locationExternalName || p.locationName, p.workplaceType, p.employmentType].filter(Boolean);
+      // ai: claude-sonnet-5 | 2026-10-07 -- departmentExternalName/departmentName
+      // no longer exist on board postings (see resolveAshbyRootTeam above); the
+      // team's own name is the closest available label.
+      const department = teamById.get(p.teamId)?.name || '';
+      const meta = [department, p.locationExternalName || p.locationName, p.workplaceType, p.employmentType].filter(Boolean);
       const lines = [p.title, 'Company: ' + company, 'URL: ' + url];
       if (meta.length) lines.push(meta.join(' | '));
       return { url, job_title: p.title, company, listing_text: lines.join('\n') };
@@ -2800,10 +2825,21 @@
   // reliably follows "Job Title at Company Name" (same pattern already used for
   // Greenhouse in buildGreenhouseJobPayload above), so use it as a fallback hint
   // when the company link above isn't found.
+  // ai: claude-sonnet-5 | 2026-10-06
+  // Job 5501 (Staff Software Engineer, FoodStorm) shipped with company
+  // "FoodStorm" instead of "Instacart" -- the server-side guess from raw page
+  // text picked the brand name adjacent to the title instead of the real
+  // employer, which only happens when BOTH extraction paths above came back
+  // empty. The old wait loop used the match-score widget's appearance as a
+  // proxy for "the page has hydrated," but that widget can render before the
+  // company link/title-suffix data (a separate, slower API response) lands.
+  // Wait for company readiness directly instead of an unrelated proxy signal.
   async function buildJobgetherJobPayload() {
+    const companyReady = () =>
+      !!extractJobgetherCompanyFromLink() || /\bat\s+.+/i.test(document.title);
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
-      if (document.querySelector('[data-match-score]')) break;
+      if (companyReady() && document.querySelector('[data-match-score]')) break;
       await sleep(300);
     }
 
