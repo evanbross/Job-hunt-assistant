@@ -53,13 +53,169 @@ export interface SettingsSchema {
 }
 
 /**
- * GET /api/config (routes/settings.py's get_config) assembles its response
- * from the full settings registry at runtime, so its exact key set is only
- * known there — this lists the one field callers outside SettingsPanel
- * actually read, plus an index signature for the rest rather than guessing
- * every registry key here.
+ * GET/PUT /api/config (routes/settings.py's get_config/update_config)
+ * assembles its response from the full settings registry at runtime. Most
+ * keys round-trip as plain strings (see backend/settings_registry.py's
+ * SettingSpec defaults, all `str(...)`), but
+ * _read_runtime_config_user_settings() special-cases this fixed set of
+ * keys to their real JSON type (bool/int) instead of a string -- these are
+ * listed explicitly below. Every other registry key (e.g. greenhouse_email,
+ * jobanni_search_url, career_scan_digest_enabled) comes through
+ * _read_user_settings_into() as a plain string, or as `{key}_set: boolean`
+ * for a secret (the plaintext is never sent) -- covered by the index
+ * signature rather than enumerated one by one.
  */
 export interface AppConfigResponse {
   default_snooze_days?: number;
+  email_lookback_days?: number;
+  scanned_email_label?: string;
+  move_successfully_processed_emails?: boolean;
+  candidate_timezone?: string;
+  ai_provider?: string;
+  anthropic_model?: string;
+  openai_model?: string;
+  ollama_base_url?: string;
+  ollama_model?: string;
+  jd_health_check_enabled?: boolean;
+  jd_health_check_time_utc?: string;
+  jd_health_check_frequency_days?: number;
+  jd_health_check_notify_email?: string;
   [key: string]: unknown;
+}
+
+/** POST /api/config/test-ollama response (routes/settings.py). */
+export interface OllamaTestResult {
+  ok: boolean;
+  message: string;
+}
+
+/** PUT /api/account response (routes/session_auth.py) -- narrower than the
+ * GET shape (AccountInfo): only name and email are echoed back. */
+export interface UpdateAccountResponse {
+  name: string;
+  email: string;
+}
+
+// ai: claude-sonnet-5 | 2026-10-07
+// Mirrors the `email_sources` table (backend/db/schema.py) and
+// routes/emails.py's GET/POST/PUT /api/sources jsonify shapes.
+export interface EmailSource {
+  id: number;
+  name: string;
+  match_type: string;
+  match_value: string;
+  subject_filter_mode: string | null;
+  subject_filter_value: string | null;
+  subject_filter_match_mode: string;
+  enabled: number | boolean;
+}
+
+/**
+ * One row of GET /api/email-subject-rules (routes/settings.py) -- despite
+ * the route's name, the backing table is `ack_patterns`, not a table named
+ * email_subject_rules.
+ */
+export interface EmailSubjectRule {
+  id: number;
+  pattern: string;
+  enabled: number | boolean;
+  rule_type: "blacklist" | "whitelist" | string;
+}
+
+// ai: claude-sonnet-5 | 2026-10-07
+// Mirrors the `jd_health_check_targets`/`jd_health_check_results` tables
+// and routes/jd_health_check.py's jsonify shapes.
+export interface JdHealthCheckTarget {
+  id: number;
+  platform: string;
+  label: string;
+  url: string;
+  enabled: number | boolean;
+  created_at: string;
+}
+
+export interface JdHealthCheckResult {
+  id: number;
+  run_at: string;
+  target_id: number | null;
+  platform: string;
+  url: string;
+  label: string;
+  success: number | boolean;
+  error_message: string | null;
+  extracted_title: string | null;
+  extracted_company: string | null;
+  text_length: number | null;
+  confidence_level: string | null;
+  triggered_by: string;
+}
+
+/** POST /api/jd-health-check/run response. */
+export interface JdHealthCheckRunStartResponse {
+  status?: string;
+  task_id?: string;
+  error?: string;
+}
+
+/** GET /api/jd-health-check/run/<task_id>/status response. */
+export interface JdHealthCheckRunStatus {
+  state: string;
+  result?: unknown;
+  error?: string;
+  info?: Record<string, unknown> | null;
+}
+
+// ai: claude-sonnet-5 | 2026-10-07
+// Mirrors the `browser_capture_queue` table and routes/browser_capture.py's
+// jsonify shapes.
+export interface BrowserCaptureQueueItem {
+  id: number;
+  url: string;
+  site_name: string | null;
+  status: "pending" | "processing" | "done" | "failed" | string;
+  created_at: string;
+  updated_at: string;
+  error_msg: string;
+  retry_count: number;
+  purpose: string;
+  job_id: number | null;
+  source_id: number | null;
+}
+
+/** GET /api/browser-capture-queue response. */
+export interface BrowserCaptureQueueResponse {
+  items: BrowserCaptureQueueItem[];
+  max_retries: number;
+  error?: string;
+}
+
+// ai: claude-sonnet-5 | 2026-10-07
+// Mirrors the `penalty_rules` table and routes/settings.py's GET/POST/PUT
+// /api/penalties jsonify shapes.
+export interface PenaltyRule {
+  id: number;
+  rule_text: string;
+  penalty_points: number;
+  enabled: number | boolean;
+  scope: "any" | "title" | "body" | "company" | string;
+}
+
+// ai: claude-sonnet-5 | 2026-10-07
+// Mirrors the `relevance_feedback` table and routes/settings.py's GET
+// /api/feedback jsonify shape.
+export interface RelevanceFeedback {
+  id: number;
+  sender_email: string;
+  subject_pattern: string | null;
+  is_relevant: number | boolean;
+  source_name: string | null;
+  created_at: string;
+}
+
+/** PUT /api/candidate-profile response (routes/settings.py). */
+export interface SaveCandidateProfileResult {
+  char_count: number;
+  profile_changed: boolean;
+  rescore_summary?: { rescored: number; failed: number } | null;
+  error?: string;
 }

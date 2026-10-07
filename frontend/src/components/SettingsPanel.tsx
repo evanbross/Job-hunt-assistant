@@ -32,25 +32,61 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useMemo, useRef, useState } from "react";
-import { apiFetch } from "../utils/apiClient.js";
-import { collectionModeLabel } from "../utils/careerSiteUtils.js";
-import { describeFetchError } from "../utils/fetchErrorUtils.js";
-import { fetchSettingsSchema } from "../utils/settingsSchema.js";
+import type { CSSProperties, FormEvent } from "react";
+import { apiFetch } from "../utils/apiClient.ts";
+import { collectionModeLabel } from "../utils/careerSiteUtils.ts";
+import { describeFetchError } from "../utils/fetchErrorUtils.ts";
+import { fetchSettingsSchema } from "../utils/settingsSchema.ts";
 import ApplicationProfilePanel from "./ApplicationProfilePanel.tsx";
-import BrowserExtensionPanel from "./BrowserExtensionPanel.jsx";
-import Modal from "./common/Modal.jsx";
-import ResumeUpload from "./ResumeUpload.jsx";
-import { SchemaFieldGroup } from "./SchemaFields.jsx";
-import { helpTextStyle, labelStyle } from "./settingsStyles.js";
+import BrowserExtensionPanel from "./BrowserExtensionPanel.tsx";
+import Modal from "./common/Modal.tsx";
+import ResumeUpload from "./ResumeUpload.tsx";
+import { SchemaField, SchemaFieldGroup } from "./SchemaFields.tsx";
+import type { SettingsConfigDraft } from "./SchemaFields.tsx";
+import { helpTextStyle, labelStyle } from "./settingsStyles.ts";
 import SetupWizardPanel from "./SetupWizardPanel.tsx";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { AccountInfo, AuthGoogleStartResponse, AuthStatusResponse } from "../types/auth.ts";
+import type { CareerSite } from "../types/careerSites.ts";
+import type { CandidateProfileResponse } from "../types/setupWizard.ts";
+import type {
+  AppConfigResponse,
+  BrowserCaptureQueueItem,
+  BrowserCaptureQueueResponse,
+  EmailSource,
+  EmailSubjectRule,
+  JdHealthCheckResult,
+  JdHealthCheckRunStartResponse,
+  JdHealthCheckRunStatus,
+  JdHealthCheckTarget,
+  OllamaTestResult,
+  PenaltyRule,
+  RelevanceFeedback,
+  SaveCandidateProfileResult,
+  SettingsSchema,
+  UpdateAccountResponse,
+} from "../types/settings.ts";
 
 // ai: claude-sonnet-5 | 2026-08-30
 // Grouped like an IDE settings tree (PyCharm-style): top-level leaves for
 // single-page sections, groups for related clusters of tabs. Order here is
 // render order, not alphabetical -- related things stay adjacent instead of
 // scattering across the sidebar by label.
-const SETTINGS_TREE = [
+interface SettingsTreeChild {
+  id: string;
+  label: string;
+}
+
+interface SettingsTreeNode {
+  id: string;
+  label: string;
+  children?: SettingsTreeChild[];
+  adminOnly?: boolean;
+}
+
+const SETTINGS_TREE: SettingsTreeNode[] = [
   { id: "account", label: "Account" },
   {
     id: "career_profile",
@@ -113,18 +149,23 @@ const SETTINGS_TREE = [
   },
 ];
 
-function groupIdContaining(sectionId) {
+function groupIdContaining(sectionId: string): string | null {
   const group = SETTINGS_TREE.find((node) => node.children?.some((child) => child.id === sectionId));
   return group ? group.id : null;
 }
 
-export default function SettingsPanel({ initialSection, onSetupComplete }) {
+interface SettingsPanelProps {
+  initialSection?: string;
+  onSetupComplete: () => void;
+}
+
+export default function SettingsPanel({ initialSection, onSetupComplete }: SettingsPanelProps) {
   const [activeSection, setActiveSection] = useState(() => initialSection || "resume");
   // ai: claude-sonnet-5 | 2026-08-21
   const [isAdmin, setIsAdmin] = useState(false);
   // ai: claude-sonnet-5 | 2026-08-30 — only the group containing the initial
   // section starts open; others expand on click, same as a PyCharm settings tree.
-  const [expandedGroups, setExpandedGroups] = useState(() => {
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
     const groupId = groupIdContaining(initialSection || "resume");
     return new Set(groupId ? [groupId] : []);
   });
@@ -133,12 +174,12 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
     (async () => {
       const res = await apiFetch("/api/account");
       if (!res.ok) return;
-      const data = await res.json();
+      const data: AccountInfo = await res.json();
       setIsAdmin(data.role === "admin");
     })();
   }, []);
 
-  const toggleGroup = (groupId) => {
+  const toggleGroup = (groupId: string) => {
     setExpandedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
@@ -153,7 +194,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
   const userNodes = SETTINGS_TREE.filter((node) => !node.adminOnly);
   const adminNodes = SETTINGS_TREE.filter((node) => node.adminOnly && isAdmin);
 
-  const renderNode = (node) =>
+  const renderNode = (node: SettingsTreeNode) =>
     node.children ? (
       <div key={node.id}>
         <button
@@ -231,7 +272,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }) {
 
 // ai: claude-sonnet-5 | 2026-08-21
 function AccountSection() {
-  const [account, setAccount] = useState(null); // { name, email }
+  const [account, setAccount] = useState<AccountInfo | null>(null);
   const [name, setName] = useState("");
   const [nameSaving, setNameSaving] = useState(false);
   const [nameSaved, setNameSaved] = useState(false);
@@ -252,7 +293,7 @@ function AccountSection() {
     (async () => {
       const res = await apiFetch("/api/account");
       if (!res.ok) return;
-      const data = await res.json();
+      const data: AccountInfo = await res.json();
       setAccount(data);
       setName(data.name || "");
     })();
@@ -267,10 +308,12 @@ function AccountSection() {
         body: JSON.stringify({ name }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         window.alert(data.error || `Save failed (${res.status})`);
         return;
       }
+      const data: UpdateAccountResponse = await res.json();
+      setAccount((prev) => (prev ? { ...prev, name: data.name } : prev));
       setNameSaved(true);
       setTimeout(() => setNameSaved(false), 2500);
     } catch (err) {
@@ -280,7 +323,7 @@ function AccountSection() {
     }
   };
 
-  const submitEmailChange = async (e) => {
+  const submitEmailChange = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (emailSubmitting) return;
     setEmailSubmitting(true);
@@ -291,7 +334,7 @@ function AccountSection() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ new_email: newEmail }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         setEmailError(data.error || `Request failed (HTTP ${res.status})`);
         return;
@@ -305,7 +348,7 @@ function AccountSection() {
     }
   };
 
-  const submitPasswordChange = async (e) => {
+  const submitPasswordChange = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (passwordSaving) return;
     if (newPassword !== confirmPassword) {
@@ -320,7 +363,7 @@ function AccountSection() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         setPasswordError(data.error || `Request failed (HTTP ${res.status})`);
         return;
@@ -441,12 +484,20 @@ function AccountSection() {
 
 // ── Email Subject Rules ────────────────────────────────────────────────────────
 
-function SubjectRuleList({ ruleType, title, description, rules, onRefresh }) {
+interface SubjectRuleListProps {
+  ruleType: "blacklist" | "whitelist";
+  title: string;
+  description: string;
+  rules: EmailSubjectRule[];
+  onRefresh: () => Promise<void>;
+}
+
+function SubjectRuleList({ ruleType, title, description, rules, onRefresh }: SubjectRuleListProps) {
   const [newPattern, setNewPattern] = useState("");
-  const [editId, setEditId] = useState(null);
+  const [editId, setEditId] = useState<number | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  const startEdit = (rule) => {
+  const startEdit = (rule: EmailSubjectRule) => {
     setEditId(rule.id);
     setEditValue(rule.pattern);
   };
@@ -456,7 +507,7 @@ function SubjectRuleList({ ruleType, title, description, rules, onRefresh }) {
     setEditValue("");
   };
 
-  const saveEdit = async (id) => {
+  const saveEdit = async (id: number) => {
     const trimmed = editValue.trim().toLowerCase();
     if (!trimmed) return;
     const res = await fetch(`/api/email-subject-rules/${id}`, {
@@ -470,7 +521,7 @@ function SubjectRuleList({ ruleType, title, description, rules, onRefresh }) {
     await onRefresh();
   };
 
-  const toggleEnabled = async (rule) => {
+  const toggleEnabled = async (rule: EmailSubjectRule) => {
     const res = await fetch(`/api/email-subject-rules/${rule.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -480,7 +531,7 @@ function SubjectRuleList({ ruleType, title, description, rules, onRefresh }) {
     await onRefresh();
   };
 
-  const deleteRule = async (id) => {
+  const deleteRule = async (id: number) => {
     if (!window.confirm("Delete this rule?")) return;
     const res = await fetch(`/api/email-subject-rules/${id}`, { method: "DELETE" });
     if (!res.ok) { window.alert(`Delete failed (${res.status})`); return; }
@@ -496,7 +547,7 @@ function SubjectRuleList({ ruleType, title, description, rules, onRefresh }) {
       body: JSON.stringify({ pattern: trimmed, rule_type: ruleType }),
     });
     if (!res.ok) {
-      const data = await res.json();
+      const data: ApiErrorBody = await res.json();
       window.alert(data.error || `Save failed (${res.status})`);
       return;
     }
@@ -579,7 +630,7 @@ function SubjectRuleList({ ruleType, title, description, rules, onRefresh }) {
 }
 
 function EmailSubjectRulesSection() {
-  const [rules, setRules] = useState([]);
+  const [rules, setRules] = useState<EmailSubjectRule[]>([]);
 
   useEffect(() => { fetchRules(); }, []);
 
@@ -615,24 +666,39 @@ function EmailSubjectRulesSection() {
 
 // ── Email Sources ─────────────────────────────────────────────────────────────
 
+interface EmailSourceForm {
+  name: string;
+  match_type: string;
+  match_value: string;
+  subject_filter_mode: string;
+  subject_filter_value: string;
+  subject_filter_match_mode: string;
+}
+
+const EMPTY_SOURCE_FORM: EmailSourceForm = {
+  name: "",
+  match_type: "sender_domain",
+  match_value: "",
+  subject_filter_mode: "",
+  subject_filter_value: "",
+  subject_filter_match_mode: "text",
+};
+
+interface SortConfig {
+  key: string;
+  direction: "asc" | "desc";
+}
+
 function EmailSourcesSection() {
-  const [sources, setSources] = useState([]);
-  const [cfg, setCfg] = useState(null);
+  const [sources, setSources] = useState<EmailSource[]>([]);
+  const [cfg, setCfg] = useState<AppConfigResponse | null>(null);
   const [configSaved, setConfigSaved] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [showForm, setShowForm] = useState(false);
-  const emptySourceForm = {
-    name: "",
-    match_type: "sender_domain",
-    match_value: "",
-    subject_filter_mode: "",
-    subject_filter_value: "",
-    subject_filter_match_mode: "text",
-  };
-  const [form, setForm] = useState(emptySourceForm);
-  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState<EmailSourceForm>(EMPTY_SOURCE_FORM);
+  const [editId, setEditId] = useState<number | null>(null);
   const [subjectFilterTest, setSubjectFilterTest] = useState("");
-  const [sourceSort, setSourceSort] = useState({ key: "name", direction: "asc" });
+  const [sourceSort, setSourceSort] = useState<SortConfig>({ key: "name", direction: "asc" });
 
   useEffect(() => {
     fetchConfig();
@@ -641,7 +707,7 @@ function EmailSourcesSection() {
 
   const fetchConfig = async () => {
     const res = await fetch("/api/config");
-    const data = await res.json();
+    const data: AppConfigResponse = await res.json();
     setCfg(data);
   };
 
@@ -657,7 +723,7 @@ function EmailSourcesSection() {
       window.alert("Processed email label cannot be empty.");
       return;
     }
-    const lookbackDays = parseInt(cfg?.email_lookback_days, 10);
+    const lookbackDays = parseInt(String(cfg?.email_lookback_days), 10);
     if (!Number.isFinite(lookbackDays) || lookbackDays < 1 || lookbackDays > 90) {
       window.alert("Lookback days must be a number between 1 and 90.");
       return;
@@ -673,7 +739,7 @@ function EmailSourcesSection() {
         move_successfully_processed_emails: !!cfg?.move_successfully_processed_emails,
       }),
     });
-    const data = await res.json();
+    const data: AppConfigResponse & ApiErrorBody = await res.json();
     setConfigSaving(false);
     if (!res.ok) {
       window.alert(data.error || "Failed to save email configuration");
@@ -684,7 +750,7 @@ function EmailSourcesSection() {
     setTimeout(() => setConfigSaved(false), 2500);
   };
 
-  const toggleEnabled = async (source) => {
+  const toggleEnabled = async (source: EmailSource) => {
     const res = await fetch(`/api/sources/${source.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -697,7 +763,7 @@ function EmailSourcesSection() {
     await fetchSources();
   };
 
-  const deleteSource = async (id) => {
+  const deleteSource = async (id: number) => {
     if (!window.confirm("Delete this source?")) return;
     const res = await fetch(`/api/sources/${id}`, { method: "DELETE" });
     if (!res.ok) {
@@ -707,7 +773,7 @@ function EmailSourcesSection() {
     await fetchSources();
   };
 
-  const startEdit = (source) => {
+  const startEdit = (source: EmailSource) => {
     setEditId(source.id);
     setForm({
       name: source.name,
@@ -750,11 +816,11 @@ function EmailSourcesSection() {
     }
     setShowForm(false);
     setEditId(null);
-    setForm(emptySourceForm);
+    setForm(EMPTY_SOURCE_FORM);
     fetchSources();
   };
 
-  const requestSourceSort = (key) => {
+  const requestSourceSort = (key: string) => {
     setSourceSort((currentSort) => ({
       key,
       direction: currentSort.key === key && currentSort.direction === "asc" ? "desc" : "asc",
@@ -787,7 +853,7 @@ function EmailSourcesSection() {
                 min="1"
                 max="90"
                 value={cfg.email_lookback_days ?? 10}
-                onChange={(e) => setCfg({ ...cfg, email_lookback_days: e.target.value })}
+                onChange={(e) => setCfg({ ...cfg, email_lookback_days: Number(e.target.value) })}
               />
               <span style={helpTextStyle}>
                 Scan emails from the past N days.
@@ -832,7 +898,7 @@ function EmailSourcesSection() {
         )}
       </div>
 
-      <SectionHeader title="Email Sources" action={{ label: "Add Source", onClick: () => { setEditId(null); setForm(emptySourceForm); setShowForm(true); } }} />
+      <SectionHeader title="Email Sources" action={{ label: "Add Source", onClick: () => { setEditId(null); setForm(EMPTY_SOURCE_FORM); setShowForm(true); } }} />
 
       {showForm && (
         <div style={formBox}>
@@ -886,7 +952,7 @@ function EmailSourcesSection() {
             )}
             {form.subject_filter_mode && form.subject_filter_value.trim() && (() => {
               const matchMode = form.subject_filter_match_mode || "text";
-              let match = null;
+              let match: boolean | null = null;
               if (subjectFilterTest.trim()) {
                 const subject = subjectFilterTest;
                 const filterValue = form.subject_filter_value.trim();
@@ -986,7 +1052,13 @@ function EmailSourcesSection() {
   );
 }
 
-function compareRows(getValue, left, right, key, direction) {
+function compareRows<T extends { name?: string | null }>(
+  getValue: (row: T, key: string) => string | number,
+  left: T,
+  right: T,
+  key: string,
+  direction: "asc" | "desc",
+): number {
   const directionMultiplier = direction === "desc" ? -1 : 1;
   const leftValue = getValue(left, key);
   const rightValue = getValue(right, key);
@@ -1007,25 +1079,25 @@ function compareRows(getValue, left, right, key, direction) {
   });
 }
 
-function formatSourceSubjectFilter(source) {
+function formatSourceSubjectFilter(source: EmailSource): string {
   const mode = source.subject_filter_mode || "";
   const value = source.subject_filter_value || "";
   if (!mode || !value) return "—";
   return `${mode === "starts_with" ? "starts with" : "contains"}: ${value}`;
 }
 
-function sourceSortValue(source, key) {
+function sourceSortValue(source: EmailSource, key: string): string | number {
   if (key === "enabled") return source.enabled ? 1 : 0;
-  return source[key] || "";
+  return (source as unknown as Record<string, string>)[key] || "";
 }
 
 // ── Career Site Sources ──────────────────────────────────────────────────────
 
-function siteSortValue(site, key) {
+function siteSortValue(site: CareerSite, key: string): string | number {
   if (key === "enabled") return site.enabled ? 1 : 0;
   if (key === "recapture_interval_days") return site.recapture_interval_days || 0;
   if (key === "last_captured_at") return site.last_captured_at || "￿";
-  return site[key] || "";
+  return (site as unknown as Record<string, string>)[key] || "";
 }
 
 const SITE_COLUMNS = [
@@ -1037,12 +1109,22 @@ const SITE_COLUMNS = [
   { key: "enabled", label: "Enabled" },
 ];
 
+interface CareerSiteForm {
+  name: string;
+  url: string;
+  enabled: boolean;
+  collection_mode: string;
+  recapture_interval_days: string;
+}
+
+const EMPTY_CAREER_SITE_FORM: CareerSiteForm = { name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" };
+
 function CareerSitesSection() {
-  const [sites, setSites] = useState([]);
+  const [sites, setSites] = useState<CareerSite[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
-  const [editId, setEditId] = useState(null);
-  const [siteSort, setSiteSort] = useState({ key: "name", direction: "asc" });
+  const [form, setForm] = useState<CareerSiteForm>(EMPTY_CAREER_SITE_FORM);
+  const [editId, setEditId] = useState<number | null>(null);
+  const [siteSort, setSiteSort] = useState<SortConfig>({ key: "name", direction: "asc" });
 
   useEffect(() => { fetchSites(); }, []);
 
@@ -1052,7 +1134,7 @@ function CareerSitesSection() {
     setSites(Array.isArray(data) ? data : []);
   };
 
-  const toggleEnabled = async (site) => {
+  const toggleEnabled = async (site: CareerSite) => {
     const res = await fetch(`/api/career-sites/${site.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1065,7 +1147,7 @@ function CareerSitesSection() {
     await fetchSites();
   };
 
-  const deleteSite = async (id) => {
+  const deleteSite = async (id: number) => {
     if (!window.confirm("Delete this career site URL?")) return;
     const res = await fetch(`/api/career-sites/${id}`, { method: "DELETE" });
     if (!res.ok) {
@@ -1075,12 +1157,12 @@ function CareerSitesSection() {
     await fetchSites();
   };
 
-  const openSite = (site) => {
+  const openSite = (site: CareerSite) => {
     if (!site?.url) return;
     window.open(site.url, "_blank", "noopener,noreferrer");
   };
 
-  const startEdit = (site) => {
+  const startEdit = (site: CareerSite) => {
     setEditId(site.id);
     setForm({
       name: site.name,
@@ -1092,7 +1174,7 @@ function CareerSitesSection() {
     setShowForm(true);
   };
 
-  const requestSiteSort = (key) => {
+  const requestSiteSort = (key: string) => {
     setSiteSort((currentSort) => ({
       key,
       direction: currentSort.key === key && currentSort.direction === "asc" ? "desc" : "asc",
@@ -1135,7 +1217,7 @@ function CareerSitesSection() {
     }
     setShowForm(false);
     setEditId(null);
-    setForm({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" });
+    setForm(EMPTY_CAREER_SITE_FORM);
     fetchSites();
   };
 
@@ -1143,7 +1225,7 @@ function CareerSitesSection() {
 
   return (
     <div>
-      <SectionHeader title="Career Site URLs" action={{ label: "Add Site", onClick: () => { setEditId(null); setForm({ name: "", url: "", enabled: true, collection_mode: "automatic", recapture_interval_days: "4" }); setShowForm(true); } }} />
+      <SectionHeader title="Career Site URLs" action={{ label: "Add Site", onClick: () => { setEditId(null); setForm(EMPTY_CAREER_SITE_FORM); setShowForm(true); } }} />
       <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
         Add each company job/careers page URL here. The background scanner checks these while the app is running.
       </p>
@@ -1235,21 +1317,28 @@ const JD_HEALTH_CHECK_PLATFORMS = [
   { value: "generic", label: "Generic" },
 ];
 
-const EMPTY_JD_TARGET_FORM = { platform: "greenhouse", label: "", url: "", enabled: true };
+interface JdTargetForm {
+  platform: string;
+  label: string;
+  url: string;
+  enabled: boolean;
+}
+
+const EMPTY_JD_TARGET_FORM: JdTargetForm = { platform: "greenhouse", label: "", url: "", enabled: true };
 
 // ai: claude-sonnet-5 | 2026-08-03
 function JdHealthCheckSection() {
-  const [cfg, setCfg] = useState(null);
+  const [cfg, setCfg] = useState<AppConfigResponse | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [authStatus, setAuthStatus] = useState(null);
-  const [targets, setTargets] = useState([]);
-  const [results, setResults] = useState([]);
+  const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
+  const [targets, setTargets] = useState<JdHealthCheckTarget[]>([]);
+  const [results, setResults] = useState<JdHealthCheckResult[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState(EMPTY_JD_TARGET_FORM);
-  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState<JdTargetForm>(EMPTY_JD_TARGET_FORM);
+  const [editId, setEditId] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
-  const runPollRef = useRef(null);
+  const runPollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const fetchConfig = async () => {
     const res = await fetch("/api/config");
@@ -1282,7 +1371,7 @@ function JdHealthCheckSection() {
   }, []);
 
   const saveConfig = async () => {
-    const frequencyDays = parseInt(cfg?.jd_health_check_frequency_days, 10);
+    const frequencyDays = parseInt(String(cfg?.jd_health_check_frequency_days), 10);
     if (!Number.isFinite(frequencyDays) || frequencyDays < 1) {
       window.alert("Frequency must be a positive number of days.");
       return;
@@ -1306,7 +1395,7 @@ function JdHealthCheckSection() {
         jd_health_check_notify_email: cfg?.jd_health_check_notify_email || "",
       }),
     });
-    const data = await res.json();
+    const data: AppConfigResponse & ApiErrorBody = await res.json();
     setSaving(false);
     if (!res.ok) {
       window.alert(data.error || "Failed to save configuration");
@@ -1319,17 +1408,17 @@ function JdHealthCheckSection() {
 
   const reconnectGmail = async () => {
     const res = await fetch("/api/auth/google");
-    const data = await res.json();
+    const data: AuthGoogleStartResponse = await res.json();
     if (!res.ok || data.error) {
       window.alert(data.error || "Failed to start Gmail auth");
       return;
     }
-    window.location.href = data.auth_url;
+    window.location.href = data.auth_url || "";
   };
 
   const closeForm = () => { setShowForm(false); setEditId(null); setForm(EMPTY_JD_TARGET_FORM); };
 
-  const startEdit = (target) => {
+  const startEdit = (target: JdHealthCheckTarget) => {
     setEditId(target.id);
     setForm({
       platform: target.platform,
@@ -1348,7 +1437,7 @@ function JdHealthCheckSection() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form),
     });
-    const data = await res.json();
+    const data: ApiErrorBody = await res.json();
     if (!res.ok) {
       window.alert(data.error || `Save failed (${res.status})`);
       return;
@@ -1357,7 +1446,7 @@ function JdHealthCheckSection() {
     await fetchTargets();
   };
 
-  const toggleEnabled = async (target) => {
+  const toggleEnabled = async (target: JdHealthCheckTarget) => {
     const res = await fetch(`/api/jd-health-check/targets/${target.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1370,7 +1459,7 @@ function JdHealthCheckSection() {
     await fetchTargets();
   };
 
-  const deleteTarget = async (id) => {
+  const deleteTarget = async (id: number) => {
     if (!window.confirm("Delete this canary target?")) return;
     const res = await fetch(`/api/jd-health-check/targets/${id}`, { method: "DELETE" });
     if (!res.ok) {
@@ -1380,11 +1469,11 @@ function JdHealthCheckSection() {
     await fetchTargets();
   };
 
-  const pollRunStatus = (taskId) => {
+  const pollRunStatus = (taskId: string) => {
     clearInterval(runPollRef.current);
     runPollRef.current = setInterval(async () => {
       const res = await fetch(`/api/jd-health-check/run/${taskId}/status`);
-      const data = await res.json();
+      const data: JdHealthCheckRunStatus = await res.json();
       if (data.state === "SUCCESS" || data.state === "FAILURE") {
         clearInterval(runPollRef.current);
         setRunning(false);
@@ -1400,13 +1489,13 @@ function JdHealthCheckSection() {
     if (running) return;
     setRunning(true);
     const res = await fetch("/api/jd-health-check/run", { method: "POST" });
-    const data = await res.json();
+    const data: JdHealthCheckRunStartResponse = await res.json();
     if (!res.ok) {
       setRunning(false);
       window.alert(data.error || `Failed to start run (${res.status})`);
       return;
     }
-    pollRunStatus(data.task_id);
+    pollRunStatus(data.task_id || "");
   };
 
   if (!cfg) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
@@ -1456,7 +1545,7 @@ function JdHealthCheckSection() {
             type="number"
             min="1"
             value={cfg.jd_health_check_frequency_days ?? 1}
-            onChange={(e) => setCfg({ ...cfg, jd_health_check_frequency_days: e.target.value })}
+            onChange={(e) => setCfg({ ...cfg, jd_health_check_frequency_days: Number(e.target.value) })}
           />
         </label>
         <label style={labelStyle}>
@@ -1584,7 +1673,7 @@ function JdHealthCheckSection() {
 // strings (same convention as SchemaField's checkbox handling below), not
 // the real bool/int types /api/config still returns for per-user fields.
 function ImportListenerSection() {
-  const [cfg, setCfg] = useState(null);
+  const [cfg, setCfg] = useState<SettingsConfigDraft | null>(null);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -1595,13 +1684,14 @@ function ImportListenerSection() {
   }, []);
 
   const save = async () => {
-    const port = parseInt(cfg.job_import_listener_port, 10);
+    if (!cfg) return;
+    const port = parseInt(String(cfg.job_import_listener_port), 10);
     if (!Number.isFinite(port) || port < 1 || port > 65535) {
       window.alert("Listener port must be a number between 1 and 65535.");
       return;
     }
 
-    const maxBytes = parseInt(cfg.job_import_listener_max_bytes, 10);
+    const maxBytes = parseInt(String(cfg.job_import_listener_max_bytes), 10);
     if (!Number.isFinite(maxBytes) || maxBytes < 1024) {
       window.alert("Max request size must be at least 1024 bytes.");
       return;
@@ -1618,10 +1708,10 @@ function ImportListenerSection() {
         job_import_listener_max_bytes: String(maxBytes),
       }),
     });
-    const data = await res.json();
+    const data: SettingsConfigDraft & ApiErrorBody = await res.json();
     setSaving(false);
     if (!res.ok) {
-      window.alert(data.error || "Failed to save import listener settings");
+      window.alert((data.error as string) || "Failed to save import listener settings");
       return;
     }
     setCfg(data);
@@ -1670,7 +1760,7 @@ function ImportListenerSection() {
           <label style={labelStyle}>
             Host
             <input
-              value={cfg.job_import_listener_host || ""}
+              value={String(cfg.job_import_listener_host ?? "")}
               onChange={(event) =>
                 setCfg({ ...cfg, job_import_listener_host: event.target.value })
               }
@@ -1687,7 +1777,7 @@ function ImportListenerSection() {
               type="number"
               min="1"
               max="65535"
-              value={cfg.job_import_listener_port ?? 8765}
+              value={String(cfg.job_import_listener_port ?? 8765)}
               onChange={(event) =>
                 setCfg({ ...cfg, job_import_listener_port: event.target.value })
               }
@@ -1700,7 +1790,7 @@ function ImportListenerSection() {
             <input
               type="number"
               min="1024"
-              value={cfg.job_import_listener_max_bytes ?? 15728640}
+              value={String(cfg.job_import_listener_max_bytes ?? 15728640)}
               onChange={(event) =>
                 setCfg({ ...cfg, job_import_listener_max_bytes: event.target.value })
               }
@@ -1723,7 +1813,7 @@ function ImportListenerSection() {
 // ── Fetch Queue ───────────────────────────────────────────────────────────────
 
 // ai: claude-sonnet-4-6 | 2026-06-21
-const QUEUE_STATUS_BADGE = {
+const QUEUE_STATUS_BADGE: Record<string, string> = {
   pending: "badge-yellow",
   processing: "badge-accent",
   done: "badge-green",
@@ -1732,16 +1822,16 @@ const QUEUE_STATUS_BADGE = {
 
 // ai: claude-sonnet-4-6 | 2026-06-21
 function FetchQueueSection() {
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState<BrowserCaptureQueueItem[]>([]);
   const [maxRetries, setMaxRetries] = useState(5);
   const [loading, setLoading] = useState(true);
   const [showDone, setShowDone] = useState(false);
-  const pollRef = useRef(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const fetchQueue = async () => {
     const res = await fetch("/api/browser-capture-queue");
     if (!res.ok) return;
-    const data = await res.json();
+    const data: BrowserCaptureQueueResponse = await res.json();
     setItems(Array.isArray(data.items) ? data.items : []);
     if (typeof data.max_retries === "number") setMaxRetries(data.max_retries);
     setLoading(false);
@@ -1754,7 +1844,7 @@ function FetchQueueSection() {
     return () => clearInterval(pollRef.current);
   }, []);
 
-  const deleteItem = async (id) => {
+  const deleteItem = async (id: number) => {
     const res = await fetch(`/api/browser-capture-queue/${id}`, { method: "DELETE" });
     if (!res.ok) { window.alert(`Remove failed (${res.status})`); return; }
     await fetchQueue();
@@ -1882,11 +1972,19 @@ function FetchQueueSection() {
 
 // ── Penalty Rules ─────────────────────────────────────────────────────────────
 
+interface PenaltyForm {
+  rule_text: string;
+  penalty_points: string;
+  scope: string;
+}
+
+const EMPTY_PENALTY_FORM: PenaltyForm = { rule_text: "", penalty_points: "", scope: "any" };
+
 function PenaltiesSection() {
-  const [rules, setRules] = useState([]);
+  const [rules, setRules] = useState<PenaltyRule[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ rule_text: "", penalty_points: "", scope: "any" });
-  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState<PenaltyForm>(EMPTY_PENALTY_FORM);
+  const [editId, setEditId] = useState<number | null>(null);
 
   useEffect(() => { fetchRules(); }, []);
 
@@ -1896,7 +1994,7 @@ function PenaltiesSection() {
     setRules(Array.isArray(data) ? data : []);
   };
 
-  const toggleEnabled = async (rule) => {
+  const toggleEnabled = async (rule: PenaltyRule) => {
     const res = await fetch(`/api/penalties/${rule.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1909,7 +2007,7 @@ function PenaltiesSection() {
     await fetchRules();
   };
 
-  const deleteRule = async (id) => {
+  const deleteRule = async (id: number) => {
     if (!window.confirm("Delete this rule?")) return;
     const res = await fetch(`/api/penalties/${id}`, { method: "DELETE" });
     if (!res.ok) {
@@ -1919,7 +2017,7 @@ function PenaltiesSection() {
     await fetchRules();
   };
 
-  const startEdit = (rule) => {
+  const startEdit = (rule: PenaltyRule) => {
     setEditId(rule.id);
     setForm({ rule_text: rule.rule_text, penalty_points: String(rule.penalty_points), scope: rule.scope || "any" });
     setShowForm(true);
@@ -1951,13 +2049,13 @@ function PenaltiesSection() {
     }
     setShowForm(false);
     setEditId(null);
-    setForm({ rule_text: "", penalty_points: "", scope: "any" });
+    setForm(EMPTY_PENALTY_FORM);
     fetchRules();
   };
 
   return (
     <div>
-      <SectionHeader title="Scoring Penalties" action={{ label: "Add Rule", onClick: () => { setEditId(null); setForm({ rule_text: "", penalty_points: "", scope: "any" }); setShowForm(true); } }} />
+      <SectionHeader title="Scoring Penalties" action={{ label: "Add Rule", onClick: () => { setEditId(null); setForm(EMPTY_PENALTY_FORM); setShowForm(true); } }} />
       <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
         If a rule's text appears in a job email, that many points are deducted from the fit score.
       </p>
@@ -2015,7 +2113,7 @@ function PenaltiesSection() {
 // ── Learned Patterns ──────────────────────────────────────────────────────────
 
 function FeedbackSection() {
-  const [feedback, setFeedback] = useState([]);
+  const [feedback, setFeedback] = useState<RelevanceFeedback[]>([]);
 
   useEffect(() => {
     fetch("/api/feedback")
@@ -2023,7 +2121,7 @@ function FeedbackSection() {
       .then((d) => setFeedback(Array.isArray(d) ? d : []));
   }, []);
 
-  const deleteFeedback = async (id) => {
+  const deleteFeedback = async (id: number) => {
     const res = await fetch(`/api/feedback/${id}`, { method: "DELETE" });
     if (!res.ok) {
       window.alert(`Delete failed (${res.status})`);
@@ -2076,11 +2174,11 @@ function FeedbackSection() {
 
 // ── Schema-driven settings fields ───────────────────────────────────────────
 function ConfigSection() {
-  const [cfg, setCfg] = useState(null);
-  const [schema, setSchema] = useState({ user: [], system: [] });
+  const [cfg, setCfg] = useState<AppConfigResponse | null>(null);
+  const [schema, setSchema] = useState<SettingsSchema>({ user: [], system: [] });
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [ollamaTest, setOllamaTest] = useState(null);
+  const [ollamaTest, setOllamaTest] = useState<OllamaTestResult | null>(null);
   const [testingOllama, setTestingOllama] = useState(false);
 
   useEffect(() => {
@@ -2102,10 +2200,10 @@ function ConfigSection() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cfg),
     });
-    const data = await res.json();
+    const data: AppConfigResponse & ApiErrorBody = await res.json();
     setSaving(false);
     if (!res.ok) {
-      alert(data.error || "Failed to save configuration");
+      window.alert(data.error || "Failed to save configuration");
       return;
     }
     setCfg(data);
@@ -2119,14 +2217,22 @@ function ConfigSection() {
     const res = await fetch("/api/config/test-ollama", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ollama_base_url: cfg.ollama_base_url, ollama_model: cfg.ollama_model }),
+      body: JSON.stringify({ ollama_base_url: cfg?.ollama_base_url, ollama_model: cfg?.ollama_model }),
     });
-    const data = await res.json();
+    const data: OllamaTestResult = await res.json();
     setOllamaTest(data);
     setTestingOllama(false);
   };
 
   if (!cfg) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+
+  // ai: claude-sonnet-5 | 2026-10-07 -- bridges AppConfigResponse's typed
+  // state to SchemaField/SchemaFieldGroup's shared SettingsConfigDraft
+  // (Record<string, unknown>) contract. `cfg` itself already satisfies that
+  // shape (it has an index signature); only the setter needs an explicit
+  // cast back, since `AppConfigResponse` is a narrower/typed subset of
+  // `SettingsConfigDraft`, not the same type.
+  const setSchemaCfg = (next: SettingsConfigDraft) => setCfg(next as AppConfigResponse);
 
   return (
     <div>
@@ -2156,7 +2262,7 @@ function ConfigSection() {
                   placeholder="claude-sonnet-4-6"
                 />
               </label>
-              <SchemaField spec={schemaByKey.anthropic_api_key} cfg={cfg} setCfg={setCfg} />
+              <SchemaField spec={schemaByKey.anthropic_api_key} cfg={cfg} setCfg={setSchemaCfg} />
             </>
           )}
 
@@ -2170,7 +2276,7 @@ function ConfigSection() {
                   placeholder="gpt-4.1"
                 />
               </label>
-              <SchemaField spec={schemaByKey.openai_api_key} cfg={cfg} setCfg={setCfg} />
+              <SchemaField spec={schemaByKey.openai_api_key} cfg={cfg} setCfg={setSchemaCfg} />
             </>
           )}
 
@@ -2210,7 +2316,7 @@ function ConfigSection() {
 
         {/* ai: claude-sonnet-5 | 2026-08-26 */}
         <div style={{ marginTop: "20px" }}>
-          <SchemaFieldGroup fields={schema.user} group="Job Board Credentials" cfg={cfg} setCfg={setCfg} />
+          <SchemaFieldGroup fields={schema.user} group="Job Board Credentials" cfg={cfg} setCfg={setSchemaCfg} />
         </div>
 
         <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
@@ -2236,27 +2342,27 @@ function ConfigSection() {
 const MAX_PROFILE_IMPORT_BYTES = 200_000;
 
 function ProfileSettingsSection() {
-  const [timezone, setTimezone] = useState(null);
-  const [profile, setProfile] = useState(null);
+  const [timezone, setTimezone] = useState<string | null>(null);
+  const [profile, setProfile] = useState<string | null>(null);
   const [savedProfile, setSavedProfile] = useState("");
   const [saved, setSaved] = useState(false);
-  const [saveSummary, setSaveSummary] = useState(null);
+  const [saveSummary, setSaveSummary] = useState<SaveCandidateProfileResult | null>(null);
   const [saving, setSaving] = useState(false);
-  const fileRef = useRef(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     apiFetch("/api/config")
       .then((r) => r.json())
-      .then((d) => setTimezone(d.candidate_timezone || ""));
+      .then((d: AppConfigResponse) => setTimezone(d.candidate_timezone || ""));
     apiFetch("/api/candidate-profile")
       .then((r) => r.json())
-      .then((d) => {
+      .then((d: CandidateProfileResponse) => {
         setProfile(d.content);
         setSavedProfile(d.content);
       });
   }, []);
 
-  const importFile = async (event) => {
+  const importFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (fileRef.current) fileRef.current.value = "";
     if (!file) return;
@@ -2268,7 +2374,7 @@ function ProfileSettingsSection() {
   };
 
   const save = async () => {
-    if (!profile.trim()) {
+    if (!profile || !profile.trim()) {
       window.alert("The candidate profile can't be empty.");
       return;
     }
@@ -2280,7 +2386,7 @@ function ProfileSettingsSection() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ content: profile }),
         });
-        const profileData = await profileRes.json();
+        const profileData: SaveCandidateProfileResult = await profileRes.json();
         if (!profileRes.ok) {
           window.alert(profileData.error || "Failed to save the candidate profile");
           return;
@@ -2294,7 +2400,7 @@ function ProfileSettingsSection() {
         body: JSON.stringify({ candidate_timezone: timezone }),
       });
       if (!cfgRes.ok) {
-        const cfgData = await cfgRes.json().catch(() => ({}));
+        const cfgData: ApiErrorBody = await cfgRes.json().catch(() => ({}));
         window.alert(cfgData.error || "Failed to save your timezone");
         return;
       }
@@ -2376,8 +2482,8 @@ function ProfileSettingsSection() {
 
 // ai: claude-sonnet-5 | 2026-08-21
 function SystemSettingsSection() {
-  const [cfg, setCfg] = useState(null);
-  const [schema, setSchema] = useState({ user: [], system: [] });
+  const [cfg, setCfg] = useState<SettingsConfigDraft | null>(null);
+  const [schema, setSchema] = useState<SettingsSchema>({ user: [], system: [] });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -2398,9 +2504,9 @@ function SystemSettingsSection() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(cfg),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: SettingsConfigDraft & ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
-        window.alert(data.error || `Save failed (${res.status})`);
+        window.alert((data.error as string) || `Save failed (${res.status})`);
         return;
       }
       setCfg(data);
@@ -2446,17 +2552,22 @@ function SystemSettingsSection() {
 
 // ── Timezone picker ───────────────────────────────────────────────────────────
 
-function TimezoneSelect({ value, onChange }) {
+interface TimezoneSelectProps {
+  value: string;
+  onChange: (value: string) => void;
+}
+
+function TimezoneSelect({ value, onChange }: TimezoneSelectProps) {
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
-  const dropdownRef = useRef(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const allZones = useMemo(() => {
     try { return Intl.supportedValuesOf("timeZone"); }
     catch { return []; }
   }, []);
 
-  const getOffset = (tz) => {
+  const getOffset = (tz: string): string => {
     try {
       const parts = new Intl.DateTimeFormat("en-US", {
         timeZone: tz,
@@ -2483,12 +2594,12 @@ function TimezoneSelect({ value, onChange }) {
     setOpen(true);
   };
 
-  const handleBlur = (e) => {
+  const handleBlur = (e: React.FocusEvent<HTMLDivElement>) => {
     if (dropdownRef.current && dropdownRef.current.contains(e.relatedTarget)) return;
     setOpen(false);
   };
 
-  const select = (tz) => {
+  const select = (tz: string) => {
     onChange(tz);
     setOpen(false);
     setSearch("");
@@ -2561,7 +2672,18 @@ function TimezoneSelect({ value, onChange }) {
 
 // ── Shared UI atoms ───────────────────────────────────────────────────────────
 
-function SectionHeader({ title, action }) {
+interface SectionHeaderAction {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}
+
+interface SectionHeaderProps {
+  title: string;
+  action?: SectionHeaderAction;
+}
+
+function SectionHeader({ title, action }: SectionHeaderProps) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
       <h2 style={{ fontSize: "16px", fontWeight: "700" }}>{title}</h2>
@@ -2579,7 +2701,12 @@ function SectionHeader({ title, action }) {
   );
 }
 
-function Toggle({ checked, onChange }) {
+interface ToggleProps {
+  checked: boolean;
+  onChange: () => void;
+}
+
+function Toggle({ checked, onChange }: ToggleProps) {
   return (
     <button
       onClick={onChange}
@@ -2613,7 +2740,7 @@ function Toggle({ checked, onChange }) {
 
 // ── Shared styles ─────────────────────────────────────────────────────────────
 
-const sideNav = {
+const sideNav: CSSProperties = {
   width: "200px",
   flexShrink: 0,
   display: "flex",
@@ -2621,7 +2748,7 @@ const sideNav = {
   gap: "2px",
 };
 
-const navBtn = (active) => ({
+const navBtn = (active: boolean): CSSProperties => ({
   textAlign: "left",
   padding: "8px 12px 8px 9px",
   borderRadius: "var(--radius)",
@@ -2637,7 +2764,7 @@ const navBtn = (active) => ({
 
 // ai: claude-sonnet-5 | 2026-08-30 — tree group header (toggles expand only,
 // never itself "active") and its indented children wrapper.
-const navGroupBtn = {
+const navGroupBtn: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "6px",
@@ -2655,14 +2782,14 @@ const navGroupBtn = {
   letterSpacing: "0.04em",
 };
 
-const navChevron = {
+const navChevron: CSSProperties = {
   display: "inline-block",
   width: "10px",
   fontSize: "10px",
   color: "var(--text-muted)",
 };
 
-const navChildren = {
+const navChildren: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: "2px",
@@ -2672,20 +2799,20 @@ const navChildren = {
 
 // ai: claude-sonnet-5 | 2026-08-30 — separates instance-wide (admin) tabs
 // from personal, per-account tabs above them in the sidebar.
-const navDividerWrap = {
+const navDividerWrap: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "8px",
   margin: "10px 4px 4px 9px",
 };
 
-const navDividerLine = {
+const navDividerLine: CSSProperties = {
   flex: 1,
   height: "1px",
   background: "var(--border)",
 };
 
-const navDividerLabel = {
+const navDividerLabel: CSSProperties = {
   fontSize: "10px",
   fontWeight: 700,
   textTransform: "uppercase",
@@ -2693,41 +2820,41 @@ const navDividerLabel = {
   color: "var(--text-muted)",
 };
 
-const sectionSubheadingStyle = {
+const sectionSubheadingStyle: CSSProperties = {
   color: "var(--text)",
   fontSize: "13px",
   fontWeight: 700,
   margin: "0 0 10px 0",
 };
 
-const settingRowStyle = {
+const settingRowStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",
   gap: "14px",
   justifyContent: "space-between",
 };
 
-const settingTitleStyle = {
+const settingTitleStyle: CSSProperties = {
   color: "var(--text)",
   fontSize: "13px",
   fontWeight: 700,
 };
 
-const settingDescriptionStyle = {
+const settingDescriptionStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   lineHeight: 1.4,
   marginTop: "2px",
 };
 
-const listenerStatusBoxStyle = {
+const listenerStatusBoxStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
   padding: "12px 14px",
 };
 
-const listenerEndpointStyle = {
+const listenerEndpointStyle: CSSProperties = {
   color: "var(--text)",
   display: "block",
   fontSize: "13px",
@@ -2735,7 +2862,7 @@ const listenerEndpointStyle = {
   overflowWrap: "anywhere",
 };
 
-const formBox = {
+const formBox: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -2743,13 +2870,13 @@ const formBox = {
   marginBottom: "16px",
 };
 
-const formGrid = {
+const formGrid: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
   gap: "12px",
 };
 
-const tableStyle = {
+const tableStyle: CSSProperties = {
   width: "100%",
   borderCollapse: "collapse",
   background: "var(--surface)",
@@ -2758,7 +2885,7 @@ const tableStyle = {
   border: "1px solid var(--border)",
 };
 
-const thStyle = {
+const thStyle: CSSProperties = {
   padding: "9px 12px",
   textAlign: "left",
   background: "var(--surface2)",
@@ -2770,7 +2897,7 @@ const thStyle = {
   borderBottom: "1px solid var(--border)",
 };
 
-const sortableHeaderButtonStyle = {
+const sortableHeaderButtonStyle: CSSProperties = {
   alignItems: "center",
   background: "transparent",
   border: "none",
@@ -2785,19 +2912,19 @@ const sortableHeaderButtonStyle = {
   textTransform: "inherit",
 };
 
-const sortDirectionStyle = {
+const sortDirectionStyle: CSSProperties = {
   color: "var(--text)",
   fontSize: "10px",
 };
 
-const tdStyle = {
+const tdStyle: CSSProperties = {
   padding: "10px 12px",
   borderBottom: "1px solid var(--border)",
   color: "var(--text)",
   verticalAlign: "middle",
 };
 
-const configNoticeStyle = {
+const configNoticeStyle: CSSProperties = {
   marginTop: "12px",
   padding: "10px 12px",
   background: "rgba(76,175,129,0.08)",

@@ -36,10 +36,25 @@
 import { helpTextStyle, labelStyle } from "./settingsStyles.ts";
 import type { SettingSchemaField } from "../types/settings.ts";
 
-/** Settings-tab config draft: registry key -> current string value (every
- * registry-backed setting round-trips as a string, including "true"/"false"
- * checkboxes — see SettingsPanel, the sole owner of this shape's semantics). */
-export type SettingsConfigDraft = Record<string, string>;
+/**
+ * Settings-tab config draft: registry key -> current value. Most
+ * registry-backed settings round-trip as a string (including "true"/"false"
+ * checkboxes), but this type is shared by three different backend shapes
+ * that aren't all pure strings:
+ *   - GET/PUT /api/settings/system (routes/settings.py): plain strings for
+ *     ordinary keys, booleans for the `{key}_set` companion of secret keys.
+ *   - GET/PUT /api/config (routes/settings.py's get_config/update_config):
+ *     the "Job Board Credentials" group's fields are all plain strings here
+ *     too, but the object also carries real number/boolean fields for keys
+ *     this component never touches (see types/settings.ts's
+ *     AppConfigResponse) -- callers whose own state has a more specific
+ *     type (e.g. AppConfigResponse) pass it through directly (it already
+ *     satisfies this index signature) and adapt the setter at the call site.
+ * SchemaField only ever reads a value with `=== "true"` or renders it as
+ * text, so `unknown` here with a `String(...)` coercion is accurate without
+ * overclaiming every key is a string.
+ */
+export type SettingsConfigDraft = Record<string, unknown>;
 
 interface SchemaFieldProps {
   spec?: SettingSchemaField | null;
@@ -53,7 +68,16 @@ interface SchemaFieldProps {
 // input type, and help text live only in the registry, never re-typed here.
 // Fields with real custom behavior (file pickers, a validated dropdown that
 // drives conditional rendering) aren't registry-backed and stay hand-written.
-function SchemaField({ spec, cfg, setCfg }: SchemaFieldProps) {
+//
+// ai: claude-sonnet-5 | 2026-10-07 -- exported: SettingsPanel.tsx's
+// ConfigSection renders single fields (e.g. anthropic_api_key) directly by
+// key, not through a whole group via SchemaFieldGroup. It previously
+// referenced this component without importing it at all (SettingsPanel.jsx
+// only imported SchemaFieldGroup from this module) -- a real
+// ReferenceError on every render where ai_provider is "anthropic" or
+// "openai" (the default), since JSX evaluates the identifier at render
+// time. Fixed by exporting it and importing it where it's used.
+export function SchemaField({ spec, cfg, setCfg }: SchemaFieldProps) {
   if (!spec) return null;
   const { key, label, input_type: inputType, placeholder, is_secret: isSecret, help_text: helpText } = spec;
 
@@ -77,7 +101,7 @@ function SchemaField({ spec, cfg, setCfg }: SchemaFieldProps) {
       {label}
       <input
         type={inputType === "password" ? "password" : "text"}
-        value={cfg[key] || ""}
+        value={String(cfg[key] ?? "")}
         onChange={(e) => setCfg({ ...cfg, [key]: e.target.value })}
         placeholder={isSecret && cfg[`${key}_set`] ? "••••••••  (set — leave blank to keep)" : placeholder}
       />
