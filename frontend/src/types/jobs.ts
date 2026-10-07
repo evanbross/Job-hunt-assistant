@@ -119,6 +119,30 @@ export interface ApplicationSheetResponse {
   rows: ApplicationSheetRow[];
 }
 
+// ai: claude-sonnet-5 | 2026-10-07
+// Full `application_stages` table row (backend/db/schema.py), as returned
+// by POST /jobs/<id>/stages and embedded on each job by GET /jobs/history
+// (routes/jobs.py's get_history_jobs, via ApplicationStagesRepository's
+// SELECT * -- richer than the ApplicationStage shape above, which is a
+// frontend-normalized projection used by the Google-Sheet-backed history view).
+export interface JobHistoryStage {
+  id: number;
+  job_id: number;
+  status: string;
+  date: string;
+  notes: string | null;
+  created_at: string;
+}
+
+/** One row of GET /api/jobs/history's `jobs` array -- a Job plus its stage timeline. */
+export type JobHistoryEntry = Job & { stages: JobHistoryStage[] };
+
+/** Response body of GET /api/jobs/history. */
+export interface JobHistoryResponse {
+  jobs: JobHistoryEntry[];
+  has_more: boolean;
+}
+
 /** Result entry produced per-job by utils/batchRefreshFromUrls.runBatchRefreshFromUrls. */
 export interface BatchRefreshResult {
   company: string;

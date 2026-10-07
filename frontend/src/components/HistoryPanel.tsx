@@ -32,12 +32,15 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import StatusBadge from "./common/StatusBadge.jsx";
-import { scoreTone } from "../utils/fitScoringUtils.js";
-import { statusTone } from "../utils/jobQueueUtils.js";
-import { formatJobDescription, jobDescriptionText } from "../utils/triagePanelUtils.js";
-import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
+import type { CSSProperties } from "react";
+import StatusBadge from "./common/StatusBadge.tsx";
+import { scoreTone } from "../utils/fitScoringUtils.ts";
+import { statusTone } from "../utils/jobQueueUtils.ts";
+import { formatJobDescription, jobDescriptionText } from "../utils/triagePanelUtils.ts";
+import { readStoredPref, writeStoredPref } from "../utils/storedPreference.ts";
+import type { JobHistoryEntry, JobHistoryResponse, JobHistoryStage } from "../types/jobs.ts";
 
 const HISTORY_SEARCH_STORAGE_KEY = "jha.history.search";
 const PAGE_SIZE = 50;
@@ -57,7 +60,7 @@ const STAGE_STATUS_OPTIONS = [
   { key: "ghosted",        label: "Ghosted" },
 ];
 
-function ScoreBadge({ score }) {
+function ScoreBadge({ score }: { score?: number | null }) {
   return (
     <StatusBadge
       status={scoreTone(score)}
@@ -69,7 +72,12 @@ function ScoreBadge({ score }) {
 
 // ── Add-stage inline form ─────────────────────────────────────────────────────
 
-function AddStageForm({ jobId, onAdded }) {
+interface AddStageFormProps {
+  jobId: number;
+  onAdded: (stage: JobHistoryStage) => void;
+}
+
+function AddStageForm({ jobId, onAdded }: AddStageFormProps) {
   const today = new Date().toLocaleDateString('en-CA');
   const [status, setStatus] = useState(STAGE_STATUS_OPTIONS[1].key); // default: waiting_call
   const [stageDate, setStageDate] = useState(today);
@@ -85,10 +93,10 @@ function AddStageForm({ jobId, onAdded }) {
       });
       if (!res.ok) {
         const err = await res.json();
-        alert(err.error || "Failed to add stage");
+        window.alert(err.error || "Failed to add stage");
         return;
       }
-      const stage = await res.json();
+      const stage: JobHistoryStage = await res.json();
       onAdded(stage);
       // Reset to next likely status
       setStatus(STAGE_STATUS_OPTIONS[1].key);
@@ -134,16 +142,16 @@ function AddStageForm({ jobId, onAdded }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function HistoryPanel() {
-  const [jobs, setJobs] = useState([]);
+  const [jobs, setJobs] = useState<JobHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
-  const [expanded, setExpanded] = useState(new Set());
-  const [descriptionOpen, setDescriptionOpen] = useState(new Set());
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [descriptionOpen, setDescriptionOpen] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState(() => readStoredPref(HISTORY_SEARCH_STORAGE_KEY));
   const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
   const latestRequestRef = useRef(0);
-  const sentinelRef = useRef(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search.trim()), SEARCH_DEBOUNCE_MS);
@@ -153,10 +161,10 @@ export default function HistoryPanel() {
   // Search is applied server-side (the client only ever holds the pages loaded so far), so
   // a request id discards responses that were overtaken by a newer search or page.
   const loadPage = useCallback(
-    (offset) => {
+    (offset: number) => {
       latestRequestRef.current += 1;
       const requestId = latestRequestRef.current;
-      const params = new URLSearchParams({ limit: PAGE_SIZE, offset, q: debouncedSearch });
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), q: debouncedSearch });
       if (offset === 0) setLoading(true);
       else setLoadingMore(true);
       fetch(`/api/jobs/history?${params}`)
@@ -164,7 +172,7 @@ export default function HistoryPanel() {
           if (!r.ok) throw new Error(`History load failed: ${r.status}`);
           return r.json();
         })
-        .then((data) => {
+        .then((data: JobHistoryResponse) => {
           if (requestId !== latestRequestRef.current) return;
           const page = Array.isArray(data.jobs) ? data.jobs : [];
           setJobs((prev) => (offset === 0 ? page : [...prev, ...page]));
@@ -207,24 +215,26 @@ export default function HistoryPanel() {
     writeStoredPref(HISTORY_SEARCH_STORAGE_KEY, search);
   }, [search]);
 
-  const toggleExpand = (id) => {
+  const toggleExpand = (id: number) => {
     setExpanded((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   };
 
-  const toggleDescription = (e, id) => {
+  const toggleDescription = (e: React.MouseEvent, id: number) => {
     e.stopPropagation();
     setDescriptionOpen((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   };
 
-  const handleStageAdded = (jobId, stage) => {
+  const handleStageAdded = (jobId: number, stage: JobHistoryStage) => {
     setJobs((prev) =>
       prev.map((j) =>
         j.id === jobId
@@ -234,7 +244,7 @@ export default function HistoryPanel() {
     );
   };
 
-  const handleStageDeleted = (jobId, stageId) => {
+  const handleStageDeleted = (jobId: number, stageId: number) => {
     setJobs((prev) =>
       prev.map((j) =>
         j.id === jobId
@@ -244,12 +254,12 @@ export default function HistoryPanel() {
     );
   };
 
-  const deleteStage = async (jobId, stageId) => {
+  const deleteStage = async (jobId: number, stageId: number) => {
     const res = await fetch(`/api/jobs/${jobId}/stages/${stageId}`, { method: "DELETE" });
     if (res.ok) {
       handleStageDeleted(jobId, stageId);
     } else {
-      alert("Failed to delete stage");
+      window.alert("Failed to delete stage");
     }
   };
 
@@ -423,7 +433,7 @@ export default function HistoryPanel() {
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
-const tdStyle = {
+const tdStyle: CSSProperties = {
   padding: "11px 14px",
   borderBottom: "1px solid var(--border)",
   color: "var(--text)",
@@ -431,7 +441,7 @@ const tdStyle = {
   fontSize: "13px",
 };
 
-const thStyle = {
+const thStyle: CSSProperties = {
   ...tdStyle,
   color: "var(--text-muted)",
   fontWeight: "600",
@@ -442,7 +452,7 @@ const thStyle = {
   borderBottom: "1.5px solid var(--border)",
 };
 
-const stageRowStyle = {
+const stageRowStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "6px",
@@ -450,7 +460,7 @@ const stageRowStyle = {
   position: "relative",
 };
 
-const timelineDotStyle = (tone) => ({
+const timelineDotStyle = (tone: string): CSSProperties => ({
   width: "10px",
   height: "10px",
   borderRadius: "50%",
@@ -458,7 +468,7 @@ const timelineDotStyle = (tone) => ({
   flexShrink: 0,
 });
 
-const timelineLineStyle = {
+const timelineLineStyle: CSSProperties = {
   position: "absolute",
   left: "4px",
   top: "15px",
@@ -468,7 +478,7 @@ const timelineLineStyle = {
   zIndex: 0,
 };
 
-const deleteStageButtonStyle = {
+const deleteStageButtonStyle: CSSProperties = {
   marginLeft: "auto",
   background: "transparent",
   border: "none",
@@ -480,7 +490,7 @@ const deleteStageButtonStyle = {
   flexShrink: 0,
 };
 
-const selectStyle = {
+const selectStyle: CSSProperties = {
   padding: "5px 8px",
   fontSize: "12px",
   borderRadius: "var(--radius)",
@@ -490,7 +500,7 @@ const selectStyle = {
   cursor: "pointer",
 };
 
-const inputStyle = {
+const inputStyle: CSSProperties = {
   padding: "5px 8px",
   fontSize: "12px",
   borderRadius: "var(--radius)",
@@ -499,7 +509,7 @@ const inputStyle = {
   color: "var(--text)",
 };
 
-const descriptionBoxStyle = {
+const descriptionBoxStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
