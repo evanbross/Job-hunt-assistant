@@ -103,19 +103,38 @@ export interface ApplicationHistoryRow {
   skip_reason: string | null;
 }
 
+/**
+ * One column descriptor of GET /api/applications's `columns` array
+ * (routes/applications.py's _TRACKING_COLUMNS -- a fixed 7-entry list, not
+ * one string per column name).
+ */
+export interface ApplicationSheetColumn {
+  index: number;
+  label: string;
+  hidden: boolean;
+}
+
+/** One stage entry embedded on a sheet row (full application_stages row). */
+export interface ApplicationSheetStage {
+  id: number;
+  status: string;
+  date: string;
+  notes?: string | null;
+}
+
 /** One row of the raw application sheet, as returned by GET /api/applications. */
 export interface ApplicationSheetRow {
   row_number: number;
-  cells?: { column_index: number | string; value?: string | null }[];
-  stages?: { id?: number | null; status: string; date?: string }[];
-  duplicate_of_id?: number | null;
-  skip_reason?: string | null;
+  cells: { column_index: number; value?: string | null }[];
+  stages: ApplicationSheetStage[];
+  duplicate_of_id: number | null;
+  skip_reason: string | null;
 }
 
 /** Response body of GET /api/applications (routes/applications.py's get_application_sheet). */
 export interface ApplicationSheetResponse {
   sheet_name: string;
-  columns: string[];
+  columns: ApplicationSheetColumn[];
   rows: ApplicationSheetRow[];
 }
 

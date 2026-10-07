@@ -32,17 +32,38 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 // ai: claude-sonnet-4-6 | 2026-06-17
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import JobCard from "./JobCard.jsx";
-import Modal from "./common/Modal.jsx";
-import ReqClosedDialog from "./common/ReqClosedDialog.jsx";
-import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../utils/reqClosedScanStorage.js";
-import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import JobCard from "./JobCard.tsx";
+import Modal from "./common/Modal.tsx";
+import ReqClosedDialog from "./common/ReqClosedDialog.tsx";
+import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../utils/reqClosedScanStorage.ts";
+import { readStoredPref, writeStoredPref } from "../utils/storedPreference.ts";
+import type {
+  ApplicationSheetColumn,
+  ApplicationSheetResponse,
+  ApplicationSheetRow,
+  ApplicationSheetStage,
+  Job,
+} from "../types/jobs.ts";
+import type {
+  ApplicationStageStatus,
+  GhostMarkResult,
+  ReqClosedScanResult,
+} from "../types/applications.ts";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { AppConfigResponse } from "../types/settings.ts";
 
 const APPLICATION_SHEET_SEARCH_STORAGE_KEY = "jha.applicationSheet.search";
 
-const STATUS_FALLBACKS = {
+interface StatusStyle {
+  background: string;
+  color: string;
+}
+
+const STATUS_FALLBACKS: Record<string, StatusStyle> = {
   applied:            { background: "var(--green-light)", color: "var(--green)" },
   rejected:           { background: "var(--red-light)", color: "var(--red)" },
   waiting_call:       { background: "var(--accent-light)", color: "var(--accent)" },
@@ -73,14 +94,14 @@ const DEFAULT_STATUS_OPTIONS = [
 
 // Job-queue statuses that live on jobs.status (not application_stages) and are
 // therefore not expected to be in the application_stage_statuses DB table.
-const FALLBACK_DISPLAY_NAMES = {
+const FALLBACK_DISPLAY_NAMES: Record<string, string> = {
   triage:             "Triage",
   pending_review:     "In Job Queue",
   possible_duplicate: "Possible Duplicate",
   not_a_fit:          "Not a Fit",
 };
 
-const DEFAULT_COLUMN_WIDTHS = {
+const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
   company: 220,
   job_title: 330,
   status: 165,
@@ -91,7 +112,17 @@ const DEFAULT_COLUMN_WIDTHS = {
 const MIN_COLUMN_WIDTH = 90;
 const ROW_CONTROL_WIDTH = 56;
 
-function defaultEmptyForm() {
+interface TrackingForm {
+  company: string;
+  status: string;
+  source: string;
+  date: string;
+  job_title: string;
+  url: string;
+  notes: string;
+}
+
+function defaultEmptyForm(): TrackingForm {
   return {
     company: "",
     status: "Applied",
@@ -103,7 +134,13 @@ function defaultEmptyForm() {
   };
 }
 
-function defaultStageForm() {
+interface StageForm {
+  status: string;
+  date: string;
+  notes: string;
+}
+
+function defaultStageForm(): StageForm {
   return {
     status: "",
     date: new Date().toLocaleDateString('en-CA'),
@@ -111,12 +148,12 @@ function defaultStageForm() {
   };
 }
 
-function normalizeStatus(value) {
+function normalizeStatus(value?: string | null): string {
   return String(value || "").trim().toLowerCase();
 }
 
 
-function getStatusStyle(value, colorMap = {}) {
+function getStatusStyle(value?: string | null, colorMap: Record<string, StatusStyle> = {}): StatusStyle | null {
   const normalizedValue = normalizeStatus(value);
   if (normalizedValue.includes("reject")) return STATUS_FALLBACKS.rejected;
   if (colorMap[normalizedValue]) return colorMap[normalizedValue];
@@ -132,12 +169,12 @@ function getStatusStyle(value, colorMap = {}) {
   return null;
 }
 
-function getCell(row, column) {
+function getCell(row: ApplicationSheetRow, column?: ApplicationSheetColumn | null): { value?: string | null } {
   if (!column) return { value: "" };
   return row.cells[column.index] || { value: "" };
 }
 
-function formForRow(row, trackingColumns) {
+function formForRow(row: ApplicationSheetRow, trackingColumns: TrackingColumns): TrackingForm {
   return {
     company: getCell(row, trackingColumns.company).value || "",
     status: getCell(row, trackingColumns.status).value || "",
@@ -149,35 +186,35 @@ function formForRow(row, trackingColumns) {
   };
 }
 
-function findColumn(columns, labels) {
+function findColumn(columns: ApplicationSheetColumn[], labels: string[]): ApplicationSheetColumn | undefined {
   return columns.find((column) => {
     const normalizedLabel = String(column.label || "").trim().toLowerCase();
     return labels.some((label) => normalizedLabel === label);
   });
 }
 
-function findExactColumn(columns, label) {
+function findExactColumn(columns: ApplicationSheetColumn[], label: string): ApplicationSheetColumn | undefined {
   return columns.find(
     (column) => String(column.label || "").trim().toLowerCase() === label,
   );
 }
 
-function isDefaultBackground(color) {
+function isDefaultBackground(color?: string | null): boolean {
   const normalizedColor = String(color || "").trim().toLowerCase();
   return !normalizedColor || normalizedColor === "#ffffff";
 }
 
-function statusColor(cell, colorMap = {}) {
+function statusColor(cell: { value?: string | null; background_color?: string | null; text_color?: string | null }, colorMap: Record<string, StatusStyle> = {}): StatusStyle {
   const fallbackStyle = getStatusStyle(cell.value, colorMap);
   return {
     background: isDefaultBackground(cell.background_color)
       ? fallbackStyle?.background || "var(--surface2)"
-      : cell.background_color,
+      : (cell.background_color as string),
     color: cell.text_color || fallbackStyle?.color || "var(--text)",
   };
 }
 
-function stageSelectStyle(status, colorMap = {}) {
+function stageSelectStyle(status: string, colorMap: Record<string, StatusStyle> = {}): CSSProperties {
   const colors = statusColor({ value: status }, colorMap);
   const isRejected = normalizeStatus(status).includes("reject");
   return {
@@ -188,7 +225,7 @@ function stageSelectStyle(status, colorMap = {}) {
   };
 }
 
-function stageOptionStyle(status, colorMap = {}) {
+function stageOptionStyle(status: string, colorMap: Record<string, StatusStyle> = {}): CSSProperties {
   const colors = statusColor({ value: status }, colorMap);
   const isRejected = normalizeStatus(status).includes("reject");
   return {
@@ -197,7 +234,13 @@ function stageOptionStyle(status, colorMap = {}) {
   };
 }
 
-function StatusIndicator({ cell, colorMap = {}, labelMap = {} }) {
+interface StatusIndicatorProps {
+  cell: { value?: string | null; background_color?: string | null; text_color?: string | null };
+  colorMap?: Record<string, StatusStyle>;
+  labelMap?: Record<string, string>;
+}
+
+function StatusIndicator({ cell, colorMap = {}, labelMap = {} }: StatusIndicatorProps) {
   const colors = statusColor(cell, colorMap);
   const raw = String(cell.value || "").trim();
   const display = (raw && labelMap[normalizeStatus(raw)]) || raw || "-";
@@ -214,7 +257,13 @@ function StatusIndicator({ cell, colorMap = {}, labelMap = {} }) {
   );
 }
 
-function GhostDialog({ result, onClose, labelMap = {} }) {
+interface GhostDialogProps {
+  result: GhostMarkResult;
+  onClose: () => void;
+  labelMap?: Record<string, string>;
+}
+
+function GhostDialog({ result, onClose, labelMap = {} }: GhostDialogProps) {
   const marked = Array.isArray(result.marked) ? result.marked : [];
   return (
     <Modal
@@ -260,7 +309,14 @@ function GhostDialog({ result, onClose, labelMap = {} }) {
   );
 }
 
-function StatusSummaryDialog({ counts, total, onClose, labelMap = {} }) {
+interface StatusSummaryDialogProps {
+  counts: Record<string, number>;
+  total: number;
+  onClose: () => void;
+  labelMap?: Record<string, string>;
+}
+
+function StatusSummaryDialog({ counts, total, onClose, labelMap = {} }: StatusSummaryDialogProps) {
   const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
   return (
     <Modal
@@ -290,7 +346,7 @@ function StatusSummaryDialog({ counts, total, onClose, labelMap = {} }) {
 }
 
 
-function cellStyle(isHeader = false, width = null) {
+function cellStyle(isHeader = false, width: number | null = null): CSSProperties {
   return {
     ...baseCellStyle,
     ...(isHeader ? headerCellStyle : {}),
@@ -301,7 +357,13 @@ function cellStyle(isHeader = false, width = null) {
   };
 }
 
-function textMatches(row, query, columns) {
+interface ParentColumnEntry {
+  key: string;
+  label: string;
+  column?: ApplicationSheetColumn;
+}
+
+function textMatches(row: ApplicationSheetRow, query: string, columns: ParentColumnEntry[]): boolean {
   if (!query) return true;
   const normalizedQuery = query.trim().toLowerCase();
   return columns.some((entry) =>
@@ -309,7 +371,7 @@ function textMatches(row, query, columns) {
   );
 }
 
-function compareCellValues(leftValue, rightValue, key) {
+function compareCellValues(leftValue: string | null | undefined, rightValue: string | null | undefined, key: string): number {
   const leftText = String(leftValue || "").trim();
   const rightText = String(rightValue || "").trim();
 
@@ -337,31 +399,55 @@ function compareCellValues(leftValue, rightValue, key) {
   });
 }
 
-export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
-  const [sheet, setSheet] = useState({ sheet_name: "", columns: [], rows: [] });
-  const [stageStatuses, setStageStatuses] = useState([]);
+interface TrackingColumns {
+  company?: ApplicationSheetColumn;
+  status?: ApplicationSheetColumn;
+  source?: ApplicationSheetColumn;
+  date?: ApplicationSheetColumn;
+  notes?: ApplicationSheetColumn;
+  jobTitle?: ApplicationSheetColumn;
+  url?: ApplicationSheetColumn;
+}
+
+interface SortConfig {
+  key: string;
+  direction: "asc" | "desc";
+}
+
+type JobDialogState =
+  | { loading: true; title?: string; company?: string }
+  | { error: string; title?: string; company?: string }
+  | { job: Job };
+
+interface ApplicationSheetPanelProps {
+  onNavigateToJobCard?: (id: number | null, status: string) => void;
+}
+
+export default function ApplicationSheetPanel({ onNavigateToJobCard }: ApplicationSheetPanelProps) {
+  const [sheet, setSheet] = useState<ApplicationSheetResponse>({ sheet_name: "", columns: [], rows: [] });
+  const [stageStatuses, setStageStatuses] = useState<ApplicationStageStatus[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [expandedRows, setExpandedRows] = useState(new Set());
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState(() => readStoredPref(APPLICATION_SHEET_SEARCH_STORAGE_KEY));
-  const [sortConfig, setSortConfig] = useState({ key: "company", direction: "asc" });
-  const [newRow, setNewRow] = useState(defaultEmptyForm());
+  const [sortConfig, setSortConfig] = useState<SortConfig | null>({ key: "company", direction: "asc" });
+  const [newRow, setNewRow] = useState<TrackingForm>(defaultEmptyForm());
   const [showAddApplication, setShowAddApplication] = useState(false);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
-  const [ghostDialog, setGhostDialog] = useState(null);
-  const [reqClosedDialog, setReqClosedDialog] = useState(null);
+  const [ghostDialog, setGhostDialog] = useState<GhostMarkResult | null>(null);
+  const [reqClosedDialog, setReqClosedDialog] = useState<ReqClosedScanResult | null>(null);
   const [showStatusSummary, setShowStatusSummary] = useState(false);
-  const [editingRows, setEditingRows] = useState({});
-  const [stageRows, setStageRows] = useState({});
+  const [editingRows, setEditingRows] = useState<Record<number, TrackingForm>>({});
+  const [stageRows, setStageRows] = useState<Record<number, StageForm>>({});
   const [savingKey, setSavingKey] = useState("");
-  const [columnWidths, setColumnWidths] = useState(DEFAULT_COLUMN_WIDTHS);
-  const [jobDialog, setJobDialog] = useState(null);
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>(DEFAULT_COLUMN_WIDTHS);
+  const [jobDialog, setJobDialog] = useState<JobDialogState | null>(null);
   // ai: claude-sonnet-4-6 | 2026-06-17
-  const [statusFilters, setStatusFilters] = useState(new Set());
+  const [statusFilters, setStatusFilters] = useState<Set<string>>(new Set());
   // ai: claude-sonnet-5 | 2026-08-11
   const [defaultSnoozeDays, setDefaultSnoozeDays] = useState(4);
-  const resizeCleanupRef = useRef(null);
-  const reqClosedPollRef = useRef(null);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+  const reqClosedPollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const reqClosedDismissedRef = useRef(false);
   const reqClosedBrowserDoneRef = useRef(0);
   // ai: claude-sonnet-4-6 | 2026-06-25
@@ -375,8 +461,8 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   useEffect(() => {
     fetch("/api/config")
       .then((res) => res.json())
-      .then((data) => {
-        const days = parseInt(data?.default_snooze_days, 10);
+      .then((data: AppConfigResponse) => {
+        const days = parseInt(String(data?.default_snooze_days), 10);
         if (Number.isFinite(days) && days >= 1) setDefaultSnoozeDays(days);
       })
       .catch(() => {});
@@ -387,7 +473,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     setError("");
     try {
       const res = await fetch("/api/applications");
-      const data = await res.json();
+      const data: ApplicationSheetResponse & ApiErrorBody = await res.json();
       if (!res.ok) {
         setError(data.error || `Sheet load failed (${res.status})`);
         return;
@@ -398,7 +484,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
         rows: Array.isArray(data.rows) ? data.rows : [],
       });
     } catch (loadError) {
-      setError(loadError.message || "Sheet load failed");
+      setError(loadError instanceof Error ? loadError.message : "Sheet load failed");
     } finally {
       setLoading(false);
     }
@@ -430,7 +516,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     writeStoredPref(APPLICATION_SHEET_SEARCH_STORAGE_KEY, search);
   }, [search]);
 
-  const trackingColumns = useMemo(() => {
+  const trackingColumns: TrackingColumns = useMemo(() => {
     const company = findColumn(sheet.columns, ["company"]);
     const status = findColumn(sheet.columns, ["status"]);
     const source = findColumn(sheet.columns, ["source"]);
@@ -442,7 +528,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     return { company, status, source, date, notes, jobTitle, url };
   }, [sheet.columns]);
 
-  const parentColumns = useMemo(
+  const parentColumns: ParentColumnEntry[] = useMemo(
     () => [
       { key: "company", label: "Company", column: trackingColumns.company },
       { key: "job_title", label: "Title", column: trackingColumns.jobTitle },
@@ -476,8 +562,8 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     });
   }, [parentColumns, search, sheet.rows, sortConfig, statusFilters, trackingColumns.status]);
 
-  const statusCounts = useMemo(() => {
-    return sheet.rows.reduce((acc, row) => {
+  const statusCounts: Record<string, number> = useMemo(() => {
+    return sheet.rows.reduce((acc: Record<string, number>, row) => {
       const raw = (getCell(row, trackingColumns.status).value || "").trim();
       const key = normalizeStatus(raw) || "unknown";
       acc[key] = (acc[key] || 0) + 1;
@@ -485,8 +571,8 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     }, {});
   }, [sheet.rows, trackingColumns.status]);
 
-  const statusLabelMap = useMemo(() => {
-    const map = { ...FALLBACK_DISPLAY_NAMES };
+  const statusLabelMap: Record<string, string> = useMemo(() => {
+    const map: Record<string, string> = { ...FALLBACK_DISPLAY_NAMES };
     stageStatuses.forEach((s) => { map[s.key] = s.label; });
     return map;
   }, [stageStatuses]);
@@ -506,11 +592,11 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     [statusOptions],
   );
 
-  const statusColorMap = useMemo(() => {
-    const map = {};
+  const statusColorMap: Record<string, StatusStyle> = useMemo(() => {
+    const map: Record<string, StatusStyle> = {};
     stageStatuses.forEach((s) => {
       if (s.color_bg || s.color_fg) {
-        map[s.key] = { background: s.color_bg || undefined, color: s.color_fg || undefined };
+        map[s.key] = { background: s.color_bg || "", color: s.color_fg || "" };
       }
     });
     return map;
@@ -518,7 +604,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
 
   // ai: claude-sonnet-4-6 | 2026-06-17
   const filterOptions = useMemo(() => {
-    const knownKeys = new Set();
+    const knownKeys = new Set<string>();
     const statusChips = sortedStageStatuses
       .filter((s) => { if (!statusCounts[s.key]) return false; knownKeys.add(s.key); return true; })
       .map((s) => ({ key: s.key, label: s.label, count: statusCounts[s.key] }));
@@ -530,19 +616,20 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     return [{ key: "all", label: "All", count: total }, ...statusChips, ...overflowChips];
   }, [sortedStageStatuses, statusCounts]);
 
-  const toggleStatusFilter = (key) => {
+  const toggleStatusFilter = (key: string) => {
     if (key === "all") {
       setStatusFilters(new Set());
     } else {
       setStatusFilters((prev) => {
         const next = new Set(prev);
-        next.has(key) ? next.delete(key) : next.add(key);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
         return next;
       });
     }
   };
 
-  const toggleSort = (key) => {
+  const toggleSort = (key: string) => {
     setSortConfig((previousConfig) => {
       if (!previousConfig || previousConfig.key !== key) {
         return { key, direction: "asc" };
@@ -554,7 +641,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     });
   };
 
-  const startColumnResize = (event, key) => {
+  const startColumnResize = (event: ReactPointerEvent<HTMLSpanElement>, key: string) => {
     event.preventDefault();
     event.stopPropagation();
 
@@ -562,7 +649,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     const startX = event.clientX;
     const startWidth = columnWidths[key] || DEFAULT_COLUMN_WIDTHS[key] || 160;
 
-    const handlePointerMove = (moveEvent) => {
+    const handlePointerMove = (moveEvent: PointerEvent) => {
       const nextWidth = Math.max(MIN_COLUMN_WIDTH, startWidth + moveEvent.clientX - startX);
       setColumnWidths((previousWidths) => ({ ...previousWidths, [key]: nextWidth }));
     };
@@ -582,7 +669,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     resizeCleanupRef.current = handlePointerUp;
   };
 
-  const toggleRow = (rowNumber) => {
+  const toggleRow = (rowNumber: number) => {
     setExpandedRows((previousRows) => {
       const nextRows = new Set(previousRows);
       if (nextRows.has(rowNumber)) {
@@ -594,18 +681,18 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     });
   };
 
-  const updateNewRow = (field, value) => {
+  const updateNewRow = (field: keyof TrackingForm, value: string) => {
     setNewRow((previousRow) => ({ ...previousRow, [field]: value }));
   };
 
-  const updateEditRow = (rowNumber, field, value) => {
+  const updateEditRow = (rowNumber: number, field: keyof TrackingForm, value: string) => {
     setEditingRows((previousRows) => ({
       ...previousRows,
       [rowNumber]: { ...previousRows[rowNumber], [field]: value },
     }));
   };
 
-  const updateStageRow = (rowNumber, field, value) => {
+  const updateStageRow = (rowNumber: number, field: keyof StageForm, value: string) => {
     setStageRows((previousRows) => ({
       ...previousRows,
       [rowNumber]: { ...previousRows[rowNumber], [field]: value },
@@ -621,7 +708,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
         body: JSON.stringify(newRow),
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data: ApiErrorBody = await res.json();
         window.alert(data.error || `Save failed (${res.status})`);
         return;
       }
@@ -638,7 +725,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     setSavingKey("ghosts");
     try {
       const res = await fetch("/api/applications/mark-ghosts", { method: "POST" });
-      const data = await res.json();
+      const data: GhostMarkResult = await res.json();
       if (!res.ok) {
         window.alert(data.error || `Mark ghosts failed (${res.status})`);
         return;
@@ -656,7 +743,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   // and this polls for progress rather than waiting on one long request.
   const pollReqClosedStatus = async () => {
     const res = await fetch("/api/applications/scan-closed-reqs/status");
-    const data = await res.json().catch(() => null);
+    const data: ReqClosedScanResult | null = await res.json().catch(() => null);
     if (!data) return;
     if (!reqClosedDismissedRef.current) {
       setReqClosedDialog(data);
@@ -665,13 +752,14 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     // recheck backlog — that continues well after the foreground scan reports done.
     // Refetch the sheet each time another recheck completes so newly-closed jobs
     // update without waiting for the whole backlog to drain.
-    const browserDone = data.browser_queue?.done ?? 0;
-    const browserDraining = (data.browser_queue?.remaining ?? 0) > 0;
+    const status = "setup" in data ? null : data;
+    const browserDone = status?.browser_queue?.done ?? 0;
+    const browserDraining = (status?.browser_queue?.remaining ?? 0) > 0;
     if (browserDone !== reqClosedBrowserDoneRef.current) {
       reqClosedBrowserDoneRef.current = browserDone;
       await loadSheet();
     }
-    if (!data.running && !browserDraining) {
+    if (!status?.running && !browserDraining) {
       clearInterval(reqClosedPollRef.current);
       setSavingKey("");
       setReqClosedDialogVisible(false);
@@ -689,7 +777,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     setReqClosedDialog({ setup: true });
   };
 
-  const scanClosedReqs = async (platforms) => {
+  const scanClosedReqs = async (platforms: string[]) => {
     setSavingKey("req-closed");
     reqClosedDismissedRef.current = false;
     reqClosedBrowserDoneRef.current = 0;
@@ -699,19 +787,39 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ platforms }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         window.alert(data.error || `Scan failed (${res.status})`);
         setSavingKey("");
         return;
       }
-      setReqClosedDialog({ running: true, progress: 0, total: 0, marked: [], errors: [] });
+      setReqClosedDialog({
+        running: true,
+        progress: 0,
+        total: 0,
+        message: "",
+        marked: [],
+        errors: [],
+        checked: 0,
+        kept_count: 0,
+        closed_count: 0,
+        bad_url_count: 0,
+        unreachable_count: 0,
+        browser_checks_queued: 0,
+        browser_checks_total: 0,
+        browser_checks_done: 0,
+        current_platform: "",
+        current_company: "",
+        current_job_title: "",
+        last_run_at: null,
+        error: null,
+      });
       setReqClosedDialogVisible(true);
       clearInterval(reqClosedPollRef.current);
       reqClosedPollRef.current = setInterval(pollReqClosedStatus, 2000);
       await pollReqClosedStatus();
     } catch (err) {
-      window.alert(err.message || "Scan failed to start");
+      window.alert(err instanceof Error ? err.message : "Scan failed to start");
       setSavingKey("");
     }
   };
@@ -727,16 +835,17 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
       try {
         const res = await fetch("/api/applications/scan-closed-reqs/status");
         if (!res.ok) return;
-        const data = await res.json();
+        const data: ReqClosedScanResult = await res.json();
         if (cancelled) return;
-        const browserDraining = (data.browser_queue?.remaining ?? 0) > 0;
-        if (!data.running && !browserDraining) {
+        const status = "setup" in data ? null : data;
+        const browserDraining = (status?.browser_queue?.remaining ?? 0) > 0;
+        if (!status?.running && !browserDraining) {
           setReqClosedDialogVisible(false);
           return;
         }
         reqClosedDismissedRef.current = false;
-        reqClosedBrowserDoneRef.current = data.browser_queue?.done ?? 0;
-        if (data.running) setSavingKey("req-closed");
+        reqClosedBrowserDoneRef.current = status?.browser_queue?.done ?? 0;
+        if (status?.running) setSavingKey("req-closed");
         setReqClosedDialog(data);
         clearInterval(reqClosedPollRef.current);
         reqClosedPollRef.current = setInterval(pollReqClosedStatus, 2000);
@@ -748,14 +857,14 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const startEditing = (row) => {
+  const startEditing = (row: ApplicationSheetRow) => {
     setEditingRows((previousRows) => ({
       ...previousRows,
       [row.row_number]: formForRow(row, trackingColumns),
     }));
   };
 
-  const saveRow = async (rowNumber) => {
+  const saveRow = async (rowNumber: number) => {
     setSavingKey(`edit:${rowNumber}`);
     try {
       const res = await fetch(`/api/applications/${rowNumber}`, {
@@ -764,7 +873,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
         body: JSON.stringify(editingRows[rowNumber]),
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data: ApiErrorBody = await res.json();
         window.alert(data.error || `Save failed (${res.status})`);
         return;
       }
@@ -779,7 +888,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     }
   };
 
-  const addStage = async (rowNumber) => {
+  const addStage = async (rowNumber: number) => {
     const stage = { ...defaultStageForm(), ...(stageRows[rowNumber] || {}) };
     setSavingKey(`stage:${rowNumber}`);
     try {
@@ -789,7 +898,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
         body: JSON.stringify(stage),
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data: ApiErrorBody = await res.json();
         window.alert(data.error || `Save failed (${res.status})`);
         return;
       }
@@ -803,12 +912,12 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     }
   };
 
-  const deleteStage = async (jobId, stageId) => {
+  const deleteStage = async (jobId: number, stageId: number) => {
     setSavingKey(`stage-del:${stageId}`);
     try {
       const res = await fetch(`/api/jobs/${jobId}/stages/${stageId}`, { method: "DELETE" });
       if (!res.ok) {
-        const data = await res.json();
+        const data: ApiErrorBody = await res.json();
         window.alert(data.error || `Delete failed (${res.status})`);
         return;
       }
@@ -818,13 +927,13 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     }
   };
 
-  const returnToQueue = async (jobId) => {
+  const returnToQueue = async (jobId: number) => {
     if (!window.confirm("Move this job back to the Job Queue?")) return;
     setSavingKey(`queue:${jobId}`);
     try {
       const res = await fetch(`/api/jobs/${jobId}/return-to-queue`, { method: "POST" });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         window.alert(data.error || `Move failed (${res.status})`);
         return;
       }
@@ -834,7 +943,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     }
   };
 
-  const confirmDuplicate = async (row) => {
+  const confirmDuplicate = async (row: ApplicationSheetRow) => {
     setSavingKey(`confirm-dup:${row.row_number}`);
     try {
       const base = formForRow(row, trackingColumns);
@@ -850,7 +959,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
         body: JSON.stringify(rowData),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         window.alert(data.error || `Save failed (${res.status})`);
         return;
       }
@@ -860,7 +969,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
     }
   };
 
-  const openJobDialog = async (rowNumber, title, company) => {
+  const openJobDialog = async (rowNumber: number, title: string, company: string) => {
     setJobDialog({ loading: true, title, company });
     try {
       const res = await fetch(`/api/jobs/${rowNumber}`);
@@ -871,7 +980,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
       }
       setJobDialog({ job: data });
     } catch (err) {
-      setJobDialog({ error: err.message || "Failed to load job", title, company });
+      setJobDialog({ error: err instanceof Error ? err.message : "Failed to load job", title, company });
     }
   };
 
@@ -1027,24 +1136,32 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
 
       {jobDialog && (
         <Modal
-          title={jobDialog.job?.job_title || jobDialog.title || "Job Details"}
-          subtitle={jobDialog.job?.company || jobDialog.company || undefined}
+          title={
+            "job" in jobDialog
+              ? jobDialog.job.job_title || "Job Details"
+              : jobDialog.title || "Job Details"
+          }
+          subtitle={
+            "job" in jobDialog
+              ? jobDialog.job.company || undefined
+              : jobDialog.company || undefined
+          }
           onClose={() => setJobDialog(null)}
           maxWidth="960px"
         >
-          {jobDialog.loading && (
+          {"loading" in jobDialog && jobDialog.loading && (
             <p style={{ color: "var(--text-muted)" }}>Loading...</p>
           )}
-          {jobDialog.error && (
+          {"error" in jobDialog && (
             <p style={{ color: "var(--red)" }}>{jobDialog.error}</p>
           )}
-          {jobDialog.job && (
+          {"job" in jobDialog && (
             <JobCard
               job={jobDialog.job}
               onApprove={async (jobId) => {
                 const res = await fetch(`/api/jobs/${jobId}/apply`, { method: "POST" });
                 if (!res.ok) {
-                  const data = await res.json().catch(() => ({}));
+                  const data: ApiErrorBody = await res.json().catch(() => ({}));
                   window.alert(data.error || "Failed to approve job");
                   return;
                 }
@@ -1073,8 +1190,8 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                   await loadSheet();
                 }
               }}
-              onUpdate={(jobId, updatedJob) => {
-                setJobDialog((prev) => (prev?.job ? { ...prev, job: { ...prev.job, ...updatedJob } } : prev));
+              onUpdate={(_jobId, updatedJob) => {
+                setJobDialog((prev) => (prev && "job" in prev ? { job: { ...prev.job, ...updatedJob } } : prev));
               }}
               onNavigateToJobCard={(jobId, status) => {
                 setJobDialog(null);
@@ -1331,7 +1448,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
                         {row.stages?.length > 0 && (
                           <div style={stageHistoryStyle}>
                             <span style={detailLabelStyle}>Stage History</span>
-                            {row.stages.map((stage) => (
+                            {row.stages.map((stage: ApplicationSheetStage) => (
                               <div key={stage.id} style={stageHistoryRowStyle}>
                                 <span style={{ minWidth: "135px", flexShrink: 0 }}>
                                   <StatusIndicator cell={{ value: stage.status }} colorMap={statusColorMap} labelMap={statusLabelMap} />
@@ -1390,7 +1507,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }) {
   );
 }
 
-const toolbarStyle = {
+const toolbarStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
@@ -1398,7 +1515,7 @@ const toolbarStyle = {
   marginBottom: "12px",
 };
 
-const toolbarActionsStyle = {
+const toolbarActionsStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "8px",
@@ -1406,18 +1523,18 @@ const toolbarActionsStyle = {
   justifyContent: "flex-end",
 };
 
-const actionMenuWrapStyle = {
+const actionMenuWrapStyle: CSSProperties = {
   position: "relative",
 };
 
-const kebabButtonStyle = {
+const kebabButtonStyle: CSSProperties = {
   fontSize: "20px",
   lineHeight: 1,
   minHeight: "34px",
   padding: "4px 10px",
 };
 
-const actionMenuStyle = {
+const actionMenuStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -1433,7 +1550,7 @@ const actionMenuStyle = {
   zIndex: 20,
 };
 
-const actionMenuItemStyle = {
+const actionMenuItemStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   borderRadius: "4px",
@@ -1445,23 +1562,23 @@ const actionMenuItemStyle = {
   textAlign: "left",
 };
 
-const titleStyle = {
+const titleStyle: CSSProperties = {
   fontSize: "18px",
   fontWeight: 700,
   lineHeight: 1.2,
 };
 
-const summaryStyle = {
+const summaryStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   marginTop: "2px",
 };
 
-const searchStyle = {
+const searchStyle: CSSProperties = {
   maxWidth: "320px",
 };
 
-const addCardStyle = {
+const addCardStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(130px, 1fr) minmax(170px, 1.3fr) minmax(150px, 1fr) minmax(120px, 1fr) 140px minmax(180px, 1.2fr) minmax(160px, 1.2fr)",
   gap: "8px",
@@ -1469,18 +1586,18 @@ const addCardStyle = {
   padding: "12px",
 };
 
-const compactInputStyle = {
+const compactInputStyle: CSSProperties = {
   minWidth: 0,
 };
 
-const addButtonRowStyle = {
+const addButtonRowStyle: CSSProperties = {
   display: "flex",
   justifyContent: "flex-end",
   gap: "8px",
   gridColumn: "1 / -1",
 };
 
-const tableWrapStyle = {
+const tableWrapStyle: CSSProperties = {
   overflow: "auto",
   background: "var(--surface)",
   border: "1px solid var(--border)",
@@ -1489,14 +1606,14 @@ const tableWrapStyle = {
   maxHeight: "calc(100vh - 180px)",
 };
 
-const tableStyle = {
+const tableStyle: CSSProperties = {
   borderCollapse: "separate",
   borderSpacing: 0,
   minWidth: "100%",
   tableLayout: "fixed",
 };
 
-const headerCellStyle = {
+const headerCellStyle: CSSProperties = {
   position: "sticky",
   top: 0,
   zIndex: 2,
@@ -1505,7 +1622,7 @@ const headerCellStyle = {
   overflow: "visible",
 };
 
-const baseCellStyle = {
+const baseCellStyle: CSSProperties = {
   borderRight: "1px solid var(--border)",
   borderBottom: "1px solid var(--border)",
   fontSize: "13px",
@@ -1514,14 +1631,14 @@ const baseCellStyle = {
   verticalAlign: "middle",
 };
 
-const oneLineStyle = {
+const oneLineStyle: CSSProperties = {
   display: "block",
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
 };
 
-const jobTitleLinkStyle = {
+const jobTitleLinkStyle: CSSProperties = {
   ...oneLineStyle,
   background: "transparent",
   border: 0,
@@ -1534,7 +1651,7 @@ const jobTitleLinkStyle = {
   width: "100%",
 };
 
-const sortButtonStyle = {
+const sortButtonStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(0, 1fr) 18px",
   alignItems: "center",
@@ -1550,7 +1667,7 @@ const sortButtonStyle = {
   textAlign: "left",
 };
 
-const columnResizeHandleStyle = {
+const columnResizeHandleStyle: CSSProperties = {
   bottom: 0,
   cursor: "col-resize",
   position: "absolute",
@@ -1561,7 +1678,7 @@ const columnResizeHandleStyle = {
   zIndex: 4,
 };
 
-const sortIndicatorStyle = {
+const sortIndicatorStyle: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
@@ -1571,11 +1688,11 @@ const sortIndicatorStyle = {
   fontWeight: 700,
 };
 
-const bodyRowStyle = {
+const bodyRowStyle: CSSProperties = {
   cursor: "pointer",
 };
 
-const rowNumberCellStyle = {
+const rowNumberCellStyle: CSSProperties = {
   ...baseCellStyle,
   width: "56px",
   minWidth: "56px",
@@ -1585,20 +1702,20 @@ const rowNumberCellStyle = {
   fontWeight: 700,
 };
 
-const detailCellStyle = {
+const detailCellStyle: CSSProperties = {
   padding: "14px 16px",
   background: "var(--surface2)",
   borderBottom: "1px solid var(--border)",
 };
 
-const detailRowStyle = {
+const detailRowStyle: CSSProperties = {
   display: "flex",
   alignItems: "flex-start",
   gap: "22px",
   minWidth: 0,
 };
 
-const editGridStyle = {
+const editGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: "8px",
@@ -1607,14 +1724,14 @@ const editGridStyle = {
   borderTop: "1px solid var(--border)",
 };
 
-const buttonRowStyle = {
+const buttonRowStyle: CSSProperties = {
   display: "flex",
   gap: "8px",
   justifyContent: "flex-end",
   gridColumn: "1 / -1",
 };
 
-const stageHistoryStyle = {
+const stageHistoryStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: "4px",
@@ -1623,14 +1740,14 @@ const stageHistoryStyle = {
   borderTop: "1px solid var(--border)",
 };
 
-const stageHistoryRowStyle = {
+const stageHistoryRowStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "10px",
   padding: "4px 0",
 };
 
-const stageFormStyle = {
+const stageFormStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(160px, 1fr) 150px minmax(220px, 2fr) auto",
   gap: "8px",
@@ -1640,7 +1757,7 @@ const stageFormStyle = {
   borderTop: "1px solid var(--border)",
 };
 
-const stageControlStyle = {
+const stageControlStyle: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
   fontFamily: "inherit",
@@ -1649,32 +1766,32 @@ const stageControlStyle = {
   padding: "6px 9px",
 };
 
-const detailItemStyle = {
+const detailItemStyle: CSSProperties = {
   minWidth: 0,
   display: "flex",
   flexDirection: "column",
   gap: "4px",
 };
 
-const detailStatusStyle = {
+const detailStatusStyle: CSSProperties = {
   ...detailItemStyle,
   minWidth: "150px",
 };
 
-const detailLabelStyle = {
+const detailLabelStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "11px",
   fontWeight: 700,
   textTransform: "uppercase",
 };
 
-const detailValueStyle = {
+const detailValueStyle: CSSProperties = {
   color: "var(--text)",
   fontSize: "13px",
   overflowWrap: "anywhere",
 };
 
-const statusBadgeStyle = {
+const statusBadgeStyle: CSSProperties = {
   borderRadius: "999px",
   display: "inline-flex",
   alignItems: "center",
@@ -1689,7 +1806,7 @@ const statusBadgeStyle = {
   whiteSpace: "nowrap",
 };
 
-const emptyCellStyle = {
+const emptyCellStyle: CSSProperties = {
   padding: "28px",
   textAlign: "center",
   color: "var(--text-muted)",
@@ -1697,14 +1814,14 @@ const emptyCellStyle = {
 };
 
 // ai: claude-sonnet-4-6 | 2026-06-17
-const filterBarStyle = {
+const filterBarStyle: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   gap: "6px",
   marginBottom: "10px",
 };
 
-const filterChipStyle = {
+const filterChipStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "999px",
@@ -1718,14 +1835,13 @@ const filterChipStyle = {
   whiteSpace: "nowrap",
 };
 
-const filterChipActiveStyle = {
+const filterChipActiveStyle: CSSProperties = {
   background: "var(--accent)",
   borderColor: "var(--accent)",
   color: "#fff",
 };
 
-const filterCountStyle = {
+const filterCountStyle: CSSProperties = {
   fontWeight: 400,
   opacity: 0.8,
 };
-

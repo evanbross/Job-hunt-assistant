@@ -90,3 +90,32 @@ export interface ReqClosedScanStatus {
 }
 
 export type ReqClosedScanResult = ReqClosedScanSetupState | ReqClosedScanStatus;
+
+// ai: claude-sonnet-5 | 2026-10-07
+/** One row of GET /api/applications/stage-statuses (application_stage_statuses table). */
+export interface ApplicationStageStatus {
+  key: string;
+  label: string;
+  sort_order: number;
+  ghost_eligible: boolean;
+  is_terminal: boolean;
+  color_bg: string | null;
+  color_fg: string | null;
+}
+
+/** One marked-ghost entry in POST /api/applications/mark-ghosts's response. */
+export interface GhostMarkedJob {
+  id: number;
+  company: string;
+  job_title: string;
+  applied_date: string;
+  days_applied: number;
+}
+
+/** Response body of POST /api/applications/mark-ghosts (routes/applications.py's run_mark_ghosts). */
+export interface GhostMarkResult {
+  marked: GhostMarkedJob[];
+  count: number;
+  cutoff_date: string;
+  error?: string;
+}
