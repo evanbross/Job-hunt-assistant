@@ -32,15 +32,32 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
-import Modal from "./common/Modal.jsx";
-import MetricGrid, { MetricItem } from "./common/MetricGrid.jsx";
-import StatusBadge from "./common/StatusBadge.jsx";
-import { statusTone } from "../utils/jobQueueUtils.js";
-import { SKIP_REASONS } from "../utils/triagePanelUtils.js";
+import type { CSSProperties } from "react";
+import { formatLocalDateTime } from "../utils/dateTimeUtils.ts";
+import Modal from "./common/Modal.tsx";
+import MetricGrid, { MetricItem } from "./common/MetricGrid.tsx";
+import StatusBadge from "./common/StatusBadge.tsx";
+import { statusTone } from "../utils/jobQueueUtils.ts";
+import { SKIP_REASONS } from "../utils/triagePanelUtils.ts";
+import type { ApiErrorBody } from "../types/common.ts";
+import type {
+  CleanEmailsResponse,
+  RescanEmailResponse,
+  ScanStatus,
+  ScanSummary,
+  ScanEmailReportRow,
+  ScannedEmailJob,
+  ScannedEmailRow,
+} from "../types/scanning.ts";
 
-const DISPOSITION_INFO = {
+interface BadgeInfo {
+  label: string;
+  cls: string;
+}
+
+const DISPOSITION_INFO: Record<string, BadgeInfo> = {
   job_created:       { label: "Job extracted",      cls: "badge-accent" },
   noise:             { label: "Not a job email",    cls: "badge-gray" },
   ack:               { label: "Application ack",    cls: "badge-gray" },
@@ -49,7 +66,7 @@ const DISPOSITION_INFO = {
   parser_error:      { label: "Parser error",       cls: "badge-red" },
 };
 
-const JOB_STATUS_INFO = {
+const JOB_STATUS_INFO: Record<string, BadgeInfo> = {
   pending_review:     { label: "In Job Queue",       cls: "badge-yellow" },
   triage:             { label: "Triage",             cls: "badge-yellow" },
   possible_duplicate: { label: "Possible duplicate", cls: "badge-gray" },
@@ -58,40 +75,44 @@ const JOB_STATUS_INFO = {
 };
 
 // ai: claude-sonnet-4-6 | 2026-06-13
-function skipReasonLabel(reason) {
-  return SKIP_REASONS.find((r) => r.key === reason)?.label || reason;
+function skipReasonLabel(reason?: string | null): string {
+  return SKIP_REASONS.find((r) => r.key === reason)?.label || reason || "";
 }
 
-function statusBadge(email) {
+function statusBadge(email: ScannedEmailRow): BadgeInfo {
   if (email.job_status) {
     return JOB_STATUS_INFO[email.job_status] || { label: email.job_status, cls: `badge-${statusTone(email.job_status)}` };
   }
-  return DISPOSITION_INFO[email.disposition] || { label: email.disposition || "Unknown", cls: "badge-gray" };
+  return DISPOSITION_INFO[email.disposition || ""] || { label: email.disposition || "Unknown", cls: "badge-gray" };
 }
 
-function statusSortKey(email) {
+function statusSortKey(email: ScannedEmailRow): string {
   return statusBadge(email).label;
 }
 
 // ai: claude-sonnet-4-6 | 2026-07-02
-function parsingReasonText(email) {
-  const dispositionLabel = (DISPOSITION_INFO[email.disposition] || { label: email.disposition || "Unknown" }).label;
+function parsingReasonText(email: ScannedEmailRow): string {
+  const dispositionLabel = (DISPOSITION_INFO[email.disposition || ""] || { label: email.disposition || "Unknown" }).label;
   if (email.disposition === "parser_error" && email.parser_error_msg) {
     return `${dispositionLabel} — ${email.parser_error_msg}`;
   }
   return dispositionLabel;
 }
 
-function jobStatusBadge(job) {
-  return JOB_STATUS_INFO[job.status] || { label: job.status || "Unknown", cls: `badge-${statusTone(job.status || "")}` };
+function jobStatusBadge(job: ScannedEmailJob): BadgeInfo {
+  return JOB_STATUS_INFO[job.status || ""] || { label: job.status || "Unknown", cls: `badge-${statusTone(job.status || "")}` };
 }
 
-function emailHasJobStatus(email, statuses) {
+function emailHasJobStatus(email: ScannedEmailRow, statuses: string[]): boolean {
   const childJobs = Array.isArray(email.jobs) ? email.jobs : [];
-  return childJobs.some((job) => statuses.includes(job.status)) || statuses.includes(email.job_status);
+  return childJobs.some((job) => statuses.includes(job.status || "")) || statuses.includes(email.job_status || "");
 }
 
-function gmailReadIndicator(email) {
+interface GmailIndicator extends BadgeInfo {
+  canMoveToScanned: boolean;
+}
+
+function gmailReadIndicator(email: ScannedEmailRow): GmailIndicator {
   if (emailHasJobStatus(email, ["pending_review", "triage", "possible_duplicate"])) {
     return { label: "Keep unread", cls: "badge-yellow", canMoveToScanned: false };
   }
@@ -101,7 +122,7 @@ function gmailReadIndicator(email) {
   if (email.disposition === "noise") {
     return { label: "Leave in inbox", cls: "badge-gray", canMoveToScanned: false };
   }
-  if (["ack", "duplicate", "feedback_filtered"].includes(email.disposition)) {
+  if (["ack", "duplicate", "feedback_filtered"].includes(email.disposition || "")) {
     return { label: "Move To Scanned", cls: "badge-green", canMoveToScanned: true };
   }
   if (email.disposition === "parser_error") {
@@ -112,7 +133,12 @@ function gmailReadIndicator(email) {
 
 // ── Raw body modal ────────────────────────────────────────────────────────────
 
-function RawBodyModal({ email, onClose }) {
+interface RawBodyModalProps {
+  email: ScannedEmailRow;
+  onClose: () => void;
+}
+
+function RawBodyModal({ email, onClose }: RawBodyModalProps) {
   return (
     <Modal
       title={email.email_subject || "(No subject)"}
@@ -166,7 +192,20 @@ function RawBodyModal({ email, onClose }) {
 
 // ── Rescan progress modal ─────────────────────────────────────────────────────
 
-function RescanProgressModal({ status, onClose }) {
+interface RescanStatusState {
+  emailId: string;
+  loading: boolean;
+  message: string | null;
+  jobs: RescanEmailResponse["jobs"] | null;
+  error: boolean;
+}
+
+interface RescanProgressModalProps {
+  status: RescanStatusState;
+  onClose: () => void;
+}
+
+function RescanProgressModal({ status, onClose }: RescanProgressModalProps) {
   const isDone = !status.loading;
   return (
     <Modal
@@ -206,7 +245,18 @@ function RescanProgressModal({ status, onClose }) {
 
 // ── Email detail modal ────────────────────────────────────────────────────────
 
-function EmailDetailModal({ email, movingToScanned, onMoveToScanned, rescanning, onRescan, onShowBody, onSetHidden, onClose }) {
+interface EmailDetailModalProps {
+  email: ScannedEmailRow;
+  movingToScanned: Record<string, boolean>;
+  onMoveToScanned: (emailId: string) => void;
+  rescanning: Record<string, boolean>;
+  onRescan: (emailId: string) => void;
+  onShowBody: () => void;
+  onSetHidden: (emailId: string, hidden: boolean) => void;
+  onClose: () => void;
+}
+
+function EmailDetailModal({ email, movingToScanned, onMoveToScanned, rescanning, onRescan, onShowBody, onSetHidden, onClose }: EmailDetailModalProps) {
   const gmailIndicator = gmailReadIndicator(email);
   const isMovingToScanned = movingToScanned[email.email_id];
   const isRescanning = rescanning[email.email_id];
@@ -272,7 +322,7 @@ function EmailDetailModal({ email, movingToScanned, onMoveToScanned, rescanning,
               <StatusBadge status="parser_error" label="Parser Error" />
             </button>
           ) : (
-            (DISPOSITION_INFO[email.disposition] || { label: email.disposition || "—" }).label
+            (DISPOSITION_INFO[email.disposition || ""] || { label: email.disposition || "—" }).label
           )}
         </div>
         <div>
@@ -322,25 +372,35 @@ function EmailDetailModal({ email, movingToScanned, onMoveToScanned, rescanning,
 
 // ── Main panel ────────────────────────────────────────────────────────────────
 
-export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focusEmailId }) {
-  const [emails, setEmails] = useState([]);
+interface EmailsPanelProps {
+  isAuthenticated: boolean;
+  onTriageCountChange?: (count: number) => void;
+  focusEmailId?: string | null;
+}
+
+type EmailFilter = "all" | "potential" | "acted";
+type SortCol = "date" | "status";
+type SortDir = "asc" | "desc";
+
+export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focusEmailId }: EmailsPanelProps) {
+  const [emails, setEmails] = useState<ScannedEmailRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState("all");
-  const [selected, setSelected] = useState(null);
-  const [detailModalEmail, setDetailModalEmail] = useState(null);
-  const [rescanStatus, setRescanStatus] = useState(null);
-  const [rescanning, setRescanning] = useState({});
+  const [filter, setFilter] = useState<EmailFilter>("all");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [detailModalEmail, setDetailModalEmail] = useState<ScannedEmailRow | null>(null);
+  const [rescanStatus, setRescanStatus] = useState<RescanStatusState | null>(null);
+  const [rescanning, setRescanning] = useState<Record<string, boolean>>({});
   const [rescanAllRunning, setRescanAllRunning] = useState(false);
   const [cleaning, setCleaning] = useState(false);
-  const [movingToScanned, setMovingToScanned] = useState({});
-  const [cleanResult, setCleanResult] = useState(null);
-  const [scanState, setScanState] = useState(null);
-  const [scanSummary, setScanSummary] = useState(null);
-  const [sortCol, setSortCol] = useState("date");
-  const [sortDir, setSortDir] = useState("desc");
+  const [movingToScanned, setMovingToScanned] = useState<Record<string, boolean>>({});
+  const [cleanResult, setCleanResult] = useState<CleanEmailsResponse | null>(null);
+  const [scanState, setScanState] = useState<ScanStatus | null>(null);
+  const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
+  const [sortCol, setSortCol] = useState<SortCol>("date");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [showHidden, setShowHidden] = useState(false);
-  const [errorModalEmail, setErrorModalEmail] = useState(null);
-  const pollRef = useRef(null);
+  const [errorModalEmail, setErrorModalEmail] = useState<ScannedEmailRow | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   useEffect(() => {
     if (focusEmailId) {
@@ -349,17 +409,18 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
     }
   }, [focusEmailId]);
 
-  const fetchEmails = useCallback(async (activeFilter) => {
+  const fetchEmails = useCallback(async (activeFilter: EmailFilter): Promise<ScannedEmailRow[] | undefined> => {
     setLoading(true);
     try {
       const q = activeFilter && activeFilter !== "all" ? `?filter=${activeFilter}` : "";
       const res = await fetch(`/api/emails${q}`);
       const data = await res.json();
-      const list = Array.isArray(data) ? data : [];
+      const list: ScannedEmailRow[] = Array.isArray(data) ? data : [];
       setEmails(list);
       return list;
     } catch {
       /* no-op */
+      return undefined;
     } finally {
       setLoading(false);
     }
@@ -371,7 +432,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
   }, [filter, fetchEmails]);
 
 
-  const handleColSort = (col) => {
+  const handleColSort = (col: SortCol) => {
     if (sortCol === col) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
@@ -396,13 +457,13 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
     return sortDir === "asc" ? cmp : -cmp;
   });
 
-  const handleRowClick = (emailId) => {
+  const handleRowClick = (emailId: string) => {
     setSelected((prev) => (prev === emailId ? null : emailId));
   };
 
-  const handleRescan = async (emailId) => {
+  const handleRescan = async (emailId: string) => {
     if (!isAuthenticated) {
-      alert("Connect your Google account first.");
+      window.alert("Connect your Google account first.");
       return;
     }
     setRescanning((prev) => ({ ...prev, [emailId]: true }));
@@ -411,7 +472,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
       const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/rescan`, {
         method: "POST",
       });
-      const data = await res.json();
+      const data: RescanEmailResponse = await res.json();
       if (!res.ok) {
         setRescanStatus({ emailId, loading: false, message: data.error || "Rescan failed", jobs: null, error: true });
         return;
@@ -428,7 +489,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
         onTriageCountChange?.(Array.isArray(td) ? td.length : 0);
       } catch { /* no-op */ }
     } catch (e) {
-      setRescanStatus({ emailId, loading: false, message: "Rescan failed: " + e.message, jobs: null, error: true });
+      setRescanStatus({ emailId, loading: false, message: "Rescan failed: " + (e instanceof Error ? e.message : String(e)), jobs: null, error: true });
     } finally {
       setRescanning((prev) => ({ ...prev, [emailId]: false }));
     }
@@ -436,7 +497,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
 
   const handleRescanAll = async () => {
     if (!isAuthenticated) {
-      alert("Connect your Google account first.");
+      window.alert("Connect your Google account first.");
       return;
     }
     setCleanResult(null);
@@ -449,8 +510,8 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
     }
     const res = await fetch("/api/emails/rescan-all", { method: "POST" });
     if (!res.ok) {
-      const err = await res.json();
-      alert(err.error || "Failed to start rescan");
+      const err: ApiErrorBody = await res.json();
+      window.alert(err.error || "Failed to start rescan");
       return;
     }
     setRescanAllRunning(true);
@@ -462,7 +523,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
     pollRef.current = setInterval(async () => {
       try {
         const r = await fetch("/api/scan/status");
-        const state = await r.json();
+        const state: ScanStatus = await r.json();
         setScanState(state);
         if (!state.running) {
           clearInterval(pollRef.current);
@@ -491,7 +552,7 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
 
   const handleCleanList = async () => {
     if (!isAuthenticated) {
-      alert("Connect your Google account first.");
+      window.alert("Connect your Google account first.");
       return;
     }
     setCleaning(true);
@@ -502,26 +563,26 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email_ids: visibleEmails.map((email) => email.email_id) }),
       });
-      const data = await res.json();
+      const data: CleanEmailsResponse = await res.json();
       if (!res.ok) {
-        alert(data.error || "Clean failed");
+        window.alert(data.error || "Clean failed");
         return;
       }
       await fetchEmails(filter);
       setCleanResult(data);
-      if (!showHidden && data.hidden_email_ids?.includes(selected)) {
+      if (!showHidden && data.hidden_email_ids?.includes(selected || "")) {
         setSelected(null);
       }
     } catch (e) {
-      alert("Clean failed: " + e.message);
+      window.alert("Clean failed: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setCleaning(false);
     }
   };
 
-  const handleMoveToScanned = async (emailId) => {
+  const handleMoveToScanned = async (emailId: string) => {
     if (!isAuthenticated) {
-      alert("Connect your Google account first.");
+      window.alert("Connect your Google account first.");
       return;
     }
     setMovingToScanned((prev) => ({ ...prev, [emailId]: true }));
@@ -531,28 +592,28 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email_ids: [emailId] }),
       });
-      const data = await res.json();
+      const data: ApiErrorBody = await res.json();
       if (!res.ok) {
-        alert(data.error || "Failed to move email to scanned label");
+        window.alert(data.error || "Failed to move email to scanned label");
         return;
       }
       await fetchEmails(filter);
     } catch (e) {
-      alert("Failed to move email to scanned label: " + e.message);
+      window.alert("Failed to move email to scanned label: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setMovingToScanned((prev) => ({ ...prev, [emailId]: false }));
     }
   };
 
-  const handleSetHidden = async (emailId, hidden) => {
+  const handleSetHidden = async (emailId: string, hidden: boolean) => {
     const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/hide`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ hidden }),
     });
     if (!res.ok) {
-      const data = await res.json();
-      alert(data.error || "Failed to update email visibility");
+      const data: ApiErrorBody = await res.json();
+      window.alert(data.error || "Failed to update email visibility");
       return;
     }
     await fetchEmails(filter);
@@ -568,13 +629,13 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
     { potential: 0, acted: 0 }
   );
 
-  const filterButtons = [
+  const filterButtons: { key: EmailFilter; label: string }[] = [
     { key: "all", label: "All" },
     { key: "potential", label: `Potential Jobs${filter !== "potential" && counts.potential ? ` (${counts.potential})` : ""}` },
     { key: "acted",     label: `Acted On${filter !== "acted" && counts.acted ? ` (${counts.acted})` : ""}` },
   ];
 
-  const SortIndicator = ({ col }) => {
+  const SortIndicator = ({ col }: { col: SortCol }) => {
     if (sortCol !== col) return <span style={{ opacity: 0.3, marginLeft: "4px" }}>↕</span>;
     return <span style={{ marginLeft: "4px" }}>{sortDir === "asc" ? "↑" : "↓"}</span>;
   };
@@ -902,8 +963,13 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
   );
 }
 
-function EmailScanSummaryModal({ summary, onClose }) {
-  const emailReport = Array.isArray(summary.email_report) ? summary.email_report : [];
+interface EmailScanSummaryModalProps {
+  summary: ScanSummary;
+  onClose: () => void;
+}
+
+function EmailScanSummaryModal({ summary, onClose }: EmailScanSummaryModalProps) {
+  const emailReport: ScanEmailReportRow[] = Array.isArray(summary.email_report) ? summary.email_report : [];
   const jobEmails = emailReport.filter((email) => (email.job_count || 0) > 0);
   const bySource = Array.isArray(summary.by_source) ? summary.by_source : [];
 
@@ -964,7 +1030,7 @@ function EmailScanSummaryModal({ summary, onClose }) {
   );
 }
 
-function formatSummaryJobTitles(jobTitles) {
+function formatSummaryJobTitles(jobTitles?: string[] | null): string {
   if (!Array.isArray(jobTitles) || jobTitles.length === 0) {
     return "No job titles captured.";
   }
@@ -973,7 +1039,7 @@ function formatSummaryJobTitles(jobTitles) {
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
-const tdStyle = {
+const tdStyle: CSSProperties = {
   padding: "10px 14px",
   borderBottom: "1px solid var(--border)",
   color: "var(--text)",
@@ -981,7 +1047,7 @@ const tdStyle = {
   fontSize: "13px",
 };
 
-const thStyle = {
+const thStyle: CSSProperties = {
   ...tdStyle,
   color: "var(--text-muted)",
   fontWeight: "600",
@@ -992,13 +1058,13 @@ const thStyle = {
   borderBottom: "1.5px solid var(--border)",
 };
 
-const badgeButtonStyle = {
+const badgeButtonStyle: CSSProperties = {
   border: "none",
   cursor: "pointer",
   font: "inherit",
 };
 
-const progressBox = {
+const progressBox: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-lg)",
@@ -1007,7 +1073,7 @@ const progressBox = {
   boxShadow: "var(--shadow-sm)",
 };
 
-const expandedHeaderStyle = {
+const expandedHeaderStyle: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   gap: "6px 20px",
@@ -1018,7 +1084,7 @@ const expandedHeaderStyle = {
   borderBottom: "1px solid var(--border)",
 };
 
-const treeJobRowStyle = {
+const treeJobRowStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(0, 1fr) auto",
   gap: "12px",
@@ -1029,7 +1095,7 @@ const treeJobRowStyle = {
   borderRadius: "var(--radius)",
 };
 
-const sectionLabel = {
+const sectionLabel: CSSProperties = {
   fontSize: "10px",
   fontWeight: "700",
   textTransform: "uppercase",
@@ -1038,13 +1104,13 @@ const sectionLabel = {
   marginBottom: "8px",
 };
 
-const summarySectionStyle = {
+const summarySectionStyle: CSSProperties = {
   borderTop: "1px solid var(--border)",
   paddingTop: "13px",
   marginTop: "13px",
 };
 
-const sourceRowStyle = {
+const sourceRowStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   gap: "12px",
@@ -1053,7 +1119,7 @@ const sourceRowStyle = {
   padding: "4px 0",
 };
 
-const summaryEmailRowStyle = {
+const summaryEmailRowStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(0, 1fr) auto",
   gap: "14px",
@@ -1064,28 +1130,28 @@ const summaryEmailRowStyle = {
   padding: "10px 12px",
 };
 
-const summaryEmailSubjectStyle = {
+const summaryEmailSubjectStyle: CSSProperties = {
   fontSize: "13px",
   fontWeight: 700,
   color: "var(--text)",
   overflowWrap: "anywhere",
 };
 
-const summaryEmailMetaStyle = {
+const summaryEmailMetaStyle: CSSProperties = {
   fontSize: "11px",
   color: "var(--text-muted)",
   marginTop: "2px",
   overflowWrap: "anywhere",
 };
 
-const summaryJobTitlesStyle = {
+const summaryJobTitlesStyle: CSSProperties = {
   fontSize: "12px",
   color: "var(--text)",
   marginTop: "5px",
   overflowWrap: "anywhere",
 };
 
-const summaryJobCountStyle = {
+const summaryJobCountStyle: CSSProperties = {
   fontSize: "13px",
   color: "var(--green)",
   whiteSpace: "nowrap",

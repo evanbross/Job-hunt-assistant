@@ -52,7 +52,7 @@ const VerifyAccountPage = lazy(() => import("./components/VerifyAccountPage.jsx"
 const VerifyEmailChangePage = lazy(() => import("./components/VerifyEmailChangePage.jsx"));
 const ResetPasswordPage = lazy(() => import("./components/ResetPasswordPage.jsx"));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel.jsx"));
-const EmailsPanel = lazy(() => import("./components/EmailsPanel.jsx"));
+const EmailsPanel = lazy(() => import("./components/EmailsPanel.tsx"));
 const HistoryPanel = lazy(() => import("./components/HistoryPanel.tsx"));
 const ApplicationSheetPanel = lazy(() => import("./components/ApplicationSheetPanel.jsx"));
 const ContactsPanel = lazy(() => import("./components/ContactsPanel.tsx"));

@@ -155,3 +155,56 @@ export interface MoveScannedEmailsResponse {
   message?: string;
   error?: string;
 }
+
+// ai: claude-sonnet-5 | 2026-10-07
+// One child job embedded on a scanned-email row, built in
+// backend/db/repositories/scanned_emails.py's get_all_with_job_status.
+export interface ScannedEmailJob {
+  id: number;
+  dedup_key: string | null;
+  company: string | null;
+  job_title: string | null;
+  url: string | null;
+  status: string | null;
+  fit_score: number | null;
+  skip_reason: string | null;
+  certainty_level: string | null;
+  certainty_score: number | null;
+  duplicate_hint: string | null;
+  date_found: string | null;
+}
+
+/**
+ * One row of GET /api/emails (routes/emails.py's get_scanned_emails), a
+ * `scanned_emails` row enriched with its matched jobs -- the top-level
+ * job_id/company/job_title/job_status/fit_score/skip_reason fields mirror
+ * the *first* job in `jobs` (kept for older single-job call sites); EmailsPanel
+ * itself always reads through the `jobs` array for anything beyond that.
+ */
+export interface ScannedEmailRow {
+  email_id: string;
+  sender_email: string | null;
+  email_subject: string | null;
+  scanned_at: string | null;
+  email_date: string | null;
+  disposition: string | null;
+  raw_body: string | null;
+  parser_error_msg: string | null;
+  hidden: number | boolean | null;
+  job_id: number | null;
+  company: string | null;
+  job_title: string | null;
+  job_status: string | null;
+  fit_score: number | null;
+  skip_reason: string | null;
+  job_count: number;
+  jobs: ScannedEmailJob[];
+}
+
+/** Response body of POST /api/emails/clean (routes/emails.py's clean_displayed_emails). */
+export interface CleanEmailsResponse {
+  checked: number;
+  hidden: number;
+  hidden_email_ids: string[];
+  error?: string;
+}
