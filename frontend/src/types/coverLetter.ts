@@ -81,6 +81,16 @@ export interface ResumeTailorResponse {
   analysis: string;
 }
 
+/** POST /api/jobs/<id>/cover-letter (generate) response. */
+export interface GenerateCoverLetterResponse {
+  cover_letter: string;
+}
+
+/** POST /api/jobs/<id>/pitch (generate) response. */
+export interface GeneratePitchResponse {
+  text: string;
+}
+
 export type PitchType = "why_company" | "why_fit";
 
 /** One row of the cover_letter_phrases table / GET /api/phrase-book. */

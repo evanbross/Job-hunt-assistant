@@ -32,23 +32,25 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { memo, useEffect, useRef, useState } from "react";
-import StatusBadge from "./common/StatusBadge.jsx";
-import CoverLetterModal from "./common/CoverLetterModal.jsx";
-import PitchModal from "./common/PitchModal.jsx";
-import ResumeTailorModal from "./common/ResumeTailorModal.jsx";
-import TailorProgressModal from "./common/TailorProgressModal.jsx";
-import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
-import SnoozeModal from "./common/SnoozeModal.jsx";
-import ContactsBadge from "./common/ContactsBadge.jsx";
-import SalaryBadge from "./common/SalaryBadge.jsx";
-import UndoEditNotice from "./common/UndoEditNotice.jsx";
-import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
-import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
-import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.js";
-import { parseImportWarnings, importWarningTooltip, hasCompanyHistoryAvailable } from "../utils/jobQueueUtils.js";
-import { describeFetchError } from "../utils/fetchErrorUtils.js"; // ai: claude-fable-5 | 2026-07-15
-import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.js";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, RefObject } from "react";
+import StatusBadge from "./common/StatusBadge.tsx";
+import CoverLetterModal from "./common/CoverLetterModal.tsx";
+import PitchModal from "./common/PitchModal.tsx";
+import ResumeTailorModal from "./common/ResumeTailorModal.tsx";
+import TailorProgressModal from "./common/TailorProgressModal.tsx";
+import CompanyHistoryDialog from "./common/CompanyHistoryDialog.tsx";
+import SnoozeModal from "./common/SnoozeModal.tsx";
+import ContactsBadge from "./common/ContactsBadge.tsx";
+import SalaryBadge from "./common/SalaryBadge.tsx";
+import UndoEditNotice from "./common/UndoEditNotice.tsx";
+import { useCardContextMenu } from "../hooks/useCardContextMenu.ts";
+import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.ts";
+import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.ts";
+import { parseImportWarnings, importWarningTooltip, hasCompanyHistoryAvailable } from "../utils/jobQueueUtils.ts";
+import { describeFetchError } from "../utils/fetchErrorUtils.ts"; // ai: claude-fable-5 | 2026-07-15
+import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.ts";
 import {
   MISMATCH_REASONS,
   SKIP_REASONS,
@@ -61,7 +63,35 @@ import {
   normalizeManualJobUrl,
   penaltiesAppliedForJob,
   platformLabelForUrl,
-} from "../utils/triagePanelUtils.js";
+} from "../utils/triagePanelUtils.ts";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { ContactsByCompany } from "../types/contacts.ts";
+import type { GenerateCoverLetterResponse, GeneratePitchResponse, PitchType } from "../types/coverLetter.ts";
+import type { ResumeTailorResponse } from "../types/coverLetter.ts";
+import type {
+  CompanyJobCounts,
+  FitChatMessage,
+  FitChatResponse,
+  FitReclassification,
+  Job,
+  JobCardUndoEdit,
+} from "../types/jobs.ts";
+import type { SkipReason } from "../types/triage.ts";
+
+interface JobCardProps {
+  job: Job;
+  onApprove: (jobId: number) => Promise<void>;
+  onReEvaluate?: ((job: Job) => Promise<void>) | null;
+  onSkip: (jobId: number, reason: string, feedback: string, mismatchReasons: string[]) => Promise<void>;
+  onSnooze: (jobId: number, days: number) => Promise<void>;
+  onUpdate?: ((jobId: number, updatedJob: Job) => void) | null;
+  onDismissDuplicate?: ((jobId: number) => Promise<void>) | null;
+  onRescanEmail?: ((job: Job) => Promise<void>) | null;
+  onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
+  contactsByCompany?: ContactsByCompany;
+  companyJobCounts?: CompanyJobCounts | null;
+  defaultSnoozeDays: number;
+}
 
 // ai: claude-sonnet-4-6 | 2026-06-23
 // Memoized: parent re-renders on every search keystroke, and callback props
@@ -81,7 +111,7 @@ function JobCard({
   contactsByCompany,
   companyJobCounts,
   defaultSnoozeDays,
-}) {
+}: JobCardProps) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [descriptionEditOpen, setDescriptionEditOpen] = useState(false);
@@ -89,22 +119,22 @@ function JobCard({
   const [descriptionSaving, setDescriptionSaving] = useState(false);
   const [descriptionError, setDescriptionError] = useState("");
   const [descriptionSaved, setDescriptionSaved] = useState(false);
-  const [loading, setLoading] = useState(null); // "approve" | "skip:<reason>" | "snooze" | "cover" | "pitch" | "tailor" | null
+  const [loading, setLoading] = useState<string | null>(null); // "approve" | "skip:<reason>" | "snooze" | "cover" | "pitch" | "tailor" | null
   const [showSkipMenu, setShowSkipMenu] = useState(false);
-  const skipBtnRef = useRef(null);
-  const [skipMenuAnchor, setSkipMenuAnchor] = useState(null);
+  const skipBtnRef = useRef<HTMLButtonElement>(null);
+  const [skipMenuAnchor, setSkipMenuAnchor] = useState<DOMRect | null>(null);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [snoozeDays, setSnoozeDays] = useState(() => {
-    const stored = parseInt(localStorage.getItem(SNOOZE_DAYS_STORAGE_KEY), 10);
+    const stored = parseInt(localStorage.getItem(SNOOZE_DAYS_STORAGE_KEY) || "", 10);
     return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
   });
-  const [pitchText, setPitchText] = useState(null);
-  const [pitchType, setPitchType] = useState(null); // "why_company" | "why_fit"
+  const [pitchText, setPitchText] = useState<string | null>(null);
+  const [pitchType, setPitchType] = useState<PitchType | null>(null);
   const [pitchOpen, setPitchOpen] = useState(false);
   // skipConfirm: null | { key, label } — the selected reason awaiting confirmation
-  const [skipConfirm, setSkipConfirm] = useState(null);
+  const [skipConfirm, setSkipConfirm] = useState<SkipReason | null>(null);
   const [skipNote, setSkipNote] = useState("");
-  const [skipMismatchReasons, setSkipMismatchReasons] = useState([]);
+  const [skipMismatchReasons, setSkipMismatchReasons] = useState<string[]>([]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [editingCompany, setEditingCompany] = useState(false);
@@ -113,29 +143,29 @@ function JobCard({
   const [urlDraft, setUrlDraft] = useState("");
   const [urlSaving, setUrlSaving] = useState(false);
   const [urlError, setUrlError] = useState("");
-  const [refreshError, setRefreshError] = useState(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [refreshQueued, setRefreshQueued] = useState(false);
-  const [undoEdit, setUndoEdit] = useState(null);
+  const [undoEdit, setUndoEdit] = useState<JobCardUndoEdit | null>(null);
   const [undoSaving, setUndoSaving] = useState(false);
-  const [coverLetter, setCoverLetter] = useState(null);
+  const [coverLetter, setCoverLetter] = useState<string | null>(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   const companyHistory = useCompanyHistoryLookup(job);
   const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const { contextMenu, setContextMenu, runContextAction } = useCardContextMenu();
 
-  const descriptionTextareaRef = useRef(null);
+  const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Fit review chat state
   const [fitChatOpen, setFitChatOpen] = useState(false);
-  const [fitChatMessages, setFitChatMessages] = useState([]);
+  const [fitChatMessages, setFitChatMessages] = useState<FitChatMessage[]>([]);
   const [fitChatInput, setFitChatInput] = useState("");
   const [fitChatSending, setFitChatSending] = useState(false);
-  const [pendingReclassification, setPendingReclassification] = useState(null);
-  const fitChatMessagesRef = useRef(null);
+  const [pendingReclassification, setPendingReclassification] = useState<FitReclassification | null>(null);
+  const fitChatMessagesRef = useRef<HTMLDivElement>(null);
 
   // Resume tailor state — the modal itself (ResumeTailorModal) owns copy/save/chat
   // state once open; this card only owns the generate-trigger + progress phases.
-  const [resumeTailor, setResumeTailor] = useState(null);
+  const [resumeTailor, setResumeTailor] = useState<string | null>(null);
   const [resumeTailorOpen, setResumeTailorOpen] = useState(false);
   const [tailorPhaseIdx, setTailorPhaseIdx] = useState(0);
 
@@ -154,9 +184,9 @@ function JobCard({
   // Match each penalty to the reasoning bullet that best describes it so the
   // deduction can be shown inline. Words from the penalty's ruleText (>3 chars)
   // are searched in the bullet text; each penalty is consumed at most once.
-  const usedPenaltyIndices = new Set();
+  const usedPenaltyIndices = new Set<number>();
   const bulletsWithDeductions = reasoningBullets.map((bullet) => {
-    if (!isNegativeReasoningBullet(bullet)) return { bullet, deduction: null };
+    if (!isNegativeReasoningBullet(bullet)) return { bullet, deduction: null as number | null };
     const bulletLower = bullet.toLowerCase();
     let matchedIdx = -1;
     penaltiesApplied.forEach((p, i) => {
@@ -168,9 +198,9 @@ function JobCard({
     });
     if (matchedIdx !== -1) {
       usedPenaltyIndices.add(matchedIdx);
-      return { bullet, deduction: penaltiesApplied[matchedIdx].points };
+      return { bullet, deduction: penaltiesApplied[matchedIdx].points as number | null };
     }
-    return { bullet, deduction: null };
+    return { bullet, deduction: null as number | null };
   });
   const unmatchedPenalties = penaltiesApplied.filter((_, i) => !usedPenaltyIndices.has(i));
 
@@ -190,7 +220,7 @@ function JobCard({
   };
 
   const handleSnoozeConfirm = async () => {
-    const days = parseInt(snoozeDays, 10);
+    const days = parseInt(String(snoozeDays), 10);
     if (!Number.isFinite(days) || days < 1) return;
     localStorage.setItem(SNOOZE_DAYS_STORAGE_KEY, String(days));
     setSnoozeOpen(false);
@@ -202,7 +232,7 @@ function JobCard({
     }
   };
 
-  const handleSkipReasonClick = async (reason) => {
+  const handleSkipReasonClick = async (reason: SkipReason) => {
     setShowSkipMenu(false);
     setSkipNote("");
     setSkipMismatchReasons([]);
@@ -234,7 +264,7 @@ function JobCard({
     }
   };
 
-  const toggleMismatchReason = (reason) => {
+  const toggleMismatchReason = (reason: string) => {
     setSkipMismatchReasons((prev) =>
       prev.includes(reason)
         ? prev.filter((item) => item !== reason)
@@ -242,8 +272,9 @@ function JobCard({
     );
   };
 
-  const openContextMenu = (event) => {
-    if (event.target.closest("a,button,input,textarea,select")) return;
+  const openContextMenu = (event: ReactMouseEvent) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("a,button,input,textarea,select")) return;
     event.preventDefault();
     setContextMenu({
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - 240)),
@@ -270,10 +301,10 @@ function JobCard({
       const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
       // ai: claude-fable-5 | 2026-07-15
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Generation failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: GenerateCoverLetterResponse = await res.json();
       setCoverLetter(data.cover_letter);
       setCoverLetterOpen(true);
     } catch (e) {
@@ -283,7 +314,7 @@ function JobCard({
     }
   };
 
-  const handlePitch = async (type) => {
+  const handlePitch = async (type: PitchType) => {
     if (pitchType === type && pitchText) {
       setPitchOpen(true);
       return;
@@ -299,10 +330,10 @@ function JobCard({
       });
       // ai: claude-fable-5 | 2026-07-15
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Generation failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: GeneratePitchResponse = await res.json();
       setPitchText(data.text);
       setPitchOpen(true);
     } catch (e) {
@@ -331,7 +362,7 @@ function JobCard({
     setRefreshQueued(false);
     try {
       const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
-      const data = await res.json();
+      const data: (Job & { queued_for_browser_capture?: boolean }) & ApiErrorBody = await res.json();
       if (!res.ok) {
         throw new Error(data.error || `Re-fetch failed (${res.status})`);
       }
@@ -341,7 +372,7 @@ function JobCard({
       }
       onUpdate?.(job.id, data);
     } catch (e) {
-      setRefreshError(e.message || "Re-fetch from URL failed");
+      setRefreshError(e instanceof Error ? e.message : "Re-fetch from URL failed");
     } finally {
       setLoading(null);
     }
@@ -364,13 +395,13 @@ function JobCard({
     }
   };
 
-  const updateJobDescription = async (description) => {
+  const updateJobDescription = async (description: string): Promise<Job> => {
     const res = await fetch(`/api/jobs/${job.id}/description`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ description }),
     });
-    const data = await res.json();
+    const data: Job & ApiErrorBody = await res.json();
     if (!res.ok) {
       throw new Error(data.error || `Description update failed (${res.status})`);
     }
@@ -400,7 +431,7 @@ function JobCard({
       setDescriptionDraft("");
       setDescriptionSaved(true);
     } catch (e) {
-      setDescriptionError(e.message || "Description update failed");
+      setDescriptionError(e instanceof Error ? e.message : "Description update failed");
     } finally {
       setDescriptionSaving(false);
     }
@@ -431,7 +462,7 @@ function JobCard({
     }
   };
 
-  const handleFitChatSend = async ({ saveAsDescription = false } = {}) => {
+  const handleFitChatSend = async ({ saveAsDescription = false }: { saveAsDescription?: boolean } = {}) => {
     const text = fitChatInput.trim();
     if (!text || fitChatSending) return;
 
@@ -446,7 +477,7 @@ function JobCard({
     const userContent = saveAsDescription
       ? `I updated the stored job description to this text. Please review the fit based on the updated description:\n\n${text}`
       : text;
-    const newMessages = [...fitChatMessages, { role: "user", content: userContent }];
+    const newMessages: FitChatMessage[] = [...fitChatMessages, { role: "user", content: userContent }];
     setFitChatMessages(newMessages);
     setFitChatInput("");
     setFitChatSending(true);
@@ -462,10 +493,10 @@ function JobCard({
       });
       // ai: claude-fable-5 | 2026-07-15
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error ? `${data.error} (${res.status})` : `Fit chat failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: FitChatResponse = await res.json();
 
       setFitChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       if (data.reclassification) {
@@ -499,10 +530,10 @@ function JobCard({
       const res = await fetch(`/api/jobs/${job.id}/resume-tailor`, { method: "POST" });
       // ai: claude-fable-5 | 2026-07-15
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Generation failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: ResumeTailorResponse = await res.json();
       setResumeTailor(data.analysis);
       setResumeTailorOpen(true);
     } catch (e) {
@@ -528,7 +559,7 @@ function JobCard({
       window.alert(`Job title update failed (${res.status})`);
       return;
     }
-    const updated = await res.json();
+    const updated: Job = await res.json();
     onUpdate?.(job.id, updated);
   };
 
@@ -545,7 +576,7 @@ function JobCard({
       window.alert(`Company update failed (${res.status})`);
       return;
     }
-    const updated = await res.json();
+    const updated: Job = await res.json();
     onUpdate?.(job.id, updated);
   };
 
@@ -575,7 +606,7 @@ function JobCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: value }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: Job & ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         setUrlError(data.error || `URL update failed (${res.status})`);
         return;
@@ -605,7 +636,7 @@ function JobCard({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: undoEdit.previousValue }),
         });
-        const data = await res.json().catch(() => ({}));
+        const data: Job & ApiErrorBody = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(data.error || `URL undo failed (${res.status})`);
         }
@@ -620,7 +651,7 @@ function JobCard({
       setUndoEdit(null);
       setDescriptionSaved(false);
     } catch (error) {
-      const message = error.message || "Undo failed";
+      const message = error instanceof Error ? error.message : "Undo failed";
       if (undoEdit.type === "url") {
         setUrlError(message);
       } else {
@@ -759,7 +790,7 @@ function JobCard({
                 onChange={(e) => setCompanyDraft(e.target.value)}
                 onBlur={saveCompanyEdit}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") e.target.blur();
+                  if (e.key === "Enter") e.currentTarget.blur();
                   if (e.key === "Escape") setEditingCompany(false);
                 }}
                 style={{
@@ -1412,11 +1443,11 @@ function JobCard({
               body: JSON.stringify(pendingReclassification),
             });
             if (!res.ok) {
-              const data = await res.json().catch(() => ({}));
+              const data: ApiErrorBody = await res.json().catch(() => ({}));
               window.alert(`Failed to apply: ${data.error || res.status}`);
               return;
             }
-            const updated = await res.json();
+            const updated: Job = await res.json();
             onUpdate?.(job.id, updated);
             setPendingReclassification(null);
           }}
@@ -1430,8 +1461,8 @@ function JobCard({
       {/* Snooze modal */}
       {snoozeOpen && (
         <SnoozeModal
-          days={snoozeDays}
-          onDaysChange={setSnoozeDays}
+          days={String(snoozeDays)}
+          onDaysChange={(value) => setSnoozeDays(Number(value))}
           onConfirm={handleSnoozeConfirm}
           onClose={() => setSnoozeOpen(false)}
           busy={loading === "snooze"}
@@ -1439,7 +1470,7 @@ function JobCard({
       )}
 
       {/* Pitch panel */}
-      {pitchOpen && pitchText && (
+      {pitchOpen && pitchText && pitchType && (
         <PitchModal job={job} pitchType={pitchType} text={pitchText} onClose={() => setPitchOpen(false)} />
       )}
 
@@ -1467,6 +1498,20 @@ function JobCard({
 
 export default memo(JobCard, arePropsEqualIgnoringFunctions);
 
+interface FitReviewPanelProps {
+  currentScore?: number | null;
+  fitChatInput: string;
+  fitChatMessages: FitChatMessage[];
+  fitChatMessagesRef: RefObject<HTMLDivElement>;
+  fitChatSending: boolean;
+  onApplyReclassification: () => Promise<void>;
+  onDismissReclassification: () => void;
+  onInputChange: (value: string) => void;
+  onSend: () => void;
+  onSaveDescriptionAndSend: () => void;
+  pendingReclassification: FitReclassification | null;
+}
+
 function FitReviewPanel({
   currentScore,
   fitChatInput,
@@ -1479,7 +1524,7 @@ function FitReviewPanel({
   onSend,
   onSaveDescriptionAndSend,
   pendingReclassification,
-}) {
+}: FitReviewPanelProps) {
   const canSaveDescription = fitChatInput.trim().length >= 80;
 
   return (
@@ -1585,14 +1630,14 @@ function FitReviewPanel({
   );
 }
 
-function classificationLabel(status) {
+function classificationLabel(status: string): string {
   if (status === "pending_review") return "Keep in queue";
   if (status === "triage") return "Move to triage";
   if (status === "skipped") return "Skip as not a fit";
   return status;
 }
 
-function sourceSummaryForJob(job) {
+function sourceSummaryForJob(job: Pick<Job, "source" | "url" | "capture_label" | "dedup_key">): string {
   const source = String(job.source || "").trim();
   const platform = platformLabelForUrl(job.url);
   const sourceLabel = source ? titleCaseKnownSource(source) : "";
@@ -1626,7 +1671,7 @@ function sourceSummaryForJob(job) {
   return sourceLabel || platform || "";
 }
 
-function isManualJob(job) {
+function isManualJob(job: Pick<Job, "capture_label" | "dedup_key" | "source">): boolean {
   const emailSubject = String(job.capture_label || "").toLowerCase();
   const dedupKey = String(job.dedup_key || "").toLowerCase();
   const source = String(job.source || "").toLowerCase();
@@ -1643,12 +1688,12 @@ function isManualJob(job) {
   );
 }
 
-function shouldShowEmailOrigin(job) {
+function shouldShowEmailOrigin(job: Pick<Job, "sender_email" | "capture_label" | "dedup_key" | "source">): boolean {
   if (!job.sender_email && !job.capture_label) return false;
   return !isManualJob(job);
 }
 
-function titleCaseKnownSource(source) {
+function titleCaseKnownSource(source: string): string {
   const normalizedSource = source.trim().toLowerCase();
   if (normalizedSource === "greenhouse") return "Greenhouse";
   if (normalizedSource === "lever") return "Lever";
@@ -1662,16 +1707,16 @@ function titleCaseKnownSource(source) {
   return source;
 }
 
-function isManualSourceLabel(source) {
+function isManualSourceLabel(source: string): boolean {
   return ["manual paste", "manual url"].includes(source.trim().toLowerCase());
 }
 
-function manualPlatformFromSource(source) {
+function manualPlatformFromSource(source: string): string {
   const match = source.trim().match(/^manual\s+(?:paste|url)\s*-\s*(.+)$/i);
   return match ? titleCaseKnownSource(match[1].trim()) : "";
 }
 
-const cardStyle = {
+const cardStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-lg)",
@@ -1681,7 +1726,7 @@ const cardStyle = {
   transition: "box-shadow 0.2s, border-color 0.2s",
 };
 
-const contextMenuStyle = {
+const contextMenuStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -1694,7 +1739,7 @@ const contextMenuStyle = {
   zIndex: 1000,
 };
 
-const contextMenuItemStyle = {
+const contextMenuItemStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   borderRadius: "4px",
@@ -1706,12 +1751,12 @@ const contextMenuItemStyle = {
   width: "100%",
 };
 
-const contextMenuSeparatorStyle = {
+const contextMenuSeparatorStyle: CSSProperties = {
   borderTop: "1px solid var(--border)",
   margin: "4px 0",
 };
 
-const sourceSummaryStyle = {
+const sourceSummaryStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   lineHeight: 1.5,
@@ -1719,19 +1764,19 @@ const sourceSummaryStyle = {
   overflowWrap: "anywhere",
 };
 
-const sourceLinkStyle = {
+const sourceLinkStyle: CSSProperties = {
   color: "var(--accent)",
   textDecoration: "none",
 };
 
-const editableJobTitleStyle = {
+const editableJobTitleStyle: CSSProperties = {
   borderBottom: "1px dotted var(--text-muted)",
   color: "var(--text)",
   cursor: "text",
   fontWeight: 600,
 };
 
-const editableJobTitleInputStyle = {
+const editableJobTitleInputStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   borderBottom: "1px solid var(--accent)",
@@ -1745,7 +1790,7 @@ const editableJobTitleInputStyle = {
   width: "min(460px, 70%)",
 };
 
-const jobUrlEditRowStyle = {
+const jobUrlEditRowStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",
   flexWrap: "wrap",
@@ -1753,13 +1798,13 @@ const jobUrlEditRowStyle = {
   marginTop: "6px",
 };
 
-const jobUrlTextStyle = {
+const jobUrlTextStyle: CSSProperties = {
   color: "var(--accent)",
   fontSize: "12px",
   overflowWrap: "anywhere",
 };
 
-const jobUrlInputStyle = {
+const jobUrlInputStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -1770,19 +1815,19 @@ const jobUrlInputStyle = {
   padding: "6px 9px",
 };
 
-const jobUrlSmallButtonStyle = {
+const jobUrlSmallButtonStyle: CSSProperties = {
   flexShrink: 0,
   fontSize: "11px",
   padding: "3px 8px",
 };
 
-const jobUrlErrorStyle = {
+const jobUrlErrorStyle: CSSProperties = {
   color: "var(--red)",
   fontSize: "11px",
   marginTop: "5px",
 };
 
-const editableCompanyStyle = {
+const editableCompanyStyle: CSSProperties = {
   background: "var(--accent-light)",
   border: "1px solid rgba(74,92,247,0.28)",
   borderRadius: "6px",
@@ -1795,7 +1840,7 @@ const editableCompanyStyle = {
 };
 
 // ai: claude-sonnet-4-6 | 2026-06-16
-const amberBannerStyle = {
+const amberBannerStyle: CSSProperties = {
   marginTop: "10px",
   padding: "10px 14px",
   background: "rgba(220,140,0,0.12)",
@@ -1807,7 +1852,7 @@ const amberBannerStyle = {
   gap: "10px",
 };
 
-const emailMetaStyle = {
+const emailMetaStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -1817,11 +1862,11 @@ const emailMetaStyle = {
   marginBottom: "2px",
 };
 
-const reasoningBoxStyle = {
+const reasoningBoxStyle: CSSProperties = {
   marginTop: "8px",
 };
 
-const descriptionBoxStyle = {
+const descriptionBoxStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -1835,18 +1880,18 @@ const descriptionBoxStyle = {
   whiteSpace: "pre-wrap",
 };
 
-const descriptionToolsStyle = {
+const descriptionToolsStyle: CSSProperties = {
   marginTop: "8px",
 };
 
-const descriptionEditorStyle = {
+const descriptionEditorStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
   padding: "10px",
 };
 
-const descriptionTextareaStyle = {
+const descriptionTextareaStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -1860,7 +1905,7 @@ const descriptionTextareaStyle = {
   width: "100%",
 };
 
-const descriptionEditorFooterStyle = {
+const descriptionEditorFooterStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",
   flexWrap: "wrap",
@@ -1869,26 +1914,26 @@ const descriptionEditorFooterStyle = {
   marginTop: "8px",
 };
 
-const descriptionFileInputStyle = {
+const descriptionFileInputStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   marginTop: "8px",
   width: "100%",
 };
 
-const descriptionErrorStyle = {
+const descriptionErrorStyle: CSSProperties = {
   color: "var(--red)",
   fontSize: "12px",
   marginTop: "6px",
 };
 
-const descriptionSavedStyle = {
+const descriptionSavedStyle: CSSProperties = {
   color: "var(--green)",
   fontSize: "12px",
   marginTop: "6px",
 };
 
-const reasoningListStyle = {
+const reasoningListStyle: CSSProperties = {
   columns: "2 260px",
   columnGap: "28px",
   paddingLeft: "18px",
@@ -1898,18 +1943,18 @@ const reasoningListStyle = {
   lineHeight: "1.6",
 };
 
-const penaltyInlineBulletStyle = {
+const penaltyInlineBulletStyle: CSSProperties = {
   color: "var(--red)",
 };
 
-const penaltyDeductionBadgeStyle = {
+const penaltyDeductionBadgeStyle: CSSProperties = {
   fontSize: "11px",
   fontWeight: 700,
   marginLeft: "6px",
   opacity: 0.85,
 };
 
-const fitReviewPanelStyle = {
+const fitReviewPanelStyle: CSSProperties = {
   marginTop: "12px",
   background: "var(--surface2)",
   border: "1px solid var(--border)",
@@ -1917,7 +1962,7 @@ const fitReviewPanelStyle = {
   padding: "12px 14px",
 };
 
-const fitSuggestionStyle = {
+const fitSuggestionStyle: CSSProperties = {
   marginBottom: "10px",
   padding: "8px 12px",
   background: "rgba(76,175,129,0.08)",
@@ -1929,7 +1974,7 @@ const fitSuggestionStyle = {
   flexWrap: "wrap",
 };
 
-const fitChatMessagesStyle = {
+const fitChatMessagesStyle: CSSProperties = {
   maxHeight: "260px",
   overflowY: "auto",
   marginBottom: "10px",
@@ -1938,7 +1983,7 @@ const fitChatMessagesStyle = {
   gap: "8px",
 };
 
-const fitChatBubbleStyle = {
+const fitChatBubbleStyle: CSSProperties = {
   maxWidth: "85%",
   borderRadius: "var(--radius)",
   padding: "8px 12px",
@@ -1947,7 +1992,7 @@ const fitChatBubbleStyle = {
   whiteSpace: "pre-wrap",
 };
 
-const fitChatInputStyle = {
+const fitChatInputStyle: CSSProperties = {
   flex: 1,
   fontSize: "13px",
   padding: "7px 10px",
@@ -1959,7 +2004,7 @@ const fitChatInputStyle = {
   fontFamily: "inherit",
 };
 
-const mismatchChipStyle = {
+const mismatchChipStyle: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: "999px",
   padding: "6px 10px",
@@ -1967,7 +2012,7 @@ const mismatchChipStyle = {
   cursor: "pointer",
 };
 
-const skipMenuStyle = {
+const skipMenuStyle: CSSProperties = {
   position: "absolute",
   bottom: "calc(100% + 4px)",
   left: 0,
@@ -1982,7 +2027,7 @@ const skipMenuStyle = {
   flexDirection: "column",
 };
 
-const skipMenuItemStyle = {
+const skipMenuItemStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   padding: "7px 10px",
@@ -1993,4 +2038,3 @@ const skipMenuItemStyle = {
   borderRadius: "4px",
   width: "100%",
 };
-

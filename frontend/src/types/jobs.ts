@@ -152,3 +152,56 @@ export interface FitPenalty {
 export type RefreshFromUrlResponse =
   | { queued_for_browser_capture: true; message: string }
   | Job;
+
+/** POST /api/jobs/<id>/fit-chat response (routes/fit.py's fit_chat). */
+export interface FitChatResponse {
+  reply: string;
+  reclassification: FitReclassification | null;
+}
+
+/** The structured reclassification block fit_chat extracts from the AI's reply. */
+export interface FitReclassification {
+  fit_score: number;
+  status: string;
+  fit_reasoning: string;
+}
+
+/** A single turn in JobCard's "Review Fit with AI" chat (role/content, same shape as ChatMessage). */
+export interface FitChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** JobCard's pending "undo my last edit" banner state (client-side only, not a backend shape). */
+export interface JobCardUndoEdit {
+  label: string;
+  previousValue: string;
+  type: "url" | "description";
+}
+
+/**
+ * TriagePanel/JobCard's client-side "re-evaluate / re-fetch" progress-popup
+ * state, assembled from the Job fields of whichever /re-evaluate-fit or
+ * /refresh-from-url response landed (not a single backend payload shape).
+ */
+export interface ReEvaluatePopupState {
+  action?: string;
+  runningText?: string;
+  company: string;
+  jobTitle: string;
+  phase: "running" | "error" | "queued" | "done";
+  previousScore?: number | null;
+  newScore?: number | null;
+  status?: string | null;
+  error?: string;
+}
+
+/** TriagePanel's client-side "description updated" popup state. */
+export interface DescriptionUpdatePopupState {
+  company: string;
+  jobTitle: string;
+  newScore?: number | null;
+  newStatus?: string | null;
+  previousScore?: number | null;
+  previousStatus?: string | null;
+}

@@ -32,25 +32,27 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import Modal from "./common/Modal.jsx";
-import CoverLetterModal from "./common/CoverLetterModal.jsx";
-import PitchModal from "./common/PitchModal.jsx";
-import ResumeTailorModal from "./common/ResumeTailorModal.jsx";
-import TailorProgressModal from "./common/TailorProgressModal.jsx";
-import SnoozeModal from "./common/SnoozeModal.jsx";
-import StatusBadge from "./common/StatusBadge.jsx";
-import CompanyHistoryDialog from "./common/CompanyHistoryDialog.jsx";
-import ContactsBadge from "./common/ContactsBadge.jsx";
-import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.js";
-import { applicationRowFromSheet, isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.js";
-import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.js";
-import UndoEditNotice from "./common/UndoEditNotice.jsx";
-import SalaryBadge from "./common/SalaryBadge.jsx";
-import { useCardContextMenu } from "../hooks/useCardContextMenu.js";
-import { jobMatchesSearch } from "../utils/jobSearchUtils.js";
-import { fitReasoningBullets } from "../utils/fitScoringUtils.js";
-import { describeFetchError } from "../utils/fetchErrorUtils.js"; // ai: claude-fable-5 | 2026-07-15
+import type { CSSProperties, RefObject } from "react";
+import Modal from "./common/Modal.tsx";
+import CoverLetterModal from "./common/CoverLetterModal.tsx";
+import PitchModal from "./common/PitchModal.tsx";
+import ResumeTailorModal from "./common/ResumeTailorModal.tsx";
+import TailorProgressModal from "./common/TailorProgressModal.tsx";
+import SnoozeModal from "./common/SnoozeModal.tsx";
+import StatusBadge from "./common/StatusBadge.tsx";
+import CompanyHistoryDialog from "./common/CompanyHistoryDialog.tsx";
+import ContactsBadge from "./common/ContactsBadge.tsx";
+import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.ts";
+import { applicationRowFromSheet, isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.ts";
+import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.ts";
+import UndoEditNotice from "./common/UndoEditNotice.tsx";
+import SalaryBadge from "./common/SalaryBadge.tsx";
+import { useCardContextMenu } from "../hooks/useCardContextMenu.ts";
+import { jobMatchesSearch } from "../utils/jobSearchUtils.ts";
+import { fitReasoningBullets } from "../utils/fitScoringUtils.ts";
+import { describeFetchError } from "../utils/fetchErrorUtils.ts"; // ai: claude-fable-5 | 2026-07-15
 import {
   MISMATCH_REASONS,
   SKIP_REASONS,
@@ -76,17 +78,35 @@ import {
   scoreDeltaLabel,
   sourceLabel,
   triageReasoningForJob,
-} from "../utils/triagePanelUtils.js";
-import { parseImportWarnings, importWarningTooltip, possibleDuplicateLabel, hasCompanyHistoryAvailable } from "../utils/jobQueueUtils.js";
-import { readStoredPref, writeStoredPref } from "../utils/storedPreference.js";
-import { runBatchRefreshFromUrls } from "../utils/batchRefreshFromUrls.js";
+} from "../utils/triagePanelUtils.ts";
+import { parseImportWarnings, importWarningTooltip, possibleDuplicateLabel, hasCompanyHistoryAvailable } from "../utils/jobQueueUtils.ts";
+import { readStoredPref, writeStoredPref } from "../utils/storedPreference.ts";
+import { runBatchRefreshFromUrls } from "../utils/batchRefreshFromUrls.ts";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { ContactsByCompany } from "../types/contacts.ts";
+import type { ChatMessage, PitchType } from "../types/coverLetter.ts";
+import type { GenerateCoverLetterResponse, GeneratePitchResponse, ResumeTailorResponse } from "../types/coverLetter.ts";
+import type {
+  ApplicationHistoryRow,
+  ApplicationSheetResponse,
+  BatchRefreshPopupState,
+  CompanyJobCounts,
+  DescriptionUpdatePopupState,
+  FitChatResponse,
+  FitReclassification,
+  Job,
+  JobCardUndoEdit,
+  ReEvaluatePopupState,
+  RefreshFromUrlResponse,
+} from "../types/jobs.ts";
+import type { SkipReason } from "../types/triage.ts";
 
 const TRIAGE_SEARCH_STORAGE_KEY = "jha.triage.search";
 const TRIAGE_SEARCH_ALL_FIELDS_KEY = "jha.triage.searchAllFields";
 
 
-function companyRowSummary(rows) {
-  const counts = {};
+function companyRowSummary(rows: ApplicationHistoryRow[]): Record<string, number> {
+  const counts: Record<string, number> = {};
   for (const row of rows) {
     const s = String(row.status || "No status").trim();
     counts[s] = (counts[s] || 0) + 1;
@@ -94,14 +114,20 @@ function companyRowSummary(rows) {
   return counts;
 }
 
-function companyHistoryBadgeClass(rows) {
+function companyHistoryBadgeClass(rows: ApplicationHistoryRow[]): string {
   if (rows.some((row) => String(row.status || "").toLowerCase().includes("reject"))) return "badge-red";
   if (rows.some((row) => isAppliedStatus(row.status))) return "badge-orange";
   return "badge-gray";
 }
 
-export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJobCard }) {
-  const [jobs, setJobs] = useState([]);
+interface TriagePanelProps {
+  onCountChange: (count: number) => void;
+  focusJobId?: number | null;
+  onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
+}
+
+export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJobCard }: TriagePanelProps) {
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState("date_desc");
   const [searchText, setSearchText] = useState(() => readStoredPref(TRIAGE_SEARCH_STORAGE_KEY));
@@ -110,19 +136,19 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   const [searchAllFields, setSearchAllFields] = useState(
     () => readStoredPref(TRIAGE_SEARCH_ALL_FIELDS_KEY) === "true"
   );
-  const [reEvaluatePopup, setReEvaluatePopup] = useState(null);
-  const [batchRefreshPopup, setBatchRefreshPopup] = useState(null);
-  const [descriptionUpdatePopup, setDescriptionUpdatePopup] = useState(null);
+  const [reEvaluatePopup, setReEvaluatePopup] = useState<ReEvaluatePopupState | null>(null);
+  const [batchRefreshPopup, setBatchRefreshPopup] = useState<BatchRefreshPopupState | null>(null);
+  const [descriptionUpdatePopup, setDescriptionUpdatePopup] = useState<DescriptionUpdatePopupState | null>(null);
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
   const [showOnlyImportReview, setShowOnlyImportReview] = useState(false);
-  const [allSheetRows, setAllSheetRows] = useState(null);
-  const moreActionsRef = useRef(null);
+  const [allSheetRows, setAllSheetRows] = useState<ApplicationHistoryRow[] | null>(null);
+  const moreActionsRef = useRef<HTMLDivElement>(null);
 
   const fetchTriage = async () => {
     try {
       const res = await fetch("/api/jobs/triage");
-      const data = await res.json();
+      const data: Job[] = await res.json();
       const list = Array.isArray(data) ? data : [];
       setJobs(list);
       onCountChange(list.length);
@@ -160,8 +186,8 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
 
   useEffect(() => {
     if (!moreActionsOpen) return;
-    const handleOutsideClick = (event) => {
-      if (moreActionsRef.current && !moreActionsRef.current.contains(event.target)) {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (moreActionsRef.current && !moreActionsRef.current.contains(event.target as Node)) {
         setMoreActionsOpen(false);
       }
     };
@@ -189,12 +215,12 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   useEffect(() => {
     fetch("/api/applications")
       .then((res) => res.json())
-      .then((data) => setAllSheetRows(Array.isArray(data.rows) ? data.rows.map(applicationRowFromSheet) : []))
+      .then((data: ApplicationSheetResponse) => setAllSheetRows(Array.isArray(data.rows) ? data.rows.map(applicationRowFromSheet) : []))
       .catch(() => setAllSheetRows([]));
   }, []);
 
-  const handleApprove = async (job) => {
-    const senderEmail = extractSender(job.raw_jd_snippet, job);
+  const handleApprove = async (job: Pick<Job, "id" | "raw_jd_snippet" | "job_title">) => {
+    const senderEmail = extractSender(job.raw_jd_snippet || "", { source: null });
     const subjectPattern = extractSubjectWords(job.job_title || "");
 
     const res = await fetch(`/api/jobs/${job.id}/approve`, {
@@ -208,16 +234,16 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
       setJobs(updated);
       onCountChange(updated.length);
     } else {
-      const err = await res.json();
+      const err: ApiErrorBody = await res.json();
       alert(err.error || "Failed to approve");
     }
   };
 
-  const handleSkipAsDuplicate = async (job) => {
+  const handleSkipAsDuplicate = async (job: Pick<Job, "id">) => {
     await handleSkip(job, "duplicate", "", []);
   };
 
-  const handleSkip = async (job, reason, feedback = "", mismatchReasons = []) => {
+  const handleSkip = async (job: Pick<Job, "id">, reason: string, feedback = "", mismatchReasons: string[] = []) => {
     const res = await fetch(`/api/jobs/${job.id}/skip`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -228,18 +254,18 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
       setJobs(updated);
       onCountChange(updated.length);
     } else {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to skip job");
     }
   };
 
   // ai: claude-sonnet-4-6 | 2026-06-26
-  const handleMarkUnique = async (job) => {
+  const handleMarkUnique = async (job: Pick<Job, "id">) => {
     const res = await fetch(`/api/jobs/${job.id}/dismiss-duplicate`, { method: "POST" });
     if (res.ok) {
-      const updated = await res.json();
+      const updated: Job = await res.json();
       const triageStatuses = new Set(["triage", "possible_duplicate"]);
-      if (triageStatuses.has(updated.status)) {
+      if (triageStatuses.has(updated.status || "")) {
         setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
       } else {
         const next = jobs.filter((j) => j.id !== job.id);
@@ -247,24 +273,24 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
         onCountChange(next.length);
       }
     } else {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to mark job as unique");
     }
   };
 
-  const handleMarkApplied = async (job) => {
+  const handleMarkApplied = async (job: Pick<Job, "id">) => {
     const res = await fetch(`/api/jobs/${job.id}/apply`, { method: "POST" });
     if (res.ok) {
       const updated = jobs.filter((j) => j.id !== job.id);
       setJobs(updated);
       onCountChange(updated.length);
     } else {
-      const err = await res.json().catch(() => ({}));
+      const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to mark job as applied");
     }
   };
 
-  const handleRefreshFromUrl = async (job) => {
+  const handleRefreshFromUrl = async (job: Job) => {
     setReEvaluatePopup({
       action: "Re-fetch",
       runningText: "Fetching job details and scoring…",
@@ -275,7 +301,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     });
 
     const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
-    const data = await res.json();
+    const data: RefreshFromUrlResponse & ApiErrorBody = await res.json();
 
     if (!res.ok) {
       setReEvaluatePopup({
@@ -289,7 +315,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
       throw new Error(data.error || "Failed to re-fetch job");
     }
 
-    if (data.queued_for_browser_capture) {
+    if ("queued_for_browser_capture" in data && data.queued_for_browser_capture) {
       setReEvaluatePopup({
         action: "Re-fetch",
         company: job.company || "",
@@ -300,19 +326,20 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
       return;
     }
 
+    const updatedJob = data as Job;
     setReEvaluatePopup({
       action: "Re-fetch",
-      company: data.company || job.company || "",
-      jobTitle: data.job_title || job.job_title || "",
-      newScore: data.fit_score,
+      company: updatedJob.company || job.company || "",
+      jobTitle: updatedJob.job_title || job.job_title || "",
+      newScore: updatedJob.fit_score,
       phase: "done",
       previousScore: job.fit_score,
-      status: data.status,
+      status: updatedJob.status,
     });
 
     const triageStatuses = new Set(["triage", "possible_duplicate"]);
-    if (triageStatuses.has(data.status)) {
-      setJobs((prev) => prev.map((j) => (j.id === data.id ? data : j)));
+    if (triageStatuses.has(updatedJob.status || "")) {
+      setJobs((prev) => prev.map((j) => (j.id === updatedJob.id ? updatedJob : j)));
     } else {
       const remaining = jobs.filter((j) => j.id !== job.id);
       setJobs(remaining);
@@ -320,7 +347,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     }
   };
 
-  const handleReEvaluateFit = async (job) => {
+  const handleReEvaluateFit = async (job: Job): Promise<Job | undefined> => {
     setReEvaluatePopup({
       company: job.company || "",
       jobTitle: job.job_title || "",
@@ -329,7 +356,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     });
 
     const res = await fetch(`/api/jobs/${job.id}/re-evaluate-fit`, { method: "POST" });
-    const data = await res.json();
+    const data: Job & ApiErrorBody = await res.json();
 
     if (!res.ok) {
       setReEvaluatePopup({
@@ -352,7 +379,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     });
 
     const triageStatuses = new Set(["triage", "possible_duplicate"]);
-    if (triageStatuses.has(data.status)) {
+    if (triageStatuses.has(data.status || "")) {
       setJobs((prev) => prev.map((j) => (j.id === data.id ? data : j)));
       return data;
     }
@@ -368,9 +395,9 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
     if (refreshableJobs.length === 0) return;
 
     let nextJobs = [...jobs];
-    await runBatchRefreshFromUrls(refreshableJobs, setBatchRefreshPopup, (job, data) => {
+    await runBatchRefreshFromUrls(refreshableJobs, setBatchRefreshPopup as React.Dispatch<React.SetStateAction<BatchRefreshPopupState>>, (job, data) => {
       const triageStatuses = new Set(["triage", "possible_duplicate"]);
-      if (triageStatuses.has(data.status)) {
+      if (triageStatuses.has(data.status || "")) {
         nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
       } else {
         nextJobs = nextJobs.filter((item) => item.id !== job.id);
@@ -398,8 +425,8 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
 
   const sortedJobs = useMemo(() => [...filteredJobs].sort((a, b) => {
     if (sortBy === "date_desc" || sortBy === "date_asc") {
-      const da = new Date(a.date_found || 0);
-      const db = new Date(b.date_found || 0);
+      const da = new Date(a.date_found || 0).getTime();
+      const db = new Date(b.date_found || 0).getTime();
       return sortBy === "date_desc" ? db - da : da - db;
     }
     if (sortBy === "fit_desc" || sortBy === "fit_asc") {
@@ -577,7 +604,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
             onRefreshFromUrl={() => handleRefreshFromUrl(job)}
             onReprocessed={(updated) => {
               const triageStatuses = new Set(["triage", "possible_duplicate"]);
-              if (triageStatuses.has(updated.status)) {
+              if (triageStatuses.has(updated.status || "")) {
                 setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
                 return;
               }
@@ -603,7 +630,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
             allSheetRows={allSheetRows}
             onReprocessed={(updated) => {
               const triageStatuses = new Set(["triage", "possible_duplicate"]);
-              if (triageStatuses.has(updated.status)) {
+              if (triageStatuses.has(updated.status || "")) {
                 setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
                 return;
               }
@@ -624,7 +651,7 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
               });
 
               const triageStatuses = new Set(["triage", "possible_duplicate"]);
-              if (triageStatuses.has(updated.status)) {
+              if (triageStatuses.has(updated.status || "")) {
                 setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
                 return;
               }
@@ -643,7 +670,13 @@ export default function TriagePanel({ onCountChange, focusJobId, onNavigateToJob
   );
 }
 
-function CardContextMenu({ contextMenu, historyAvailable, onShowCompanyHistory }) {
+interface CardContextMenuProps {
+  contextMenu: { x: number; y: number };
+  historyAvailable: boolean;
+  onShowCompanyHistory: () => void;
+}
+
+function CardContextMenu({ contextMenu, historyAvailable, onShowCompanyHistory }: CardContextMenuProps) {
   return (
     <div
       style={{
@@ -671,8 +704,15 @@ function CardContextMenu({ contextMenu, historyAvailable, onShowCompanyHistory }
   );
 }
 
+interface CompanyNameEditorProps {
+  jobId: number;
+  company?: string | null;
+  onSave?: ((updated: Job) => void) | null;
+  onError?: ((message: string) => void) | null;
+}
+
 // ai: claude-sonnet-4-6 | 2026-06-16
-function CompanyNameEditor({ jobId, company, onSave, onError }) {
+function CompanyNameEditor({ jobId, company, onSave, onError }: CompanyNameEditorProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
 
@@ -719,38 +759,58 @@ function CompanyNameEditor({ jobId, company, onSave, onError }) {
   );
 }
 
+interface DuplicateCardProps {
+  job: Job;
+  onSameJob: () => Promise<void>;
+  onDifferentJob: () => Promise<void>;
+  onMarkApplied: () => Promise<void>;
+  onSkip: (reason: string, feedback: string, mismatchReasons: string[]) => Promise<void>;
+  onReEvaluate: () => Promise<Job | undefined>;
+  onRefreshFromUrl?: (() => Promise<void>) | null;
+  onReprocessed: (updated: Job) => void;
+  onSkipDuplicate?: ((jobId: number) => Promise<void>) | null;
+  onDismissDuplicate?: ((jobId: number) => Promise<void>) | null;
+  onRescanEmail?: ((job: Job) => Promise<void>) | null;
+  onSnooze?: ((jobId: number, days: number) => Promise<void>) | null;
+  defaultSnoozeDays?: number;
+  allSheetRows?: ApplicationHistoryRow[] | null;
+  onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
+  contactsByCompany?: ContactsByCompany;
+  companyJobCounts?: CompanyJobCounts | null;
+}
+
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }) {
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }: DuplicateCardProps) {
   const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
   );
-  const [loadingAction, setLoadingAction] = useState(null);
+  const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [showSkipMenu, setShowSkipMenu] = useState(false);
-  const [skipConfirm, setSkipConfirm] = useState(null);
+  const [skipConfirm, setSkipConfirm] = useState<SkipReason | null>(null);
   const [skipNote, setSkipNote] = useState("");
-  const [skipMismatchReasons, setSkipMismatchReasons] = useState([]);
+  const [skipMismatchReasons, setSkipMismatchReasons] = useState<string[]>([]);
   const [reasoningOpen, setReasoningOpen] = useState(false);
-  const [reEvaluateError, setReEvaluateError] = useState(null);
+  const [reEvaluateError, setReEvaluateError] = useState<string | null>(null);
   const [descriptionPasteOpen, setDescriptionPasteOpen] = useState(false);
   const [pastedDescription, setPastedDescription] = useState("");
   // ai: claude-sonnet-4-6 | 2026-06-20
-  const [coverLetter, setCoverLetter] = useState(null);
+  const [coverLetter, setCoverLetter] = useState<string | null>(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   // ai: claude-sonnet-5 | 2026-07-27
-  const [pitchText, setPitchText] = useState(null);
-  const [pitchType, setPitchType] = useState(null); // "why_company" | "why_fit"
+  const [pitchText, setPitchText] = useState<string | null>(null);
+  const [pitchType, setPitchType] = useState<PitchType | null>(null);
   const [pitchOpen, setPitchOpen] = useState(false);
-  const [resumeTailor, setResumeTailor] = useState(null);
+  const [resumeTailor, setResumeTailor] = useState<string | null>(null);
   const [resumeTailorOpen, setResumeTailorOpen] = useState(false);
   const [tailorPhaseIdx, setTailorPhaseIdx] = useState(0);
   // ai: claude-sonnet-5 | 2026-09-14
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [snoozeDays, setSnoozeDays] = useState(() => {
-    const stored = parseInt(localStorage.getItem(SNOOZE_DAYS_STORAGE_KEY), 10);
+    const stored = parseInt(localStorage.getItem(SNOOZE_DAYS_STORAGE_KEY) || "", 10);
     return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
   });
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
@@ -758,7 +818,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
   const triageReasoning = triageReasoningForJob(job);
   const penaltiesApplied = penaltiesAppliedForJob(job);
 
-  const act = async (fn, label) => {
+  const act = async (fn: () => Promise<void>, label: string) => {
     setLoadingAction(label);
     try {
       await fn();
@@ -769,11 +829,11 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
 
   // ai: claude-sonnet-5 | 2026-09-14
   const handleSnoozeConfirm = async () => {
-    const days = parseInt(snoozeDays, 10);
+    const days = parseInt(String(snoozeDays), 10);
     if (!Number.isFinite(days) || days < 1) return;
     localStorage.setItem(SNOOZE_DAYS_STORAGE_KEY, String(days));
     setSnoozeOpen(false);
-    await act(() => onSnooze(job.id, days), "snooze");
+    await act(() => onSnooze ? onSnooze(job.id, days) : Promise.resolve(), "snooze");
   };
 
   const handleReEvaluateClick = async () => {
@@ -782,13 +842,13 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     try {
       await onReEvaluate();
     } catch (err) {
-      setReEvaluateError(err.message || "Re-evaluate failed");
+      setReEvaluateError(err instanceof Error ? err.message : "Re-evaluate failed");
     } finally {
       setLoadingAction(null);
     }
   };
 
-  const handleSkipReasonClick = async (reason) => {
+  const handleSkipReasonClick = async (reason: SkipReason) => {
     setShowSkipMenu(false);
     setSkipNote("");
     setSkipMismatchReasons([]);
@@ -820,7 +880,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     }
   };
 
-  const toggleMismatchReason = (reason) => {
+  const toggleMismatchReason = (reason: string) => {
     setSkipMismatchReasons((previousReasons) =>
       previousReasons.includes(reason)
         ? previousReasons.filter((currentReason) => currentReason !== reason)
@@ -842,7 +902,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ description }),
       });
-      const data = await res.json();
+      const data: Job & ApiErrorBody = await res.json();
       if (!res.ok) {
         setReEvaluateError(data.error || "Description update failed");
         return;
@@ -851,7 +911,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
       setPastedDescription("");
       setDescriptionPasteOpen(false);
     } catch (err) {
-      setReEvaluateError(err.message || "Description update failed");
+      setReEvaluateError(err instanceof Error ? err.message : "Description update failed");
     } finally {
       setLoadingAction(null);
     }
@@ -871,7 +931,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
       setReEvaluateError(`Job title update failed (${res.status})`);
       return;
     }
-    const updated = await res.json();
+    const updated: Job = await res.json();
     onReprocessed?.(updated);
   };
 
@@ -882,7 +942,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     try {
       await onRefreshFromUrl?.();
     } catch (err) {
-      setReEvaluateError(err.message || "Re-fetch failed");
+      setReEvaluateError(err instanceof Error ? err.message : "Re-fetch failed");
     } finally {
       setLoadingAction(null);
     }
@@ -897,10 +957,10 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
       const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
       // ai: claude-fable-5 | 2026-07-15
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Generation failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: GenerateCoverLetterResponse = await res.json();
       setCoverLetter(data.cover_letter);
       setCoverLetterOpen(true);
     } catch (err) {
@@ -911,7 +971,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
   };
 
   // ai: claude-sonnet-5 | 2026-07-27
-  const handlePitch = async (type) => {
+  const handlePitch = async (type: PitchType) => {
     if (pitchType === type && pitchText) { setPitchOpen(true); return; }
     setPitchType(type);
     setPitchOpen(false);
@@ -924,10 +984,10 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
         body: JSON.stringify({ type }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Generation failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: GeneratePitchResponse = await res.json();
       setPitchText(data.text);
       setPitchOpen(true);
     } catch (err) {
@@ -949,10 +1009,10 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     try {
       const res = await fetch(`/api/jobs/${job.id}/resume-tailor`, { method: "POST" });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Generation failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: ResumeTailorResponse = await res.json();
       setResumeTailor(data.analysis);
       setResumeTailorOpen(true);
     } catch (err) {
@@ -1155,7 +1215,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
                 ) {
                   return;
                 }
-                act(() => onRescanEmail(job), "rescan");
+                act(() => onRescanEmail ? onRescanEmail(job) : Promise.resolve(), "rescan");
               }}
               disabled={loadingAction !== null}
               style={{ fontSize: "12px", marginTop: "6px", padding: "3px 9px" }}
@@ -1355,8 +1415,8 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
 
       {snoozeOpen && (
         <SnoozeModal
-          days={snoozeDays}
-          onDaysChange={setSnoozeDays}
+          days={String(snoozeDays)}
+          onDaysChange={(value) => setSnoozeDays(Number(value))}
           onConfirm={handleSnoozeConfirm}
           onClose={() => setSnoozeOpen(false)}
           busy={loadingAction === "snooze"}
@@ -1448,7 +1508,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
       )}
 
       {/* ai: claude-sonnet-5 | 2026-07-27 */}
-      {pitchOpen && pitchText && (
+      {pitchOpen && pitchText && pitchType && (
         <PitchModal job={job} pitchType={pitchType} text={pitchText} onClose={() => setPitchOpen(false)} />
       )}
 
@@ -1482,51 +1542,71 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
 
 export const DuplicateCard = memo(DuplicateCardImpl, arePropsEqualIgnoringFunctions);
 
+interface TriageCardProps {
+  job: Job;
+  onApprove: () => Promise<void>;
+  onSkip: (reason: string, feedback: string, mismatchReasons: string[]) => Promise<void>;
+  onMarkApplied: () => Promise<void>;
+  onReEvaluate: () => Promise<Job | undefined>;
+  onRefreshFromUrl: () => Promise<void>;
+  onReprocessed: (updated: Job) => void;
+  onDescriptionUpdated: (updated: Job, previous: { previousScore?: number | null; previousStatus?: string | null }) => void;
+  onSkipDuplicate?: ((jobId: number) => Promise<void>) | null;
+  onDismissDuplicate?: ((jobId: number) => Promise<void>) | null;
+  onRescanEmail?: ((job: Job) => Promise<void>) | null;
+  onSnooze?: ((jobId: number, days: number) => Promise<void>) | null;
+  defaultSnoozeDays?: number;
+  allSheetRows?: ApplicationHistoryRow[] | null;
+  onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
+  contactsByCompany?: ContactsByCompany;
+  companyJobCounts?: CompanyJobCounts | null;
+}
+
 // ai: claude-sonnet-4-6 | 2026-06-23
-function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }) {
+function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }: TriageCardProps) {
   const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
     [allSheetRows, job.company],
   );
-  const [loadingAction, setLoadingAction] = useState(null);
+  const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [editingUrl, setEditingUrl] = useState(false);
   const [urlDraft, setUrlDraft] = useState("");
-  const [reprocessError, setReprocessError] = useState(null);
-  const [reEvaluateError, setReEvaluateError] = useState(null);
-  const [undoEdit, setUndoEdit] = useState(null);
+  const [reprocessError, setReprocessError] = useState<string | null>(null);
+  const [reEvaluateError, setReEvaluateError] = useState<string | null>(null);
+  const [undoEdit, setUndoEdit] = useState<JobCardUndoEdit | null>(null);
   const [undoSaving, setUndoSaving] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [showSkipMenu, setShowSkipMenu] = useState(false);
-  const [skipConfirm, setSkipConfirm] = useState(null);
+  const [skipConfirm, setSkipConfirm] = useState<SkipReason | null>(null);
   const [skipNote, setSkipNote] = useState("");
-  const [skipMismatchReasons, setSkipMismatchReasons] = useState([]);
+  const [skipMismatchReasons, setSkipMismatchReasons] = useState<string[]>([]);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [descriptionPasteOpen, setDescriptionPasteOpen] = useState(false);
   const [pastedDescription, setPastedDescription] = useState("");
   // ai: claude-sonnet-4-6 | 2026-06-20
-  const [coverLetter, setCoverLetter] = useState(null);
+  const [coverLetter, setCoverLetter] = useState<string | null>(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   // ai: claude-sonnet-5 | 2026-07-27
-  const [pitchText, setPitchText] = useState(null);
-  const [pitchType, setPitchType] = useState(null); // "why_company" | "why_fit"
+  const [pitchText, setPitchText] = useState<string | null>(null);
+  const [pitchType, setPitchType] = useState<PitchType | null>(null);
   const [pitchOpen, setPitchOpen] = useState(false);
-  const [resumeTailor, setResumeTailor] = useState(null);
+  const [resumeTailor, setResumeTailor] = useState<string | null>(null);
   const [resumeTailorOpen, setResumeTailorOpen] = useState(false);
   const [tailorPhaseIdx, setTailorPhaseIdx] = useState(0);
   const [chatOpen, setChatOpen] = useState(false);
-  const [chatMessages, setChatMessages] = useState([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
-  const [chatReclassification, setChatReclassification] = useState(null);
+  const [chatReclassification, setChatReclassification] = useState<FitReclassification | null>(null);
   const [chatAccepting, setChatAccepting] = useState(false);
-  const chatMessagesRef = useRef(null);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
   // ai: claude-sonnet-5 | 2026-09-14
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [snoozeDays, setSnoozeDays] = useState(() => {
-    const stored = parseInt(localStorage.getItem(SNOOZE_DAYS_STORAGE_KEY), 10);
+    const stored = parseInt(localStorage.getItem(SNOOZE_DAYS_STORAGE_KEY) || "", 10);
     return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
   });
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
@@ -1543,7 +1623,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     }
   }, [chatMessages, chatOpen]);
 
-  const act = async (fn, label) => {
+  const act = async (fn: () => Promise<void>, label: string) => {
     setLoadingAction(label);
     try {
       await fn();
@@ -1554,11 +1634,11 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
 
   // ai: claude-sonnet-5 | 2026-09-14
   const handleSnoozeConfirm = async () => {
-    const days = parseInt(snoozeDays, 10);
+    const days = parseInt(String(snoozeDays), 10);
     if (!Number.isFinite(days) || days < 1) return;
     localStorage.setItem(SNOOZE_DAYS_STORAGE_KEY, String(days));
     setSnoozeOpen(false);
-    await act(() => onSnooze(job.id, days), "snooze");
+    await act(() => onSnooze ? onSnooze(job.id, days) : Promise.resolve(), "snooze");
   };
 
   const handleReEvaluateClick = async () => {
@@ -1567,13 +1647,13 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     try {
       await onReEvaluate();
     } catch (err) {
-      setReEvaluateError(err.message || "Re-evaluate failed");
+      setReEvaluateError(err instanceof Error ? err.message : "Re-evaluate failed");
     } finally {
       setLoadingAction(null);
     }
   };
 
-  const handleSkipReasonClick = async (reason) => {
+  const handleSkipReasonClick = async (reason: SkipReason) => {
     setShowSkipMenu(false);
     setSkipNote("");
     setSkipMismatchReasons([]);
@@ -1605,7 +1685,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     }
   };
 
-  const toggleMismatchReason = (reason) => {
+  const toggleMismatchReason = (reason: string) => {
     setSkipMismatchReasons((previousReasons) =>
       previousReasons.includes(reason)
         ? previousReasons.filter((currentReason) => currentReason !== reason)
@@ -1618,7 +1698,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     setReprocessError(null);
     try {
       const res = await fetch(`/api/jobs/${job.id}/reprocess`, { method: "POST" });
-      const data = await res.json();
+      const data: Job & ApiErrorBody = await res.json();
       if (!res.ok) {
         setReprocessError(data.error || "Reprocess failed");
       } else {
@@ -1635,7 +1715,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     try {
       await onRefreshFromUrl();
     } catch (err) {
-      setReprocessError(err.message || "Re-fetch failed");
+      setReprocessError(err instanceof Error ? err.message : "Re-fetch failed");
     } finally {
       setLoadingAction(null);
     }
@@ -1650,10 +1730,10 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
       const res = await fetch(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
       // ai: claude-fable-5 | 2026-07-15
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Generation failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: GenerateCoverLetterResponse = await res.json();
       setCoverLetter(data.cover_letter);
       setCoverLetterOpen(true);
     } catch (err) {
@@ -1664,7 +1744,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
   };
 
   // ai: claude-sonnet-5 | 2026-07-27
-  const handlePitch = async (type) => {
+  const handlePitch = async (type: PitchType) => {
     if (pitchType === type && pitchText) { setPitchOpen(true); return; }
     setPitchType(type);
     setPitchOpen(false);
@@ -1677,10 +1757,10 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         body: JSON.stringify({ type }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Generation failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: GeneratePitchResponse = await res.json();
       setPitchText(data.text);
       setPitchOpen(true);
     } catch (err) {
@@ -1702,10 +1782,10 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     try {
       const res = await fetch(`/api/jobs/${job.id}/resume-tailor`, { method: "POST" });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Generation failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: ResumeTailorResponse = await res.json();
       setResumeTailor(data.analysis);
       setResumeTailorOpen(true);
     } catch (err) {
@@ -1735,7 +1815,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ description }),
       });
-      const data = await res.json();
+      const data: Job & ApiErrorBody = await res.json();
       if (!res.ok) {
         setReprocessError(data.error || "Description update failed");
         return;
@@ -1752,7 +1832,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
       setPastedDescription("");
       setDescriptionPasteOpen(false);
     } catch (err) {
-      setReprocessError(err.message || "Description update failed");
+      setReprocessError(err instanceof Error ? err.message : "Description update failed");
     } finally {
       setLoadingAction(null);
     }
@@ -1762,7 +1842,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     const text = chatInput.trim();
     if (!text || chatSending) return;
 
-    const newMessages = [...chatMessages, { role: "user", content: text }];
+    const newMessages: ChatMessage[] = [...chatMessages, { role: "user", content: text }];
     setChatMessages(newMessages);
     setChatInput("");
     setChatSending(true);
@@ -1773,7 +1853,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages }),
       });
-      const data = await res.json();
+      const data: FitChatResponse & ApiErrorBody = await res.json();
       if (!res.ok) throw new Error(data.error ? `${data.error} (${res.status})` : `Chat failed (${res.status})`);
 
       setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
@@ -1781,7 +1861,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     } catch (err) {
       setChatMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `Error: ${err.message}` },
+        { role: "assistant", content: `Error: ${err instanceof Error ? err.message : String(err)}` },
       ]);
     } finally {
       setChatSending(false);
@@ -1798,17 +1878,17 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         body: JSON.stringify(chatReclassification),
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data: ApiErrorBody = await res.json();
         window.alert(`Failed to apply: ${data.error || res.status}`);
         return;
       }
-      const updated = await res.json();
+      const updated: Job = await res.json();
       setChatReclassification(null);
       setChatOpen(false);
       setChatMessages([]);
       onReprocessed(updated);
     } catch (err) {
-      window.alert(`Failed to apply: ${err.message}`);
+      window.alert(`Failed to apply: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setChatAccepting(false);
     }
@@ -1828,7 +1908,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
       setReprocessError(`Job title update failed (${res.status})`);
       return;
     }
-    const updated = await res.json();
+    const updated: Job = await res.json();
     onReprocessed(updated);
   };
 
@@ -1858,7 +1938,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: value }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: Job & ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         setReprocessError(data.error || `URL update failed (${res.status})`);
         return;
@@ -1888,7 +1968,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: undoEdit.previousValue }),
         });
-        const data = await res.json().catch(() => ({}));
+        const data: Job & ApiErrorBody = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(data.error || `URL undo failed (${res.status})`);
         }
@@ -1903,7 +1983,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ description: previousDescription }),
         });
-        const data = await res.json();
+        const data: Job & ApiErrorBody = await res.json();
         if (!res.ok) {
           throw new Error(data.error || "Description undo failed");
         }
@@ -1914,13 +1994,13 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
       }
       setUndoEdit(null);
     } catch (error) {
-      setReprocessError(error.message || "Undo failed");
+      setReprocessError(error instanceof Error ? error.message : "Undo failed");
     } finally {
       setUndoSaving(false);
     }
   };
 
-  const handleCardContextMenu = (event) => {
+  const handleCardContextMenu = (event: React.MouseEvent) => {
     setShowSkipMenu(false);
     openContextMenu(event);
   };
@@ -2203,7 +2283,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
                 ) {
                   return;
                 }
-                act(() => onRescanEmail(job), "rescan");
+                act(() => onRescanEmail ? onRescanEmail(job) : Promise.resolve(), "rescan");
               }}
               disabled={loadingAction !== null}
               style={{ fontSize: "12px", marginTop: "6px", padding: "3px 9px" }}
@@ -2467,8 +2547,8 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
 
       {snoozeOpen && (
         <SnoozeModal
-          days={snoozeDays}
-          onDaysChange={setSnoozeDays}
+          days={String(snoozeDays)}
+          onDaysChange={(value) => setSnoozeDays(Number(value))}
           onConfirm={handleSnoozeConfirm}
           onClose={() => setSnoozeOpen(false)}
           busy={loadingAction === "snooze"}
@@ -2561,7 +2641,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
       )}
 
       {/* ai: claude-sonnet-5 | 2026-07-27 */}
-      {pitchOpen && pitchText && (
+      {pitchOpen && pitchText && pitchType && (
         <PitchModal job={job} pitchType={pitchType} text={pitchText} onClose={() => setPitchOpen(false)} />
       )}
 
@@ -2596,6 +2676,18 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
 
 export const TriageCard = memo(TriageCardImpl, arePropsEqualIgnoringFunctions);
 
+interface FitChatPanelProps {
+  chatInput: string;
+  chatMessages: ChatMessage[];
+  chatMessagesRef: RefObject<HTMLDivElement>;
+  chatSending: boolean;
+  reclassification: FitReclassification | null;
+  accepting: boolean;
+  onInputChange: (value: string) => void;
+  onSend: () => void;
+  onAccept: () => void;
+}
+
 function FitChatPanel({
   chatInput,
   chatMessages,
@@ -2606,8 +2698,8 @@ function FitChatPanel({
   onInputChange,
   onSend,
   onAccept,
-}) {
-  const statusLabel = (status) =>
+}: FitChatPanelProps) {
+  const statusLabel = (status: string) =>
     status === "pending_review" ? "Job Queue" : status === "triage" ? "Triage" : "Skip";
 
   return (
@@ -2682,7 +2774,12 @@ function FitChatPanel({
   );
 }
 
-export function ReEvaluatePopup({ popup, onClose }) {
+interface ReEvaluatePopupProps {
+  popup: ReEvaluatePopupState;
+  onClose: () => void;
+}
+
+export function ReEvaluatePopup({ popup, onClose }: ReEvaluatePopupProps) {
   const title = popup.jobTitle || "Job";
   const companyText = popup.company ? ` at ${popup.company}` : "";
   const isRunning = popup.phase === "running";
@@ -2735,7 +2832,12 @@ export function ReEvaluatePopup({ popup, onClose }) {
   );
 }
 
-export function BatchRefreshPopup({ popup, onClose }) {
+interface BatchRefreshPopupProps {
+  popup: BatchRefreshPopupState;
+  onClose: () => void;
+}
+
+export function BatchRefreshPopup({ popup, onClose }: BatchRefreshPopupProps) {
   const results = popup.results || [];
   const isRunning = popup.phase === "running";
   const currentJob = popup.currentJob || {};
@@ -2820,7 +2922,7 @@ export function BatchRefreshPopup({ popup, onClose }) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function SourceText({ job }) {
+function SourceText({ job }: { job: Pick<Job, "source" | "url" | "capture_label" | "dedup_key"> }) {
   const label = sourceLabel(job);
   if (job.url) {
     return (
@@ -2835,8 +2937,17 @@ function SourceText({ job }) {
   return <span>Manual or pasted entry</span>;
 }
 
-function DescriptionPasteModal({ job, value, saving, onChange, onClose, onSubmit }) {
-  const textareaRef = useRef(null);
+interface DescriptionPasteModalProps {
+  job: Pick<Job, "job_title" | "company">;
+  value: string;
+  saving: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}
+
+function DescriptionPasteModal({ job, value, saving, onChange, onClose, onSubmit }: DescriptionPasteModalProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [pasteError, setPasteError] = useState("");
   const charCount = value.trim().length;
   const canSubmit = charCount >= 80 && !saving;
@@ -2937,7 +3048,12 @@ function DescriptionPasteModal({ job, value, saving, onChange, onClose, onSubmit
   );
 }
 
-export function DescriptionUpdatePopup({ popup, onClose }) {
+interface DescriptionUpdatePopupProps {
+  popup: DescriptionUpdatePopupState;
+  onClose: () => void;
+}
+
+export function DescriptionUpdatePopup({ popup, onClose }: DescriptionUpdatePopupProps) {
   const title = popup.jobTitle || "Job";
   const companyText = popup.company ? ` at ${popup.company}` : "";
   const movedToQueue = popup.newStatus === "pending_review" && popup.previousStatus !== "pending_review";
@@ -2973,7 +3089,7 @@ export function DescriptionUpdatePopup({ popup, onClose }) {
 
 
 
-const sortSelectStyle = {
+const sortSelectStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -2983,28 +3099,28 @@ const sortSelectStyle = {
   cursor: "pointer",
 };
 
-const triageToolbarStyle = {
+const triageToolbarStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: "8px",
   marginBottom: "16px",
 };
 
-const triageToolbarMainStyle = {
+const triageToolbarMainStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",
   gap: "12px",
   width: "100%",
 };
 
-const triageFiltersRowStyle = {
+const triageFiltersRowStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",
   flexWrap: "wrap",
   gap: "12px",
 };
 
-const triageSearchInputStyle = {
+const triageSearchInputStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -3016,24 +3132,24 @@ const triageSearchInputStyle = {
   padding: "8px 11px",
 };
 
-const triageCountStyle = {
+const triageCountStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "13px",
   margin: 0,
 };
 
-const triageMoreActionsStyle = {
+const triageMoreActionsStyle: CSSProperties = {
   position: "relative",
 };
 
-const triageKebabButtonStyle = {
+const triageKebabButtonStyle: CSSProperties = {
   fontSize: "20px",
   lineHeight: 1,
   minHeight: "34px",
   padding: "4px 10px",
 };
 
-const triageMenuStyle = {
+const triageMenuStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -3046,7 +3162,7 @@ const triageMenuStyle = {
   zIndex: 100,
 };
 
-const triageMenuItemStyle = {
+const triageMenuItemStyle: CSSProperties = {
   background: "none",
   border: "none",
   color: "var(--text)",
@@ -3057,13 +3173,13 @@ const triageMenuItemStyle = {
   width: "100%",
 };
 
-const triageSortLabelStyle = {
+const triageSortLabelStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   whiteSpace: "nowrap",
 };
 
-const cardStyle = {
+const cardStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-lg)",
@@ -3073,7 +3189,7 @@ const cardStyle = {
   transition: "box-shadow 0.2s, border-color 0.2s",
 };
 
-const contextMenuStyle = {
+const contextMenuStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -3086,7 +3202,7 @@ const contextMenuStyle = {
   zIndex: 1000,
 };
 
-const contextMenuItemStyle = {
+const contextMenuItemStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   borderRadius: "4px",
@@ -3098,19 +3214,19 @@ const contextMenuItemStyle = {
   width: "100%",
 };
 
-const triageHeaderStyle = {
+const triageHeaderStyle: CSSProperties = {
   display: "flex",
   alignItems: "flex-start",
   gap: "12px",
   marginBottom: "12px",
 };
 
-const triageHeaderBodyStyle = {
+const triageHeaderBodyStyle: CSSProperties = {
   flex: 1,
   minWidth: 0,
 };
 
-const triageHeaderActionsStyle = {
+const triageHeaderActionsStyle: CSSProperties = {
   alignItems: "flex-start",
   display: "flex",
   flexShrink: 0,
@@ -3120,14 +3236,14 @@ const triageHeaderActionsStyle = {
 };
 
 
-const triageTitleStyle = {
+const triageTitleStyle: CSSProperties = {
   fontSize: "15px",
   fontWeight: 600,
   color: "var(--text)",
   lineHeight: 1.4,
 };
 
-const triageMetaTextStyle = {
+const triageMetaTextStyle: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   gap: "4px 12px",
@@ -3137,14 +3253,14 @@ const triageMetaTextStyle = {
   lineHeight: 1.5,
 };
 
-const editableJobTitleStyle = {
+const editableJobTitleStyle: CSSProperties = {
   borderBottom: "1px dotted var(--text-muted)",
   color: "var(--text)",
   cursor: "text",
   fontWeight: 600,
 };
 
-const editableJobTitleInputStyle = {
+const editableJobTitleInputStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   borderBottom: "1px solid var(--accent)",
@@ -3158,7 +3274,7 @@ const editableJobTitleInputStyle = {
   width: "min(460px, 70%)",
 };
 
-const editableDuplicateTitleInputStyle = {
+const editableDuplicateTitleInputStyle: CSSProperties = {
   ...editableJobTitleInputStyle,
   color: "var(--text-muted)",
   fontSize: "13px",
@@ -3166,14 +3282,14 @@ const editableDuplicateTitleInputStyle = {
   width: "min(420px, 100%)",
 };
 
-const editableCompanyStyle = {
+const editableCompanyStyle: CSSProperties = {
   borderBottom: "1px dotted var(--text-muted)",
   color: "var(--text)",
   cursor: "text",
   fontWeight: 600,
 };
 
-const editableCompanyInputStyle = {
+const editableCompanyInputStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   borderBottom: "1px solid var(--accent)",
@@ -3186,14 +3302,14 @@ const editableCompanyInputStyle = {
   width: "170px",
 };
 
-const compactOriginStyle = {
+const compactOriginStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "11px",
   lineHeight: 1.4,
   marginTop: "3px",
 };
 
-const triageUrlRowStyle = {
+const triageUrlRowStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",
   flexWrap: "wrap",
@@ -3201,14 +3317,14 @@ const triageUrlRowStyle = {
   marginTop: "4px",
 };
 
-const triageUrlLinkStyle = {
+const triageUrlLinkStyle: CSSProperties = {
   color: "var(--accent)",
   fontSize: "12px",
   minWidth: 0,
   overflowWrap: "anywhere",
 };
 
-const triageUrlInputStyle = {
+const triageUrlInputStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -3219,18 +3335,18 @@ const triageUrlInputStyle = {
   padding: "6px 9px",
 };
 
-const triageUrlButtonStyle = {
+const triageUrlButtonStyle: CSSProperties = {
   flexShrink: 0,
   fontSize: "11px",
   padding: "2px 8px",
 };
 
-const sourceLinkStyle = {
+const sourceLinkStyle: CSSProperties = {
   color: "var(--accent)",
   overflowWrap: "anywhere",
 };
 
-const skipMenuStyle = {
+const skipMenuStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -3246,7 +3362,7 @@ const skipMenuStyle = {
   zIndex: 10,
 };
 
-const skipMenuItemStyle = {
+const skipMenuItemStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   borderRadius: "4px",
@@ -3258,7 +3374,7 @@ const skipMenuItemStyle = {
   textAlign: "left",
 };
 
-const skipConfirmPanelStyle = {
+const skipConfirmPanelStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -3266,20 +3382,20 @@ const skipConfirmPanelStyle = {
   padding: "12px 14px",
 };
 
-const skipConfirmTextStyle = {
+const skipConfirmTextStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   margin: "0 0 8px",
 };
 
-const mismatchChipRowStyle = {
+const mismatchChipRowStyle: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   gap: "8px",
   marginBottom: "10px",
 };
 
-const mismatchChipStyle = {
+const mismatchChipStyle: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: "999px",
   cursor: "pointer",
@@ -3288,7 +3404,7 @@ const mismatchChipStyle = {
   padding: "4px 9px",
 };
 
-const skipNoteInputStyle = {
+const skipNoteInputStyle: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -3300,19 +3416,19 @@ const skipNoteInputStyle = {
   width: "100%",
 };
 
-const skipConfirmActionsStyle = {
+const skipConfirmActionsStyle: CSSProperties = {
   display: "flex",
   gap: "8px",
   marginTop: "8px",
 };
 
-const buttonSpinnerContentStyle = {
+const buttonSpinnerContentStyle: CSSProperties = {
   alignItems: "center",
   display: "inline-flex",
   gap: "6px",
 };
 
-const emailMetaStyle = {
+const emailMetaStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -3321,7 +3437,7 @@ const emailMetaStyle = {
   marginBottom: "12px",
 };
 
-const hintStyle = {
+const hintStyle: CSSProperties = {
   background: "var(--orange-light)",
   border: "1px solid rgba(194,96,10,0.2)",
   borderRadius: "var(--radius)",
@@ -3331,11 +3447,11 @@ const hintStyle = {
   marginBottom: "4px",
 };
 
-const reasoningBoxStyle = {
+const reasoningBoxStyle: CSSProperties = {
   marginTop: "8px",
 };
 
-const reasoningListStyle = {
+const reasoningListStyle: CSSProperties = {
   columns: "2 260px",
   columnGap: "28px",
   paddingLeft: "18px",
@@ -3345,18 +3461,18 @@ const reasoningListStyle = {
   lineHeight: "1.6",
 };
 
-const penaltyInlineBulletStyle = {
+const penaltyInlineBulletStyle: CSSProperties = {
   color: "var(--red)",
 };
 
-const descriptionActionRowStyle = {
+const descriptionActionRowStyle: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   gap: "8px",
   marginBottom: "8px",
 };
 
-const chatPanelStyle = {
+const chatPanelStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -3364,7 +3480,7 @@ const chatPanelStyle = {
   marginBottom: "12px",
 };
 
-const chatHeadingStyle = {
+const chatHeadingStyle: CSSProperties = {
   fontSize: "11px",
   fontWeight: 600,
   color: "var(--text-muted)",
@@ -3373,7 +3489,7 @@ const chatHeadingStyle = {
   marginBottom: "10px",
 };
 
-const chatMessagesStyle = {
+const chatMessagesStyle: CSSProperties = {
   maxHeight: "260px",
   overflowY: "auto",
   marginBottom: "10px",
@@ -3382,7 +3498,7 @@ const chatMessagesStyle = {
   gap: "8px",
 };
 
-const chatBubbleStyle = {
+const chatBubbleStyle: CSSProperties = {
   maxWidth: "85%",
   borderRadius: "var(--radius)",
   padding: "8px 12px",
@@ -3391,7 +3507,7 @@ const chatBubbleStyle = {
   whiteSpace: "pre-wrap",
 };
 
-const reclassificationBannerStyle = {
+const reclassificationBannerStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
@@ -3403,7 +3519,7 @@ const reclassificationBannerStyle = {
   marginBottom: "10px",
 };
 
-const chatInputStyle = {
+const chatInputStyle: CSSProperties = {
   flex: 1,
   fontSize: "13px",
   padding: "7px 10px",
@@ -3415,7 +3531,7 @@ const chatInputStyle = {
   fontFamily: "inherit",
 };
 
-const descriptionBoxStyle = {
+const descriptionBoxStyle: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
@@ -3428,4 +3544,3 @@ const descriptionBoxStyle = {
   padding: "12px 14px",
   whiteSpace: "pre-wrap",
 };
-
