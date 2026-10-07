@@ -37,7 +37,7 @@ import { apiFetch } from "../utils/apiClient.js";
 import { collectionModeLabel } from "../utils/careerSiteUtils.js";
 import { describeFetchError } from "../utils/fetchErrorUtils.js";
 import { fetchSettingsSchema } from "../utils/settingsSchema.js";
-import ApplicationProfilePanel from "./ApplicationProfilePanel.jsx";
+import ApplicationProfilePanel from "./ApplicationProfilePanel.tsx";
 import BrowserExtensionPanel from "./BrowserExtensionPanel.jsx";
 import Modal from "./common/Modal.jsx";
 import ResumeUpload from "./ResumeUpload.jsx";

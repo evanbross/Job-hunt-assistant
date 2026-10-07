@@ -32,13 +32,17 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 // ai: claude-sonnet-5 | 2026-08-13
 import { useEffect, useState } from "react";
-import { describeFetchError } from "../utils/fetchErrorUtils.js";
+import type { CSSProperties } from "react";
+import { describeFetchError } from "../utils/fetchErrorUtils.ts";
+import type { ApplicationAnswer, ApplicationProfile } from "../types/applicationProfile.ts";
+import type { ApiErrorBody } from "../types/common.ts";
 
-const titleStyle = { fontSize: "18px", fontWeight: 700, lineHeight: 1.2 };
-const summaryStyle = { color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" };
-const sectionHeaderStyle = {
+const titleStyle: CSSProperties = { fontSize: "18px", fontWeight: 700, lineHeight: 1.2 };
+const summaryStyle: CSSProperties = { color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" };
+const sectionHeaderStyle: CSSProperties = {
   fontSize: "11px",
   fontWeight: "600",
   color: "var(--text-muted)",
@@ -46,7 +50,7 @@ const sectionHeaderStyle = {
   letterSpacing: "0.05em",
   marginBottom: "10px",
 };
-const fieldStyle = {
+const fieldStyle: CSSProperties = {
   width: "100%",
   fontSize: "13px",
   padding: "7px 10px",
@@ -57,15 +61,39 @@ const fieldStyle = {
   fontFamily: "inherit",
   boxSizing: "border-box",
 };
-const labelStyle = { fontSize: "12px", fontWeight: "600", color: "var(--text)", marginBottom: "4px", display: "block" };
-const rowStyle = {
+const labelStyle: CSSProperties = { fontSize: "12px", fontWeight: "600", color: "var(--text)", marginBottom: "4px", display: "block" };
+const rowStyle: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
   padding: "10px 12px",
   marginBottom: "8px",
 };
 
-const emptyProfile = {
+// Local form-state shape: text fields always hold a string (never null) so
+// the unconditional .trim() calls in handleSaveProfile are safe -- see the
+// fetchProfile merge step below, which coalesces a null DB value back to "".
+type ProfileFormState = {
+  legal_name: string;
+  email: string;
+  phone: string;
+  street_address: string;
+  city: string;
+  state: string;
+  postal_code: string;
+  work_authorized: boolean | null;
+  requires_visa_sponsorship: boolean | null;
+  linkedin_url: string;
+  portfolio_url: string;
+  code_repository_url: string;
+  pronouns: string;
+  gender: string;
+  race: string;
+  is_veteran: boolean | null;
+  has_disability: boolean | null;
+  current_company: string;
+};
+
+const emptyProfile: ProfileFormState = {
   legal_name: "",
   email: "",
   phone: "",
@@ -86,7 +114,13 @@ const emptyProfile = {
   current_company: "",
 };
 
-const emptyAnswerForm = { question_text: "", answer_text: "", platform: "" };
+interface AnswerFormState {
+  question_text: string;
+  answer_text: string;
+  platform: string;
+}
+
+const emptyAnswerForm: AnswerFormState = { question_text: "", answer_text: "", platform: "" };
 
 // ai: claude-sonnet-5 | 2026-08-25
 // The standard OFCCP EEO-1 race/ethnicity categories, confirmed live against
@@ -106,9 +140,16 @@ const RACE_OPTIONS = [
   "Decline to self-identify",
 ];
 
+interface TriStateSelectProps {
+  value: boolean | null;
+  onChange: (value: boolean | null) => void;
+  yesLabel: string;
+  noLabel: string;
+}
+
 // Tri-state select for fields the extension should leave to the user rather
 // than guess wrong on (e.g. an unset field is safer than a confidently wrong one).
-function TriStateSelect({ value, onChange, yesLabel, noLabel }) {
+function TriStateSelect({ value, onChange, yesLabel, noLabel }: TriStateSelectProps) {
   const selectValue = value === true ? "yes" : value === false ? "no" : "";
   return (
     <select
@@ -132,18 +173,18 @@ function TriStateSelect({ value, onChange, yesLabel, noLabel }) {
  * plus a reusable answer bank for free-text questions that vary per ATS/posting.
  */
 export default function ApplicationProfilePanel() {
-  const [profile, setProfile] = useState(emptyProfile);
+  const [profile, setProfile] = useState<ProfileFormState>(emptyProfile);
   const [loadingProfile, setLoadingProfile] = useState(true);
-  const [profileError, setProfileError] = useState(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
   const [savingProfile, setSavingProfile] = useState(false);
 
-  const [answers, setAnswers] = useState([]);
+  const [answers, setAnswers] = useState<ApplicationAnswer[]>([]);
   const [loadingAnswers, setLoadingAnswers] = useState(true);
-  const [answersError, setAnswersError] = useState(null);
-  const [addForm, setAddForm] = useState(emptyAnswerForm);
+  const [answersError, setAnswersError] = useState<string | null>(null);
+  const [addForm, setAddForm] = useState<AnswerFormState>(emptyAnswerForm);
   const [savingAnswer, setSavingAnswer] = useState(false);
-  const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState(emptyAnswerForm);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState<AnswerFormState>(emptyAnswerForm);
 
   const fetchProfile = async () => {
     setLoadingProfile(true);
@@ -151,7 +192,7 @@ export default function ApplicationProfilePanel() {
     try {
       const res = await fetch("/api/application-profile");
       if (!res.ok) throw new Error(`Failed to load (${res.status})`);
-      const data = await res.json();
+      const data: ApplicationProfile | null = await res.json();
       // ai: claude-sonnet-5 | 2026-08-17
       // A plain {...emptyProfile, ...data} spread lets an explicit `null` from
       // the DB (any unset text column) clobber emptyProfile's "" default —
@@ -159,8 +200,13 @@ export default function ApplicationProfilePanel() {
       // on the next save, which describeFetchError misreports as the backend
       // being unreachable. Coalesce per-field instead so state/boolean fields
       // alike only ever hold their emptyProfile-shaped default or a real value.
-      const merged = data
-        ? Object.fromEntries(Object.keys(emptyProfile).map((key) => [key, data[key] ?? emptyProfile[key]]))
+      const merged: ProfileFormState = data
+        ? (Object.fromEntries(
+            (Object.keys(emptyProfile) as (keyof ProfileFormState)[]).map((key) => [
+              key,
+              data[key] ?? emptyProfile[key],
+            ]),
+          ) as ProfileFormState)
         : emptyProfile;
       setProfile(merged);
     } catch (e) {
@@ -176,7 +222,7 @@ export default function ApplicationProfilePanel() {
     try {
       const res = await fetch("/api/application-answers");
       if (!res.ok) throw new Error(`Failed to load (${res.status})`);
-      const data = await res.json();
+      const data: ApplicationAnswer[] = await res.json();
       setAnswers(Array.isArray(data) ? data : []);
     } catch (e) {
       setAnswersError(describeFetchError(e));
@@ -218,7 +264,7 @@ export default function ApplicationProfilePanel() {
         }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Save failed (${res.status})`);
       }
       await fetchProfile();
@@ -244,7 +290,7 @@ export default function ApplicationProfilePanel() {
         body: JSON.stringify({ question_text, answer_text, platform: addForm.platform.trim() || null }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Save failed (${res.status})`);
       }
       setAddForm(emptyAnswerForm);
@@ -256,7 +302,7 @@ export default function ApplicationProfilePanel() {
     }
   };
 
-  const startEdit = (answer) => {
+  const startEdit = (answer: ApplicationAnswer) => {
     setEditingId(answer.id);
     setEditForm({
       question_text: answer.question_text || "",
@@ -287,7 +333,7 @@ export default function ApplicationProfilePanel() {
         body: JSON.stringify({ question_text, answer_text, platform: editForm.platform.trim() || null }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Save failed (${res.status})`);
       }
       cancelEdit();
@@ -297,12 +343,12 @@ export default function ApplicationProfilePanel() {
     }
   };
 
-  const handleDeleteAnswer = async (id) => {
+  const handleDeleteAnswer = async (id: number) => {
     if (!window.confirm("Delete this saved answer?")) return;
     try {
       const res = await fetch(`/api/application-answers/${id}`, { method: "DELETE" });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Delete failed (${res.status})`);
       }
       await fetchAnswers();
