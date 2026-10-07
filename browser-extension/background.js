@@ -669,7 +669,52 @@ async function fetchAutofillData(settings) {
   return { profile: profileData.profile || null, answers: answersData.answers || [], resumeFile };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+// ─── Main-world page-data bridge ───────────────────────────────────────────
+// content.js runs in each tab's extension isolated world, which on Brave
+// (unlike Chrome) does not expose JS globals a page sets directly on window
+// (e.g. Ashby's window.__appData) -- confirmed live against
+// jobs.ashbyhq.com/vanta. chrome.scripting.executeScript's world:'MAIN'
+// option reads the page's own JS context directly and, unlike injecting a
+// <script> tag, is exempt from the page's CSP, so it works the same across
+// Chromium-based browsers regardless of a given site's CSP. Only
+// background.js has the `scripting` permission, so content.js relays reads
+// through here via the 'readMainWorldValue' message below.
+const _MAIN_WORLD_KEYS = new Set(['ashbyAppData', 'jobanniNextData']);
+
+async function readMainWorldValue(tabId, frameId, key) {
+  if (!tabId || !_MAIN_WORLD_KEYS.has(key)) return null;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, frameIds: frameId != null ? [frameId] : undefined },
+      world: 'MAIN',
+      func: (k) => {
+        let value = null;
+        try {
+          if (k === 'ashbyAppData') value = window.__appData ?? null;
+          else if (k === 'jobanniNextData') value = window.__NEXT_DATA__ ?? null;
+        } catch {
+          value = null;
+        }
+        try {
+          return JSON.parse(JSON.stringify(value));
+        } catch {
+          return null;
+        }
+      },
+      args: [key],
+    });
+    return results?.[0]?.result ?? null;
+  } catch {
+    return null;
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'readMainWorldValue') {
+    readMainWorldValue(sender.tab?.id, sender.frameId, message.key).then(sendResponse);
+    return true; // keep channel open for the async response
+  }
+
   if (message.action === 'startAutofill') {
     (async () => {
       try {

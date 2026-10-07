@@ -69,7 +69,7 @@
 
   // ─── Page Detection ────────────────────────────────────────────────────────
 
-  function detectPage() {
+  async function detectPage() {
     const host = location.hostname;
     const path = location.pathname;
 
@@ -231,7 +231,7 @@
         return { site: 'Ashby', type: 'ashbyJob', jobCount: 1, description: 'Single job listing' };
       }
       if (segments.length === 1) {
-        const count = getAshbyBoardJobs().length;
+        const count = (await getAshbyBoardJobs()).length;
         return { site: 'Ashby', type: 'ashbySearch', jobCount: count, description: `${count} jobs` };
       }
     }
@@ -476,6 +476,23 @@
   }
 
   // ai: claude-sonnet-5 | 2026-10-07
+  // Brave's content-script isolated world does not expose JS globals a page
+  // sets directly on window (window.__appData here) -- confirmed live: the
+  // exact same read returns real data from the page's own "top" console
+  // context but undefined from this content script's own context, on the
+  // same page, in the same browser. Chrome's isolated world does expose it
+  // (this file relied on that for months), so this is a genuine Brave/Chrome
+  // difference, not a regression. Content scripts don't have the `scripting`
+  // permission, so the read is relayed through background.js, which can use
+  // chrome.scripting.executeScript's world:'MAIN' option to read the page's
+  // actual JS context directly -- and unlike injecting a <script> tag, that's
+  // exempt from the page's CSP, so it works the same on every Chromium
+  // browser rather than depending on a given site's CSP being lenient.
+  function requestMainWorldValue(key) {
+    return chrome.runtime.sendMessage({ action: 'readMainWorldValue', key }).catch(() => null);
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-07
   // Ashby reshaped jobBoard.jobPostings since this was written: `isListed` is
   // gone entirely (the array itself now only contains public postings, so that
   // check was silently filtering out every single one) and there's no flat
@@ -498,9 +515,10 @@
     return team;
   }
 
-  function getAshbyBoardJobs() {
-    const postings = window.__appData?.jobBoard?.jobPostings || [];
-    const teams = window.__appData?.jobBoard?.teams || [];
+  async function getAshbyBoardJobs() {
+    const appData = await requestMainWorldValue('ashbyAppData');
+    const postings = appData?.jobBoard?.jobPostings || [];
+    const teams = appData?.jobBoard?.teams || [];
     const params = new URLSearchParams(location.search);
     const departmentId = params.get('departmentId');
     const locationId = params.get('locationId');
@@ -1208,12 +1226,13 @@
   // (which causes the backend to pick up footer/nav links as job postings).
   async function buildAshbyJobPayload() {
     const deadline = Date.now() + 8000;
+    let appData = null;
     while (Date.now() < deadline) {
-      if (window.__appData?.posting?.title) break;
+      appData = await requestMainWorldValue('ashbyAppData');
+      if (appData?.posting?.title) break;
       await sleep(300);
     }
 
-    const appData = window.__appData;
     const posting = appData?.posting;
     if (!posting?.title) return buildGenericJobPagePayload();
 
@@ -1247,14 +1266,15 @@
   // Company job-board page — turn the filtered jobPostings array (see
   // getAshbyBoardJobs) into one entry per listed posting, linking to that
   // posting's own single-job page via its id.
-  function buildAshbySearchPayload() {
+  async function buildAshbySearchPayload() {
     const slug = location.pathname.split('/').filter(Boolean)[0] || '';
-    const company = window.__appData?.organization?.name
+    const appData = await requestMainWorldValue('ashbyAppData');
+    const company = appData?.organization?.name
       || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-    const teams = window.__appData?.jobBoard?.teams || [];
+    const teams = appData?.jobBoard?.teams || [];
     const teamById = new Map(teams.map(t => [t.id, t]));
 
-    const jobs = getAshbyBoardJobs().map(p => {
+    const jobs = (await getAshbyBoardJobs()).map(p => {
       const url = `https://jobs.ashbyhq.com/${slug}/${p.id}`;
       // ai: claude-sonnet-5 | 2026-10-07 -- departmentExternalName/departmentName
       // no longer exist on board postings (see resolveAshbyRootTeam above); the
@@ -2174,8 +2194,12 @@
       const m = (s.src || '').match(/\/static\/([^/]+)\/_buildManifest/);
       if (m) buildHash = m[1];
     });
-    if (!buildHash && window.__NEXT_DATA__?.buildId) {
-      buildHash = window.__NEXT_DATA__.buildId;
+    if (!buildHash) {
+      // ai: claude-sonnet-5 | 2026-10-07 -- see requestMainWorldValue above;
+      // window.__NEXT_DATA__ has the same Brave isolated-world gap as Ashby's
+      // window.__appData, just for a fallback path instead of the main one.
+      const nextData = await requestMainWorldValue('jobanniNextData');
+      buildHash = nextData?.buildId || null;
     }
     if (!buildHash) {
       return buildSmartGenericPayload();  // fallback
@@ -2911,7 +2935,7 @@
   }
 
   async function buildPayload(options = {}) {
-    const page = detectPage();
+    const page = await detectPage();
     let payload;
     let warning = null;
     switch (page.type) {
@@ -2934,7 +2958,7 @@
       case 'workAtAStartup':   payload = buildWorkAtAStartupPayload(); break;
       case 'discordCareers':   payload = buildDiscordCareersPayload(); break;
       case 'ashbyJob':         payload = await buildAshbyJobPayload(); break;
-      case 'ashbySearch':      payload = buildAshbySearchPayload(); break;
+      case 'ashbySearch':      payload = await buildAshbySearchPayload(); break;
       case 'wttjJob':          payload = buildWttjJobPayload(); break;
       case 'robertHalfJob':    payload = buildRobertHalfJobPayload(); break;
       case 'jibeJob':          payload = buildJibeJobPayload(); break;
@@ -3036,8 +3060,8 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === 'scan') {
-      sendResponse(detectPage());
-      return false;
+      detectPage().then(sendResponse);
+      return true; // keep channel open for async response
     }
 
     if (message.action === 'build') {
@@ -3050,14 +3074,15 @@
     // Context menu flow: background can't wait for a long async response,
     // so content script sends the result back proactively via runtime message.
     if (message.action === 'buildForBackground') {
-      const page = detectPage();
-      if (page.type === 'blocked') {
-        chrome.runtime.sendMessage({ action: 'payloadReady', payload: null, blocked: true, site: page.site });
-        return false;
-      }
-      buildPayload()
-        .then(({ payload, warning }) => chrome.runtime.sendMessage({ action: 'payloadReady', payload, warning }))
-        .catch(() => chrome.runtime.sendMessage({ action: 'payloadReady', payload: null }));
+      detectPage().then(page => {
+        if (page.type === 'blocked') {
+          chrome.runtime.sendMessage({ action: 'payloadReady', payload: null, blocked: true, site: page.site });
+          return;
+        }
+        buildPayload()
+          .then(({ payload, warning }) => chrome.runtime.sendMessage({ action: 'payloadReady', payload, warning }))
+          .catch(() => chrome.runtime.sendMessage({ action: 'payloadReady', payload: null }));
+      });
       return false;
     }
 
