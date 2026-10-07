@@ -32,6 +32,7 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 // ai: claude-sonnet-5 | 2026-08-27
 // Forced screen shown while the logged-in account still has
 // must_complete_setup=TRUE (the seeded default-admin bootstrap account --
@@ -43,15 +44,19 @@
 // and this is the earliest point in the app that's actually reachable
 // without one already working.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiFetch } from "../utils/apiClient.js";
-import { describeFetchError } from "../utils/fetchErrorUtils.js";
-import { SchemaFieldGroup } from "./SchemaFields.jsx";
-import { fetchSettingsSchema } from "../utils/settingsSchema.js";
-import { helpTextStyle, labelStyle } from "./settingsStyles.js";
+import type { CSSProperties, FormEvent } from "react";
+import { apiFetch } from "../utils/apiClient.ts";
+import { describeFetchError } from "../utils/fetchErrorUtils.ts";
+import { SchemaFieldGroup, type SettingsConfigDraft } from "./SchemaFields.tsx";
+import { fetchSettingsSchema } from "../utils/settingsSchema.ts";
+import { helpTextStyle, labelStyle } from "./settingsStyles.ts";
+import type { AccountInfo } from "../types/auth.ts";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { SettingsSchema } from "../types/settings.ts";
 
 const DEFAULT_ADMIN_EMAIL = "admin@localhost";
 
-const styles = {
+const styles: Record<string, CSSProperties> = {
   wrap: {
     minHeight: "100vh",
     display: "flex",
@@ -106,8 +111,12 @@ const styles = {
   },
 };
 
-export default function CompleteSetupPage({ onComplete }) {
-  const [account, setAccount] = useState(null); // { email, must_complete_setup, password_pending_default }
+interface CompleteSetupPageProps {
+  onComplete: () => void;
+}
+
+export default function CompleteSetupPage({ onComplete }: CompleteSetupPageProps) {
+  const [account, setAccount] = useState<AccountInfo | null>(null);
   const [loadError, setLoadError] = useState("");
 
   const [newEmail, setNewEmail] = useState("");
@@ -122,8 +131,8 @@ export default function CompleteSetupPage({ onComplete }) {
   const [changingPassword, setChangingPassword] = useState(false);
 
   const [showSmtp, setShowSmtp] = useState(false);
-  const [smtpCfg, setSmtpCfg] = useState(null);
-  const [smtpSchema, setSmtpSchema] = useState({ user: [], system: [] });
+  const [smtpCfg, setSmtpCfg] = useState<SettingsConfigDraft | null>(null);
+  const [smtpSchema, setSmtpSchema] = useState<SettingsSchema>({ user: [], system: [] });
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpSaved, setSmtpSaved] = useState(false);
 
@@ -141,7 +150,7 @@ export default function CompleteSetupPage({ onComplete }) {
         setLoadError(`Could not load account (HTTP ${res.status})`);
         return;
       }
-      const data = await res.json();
+      const data: AccountInfo = await res.json();
       setAccount(data);
       if (!data.must_complete_setup) onCompleteRef.current();
     } catch (err) {
@@ -153,10 +162,10 @@ export default function CompleteSetupPage({ onComplete }) {
     loadAccount();
   }, [loadAccount]);
 
-  const emailDone = account && account.email !== DEFAULT_ADMIN_EMAIL;
-  const passwordDone = account && !account.password_pending_default;
+  const emailDone = !!account && account.email !== DEFAULT_ADMIN_EMAIL;
+  const passwordDone = !!account && !account.password_pending_default;
 
-  const submitEmail = async (e) => {
+  const submitEmail = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setEmailError("");
     setSendingEmail(true);
@@ -166,7 +175,7 @@ export default function CompleteSetupPage({ onComplete }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ new_email: newEmail }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         setEmailError(data.error || `Request failed (HTTP ${res.status})`);
         if (res.status === 502) setShowSmtp(true);
@@ -180,7 +189,7 @@ export default function CompleteSetupPage({ onComplete }) {
     }
   };
 
-  const submitPassword = async (e) => {
+  const submitPassword = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setPasswordError("");
     if (newPassword !== confirmPassword) {
@@ -194,7 +203,7 @@ export default function CompleteSetupPage({ onComplete }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         setPasswordError(data.error || `Request failed (HTTP ${res.status})`);
         return;
@@ -229,7 +238,7 @@ export default function CompleteSetupPage({ onComplete }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(smtpCfg),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: SettingsConfigDraft & ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         window.alert(data.error || `Save failed (${res.status})`);
         return;

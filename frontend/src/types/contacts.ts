@@ -116,3 +116,46 @@ export interface CompanyReportRow {
 export interface CompaniesReportResponse {
   companies: CompanyReportRow[];
 }
+
+// ai: claude-sonnet-5 | 2026-10-07
+// Matches backend/db/repositories/contacts.py's recruiter_type CHECK
+// constraint (mirrored by ContactsPanel.jsx's RECRUITER_TYPES).
+export type RecruiterType =
+  | "unrated"
+  | "motion"
+  | "low_reliability"
+  | "high_reliability"
+  | "offshore_spam";
+
+/**
+ * One row of GET /api/contacts/titles (routes/contacts.py's
+ * get_titles_report, backed by TitleRulesRepository.titles_report) -- one
+ * row per distinct normalized title.
+ */
+export interface TitleReportRow {
+  normalized_title: string;
+  title: string;
+  contact_count: number;
+  flagged_count: number;
+  unflagged_count: number;
+  rule_exists: boolean;
+  rule_recruiter_type: RecruiterType | null;
+}
+
+/** Response body of GET /api/contacts/titles. */
+export interface TitlesReportResponse {
+  titles: TitleReportRow[];
+}
+
+/** One entry of POST /api/contacts/titles/suggest's `suggestions` array. */
+export interface TitleSuggestion {
+  normalized_title: string;
+  title: string;
+  reason: string;
+}
+
+/** Response body of POST /api/contacts/titles/suggest. */
+export interface TitleSuggestResponse {
+  suggestions: TitleSuggestion[];
+  ai_error: string | null;
+}

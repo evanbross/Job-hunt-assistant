@@ -14,14 +14,23 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
+import type {
+  RecruiterType,
+  TitleReportRow,
+  TitleSuggestResponse,
+  TitleSuggestion,
+  TitlesReportResponse,
+} from "../types/contacts.ts";
 
 const PAGE_SIZE = 100;
 
 // ai: claude-sonnet-5 | 2026-09-30
 // Matches backend/db/repositories/contacts.py's recruiter_type CHECK
 // constraint. Mirrors ContactsPanel.jsx's RECRUITER_TYPES.
-const RECRUITER_TYPES = [
+const RECRUITER_TYPES: { value: RecruiterType; label: string }[] = [
   { value: "unrated", label: "Unrated" },
   { value: "motion", label: "Motion (high-pressure, low-success)" },
   { value: "low_reliability", label: "Low Reliability" },
@@ -32,7 +41,7 @@ const RECRUITER_TYPES = [
 const QUICK_FILTERS = ["recruit", "talent", "sourc"];
 
 // ai: claude-sonnet-5 | 2026-09-28
-async function sendJson(url, method, body) {
+async function sendJson(url: string, method: string, body?: unknown): Promise<Response> {
   return fetch(url, {
     method,
     headers: { "Content-Type": "application/json" },
@@ -40,36 +49,40 @@ async function sendJson(url, method, body) {
   });
 }
 
+interface TitlesReportProps {
+  onViewContactsForTitle?: (normalizedTitle: string) => void;
+}
+
 // ai: claude-sonnet-5 | 2026-09-28
 // docs/contacts-recruiter-classification-plan.md build-order item 3: one row
 // per distinct normalized title, with stored title rules a person can flag
 // or dismiss in bulk (decided_by provenance keeps this from ever overwriting
 // a manual per-contact choice -- see the backend).
-export default function TitlesReport({ onViewContactsForTitle }) {
-  const [titles, setTitles] = useState([]);
+export default function TitlesReport({ onViewContactsForTitle }: TitlesReportProps) {
+  const [titles, setTitles] = useState<TitleReportRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
   const [unflaggedOnly, setUnflaggedOnly] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [pendingType, setPendingType] = useState({});
-  const [busyTitle, setBusyTitle] = useState(null);
+  const [pendingType, setPendingType] = useState<Record<string, RecruiterType>>({});
+  const [busyTitle, setBusyTitle] = useState<string | null>(null);
   const [useAi, setUseAi] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [suggestError, setSuggestError] = useState("");
-  const [suggestions, setSuggestions] = useState(null); // null = no review panel open
-  const [selectedSuggestions, setSelectedSuggestions] = useState(() => new Set());
+  const [suggestions, setSuggestions] = useState<TitleSuggestion[] | null>(null); // null = no review panel open
+  const [selectedSuggestions, setSelectedSuggestions] = useState<Set<string>>(() => new Set());
   const [applyingSuggestions, setApplyingSuggestions] = useState(false);
 
   const loadTitles = async () => {
     try {
       const res = await fetch("/api/contacts/titles");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data: TitlesReportResponse = await res.json();
       setTitles(data.titles);
       setLoadError("");
     } catch (e) {
-      setLoadError(`Could not load titles: ${e.message}`);
+      setLoadError(`Could not load titles: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setLoading(false);
     }
@@ -94,7 +107,7 @@ export default function TitlesReport({ onViewContactsForTitle }) {
 
   const visible = filtered.slice(0, visibleCount);
 
-  const applyRule = async (normalizedTitle, recruiterType) => {
+  const applyRule = async (normalizedTitle: string, recruiterType: RecruiterType | null) => {
     setBusyTitle(normalizedTitle);
     try {
       const res = await sendJson("/api/contacts/titles/rule", "POST", {
@@ -104,13 +117,13 @@ export default function TitlesReport({ onViewContactsForTitle }) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await loadTitles();
     } catch (e) {
-      window.alert(`Could not save the rule: ${e.message}`);
+      window.alert(`Could not save the rule: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusyTitle(null);
     }
   };
 
-  const undoRule = async (normalizedTitle) => {
+  const undoRule = async (normalizedTitle: string) => {
     setBusyTitle(normalizedTitle);
     try {
       const res = await sendJson("/api/contacts/titles/rule/undo", "POST", {
@@ -119,7 +132,7 @@ export default function TitlesReport({ onViewContactsForTitle }) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await loadTitles();
     } catch (e) {
-      window.alert(`Could not undo the rule: ${e.message}`);
+      window.alert(`Could not undo the rule: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusyTitle(null);
     }
@@ -136,20 +149,20 @@ export default function TitlesReport({ onViewContactsForTitle }) {
     try {
       const res = await sendJson("/api/contacts/titles/suggest", "POST", { use_ai: useAi });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data: TitleSuggestResponse = await res.json();
       setSuggestions(data.suggestions);
       setSelectedSuggestions(new Set(data.suggestions.map((s) => s.normalized_title)));
       if (data.ai_error) {
         setSuggestError(`AI suggestions unavailable: ${data.ai_error}`);
       }
     } catch (e) {
-      setSuggestError(`Could not get suggestions: ${e.message}`);
+      setSuggestError(`Could not get suggestions: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSuggesting(false);
     }
   };
 
-  const toggleSuggestion = (normalizedTitle, checked) =>
+  const toggleSuggestion = (normalizedTitle: string, checked: boolean) =>
     setSelectedSuggestions((prev) => {
       const next = new Set(prev);
       if (checked) next.add(normalizedTitle);
@@ -169,7 +182,7 @@ export default function TitlesReport({ onViewContactsForTitle }) {
       setSuggestions(null);
       await loadTitles();
     } catch (e) {
-      window.alert(`Could not apply suggestions: ${e.message}`);
+      window.alert(`Could not apply suggestions: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setApplyingSuggestions(false);
     }
@@ -329,7 +342,10 @@ export default function TitlesReport({ onViewContactsForTitle }) {
                       <select
                         value={pendingType[t.normalized_title] || "unrated"}
                         onChange={(e) =>
-                          setPendingType((prev) => ({ ...prev, [t.normalized_title]: e.target.value }))
+                          setPendingType((prev) => ({
+                            ...prev,
+                            [t.normalized_title]: e.target.value as RecruiterType,
+                          }))
                         }
                         aria-label={`Recruiter type to flag "${t.title}" as`}
                         style={{ fontSize: "12px" }}
@@ -396,7 +412,7 @@ export default function TitlesReport({ onViewContactsForTitle }) {
   );
 }
 
-const summaryStyle = {
+const summaryStyle: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
   marginTop: "2px",
@@ -404,7 +420,7 @@ const summaryStyle = {
   maxWidth: "640px",
 };
 
-const toolbar = {
+const toolbar: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   alignItems: "center",
@@ -412,7 +428,7 @@ const toolbar = {
   marginBottom: "10px",
 };
 
-const suggestBar = {
+const suggestBar: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   alignItems: "center",
@@ -420,11 +436,11 @@ const suggestBar = {
   marginBottom: "10px",
 };
 
-const suggestPanel = {
+const suggestPanel: CSSProperties = {
   marginBottom: "16px",
 };
 
-const suggestRow = {
+const suggestRow: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "10px",
@@ -432,7 +448,7 @@ const suggestRow = {
   fontSize: "13px",
 };
 
-const rowGrid = {
+const rowGrid: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(0, 1fr) 90px 80px 90px minmax(260px, 340px)",
   alignItems: "center",
@@ -441,13 +457,13 @@ const rowGrid = {
   borderBottom: "1px solid var(--border)",
 };
 
-const headerRow = {
+const headerRow: CSSProperties = {
   background: "var(--surface2)",
   borderBottom: "1px solid var(--border)",
   padding: "6px 14px",
 };
 
-const headerCell = {
+const headerCell: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "6px",
@@ -458,7 +474,7 @@ const headerCell = {
   letterSpacing: "0.05em",
 };
 
-const subtleText = {
+const subtleText: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "11px",
   fontWeight: 400,

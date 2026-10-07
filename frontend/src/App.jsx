@@ -47,7 +47,7 @@ import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
 
 // Everything except the default tab and the login page loads on first use, so the
 // initial bundle is what a signed-out visitor or the job queue actually needs.
-const CompleteSetupPage = lazy(() => import("./components/CompleteSetupPage.jsx"));
+const CompleteSetupPage = lazy(() => import("./components/CompleteSetupPage.tsx"));
 const VerifyAccountPage = lazy(() => import("./components/VerifyAccountPage.jsx"));
 const VerifyEmailChangePage = lazy(() => import("./components/VerifyEmailChangePage.jsx"));
 const ResetPasswordPage = lazy(() => import("./components/ResetPasswordPage.jsx"));

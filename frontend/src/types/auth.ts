@@ -40,3 +40,13 @@ export interface ConfirmEmailChangeResponse {
   email?: string;
   error?: string;
 }
+
+/** GET /api/account response (routes/session_auth.py's get_account). */
+export interface AccountInfo {
+  name: string;
+  email: string;
+  role: string;
+  must_complete_setup: boolean;
+  password_pending_default: boolean;
+  deletion_requested_at: string | null;
+}
