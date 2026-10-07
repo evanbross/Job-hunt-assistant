@@ -209,7 +209,21 @@ export interface ImportSummary {
   failures?: ImportFailureDetail[];
 }
 
-/** GET /api/import/status (routes/import_.py's per-import tracked state). */
+/** One entry of ImportStatus.steps (routes/import_.py's _import_steps). */
+export interface ImportProgressStep {
+  key: string;
+  label: string;
+  status: "pending" | "active" | "complete" | "error" | string;
+}
+
+/**
+ * GET /api/import/status (routes/import_.py's per-import tracked state).
+ * Mirrors ImportProgressState.as_dict() for the pre-dispatch
+ * receiving/filtering phase, plus import_status()'s three post-dispatch
+ * branches (still-batching, done, error) -- those three additionally send
+ * live running totals (queued/skipped/repaired/enriched/failed) and
+ * completed_batches/batch_count, which as_dict() itself never includes.
+ */
 export interface ImportStatus {
   running: boolean;
   phase: string;
@@ -222,8 +236,15 @@ export interface ImportStatus {
   trigger?: string;
   started_at?: string;
   capture_source?: ImportCaptureSource | null;
-  steps?: unknown;
+  steps?: ImportProgressStep[];
   import_id?: string | null;
   task_id?: string | null;
   task_ids?: string[];
+  queued?: number;
+  skipped?: number;
+  repaired?: number;
+  enriched?: number;
+  failed?: number;
+  completed_batches?: number;
+  batch_count?: number;
 }

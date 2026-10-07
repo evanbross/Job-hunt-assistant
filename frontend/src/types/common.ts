@@ -42,3 +42,10 @@
 export interface ApiErrorBody {
   error?: string;
 }
+
+/** GET /api/system/health response (routes/system.py's health_check). */
+export interface SystemHealthResponse {
+  status: "ok" | "error" | string;
+  db?: string;
+  detail?: string;
+}

@@ -32,33 +32,40 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { lazy, Suspense, useEffect, useState } from "react";
-import LoginPage from "./components/LoginPage.jsx";
-import { apiFetch, UNAUTHENTICATED_EVENT } from "./utils/apiClient.js";
-import JobQueue from "./components/JobQueue/index.jsx";
-import GoogleConnectionMenu from "./components/GoogleConnectionMenu.jsx";
+import type { CSSProperties } from "react";
+import LoginPage from "./components/LoginPage.tsx";
+import { apiFetch, UNAUTHENTICATED_EVENT } from "./utils/apiClient.ts";
+import JobQueue from "./components/JobQueue/index.tsx";
+import type { ViewMode } from "./components/JobQueue/index.tsx";
+import GoogleConnectionMenu from "./components/GoogleConnectionMenu.tsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.tsx";
-import StatsBar from "./components/StatsBar.jsx";
-import RecentChangesModal from "./components/RecentChangesModal.jsx";
-import Modal from "./components/common/Modal.jsx";
-import MetricGrid, { MetricItem } from "./components/common/MetricGrid.jsx";
-import { ImportBreakdownDetails } from "./components/JobQueue/ImportSummaryPopup.jsx";
-import { jobCardTabForStatus } from "./utils/jobQueueUtils.js";
+import StatsBar from "./components/StatsBar.tsx";
+import RecentChangesModal from "./components/RecentChangesModal.tsx";
+import Modal from "./components/common/Modal.tsx";
+import MetricGrid, { MetricItem } from "./components/common/MetricGrid.tsx";
+import { ImportBreakdownDetails } from "./components/JobQueue/ImportSummaryPopup.tsx";
+import { jobCardTabForStatus } from "./utils/jobQueueUtils.ts";
+import type { SessionStatusResponse, AuthGoogleStartResponse } from "./types/auth.ts";
+import type { SetupStatusResponse } from "./types/setupWizard.ts";
+import type { ImportStatus } from "./types/importing.ts";
+import type { SystemHealthResponse } from "./types/common.ts";
 
 // Everything except the default tab and the login page loads on first use, so the
 // initial bundle is what a signed-out visitor or the job queue actually needs.
 const CompleteSetupPage = lazy(() => import("./components/CompleteSetupPage.tsx"));
-const VerifyAccountPage = lazy(() => import("./components/VerifyAccountPage.jsx"));
-const VerifyEmailChangePage = lazy(() => import("./components/VerifyEmailChangePage.jsx"));
-const ResetPasswordPage = lazy(() => import("./components/ResetPasswordPage.jsx"));
+const VerifyAccountPage = lazy(() => import("./components/VerifyAccountPage.tsx"));
+const VerifyEmailChangePage = lazy(() => import("./components/VerifyEmailChangePage.tsx"));
+const ResetPasswordPage = lazy(() => import("./components/ResetPasswordPage.tsx"));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel.tsx"));
 const EmailsPanel = lazy(() => import("./components/EmailsPanel.tsx"));
 const HistoryPanel = lazy(() => import("./components/HistoryPanel.tsx"));
 const ApplicationSheetPanel = lazy(() => import("./components/ApplicationSheetPanel.tsx"));
 const ContactsPanel = lazy(() => import("./components/ContactsPanel.tsx"));
-const PhraseBookPanel = lazy(() => import("./components/PhraseBookPanel.jsx"));
-const ToptalPitchModal = lazy(() => import("./components/common/ToptalPitchModal.jsx"));
-const VoiceQuery = lazy(() => import("./components/VoiceQuery/index.jsx"));
+const PhraseBookPanel = lazy(() => import("./components/PhraseBookPanel.tsx"));
+const ToptalPitchModal = lazy(() => import("./components/common/ToptalPitchModal.tsx"));
+const VoiceQuery = lazy(() => import("./components/VoiceQuery/index.tsx"));
 
 // ai: claude-fable-5 | 2026-07-14 — Career Sites tab removed; sites are managed in Settings
 // ai: claude-sonnet-5 | 2026-07-26 — Setup tab removed; the wizard now lives in Settings
@@ -79,7 +86,7 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     minHeight: "100vh",
-  },
+  } as CSSProperties,
   headerWrap: {
     background: "linear-gradient(135deg, var(--header-from) 0%, var(--header-to) 100%)",
     boxShadow: "0 3px 14px rgba(45,58,158,0.35)",
@@ -87,7 +94,7 @@ const styles = {
     position: "sticky",
     top: 0,
     zIndex: 100,
-  },
+  } as CSSProperties,
   header: {
     padding: "0 28px",
     display: "flex",
@@ -97,7 +104,7 @@ const styles = {
     maxWidth: "1200px",
     margin: "0 auto",
     width: "100%",
-  },
+  } as CSSProperties,
   logoMark: {
     width: "34px",
     height: "34px",
@@ -109,25 +116,25 @@ const styles = {
     justifyContent: "center",
     fontSize: "17px",
     flexShrink: 0,
-  },
+  } as CSSProperties,
   logo: {
     fontSize: "15px",
     fontWeight: "700",
     color: "#ffffff",
     letterSpacing: "-0.01em",
-  },
+  } as CSSProperties,
   logoSub: {
     fontSize: "11px",
     color: "rgba(255,255,255,0.65)",
     fontWeight: "400",
     marginTop: "-1px",
-  },
+  } as CSSProperties,
   tabBar: {
     display: "flex",
     gap: "2px",
     marginLeft: "8px",
-  },
-  tab: (active) => ({
+  } as CSSProperties,
+  tab: (active: boolean): CSSProperties => ({
     padding: "6px 14px",
     minHeight: "44px",
     minWidth: "74px",
@@ -155,7 +162,7 @@ const styles = {
     fontSize: "10px",
     fontWeight: "700",
     boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
-  },
+  } as CSSProperties,
   // ai: claude-fable-5 | 2026-07-14
   healthBanner: {
     background: "var(--red-light)",
@@ -168,7 +175,7 @@ const styles = {
     color: "var(--red)",
     fontSize: "13px",
     fontWeight: "500",
-  },
+  } as CSSProperties,
   authBanner: {
     background: "var(--accent-light)",
     border: "1px solid rgba(74,92,247,0.25)",
@@ -178,49 +185,58 @@ const styles = {
     alignItems: "center",
     justifyContent: "space-between",
     gap: "12px",
-  },
+  } as CSSProperties,
   content: {
     flex: 1,
     padding: "24px 28px",
     maxWidth: "1200px",
     width: "100%",
     margin: "0 auto",
-  },
+  } as CSSProperties,
 };
 
 const EMAILS_TAB_KEY = "emails";
 const HISTORY_TAB_KEY = "history";
+
+interface FocusedJobCard {
+  id: number;
+  tabKey: "queue";
+  requestedViewMode?: ViewMode;
+  requestedAt: number;
+}
+
+type BackendHealth = "ok" | "db_down" | "unreachable";
 
 export default function App() {
   // ai: claude-fable-5 | 2026-07-14 — validate legacy-resolved keys too, so a
   // stored tab that no longer exists (e.g. "career") falls back to the queue
   const [activeTab, setActiveTab] = useState(() => {
     const saved = localStorage.getItem("activeTab");
-    const legacyIndex = parseInt(saved, 10);
+    const legacyIndex = parseInt(String(saved), 10);
     const resolved =
       Number.isFinite(legacyIndex) && LEGACY_TAB_KEYS[legacyIndex]
         ? LEGACY_TAB_KEYS[legacyIndex]
         : saved;
     if (resolved === HISTORY_TAB_KEY || TABS.some((tab) => tab.key === resolved)) {
-      return resolved;
+      return resolved as string;
     }
     return "queue";
   });
   const [, setTriageCount] = useState(0);
-  const [appAuthenticated, setAppAuthenticated] = useState(null); // null | true | false — app login gate, distinct from Google authStatus below
-  const [mustCompleteSetup, setMustCompleteSetup] = useState(false); // ai: claude-sonnet-5 | 2026-08-27 — default-admin bootstrap gate, see CompleteSetupPage.jsx
-  const [authStatus, setAuthStatus] = useState(null); // null | true | false
-  const [emailFocusId, setEmailFocusId] = useState(null);
-  const [focusedJobCard, setFocusedJobCard] = useState(null);
-  const [listenerImportState, setListenerImportState] = useState(null);
+  const [appAuthenticated, setAppAuthenticated] = useState<boolean | null>(null); // null | true | false — app login gate, distinct from Google authStatus below
+  const [mustCompleteSetup, setMustCompleteSetup] = useState(false); // ai: claude-sonnet-5 | 2026-08-27 — default-admin bootstrap gate, see CompleteSetupPage.tsx
+  const [authStatus, setAuthStatus] = useState<boolean | null>(null); // null | true | false
+  const [emailFocusId, setEmailFocusId] = useState<string | null>(null);
+  const [focusedJobCard, setFocusedJobCard] = useState<FocusedJobCard | null>(null);
+  const [listenerImportState, setListenerImportState] = useState<ImportStatus | null>(null);
   const [listenerImportDismissedAt, setListenerImportDismissedAt] = useState("");
   const [setupComplete, setSetupComplete] = useState(true); // optimistic; corrected on mount
-  const [settingsInitialSection, setSettingsInitialSection] = useState(null);
+  const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined);
   const [showRecentChanges, setShowRecentChanges] = useState(false);
   const [showToptalPitch, setShowToptalPitch] = useState(false);
-  const [backendHealth, setBackendHealth] = useState("ok"); // "ok" | "db_down" | "unreachable"
+  const [backendHealth, setBackendHealth] = useState<BackendHealth>("ok");
 
-  const navigateToEmails = (emailId) => {
+  const navigateToEmails = (emailId: string) => {
     setEmailFocusId(emailId);
     setActiveTab(EMAILS_TAB_KEY);
     localStorage.setItem("activeTab", EMAILS_TAB_KEY);
@@ -231,7 +247,7 @@ export default function App() {
     localStorage.setItem("activeTab", HISTORY_TAB_KEY);
   };
 
-  const navigateToJobCard = (jobId, status) => {
+  const navigateToJobCard = (jobId: number | null, status: string) => {
     if (!jobCardTabForStatus(status)) {
       window.alert("That job is not currently on the Job Queue or Triage page.");
       return;
@@ -286,7 +302,7 @@ export default function App() {
     const checkSession = async () => {
       try {
         const res = await fetch("/api/session", { credentials: "include" });
-        const data = await res.json();
+        const data: SessionStatusResponse = await res.json();
         if (cancelled) return;
         setAppAuthenticated(!!data.authenticated);
         setMustCompleteSetup(!!data.must_complete_setup);
@@ -317,7 +333,7 @@ export default function App() {
     const pollListenerImportStatus = async () => {
       try {
         const res = await fetch("/api/import/status");
-        const data = await res.json();
+        const data: ImportStatus = await res.json();
         if (cancelled) return;
         if (
           data.trigger === "listener"
@@ -343,12 +359,12 @@ export default function App() {
   // out never overlaps the next poll; polls faster while unhealthy.
   useEffect(() => {
     let cancelled = false;
-    let timerId = null;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
     let inFlight = false; // ai: claude-fable-5 | 2026-07-15
     const pollBackendHealth = async () => {
       if (inFlight) return; // ai: claude-fable-5 | 2026-07-15
       inFlight = true;
-      let next = "unreachable";
+      let next: BackendHealth = "unreachable";
       try {
         const res = await fetch("/api/system/health");
         if (res.ok) {
@@ -356,7 +372,7 @@ export default function App() {
         } else {
           // A JSON 503 from the health route means the server is up but the
           // DB is down; anything else (e.g. dev-proxy 502) means no backend.
-          const data = await res.json().catch(() => null);
+          const data: SystemHealthResponse | null = await res.json().catch(() => null);
           next = data && data.db ? "db_down" : "unreachable";
         }
       } catch {
@@ -398,7 +414,7 @@ export default function App() {
   const fetchSetupStatus = async () => {
     try {
       const res = await fetch("/api/setup/status");
-      const data = await res.json();
+      const data: SetupStatusResponse = await res.json();
       setSetupComplete(data.complete);
       if (!data.complete) {
         setSettingsInitialSection("setup");
@@ -412,7 +428,7 @@ export default function App() {
 
   const handleSetupComplete = async () => {
     await fetchSetupStatus();
-    setSettingsInitialSection(null);
+    setSettingsInitialSection(undefined);
     setActiveTab("queue");
     localStorage.setItem("activeTab", "queue");
   };
@@ -429,19 +445,19 @@ export default function App() {
 
   const startGoogleAuth = async () => {
     const res = await fetch("/api/auth/google");
-    const data = await res.json();
+    const data: AuthGoogleStartResponse = await res.json();
     if (data.error) {
-      alert(data.error);
+      window.alert(data.error);
       return;
     }
-    window.location.href = data.auth_url;
+    window.location.href = data.auth_url || "";
   };
 
   const handleAuthClick = async () => {
     try {
       await startGoogleAuth();
     } catch (e) {
-      alert("Failed to start auth: " + e.message);
+      window.alert("Failed to start auth: " + (e instanceof Error ? e.message : String(e)));
     }
   };
 
@@ -456,7 +472,7 @@ export default function App() {
       }
       await startGoogleAuth();
     } catch (e) {
-      alert("Failed to reconnect: " + e.message);
+      window.alert("Failed to reconnect: " + (e instanceof Error ? e.message : String(e)));
     }
   };
 
@@ -471,7 +487,7 @@ export default function App() {
       }
       await fetchAuthStatus();
     } catch (e) {
-      window.alert("Failed to disconnect: " + e.message);
+      window.alert("Failed to disconnect: " + (e instanceof Error ? e.message : String(e)));
     }
   };
 
@@ -513,7 +529,7 @@ export default function App() {
           setAppAuthenticated(true);
           fetch("/api/session", { credentials: "include" })
             .then((res) => res.json())
-            .then((data) => setMustCompleteSetup(!!data.must_complete_setup))
+            .then((data: SessionStatusResponse) => setMustCompleteSetup(!!data.must_complete_setup))
             .catch(() => {});
         }}
       />
@@ -695,10 +711,15 @@ export default function App() {
   );
 }
 
-function ListenerImportDialog({ state, onClose }) {
+interface ListenerImportDialogProps {
+  state: ImportStatus;
+  onClose: () => void;
+}
+
+function ListenerImportDialog({ state, onClose }: ListenerImportDialogProps) {
   const running = !!state.running;
   const safeProgress = Math.max(0, Math.min(100, Number(state.progress) || 0));
-  const result = state.result || {};
+  const result = state.result || null;
   const sourceName = state.capture_source?.name || state.capture_source?.url || "";
   const phaseLabel = listenerImportPhaseLabel(state.phase);
   const title = listenerImportTitle(state.phase, running);
@@ -789,7 +810,7 @@ function ListenerImportDialog({ state, onClose }) {
         </div>
       )}
 
-      {running && (state.queued > 0 || state.skipped > 0 || state.failed > 0 || state.repaired > 0 || state.enriched > 0) && (
+      {running && ((state.queued ?? 0) > 0 || (state.skipped ?? 0) > 0 || (state.failed ?? 0) > 0 || (state.repaired ?? 0) > 0 || (state.enriched ?? 0) > 0) && (
         <div style={{
           marginTop: "12px",
           display: "flex",
@@ -798,25 +819,25 @@ function ListenerImportDialog({ state, onClose }) {
           fontSize: "12px",
           color: "var(--text-muted)",
         }}>
-          {state.queued > 0 && (
+          {!!state.queued && (
             <span><strong style={{ color: "var(--green)" }}>{state.queued}</strong> new</span>
           )}
-          {state.skipped > 0 && (
+          {!!state.skipped && (
             <span><strong>{state.skipped}</strong> already in DB</span>
           )}
-          {state.repaired > 0 && (
+          {!!state.repaired && (
             <span><strong style={{ color: "var(--green)" }}>{state.repaired}</strong> company fixed</span>
           )}
-          {state.enriched > 0 && (
+          {!!state.enriched && (
             <span><strong style={{ color: "var(--green)" }}>{state.enriched}</strong> description enriched</span>
           )}
-          {state.failed > 0 && (
+          {!!state.failed && (
             <span><strong style={{ color: "var(--red)" }}>{state.failed}</strong> failed</span>
           )}
         </div>
       )}
 
-      {!running && state.result && (
+      {!running && result && (
         <div style={{ marginTop: "18px", paddingTop: "14px", borderTop: "1px solid var(--border)" }}>
           <MetricGrid>
             <MetricItem label="queued" value={result.queued || 0} tone="green" />
@@ -833,13 +854,13 @@ function ListenerImportDialog({ state, onClose }) {
   );
 }
 
-function listenerImportTitle(phase, running) {
+function listenerImportTitle(phase: string, running: boolean): string {
   if (running) return "Receiving Job Description";
   if (phase === "error") return "Job Description Import Failed";
   return "Job Description Import Complete";
 }
 
-function listenerImportPhaseLabel(phase) {
+function listenerImportPhaseLabel(phase: string): string {
   if (phase === "receiving") return "Receiving HTML";
   if (phase === "analyzing") return "Extracting job links";
   if (phase === "filtering") return "Filtering captured content";

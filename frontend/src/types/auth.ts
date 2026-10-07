@@ -62,3 +62,10 @@ export interface AuthGoogleStartResponse {
   auth_url?: string;
   error?: string;
 }
+
+/** GET /api/session response (routes/session_auth.py's session_status). */
+export interface SessionStatusResponse {
+  authenticated: boolean;
+  must_complete_setup?: boolean;
+  deletion_requested_at?: string | null;
+}

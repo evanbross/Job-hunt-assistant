@@ -231,7 +231,10 @@ const VIEW_MODE_STORAGE_KEY = "jha.jobQueue.viewMode";
 const SORT_STORAGE_KEY = "jha.jobQueue.sort";
 const SEARCH_ALL_FIELDS_KEY = "jha.jobQueue.searchAllFields";
 
-type ViewMode = "queue" | "triage" | "both" | "company" | "unreachable";
+// ai: claude-sonnet-5 | 2026-10-07 -- exported: App.tsx types the
+// requestedViewMode it threads through focusedJobCard state against this
+// same union, instead of re-declaring it.
+export type ViewMode = "queue" | "triage" | "both" | "company" | "unreachable";
 
 const VIEW_MODES: { key: ViewMode; label: string }[] = [
   { key: "queue", label: "Job Queue" },
