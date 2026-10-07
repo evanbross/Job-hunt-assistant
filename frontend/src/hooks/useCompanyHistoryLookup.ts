@@ -93,7 +93,18 @@ export function useCompanyHistoryLookup(job: Job) {
       // Force-include the current duplicate hint AND every previously dismissed
       // candidate — even when their stored company name doesn't match the
       // fuzzy threshold used by rowMatchesCompany.
+      // ai: claude-sonnet-5 | 2026-10-07
+      // alwaysIncludedIds(job) only covers the opened job's own duplicate_of_id
+      // -- a row merged in from the company query (e.g. a sibling job also
+      // flagged as a possible duplicate of some third job) still needs its own
+      // duplicate_of_id force-included, or its "Possible Duplicate of #X" label
+      // points at a row that got silently filtered out of the list. Confirmed
+      // reported live: job 5776 showed "Possible Duplicate of #5500" while
+      // viewing job 5505's history, but #5500 itself never appeared.
       const forceIncludeIds = alwaysIncludedIds(job);
+      for (const row of withCurrent) {
+        if (row.duplicate_of_id != null) forceIncludeIds.add(row.duplicate_of_id);
+      }
       const missingIds = [...forceIncludeIds].filter((id) => !withCurrent.some((r) => r.id === id));
       const fetchedRefs = await Promise.all(
         missingIds.map(async (id) => {
