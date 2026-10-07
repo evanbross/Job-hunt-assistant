@@ -61,7 +61,11 @@ function formatSalaryRange(min?: number | null, max?: number | null): string {
 
 export function extractSalaryRange(text?: string | null): string {
   const normalizedText = String(text || "")
-    .replace(/ /g, " ")
+    // ai: claude-sonnet-5 | 2026-10-07 -- was a literal non-breaking space
+    // (U+00A0) in the regex, which ESLint's no-irregular-whitespace rule
+    // flags once real linting runs over this file; \u00A0 is the same
+    // character, just visible in source instead of invisible.
+    .replace(/\u00A0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!normalizedText) return "";
