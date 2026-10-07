@@ -7,12 +7,15 @@
 
 // ai: claude-sonnet-4-6 | 2026-06-27
 import { useEffect, useRef, useState } from "react";
-import Modal from "./Modal.jsx";
-import PhraseBookModal from "./PhraseBookModal.jsx"; // ai: claude-sonnet-5 | 2026-08-11
-import { pickSaveFolder, promptForSaveFolder } from "../../utils/saveFolderUtils.js"; // ai: claude-fable-5 | 2026-07-13
-import { describeFetchError } from "../../utils/fetchErrorUtils.js"; // ai: claude-fable-5 | 2026-07-15
+import type { CSSProperties } from "react";
+import Modal from "./Modal.tsx";
+import PhraseBookModal from "./PhraseBookModal.tsx"; // ai: claude-sonnet-5 | 2026-08-11
+import { pickSaveFolder, promptForSaveFolder } from "../../utils/saveFolderUtils.ts"; // ai: claude-fable-5 | 2026-07-13
+import { describeFetchError } from "../../utils/fetchErrorUtils.ts"; // ai: claude-fable-5 | 2026-07-15
+import type { ChatMessage, CoverLetterChatResponse, SaveDocumentResponse, SaveStatus } from "../../types/coverLetter.ts";
+import type { Job } from "../../types/jobs.ts";
 
-const saveMenuStyle = {
+const saveMenuStyle: CSSProperties = {
   position: "absolute",
   top: "calc(100% + 4px)",
   right: 0,
@@ -27,7 +30,7 @@ const saveMenuStyle = {
   flexDirection: "column",
 };
 
-const saveMenuItemStyle = {
+const saveMenuItemStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   padding: "7px 10px",
@@ -39,7 +42,7 @@ const saveMenuItemStyle = {
   width: "100%",
 };
 
-const saveStatusBoxStyle = {
+const saveStatusBoxStyle: CSSProperties = {
   marginBottom: "10px",
   padding: "10px 12px",
   background: "rgba(76,175,129,0.08)",
@@ -47,25 +50,31 @@ const saveStatusBoxStyle = {
   borderRadius: "var(--radius)",
 };
 
+interface CoverLetterModalProps {
+  job: Pick<Job, "id" | "job_title" | "company">;
+  coverLetter: string;
+  onClose: () => void;
+}
+
 /**
  * Self-contained cover letter modal. Owns all copy, save-to-file, and AI chat
  * state. Props: job (for title/company and chat API), coverLetter (initial
  * text), onClose.
  */
-export default function CoverLetterModal({ job, coverLetter, onClose }) {
+export default function CoverLetterModal({ job, coverLetter, onClose }: CoverLetterModalProps) {
   const [currentLetter, setCurrentLetter] = useState(coverLetter);
   const [copied, setCopied] = useState(false);
-  const [saveStatus, setSaveStatus] = useState(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>(null);
   const [showSaveMenu, setShowSaveMenu] = useState(false);
   const [folderEditOpen, setFolderEditOpen] = useState(false);
   const [folderInput, setFolderInput] = useState("");
-  const [chatMessages, setChatMessages] = useState([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
-  const [pendingUpdate, setPendingUpdate] = useState(null);
-  const [phraseBookMode, setPhraseBookMode] = useState(null); // null | "insert" | "save"
+  const [pendingUpdate, setPendingUpdate] = useState<string | null>(null);
+  const [phraseBookMode, setPhraseBookMode] = useState<"insert" | "save" | null>(null);
   const [phraseBookSaveText, setPhraseBookSaveText] = useState("");
-  const chatMessagesRef = useRef(null);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
   const hasLearnedRef = useRef(false);
 
   useEffect(() => {
@@ -80,12 +89,12 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleSave = async (format = "docx", folderOverride = null) => {
+  const handleSave = async (format = "docx", folderOverride: string | null = null) => {
     setSaveStatus("saving");
     setShowSaveMenu(false);
     setFolderEditOpen(false);
     try {
-      const body = {
+      const body: Record<string, string> = {
         text: currentLetter,
         label: "Cover Letter",
         format,
@@ -98,7 +107,7 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json().catch(() => ({})); // ai: claude-fable-5 | 2026-07-15
+      const data: SaveDocumentResponse = await res.json().catch(() => ({})); // ai: claude-fable-5 | 2026-07-15
       if (!res.ok) {
         // ai: claude-fable-5 | 2026-07-13
         if (data.folder_error) {
@@ -146,17 +155,17 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
   // ai: claude-fable-5 | 2026-07-13
   const handleBrowseFolder = async () => {
     try {
-      const picked = await pickSaveFolder(folderInput || saveStatus?.folder || "");
+      const picked = await pickSaveFolder(folderInput || (typeof saveStatus === "object" && saveStatus?.folder) || "");
       if (picked) setFolderInput(picked);
     } catch (e) {
-      window.alert("Browse failed: " + e.message);
+      window.alert("Browse failed: " + describeFetchError(e));
     }
   };
 
   const handleChatSend = async () => {
     const text = chatInput.trim();
     if (!text || chatSending) return;
-    const newMessages = [...chatMessages, { role: "user", content: text }];
+    const newMessages: ChatMessage[] = [...chatMessages, { role: "user", content: text }];
     setChatMessages(newMessages);
     setChatInput("");
     setChatSending(true);
@@ -171,7 +180,7 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || `Chat failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: CoverLetterChatResponse = await res.json();
       setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       if (data.updated_cover_letter) setPendingUpdate(data.updated_cover_letter);
     } catch (e) {
@@ -182,13 +191,14 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
   };
 
   const applyPendingUpdate = () => {
+    if (pendingUpdate == null) return;
     setCurrentLetter(pendingUpdate);
     setPendingUpdate(null);
     setSaveStatus(null);
   };
 
   // ai: claude-sonnet-5 | 2026-08-11
-  const handlePhraseInsert = (phraseText) => {
+  const handlePhraseInsert = (phraseText: string) => {
     setChatInput(
       `Please work this into the "why this company" paragraph, adapting it to fit naturally:\n\n${phraseText}`
     );
@@ -275,10 +285,10 @@ export default function CoverLetterModal({ job, coverLetter, onClose }) {
               onChange={(e) => setFolderInput(e.target.value)}
               placeholder="Choose a folder for saved cover letters"
               style={{ flex: 1, minWidth: "280px", fontSize: "12px", padding: "8px 10px", borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontFamily: "monospace" }}
-              onKeyDown={(e) => { if (e.key === "Enter") handleSave(saveStatus?.format || "docx", folderInput); }}
+              onKeyDown={(e) => { if (e.key === "Enter") handleSave(typeof saveStatus === "object" && saveStatus?.format || "docx", folderInput); }}
             />
             <button className="btn-secondary" onClick={handleBrowseFolder} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>Browse…</button>
-            <button className="btn-secondary" onClick={() => handleSave(saveStatus?.format || "docx", folderInput)} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>Save here</button>
+            <button className="btn-secondary" onClick={() => handleSave(typeof saveStatus === "object" && saveStatus?.format || "docx", folderInput)} style={{ fontSize: "12px", padding: "8px 12px", whiteSpace: "nowrap" }}>Save here</button>
           </div>
         )}
 

@@ -5,16 +5,22 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
+import type { ReactNode } from "react";
+
+interface MetricItemProps {
+  /** The metric value. */
+  value: string | number;
+  /** The metric label. */
+  label: string;
+  /** Optional color tone ("green", "red", "yellow", "accent"). */
+  tone?: string;
+}
 
 /**
  * Standard Metric Item component for showing a single count/label pair.
- *
- * @param {Object} props
- * @param {string|number} props.value - The metric value.
- * @param {string} props.label - The metric label.
- * @param {string} [props.tone] - Optional color tone ("green", "red", "yellow", "accent").
  */
-export function MetricItem({ value, label, tone }) {
+export function MetricItem({ value, label, tone }: MetricItemProps) {
   let color = "inherit";
   if (tone === "green") color = "var(--green)";
   if (tone === "red") color = "var(--red)";
@@ -31,12 +37,14 @@ export function MetricItem({ value, label, tone }) {
   );
 }
 
+interface MetricGridProps {
+  /** MetricItem components. */
+  children: ReactNode;
+}
+
 /**
  * Standard Metric Grid component for showing multiple results in a dialog.
- *
- * @param {Object} props
- * @param {React.ReactNode} props.children - MetricItem components.
  */
-export default function MetricGrid({ children }) {
+export default function MetricGrid({ children }: MetricGridProps) {
   return <div className="metric-grid">{children}</div>;
 }

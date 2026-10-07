@@ -5,17 +5,22 @@
  * This source code is made available for personal, non-commercial use only.
  */
 
-import { statusTone } from "../../utils/jobQueueUtils.js";
+// ai: claude-sonnet-5 | 2026-10-07
+import { statusTone } from "../../utils/jobQueueUtils.ts";
+
+interface StatusBadgeProps {
+  /** The status key (e.g., "applied", "rejected"). */
+  status?: string | null;
+  /** Optional override for the display text. */
+  label?: string | null;
+  /** Optional override for the color tone (green, yellow, red, orange, gray, accent). */
+  tone?: string | null;
+}
 
 /**
  * Standard Status Badge component for consistent status rendering across the app.
- *
- * @param {Object} props
- * @param {string} props.status - The status key (e.g., "applied", "rejected").
- * @param {string} [props.label] - Optional override for the display text.
- * @param {string} [props.tone] - Optional override for the color tone (green, yellow, red, orange, gray, accent).
  */
-export default function StatusBadge({ status, label, tone }) {
+export default function StatusBadge({ status, label, tone }: StatusBadgeProps) {
   const normalized = String(status || "").trim();
   const badgeTone = tone || statusTone(normalized);
   const displayText = label || statusLabel(normalized);
@@ -27,8 +32,8 @@ export default function StatusBadge({ status, label, tone }) {
   );
 }
 
-function statusLabel(status) {
-  const labels = {
+function statusLabel(status: string): string {
+  const labels: Record<string, string> = {
     applied: "Applied",
     eval_1: "Eval 1",
     eval_2: "Eval 2",

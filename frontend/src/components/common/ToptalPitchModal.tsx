@@ -7,8 +7,15 @@
 
 // ai: claude-sonnet-4-6 | 2026-07-03
 import { useEffect, useRef, useState } from "react";
-import { describeFetchError } from "../../utils/fetchErrorUtils.js";
-import Modal from "./Modal.jsx";
+import { describeFetchError } from "../../utils/fetchErrorUtils.ts";
+import Modal from "./Modal.tsx";
+import type { ChatMessage } from "../../types/coverLetter.ts";
+import type { ToptalBioChatResponse, ToptalBioResponse } from "../../types/toptal.ts";
+import type { ApiErrorBody } from "../../types/common.ts";
+
+interface ToptalPitchModalProps {
+  onClose: () => void;
+}
 
 /**
  * Self-contained Toptal Pitch generator. The candidate pastes in a Toptal job
@@ -17,17 +24,17 @@ import Modal from "./Modal.jsx";
  * along to the client, with an AI chat to refine it.
  */
 
-export default function ToptalPitchModal({ onClose }) {
+export default function ToptalPitchModal({ onClose }: ToptalPitchModalProps) {
   const [jobDescription, setJobDescription] = useState("");
   const [bio, setBio] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [chatMessages, setChatMessages] = useState([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
-  const [pendingUpdate, setPendingUpdate] = useState(null);
-  const chatMessagesRef = useRef(null);
+  const [pendingUpdate, setPendingUpdate] = useState<string | null>(null);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (chatMessagesRef.current) {
@@ -46,7 +53,7 @@ export default function ToptalPitchModal({ onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job_description: text }),
       });
-      const data = await res.json();
+      const data: ToptalBioResponse & ApiErrorBody = await res.json();
       if (!res.ok) throw new Error(data.error || "Generation failed");
       setBio(data.bio);
       setChatMessages([]);
@@ -67,7 +74,7 @@ export default function ToptalPitchModal({ onClose }) {
   const handleChatSend = async () => {
     const text = chatInput.trim();
     if (!text || chatSending) return;
-    const newMessages = [...chatMessages, { role: "user", content: text }];
+    const newMessages: ChatMessage[] = [...chatMessages, { role: "user", content: text }];
     setChatMessages(newMessages);
     setChatInput("");
     setChatSending(true);
@@ -81,7 +88,7 @@ export default function ToptalPitchModal({ onClose }) {
           current_bio: bio,
         }),
       });
-      const data = await res.json();
+      const data: ToptalBioChatResponse & ApiErrorBody = await res.json();
       if (!res.ok) throw new Error(data.error || "Chat failed");
       setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       if (data.updated_bio) setPendingUpdate(data.updated_bio);
@@ -93,6 +100,7 @@ export default function ToptalPitchModal({ onClose }) {
   };
 
   const applyPendingUpdate = () => {
+    if (pendingUpdate == null) return;
     setBio(pendingUpdate);
     setPendingUpdate(null);
   };

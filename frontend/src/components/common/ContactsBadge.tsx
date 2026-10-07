@@ -14,12 +14,19 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useState } from "react";
-import { contactsMatchKey } from "../../utils/contactsUtils.js";
-import ContactsAtCompanyDialog from "./ContactsAtCompanyDialog.jsx";
+import { contactsMatchKey } from "../../utils/contactsUtils.ts";
+import ContactsAtCompanyDialog from "./ContactsAtCompanyDialog.tsx";
+import type { ContactsByCompany } from "../../types/contacts.ts";
+
+interface ContactsBadgeProps {
+  company?: string | null;
+  contactsByCompany?: ContactsByCompany;
+}
 
 // ai: claude-sonnet-5 | 2026-07-25
-export default function ContactsBadge({ company, contactsByCompany = {} }) {
+export default function ContactsBadge({ company, contactsByCompany = {} }: ContactsBadgeProps) {
   const [open, setOpen] = useState(false);
   const contacts = contactsByCompany[contactsMatchKey(company)] ?? [];
 

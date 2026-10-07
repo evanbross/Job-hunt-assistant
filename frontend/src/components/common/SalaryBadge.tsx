@@ -14,7 +14,9 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
-import { salaryRangeForJob } from "../../utils/salaryUtils.js";
+// ai: claude-sonnet-5 | 2026-10-07
+import { salaryRangeForJob } from "../../utils/salaryUtils.ts";
+import type { Job } from "../../types/jobs.ts";
 
 // ai: claude-sonnet-5 | 2026-07-26
 // LinkedIn gates its offsite "Apply" URL behind a sign-in modal, so the fit
@@ -25,7 +27,11 @@ import { salaryRangeForJob } from "../../utils/salaryUtils.js";
 // knows to check the original posting rather than assume no salary exists.
 const _SOURCES_WITH_KNOWN_ACCESS_GAP = new Set(["linkedin"]);
 
-export default function SalaryBadge({ job }) {
+interface SalaryBadgeProps {
+  job: Pick<Job, "salary_min" | "salary_max" | "raw_jd_snippet" | "fit_reasoning" | "source">;
+}
+
+export default function SalaryBadge({ job }: SalaryBadgeProps) {
   const salaryRange = salaryRangeForJob(job);
   if (salaryRange) {
     return <span className="badge badge-green">Salary: {salaryRange}</span>;

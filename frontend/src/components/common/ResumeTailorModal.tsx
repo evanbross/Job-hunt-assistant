@@ -7,11 +7,14 @@
 
 // ai: claude-sonnet-5 | 2026-07-27
 import { useEffect, useRef, useState } from "react";
-import Modal from "./Modal.jsx";
-import { pickSaveFolder, promptForSaveFolder } from "../../utils/saveFolderUtils.js";
-import { describeFetchError } from "../../utils/fetchErrorUtils.js";
+import type { CSSProperties } from "react";
+import Modal from "./Modal.tsx";
+import { pickSaveFolder, promptForSaveFolder } from "../../utils/saveFolderUtils.ts";
+import { describeFetchError } from "../../utils/fetchErrorUtils.ts";
+import type { ChatMessage, ResumeTailorChatResponse, SaveDocumentResponse } from "../../types/coverLetter.ts";
+import type { Job } from "../../types/jobs.ts";
 
-const saveStatusBoxStyle = {
+const saveStatusBoxStyle: CSSProperties = {
   marginBottom: "10px",
   padding: "10px 12px",
   background: "rgba(76,175,129,0.08)",
@@ -19,22 +22,35 @@ const saveStatusBoxStyle = {
   borderRadius: "var(--radius)",
 };
 
+interface ResumeTailorSaveStatusDetail {
+  path: string;
+  folder: string;
+}
+
+type ResumeTailorSaveStatus = "saving" | ResumeTailorSaveStatusDetail | null;
+
+interface ResumeTailorModalProps {
+  job: Pick<Job, "id" | "job_title" | "company">;
+  analysis: string;
+  onClose: () => void;
+}
+
 /**
  * Self-contained resume tailoring modal. Owns all copy, save-as-markdown, and
  * AI chat state. Props: job (for title/company, save metadata, and chat API),
  * analysis (initial generated analysis text), onClose.
  */
-export default function ResumeTailorModal({ job, analysis, onClose }) {
+export default function ResumeTailorModal({ job, analysis, onClose }: ResumeTailorModalProps) {
   const [currentAnalysis, setCurrentAnalysis] = useState(analysis);
   const [copied, setCopied] = useState(false);
-  const [saveStatus, setSaveStatus] = useState(null);
+  const [saveStatus, setSaveStatus] = useState<ResumeTailorSaveStatus>(null);
   const [folderEditOpen, setFolderEditOpen] = useState(false);
   const [folderInput, setFolderInput] = useState("");
-  const [chatMessages, setChatMessages] = useState([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
-  const [pendingUpdate, setPendingUpdate] = useState(null);
-  const chatMessagesRef = useRef(null);
+  const [pendingUpdate, setPendingUpdate] = useState<string | null>(null);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (chatMessagesRef.current) {
@@ -48,11 +64,11 @@ export default function ResumeTailorModal({ job, analysis, onClose }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleSave = async (folderOverride = null) => {
+  const handleSave = async (folderOverride: string | null = null) => {
     setSaveStatus("saving");
     setFolderEditOpen(false);
     try {
-      const body = {
+      const body: Record<string, string> = {
         text: currentAnalysis,
         label: "Resume Tailoring",
         format: "md",
@@ -65,7 +81,7 @@ export default function ResumeTailorModal({ job, analysis, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: SaveDocumentResponse = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (data.folder_error) {
           const replacement = await promptForSaveFolder(data.folder);
@@ -87,7 +103,7 @@ export default function ResumeTailorModal({ job, analysis, onClose }) {
 
   const handleBrowseFolder = async () => {
     try {
-      const picked = await pickSaveFolder(folderInput || saveStatus?.folder || "");
+      const picked = await pickSaveFolder(folderInput || (typeof saveStatus === "object" && saveStatus?.folder) || "");
       if (picked) setFolderInput(picked);
     } catch (e) {
       window.alert("Browse failed: " + describeFetchError(e));
@@ -97,7 +113,7 @@ export default function ResumeTailorModal({ job, analysis, onClose }) {
   const handleChatSend = async () => {
     const message = chatInput.trim();
     if (!message || chatSending) return;
-    const newMessages = [...chatMessages, { role: "user", content: message }];
+    const newMessages: ChatMessage[] = [...chatMessages, { role: "user", content: message }];
     setChatMessages(newMessages);
     setChatInput("");
     setChatSending(true);
@@ -111,7 +127,7 @@ export default function ResumeTailorModal({ job, analysis, onClose }) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || `Chat failed (${res.status})`);
       }
-      const data = await res.json();
+      const data: ResumeTailorChatResponse = await res.json();
       setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       if (data.updated_analysis) setPendingUpdate(data.updated_analysis);
     } catch (e) {
@@ -122,6 +138,7 @@ export default function ResumeTailorModal({ job, analysis, onClose }) {
   };
 
   const applyPendingUpdate = () => {
+    if (pendingUpdate == null) return;
     setCurrentAnalysis(pendingUpdate);
     setPendingUpdate(null);
     setSaveStatus(null);

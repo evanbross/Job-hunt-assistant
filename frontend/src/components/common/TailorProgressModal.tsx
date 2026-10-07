@@ -6,7 +6,8 @@
  */
 
 // ai: claude-sonnet-5 | 2026-07-27
-import Modal from "./Modal.jsx";
+import Modal from "./Modal.tsx";
+import type { Job } from "../../types/jobs.ts";
 
 const TAILOR_PHASES = [
   { key: "jd",         label: "Analyzing job description" },
@@ -15,8 +16,13 @@ const TAILOR_PHASES = [
   { key: "generate",   label: "Generating suggestions" },
 ];
 
+interface TailorProgressModalProps {
+  job: Pick<Job, "job_title" | "company">;
+  phaseIdx: number;
+}
+
 /** Progress dialog shown while a resume-tailoring generation is in flight. */
-export default function TailorProgressModal({ job, phaseIdx }) {
+export default function TailorProgressModal({ job, phaseIdx }: TailorProgressModalProps) {
   const subtitle = [job.job_title, job.company].filter(Boolean).join(" at ");
   return (
     <Modal

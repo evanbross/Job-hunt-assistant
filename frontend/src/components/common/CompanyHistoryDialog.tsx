@@ -32,26 +32,43 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useState } from "react";
-import Modal from "./Modal.jsx";
-import StatusBadge from "./StatusBadge.jsx";
-import { isAppliedStatus, titleLooksSimilar } from "../../utils/sheetUtils.js";
-import { jobCardTabForStatus, possibleDuplicateLabel, skippedLabel } from "../../utils/jobQueueUtils.js";
+import Modal from "./Modal.tsx";
+import StatusBadge from "./StatusBadge.tsx";
+import { isAppliedStatus, titleLooksSimilar } from "../../utils/sheetUtils.ts";
+import { jobCardTabForStatus, possibleDuplicateLabel, skippedLabel } from "../../utils/jobQueueUtils.ts";
+import type { ApplicationHistoryRow } from "../../types/jobs.ts";
 
 // ai: claude-sonnet-4-6 | 2026-06-10
-function rowStatusLabel(row) {
+function rowStatusLabel(row: ApplicationHistoryRow): string {
   if (row.status === "possible_duplicate") return possibleDuplicateLabel(row);
   if (row.status === "skipped") return skippedLabel(row);
   return row.status || "No status";
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-12
-function isDeclaredDuplicate(row) {
+function isDeclaredDuplicate(row: ApplicationHistoryRow): boolean {
   return row.status === "skipped" && row.skip_reason === "duplicate";
 }
 
+interface HistoryRowProps {
+  row: ApplicationHistoryRow;
+  effectiveRow: ApplicationHistoryRow;
+  currentJobId: number | null;
+  navigable: boolean;
+  skippingId: number | null;
+  dismissingId: number | null;
+  onSkipDuplicate?: ((id: number) => void) | null;
+  onDismissDuplicate?: ((id: number) => void) | null;
+  onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
+  onClose: () => void;
+  handleSkipDuplicate: (row: ApplicationHistoryRow) => void;
+  handleDismissDuplicate: (row: ApplicationHistoryRow) => void;
+}
+
 // ai: claude-sonnet-4-6 | 2026-06-28
-function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, dismissingId, onSkipDuplicate, onDismissDuplicate, onNavigateToJobCard, onClose, handleSkipDuplicate, handleDismissDuplicate }) {
+function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, dismissingId, onSkipDuplicate, onDismissDuplicate, onNavigateToJobCard, onClose, handleSkipDuplicate, handleDismissDuplicate }: HistoryRowProps) {
   return (
     <div
       style={{
@@ -66,7 +83,7 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, di
         padding: "10px 12px",
       }}
       title={navigable ? "Click to go to this job card" : undefined}
-      onClick={navigable ? () => { onNavigateToJobCard(row.id, row.status); onClose(); } : undefined}
+      onClick={navigable ? () => { onNavigateToJobCard?.(row.id, row.status); onClose(); } : undefined}
     >
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ alignItems: "center", color: "var(--text)", display: "flex", flexWrap: "wrap", fontSize: "13px", fontWeight: 700, gap: "7px", overflowWrap: "anywhere" }}>
@@ -171,21 +188,37 @@ function HistoryRow({ row, effectiveRow, currentJobId, navigable, skippingId, di
   );
 }
 
+interface CompanyHistoryDialogProps {
+  company: string;
+  currentJobId: number | null;
+  currentJobTitle?: string | null;
+  duplicateOfId?: number | null;
+  error?: string | null;
+  loading: boolean;
+  rows: ApplicationHistoryRow[];
+  onClose: () => void;
+  onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
+  onSkipDuplicate?: ((id: number) => Promise<void>) | null;
+  onDismissDuplicate?: ((id: number) => Promise<void>) | null;
+  onRefresh?: (() => Promise<void>) | null;
+}
+
 // ai: claude-sonnet-4-6 | 2026-06-28
-export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, duplicateOfId, error, loading, rows, onClose, onNavigateToJobCard, onSkipDuplicate, onDismissDuplicate, onRefresh }) {
-  const [skippedIds, setSkippedIds] = useState(new Set());
-  const [skippingId, setSkippingId] = useState(null);
-  const [dismissingId, setDismissingId] = useState(null);
+export default function CompanyHistoryDialog({ company, currentJobId, currentJobTitle, duplicateOfId, error, loading, rows, onClose, onNavigateToJobCard, onSkipDuplicate, onDismissDuplicate, onRefresh }: CompanyHistoryDialogProps) {
+  const [skippedIds, setSkippedIds] = useState<Set<number | null>>(new Set());
+  const [skippingId, setSkippingId] = useState<number | null>(null);
+  const [dismissingId, setDismissingId] = useState<number | null>(null);
   const [showDuplicates, setShowDuplicates] = useState(true);
   // ai: claude-sonnet-5 | 2026-09-25
   const [showSkipped, setShowSkipped] = useState(false);
-  const [sortBy, setSortBy] = useState("id");
+  const [sortBy, setSortBy] = useState<"id" | "alpha">("id");
   const [search, setSearch] = useState("");
 
-  const handleSkipDuplicate = async (row) => {
+  const handleSkipDuplicate = async (row: ApplicationHistoryRow) => {
+    if (row.id == null) return;
     setSkippingId(row.id);
     try {
-      await onSkipDuplicate(row.id);
+      await onSkipDuplicate?.(row.id);
       setSkippedIds((prev) => new Set(prev).add(row.id));
       // ai: claude-sonnet-5 | 2026-07-21
       // Re-fetch so the dialog reflects the new duplicate hint / newly-surfaced
@@ -196,10 +229,11 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
     }
   };
 
-  const handleDismissDuplicate = async (row) => {
+  const handleDismissDuplicate = async (row: ApplicationHistoryRow) => {
+    if (row.id == null) return;
     setDismissingId(row.id);
     try {
-      await onDismissDuplicate(row.id);
+      await onDismissDuplicate?.(row.id);
       // ai: claude-sonnet-5 | 2026-07-21
       // Refetch before deciding whether to hide the buttons: dismissing this
       // candidate can surface a *new* duplicate hint for the same row id, which
@@ -286,7 +320,7 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
             {duplicateHints > 0 && <span>{duplicateHints} similar title{duplicateHints === 1 ? "" : "s"}</span>}
             {previousRows.length > 1 && (
               <div style={{ display: "flex", gap: "4px", marginLeft: "auto" }}>
-                {[{ key: "id", label: "Newest first" }, { key: "alpha", label: "A–Z" }].map(({ key, label }) => (
+                {([{ key: "id", label: "Newest first" }, { key: "alpha", label: "A–Z" }] as const).map(({ key, label }) => (
                   <button
                     key={key}
                     type="button"
@@ -330,7 +364,7 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
           </div>
           {/* ai: claude-sonnet-4-6 | 2026-06-28 */}
           {currentRows.map((row) => {
-            const effectiveRow = skippedIds.has(row.id) ? { ...row, status: "skipped" } : row;
+            const effectiveRow: ApplicationHistoryRow = skippedIds.has(row.id) ? { ...row, status: "skipped" } : row;
             return (
               <div
                 key={row.id}
@@ -361,7 +395,7 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
           })}
           {/* ai: claude-sonnet-5 | 2026-08-11 */}
           {pinnedMatchRow && (() => {
-            const effectiveRow = skippedIds.has(pinnedMatchRow.id) ? { ...pinnedMatchRow, status: "skipped" } : pinnedMatchRow;
+            const effectiveRow: ApplicationHistoryRow = skippedIds.has(pinnedMatchRow.id) ? { ...pinnedMatchRow, status: "skipped" } : pinnedMatchRow;
             const navigable = Boolean(onNavigateToJobCard && pinnedMatchRow.id && jobCardTabForStatus(pinnedMatchRow.status));
             return (
               <div style={{ marginBottom: "8px" }}>
@@ -403,7 +437,7 @@ export default function CompanyHistoryDialog({ company, currentJobId, currentJob
             )}
             {remainingPreviousRows.map((row) => {
               const navigable = Boolean(onNavigateToJobCard && row.id && jobCardTabForStatus(row.status));
-              const effectiveRow = skippedIds.has(row.id) ? { ...row, status: "skipped" } : row;
+              const effectiveRow: ApplicationHistoryRow = skippedIds.has(row.id) ? { ...row, status: "skipped" } : row;
               return (
                 <HistoryRow
                   key={row.id || `${row.company}-${row.title}-${row.date}`}

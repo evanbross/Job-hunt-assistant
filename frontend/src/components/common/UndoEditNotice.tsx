@@ -32,7 +32,17 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-export default function UndoEditNotice({ label, onDismiss, onUndo, saving }) {
+// ai: claude-sonnet-5 | 2026-10-07
+import type { CSSProperties } from "react";
+
+interface UndoEditNoticeProps {
+  label: string;
+  onDismiss: () => void;
+  onUndo: () => void;
+  saving: boolean;
+}
+
+export default function UndoEditNotice({ label, onDismiss, onUndo, saving }: UndoEditNoticeProps) {
   return (
     <div style={undoEditNoticeStyle}>
       <span style={{ flex: 1 }}>{label}.</span>
@@ -58,7 +68,7 @@ export default function UndoEditNotice({ label, onDismiss, onUndo, saving }) {
   );
 }
 
-const undoEditNoticeStyle = {
+const undoEditNoticeStyle: CSSProperties = {
   alignItems: "center",
   background: "var(--surface2)",
   border: "1px solid var(--border)",
@@ -72,12 +82,12 @@ const undoEditNoticeStyle = {
   padding: "8px 10px",
 };
 
-const undoEditButtonStyle = {
+const undoEditButtonStyle: CSSProperties = {
   fontSize: "11px",
   padding: "3px 9px",
 };
 
-const undoEditDismissStyle = {
+const undoEditDismissStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   color: "var(--text-muted)",

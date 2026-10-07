@@ -32,11 +32,17 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import Modal from "./Modal.jsx";
-import MetricGrid, { MetricItem } from "./MetricGrid.jsx";
-import { careerScanStatusLine } from "../../utils/careerSiteUtils.js";
+// ai: claude-sonnet-5 | 2026-10-07
+import Modal from "./Modal.tsx";
+import MetricGrid, { MetricItem } from "./MetricGrid.tsx";
+import { careerScanStatusLine } from "../../utils/careerSiteUtils.ts";
+import type { CareerScanStatus } from "../../types/careerSites.ts";
 
-export function CareerScanErrorList({ errors }) {
+interface CareerScanErrorListProps {
+  errors?: string[] | null;
+}
+
+export function CareerScanErrorList({ errors }: CareerScanErrorListProps) {
   if (!errors?.length) return null;
   return (
     <ul style={{ margin: 0, paddingLeft: "16px", maxHeight: "220px", overflowY: "auto", fontSize: "12px", color: "var(--red)", lineHeight: 1.45 }}>
@@ -47,7 +53,12 @@ export function CareerScanErrorList({ errors }) {
   );
 }
 
-export function CareerScanProgressPopup({ title, status }) {
+interface CareerScanProgressPopupProps {
+  title: string;
+  status?: CareerScanStatus | null;
+}
+
+export function CareerScanProgressPopup({ title, status }: CareerScanProgressPopupProps) {
   const progress = Math.max(0, Math.min(100, Number(status?.progress) || 0));
   return (
     <Modal
@@ -65,14 +76,19 @@ export function CareerScanProgressPopup({ title, status }) {
       <p style={{ margin: "10px 0 0", fontSize: "12px", color: "var(--text-muted)" }}>
         {careerScanStatusLine(status)}
       </p>
-      {status?.errors?.length > 0 && (
+      {status?.errors && status.errors.length > 0 && (
         <CareerScanErrorList errors={status.errors} />
       )}
     </Modal>
   );
 }
 
-export function CareerScanSummaryPopup({ summary, onClose }) {
+interface CareerScanSummaryPopupProps {
+  summary?: CareerScanStatus | null;
+  onClose: () => void;
+}
+
+export function CareerScanSummaryPopup({ summary, onClose }: CareerScanSummaryPopupProps) {
   const errors = Array.isArray(summary?.errors) ? summary.errors : [];
   const hasErrors = errors.length > 0;
   return (

@@ -6,11 +6,17 @@
  */
 
 import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 
-import Modal from "./Modal.jsx";
-import MetricGrid, { MetricItem } from "./MetricGrid.jsx";
+import Modal from "./Modal.tsx";
+import MetricGrid, { MetricItem } from "./MetricGrid.tsx";
+import type {
+  ReqClosedScanPlatformOption,
+  ReqClosedScanResult,
+  ReqClosedScanStatus,
+} from "../../types/applications.ts";
 
-const badgeStyle = {
+const badgeStyle: CSSProperties = {
   background: "var(--red-bg, #3a1f1f)",
   borderRadius: "999px",
   color: "var(--red, #f47174)",
@@ -23,6 +29,14 @@ const badgeStyle = {
   padding: "3px 10px",
 };
 
+interface ReqClosedDialogProps {
+  /** `{ setup: true }` for the setup step, otherwise the status payload from
+   * /api/applications/scan-closed-reqs/status. */
+  result: ReqClosedScanResult;
+  onStart: (platforms: string[]) => void;
+  onClose: () => void;
+}
+
 /**
  * Shared dialog for the "Scan for Closed Reqs" action, used by both the
  * Application Tracking sheet and the Job Queue.
@@ -32,18 +46,12 @@ const badgeStyle = {
  * so the list can't drift from the backend. The caller's `onStart(platforms)`
  * kicks off the scan and swaps `result` to the status payload, which renders the
  * existing progress/result view.
- *
- * @param {Object} props
- * @param {Object} props.result - `{ setup: true }` for the setup step, otherwise
- *   the status payload from /api/applications/scan-closed-reqs/status.
- * @param {(platforms: string[]) => void} props.onStart
- * @param {() => void} props.onClose
  */
 // ai: claude-fable-5 | 2026-07-16
-export default function ReqClosedDialog({ result, onStart, onClose }) {
-  const isSetup = !!result.setup;
-  const [platformOptions, setPlatformOptions] = useState(null);
-  const [selectedPlatforms, setSelectedPlatforms] = useState([]);
+export default function ReqClosedDialog({ result, onStart, onClose }: ReqClosedDialogProps) {
+  const isSetup = "setup" in result && result.setup;
+  const [platformOptions, setPlatformOptions] = useState<ReqClosedScanPlatformOption[] | null>(null);
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
 
   useEffect(() => {
     if (!isSetup) return undefined;
@@ -52,7 +60,7 @@ export default function ReqClosedDialog({ result, onStart, onClose }) {
       try {
         const res = await fetch("/api/applications/scan-closed-reqs/platforms");
         if (!res.ok) return;
-        const data = await res.json();
+        const data: ReqClosedScanPlatformOption[] = await res.json();
         if (cancelled || !Array.isArray(data)) return;
         setPlatformOptions(data);
         setSelectedPlatforms(data.map((p) => p.key));
@@ -63,7 +71,7 @@ export default function ReqClosedDialog({ result, onStart, onClose }) {
     return () => { cancelled = true; };
   }, [isSetup]);
 
-  const togglePlatform = (key) => {
+  const togglePlatform = (key: string) => {
     setSelectedPlatforms((previous) =>
       previous.includes(key) ? previous.filter((k) => k !== key) : [...previous, key]
     );
@@ -124,38 +132,39 @@ export default function ReqClosedDialog({ result, onStart, onClose }) {
     );
   }
 
-  const marked = Array.isArray(result.marked) ? result.marked : [];
-  const errors = Array.isArray(result.errors) ? result.errors : [];
+  const status = result as ReqClosedScanStatus;
+  const marked = Array.isArray(status.marked) ? status.marked : [];
+  const errors = Array.isArray(status.errors) ? status.errors : [];
   const badUrlErrors = errors.filter((job) => job.reason === "bad_url");
   const unreachableErrors = errors.filter((job) => job.reason !== "bad_url");
-  const running = !!result.running;
+  const running = !!status.running;
   // ai: claude-fable-5 | 2026-07-17 — in-scan recheck progress, fed by the scan
   // thread's batch loop (browser_checks_*) rather than the raw queue snapshot,
   // which also counts done rows from earlier runs.
-  const browserChecksTotal = result.browser_checks_total ?? 0;
-  const browserChecksDone = result.browser_checks_done ?? 0;
+  const browserChecksTotal = status.browser_checks_total ?? 0;
+  const browserChecksDone = status.browser_checks_done ?? 0;
   const browserRecheckPhase = running && browserChecksTotal > 0;
-  const browserQueue = result.browser_queue || {};
+  const browserQueue = status.browser_queue || { pending: 0, processing: 0, done: 0, failed: 0, remaining: 0, eta_seconds: 0 };
   const browserRemaining = browserQueue.remaining ?? 0;
   const browserDone = browserQueue.done ?? 0;
   const browserFailed = browserQueue.failed ?? 0;
   const browserTotal = browserRemaining + browserDone + browserFailed;
   const browserDraining = !running && browserRemaining > 0;
   const browserEtaMinutes = browserQueue.eta_seconds ? Math.ceil(browserQueue.eta_seconds / 60) : 0;
-  const progress = Math.max(0, Math.min(100, result.total ? Math.round(((result.progress ?? 0) / result.total) * 100) : 0));
+  const progress = Math.max(0, Math.min(100, status.total ? Math.round(((status.progress ?? 0) / status.total) * 100) : 0));
   const title = running
     ? (browserRecheckPhase ? "Rechecking via Browser Extension…" : "Scanning for Closed Reqs…") // ai: claude-fable-5 | 2026-07-17
     : browserDraining
       ? "Waiting on Authenticated Browser Rechecks…"
       : "Scan for Closed Reqs Complete";
-  const subtitle = result.error
-    ? `Scan failed: ${result.error}`
+  const subtitle = status.error
+    ? `Scan failed: ${status.error}`
     : running
-      ? (result.message || "Scanning…")
+      ? (status.message || "Scanning…")
       : browserDraining
         ? `${browserRemaining} job${browserRemaining === 1 ? "" : "s"} still awaiting an authenticated recheck via the browser extension.`
-        : (result.message || `Checked ${result.checked ?? 0} job${result.checked === 1 ? "" : "s"}.`);
-  const currentJobLine = [result.current_platform, result.current_job_title, result.current_company && `at ${result.current_company}`]
+        : (status.message || `Checked ${status.checked ?? 0} job${status.checked === 1 ? "" : "s"}.`);
+  const currentJobLine = [status.current_platform, status.current_job_title, status.current_company && `at ${status.current_company}`]
     .filter(Boolean)
     .join(" — ");
   return (
@@ -170,7 +179,7 @@ export default function ReqClosedDialog({ result, onStart, onClose }) {
         <>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
             <span>Progress</span>
-            <span>{result.progress ?? 0} of {result.total ?? 0}</span>
+            <span>{status.progress ?? 0} of {status.total ?? 0}</span>
           </div>
           <div className="loading-bar">
             <div className="loading-bar-fill" style={{ width: `${progress}%` }} />
@@ -185,10 +194,10 @@ export default function ReqClosedDialog({ result, onStart, onClose }) {
 
       <div style={{ marginTop: running ? "14px" : "0" }}>
         <MetricGrid>
-          <MetricItem label="kept (open)" value={result.kept_count ?? 0} tone={(result.kept_count ?? 0) > 0 ? "green" : "muted"} />
-          <MetricItem label="closed" value={result.closed_count ?? marked.length} tone={(result.closed_count ?? marked.length) > 0 ? "accent" : "muted"} />
-          <MetricItem label="bad urls" value={result.bad_url_count ?? badUrlErrors.length} tone={(result.bad_url_count ?? badUrlErrors.length) > 0 ? "yellow" : "muted"} />
-          <MetricItem label="unreachable" value={result.unreachable_count ?? unreachableErrors.length} tone={(result.unreachable_count ?? unreachableErrors.length) > 0 ? "red" : "muted"} />
+          <MetricItem label="kept (open)" value={status.kept_count ?? 0} tone={(status.kept_count ?? 0) > 0 ? "green" : "muted"} />
+          <MetricItem label="closed" value={status.closed_count ?? marked.length} tone={(status.closed_count ?? marked.length) > 0 ? "accent" : "muted"} />
+          <MetricItem label="bad urls" value={status.bad_url_count ?? badUrlErrors.length} tone={(status.bad_url_count ?? badUrlErrors.length) > 0 ? "yellow" : "muted"} />
+          <MetricItem label="unreachable" value={status.unreachable_count ?? unreachableErrors.length} tone={(status.unreachable_count ?? unreachableErrors.length) > 0 ? "red" : "muted"} />
         </MetricGrid>
       </div>
 

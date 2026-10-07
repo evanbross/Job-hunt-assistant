@@ -14,10 +14,18 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
-import Modal from "./Modal.jsx";
+// ai: claude-sonnet-5 | 2026-10-07
+import Modal from "./Modal.tsx";
+import type { CompanyMapContact } from "../../types/contacts.ts";
+
+interface ContactsAtCompanyDialogProps {
+  company: string;
+  contacts: CompanyMapContact[];
+  onClose: () => void;
+}
 
 // ai: claude-sonnet-5 | 2026-07-25
-export default function ContactsAtCompanyDialog({ company, contacts, onClose }) {
+export default function ContactsAtCompanyDialog({ company, contacts, onClose }: ContactsAtCompanyDialogProps) {
   return (
     <Modal
       title={company}

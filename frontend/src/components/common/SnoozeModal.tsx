@@ -6,9 +6,10 @@
  */
 
 // ai: claude-sonnet-5 | 2026-08-19
-import Modal from "./Modal.jsx";
+import type { CSSProperties } from "react";
+import Modal from "./Modal.tsx";
 
-const inputStyle = {
+const inputStyle: CSSProperties = {
   width: "80px",
   fontSize: "14px",
   padding: "8px 10px",
@@ -19,11 +20,19 @@ const inputStyle = {
   fontFamily: "inherit",
 };
 
+interface SnoozeModalProps {
+  /** Current draft value. */
+  days: string;
+  onDaysChange: (value: string) => void;
+  onConfirm: () => void;
+  onClose: () => void;
+  busy: boolean;
+}
+
 /**
- * Small modal dialog for choosing how many days to snooze a job. Props:
- * days (current draft value), onDaysChange, onConfirm, onClose, busy.
+ * Small modal dialog for choosing how many days to snooze a job.
  */
-export default function SnoozeModal({ days, onDaysChange, onConfirm, onClose, busy }) {
+export default function SnoozeModal({ days, onDaysChange, onConfirm, onClose, busy }: SnoozeModalProps) {
   return (
     <Modal
       title="Snooze this job"

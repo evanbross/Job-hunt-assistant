@@ -7,16 +7,19 @@
 
 // ai: claude-sonnet-5 | 2026-08-13
 import { useEffect, useState } from "react";
-import { describeFetchError } from "../../utils/fetchErrorUtils.js";
+import type { CSSProperties } from "react";
+import { describeFetchError } from "../../utils/fetchErrorUtils.ts";
+import type { PhraseBookEntry } from "../../types/coverLetter.ts";
+import type { ApiErrorBody } from "../../types/common.ts";
 
-const rowStyle = {
+const rowStyle: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
   padding: "10px 12px",
   marginBottom: "8px",
 };
 
-const tagPillStyle = {
+const tagPillStyle: CSSProperties = {
   display: "inline-block",
   fontSize: "10px",
   fontWeight: "600",
@@ -29,7 +32,7 @@ const tagPillStyle = {
   marginBottom: "6px",
 };
 
-const fieldStyle = {
+const fieldStyle: CSSProperties = {
   width: "100%",
   fontSize: "13px",
   padding: "7px 10px",
@@ -41,7 +44,19 @@ const fieldStyle = {
   boxSizing: "border-box",
 };
 
-const emptyForm = { tag: "", label: "", phrase_text: "" };
+interface PhraseForm {
+  tag: string;
+  label: string;
+  phrase_text: string;
+}
+
+const emptyForm: PhraseForm = { tag: "", label: "", phrase_text: "" };
+
+interface PhraseBookManagerProps {
+  onInsert?: ((text: string) => void) | null;
+  onClose?: (() => void) | null;
+  initialText?: string | null;
+}
 
 /**
  * List/add/edit/delete UI and CRUD logic for saved cover-letter "why this
@@ -53,14 +68,14 @@ const emptyForm = { tag: "", label: "", phrase_text: "" };
  * onClose. Optional onClose — paired with onInsert. Optional initialText —
  * prefills the "add a new phrase" text area.
  */
-export default function PhraseBookManager({ onInsert, onClose, initialText }) {
-  const [phrases, setPhrases] = useState([]);
+export default function PhraseBookManager({ onInsert, onClose, initialText }: PhraseBookManagerProps) {
+  const [phrases, setPhrases] = useState<PhraseBookEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [addForm, setAddForm] = useState({ ...emptyForm, phrase_text: initialText || "" });
+  const [error, setError] = useState<string | null>(null);
+  const [addForm, setAddForm] = useState<PhraseForm>({ ...emptyForm, phrase_text: initialText || "" });
   const [saving, setSaving] = useState(false);
-  const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState<PhraseForm>(emptyForm);
 
   const fetchPhrases = async () => {
     setLoading(true);
@@ -68,7 +83,7 @@ export default function PhraseBookManager({ onInsert, onClose, initialText }) {
     try {
       const res = await fetch("/api/phrase-book");
       if (!res.ok) throw new Error(`Failed to load (${res.status})`);
-      const data = await res.json();
+      const data: PhraseBookEntry[] = await res.json();
       setPhrases(Array.isArray(data) ? data : []);
     } catch (e) {
       setError(describeFetchError(e));
@@ -97,7 +112,7 @@ export default function PhraseBookManager({ onInsert, onClose, initialText }) {
         body: JSON.stringify({ tag, label, phrase_text }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Save failed (${res.status})`);
       }
       setAddForm(emptyForm);
@@ -109,7 +124,7 @@ export default function PhraseBookManager({ onInsert, onClose, initialText }) {
     }
   };
 
-  const startEdit = (phrase) => {
+  const startEdit = (phrase: PhraseBookEntry) => {
     setEditingId(phrase.id);
     setEditForm({ tag: phrase.tag || "", label: phrase.label || "", phrase_text: phrase.phrase_text || "" });
   };
@@ -119,7 +134,7 @@ export default function PhraseBookManager({ onInsert, onClose, initialText }) {
     setEditForm(emptyForm);
   };
 
-  const handleEditSave = async (id) => {
+  const handleEditSave = async (id: number) => {
     const tag = editForm.tag.trim();
     const label = editForm.label.trim();
     const phrase_text = editForm.phrase_text.trim();
@@ -134,7 +149,7 @@ export default function PhraseBookManager({ onInsert, onClose, initialText }) {
         body: JSON.stringify({ tag, label, phrase_text }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Save failed (${res.status})`);
       }
       cancelEdit();
@@ -144,12 +159,12 @@ export default function PhraseBookManager({ onInsert, onClose, initialText }) {
     }
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (id: number) => {
     if (!window.confirm("Delete this phrase-book entry?")) return;
     try {
       const res = await fetch(`/api/phrase-book/${id}`, { method: "DELETE" });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
         throw new Error(data.error || `Delete failed (${res.status})`);
       }
       await fetchPhrases();
@@ -218,7 +233,7 @@ export default function PhraseBookManager({ onInsert, onClose, initialText }) {
                   <button
                     className="btn-primary"
                     style={{ fontSize: "11px", padding: "3px 10px" }}
-                    onClick={() => { onInsert(phrase.phrase_text); onClose(); }}
+                    onClick={() => { onInsert(phrase.phrase_text); onClose?.(); }}
                   >
                     Use this
                   </button>

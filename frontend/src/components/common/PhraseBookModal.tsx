@@ -6,8 +6,14 @@
  */
 
 // ai: claude-sonnet-5 | 2026-08-13
-import Modal from "./Modal.jsx";
-import PhraseBookManager from "./PhraseBookManager.jsx";
+import Modal from "./Modal.tsx";
+import PhraseBookManager from "./PhraseBookManager.tsx";
+
+interface PhraseBookModalProps {
+  onClose: () => void;
+  onInsert?: ((text: string) => void) | null;
+  initialText?: string | null;
+}
 
 /**
  * Modal wrapper around PhraseBookManager, for opening the phrase book from
@@ -20,7 +26,7 @@ import PhraseBookManager from "./PhraseBookManager.jsx";
  * Optional initialText — prefills the "add a new phrase" text area, so callers
  * can open this straight into "save what I just wrote" mode.
  */
-export default function PhraseBookModal({ onClose, onInsert, initialText }) {
+export default function PhraseBookModal({ onClose, onInsert, initialText }: PhraseBookModalProps) {
   return (
     <Modal title="Phrase Book" subtitle="Reusable 'why this company' material, tagged by theme" onClose={onClose} maxWidth="700px">
       <div style={{ maxHeight: "72vh", overflowY: "auto", paddingRight: "4px" }}>
