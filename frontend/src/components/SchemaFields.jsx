@@ -40,7 +40,8 @@ import { helpTextStyle, labelStyle } from "./settingsStyles.js";
 // input type, and help text live only in the registry, never re-typed here.
 // Fields with real custom behavior (file pickers, a validated dropdown that
 // drives conditional rendering) aren't registry-backed and stay hand-written.
-function SchemaField({ spec, cfg, setCfg }) {
+// ai: claude-sonnet-5 | 2026-10-07
+export function SchemaField({ spec, cfg, setCfg }) {
   if (!spec) return null;
   const { key, label, input_type: inputType, placeholder, is_secret: isSecret, help_text: helpText } = spec;
 

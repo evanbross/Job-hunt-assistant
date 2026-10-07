@@ -41,7 +41,7 @@ import ApplicationProfilePanel from "./ApplicationProfilePanel.jsx";
 import BrowserExtensionPanel from "./BrowserExtensionPanel.jsx";
 import Modal from "./common/Modal.jsx";
 import ResumeUpload from "./ResumeUpload.jsx";
-import { SchemaFieldGroup } from "./SchemaFields.jsx";
+import { SchemaField, SchemaFieldGroup } from "./SchemaFields.jsx";
 import { helpTextStyle, labelStyle } from "./settingsStyles.js";
 import SetupWizardPanel from "./SetupWizardPanel.jsx";
 
