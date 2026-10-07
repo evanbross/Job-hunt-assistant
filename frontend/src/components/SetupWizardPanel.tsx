@@ -32,7 +32,18 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import React, { useEffect, useRef, useState } from "react";
+import type { ChangeEvent, CSSProperties } from "react";
+import type {
+  CandidateProfileResponse,
+  SetupLocalFileInfo,
+  SetupSaveProfileResult,
+  SetupStatusResponse,
+  SetupTestAiResult,
+  SetupUploadCredentialsResult,
+} from "../types/setupWizard.ts";
+import type { ApiErrorBody } from "../types/common.ts";
 
 const STEP_AI = 0;
 const STEP_CREDS = 1;
@@ -64,10 +75,23 @@ const PROFILE_TEMPLATE = `# About Me
 [List deal-breakers: e.g. no on-call, no defense contracts, etc.]
 `;
 
-export default function SetupWizardPanel({ onSetupComplete }) {
+interface StepDoneState {
+  ai: boolean;
+  creds: boolean;
+  auth: boolean;
+  profile: boolean;
+}
+
+type AiProvider = "anthropic" | "openai" | "ollama";
+
+interface SetupWizardPanelProps {
+  onSetupComplete: () => void;
+}
+
+export default function SetupWizardPanel({ onSetupComplete }: SetupWizardPanelProps) {
   const [currentStep, setCurrentStep] = useState(0);
-  const [serverStatus, setServerStatus] = useState(null);
-  const [stepDone, setStepDone] = useState({
+  const [serverStatus, setServerStatus] = useState<SetupStatusResponse | null>(null);
+  const [stepDone, setStepDone] = useState<StepDoneState>({
     ai: false,
     creds: false,
     auth: false,
@@ -75,34 +99,34 @@ export default function SetupWizardPanel({ onSetupComplete }) {
   });
 
   // Step 0 — AI Provider
-  const [aiProvider, setAiProvider] = useState("anthropic");
+  const [aiProvider, setAiProvider] = useState<AiProvider>("anthropic");
   const [apiKey, setApiKey] = useState("");
   const [openaiModel, setOpenaiModel] = useState("gpt-4.1");
   const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
   const [ollamaModel, setOllamaModel] = useState("qwen2.5:32b");
-  const [aiTestResult, setAiTestResult] = useState(null);
+  const [aiTestResult, setAiTestResult] = useState<SetupTestAiResult | null>(null);
   const [aiTesting, setAiTesting] = useState(false);
   const [aiSaving, setAiSaving] = useState(false);
 
   // Step 1 — Google Credentials
-  const [credFileContent, setCredFileContent] = useState(null);
+  const [credFileContent, setCredFileContent] = useState<Record<string, unknown> | null>(null);
   const [credFileName, setCredFileName] = useState("");
   const [credParseError, setCredParseError] = useState("");
   const [credUploading, setCredUploading] = useState(false);
-  const [credUploadResult, setCredUploadResult] = useState(null);
-  const fileInputRef = useRef(null);
+  const [credUploadResult, setCredUploadResult] = useState<SetupUploadCredentialsResult | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Step 2 — Google Auth
   const [authPolling, setAuthPolling] = useState(false);
-  const authPollRef = useRef(null);
+  const authPollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   // Step 3 — Candidate Profile
   const [profileContent, setProfileContent] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
-  const [profileSaveResult, setProfileSaveResult] = useState(null);
+  const [profileSaveResult, setProfileSaveResult] = useState<SetupSaveProfileResult | null>(null);
   // ai: claude-sonnet-5 | 2026-09-01 — local-files summary for StepFinish
   // (the prompt-template files; the candidate profile lives in the account).
-  const [localFiles, setLocalFiles] = useState(null);
+  const [localFiles, setLocalFiles] = useState<SetupStatusResponse["local_files"] | null>(null);
 
   useEffect(() => {
     // fetchStatus is redefined every render; run once on mount only.
@@ -123,7 +147,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
   const fetchStatus = async () => {
     try {
       const res = await fetch("/api/setup/status");
-      const data = await res.json();
+      const data: SetupStatusResponse = await res.json();
       setServerStatus(data);
       applyServerStatus(data);
 
@@ -132,7 +156,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
       if (data?.steps?.candidate_profile?.done) {
         const profileRes = await fetch("/api/candidate-profile");
         if (profileRes.ok) {
-          const saved = await profileRes.json();
+          const saved: CandidateProfileResponse = await profileRes.json();
           setProfileContent((current) => current || saved.content);
         }
       }
@@ -141,8 +165,8 @@ export default function SetupWizardPanel({ onSetupComplete }) {
     }
   };
 
-  const applyServerStatus = (data) => {
-    const steps = data?.steps || {};
+  const applyServerStatus = (data: SetupStatusResponse) => {
+    const steps = data?.steps || ({} as SetupStatusResponse["steps"]);
     const aiDone = steps.ai_provider?.done ?? false;
     const credsDone = steps.google_credentials?.done ?? false;
     const authDone = steps.google_auth?.done ?? false;
@@ -153,7 +177,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
     // ai: claude-sonnet-5 | 2026-09-01
     setLocalFiles(data?.local_files || null);
 
-    if (steps.ai_provider?.provider) setAiProvider(steps.ai_provider.provider);
+    if (steps.ai_provider?.provider) setAiProvider(steps.ai_provider.provider as AiProvider);
 
     // Advance to the first incomplete required step
     if (!aiDone) { setCurrentStep(STEP_AI); return; }
@@ -197,7 +221,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
       startAuthPolling();
       window.location.href = data.auth_url;
     } catch (e) {
-      window.alert("Failed to start auth: " + e.message);
+      window.alert("Failed to start auth: " + (e instanceof Error ? e.message : String(e)));
     }
   };
 
@@ -205,7 +229,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
     setAiTesting(true);
     setAiTestResult(null);
     try {
-      const body = { provider: aiProvider };
+      const body: Record<string, string> = { provider: aiProvider };
       if (aiProvider === "anthropic") body.api_key = apiKey;
       else if (aiProvider === "openai") { body.api_key = apiKey; body.model = openaiModel; }
       else if (aiProvider === "ollama") { body.base_url = ollamaUrl; body.model = ollamaModel; }
@@ -215,10 +239,10 @@ export default function SetupWizardPanel({ onSetupComplete }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
+      const data: SetupTestAiResult = await res.json();
       setAiTestResult(data);
     } catch (e) {
-      setAiTestResult({ ok: false, message: "Request failed: " + e.message });
+      setAiTestResult({ ok: false, message: "Request failed: " + (e instanceof Error ? e.message : String(e)) });
     } finally {
       setAiTesting(false);
     }
@@ -232,7 +256,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
       // are per-account settings stored encrypted in the database (the wizard
       // used to POST them to /api/setup/save-env, which no longer accepts them
       // and has been removed).
-      const cfgPayload = { ai_provider: aiProvider };
+      const cfgPayload: Record<string, string> = { ai_provider: aiProvider };
       if (aiProvider === "anthropic") cfgPayload.anthropic_api_key = apiKey;
       else if (aiProvider === "openai") {
         cfgPayload.openai_api_key = apiKey;
@@ -248,7 +272,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
         body: JSON.stringify(cfgPayload),
       });
       if (!cfgRes.ok) {
-        const err = await cfgRes.json().catch(() => ({}));
+        const err: ApiErrorBody = await cfgRes.json().catch(() => ({}));
         window.alert("Failed to save: " + (err.error || cfgRes.status));
         return;
       }
@@ -260,8 +284,8 @@ export default function SetupWizardPanel({ onSetupComplete }) {
     }
   };
 
-  const handleCredFileChange = (e) => {
-    const file = e.target.files[0];
+  const handleCredFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
     if (!file) return;
     setCredFileName(file.name);
     setCredParseError("");
@@ -270,7 +294,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const parsed = JSON.parse(ev.target.result);
+        const parsed = JSON.parse(String(ev.target?.result));
         if (!parsed.installed && !parsed.web) {
           setCredParseError("This doesn't look like a Google OAuth credentials file. Expected an 'installed' or 'web' key.");
           setCredFileContent(null);
@@ -294,11 +318,11 @@ export default function SetupWizardPanel({ onSetupComplete }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(credFileContent),
       });
-      const data = await res.json();
+      const data: SetupUploadCredentialsResult = await res.json();
       setCredUploadResult(data);
       if (data.ok) setStepDone((prev) => ({ ...prev, creds: true }));
     } catch (e) {
-      setCredUploadResult({ ok: false, error: "Request failed: " + e.message });
+      setCredUploadResult({ ok: false, error: "Request failed: " + (e instanceof Error ? e.message : String(e)) });
     } finally {
       setCredUploading(false);
     }
@@ -318,15 +342,15 @@ export default function SetupWizardPanel({ onSetupComplete }) {
         body: JSON.stringify({ content: profileContent }),
       });
       if (!res.ok) {
-        const err = await res.json();
+        const err: ApiErrorBody = await res.json();
         setProfileSaveResult({ ok: false, message: err.error || "Save failed" });
         return;
       }
-      const data = await res.json();
+      const data: SetupSaveProfileResult = await res.json();
       setProfileSaveResult({ ok: true, char_count: data.char_count });
       setStepDone((prev) => ({ ...prev, profile: true }));
     } catch (e) {
-      setProfileSaveResult({ ok: false, message: "Request failed: " + e.message });
+      setProfileSaveResult({ ok: false, message: "Request failed: " + (e instanceof Error ? e.message : String(e)) });
     } finally {
       setProfileSaving(false);
     }
@@ -336,7 +360,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
   // Reads the chosen file in the browser and puts its text in the editor; the
   // user then saves it like any other edit. (Nothing is read from, or written
   // to, the server's disk.)
-  const handleImportProfileFile = async (event) => {
+  const handleImportProfileFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
@@ -352,7 +376,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
     onSetupComplete();
   };
 
-  const aiNextEnabled = stepDone.ai || (aiTestResult?.ok && apiKey.trim());
+  const aiNextEnabled = stepDone.ai || (!!aiTestResult?.ok && !!apiKey.trim());
   const authNextEnabled = true;  // always skippable
 
   return (
@@ -525,7 +549,7 @@ export default function SetupWizardPanel({ onSetupComplete }) {
 
 // ─── Progress Bar ─────────────────────────────────────────────────────────────
 
-function ProgressBar({ currentStep, stepDone }) {
+function ProgressBar({ currentStep, stepDone }: { currentStep: number; stepDone: StepDoneState }) {
   const doneMap = [stepDone.ai, stepDone.creds, stepDone.auth, stepDone.profile, false];
 
   return (
@@ -553,6 +577,23 @@ function ProgressBar({ currentStep, stepDone }) {
 
 // ─── Step 0: AI Provider ─────────────────────────────────────────────────────
 
+interface StepAIProps {
+  provider: AiProvider;
+  onProviderChange: (provider: AiProvider) => void;
+  apiKey: string;
+  onApiKeyChange: (value: string) => void;
+  openaiModel: string;
+  onOpenaiModelChange: (value: string) => void;
+  ollamaUrl: string;
+  onOllamaUrlChange: (value: string) => void;
+  ollamaModel: string;
+  onOllamaModelChange: (value: string) => void;
+  testResult: SetupTestAiResult | null;
+  testing: boolean;
+  onTest: () => void;
+  alreadyDone: boolean;
+}
+
 function StepAI({
   provider, onProviderChange,
   apiKey, onApiKeyChange,
@@ -561,7 +602,7 @@ function StepAI({
   ollamaModel, onOllamaModelChange,
   testResult, testing, onTest,
   alreadyDone,
-}) {
+}: StepAIProps) {
   return (
     <div>
       <h3 style={styles.stepTitle}>AI Provider</h3>
@@ -576,11 +617,11 @@ function StepAI({
       )}
 
       <div style={styles.radioGroup}>
-        {[
+        {([
           { value: "anthropic", label: "Anthropic (Claude)", hint: "Recommended — best job scoring quality" },
           { value: "openai", label: "OpenAI (GPT)", hint: "Good alternative if you already have an OpenAI key" },
           { value: "ollama", label: "Ollama (local)", hint: "Free and private, but requires a local GPU" },
-        ].map(({ value, label, hint }) => (
+        ] as { value: AiProvider; label: string; hint: string }[]).map(({ value, label, hint }) => (
           <label key={value} style={styles.radioOption(provider === value)}>
             <input
               type="radio"
@@ -678,10 +719,21 @@ function StepAI({
 
 // ─── Step 1: Google Credentials ───────────────────────────────────────────────
 
+interface StepCredentialsProps {
+  fileName: string;
+  parseError: string;
+  fileReady: boolean;
+  uploadResult: SetupUploadCredentialsResult | null;
+  onFileChange: (e: ChangeEvent<HTMLInputElement>) => void;
+  fileInputRef: React.RefObject<HTMLInputElement>;
+  alreadyDone: boolean;
+  canConfigure: boolean;
+}
+
 function StepCredentials({
   fileName, parseError, fileReady, uploadResult,
   onFileChange, fileInputRef, alreadyDone, canConfigure,
-}) {
+}: StepCredentialsProps) {
   // ai: claude-sonnet-5 | 2026-09-26 -- one Google OAuth client serves the whole
   // installation, so only an administrator may upload it (see routes/setup.py).
   if (!canConfigure) {
@@ -755,7 +807,14 @@ function StepCredentials({
 
 // ─── Step 2: Google Auth ──────────────────────────────────────────────────────
 
-function StepAuth({ done, polling, onConnect, credsMissing }) {
+interface StepAuthProps {
+  done: boolean;
+  polling: boolean;
+  onConnect: () => void;
+  credsMissing: boolean;
+}
+
+function StepAuth({ done, polling, onConnect, credsMissing }: StepAuthProps) {
   return (
     <div>
       <h3 style={styles.stepTitle}>Connect Google Account</h3>
@@ -801,6 +860,17 @@ function StepAuth({ done, polling, onConnect, credsMissing }) {
 
 // ─── Step 3: Candidate Profile ────────────────────────────────────────────────
 
+interface StepProfileProps {
+  content: string;
+  onContentChange: (value: string) => void;
+  saveResult: SetupSaveProfileResult | null;
+  saving: boolean;
+  onSave: () => void;
+  alreadyDone: boolean;
+  serverCharCount?: number;
+  onImportFile: (e: ChangeEvent<HTMLInputElement>) => void;
+}
+
 // ai: claude-sonnet-5 | 2026-09-26 -- the profile is saved in the account and
 // edited here; a file can be imported into the editor but is never read from
 // the server's disk.
@@ -813,7 +883,7 @@ function StepProfile({
   alreadyDone,
   serverCharCount,
   onImportFile,
-}) {
+}: StepProfileProps) {
   const charCount = content.length;
   const tooShort = charCount > 0 && charCount < 200;
 
@@ -824,7 +894,7 @@ function StepProfile({
         Describe your skills, experience, and job preferences. The AI uses this to score how well each job matches you. The more detail you provide, the better the scoring.
       </p>
 
-      {alreadyDone && serverCharCount > 0 && (
+      {alreadyDone && !!serverCharCount && serverCharCount > 0 && (
         <div style={styles.alreadyDoneBanner}>
           A profile with {serverCharCount.toLocaleString()} characters is already saved. Edit it below or click Next to keep it.
         </div>
@@ -881,12 +951,18 @@ function StepProfile({
 
 // ─── Step 4: Finish ───────────────────────────────────────────────────────────
 
-function StepFinish({ stepDone, serverStatus, localFiles }) {
+interface StepFinishProps {
+  stepDone: StepDoneState;
+  serverStatus: SetupStatusResponse | null;
+  localFiles: SetupStatusResponse["local_files"] | null;
+}
+
+function StepFinish({ stepDone, serverStatus, localFiles }: StepFinishProps) {
   const redisOk = serverStatus?.redis_reachable ?? null;
 
   // ai: claude-sonnet-5 | 2026-09-01 — localFiles prop + fileItems for the
   // new "Local Files" summary below
-  const fileItems = [
+  const fileItems: { key: keyof SetupStatusResponse["local_files"]; label: string }[] = [
     { key: "cover_letter_prompt", label: "Cover letter prompt" },
     { key: "fit_scorer_prompt", label: "Fit scorer prompt" },
   ];
@@ -934,7 +1010,7 @@ function StepFinish({ stepDone, serverStatus, localFiles }) {
         <div style={{ ...styles.infraSection, marginTop: "12px" }}>
           <div style={styles.infraTitle}>Local Files</div>
           {fileItems.map(({ key, label }) => {
-            const info = localFiles[key];
+            const info: SetupLocalFileInfo | undefined = localFiles[key];
             const found = !!info?.found;
             return (
               <div key={key} style={{ ...styles.infraRow, marginTop: "4px" }}>
@@ -963,7 +1039,7 @@ const styles = {
     display: "flex",
     justifyContent: "center",
     paddingTop: "8px",
-  },
+  } as CSSProperties,
   card: {
     background: "var(--surface)",
     border: "1px solid var(--border)",
@@ -972,21 +1048,21 @@ const styles = {
     maxWidth: "680px",
     width: "100%",
     overflow: "hidden",
-  },
+  } as CSSProperties,
   cardHeader: {
     background: "linear-gradient(135deg, var(--header-from) 0%, var(--header-to) 100%)",
     padding: "20px 28px",
-  },
+  } as CSSProperties,
   cardTitle: {
     color: "#fff",
     fontSize: "20px",
     fontWeight: 700,
-  },
+  } as CSSProperties,
   cardSubtitle: {
     color: "rgba(255,255,255,0.7)",
     fontSize: "13px",
     marginTop: "2px",
-  },
+  } as CSSProperties,
   progressBar: {
     display: "flex",
     alignItems: "center",
@@ -994,15 +1070,15 @@ const styles = {
     borderBottom: "1px solid var(--border)",
     background: "var(--surface2)",
     overflowX: "auto",
-  },
-  progressStep: (active, done) => ({
+  } as CSSProperties,
+  progressStep: (active: boolean, done: boolean): CSSProperties => ({
     display: "flex",
     alignItems: "center",
     gap: "7px",
     flexShrink: 0,
     opacity: active || done ? 1 : 0.45,
   }),
-  progressDot: (active, done) => ({
+  progressDot: (active: boolean, done: boolean): CSSProperties => ({
     width: "24px",
     height: "24px",
     borderRadius: "50%",
@@ -1015,13 +1091,13 @@ const styles = {
     justifyContent: "center",
     flexShrink: 0,
   }),
-  progressLabel: (active, done) => ({
+  progressLabel: (active: boolean, done: boolean): CSSProperties => ({
     fontSize: "12px",
     fontWeight: active || done ? 600 : 400,
     color: done ? "var(--green)" : active ? "var(--accent)" : "var(--text-muted)",
     whiteSpace: "nowrap",
   }),
-  progressConnector: (done) => ({
+  progressConnector: (done: boolean): CSSProperties => ({
     flex: 1,
     height: "2px",
     background: done ? "var(--green)" : "var(--border)",
@@ -1032,7 +1108,7 @@ const styles = {
   stepContent: {
     padding: "24px 28px",
     minHeight: "320px",
-  },
+  } as CSSProperties,
   navRow: {
     display: "flex",
     alignItems: "center",
@@ -1040,26 +1116,26 @@ const styles = {
     padding: "16px 28px",
     borderTop: "1px solid var(--border)",
     background: "var(--surface2)",
-  },
+  } as CSSProperties,
   stepTitle: {
     fontSize: "17px",
     fontWeight: 700,
     color: "var(--text)",
     margin: "0 0 6px 0",
-  },
+  } as CSSProperties,
   stepDesc: {
     fontSize: "13px",
     color: "var(--text-muted)",
     margin: "0 0 18px 0",
     lineHeight: 1.5,
-  },
+  } as CSSProperties,
   radioGroup: {
     display: "flex",
     flexDirection: "column",
     gap: "8px",
     marginBottom: "18px",
-  },
-  radioOption: (checked) => ({
+  } as CSSProperties,
+  radioOption: (checked: boolean): CSSProperties => ({
     display: "flex",
     alignItems: "flex-start",
     gap: "10px",
@@ -1073,17 +1149,17 @@ const styles = {
     fontSize: "14px",
     fontWeight: 600,
     color: "var(--text)",
-  },
+  } as CSSProperties,
   radioHint: {
     fontSize: "12px",
     color: "var(--text-muted)",
     marginTop: "1px",
-  },
+  } as CSSProperties,
   fieldGroup: {
     display: "flex",
     flexDirection: "column",
     gap: "4px",
-  },
+  } as CSSProperties,
   fieldLabel: {
     fontSize: "13px",
     fontWeight: 600,
@@ -1091,13 +1167,13 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: "10px",
-  },
+  } as CSSProperties,
   fieldLabelLink: {
     fontSize: "12px",
     color: "var(--accent)",
     textDecoration: "none",
     fontWeight: 400,
-  },
+  } as CSSProperties,
   alreadyDoneBanner: {
     background: "var(--green-light)",
     border: "1px solid var(--green)",
@@ -1106,7 +1182,7 @@ const styles = {
     fontSize: "13px",
     color: "var(--text)",
     marginBottom: "16px",
-  },
+  } as CSSProperties,
   warningBanner: {
     background: "rgba(251,191,36,0.1)",
     border: "1px solid var(--orange)",
@@ -1115,7 +1191,7 @@ const styles = {
     fontSize: "13px",
     color: "var(--text)",
     marginBottom: "16px",
-  },
+  } as CSSProperties,
   successBanner: {
     display: "flex",
     alignItems: "center",
@@ -1125,18 +1201,18 @@ const styles = {
     borderRadius: "var(--radius)",
     padding: "14px 16px",
     marginTop: "16px",
-  },
+  } as CSSProperties,
   instructionList: {
     fontSize: "13px",
     color: "var(--text)",
     lineHeight: 1.8,
     paddingLeft: "18px",
     margin: "0 0 16px 0",
-  },
+  } as CSSProperties,
   link: {
     color: "var(--accent)",
     textDecoration: "none",
-  },
+  } as CSSProperties,
   uploadArea: {
     border: "2px dashed var(--border)",
     borderRadius: "var(--radius)",
@@ -1147,7 +1223,7 @@ const styles = {
     fontSize: "13px",
     color: "var(--text)",
     transition: "border-color 0.15s",
-  },
+  } as CSSProperties,
   profileTextarea: {
     width: "100%",
     padding: "12px",
@@ -1160,26 +1236,26 @@ const styles = {
     resize: "vertical",
     lineHeight: 1.6,
     boxSizing: "border-box",
-  },
+  } as CSSProperties,
   profileFooter: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
     marginTop: "10px",
-  },
+  } as CSSProperties,
   profileBrowseRow: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     gap: "10px",
     marginBottom: "10px",
-  },
+  } as CSSProperties,
   summaryList: {
     display: "flex",
     flexDirection: "column",
     gap: "10px",
     marginBottom: "20px",
-  },
+  } as CSSProperties,
   summaryItem: {
     display: "flex",
     alignItems: "center",
@@ -1188,13 +1264,13 @@ const styles = {
     border: "1px solid var(--border)",
     borderRadius: "var(--radius)",
     background: "var(--surface2)",
-  },
+  } as CSSProperties,
   infraSection: {
     padding: "12px 14px",
     border: "1px solid var(--border)",
     borderRadius: "var(--radius)",
     background: "var(--surface2)",
-  },
+  } as CSSProperties,
   infraTitle: {
     fontSize: "11px",
     fontWeight: 700,
@@ -1202,13 +1278,13 @@ const styles = {
     color: "var(--text-muted)",
     marginBottom: "8px",
     letterSpacing: "0.05em",
-  },
+  } as CSSProperties,
   infraRow: {
     display: "flex",
     alignItems: "center",
     gap: "8px",
-  },
-  infraDot: (color) => ({
+  } as CSSProperties,
+  infraDot: (color: string): CSSProperties => ({
     width: "8px",
     height: "8px",
     borderRadius: "50%",
@@ -1223,5 +1299,5 @@ const styles = {
     cursor: "pointer",
     padding: "0 4px",
     textDecoration: "underline",
-  },
+  } as CSSProperties,
 };

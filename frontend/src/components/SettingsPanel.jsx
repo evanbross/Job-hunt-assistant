@@ -43,7 +43,7 @@ import Modal from "./common/Modal.jsx";
 import ResumeUpload from "./ResumeUpload.jsx";
 import { SchemaFieldGroup } from "./SchemaFields.jsx";
 import { helpTextStyle, labelStyle } from "./settingsStyles.js";
-import SetupWizardPanel from "./SetupWizardPanel.jsx";
+import SetupWizardPanel from "./SetupWizardPanel.tsx";
 
 // ai: claude-sonnet-5 | 2026-08-30
 // Grouped like an IDE settings tree (PyCharm-style): top-level leaves for

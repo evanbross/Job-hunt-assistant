@@ -50,3 +50,15 @@ export interface AccountInfo {
   password_pending_default: boolean;
   deletion_requested_at: string | null;
 }
+
+/** GET /api/auth/status response (routes/auth.py's auth_status). */
+export interface AuthStatusResponse {
+  authenticated: boolean;
+  has_send_scope?: boolean;
+}
+
+/** GET /api/auth/google response (routes/auth.py's auth_google_start). */
+export interface AuthGoogleStartResponse {
+  auth_url?: string;
+  error?: string;
+}
