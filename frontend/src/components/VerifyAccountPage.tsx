@@ -33,13 +33,17 @@
  */
 
 // ai: claude-sonnet-5 | 2026-08-21
-// The page the forgot-password email links to (/reset-password?token=...).
-// Mirrors VerifyAccountPage.jsx's shape (collect a password, POST it with
-// the token) rather than auto-submitting on mount, for the same reason: a
-// page load shouldn't itself complete an irreversible action.
+// The page the registration-verification email links to
+// (/verify-account?token=...). Deliberately does nothing on mount (a
+// page-load/GET shouldn't itself complete an irreversible action) — it
+// collects a password and POSTs it with the token to
+// /api/account/complete-registration, which is the actual "log in" moment
+// for a new account.
 import { useState } from "react";
-import { apiFetch } from "../utils/apiClient.js";
-import { describeFetchError } from "../utils/fetchErrorUtils.js";
+import type { CSSProperties } from "react";
+import { apiFetch } from "../utils/apiClient.ts";
+import { describeFetchError } from "../utils/fetchErrorUtils.ts";
+import type { ApiErrorBody } from "../types/common.ts";
 
 const styles = {
   wrap: {
@@ -48,34 +52,34 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     background: "var(--bg, #f4f5fb)",
-  },
+  } as CSSProperties,
   card: {
     width: "320px",
     background: "var(--card-bg, #fff)",
     borderRadius: "var(--radius, 8px)",
     boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
     padding: "32px 28px",
-  },
+  } as CSSProperties,
   logo: {
     fontSize: "20px",
     fontWeight: "700",
     marginBottom: "4px",
-  },
+  } as CSSProperties,
   sub: {
     fontSize: "13px",
     color: "var(--text-muted, #777)",
     marginBottom: "22px",
-  },
+  } as CSSProperties,
   field: {
     marginBottom: "14px",
-  },
+  } as CSSProperties,
   label: {
     display: "block",
     fontSize: "12px",
     fontWeight: "600",
     marginBottom: "5px",
     color: "var(--text, #333)",
-  },
+  } as CSSProperties,
   input: {
     width: "100%",
     padding: "9px 11px",
@@ -83,15 +87,20 @@ const styles = {
     border: "1px solid var(--border, #ccc)",
     borderRadius: "var(--radius, 8px)",
     boxSizing: "border-box",
-  },
+  } as CSSProperties,
   error: {
     color: "var(--red, #d33)",
     fontSize: "13px",
     marginBottom: "14px",
-  },
+  } as CSSProperties,
 };
 
-export default function ResetPasswordPage({ token, onLoginSuccess }) {
+interface VerifyAccountPageProps {
+  token?: string | null;
+  onLoginSuccess: () => void;
+}
+
+export default function VerifyAccountPage({ token, onLoginSuccess }: VerifyAccountPageProps) {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
@@ -103,15 +112,15 @@ export default function ResetPasswordPage({ token, onLoginSuccess }) {
         <div style={styles.card}>
           <div style={styles.logo}>💼 Job Hunt Assistant</div>
           <div style={styles.error}>
-            This link is missing a reset token. Check the link in your
-            email, or request a new one from the sign-in page.
+            This link is missing a verification token. Check the link in
+            your email, or request a new one from the sign-in page.
           </div>
         </div>
       </div>
     );
   }
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (submitting) return;
     if (password !== confirmPassword) {
@@ -121,12 +130,12 @@ export default function ResetPasswordPage({ token, onLoginSuccess }) {
     setSubmitting(true);
     setError("");
     try {
-      const res = await apiFetch("/api/account/reset-password", {
+      const res = await apiFetch("/api/account/complete-registration", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, password }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(data.error || `Request failed (HTTP ${res.status})`);
         return;
@@ -144,13 +153,13 @@ export default function ResetPasswordPage({ token, onLoginSuccess }) {
     <div style={styles.wrap}>
       <div style={styles.card}>
         <div style={styles.logo}>💼 Job Hunt Assistant</div>
-        <div style={styles.sub}>Choose a new password</div>
+        <div style={styles.sub}>Set your password to finish creating your account</div>
         <form onSubmit={handleSubmit}>
           {error && <div style={styles.error}>{error}</div>}
           <div style={styles.field}>
-            <label style={styles.label} htmlFor="reset-password">New password</label>
+            <label style={styles.label} htmlFor="verify-password">Password</label>
             <input
-              id="reset-password"
+              id="verify-password"
               type="password"
               autoComplete="new-password"
               value={password}
@@ -160,9 +169,9 @@ export default function ResetPasswordPage({ token, onLoginSuccess }) {
             />
           </div>
           <div style={styles.field}>
-            <label style={styles.label} htmlFor="reset-confirm-password">Confirm new password</label>
+            <label style={styles.label} htmlFor="verify-confirm-password">Confirm password</label>
             <input
-              id="reset-confirm-password"
+              id="verify-confirm-password"
               type="password"
               autoComplete="new-password"
               value={confirmPassword}

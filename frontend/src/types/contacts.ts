@@ -82,3 +82,13 @@ export interface ContactsStatusResponse {
   count: number;
   last_imported_at: string | null;
 }
+
+/** Response body of POST /api/contacts/import (routes/contacts.py's import_contacts). */
+export interface ContactsImportSummary {
+  imported: number;
+  added: number;
+  updated: number;
+  removed: number;
+  skipped: number;
+  total_rows: number;
+}

@@ -39,8 +39,10 @@
 // (per the user's explicit call: confirming an email change never touches
 // the password) — so this confirms automatically on mount.
 import { useEffect, useState } from "react";
-import { apiFetch } from "../utils/apiClient.js";
-import { describeFetchError } from "../utils/fetchErrorUtils.js";
+import type { CSSProperties } from "react";
+import { apiFetch } from "../utils/apiClient.ts";
+import { describeFetchError } from "../utils/fetchErrorUtils.ts";
+import type { ConfirmEmailChangeResponse } from "../types/auth.ts";
 
 const styles = {
   wrap: {
@@ -49,34 +51,34 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     background: "var(--bg, #f4f5fb)",
-  },
+  } as CSSProperties,
   card: {
     width: "320px",
     background: "var(--card-bg, #fff)",
     borderRadius: "var(--radius, 8px)",
     boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
     padding: "32px 28px",
-  },
+  } as CSSProperties,
   logo: {
     fontSize: "20px",
     fontWeight: "700",
     marginBottom: "4px",
-  },
+  } as CSSProperties,
   sub: {
     fontSize: "13px",
     color: "var(--text-muted, #777)",
     marginBottom: "18px",
-  },
+  } as CSSProperties,
   error: {
     color: "var(--red, #d33)",
     fontSize: "13px",
     lineHeight: "1.5",
-  },
+  } as CSSProperties,
   success: {
     color: "var(--green, #1a8a4a)",
     fontSize: "13px",
     lineHeight: "1.5",
-  },
+  } as CSSProperties,
   toggleLink: {
     display: "inline-block",
     marginTop: "16px",
@@ -84,11 +86,17 @@ const styles = {
     cursor: "pointer",
     fontWeight: "600",
     fontSize: "13px",
-  },
+  } as CSSProperties,
 };
 
-export default function VerifyEmailChangePage({ token }) {
-  const [status, setStatus] = useState(token ? "pending" : "missing_token"); // pending | done | error | missing_token
+type VerifyStatus = "pending" | "done" | "error" | "missing_token";
+
+interface VerifyEmailChangePageProps {
+  token?: string | null;
+}
+
+export default function VerifyEmailChangePage({ token }: VerifyEmailChangePageProps) {
+  const [status, setStatus] = useState<VerifyStatus>(token ? "pending" : "missing_token");
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -101,7 +109,7 @@ export default function VerifyEmailChangePage({ token }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token }),
         });
-        const data = await res.json().catch(() => ({}));
+        const data: ConfirmEmailChangeResponse = await res.json().catch(() => ({}));
         if (cancelled) return;
         if (!res.ok) {
           setStatus("error");
@@ -109,7 +117,7 @@ export default function VerifyEmailChangePage({ token }) {
           return;
         }
         setStatus("done");
-        setMessage(data.email);
+        setMessage(data.email || "");
       } catch (err) {
         if (!cancelled) {
           setStatus("error");

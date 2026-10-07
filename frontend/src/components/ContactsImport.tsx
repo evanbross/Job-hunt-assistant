@@ -14,29 +14,37 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useRef, useState } from "react";
-import Modal from "./common/Modal.jsx";
-import { formatLocalDateTime } from "../utils/dateTimeUtils.js";
+import type { CSSProperties } from "react";
+import Modal from "./common/Modal.tsx";
+import { formatLocalDateTime } from "../utils/dateTimeUtils.ts";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { ContactsImportSummary, ContactsStatusResponse } from "../types/contacts.ts";
+
+interface ContactsImportProps {
+  onImported?: (() => void) | null;
+}
 
 // ai: claude-sonnet-5 | 2026-07-26
-export default function ContactsImport({ onImported }) {
-  const [status, setStatus] = useState(null);
+export default function ContactsImport({ onImported }: ContactsImportProps) {
+  const [status, setStatus] = useState<ContactsStatusResponse | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
-  const [summary, setSummary] = useState(null);
-  const fileRef = useRef(null);
+  const [summary, setSummary] = useState<ContactsImportSummary | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const loadStatus = () =>
     fetch("/api/contacts/status")
       .then((r) => r.json())
-      .then((data) => setStatus(data))
+      .then((data: ContactsStatusResponse) => setStatus(data))
       .catch(() => {});
 
   useEffect(() => {
     loadStatus();
   }, []);
 
-  const handleFileChange = async (e) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".csv")) {
@@ -52,7 +60,7 @@ export default function ContactsImport({ onImported }) {
 
     try {
       const res = await fetch("/api/contacts/import", { method: "POST", body: form });
-      const data = await res.json();
+      const data: ContactsImportSummary & ApiErrorBody = await res.json();
       if (!res.ok) {
         setError(data.error || "Import failed");
         return;
@@ -61,7 +69,7 @@ export default function ContactsImport({ onImported }) {
       await loadStatus();
       onImported?.();
     } catch (e) {
-      setError("Import failed: " + e.message);
+      setError("Import failed: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -152,7 +160,7 @@ export default function ContactsImport({ onImported }) {
   );
 }
 
-const sectionTitle = {
+const sectionTitle: CSSProperties = {
   fontSize: "13px",
   fontWeight: "700",
   color: "var(--text-muted)",
@@ -161,7 +169,7 @@ const sectionTitle = {
   marginBottom: "12px",
 };
 
-const infoBox = {
+const infoBox: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",

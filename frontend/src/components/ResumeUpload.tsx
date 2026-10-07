@@ -32,22 +32,26 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
+import type { ApiErrorBody } from "../types/common.ts";
+import type { ResumeInfo } from "../types/resume.ts";
 
 export default function ResumeUpload() {
-  const [resume, setResume] = useState(null);
+  const [resume, setResume] = useState<ResumeInfo | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
-  const fileRef = useRef(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch("/api/resume")
       .then((r) => r.json())
-      .then((data) => setResume(data))
+      .then((data: ResumeInfo | null) => setResume(data))
       .catch(() => {});
   }, []);
 
-  const handleFileChange = async (e) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -62,14 +66,14 @@ export default function ResumeUpload() {
 
     try {
       const res = await fetch("/api/resume", { method: "POST", body: form });
-      const data = await res.json();
+      const data: ResumeInfo & ApiErrorBody = await res.json();
       if (!res.ok) {
         setError(data.error || "Upload failed");
         return;
       }
       setResume(data);
     } catch (e) {
-      setError("Upload failed: " + e.message);
+      setError("Upload failed: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -136,7 +140,7 @@ export default function ResumeUpload() {
   );
 }
 
-const sectionTitle = {
+const sectionTitle: CSSProperties = {
   fontSize: "13px",
   fontWeight: "700",
   color: "var(--text-muted)",
@@ -145,7 +149,7 @@ const sectionTitle = {
   marginBottom: "12px",
 };
 
-const infoBox = {
+const infoBox: CSSProperties = {
   background: "var(--surface2)",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
