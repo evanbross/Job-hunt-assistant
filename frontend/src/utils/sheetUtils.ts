@@ -32,7 +32,10 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-export function applicationRowFromSheet(row) {
+// ai: claude-sonnet-5 | 2026-10-07
+import type { ApplicationHistoryRow, ApplicationSheetRow, Job } from "../types/jobs.ts";
+
+export function applicationRowFromSheet(row: ApplicationSheetRow): ApplicationHistoryRow {
   const cells = Array.isArray(row.cells) ? row.cells : [];
   const date = cellValue(cells, 3);
   const rawStages = Array.isArray(row.stages) ? row.stages : [];
@@ -49,18 +52,21 @@ export function applicationRowFromSheet(row) {
     title: cellValue(cells, 4),
     url: cellValue(cells, 5),
     notes: cellValue(cells, 6),
-    stages,
+    stages: stages.map((s) => ({ id: s.id ?? null, status: s.status, date: s.date ?? "" })),
     duplicate_of_id: row.duplicate_of_id ?? null, // ai: claude-sonnet-4-6 | 2026-06-09
     skip_reason: row.skip_reason ?? null, // ai: claude-sonnet-4-6 | 2026-06-10
   };
 }
 
-export function cellValue(cells, columnIndex) {
+export function cellValue(
+  cells: { column_index: number | string; value?: string | null }[],
+  columnIndex: number,
+): string {
   const cell = cells.find((item) => Number(item.column_index) === columnIndex);
   return String(cell?.value || "").trim();
 }
 
-export function normalizeCompany(value) {
+export function normalizeCompany(value?: string | null): string {
   return String(value || "")
     .toLowerCase()
     .replace(/\b(inc|llc|ltd|corp|corporation|company|co)\b\.?/g, "")
@@ -69,7 +75,7 @@ export function normalizeCompany(value) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-16
-export function rowMatchesCompany(rowCompany, targetCompany) {
+export function rowMatchesCompany(rowCompany?: string | null, targetCompany?: string | null): boolean {
   const rowName = normalizeCompany(rowCompany);
   const targetName = normalizeCompany(targetCompany);
   if (!rowName || !targetName) return false;
@@ -78,7 +84,7 @@ export function rowMatchesCompany(rowCompany, targetCompany) {
   return rowName.replace(/\s+/g, "") === targetName.replace(/\s+/g, "");
 }
 
-export function isAppliedStatus(status) {
+export function isAppliedStatus(status?: string | null): boolean {
   const normalized = String(status || "").toLowerCase();
   return normalized.includes("applied") || normalized.includes("added");
 }
@@ -87,7 +93,7 @@ export function isAppliedStatus(status) {
 // Converts a jobs-DB row to the same shape that applicationRowFromSheet produces.
 // Used to inject the current job into company-history results so it always appears
 // as "this card" even when the job has not yet been added to the application sheet.
-export function jobToHistoryRow(job) {
+export function jobToHistoryRow(job: Job): ApplicationHistoryRow {
   return {
     id: job.id,
     company: String(job.company || "").trim(),
@@ -103,7 +109,7 @@ export function jobToHistoryRow(job) {
   };
 }
 
-export function titleLooksSimilar(title, currentTitle) {
+export function titleLooksSimilar(title?: string | null, currentTitle?: string | null): boolean {
   const normalizedTitle = String(title || "").toLowerCase();
   const normalizedCurrentTitle = String(currentTitle || "").toLowerCase();
   if (!normalizedTitle || !normalizedCurrentTitle) return false;

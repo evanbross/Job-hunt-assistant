@@ -32,24 +32,25 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-export function scoreLabel(score) {
+// ai: claude-sonnet-5 | 2026-10-07
+export function scoreLabel(score?: number | null): string {
   return score === null || score === undefined ? "not scored" : `${score}%`;
 }
 
-export function scoreTone(score) {
+export function scoreTone(score?: number | null): string {
   if (score === null || score === undefined) return "gray";
   if (score >= 70) return "green";
   if (score >= 40) return "yellow";
   return "red";
 }
 
-export function reasoningWithoutPenaltySummary(reasoning) {
+export function reasoningWithoutPenaltySummary(reasoning?: string | null): string {
   return String(reasoning || "")
     .replace(/\s*Penalties applied:\s*.+?\.\s*$/i, "")
     .trim();
 }
 
-export function fitReasoningBullets(reasoning) {
+export function fitReasoningBullets(reasoning?: string | null): string[] {
   const text = String(reasoning || "").trim();
   if (!text) return [];
   const bulletMatches = text.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s+.+/g);
@@ -64,8 +65,8 @@ export function fitReasoningBullets(reasoning) {
     .filter(Boolean));
 }
 
-function combineParserConfidenceBullets(items) {
-  const combinedItems = [];
+function combineParserConfidenceBullets(items: string[]): string[] {
+  const combinedItems: string[] = [];
   for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
     const confidenceMatch = items[itemIndex].match(/^Certainty:\s*(.+?)\.?$/i);
     const certaintyMatch = items[itemIndex + 1]?.match(/^Certainty score:\s*(.+?)\.?$/i);

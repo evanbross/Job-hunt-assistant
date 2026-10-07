@@ -32,6 +32,16 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
+import type { Dispatch, SetStateAction } from "react";
+import type {
+  BatchRefreshPopupState,
+  BatchRefreshResult,
+  Job,
+  RefreshFromUrlResponse,
+} from "../types/jobs.ts";
+import type { ApiErrorBody } from "../types/common.ts";
+
 // ai: claude-sonnet-5 | 2026-07-24
 // Shared by every "batch re-fetch from URL" tool (TriagePanel's own Re-fetch All,
 // JobQueue's Re-fetch Triage, and JobQueue's Re-fetch Unrated Jobs) — they all POST
@@ -39,8 +49,12 @@
 // capture / success / error), and drive the same progress-popup shape. Callers only
 // differ in which job list(s) they filter from and how a successfully-refreshed job
 // gets folded back into their own state, which is why routing is left to `onRefreshed`.
-export async function runBatchRefreshFromUrls(jobsToRefresh, setPopup, onRefreshed) {
-  const results = [];
+export async function runBatchRefreshFromUrls(
+  jobsToRefresh: Job[],
+  setPopup: Dispatch<SetStateAction<BatchRefreshPopupState>>,
+  onRefreshed: (job: Job, data: Job) => void,
+): Promise<BatchRefreshResult[]> {
+  const results: BatchRefreshResult[] = [];
 
   setPopup({
     currentIndex: 0,
@@ -56,10 +70,10 @@ export async function runBatchRefreshFromUrls(jobsToRefresh, setPopup, onRefresh
 
     try {
       const res = await fetch(`/api/jobs/${job.id}/refresh-from-url`, { method: "POST" });
-      const data = await res.json();
+      const data: RefreshFromUrlResponse & ApiErrorBody = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to re-fetch job");
 
-      if (data.queued_for_browser_capture) {
+      if ("queued_for_browser_capture" in data && data.queued_for_browser_capture) {
         results.push({
           company: job.company || "",
           error: "",
@@ -69,20 +83,21 @@ export async function runBatchRefreshFromUrls(jobsToRefresh, setPopup, onRefresh
           status: "queued",
         });
       } else {
+        const updatedJob = data as Job;
         results.push({
-          company: data.company || job.company || "",
+          company: updatedJob.company || job.company || "",
           error: "",
-          jobTitle: data.job_title || job.job_title || "",
-          newScore: data.fit_score,
+          jobTitle: updatedJob.job_title || job.job_title || "",
+          newScore: updatedJob.fit_score ?? null,
           previousScore: job.fit_score,
-          status: data.status,
+          status: updatedJob.status || "",
         });
-        onRefreshed(job, data);
+        onRefreshed(job, updatedJob);
       }
     } catch (err) {
       results.push({
         company: job.company || "",
-        error: err.message || "Failed to re-fetch job",
+        error: err instanceof Error ? err.message : "Failed to re-fetch job",
         jobTitle: job.job_title || "",
         newScore: null,
         previousScore: job.fit_score,

@@ -32,23 +32,11 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-export const labelStyle = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "4px",
-  color: "var(--text-muted)",
-  fontSize: "12px",
-  fontWeight: "600",
-  textTransform: "uppercase",
-  letterSpacing: "0.04em",
-};
-
-export const helpTextStyle = {
-  color: "var(--text-muted)",
-  display: "block",
-  fontSize: "11px",
-  fontWeight: 400,
-  letterSpacing: 0,
-  marginTop: "4px",
-  textTransform: "none",
-};
+// ai: claude-sonnet-5 | 2026-10-07
+// Mirrors shared/skip_reasons.json's entry shape (also the backend allowlist
+// in backend/skip_reasons.py).
+export interface SkipReason {
+  key: string;
+  label: string;
+  color?: string;
+}

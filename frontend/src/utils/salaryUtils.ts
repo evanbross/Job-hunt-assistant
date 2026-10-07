@@ -32,7 +32,10 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-export function salaryRangeForJob(job) {
+// ai: claude-sonnet-5 | 2026-10-07
+import type { Job } from "../types/jobs.ts";
+
+export function salaryRangeForJob(job: Pick<Job, "salary_min" | "salary_max" | "raw_jd_snippet" | "fit_reasoning">): string {
   const structured = formatSalaryRange(job.salary_min, job.salary_max);
   if (structured) return structured;
   const sourceText = [job.raw_jd_snippet, job.fit_reasoning]
@@ -45,20 +48,20 @@ export function salaryRangeForJob(job) {
 // the job description states a range, so prefer that structured value over the
 // regex text-scrape below, which stays as a fallback for jobs scored before
 // this field existed or where the LLM didn't find a range but the raw text has one.
-function formatSalaryRange(min, max) {
+function formatSalaryRange(min?: number | null, max?: number | null): string {
   const hasMin = typeof min === "number" && Number.isFinite(min);
   const hasMax = typeof max === "number" && Number.isFinite(max);
   if (!hasMin && !hasMax) return "";
-  const formatOne = (value) => `$${Math.round(value / 1000)}k`;
+  const formatOne = (value: number) => `$${Math.round(value / 1000)}k`;
   if (hasMin && hasMax && min !== max) {
-    return `${formatOne(min)} - ${formatOne(max)}`;
+    return `${formatOne(min as number)} - ${formatOne(max as number)}`;
   }
-  return formatOne(hasMin ? min : max);
+  return formatOne((hasMin ? min : max) as number);
 }
 
-export function extractSalaryRange(text) {
+export function extractSalaryRange(text?: string | null): string {
   const normalizedText = String(text || "")
-    .replace(/\u00A0/g, " ")
+    .replace(/ /g, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!normalizedText) return "";
@@ -76,7 +79,7 @@ export function extractSalaryRange(text) {
   return "";
 }
 
-function normalizeSalaryRange(value) {
+function normalizeSalaryRange(value: string): string {
   return value
     .replace(/\s+/g, " ")
     .replace(/\$\s+/g, "$")

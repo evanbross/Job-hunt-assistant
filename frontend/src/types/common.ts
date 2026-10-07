@@ -32,50 +32,13 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-const REGEX_SPECIAL_CHARS = /[.+^${}()|[\]\\]/g;
+// ai: claude-sonnet-5 | 2026-10-07
+// Shared cross-domain response/error shapes. Most JHA Flask routes return
+// either the requested JSON payload on 2xx, or `{ error: "<message>" }` on a
+// non-2xx status (see routes/*.py's error-handling patterns) — ApiErrorBody
+// is that common shape; callers check `res.ok` before trusting a payload.
 
-// ai: claude-sonnet-4-6 | 2026-08-01
-// Converts a search term into a RegExp, treating * / % as "any sequence" and
-// ? / _ as "any single character" (glob and SQL LIKE wildcard styles both accepted).
-function wildcardTermToRegex(term) {
-  const escaped = term.replace(REGEX_SPECIAL_CHARS, "\\$&");
-  const pattern = escaped
-    .replace(/[*%]/g, ".*")
-    .replace(/[?_]/g, ".");
-  return new RegExp(pattern);
-}
-
-export function jobMatchesSearch(job, searchText, searchAllFields = false) {
-  const terms = String(searchText || "")
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(wildcardTermToRegex);
-  if (terms.length === 0) return true;
-
-  const fields = searchAllFields
-    ? [
-        job.id == null ? "" : `#${job.id}`,
-        job.company,
-        job.job_title,
-        job.source,
-        job.url,
-        job.status,
-        job.capture_label,
-        job.sender_email,
-        job.raw_jd_snippet,
-        job.fit_reasoning,
-        job.duplicate_hint,
-        job.date_found,
-        job.fit_score == null ? "" : `${job.fit_score}`,
-      ]
-    : [job.company];
-
-  const haystack = fields
-    .filter((value) => value !== null && value !== undefined)
-    .join(" ")
-    .toLowerCase();
-
-  return terms.every((term) => term.test(haystack));
+/** Generic error body returned by most routes on a non-2xx response. */
+export interface ApiErrorBody {
+  error?: string;
 }

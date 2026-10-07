@@ -33,6 +33,17 @@
  */
 
 import { useEffect, useId, useSyncExternalStore } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
+
+interface MenuPosition {
+  x: number;
+  y: number;
+}
+
+interface ActiveMenu {
+  ownerId: string;
+  position: MenuPosition;
+}
 
 // ai: claude-sonnet-5 | 2026-07-30
 // Module-level store shared by every card instance. Each JobCard/TriagePanel
@@ -40,20 +51,20 @@ import { useEffect, useId, useSyncExternalStore } from "react";
 // hold its own "menu open" flag at once -- right-clicking card A no longer
 // closed card A's menu when card B was opened. A single shared record of
 // which owner currently has the menu ensures only one card renders it at a time.
-let activeMenu = null;
-const listeners = new Set();
+let activeMenu: ActiveMenu | null = null;
+const listeners = new Set<() => void>();
 
-function setActiveMenu(next) {
+function setActiveMenu(next: ActiveMenu | null): void {
   activeMenu = next;
   listeners.forEach((listener) => listener());
 }
 
-function subscribeToActiveMenu(listener) {
+function subscribeToActiveMenu(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
-function getActiveMenuSnapshot() {
+function getActiveMenuSnapshot(): ActiveMenu | null {
   return activeMenu;
 }
 
@@ -67,13 +78,13 @@ function getActiveMenuSnapshot() {
 export function useCardContextMenu() {
   const ownerId = useId();
   const globalMenu = useSyncExternalStore(subscribeToActiveMenu, getActiveMenuSnapshot);
-  const contextMenu = globalMenu && globalMenu.ownerId === ownerId ? globalMenu.position : null;
+  const contextMenu: MenuPosition | null = globalMenu && globalMenu.ownerId === ownerId ? globalMenu.position : null;
 
   useEffect(() => {
     if (!contextMenu) return undefined;
 
     const close = () => setActiveMenu(null);
-    const onKey = (event) => { if (event.key === "Escape") close(); };
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
 
     window.addEventListener("click", close);
     window.addEventListener("scroll", close, true);
@@ -85,12 +96,13 @@ export function useCardContextMenu() {
     };
   }, [contextMenu]);
 
-  const setContextMenu = (position) => {
+  const setContextMenu = (position: MenuPosition | null) => {
     setActiveMenu(position ? { ownerId, position } : null);
   };
 
-  const openContextMenu = (event) => {
-    if (event.target.closest("a,button,input,textarea,select")) return;
+  const openContextMenu = (event: ReactMouseEvent) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("a,button,input,textarea,select")) return;
     event.preventDefault();
     setContextMenu({
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - 240)),
@@ -98,7 +110,7 @@ export function useCardContextMenu() {
     });
   };
 
-  const runContextAction = (action) => {
+  const runContextAction = (action: () => void) => {
     setActiveMenu(null);
     action();
   };

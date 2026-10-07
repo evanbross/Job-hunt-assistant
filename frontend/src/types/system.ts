@@ -32,14 +32,9 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-// ai: claude-sonnet-5 | 2026-07-09
-export const BACKEND_UNREACHABLE_MESSAGE = "Could not contact JHA's server — is it running?";
-
-// A bare fetch() rejects with a TypeError when the network request itself
-// never completes (e.g. the backend process isn't running). Distinguish that
-// from an Error we threw ourselves after a successful response with a non-OK
-// status, which already carries a specific, useful message.
-export function describeFetchError(e) {
-  if (e instanceof TypeError) return BACKEND_UNREACHABLE_MESSAGE;
-  return e.message;
+// ai: claude-sonnet-5 | 2026-10-07
+// Mirrors routes/system.py's select_folder() jsonify shapes.
+export interface SelectFolderResponse {
+  selected_path: string | null;
+  error?: string;
 }

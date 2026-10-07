@@ -33,17 +33,19 @@
  */
 
 import { useState } from "react";
-import { describeFetchError } from "../utils/fetchErrorUtils.js";
-import { applicationRowFromSheet, jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.js";
-import { alwaysIncludedIds } from "../utils/jobQueueUtils.js";
+import { describeFetchError } from "../utils/fetchErrorUtils.ts";
+import { applicationRowFromSheet, jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.ts";
+import { alwaysIncludedIds } from "../utils/jobQueueUtils.ts";
+import type { ApplicationHistoryRow, ApplicationSheetResponse, Job } from "../types/jobs.ts";
+import type { ApiErrorBody } from "../types/common.ts";
 
 // ai: claude-sonnet-4-6 | 2026-06-11
-export function useCompanyHistoryLookup(job) {
+export function useCompanyHistoryLookup(job: Job) {
   const [opened, setOpened] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [rows, setRows] = useState([]);
+  const [rows, setRows] = useState<ApplicationHistoryRow[]>([]);
 
   // ai: claude-sonnet-5 | 2026-07-21
   // Shared fetch used by both the initial open and later in-place refreshes
@@ -68,11 +70,11 @@ export function useCompanyHistoryLookup(job) {
         fetch(`/api/jobs/by-company?company=${encodeURIComponent(company)}`),
       ]);
       if (!sheetRes.ok) {
-        const sheetData = await sheetRes.json().catch(() => ({}));
-        throw new Error(sheetData.error || `Application lookup failed (${sheetRes.status})`);
+        const sheetErrorData: ApiErrorBody = await sheetRes.json().catch(() => ({}));
+        throw new Error(sheetErrorData.error || `Application lookup failed (${sheetRes.status})`);
       }
-      const sheetData = await sheetRes.json();
-      const dbData = dbRes.ok ? await dbRes.json() : [];
+      const sheetData: ApplicationSheetResponse = await sheetRes.json();
+      const dbData: Job[] = dbRes.ok ? await dbRes.json() : [];
 
       const sheetRows = (Array.isArray(sheetData.rows) ? sheetData.rows : []).map(applicationRowFromSheet);
       const sheetIds = new Set(sheetRows.map((r) => r.id));
@@ -97,13 +99,13 @@ export function useCompanyHistoryLookup(job) {
         missingIds.map(async (id) => {
           const refRes = await fetch(`/api/jobs/${id}`);
           if (!refRes.ok) return null;
-          const refJob = await refRes.json();
+          const refJob: Job = await refRes.json();
           return jobToHistoryRow(refJob);
         })
       );
-      const withDuplicateRefs = [...withCurrent, ...fetchedRefs.filter(Boolean)];
+      const withDuplicateRefs = [...withCurrent, ...fetchedRefs.filter((row): row is ApplicationHistoryRow => Boolean(row))];
 
-      setRows(withDuplicateRefs.filter((row) => rowMatchesCompany(row.company, company) || forceIncludeIds.has(row.id)));
+      setRows(withDuplicateRefs.filter((row) => rowMatchesCompany(row.company, company) || forceIncludeIds.has(row.id ?? -1)));
       setError("");
     } catch (lookupError) {
       // ai: claude-sonnet-5 | 2026-07-09

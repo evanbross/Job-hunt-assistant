@@ -14,11 +14,11 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
-import { normalizeCompany } from "./sheetUtils.js";
+import { normalizeCompany } from "./sheetUtils.ts";
 
 // ai: claude-sonnet-5 | 2026-07-25
 // Mirrors normalize_company_name() in backend/company_matching.py — keep the
 // suffix list and operation order identical in both places.
-export function contactsMatchKey(company) {
+export function contactsMatchKey(company?: string | null): string {
   return normalizeCompany(company).replace(/\s+/g, "");
 }

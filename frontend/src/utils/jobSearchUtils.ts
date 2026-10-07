@@ -32,20 +32,53 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-export function readStoredPref(storageKey, fallback = "") {
-  if (typeof window === "undefined") return fallback;
-  try {
-    return window.localStorage.getItem(storageKey) || fallback;
-  } catch {
-    return fallback;
-  }
+// ai: claude-sonnet-5 | 2026-10-07
+import type { Job } from "../types/jobs.ts";
+
+const REGEX_SPECIAL_CHARS = /[.+^${}()|[\]\\]/g;
+
+// ai: claude-sonnet-4-6 | 2026-08-01
+// Converts a search term into a RegExp, treating * / % as "any sequence" and
+// ? / _ as "any single character" (glob and SQL LIKE wildcard styles both accepted).
+function wildcardTermToRegex(term: string): RegExp {
+  const escaped = term.replace(REGEX_SPECIAL_CHARS, "\\$&");
+  const pattern = escaped
+    .replace(/[*%]/g, ".*")
+    .replace(/[?_]/g, ".");
+  return new RegExp(pattern);
 }
 
-export function writeStoredPref(storageKey, value) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(storageKey, value);
-  } catch {
-    /* ignore unavailable storage */
-  }
+export function jobMatchesSearch(job: Job, searchText: string, searchAllFields = false): boolean {
+  const terms = String(searchText || "")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(wildcardTermToRegex);
+  if (terms.length === 0) return true;
+
+  const fields: (string | null | undefined)[] = searchAllFields
+    ? [
+        job.id == null ? "" : `#${job.id}`,
+        job.company,
+        job.job_title,
+        job.source,
+        job.url,
+        job.status,
+        job.capture_label,
+        job.sender_email,
+        job.raw_jd_snippet,
+        job.fit_reasoning,
+        job.duplicate_hint,
+        job.date_found,
+        job.fit_score == null ? "" : `${job.fit_score}`,
+      ]
+    : [job.company];
+
+  const haystack = fields
+    .filter((value) => value !== null && value !== undefined)
+    .join(" ")
+    .toLowerCase();
+
+  return terms.every((term) => term.test(haystack));
 }

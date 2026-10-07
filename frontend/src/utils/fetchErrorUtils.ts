@@ -32,16 +32,15 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-export function collectionModeLabel(mode) {
-  if (mode === "manual") return "Manual capture";
-  if (mode === "automatic_browser") return "App scan (browser)";
-  return "App scan (direct)";
-}
+// ai: claude-sonnet-5 | 2026-10-07
+export const BACKEND_UNREACHABLE_MESSAGE = "Could not contact JHA's server — is it running?";
 
-export function isManualCollectionSite(site) {
-  return (site?.collection_mode || "automatic") === "manual";
-}
-
-export function careerScanStatusLine(status) {
-  return `${status?.sites_total ?? status?.sites_scanned ?? 0} Sites, ${status?.job_listings ?? status?.jobs_found ?? 0} Job Listings, ${status?.listings_filtered ?? 0} Listings Filtered, ${status?.listings_evaluated ?? 0} Listings Evaluated`;
+// A bare fetch() rejects with a TypeError when the network request itself
+// never completes (e.g. the backend process isn't running). Distinguish that
+// from an Error we threw ourselves after a successful response with a non-OK
+// status, which already carries a specific, useful message.
+export function describeFetchError(e: unknown): string {
+  if (e instanceof TypeError) return BACKEND_UNREACHABLE_MESSAGE;
+  if (e instanceof Error) return e.message;
+  return String(e);
 }

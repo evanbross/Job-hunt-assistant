@@ -32,31 +32,26 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-// ai: claude-sonnet-4-6 | 2026-07-04
-// Persists whether the "Scan for Closed Reqs" dialog should be showing, so it can be
-// restored if the tab is discarded/reloaded while the browser-extension recheck backlog
-// is still draining (that can take several minutes, well past a browser's inactive-tab
-// memory-saver threshold). Shared by JobQueue.jsx and ApplicationSheetPanel.jsx per
-// REACT_STANDARDS.md — both trigger the same server-side scan and must agree on whether
-// the dialog is still "open" from the user's perspective.
-const REQ_CLOSED_DIALOG_VISIBLE_KEY = "jha_req_closed_dialog_visible";
+// ai: claude-sonnet-5 | 2026-10-07
+import type { CSSProperties } from "react";
 
-export function getReqClosedDialogVisible() {
-  try {
-    return window.localStorage.getItem(REQ_CLOSED_DIALOG_VISIBLE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
+export const labelStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "4px",
+  color: "var(--text-muted)",
+  fontSize: "12px",
+  fontWeight: "600",
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+};
 
-export function setReqClosedDialogVisible(visible) {
-  try {
-    if (visible) {
-      window.localStorage.setItem(REQ_CLOSED_DIALOG_VISIBLE_KEY, "1");
-    } else {
-      window.localStorage.removeItem(REQ_CLOSED_DIALOG_VISIBLE_KEY);
-    }
-  } catch {
-    /* ignore */
-  }
-}
+export const helpTextStyle: CSSProperties = {
+  color: "var(--text-muted)",
+  display: "block",
+  fontSize: "11px",
+  fontWeight: 400,
+  letterSpacing: 0,
+  marginTop: "4px",
+  textTransform: "none",
+};

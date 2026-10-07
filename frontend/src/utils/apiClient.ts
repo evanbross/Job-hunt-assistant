@@ -32,8 +32,21 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-export async function fetchSettingsSchema() {
-  const res = await fetch("/api/settings/schema");
-  if (!res.ok) return { user: [], system: [] };
-  return res.json();
+// ai: claude-sonnet-5 | 2026-08-20
+// Thin fetch wrapper for the app-login gate (backend: routes/session_auth.py).
+// credentials: "include" is required so the session cookie is sent when the
+// frontend is served from Vite's dev origin directly (not proxied through
+// /api to :5004) — see app.py's CORS(..., supports_credentials=True).
+//
+// On a 401, dispatches a "jha:unauthenticated" window event instead of
+// throwing, so App.jsx can drop back to the login screen; existing bare
+// fetch() call sites elsewhere in the app are unaffected and keep working.
+export const UNAUTHENTICATED_EVENT = "jha:unauthenticated";
+
+export async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const res = await fetch(url, { ...options, credentials: "include" });
+  if (res.status === 401) {
+    window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT));
+  }
+  return res;
 }

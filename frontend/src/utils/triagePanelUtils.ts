@@ -32,27 +32,29 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-import { reasoningWithoutPenaltySummary } from "./fitScoringUtils.js";
+import { reasoningWithoutPenaltySummary } from "./fitScoringUtils.ts";
 // ai: claude-fable-5 | 2026-07-16
 // Canonical skip-reason list shared with the backend allowlist
 // (backend/skip_reasons.py) — edit shared/skip_reasons.json, not this file.
 import skipReasons from "../../../shared/skip_reasons.json";
+import type { Job, FitPenalty } from "../types/jobs.ts";
+import type { SkipReason } from "../types/triage.ts";
 
 // ai: claude-sonnet-5 | 2026-09-14
 // Shared localStorage key so the last snooze-days value a user picked on any
 // card (queue, triage, or duplicate) is remembered as the default everywhere.
 export const SNOOZE_DAYS_STORAGE_KEY = "jobcard_snooze_days";
 
-export const PLATFORM_LABELS = {
+export const PLATFORM_LABELS: Record<string, string> = {
   greenhouse: "Greenhouse",
   lever: "Lever",
   ashby: "Ashby",
   workday: "Workday",
 };
 
-export const SKIP_REASONS = skipReasons; // ai: claude-fable-5 | 2026-07-16
+export const SKIP_REASONS: SkipReason[] = skipReasons; // ai: claude-fable-5 | 2026-07-16
 
-export const MISMATCH_REASONS = [
+export const MISMATCH_REASONS: string[] = [
   "Not Remote",
   "Hybrid / On-Site",
   "Wrong Level",
@@ -65,7 +67,7 @@ export const MISMATCH_REASONS = [
   "Other Mismatch",
 ];
 
-export function platformLabelForUrl(rawUrl) {
+export function platformLabelForUrl(rawUrl?: string | null): string {
   const normalizedUrl = String(rawUrl || "").trim().toLowerCase();
   if (!normalizedUrl) return "";
   if (normalizedUrl.includes("greenhouse.io")) return PLATFORM_LABELS.greenhouse;
@@ -77,7 +79,7 @@ export function platformLabelForUrl(rawUrl) {
   return "";
 }
 
-export function isManualSource(source) {
+export function isManualSource(source: string): boolean {
   const normalizedSource = source.trim().toLowerCase();
   return [
     "manual",
@@ -89,7 +91,7 @@ export function isManualSource(source) {
   ].includes(normalizedSource);
 }
 
-export function isManualPastedJob(job) {
+export function isManualPastedJob(job: Pick<Job, "capture_label" | "source">): boolean {
   const subject = String(job.capture_label || "").trim().toLowerCase();
   return (
     subject === "manual pasted job listing"
@@ -107,13 +109,13 @@ export function isManualPastedJob(job) {
 // uses a "prefix:date:token" shaped key instead, which this regex rejects.
 const _EMAIL_DEDUP_KEY_RE = /^[0-9a-f]{16}(?::\d+)?$/i;
 
-export function emailIdForRescan(job) {
+export function emailIdForRescan(job: Pick<Job, "dedup_key">): string {
   const dedupKey = String(job.dedup_key || "").trim();
   if (!_EMAIL_DEDUP_KEY_RE.test(dedupKey)) return "";
   return dedupKey.split(":")[0];
 }
 
-export function titleCaseKnownSource(source) {
+export function titleCaseKnownSource(source: string): string {
   const normalizedSource = source.trim().toLowerCase();
   if (normalizedSource === "greenhouse") return PLATFORM_LABELS.greenhouse;
   if (normalizedSource === "lever") return PLATFORM_LABELS.lever;
@@ -127,7 +129,7 @@ export function titleCaseKnownSource(source) {
   return source;
 }
 
-export function sourceLabel(job) {
+export function sourceLabel(job: Pick<Job, "source" | "url" | "capture_label">): string {
   const source = String(job.source || "").trim();
   const platform = platformLabelForUrl(job.url);
 
@@ -152,7 +154,7 @@ export function sourceLabel(job) {
   return titleCaseKnownSource(source);
 }
 
-export function normalizeManualJobUrl(value) {
+export function normalizeManualJobUrl(value?: string | null): string {
   const trimmed = String(value || "").trim();
   if (!trimmed) return "";
   try {
@@ -164,8 +166,10 @@ export function normalizeManualJobUrl(value) {
   }
 }
 
-export function triageReasoningForJob(job) {
-  const parts = [];
+export function triageReasoningForJob(
+  job: Pick<Job, "certainty_level" | "certainty_score" | "certainty_reason" | "fit_score" | "fit_reasoning">,
+): string {
+  const parts: string[] = [];
   const certaintyLevel = String(job.certainty_level || "").trim();
   if (certaintyLevel) {
     parts.push(`Certainty: ${certaintyLevel}.`);
@@ -187,14 +191,14 @@ export function triageReasoningForJob(job) {
   return parts.join(" ") || "No detailed triage reasoning was stored for this row. Reprocess the job to capture newer confidence details.";
 }
 
-export function penaltiesAppliedForJob(job) {
+export function penaltiesAppliedForJob(job: Pick<Job, "fit_reasoning">): FitPenalty[] {
   const reasoning = String(job.fit_reasoning || "");
   const match = reasoning.match(/Penalties applied:\s*(.+?)\.\s*$/i);
   if (!match) return [];
   return match[1]
     .split(/\s*,\s*/)
     .map((item) => item.match(/-(\d+)\s+for\s+'([^']+)'/i))
-    .filter(Boolean)
+    .filter((matchItem): matchItem is RegExpMatchArray => Boolean(matchItem))
     .map((matchItem) => ({
       points: Number(matchItem[1]),
       ruleText: matchItem[2],
@@ -202,36 +206,36 @@ export function penaltiesAppliedForJob(job) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-16
-export function isNegativeReasoningBullet(item) {
+export function isNegativeReasoningBullet(item?: string | null): boolean {
   return /\b(penalt|deduct|below|low|missing|uncertain|failed|mismatch|triage)\b/i.test(
     String(item || "")
   );
 }
 
-export function negativeReasoningBulletStyleFor(item) {
+export function negativeReasoningBulletStyleFor(item?: string | null): { color: string } | undefined {
   return isNegativeReasoningBullet(item) ? { color: "var(--red)" } : undefined;
 }
 
-export function certaintyLabel(job) {
+export function certaintyLabel(job: Pick<Job, "certainty_level" | "certainty_score">): string {
   const level = String(job.certainty_level || "unknown").trim();
   if (job.certainty_score == null) return level;
   return `${level} (${job.certainty_score}%)`;
 }
 
-export function fitConfidenceLabel(job) {
+export function fitConfidenceLabel(job: Pick<Job, "fit_score">): string {
   if (job.fit_score == null) return "Not scored yet";
   return "n/a (score-based only)";
 }
 
-export function fitPercentageLabel(job) {
+export function fitPercentageLabel(job: Pick<Job, "fit_score">): string {
   return job.fit_score == null ? "Not scored" : `${job.fit_score}%`;
 }
 
-export function scoreLabel(score) {
+export function scoreLabel(score?: number | null): string {
   return score === null || score === undefined ? "not scored" : `${score}%`;
 }
 
-export function scoreDeltaLabel(previousScore, newScore) {
+export function scoreDeltaLabel(previousScore?: number | null, newScore?: number | null): string {
   if (previousScore === null || previousScore === undefined || newScore === null || newScore === undefined) {
     return "";
   }
@@ -240,7 +244,11 @@ export function scoreDeltaLabel(previousScore, newScore) {
   return ` (${delta > 0 ? "+" : ""}${delta})`;
 }
 
-export function compareNullableScores(leftScore, rightScore, direction) {
+export function compareNullableScores(
+  leftScore?: number | null,
+  rightScore?: number | null,
+  direction?: "asc" | "desc",
+): number {
   const leftMissing = leftScore === null || leftScore === undefined;
   const rightMissing = rightScore === null || rightScore === undefined;
   if (leftMissing && rightMissing) return 0;
@@ -252,11 +260,11 @@ export function compareNullableScores(leftScore, rightScore, direction) {
 
 // Tiebreaker for fit-score sorts: newest date_found first, regardless of
 // whether the score sort itself is ascending or descending.
-export function compareByDateFoundDesc(a, b) {
-  return new Date(b.date_found || 0) - new Date(a.date_found || 0);
+export function compareByDateFoundDesc(a: Pick<Job, "date_found">, b: Pick<Job, "date_found">): number {
+  return new Date(b.date_found || 0).getTime() - new Date(a.date_found || 0).getTime();
 }
 
-export function dispositionLabel(status) {
+export function dispositionLabel(status?: string | null): string {
   if (status === "pending_review") return "In Job Queue";
   if (status === "triage") return "Still triage";
   if (status === "possible_duplicate") return "Duplicate review";
@@ -265,13 +273,13 @@ export function dispositionLabel(status) {
   return status || "Updated";
 }
 
-export function jobDisplayName(job) {
+export function jobDisplayName(job: { jobTitle?: string | null } & Pick<Job, "job_title" | "company">): string {
   const title = job.jobTitle || job.job_title || "Job";
   const company = job.company ? ` at ${job.company}` : "";
   return `${title}${company}`;
 }
 
-export function fitScoreClass(job) {
+export function fitScoreClass(job: Pick<Job, "fit_score">): string {
   if (job.fit_score == null) return "badge-gray";
   const score = Number(job.fit_score);
   if (score >= 70) return "badge-green";
@@ -283,11 +291,11 @@ export function fitScoreClass(job) {
 // job_description holds the enriched/full text when a re-scan has found one;
 // raw_jd_snippet holds whatever was captured on initial ingest. Prefer
 // job_description when present, else fall back to the snippet.
-export function jobDescriptionText(job) {
+export function jobDescriptionText(job: Pick<Job, "job_description" | "raw_jd_snippet">): string {
   return String(job.job_description || job.raw_jd_snippet || "").trim();
 }
 
-export function formatJobDescription(text) {
+export function formatJobDescription(text?: string | null): string {
   return String(text || "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
@@ -301,11 +309,11 @@ export function formatJobDescription(text) {
     .trim();
 }
 
-export function extractSender(snippet, job) {
+export function extractSender(_snippet: string, job: Pick<Job, "source">): string {
   return job.source ? `unknown@${job.source.toLowerCase().replace(/\s+/g, "")}.com` : "";
 }
 
-export function extractSubjectWords(text) {
+export function extractSubjectWords(text: string): string {
   return text
     .toLowerCase()
     .split(/\W+/)
@@ -324,7 +332,7 @@ const _TRACKING_DOMAINS = [
 ];
 
 // ai: claude-sonnet-4-6 | 2026-06-16
-export function isDescriptionUnavailable(description) {
+export function isDescriptionUnavailable(description?: string | null): boolean {
   if (!description) return true;
   const trimmed = description.trim();
   if (!trimmed) return true;

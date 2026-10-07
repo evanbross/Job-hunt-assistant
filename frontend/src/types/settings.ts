@@ -32,20 +32,22 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-// ai: claude-sonnet-4-6 | 2026-06-23
-// Callback props handed to list-item cards (onApprove, onSkip, ...) are
-// routinely rebuilt as fresh closures on every parent render because they
-// capture per-item data (the job). Comparing them by reference would defeat
-// React.memo entirely. Since the card always invokes the latest closure it
-// was given, ignoring function identity in the comparison is safe: the only
-// thing that should trigger a re-render is the data the card displays.
-export function arePropsEqualIgnoringFunctions(prevProps, nextProps) {
-  const keys = new Set([...Object.keys(prevProps), ...Object.keys(nextProps)]);
-  for (const key of keys) {
-    const prev = prevProps[key];
-    const next = nextProps[key];
-    if (typeof prev === "function" && typeof next === "function") continue;
-    if (prev !== next) return false;
-  }
-  return true;
+// ai: claude-sonnet-5 | 2026-10-07
+// Mirrors schema_for_scope() in backend/settings_registry.py, which builds
+// this exact dict shape (minus `default`, deliberately never sent to the
+// client) for every SettingSpec in the registry. Consumed by GET
+// /api/settings/schema (routes/settings.py's get_settings_schema).
+export interface SettingSchemaField {
+  key: string;
+  label: string;
+  group: string;
+  input_type: "text" | "password" | "checkbox" | string;
+  placeholder: string;
+  help_text: string;
+  is_secret: boolean;
+}
+
+export interface SettingsSchema {
+  user: SettingSchemaField[];
+  system: SettingSchemaField[];
 }

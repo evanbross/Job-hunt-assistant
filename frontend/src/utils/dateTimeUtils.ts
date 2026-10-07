@@ -32,11 +32,12 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-07
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HAS_TIMEZONE_RE = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i;
 const SHORT_TIMEZONE_RE = /([+-]\d{2})$/;
 
-export function parseUtcTimestamp(value) {
+export function parseUtcTimestamp(value?: string | null): Date | null {
   if (!value) return null;
   const raw = String(value).trim();
   if (!raw || DATE_ONLY_RE.test(raw)) return null;
@@ -47,13 +48,13 @@ export function parseUtcTimestamp(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-export function formatLocalDateTime(value) {
+export function formatLocalDateTime(value?: string | null): string {
   const parsed = parseUtcTimestamp(value);
   if (!parsed) return value || "—";
   return parsed.toLocaleString();
 }
 
-export function formatLocalDate(value) {
+export function formatLocalDate(value?: string | null): string {
   const parsed = parseUtcTimestamp(value);
   if (parsed) return parsed.toLocaleDateString();
   return value || "—";
@@ -61,8 +62,8 @@ export function formatLocalDate(value) {
 
 // ai: claude-sonnet-5 | 2026-09-25
 // <input type="datetime-local"> value ("YYYY-MM-DDTHH:mm") in the user's local time.
-export function toLocalDateTimeInputValue(date = new Date()) {
-  const pad = (n) => String(n).padStart(2, "0");
+export function toLocalDateTimeInputValue(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
@@ -70,7 +71,7 @@ export function toLocalDateTimeInputValue(date = new Date()) {
 // Inverse of the above: a datetime-local value is a *local* wall-clock time
 // (no offset), which `new Date(...)` reads as local; toISOString() then
 // yields the matching UTC instant. Returns null for an empty/invalid value.
-export function localInputToUtcIso(value) {
+export function localInputToUtcIso(value?: string | null): string | null {
   if (!value) return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();

@@ -32,21 +32,31 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-// ai: claude-sonnet-5 | 2026-08-20
-// Thin fetch wrapper for the app-login gate (backend: routes/session_auth.py).
-// credentials: "include" is required so the session cookie is sent when the
-// frontend is served from Vite's dev origin directly (not proxied through
-// /api to :5004) — see app.py's CORS(..., supports_credentials=True).
-//
-// On a 401, dispatches a "jha:unauthenticated" window event instead of
-// throwing, so App.jsx can drop back to the login screen; existing bare
-// fetch() call sites elsewhere in the app are unaffected and keep working.
-export const UNAUTHENTICATED_EVENT = "jha:unauthenticated";
+// ai: claude-sonnet-4-6 | 2026-07-04
+// Persists whether the "Scan for Closed Reqs" dialog should be showing, so it can be
+// restored if the tab is discarded/reloaded while the browser-extension recheck backlog
+// is still draining (that can take several minutes, well past a browser's inactive-tab
+// memory-saver threshold). Shared by JobQueue.jsx and ApplicationSheetPanel.jsx per
+// REACT_STANDARDS.md — both trigger the same server-side scan and must agree on whether
+// the dialog is still "open" from the user's perspective.
+const REQ_CLOSED_DIALOG_VISIBLE_KEY = "jha_req_closed_dialog_visible";
 
-export async function apiFetch(url, options = {}) {
-  const res = await fetch(url, { ...options, credentials: "include" });
-  if (res.status === 401) {
-    window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT));
+export function getReqClosedDialogVisible(): boolean {
+  try {
+    return window.localStorage.getItem(REQ_CLOSED_DIALOG_VISIBLE_KEY) === "1";
+  } catch {
+    return false;
   }
-  return res;
+}
+
+export function setReqClosedDialogVisible(visible: boolean): void {
+  try {
+    if (visible) {
+      window.localStorage.setItem(REQ_CLOSED_DIALOG_VISIBLE_KEY, "1");
+    } else {
+      window.localStorage.removeItem(REQ_CLOSED_DIALOG_VISIBLE_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
 }
