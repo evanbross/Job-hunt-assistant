@@ -39,7 +39,9 @@ import re
 import time  # ai: claude-sonnet-5 | 2026-10-08
 from collections.abc import Iterator  # ai: claude-fable-5 | 2026-07-17
 from typing import Any, Protocol
-from urllib.error import HTTPError as UrllibHTTPError  # ai: claude-sonnet-5 | 2026-10-08
+from urllib.error import (
+    HTTPError as UrllibHTTPError,  # ai: claude-sonnet-5 | 2026-10-08
+)
 from urllib.request import Request  # ai: claude-sonnet-5 | 2026-10-08
 
 from backend.email.email_parser import (  # ai: claude-fable-5 | 2026-07-17

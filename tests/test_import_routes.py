@@ -31,7 +31,11 @@ import pytest
 from flask import Flask
 
 import config
-from backend.db import PostgresJobRepository, PostgresUserAccountRepository, get_connection
+from backend.db import (
+    PostgresJobRepository,
+    PostgresUserAccountRepository,
+    get_connection,
+)
 from backend.db.row_level_security import set_current_user
 from routes.import_ import _active_imports, import_bp
 
