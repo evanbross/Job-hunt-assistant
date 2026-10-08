@@ -383,10 +383,21 @@
       re: /authorized to work.*(visa|sponsorship)|(visa|sponsorship).*authorized to work/i,
     },
     { category: 'visa_sponsorship', re: /visa|sponsorship/i },
+    // ai: claude-sonnet-5 | 2026-10-08
+    // "...unlimited and unrestricted authorization to work in the United
+    // States..." reported live by the user -- "authorization to work"
+    // (noun-before-verb) is a third word order neither "authorized to work"
+    // nor "work authorization" catches.
     {
       category: 'work_authorized',
-      re: /authorized to work|work authorization|legally (authorized|eligible) to work/i,
+      re: /authorized to work|work authorization|authorization to work|legally (authorized|eligible) to work/i,
     },
+    // ai: claude-sonnet-5 | 2026-10-08
+    // A screening question ("Are you over 18 years of Age?"), not backed by
+    // any profile field -- every applicant using this tool is an adult job
+    // seeker, so the answer is always "Yes" (see boolValueForCategory's
+    // age_18_or_over case, hardcoded the same way phone_country is).
+    { category: 'age_18_or_over', re: /\bover\s*18\b|\b18\s*years?\s*(of\s*age|old)\b|at least 18/i },
     // ai: claude-sonnet-5 | 2026-08-17
     { category: 'veteran_status', re: /veteran/i },
     { category: 'disability_status', re: /disability/i },
@@ -471,6 +482,7 @@
     'work_auth_and_sponsorship',
     'veteran_status',
     'disability_status',
+    'age_18_or_over',
   ]);
 
   // ai: claude-sonnet-5 | 2026-10-08
@@ -499,6 +511,12 @@
         return null;
       case 'veteran_status': return profile.is_veteran ?? null;
       case 'disability_status': return profile.has_disability ?? null;
+      // ai: claude-sonnet-5 | 2026-10-08
+      // No profile field for this -- every applicant using this tool is an
+      // adult job seeker, so always answer "Yes" rather than leaving a
+      // screening question unresolved for something that's never actually
+      // in question.
+      case 'age_18_or_over': return true;
       default: return null;
     }
   }
@@ -582,6 +600,14 @@
     disability_status: {
       true: ['Yes, I have a disability', 'Yes'],
       false: ['No, I do not have a disability', 'No'],
+    },
+    // ai: claude-sonnet-5 | 2026-10-08
+    // false is never used (boolValueForCategory hardcodes true for this
+    // category) but the shape is kept consistent with the other boolean
+    // categories above rather than special-cased.
+    age_18_or_over: {
+      true: ['Yes', 'I am over 18', 'I am at least 18 years of age', 'I am 18 years of age or older'],
+      false: ['No'],
     },
   };
 
