@@ -108,6 +108,8 @@ _SENIORITY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bdistinguished\b"), "distinguished"),
     (re.compile(r"\bprincipal\b"), "principal"),
     (re.compile(r"\bstaff\b"), "staff"),
+    # ai: claude-sonnet-5 | 2026-10-08
+    (re.compile(r"\blead\b"), "lead"),
     (re.compile(r"\bsenior\b"), "senior"),
     (re.compile(r"\bjunior\b"), "junior"),
 ]

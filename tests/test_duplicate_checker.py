@@ -70,6 +70,13 @@ def _match(title_a: str, title_b: str) -> bool:
         ("Software Engineer I", "Software Engineer II"),
         ("Software Engineer 2", "Senior Software Engineer"),
         ("Software Engineer 1", "Staff Software Engineer"),
+        # ai: claude-sonnet-5 | 2026-10-08
+        # "Lead" is its own rung, distinct from Principal/Staff/Senior (seen with
+        # 8th Light's "Lead Software Engineer" being flagged as a duplicate of
+        # their "Principal Software Engineer" on an 87% title score).
+        ("Lead Software Engineer", "Principal Software Engineer"),
+        ("Lead Software Engineer", "Staff Software Engineer"),
+        ("Lead Software Engineer", "Senior Software Engineer"),
     ],
 )
 def test_different_roles_at_same_company_are_not_duplicates(
@@ -101,6 +108,8 @@ def test_different_roles_at_same_company_are_not_duplicates(
         # Numbered level on only one side still matches (consistent with the
         # existing "seniority named on only one side still matches" rule).
         ("Software Engineer 2", "Software Engineer"),
+        # Same "Lead" rung is still a duplicate.
+        ("Lead Software Engineer", "Lead Software Engineer"),
     ],
 )
 def test_equivalent_titles_are_duplicates(title_a: str, title_b: str) -> None:
