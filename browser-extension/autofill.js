@@ -204,6 +204,18 @@
 
     root.querySelectorAll('input[role="combobox"]').forEach((el) => {
       if (seen.has(el)) return;
+      // ai: claude-sonnet-5 | 2026-10-08
+      // Confirmed live on Greenhouse (Antora Energy posting): the phone
+      // country-code picker is the intl-tel-input library, which nests a
+      // second, type="search" role="combobox" input inside its (closed)
+      // country-list popup for filtering that list -- not an answer field in
+      // its own right. Its resolved label collides with the real phone
+      // input's own "Phone*" label (same ancestor text), so without this
+      // exclusion it was discovered as a second "phone" control and the
+      // extension tried to type the phone number into it. The real dial-code
+      // picker is the sibling "Country" combobox, handled via the
+      // phone_country category below.
+      if (el.type === 'search') return;
       seen.add(el);
       controls.push({ type: 'combobox', el, label: resolveFieldLabel(el) });
     });
@@ -315,6 +327,15 @@
     // <option> text, so it silently no-ops) but still worth not attempting.
     // No profile field backs this category; it just keeps the bare 'phone'
     // pattern from firing so the field falls through to unresolved instead.
+    // ai: claude-sonnet-5 | 2026-10-08
+    // Confirmed live on Greenhouse (Antora Energy posting): the phone
+    // country-code/dial-prefix picker is its own combobox labeled bare
+    // "Country*" (via the ancestor-text walk -- it carries no <label for>),
+    // sitting immediately beside the "Phone*" field. Anchored to the whole
+    // label so it doesn't swallow an unrelated "Country of residence"-style
+    // question -- this app has no profile.country field; see
+    // profileValueForCategory's phone_country case.
+    { category: 'phone_country', re: /^country\s*\*?\s*$/i },
     { category: 'phone_country_code', re: /phone.*country|country.*code/i },
     { category: 'phone', re: /\bphone\b/i },
     { category: 'resume', re: /\bresume\b|\bcv\b/i },
@@ -329,6 +350,18 @@
     { category: 'portfolio', re: /portfolio|personal (site|website)|\bwebsite\b/i },
     { category: 'pronouns', re: /\bpronouns?\b/i },
     { category: 'gender', re: /\bgender\b/i },
+    // ai: claude-sonnet-5 | 2026-10-08
+    // Confirmed live on Greenhouse (Antora Energy posting): "Are you
+    // Hispanic/Latino?" is a separate question from "Please identify your
+    // race" (the latter only renders in the DOM after this one is answered
+    // "No") -- Greenhouse's split-question EEO flow, distinct from Lever's
+    // single combined race/ethnicity select the 'race' pattern below was
+    // written for. Checked first since "Hispanic/Latino" doesn't itself
+    // contain "race" or "ethnicity". See hispanicLatinoCandidates below for
+    // how the answer is derived from the single profile.race field, and
+    // runAutofill's second discovery pass for how the conditionally-rendered
+    // race follow-up gets picked up at all.
+    { category: 'hispanic_latino', re: /hispanic|latino/i },
     // ai: claude-sonnet-5 | 2026-08-25
     // Confirmed on Lever (Veeva posting): bare-labeled "Race", a native
     // <select name="eeo[race]">. Greenhouse phrases the same OFCCP question
@@ -420,6 +453,13 @@
       case 'race': return profile.race;
       case 'current_company': return profile.current_company;
       case 'state': return profile.state;
+      // ai: claude-sonnet-5 | 2026-10-08
+      // No profile.country field exists (the app is US-focused -- state
+      // abbreviations, no country selector in ApplicationProfilePanel), and
+      // this category only ever targets the phone dial-code picker (see the
+      // phone_country CATEGORY_PATTERNS comment), so hardcode the one value
+      // every applicant here needs rather than adding a profile field for it.
+      case 'phone_country': return 'United States';
       default: return null;
     }
   }
@@ -431,6 +471,20 @@
     'work_auth_and_sponsorship',
     'veteran_status',
     'disability_status',
+  ]);
+
+  // ai: claude-sonnet-5 | 2026-10-08
+  // Categories whose combobox options form a small, fixed, immediately-
+  // rendered list (see fillComboboxBestMatch's comment) rather than an
+  // async/filtered one -- these use the best-match filler instead of
+  // fillCombobox's typed-filter one. Everything else (location, state, ...)
+  // keeps the typed-filter path, which those genuinely need.
+  const FIXED_OPTION_COMBOBOX_CATEGORIES = new Set([
+    ...BOOLEAN_CATEGORIES,
+    'gender',
+    'race',
+    'hispanic_latino',
+    'phone_country',
   ]);
 
   function boolValueForCategory(profile, category) {
@@ -488,7 +542,23 @@
     return GENDER_ALTERNATE_FORMS[String(value || '').trim().toLowerCase()] || null;
   }
 
-  const ALT_FORM_RESOLVERS = { state: stateAlternateForm, gender: genderAlternateForm };
+  // ai: claude-sonnet-5 | 2026-10-08
+  // profile.race is stored in the full combined Lever-style wording (e.g.
+  // "White (Not Hispanic or Latino)", per RACE_OPTIONS in
+  // ApplicationProfilePanel.tsx). Confirmed live on Greenhouse (Antora
+  // Energy posting): once the Hispanic/Latino question is answered
+  // separately, its own follow-up "Please identify your race" dropdown drops
+  // the "(...Hispanic or Latino)" qualifier from every option entirely (just
+  // "White", "Asian", ...) -- the parenthetical tokens were diluting
+  // bestMatchingOption's keyword-overlap score enough to miss the real
+  // option on the longer category names. Stripping it gives a second, more
+  // specific candidate to try.
+  function raceAlternateForm(value) {
+    const stripped = String(value || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+    return stripped && stripped !== value ? stripped : null;
+  }
+
+  const ALT_FORM_RESOLVERS = { state: stateAlternateForm, gender: genderAlternateForm, race: raceAlternateForm };
 
   // Ordered candidate strings for a plain structured value (state, gender, ...) —
   // the widget's own text is tried first, then the alternate form if any.
@@ -518,6 +588,20 @@
   function candidateValuesForBoolean(category, boolValue) {
     const candidates = BOOLEAN_ANSWER_CANDIDATES[category]?.[boolValue];
     return candidates || [boolValue ? 'Yes' : 'No'];
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-08
+  // Greenhouse's split EEO flow (see the hispanic_latino CATEGORY_PATTERNS
+  // comment) asks Hispanic/Latino as its own Yes/No/Decline question, but the
+  // profile only stores one combined race.race value (RACE_OPTIONS). Derive
+  // the Hispanic/Latino answer from it rather than adding a second profile
+  // field that would just have to be kept in sync with the first.
+  function hispanicLatinoCandidates(profile) {
+    const race = String(profile.race || '').trim().toLowerCase();
+    if (!race) return null;
+    if (race === 'hispanic or latino') return ['Yes'];
+    if (race === 'decline to self-identify') return ['Decline To Self Identify', "I don't wish to answer", 'Decline to self-identify'];
+    return ['No'];
   }
 
   // ─── Answer bank matching ──────────────────────────────────────────────────
@@ -770,6 +854,114 @@
     return false;
   }
 
+  function normalizeOptionText(text) {
+    return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-08
+  // Exact match first, then substring containment either direction (handles
+  // a candidate with extra wrapping, e.g. "White (Not Hispanic or Latino)"
+  // vs. an option that's just "White"), then keyword-overlap scoring --
+  // same approach as findBankAnswer above, reused here because ATS-specific
+  // option wording (confirmed live on Greenhouse: "I am not a protected
+  // veteran" vs. a "standard" fallback of "I am not a veteran") varies just
+  // enough that neither exact nor substring matching alone is reliable.
+  function bestMatchingOption(options, candidates) {
+    for (const candidate of candidates) {
+      const normCandidate = normalizeOptionText(candidate);
+      if (!normCandidate) continue;
+      const exact = options.find((o) => normalizeOptionText(o.textContent) === normCandidate);
+      if (exact) return exact;
+    }
+    for (const candidate of candidates) {
+      const normCandidate = normalizeOptionText(candidate);
+      if (!normCandidate) continue;
+      const substr = options.find((o) => {
+        const normOption = normalizeOptionText(o.textContent);
+        return normOption.includes(normCandidate) || normCandidate.includes(normOption);
+      });
+      if (substr) return substr;
+    }
+    let best = null;
+    let bestScore = 0;
+    for (const candidate of candidates) {
+      const candidateTokens = new Set(normalizeOptionText(candidate).split(/\W+/).filter((w) => w.length > 2));
+      if (candidateTokens.size === 0) continue;
+      for (const option of options) {
+        const optionTokens = new Set(normalizeOptionText(option.textContent).split(/\W+/).filter((w) => w.length > 2));
+        if (optionTokens.size === 0) continue;
+        const overlap = [...candidateTokens].filter((t) => optionTokens.has(t)).length;
+        const score = overlap / Math.max(candidateTokens.size, optionTokens.size);
+        if (score > bestScore) {
+          bestScore = score;
+          best = option;
+        }
+      }
+    }
+    return bestScore >= 0.6 ? best : null;
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-08
+  // Alternative to fillCombobox for small, fixed-choice dropdowns (gender,
+  // race, hispanic/latino, veteran/disability status, visa/work-auth,
+  // phone country) -- confirmed live on Greenhouse (Antora Energy posting)
+  // that Country, Gender, Hispanic/Latino, Race, and Veteran Status all
+  // render their FULL option list immediately on open, with no typing
+  // needed to populate it (unlike the async/geocoded Location combobox,
+  // which genuinely needs fillCombobox's character-by-character typing to
+  // fire its debounced fetch). fillCombobox's "type the candidate text and
+  // hope it's a literal substring of the real option" approach silently
+  // fails on these the moment an ATS's wording differs even slightly from
+  // the candidate string -- the typed text just sits in the box, unselected,
+  // which is indistinguishable from the real answer to anyone not reading
+  // the DOM. This instead reads whatever's already rendered and picks the
+  // best match via bestMatchingOption, so it tolerates ATS-specific wording
+  // differences instead of requiring an exact one.
+  async function fillComboboxBestMatch(el, candidates, _platform) {
+    const shell = el.closest('[class*="select-shell"]');
+
+    const openAndReadOptions = async () => {
+      const rect0 = el.getBoundingClientRect();
+      const openEventInit = { bubbles: true, cancelable: true, view: window, clientX: rect0.x + 5, clientY: rect0.y + 5 };
+      el.dispatchEvent(new MouseEvent('mousedown', openEventInit));
+      el.dispatchEvent(new MouseEvent('mouseup', openEventInit));
+      el.dispatchEvent(new MouseEvent('click', openEventInit));
+      el.focus();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const listboxId = el.getAttribute('aria-controls');
+      const listbox = (listboxId && document.getElementById(listboxId)) || shell?.querySelector('[role="listbox"]');
+      return listbox ? [...listbox.querySelectorAll('[role="option"]')] : [];
+    };
+
+    // ai: claude-sonnet-5 | 2026-10-08
+    // Confirmed live on Greenhouse (Antora Energy posting): the open-click
+    // sequence dropped silently the first time it ran against "Please
+    // identify your race" -- the field conditionally mounted by
+    // runAutofill's second discovery pass moments earlier, same
+    // freshly-mounted-node hydration race documented on clickYesNo above.
+    // Retry the open once before giving up, same as that function does.
+    let options = await openAndReadOptions();
+    if (options.length === 0) options = await openAndReadOptions();
+    if (options.length === 0) return false;
+
+    const option = bestMatchingOption(options, candidates);
+    if (!option) return false;
+
+    const attemptSelect = async () => {
+      const rect = option.getBoundingClientRect();
+      const eventInit = { bubbles: true, cancelable: true, view: window, clientX: rect.x + 5, clientY: rect.y + 5 };
+      option.dispatchEvent(new MouseEvent('mousedown', eventInit));
+      option.dispatchEvent(new MouseEvent('mouseup', eventInit));
+      option.dispatchEvent(new MouseEvent('click', eventInit));
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return el.getAttribute('aria-expanded') === 'false';
+    };
+
+    if (!(await attemptSelect()) && !(await attemptSelect())) return false;
+    if (el.value) return true;
+    return Boolean(shell?.querySelector('[class*="single-value"]')?.textContent.trim());
+  }
+
   function fillFileInput(el, bytes, filename) {
     const file = new File([bytes], filename, { type: 'application/pdf' });
     const dt = new DataTransfer();
@@ -836,21 +1028,38 @@
     el.addEventListener('blur', handler, { once: true });
   }
 
+  // ai: claude-sonnet-5 | 2026-10-08
+  // All DOM elements belonging to a control, for cross-pass dedup in
+  // runAutofill's second discovery pass below -- a control's own .el isn't
+  // enough on its own for the group types (checkbox-group/radio-group/yesno),
+  // since discoverControls adds every constituent element to its *own*
+  // per-call `seen` set, not one shared across calls.
+  function controlElements(control) {
+    return [
+      control.el,
+      control.checkbox,
+      control.customCheckbox,
+      control.customTextInput,
+      ...(control.checkboxes || []),
+      ...(control.radios || []),
+      ...(control.buttons || []),
+    ].filter(Boolean);
+  }
+
   // ─── Orchestration ──────────────────────────────────────────────────────────
 
   async function runAutofill({ profile, resumeFile, answers }) {
     const platform = detectApplicationPage().platform;
-    const controls = discoverControls();
     const safeProfile = profile || {};
     const safeAnswers = Array.isArray(answers) ? answers : [];
     const filled = [];
     const unresolved = [];
 
-    for (const control of controls) {
+    async function fillControl(control) {
       const label = control.label;
       if (!label) {
         unresolved.push('(no label found)');
-        continue;
+        return;
       }
 
       try {
@@ -873,10 +1082,12 @@
             markUnresolved(control.el);
             unresolved.push(label);
           }
-          continue;
+          return;
         }
 
         const category = classify(label);
+        // ai: claude-sonnet-5 | 2026-10-08
+        const comboboxFiller = FIXED_OPTION_COMBOBOX_CATEGORIES.has(category) ? fillComboboxBestMatch : fillComboboxCandidates;
 
         // Boolean categories (work authorization / visa sponsorship) can render
         // as an Ashby-style button pair, a plain text field (confirmed on
@@ -888,7 +1099,7 @@
           if (boolValue === null || boolValue === undefined) {
             markUnresolved(control.el);
             unresolved.push(label);
-            continue;
+            return;
           }
           if (control.type === 'yesno') {
             if (await clickYesNo(control.buttons, control.checkbox, boolValue)) {
@@ -907,7 +1118,7 @@
               unresolved.push(label);
             }
           } else if (control.type === 'combobox') {
-            const picked = await fillComboboxCandidates(control.el, candidateValuesForBoolean(category, boolValue), platform);
+            const picked = await comboboxFiller(control.el, candidateValuesForBoolean(category, boolValue), platform);
             if (picked) { markFilled(control.el); filled.push(label); }
             else { markUnresolved(control.el); unresolved.push(label); }
           } else {
@@ -915,7 +1126,44 @@
             markFilled(control.el);
             filled.push(label);
           }
-          continue;
+          return;
+        }
+
+        // ai: claude-sonnet-5 | 2026-10-08
+        // Greenhouse's split EEO flow (see the hispanic_latino
+        // CATEGORY_PATTERNS comment): derives its Yes/No/Decline answer from
+        // profile.race rather than profileValueForCategory, since there's no
+        // dedicated profile field for it. control.type here is always
+        // 'combobox' in practice (every live posting so far renders it as a
+        // react-select, like the other EEO questions) but the radio-group /
+        // plain-field branches are included for the same reason the
+        // structuredValue block below has them: other ATS platforms may
+        // render the same question differently.
+        if (category === 'hispanic_latino') {
+          const candidates = hispanicLatinoCandidates(safeProfile);
+          if (!candidates) {
+            markUnresolved(control.el);
+            unresolved.push(label);
+            return;
+          }
+          if (control.type === 'combobox') {
+            const picked = await fillComboboxBestMatch(control.el, candidates, platform);
+            if (picked) { markFilled(control.el); filled.push(label); }
+            else { markUnresolved(control.el); unresolved.push(label); }
+          } else if (control.type === 'radio-group') {
+            if (fillRadioGroup(control.radios, candidates)) {
+              markFilled(control.el);
+              filled.push(label);
+            } else {
+              markUnresolved(control.el);
+              unresolved.push(label);
+            }
+          } else {
+            setNativeValue(control.el, candidates);
+            markFilled(control.el);
+            filled.push(label);
+          }
+          return;
         }
 
         // Confirmed on Lever: pronoun selection is a checkbox group (He/him,
@@ -939,14 +1187,14 @@
             markUnresolved(control.el);
             unresolved.push(label);
           }
-          continue;
+          return;
         }
 
         const structuredValue = category ? profileValueForCategory(safeProfile, category) : null;
         if (structuredValue) {
           const candidates = candidateValuesForCategory(category, structuredValue);
           if (control.type === 'combobox') {
-            const picked = await fillComboboxCandidates(control.el, candidates, platform);
+            const picked = await comboboxFiller(control.el, candidates, platform);
             if (picked) {
               markFilled(control.el);
               filled.push(label);
@@ -974,7 +1222,7 @@
             markFilled(control.el);
             filled.push(label);
           }
-          continue;
+          return;
         }
 
         const bankAnswer = control.type === 'combobox' ? null : findBankAnswer(label, safeAnswers);
@@ -986,13 +1234,13 @@
             if (fillRadioGroup(control.radios, [bankAnswer.answer_text])) {
               markFilled(control.el);
               filled.push(label);
-              continue;
+              return;
             }
           } else {
             setNativeValue(control.el, bankAnswer.answer_text);
             markFilled(control.el);
             filled.push(label);
-            continue;
+            return;
           }
         }
 
@@ -1003,6 +1251,35 @@
         unresolved.push(`${label} (error: ${err})`);
       }
     }
+
+    // ai: claude-sonnet-5 | 2026-10-08
+    // Two discovery passes rather than one: confirmed live on Greenhouse
+    // (Antora Energy posting) that "Please identify your race" doesn't exist
+    // in the DOM at all until "Are you Hispanic/Latino?" is answered "No" --
+    // a true conditional mount, not just CSS-hidden -- so the single
+    // upfront discoverControls() call every other control type here relies
+    // on can never see it. processedEls tracks every element already
+    // handled (across all control shapes, not just control.el) so the
+    // second pass only touches genuinely new controls instead of
+    // re-clicking ones pass one already filled.
+    const processedEls = new Set();
+    async function processPass() {
+      const newControls = discoverControls().filter(
+        (control) => !controlElements(control).every((el) => processedEls.has(el))
+      );
+      for (const control of newControls) {
+        controlElements(control).forEach((el) => processedEls.add(el));
+        await fillControl(control);
+      }
+      return newControls.length > 0;
+    }
+
+    // A third pass would only matter for a conditional field gated behind
+    // another conditional field, not confirmed on any live posting yet --
+    // two is enough for Greenhouse's one-level Hispanic/Latino -> Race
+    // reveal and cheap to extend if that's ever confirmed needed.
+    await processPass();
+    await processPass();
 
     return { filled, unresolved };
   }
