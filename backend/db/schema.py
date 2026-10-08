@@ -1058,6 +1058,19 @@ def _migrate(conn: Any) -> None:
         cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_user_id ON {table} (user_id)")
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-10-08 -- moved out of _create_tables(), which runs
+    # before this retrofit loop: on a brand-new database jobs.user_id doesn't exist
+    # yet at that point, so this index creation raised psycopg2.errors.UndefinedColumn
+    # on every from-scratch bootstrap (e.g. CI's throwaway Postgres). A long-lived
+    # local dev database never hit it because user_id was already backfilled from a
+    # prior run. Every jobs query filters on (user_id, status)
+    # (get_all_by_status/get_by_statuses/get_page_by_statuses in
+    # backend/db/repositories/jobs.py), but the only existing index on jobs was
+    # user_id alone -- non-selective on a single-user instance, so queue/triage
+    # fetches fell back to a full sequential scan.
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_status ON jobs (user_id, status)")
+    conn.commit()
+
     # ai: claude-sonnet-5 | 2026-10-05
     # career_scan_digest_log's user_id only exists after the retrofit loop
     # above, so this uniqueness constraint -- the thing that actually makes
@@ -2111,18 +2124,6 @@ def _create_tables(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_audit_log_user_created
             ON audit_log (user_id, created_at DESC)
-        """,
-        # ai: claude-sonnet-5 | 2026-10-05 -- every jobs query filters on
-        # (user_id, status) (get_all_by_status/get_by_statuses/get_page_by_statuses
-        # in backend/db/repositories/jobs.py), but the only existing index on
-        # jobs is user_id alone. On a single-user instance user_id matches every
-        # row, so that index is non-selective and every queue/triage fetch falls
-        # back to a full sequential scan -- cost grows linearly with total jobs
-        # rows, which only ever grows since skipped/applied history is kept
-        # forever for duplicate detection (see handleRescanAll's confirm text).
-        """
-        CREATE INDEX IF NOT EXISTS idx_jobs_user_status
-            ON jobs (user_id, status)
         """,
     ]:
         cur.execute(stmt)
