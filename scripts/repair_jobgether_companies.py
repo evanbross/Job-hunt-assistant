@@ -15,18 +15,28 @@
 # =============================================================================
 
 # ai: claude-sonnet-5 | 2026-10-06
-"""One-off maintenance script: repair jobs whose company was stored as the
-literal board name "Jobgether" instead of the real employer.
+# ai: claude-sonnet-5 | 2026-10-08 — widened from the "Jobgether" placeholder
+# case to every missing-company Jobgether row (see docstring update below)
+"""One-off maintenance script: repair Jobgether jobs with no real company on file.
 
-Root cause (fixed alongside this script, see backend/utils/company_urls.py
+Original root cause (fixed alongside this script, see backend/utils/company_urls.py
 _KNOWN_JOB_BOARD_HOSTS): jobgether.com was missing from the known-job-board
 exclusion list, so whenever a Jobgether capture had no usable company text,
 backend.utils.company_urls.company_from_career_domain() fell back to parsing
 jobgether.com's own domain and returned "Jobgether" as the company. 286 rows
-were affected (284 via jobgether.com/offer/ URLs; 2 more share the literal
-company name "Jobgether" but are LinkedIn postings for a Staff/Senior
+were affected this way (284 via jobgether.com/offer/ URLs; 2 more share the
+literal company name "Jobgether" but are LinkedIn postings for a Staff/Senior
 engineering role at Jobgether the company itself — those are correct and
 intentionally excluded below).
+
+A second, independent failure mode leaves company plain blank instead of the
+"Jobgether" placeholder: the browser extension's client-side company
+extraction (content.js buildJobgetherJobPayload) can still come up empty for
+a given posting (e.g. job 6071 — EnergyHub, captured 2026-10-08), and nothing
+re-fetches the page to recover it afterward. This script's candidate filter
+originally only matched the placeholder case, leaving blank-company rows
+unrepaired even though jobgether_company_repair_updates() below already
+handles both. Widened here to cover both.
 
 Each affected jobgether.com/offer/ row's URL is the offer page itself, so the
 live page is authoritative for its own company: re-fetches it and extracts
@@ -50,17 +60,16 @@ import time
 from pathlib import Path
 from urllib.error import HTTPError as UrllibHTTPError
 from urllib.error import URLError
-from urllib.request import Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.scanning.closed_req_scan_helpers import (  # noqa: E402
-    rate_limit_backoff_seconds,
-)
 from backend.scanning.import_repair import (  # noqa: E402
+    fetch_jobgether_page_html,
+    is_jobgether_placeholder_company,
+    is_missing_company,
     jobgether_company_repair_updates,
 )
-from backend.utils.url_safety import UnsafeUrlError, safe_urlopen  # noqa: E402
+from backend.utils.url_safety import UnsafeUrlError  # noqa: E402
 from backend.utils.utils import get_repos  # noqa: E402
 
 logging.basicConfig(
@@ -71,36 +80,6 @@ logger = logging.getLogger(__name__)
 
 _USER_ID = 1  # sole account in this single-tenant deployment (evan@eross.com)
 _FETCH_INTERVAL_SECONDS = 1.0
-_FETCH_TIMEOUT_SECONDS = 15
-_FETCH_MAX_BYTES = 2_000_000
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
-
-
-def _fetch_jobgether_page_html(url: str) -> str:
-    """Fetch a Jobgether offer page's HTML, retrying once on a rate-limit response."""
-    req = Request(
-        url,
-        headers={"User-Agent": _USER_AGENT, "Accept": "text/html,application/xhtml+xml"},
-    )
-    retried = False
-    while True:
-        try:
-            with safe_urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
-                raw = resp.read(_FETCH_MAX_BYTES)
-                charset = resp.headers.get_content_charset() or "utf-8"
-            return raw.decode(charset, errors="replace")
-        except UrllibHTTPError as exc:
-            if exc.code != 429 or retried:
-                raise
-            retried = True
-            delay = rate_limit_backoff_seconds(
-                exc.headers.get("Retry-After") if exc.headers else None
-            )
-            logger.warning("Rate-limited (HTTP 429) for %s — retrying in %.0fs", url, delay)
-            time.sleep(delay)
 
 
 def _candidates(repos: dict) -> list[dict]:
@@ -108,7 +87,10 @@ def _candidates(repos: dict) -> list[dict]:
     return [
         job
         for job in jobs
-        if str(job.get("company") or "").strip().casefold() == "jobgether"
+        if (
+            is_jobgether_placeholder_company(job.get("company"))
+            or is_missing_company(job.get("company"))
+        )
         and str(job.get("url") or "").startswith("https://jobgether.com/offer/")
     ]
 
@@ -135,7 +117,7 @@ def main() -> None:
                 time.sleep(_FETCH_INTERVAL_SECONDS)
 
             try:
-                html = _fetch_jobgether_page_html(url)
+                html = fetch_jobgether_page_html(url)
             except (UrllibHTTPError, URLError, UnsafeUrlError, TimeoutError) as exc:
                 logger.warning("  fetch failed: %s", exc)
                 failed += 1
@@ -151,7 +133,7 @@ def main() -> None:
                 unchanged += 1
                 continue
 
-            logger.info("  company: 'Jobgether' -> %r", updates["company"])
+            logger.info("  company: %r -> %r", job.get("company") or "", updates["company"])
             if not args.dry_run:
                 repos["jobs"].update(_USER_ID, job_id, updates)
                 repos["conn"].commit()

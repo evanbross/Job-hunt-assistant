@@ -43,6 +43,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from urllib.error import URLError
 
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
@@ -53,12 +54,15 @@ from backend.celery_app import celery_app
 from backend.scanning.captured_page_import_service import CapturedPageImportService
 from backend.scanning.import_dump import dump_import_capture
 from backend.scanning.import_repair import (
+    fetch_jobgether_page_html,
+    jobgether_company_repair_updates,
     post_repair_duplicate_check,
     repair_ats_url_company,
     repair_linkedin_company,
 )
 from backend.scanning.platform_detection import platform_for_site_url, platform_label
 from backend.tasks import run_import_task
+from backend.utils.url_safety import UnsafeUrlError
 from backend.utils.utils import (
     current_user_id,
     get_repos,
@@ -786,13 +790,21 @@ def reset_import() -> ResponseReturnValue:
 @import_bp.route("/repair/fix-unknown-companies", methods=["POST"])
 def fix_unknown_companies() -> ResponseReturnValue:
     user_id = current_user_id()
+    fixed = 0
+    jobgether_jobs: list[dict] = []
     with get_repos() as repos:
         try:
             all_jobs = repos["jobs"].get_all_ordered(user_id)
             batch = repos["jobs"].get_with_missing_company(user_id, limit=15)
-            fixed = 0
             for job in batch:
                 url = str(job.get("url") or "")
+                # ai: claude-sonnet-5 | 2026-10-08
+                # Jobgether's repair needs a live-page fetch -- deferred to a
+                # second pass below so it doesn't hold this connection open
+                # across slow external I/O (PYTHON_STANDARDS.md).
+                if url.startswith("https://jobgether.com/offer/"):
+                    jobgether_jobs.append(job)
+                    continue
                 repaired = repair_ats_url_company(user_id, repos["jobs"], job)
                 if not repaired and "linkedin.com" in url.lower():
                     repaired = repair_linkedin_company(user_id, repos["jobs"], job, url)
@@ -805,12 +817,48 @@ def fix_unknown_companies() -> ResponseReturnValue:
                             user_id, repos["jobs"], updated_job, all_jobs
                         )
                         repos["conn"].commit()
-            remaining = repos["jobs"].count_with_missing_company(user_id)
-            return jsonify({"fixed": fixed, "remaining": remaining})
         except Exception as exc:
             repos["conn"].rollback()
             logger.error("fix-unknown-companies failed: %s", exc)
             return jsonify({"error": "Repair failed"}), 500
+
+    jobgether_updates: dict[int, dict] = {}
+    for job in jobgether_jobs:
+        url = str(job.get("url") or "")
+        try:
+            html = fetch_jobgether_page_html(url)
+        except (URLError, UnsafeUrlError, TimeoutError) as exc:
+            logger.warning(
+                "fix-unknown-companies: Jobgether fetch failed for %s: %s", url, exc
+            )
+            continue
+        updates, problem = jobgether_company_repair_updates(job, html)
+        if problem or not updates:
+            continue
+        jobgether_updates[int(job["id"])] = updates
+
+    if jobgether_updates:
+        with get_repos() as repos:
+            try:
+                all_jobs = repos["jobs"].get_all_ordered(user_id)
+                for job_id, updates in jobgether_updates.items():
+                    repos["jobs"].update(user_id, job_id, updates)
+                    fixed += 1
+                    repos["conn"].commit()
+                    updated_job = repos["jobs"].get_by_id(user_id, job_id)
+                    if updated_job:
+                        post_repair_duplicate_check(
+                            user_id, repos["jobs"], updated_job, all_jobs
+                        )
+                        repos["conn"].commit()
+            except Exception as exc:
+                repos["conn"].rollback()
+                logger.error("fix-unknown-companies failed: %s", exc)
+                return jsonify({"error": "Repair failed"}), 500
+
+    with get_repos() as repos:
+        remaining = repos["jobs"].count_with_missing_company(user_id)
+    return jsonify({"fixed": fixed, "remaining": remaining})
 
 
 @import_bp.route("/repair/delete-unknown-companies", methods=["POST"])

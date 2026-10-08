@@ -25,9 +25,14 @@ payloads) -- validating it risks silently breaking a legitimate capture."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from flask import Flask
 
+import config
+from backend.db import PostgresJobRepository, PostgresUserAccountRepository, get_connection
+from backend.db.row_level_security import set_current_user
 from routes.import_ import _active_imports, import_bp
 
 
@@ -149,3 +154,129 @@ def test_extract_job_urls_surfaces_analyze_value_error(
 
     assert response.status_code == 400
     assert response.get_json()["error"] == "nothing to extract"
+
+
+# ─── /repair/fix-unknown-companies ───────────────────────────────────────────
+
+
+def _new_user(conn: Any, email: str = "owner@example.com") -> int:
+    account = PostgresUserAccountRepository(conn).create_pending(
+        email, f"seed-{email}", "2099-01-01"
+    )
+    set_current_user(conn.cursor(), account["id"])
+    return account["id"]
+
+
+_JOBGETHER_JOBPOSTING_HTML = """
+<html><head>
+<script type="application/ld+json">
+{"@type": "JobPosting", "title": "Senior Engineer",
+ "hiringOrganization": {"name": "TestCo"}}
+</script>
+</head><body></body></html>
+"""
+
+
+@pytest.fixture
+def repair_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, int]:
+    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    flask_app = Flask(__name__)
+    flask_app.secret_key = "test"
+    flask_app.register_blueprint(import_bp, url_prefix="/api")
+    client = flask_app.test_client()
+    # get_repos() (backend/db/row_level_security.py) reads the real Flask session.
+    with client.session_transaction() as sess:
+        sess["user_id"] = user_id
+    return client, user_id
+
+
+def test_fix_unknown_companies_repairs_jobgether_row_via_live_page_fetch(
+    repair_client: tuple[Any, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Jobgether job with a blank company (e.g. job 6071/EnergyHub, captured
+    2026-10-08 — the extension's client-side extraction came up empty) must be
+    repaired from the live offer page's schema.org JobPosting, same as the
+    one-off scripts/repair_jobgether_companies.py script does."""
+    client, user_id = repair_client
+    conn = get_connection(config.DATABASE_URL)
+    try:
+        set_current_user(conn.cursor(), user_id)
+
+        job_id = PostgresJobRepository(conn).insert(
+            user_id,
+            {
+                "company": "",
+                "job_title": "Senior Engineer",
+                "url": "https://jobgether.com/offer/abc123-senior-engineer",
+                "source": "browser_ext@local",
+                "status": "triage",
+            },
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        "routes.import_.fetch_jobgether_page_html",
+        lambda url: _JOBGETHER_JOBPOSTING_HTML,
+    )
+
+    response = client.post("/api/repair/fix-unknown-companies")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"fixed": 1, "remaining": 0}
+
+    conn = get_connection(config.DATABASE_URL)
+    try:
+        set_current_user(conn.cursor(), user_id)
+
+        updated = PostgresJobRepository(conn).get_by_id(user_id, job_id)
+    finally:
+        conn.close()
+    assert updated["company"] == "TestCo"
+
+
+def test_fix_unknown_companies_still_repairs_non_jobgether_rows(
+    repair_client: tuple[Any, int],
+) -> None:
+    """Non-Jobgether missing-company rows must still go through the existing
+    (fast, no-network) ATS-URL repair path unaffected by the Jobgether branch."""
+    client, user_id = repair_client
+    conn = get_connection(config.DATABASE_URL)
+    try:
+        set_current_user(conn.cursor(), user_id)
+
+        job_id = PostgresJobRepository(conn).insert(
+            user_id,
+            {
+                "company": "",
+                "job_title": "Engineer",
+                "url": "https://boards.greenhouse.io/acmeco/jobs/1",
+                "source": "browser_ext@local",
+                "status": "triage",
+            },
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.post("/api/repair/fix-unknown-companies")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"fixed": 1, "remaining": 0}
+
+    conn = get_connection(config.DATABASE_URL)
+    try:
+        set_current_user(conn.cursor(), user_id)
+
+        updated = PostgresJobRepository(conn).get_by_id(user_id, job_id)
+    finally:
+        conn.close()
+    assert updated["company"] == "Acmeco"

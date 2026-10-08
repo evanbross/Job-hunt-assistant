@@ -36,15 +36,22 @@ from __future__ import annotations
 
 import json  # ai: claude-fable-5 | 2026-07-17
 import re
+import time  # ai: claude-sonnet-5 | 2026-10-08
 from collections.abc import Iterator  # ai: claude-fable-5 | 2026-07-17
 from typing import Any, Protocol
+from urllib.error import HTTPError as UrllibHTTPError  # ai: claude-sonnet-5 | 2026-10-08
+from urllib.request import Request  # ai: claude-sonnet-5 | 2026-10-08
 
 from backend.email.email_parser import (  # ai: claude-fable-5 | 2026-07-17
     looks_like_wttj_misparsed_title,
 )
 from backend.scanning.career_site_scanner import CareerSiteScanner
+from backend.scanning.closed_req_scan_helpers import (  # ai: claude-sonnet-5 | 2026-10-08
+    rate_limit_backoff_seconds,
+)
 from backend.scoring.duplicate_checker import DuplicateChecker, companies_match
 from backend.utils.company_urls import company_from_ats_url
+from backend.utils.url_safety import safe_urlopen  # ai: claude-sonnet-5 | 2026-10-08
 
 
 # ai: claude-sonnet-5 | 2026-08-20
@@ -315,6 +322,50 @@ def is_jobgether_placeholder_company(value: object) -> bool:
     touching any company the user has since corrected by hand (job 5752).
     """
     return str(value or "").strip().casefold() == "jobgether"
+
+
+# ai: claude-sonnet-5 | 2026-10-08
+_JOBGETHER_FETCH_TIMEOUT_SECONDS = 15
+_JOBGETHER_FETCH_MAX_BYTES = 2_000_000
+_JOBGETHER_FETCH_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+# ai: claude-sonnet-5 | 2026-10-08
+def fetch_jobgether_page_html(url: str) -> str:
+    """Fetch a Jobgether offer page's HTML, retrying once on a rate-limit response.
+
+    Shared by the one-off scripts/repair_jobgether_companies.py maintenance script
+    and routes/import_.py's fix_unknown_companies() -- both need the same live-page
+    fetch to feed jobgether_company_repair_updates() below. Raises UrllibHTTPError,
+    URLError, UnsafeUrlError, or TimeoutError on failure; callers decide how to
+    handle those (skip-and-continue in both current call sites).
+    """
+    req = Request(
+        url,
+        headers={
+            "User-Agent": _JOBGETHER_FETCH_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
+    retried = False
+    while True:
+        try:
+            with safe_urlopen(req, timeout=_JOBGETHER_FETCH_TIMEOUT_SECONDS) as resp:
+                raw = resp.read(_JOBGETHER_FETCH_MAX_BYTES)
+                charset = resp.headers.get_content_charset() or "utf-8"
+            return raw.decode(charset, errors="replace")
+        except UrllibHTTPError as exc:
+            if exc.code != 429 or retried:
+                raise
+            retried = True
+            time.sleep(
+                rate_limit_backoff_seconds(
+                    exc.headers.get("Retry-After") if exc.headers else None
+                )
+            )
 
 
 # ai: claude-sonnet-5 | 2026-10-06
