@@ -36,7 +36,7 @@
 """Guards the skip-reason single source of truth (shared/skip_reasons.json).
 
 The backend allowlist (backend/scoring/skip_reasons.py) and the frontend skip menu
-(frontend/src/utils/triagePanelUtils.js) must both derive from the shared JSON
+(frontend/src/utils/triagePanelUtils.ts) must both derive from the shared JSON
 file. These tests fail if either side re-introduces a hardcoded copy or the
 shared file loses a key that application code assigns programmatically.
 """
@@ -53,7 +53,8 @@ from backend.scoring.skip_reasons import (
 )
 
 _PROJECT_ROOT = SKIP_REASONS_PATH.parent.parent
-_FRONTEND_UTILS = _PROJECT_ROOT / "frontend" / "src" / "utils" / "triagePanelUtils.js"
+# ai: claude-sonnet-5 | 2026-10-07
+_FRONTEND_UTILS = _PROJECT_ROOT / "frontend" / "src" / "utils" / "triagePanelUtils.ts"
 
 # Skip reasons assigned by backend code (not just via the /skip endpoint):
 # "duplicate" and "not_remote" in routes/scan.py, "req_closed" in
@@ -82,12 +83,13 @@ def test_programmatically_assigned_reasons_exist() -> None:
 
 
 def test_frontend_imports_shared_json_and_has_no_hardcoded_copy() -> None:
+    # ai: claude-sonnet-5 | 2026-10-07
     source = _FRONTEND_UTILS.read_text(encoding="utf-8")
     assert re.search(
         r'import\s+\w+\s+from\s+"\.\./\.\./\.\./shared/skip_reasons\.json"', source
-    ), "triagePanelUtils.js no longer imports the shared skip-reason JSON"
-    skip_reasons_decl = re.search(r"export const SKIP_REASONS = (.+?);", source)
-    assert skip_reasons_decl, "SKIP_REASONS export missing from triagePanelUtils.js"
+    ), "triagePanelUtils.ts no longer imports the shared skip-reason JSON"
+    skip_reasons_decl = re.search(r"export const SKIP_REASONS(?:\s*:\s*[^=]+)?=\s*(.+?);", source)
+    assert skip_reasons_decl, "SKIP_REASONS export missing from triagePanelUtils.ts"
     assert "[" not in skip_reasons_decl.group(1), (
         "SKIP_REASONS is a hardcoded array again — it must re-export the shared "
         "JSON so it cannot drift from the backend allowlist"
