@@ -196,3 +196,31 @@ def company_from_career_domain(url: str) -> str | None:
         return slug_to_title_case(label)
     except Exception:
         return None
+
+
+# ai: claude-sonnet-5 | 2026-10-09
+def platform_name_from_url(url: str) -> str | None:
+    """Best-effort human-readable site name from a URL's host, for labeling
+    which site a job was captured from (e.g. "Jobgether", "Builtin").
+
+    Unlike company_from_career_domain, this makes no attempt to exclude known
+    job-board/ATS hosts — callers labeling capture source *want* "Jobgether"
+    or "Wellfound" here, not None. Callers inferring the employer's company
+    name should keep using company_from_career_domain instead.
+    """
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower().split(":")[0]
+        if not host:
+            return None
+        labels = host.split(".")
+        while len(labels) > 2 and labels[0] in _CAREER_SUBDOMAIN_PREFIXES:
+            labels = labels[1:]
+        label = _registrable_domain_label(labels)
+        if not label or _UUID_RE.match(label):
+            return None
+        return slug_to_title_case(label)
+    except Exception:
+        return None

@@ -51,7 +51,11 @@ from backend.scoring.job_validator import (
     normalize_and_validate,
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
-from backend.utils.company_urls import company_from_ats_url, company_from_career_domain
+from backend.utils.company_urls import (
+    company_from_ats_url,
+    company_from_career_domain,
+    platform_name_from_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +243,7 @@ class ManualJobIngestService:
                 job_title=clean_title,
                 url=fetched_job["job_url"],
                 source=source_name.strip()
-                or self._source_name_for_url(normalized_source_url),
+                or self.source_name_for_url(normalized_source_url),
                 certainty_level="high",
                 certainty_score=fetched_job["confidence_score"],
                 certainty_reason="Loaded from public job URL.",
@@ -277,10 +281,20 @@ class ManualJobIngestService:
         if not company and url:
             company = company_from_career_domain(url) or ""
         parsed_source = (parsed.get("source") or "").strip()
+        # ai: claude-sonnet-5 | 2026-10-09
+        # The parser is handed f"{email_id_prefix}@local" (e.g. "browser_ext@local")
+        # as the synthetic sender address for non-email captures. When it can't
+        # identify a real job-board name, its prompted fallback ("job board name
+        # or sender domain") returns that placeholder's domain verbatim ("local")
+        # or the whole address — which then overwrote source_prefix below and
+        # stored "local"/"browser_ext@local" as the job's source (921 existing
+        # rows). Never let that synthetic placeholder stand in as a real source.
+        if parsed_source.lower() in {"local", f"{email_id_prefix}@local"}:
+            parsed_source = ""
 
         source = source_name.strip() or parsed_source or source_prefix
         if (self._is_manual_source(source) or is_streamed) and url:
-            platform_source = self._source_name_for_url(url)
+            platform_source = self.source_name_for_url(url)
             if platform_source != "Manual URL":
                 source = f"{source_prefix} - {platform_source}"
 
@@ -414,9 +428,15 @@ class ManualJobIngestService:
         return f"manual:{datetime.now(UTC).date().isoformat()}:{secrets.token_hex(8)}"
 
     @staticmethod
-    def _source_name_for_url(source_url: str) -> str:
+    def source_name_for_url(source_url: str) -> str:
         lowered = source_url.lower()
         if "greenhouse.io" in lowered:
+            return "Greenhouse"
+        # ai: claude-sonnet-5 | 2026-10-09
+        # grnh.se is Greenhouse's own link-shortener domain for job postings
+        # (distinct from boards.greenhouse.io) — without this, the generic
+        # domain fallback below mangled it into "Grnh" (11 backfilled rows).
+        if "grnh.se" in lowered:
             return "Greenhouse"
         if "lever.co" in lowered:
             return "Lever"
@@ -426,9 +446,18 @@ class ManualJobIngestService:
             return "Wellfound"
         if "linkedin.com" in lowered:
             return "LinkedIn"
+        # lnkd.in is LinkedIn's link-shortener domain.
+        if "lnkd.in" in lowered:
+            return "LinkedIn"
         if "myworkdayjobs.com" in lowered:
             return "Workday"
-        return "Manual URL"
+        # ai: claude-sonnet-5 | 2026-10-09
+        # The browser extension captures from any page (manifest host_permissions
+        # is https://*/*), not just the ATS platforms named above — fall back to
+        # a readable name derived from the URL's own host (e.g. "jobgether.com"
+        # -> "Jobgether") instead of the opaque "Manual URL" catch-all, so the
+        # stored source always names the actual capture site when one is known.
+        return platform_name_from_url(source_url) or "Manual URL"
 
     @staticmethod
     def _company_and_title_from_fetched(

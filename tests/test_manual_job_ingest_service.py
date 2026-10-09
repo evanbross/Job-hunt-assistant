@@ -168,6 +168,44 @@ def test_ingest_creates_pending_review_job_from_best_match() -> None:
     assert result.job["source"] == "Greenhouse"
 
 
+# ai: claude-sonnet-5 | 2026-10-09
+def test_ingest_ignores_synthetic_sender_as_parsed_source() -> None:
+    """The parser is handed a synthetic sender address ("browser_ext@local")
+    for non-email captures. If the LLM echoes that placeholder (or just its
+    "local" domain) back as the job's "source" field — its documented fallback
+    is "job board name or sender domain" — ingest() must not store that
+    placeholder as the job's source. It should fall back to a real label
+    derived from the capture site's own URL instead (job 5778 and ~920 other
+    rows were stored with source="local"/"browser_ext@local" before this fix)."""
+    job_repo = StubJobRepo()
+    long_description = "Full job description text. " * 30  # >= 400 chars, skips JD re-fetch
+    parser = StubParser(
+        [
+            {
+                "company": "Upstart",
+                "job_title": "Principal Software Engineer",
+                "url": "https://jobgether.com/offer/abc123-principal-software-engineer",
+                "source": "browser_ext@local",
+                "certainty_level": "high",
+                "certainty_score": 90,
+                "certainty_reason": "",
+            }
+        ]
+    )
+    service = ManualJobIngestService(
+        _TEST_USER_ID,
+        job_repo,
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=parser,
+        scorer=StubScorer(score=85),
+    )
+
+    result = service.ingest(long_description, trigger="listener")
+
+    assert result.job["source"] == "Browser Extension - Jobgether"
+
+
 def test_ingest_uses_manual_overrides_when_parser_is_incomplete() -> None:
     job_repo = StubJobRepo()
     service = ManualJobIngestService(
