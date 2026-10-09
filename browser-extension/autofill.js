@@ -578,11 +578,25 @@
 
   const ALT_FORM_RESOLVERS = { state: stateAlternateForm, gender: genderAlternateForm, race: raceAlternateForm };
 
+  // ai: claude-sonnet-5 | 2026-10-09
+  // Reported live: a "Location" field classified under the 'city' category
+  // (see \blocation\b in CATEGORY_PATTERNS) can render as a <select>/combobox
+  // offering only region-level options (state, then country) rather than
+  // actual city names -- profile.city ("Mebane") never matches any option on
+  // those. Only matters for <select>/combobox controls: setNativeValue's
+  // plain-input branch only ever uses candidates[0] (the real city), so a
+  // genuine city text field is unaffected by the extra fallbacks below.
+  function locationFallbackCandidates(profile) {
+    return [profile.state, 'United States'].filter(Boolean);
+  }
+
   // Ordered candidate strings for a plain structured value (state, gender, ...) —
   // the widget's own text is tried first, then the alternate form if any.
-  function candidateValuesForCategory(category, rawValue) {
+  function candidateValuesForCategory(category, rawValue, profile) {
     const alt = ALT_FORM_RESOLVERS[category]?.(rawValue);
-    return alt ? [rawValue, alt] : [rawValue];
+    const base = alt ? [rawValue, alt] : [rawValue];
+    if (category === 'city') return [...base, ...locationFallbackCandidates(profile)];
+    return base;
   }
 
   // ai: claude-sonnet-5 | 2026-08-17
@@ -1218,7 +1232,7 @@
 
         const structuredValue = category ? profileValueForCategory(safeProfile, category) : null;
         if (structuredValue) {
-          const candidates = candidateValuesForCategory(category, structuredValue);
+          const candidates = candidateValuesForCategory(category, structuredValue, safeProfile);
           if (control.type === 'combobox') {
             const picked = await comboboxFiller(control.el, candidates, platform);
             if (picked) {
