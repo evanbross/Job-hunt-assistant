@@ -309,6 +309,20 @@ class PostgresJobRepository(_BaseRepo):
         )
         return {row["company_normalized"]: row["cnt"] for row in cur.fetchall()}
 
+    # ai: claude-sonnet-5 | 2026-10-09
+    def get_applied_companies(self, user_id: int) -> set[str]:
+        """Normalized company names (see normalize_company_name) with at least
+        one job whose status is 'applied' -- used by the frontend's "hide
+        companies I've already applied to" job-queue filter. Grouped on the
+        same company_normalized column get_company_counts/get_by_company use,
+        so all three agree on what counts as the same employer."""
+        cur = self._execute(
+            "SELECT DISTINCT company_normalized FROM jobs"
+            " WHERE user_id = %s AND status = 'applied' AND company_normalized <> ''",
+            (user_id,),
+        )
+        return {row["company_normalized"] for row in cur.fetchall()}
+
     # ai: gpt-5 | 2026-10-03
     def get_outreach_company_relevance(
         self, user_id: int, active_statuses: frozenset[str], terminal_stage_statuses: set[str]
@@ -535,6 +549,53 @@ class PostgresJobRepository(_BaseRepo):
             f"UPDATE jobs SET {set_clause} WHERE id = %s AND user_id = %s{where_extra}"
             " RETURNING *",
             [*fields.values(), job_id, user_id, *included],
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    # ai: claude-sonnet-5 | 2026-10-09
+    def update_if_company_missing(
+        self, user_id: int, job_id: int, fields: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Atomically update *job_id* with *fields*, but only if its company
+        is still missing/placeholder (same definition as
+        get_with_missing_company's _MISSING_COMPANY_SQL).
+
+        Closes the same class of SELECT-then-write race update_if_status_not_in
+        was added for (2026-10-05 review), applied here to the company-repair
+        flow (2026-10-08 review): a slow fetch (e.g. re-scraping a Jobgether
+        page) must not overwrite a company the user corrected in the window
+        between the initial read and this write.
+
+        Returns the updated row if the write was applied, or None if the
+        job's live company was no longer missing/placeholder or the job
+        doesn't exist -- the caller must only count this as "fixed" when a
+        row comes back.
+        """
+        if not fields:
+            return None
+        unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
+        if JobColumns.COMPANY in fields:
+            fields = {
+                **fields,
+                JobColumns.COMPANY_NORMALIZED: normalize_company_name(
+                    fields.get(JobColumns.COMPANY)
+                ),
+            }
+        set_clause = ", ".join(f"{k} = %s" for k in fields)
+        # ai: claude-sonnet-5 | 2026-10-09
+        # Also allow the literal "Jobgether" placeholder (company_from_career_domain
+        # mistaking jobgether.com's own domain for the employer, see
+        # is_jobgether_placeholder_company) -- _MISSING_COMPANY_SQL alone doesn't
+        # cover it, and that's exactly the stored state Jobgether rows are in when
+        # this repair applies to them.
+        cur = self._execute(
+            f"UPDATE jobs SET {set_clause} WHERE id = %s AND user_id = %s"
+            f" AND ({self._MISSING_COMPANY_SQL} OR lower(btrim(company)) = 'jobgether')"
+            " RETURNING *",
+            [*fields.values(), job_id, user_id],
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None

@@ -359,6 +359,17 @@ def get_jobs_company_counts() -> ResponseReturnValue:
     return jsonify(counts)
 
 
+# ai: claude-sonnet-5 | 2026-10-09
+@jobs_bp.route("/jobs/applied-companies")
+def get_jobs_applied_companies() -> ResponseReturnValue:
+    """Normalized company names (see normalize_company_name) with at least one
+    'applied' job, so the frontend can offer a job-queue filter for "companies
+    I haven't applied to yet" without fetching every job's full history."""
+    with get_repos() as repos:
+        companies = repos["jobs"].get_applied_companies(current_user_id())
+    return jsonify(sorted(companies))
+
+
 # ai: claude-sonnet-4-6 | 2026-06-08
 @jobs_bp.route("/jobs/<int:job_id>", methods=["GET"])
 def get_job(job_id: int) -> ResponseReturnValue:

@@ -77,6 +77,9 @@ export interface Job {
 /** Map of normalized-company-key -> count of jobs on record, from GET /api/jobs/company-counts. */
 export type CompanyJobCounts = Record<string, number>;
 
+/** Normalized company names with at least one 'applied' job, from GET /api/jobs/applied-companies. */
+export type AppliedCompanies = string[];
+
 /** A single stage entry attached to an application-sheet row (see sheetUtils.applicationRowFromSheet). */
 export interface ApplicationStage {
   id: number | null;

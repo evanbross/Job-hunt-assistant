@@ -1478,6 +1478,21 @@ def _migrate(conn: Any) -> None:
     )
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-10-09
+    # Closes the Medium finding from the 2026-10-08 review: autofill.js hardcoded
+    # 'United States' for every bare "Country" field it classified as the phone
+    # dial-code picker, and always answered the "are you 18+" screening question
+    # "Yes" -- correct only for the single operator this tool was built for, not
+    # for a second account. Both are now real per-user profile fields instead of
+    # code-level constants (autofill.js falls back to the old hardcoded value
+    # only when a field is unset, so existing behavior for this operator doesn't
+    # change until they fill in their profile).
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS country TEXT")
+    cur.execute(
+        "ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS is_18_or_older BOOLEAN"
+    )
+    conn.commit()
+
 
 # ai: claude-sonnet-4-6 | 2026-06-09
 _HINT_TITLE_RE = re.compile(
@@ -1751,6 +1766,8 @@ def _create_tables(conn: Any) -> None:
             is_veteran               BOOLEAN,
             has_disability           BOOLEAN,
             current_company          TEXT,
+            country                  TEXT,
+            is_18_or_older           BOOLEAN,
             updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             CONSTRAINT application_profile_single_row CHECK (id = 1)
         )

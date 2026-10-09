@@ -56,6 +56,8 @@ export interface ApplicationProfile {
   is_veteran: boolean | null;
   has_disability: boolean | null;
   current_company: string | null;
+  country: string | null;
+  is_18_or_older: boolean | null;
 }
 
 /** One row of GET /api/application-answers (application_answers table). */

@@ -69,6 +69,8 @@ class PostgresApplicationProfileRepository(_BaseRepo):
             "is_veteran",
             "has_disability",
             "current_company",
+            "country",
+            "is_18_or_older",
         }
     )
 

@@ -44,6 +44,9 @@ frontend:
     - npm ci
     # ESLint allows only the warnings that already exist (see package.json); a new one fails.
     - npm run lint:ci
+    # Vite transpiles TS without a full type check, and ESLint isn't a substitute for
+    # tsc's cross-module structural checks -- run it explicitly as its own gate.
+    - npm run type-check
     # A plain JS React project can lint clean and still fail to build (or reference an
     # undefined name only on a branch nothing renders), so the production build is a gate too.
     - npm run build

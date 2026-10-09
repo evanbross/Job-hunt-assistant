@@ -195,3 +195,16 @@ export function hasCompanyHistoryAvailable(
   const count = companyJobCounts[companyCountKey(company)] ?? 0;
   return count > 1;
 }
+
+// ai: claude-sonnet-5 | 2026-10-09
+// `appliedCompanies` is the bulk list from /api/jobs/applied-companies, already
+// normalized the same way companyCountKey() normalizes a job's own company —
+// keyed as a Set here for O(1) lookup in the job-queue filter below.
+export function hasAppliedToCompany(
+  job: Pick<Job, "company">,
+  appliedCompanies: Set<string>,
+): boolean {
+  const company = String(job?.company || "").trim();
+  if (!company) return false;
+  return appliedCompanies.has(companyCountKey(company));
+}

@@ -96,6 +96,31 @@ def test_get_company_counts_groups_across_corporate_suffix(pg_dsn: str) -> None:
         conn.close()
 
 
+# ai: claude-sonnet-5 | 2026-10-09
+def test_get_applied_companies_groups_across_corporate_suffix_and_users(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user(conn)
+        repo = PostgresJobRepository(conn)
+        repo.insert(user_id, {"company": "Seeq Corporation", "job_title": "Staff Engineer", "status": "applied"})
+        repo.insert(user_id, {"company": "Acme Inc", "job_title": "Solo Role", "status": "triage"})
+        conn.commit()
+
+        other_user_id = _new_other_user(conn)
+        set_current_user(conn.cursor(), other_user_id)
+        conn.commit()
+        repo.insert(other_user_id, {"company": "Beta LLC", "job_title": "Other User's Job", "status": "applied"})
+        conn.commit()
+
+        set_current_user(conn.cursor(), user_id)
+        conn.commit()
+        applied = repo.get_applied_companies(user_id)
+
+        assert applied == {normalize_company_name("Seeq")}
+    finally:
+        conn.close()
+
+
 # ai: gpt-5 | 2026-10-03
 def test_get_outreach_company_relevance_uses_latest_stage_view_schema(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)

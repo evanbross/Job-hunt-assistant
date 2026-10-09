@@ -38,6 +38,7 @@ import type { CSSProperties } from "react";
 import JobCard from "../JobCard.tsx";
 import { ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "../TriagePanel.tsx";
 import { jobMatchesSearch } from "../../utils/jobSearchUtils.ts";
+import { hasAppliedToCompany } from "../../utils/jobQueueUtils.ts";
 import { contactsMatchKey } from "../../utils/contactsUtils.ts";
 import ReqClosedDialog from "../common/ReqClosedDialog.tsx";
 import { emailIdForRescan, extractSender, extractSubjectWords } from "../../utils/triagePanelUtils.ts";
@@ -66,6 +67,7 @@ import type { ApiErrorBody } from "../../types/common.ts";
 import type { ContactsByCompany } from "../../types/contacts.ts";
 import type { BoardSearchStatus } from "../../types/boardSearch.ts";
 import type {
+  AppliedCompanies,
   ApplicationHistoryRow,
   BatchRefreshPopupState,
   CompanyJobCounts,
@@ -310,6 +312,9 @@ export default function JobQueue({
   const [contactsByCompany, setContactsByCompany] = useState<ContactsByCompany>({});
   // ai: claude-sonnet-5 | 2026-08-19
   const [companyJobCounts, setCompanyJobCounts] = useState<CompanyJobCounts | null>(null);
+  // ai: claude-sonnet-5 | 2026-10-09
+  const [appliedCompanies, setAppliedCompanies] = useState<Set<string>>(new Set());
+  const [hideAppliedCompanies, setHideAppliedCompanies] = useState(false);
   // ai: claude-sonnet-5 | 2026-08-11
   const [defaultSnoozeDays, setDefaultSnoozeDays] = useState(4);
   const [triageReEvaluatePopup, setTriageReEvaluatePopup] = useState<ReEvaluatePopupState | null>(null);
@@ -482,6 +487,14 @@ export default function JobQueue({
       .then((res) => res.json())
       .then((data) => setCompanyJobCounts(data && typeof data === "object" ? data : {}))
       .catch(() => setCompanyJobCounts({}));
+  }, []);
+
+  // ai: claude-sonnet-5 | 2026-10-09
+  useEffect(() => {
+    fetch("/api/jobs/applied-companies")
+      .then((res) => res.json())
+      .then((data: AppliedCompanies) => setAppliedCompanies(new Set(Array.isArray(data) ? data : [])))
+      .catch(() => setAppliedCompanies(new Set()));
   }, []);
 
   // ai: claude-sonnet-5 | 2026-08-11
@@ -1461,15 +1474,17 @@ export default function JobQueue({
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     if (showOnlyWithContacts && !jobHasContact(job)) return false;
+    if (hideAppliedCompanies && hasAppliedToCompany(job, appliedCompanies)) return false;
     return true;
-  }), [jobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact]);
+  }), [jobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies]);
 
   const filteredTriageJobs = useMemo(() => triageJobs.filter((job) => {
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     if (showOnlyWithContacts && !jobHasContact(job)) return false;
+    if (hideAppliedCompanies && hasAppliedToCompany(job, appliedCompanies)) return false;
     return true;
-  }), [triageJobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact]);
+  }), [triageJobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies]);
 
   // ai: claude-sonnet-5 | 2026-08-09
   const filteredUnreachableJobs = useMemo(
@@ -1487,6 +1502,13 @@ export default function JobQueue({
     () => jobs.filter((j) => j.fit_score == null).length
       + (viewMode !== "queue" ? triageJobs.filter((j) => j.fit_score == null).length : 0),
     [jobs, triageJobs, viewMode],
+  );
+
+  // ai: claude-sonnet-5 | 2026-10-09
+  const appliedCompanyCount = useMemo(
+    () => jobs.filter((j) => hasAppliedToCompany(j, appliedCompanies)).length
+      + (viewMode !== "queue" ? triageJobs.filter((j) => hasAppliedToCompany(j, appliedCompanies)).length : 0),
+    [jobs, triageJobs, viewMode, appliedCompanies],
   );
 
   const showsQueue = viewMode === "queue" || viewMode === "both" || viewMode === "company";
@@ -1971,6 +1993,18 @@ export default function JobQueue({
               style={{ cursor: "pointer" }}
             />
             Know someone ({contactsCount})
+          </label>
+        )}
+
+        {appliedCompanyCount > 0 && (
+          <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={hideAppliedCompanies}
+              onChange={(e) => setHideAppliedCompanies(e.target.checked)}
+              style={{ cursor: "pointer" }}
+            />
+            Hide companies I&apos;ve applied to ({appliedCompanyCount})
           </label>
         )}
 

@@ -842,15 +842,25 @@ def fix_unknown_companies() -> ResponseReturnValue:
             try:
                 all_jobs = repos["jobs"].get_all_ordered(user_id)
                 for job_id, updates in jobgether_updates.items():
-                    repos["jobs"].update(user_id, job_id, updates)
+                    # ai: claude-sonnet-5 | 2026-10-09
+                    # Atomic conditional write -- closes the race flagged in the
+                    # 2026-10-08 review: a concurrent user correction landing in
+                    # the window between this batch's initial read and the
+                    # Jobgether page fetch above must not be overwritten by this
+                    # stale computed update. None means the row's company was no
+                    # longer missing/placeholder (or the row is gone); skip it
+                    # rather than counting it as fixed.
+                    updated_job = repos["jobs"].update_if_company_missing(
+                        user_id, job_id, updates
+                    )
+                    if not updated_job:
+                        continue
                     fixed += 1
                     repos["conn"].commit()
-                    updated_job = repos["jobs"].get_by_id(user_id, job_id)
-                    if updated_job:
-                        post_repair_duplicate_check(
-                            user_id, repos["jobs"], updated_job, all_jobs
-                        )
-                        repos["conn"].commit()
+                    post_repair_duplicate_check(
+                        user_id, repos["jobs"], updated_job, all_jobs
+                    )
+                    repos["conn"].commit()
             except Exception as exc:
                 repos["conn"].rollback()
                 logger.error("fix-unknown-companies failed: %s", exc)

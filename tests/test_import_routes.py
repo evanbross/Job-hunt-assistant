@@ -284,3 +284,62 @@ def test_fix_unknown_companies_still_repairs_non_jobgether_rows(
     finally:
         conn.close()
     assert updated["company"] == "Acmeco"
+
+
+# ai: claude-sonnet-5 | 2026-10-09
+def test_fix_unknown_companies_does_not_overwrite_concurrent_user_correction(
+    repair_client: tuple[Any, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-10-08 review: the Jobgether branch reads the row, releases the
+    connection, then does a slow live-page fetch before writing -- a real
+    window for a concurrent user correction. Simulate that correction landing
+    while the fetch is "in flight" (a second connection commits it from inside
+    the monkeypatched fetch) and assert the stale fetched value never
+    overwrites it."""
+    client, user_id = repair_client
+    conn = get_connection(config.DATABASE_URL)
+    try:
+        set_current_user(conn.cursor(), user_id)
+        job_id = PostgresJobRepository(conn).insert(
+            user_id,
+            {
+                "company": "",
+                "job_title": "Senior Engineer",
+                "url": "https://jobgether.com/offer/abc123-senior-engineer",
+                "source": "browser_ext@local",
+                "status": "triage",
+            },
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    def _fetch_with_concurrent_correction(url: str) -> str:
+        race_conn = get_connection(config.DATABASE_URL)
+        try:
+            set_current_user(race_conn.cursor(), user_id)
+            PostgresJobRepository(race_conn).update(
+                user_id, job_id, {"company": "UserCorrectedCo"}
+            )
+            race_conn.commit()
+        finally:
+            race_conn.close()
+        return _JOBGETHER_JOBPOSTING_HTML
+
+    monkeypatch.setattr(
+        "routes.import_.fetch_jobgether_page_html", _fetch_with_concurrent_correction
+    )
+
+    response = client.post("/api/repair/fix-unknown-companies")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"fixed": 0, "remaining": 0}
+
+    conn = get_connection(config.DATABASE_URL)
+    try:
+        set_current_user(conn.cursor(), user_id)
+        updated = PostgresJobRepository(conn).get_by_id(user_id, job_id)
+    finally:
+        conn.close()
+    assert updated["company"] == "UserCorrectedCo"

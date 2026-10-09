@@ -71,6 +71,8 @@ class ApplicationProfileUpdate(BaseModel):
     is_veteran: bool | None = None
     has_disability: bool | None = None
     current_company: str | None = None
+    country: str | None = None
+    is_18_or_older: bool | None = None
 
 
 class ApplicationAnswerCreate(BaseModel):

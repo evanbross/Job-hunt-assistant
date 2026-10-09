@@ -333,8 +333,9 @@
     // "Country*" (via the ancestor-text walk -- it carries no <label for>),
     // sitting immediately beside the "Phone*" field. Anchored to the whole
     // label so it doesn't swallow an unrelated "Country of residence"-style
-    // question -- this app has no profile.country field; see
-    // profileValueForCategory's phone_country case.
+    // question entirely by accident -- but see profileValueForCategory's
+    // phone_country case (2026-10-09): profile.country now answers both of
+    // those correctly anyway, so a misclassification here is no longer wrong.
     { category: 'phone_country', re: /^country\s*\*?\s*$/i },
     { category: 'phone_country_code', re: /phone.*country|country.*code/i },
     { category: 'phone', re: /\bphone\b/i },
@@ -393,10 +394,9 @@
       re: /authorized to work|work authorization|authorization to work|legally (authorized|eligible) to work/i,
     },
     // ai: claude-sonnet-5 | 2026-10-08
-    // A screening question ("Are you over 18 years of Age?"), not backed by
-    // any profile field -- every applicant using this tool is an adult job
-    // seeker, so the answer is always "Yes" (see boolValueForCategory's
-    // age_18_or_over case, hardcoded the same way phone_country is).
+    // A screening question ("Are you over 18 years of Age?"). See
+    // boolValueForCategory's age_18_or_over case (2026-10-09): answers from
+    // profile.is_18_or_older, defaulting to "Yes" when unset.
     { category: 'age_18_or_over', re: /\bover\s*18\b|\b18\s*years?\s*(of\s*age|old)\b|at least 18/i },
     // ai: claude-sonnet-5 | 2026-08-17
     { category: 'veteran_status', re: /veteran/i },
@@ -464,13 +464,17 @@
       case 'race': return profile.race;
       case 'current_company': return profile.current_company;
       case 'state': return profile.state;
-      // ai: claude-sonnet-5 | 2026-10-08
-      // No profile.country field exists (the app is US-focused -- state
-      // abbreviations, no country selector in ApplicationProfilePanel), and
-      // this category only ever targets the phone dial-code picker (see the
-      // phone_country CATEGORY_PATTERNS comment), so hardcode the one value
-      // every applicant here needs rather than adding a profile field for it.
-      case 'phone_country': return 'United States';
+      // ai: claude-sonnet-5 | 2026-10-09
+      // Closes the Medium finding from the 2026-10-08 review: this used to
+      // hardcode 'United States' for every bare "Country" field classified as
+      // the phone dial-code picker (see the phone_country CATEGORY_PATTERNS
+      // comment) -- correct only for a US-based single operator, wrong for a
+      // second account, and also wrong if that bare "Country" label turned out
+      // to be a residence/citizenship question instead (profile.country is the
+      // right answer for either). Falls back to the old hardcoded default only
+      // when the field is genuinely unset, so this operator's behavior doesn't
+      // change until they fill in ApplicationProfilePanel's new Country field.
+      case 'phone_country': return profile.country || 'United States';
       default: return null;
     }
   }
@@ -511,12 +515,13 @@
         return null;
       case 'veteran_status': return profile.is_veteran ?? null;
       case 'disability_status': return profile.has_disability ?? null;
-      // ai: claude-sonnet-5 | 2026-10-08
-      // No profile field for this -- every applicant using this tool is an
-      // adult job seeker, so always answer "Yes" rather than leaving a
-      // screening question unresolved for something that's never actually
-      // in question.
-      case 'age_18_or_over': return true;
+      // ai: claude-sonnet-5 | 2026-10-09
+      // Closes the Medium finding from the 2026-10-08 review: this used to
+      // always answer "Yes" with no backing profile field, correct only for
+      // the single operator this tool was built for. profile.is_18_or_older
+      // defaults to true when unset (?? true, not ?? null) so this operator's
+      // behavior doesn't change -- a second account can now override it.
+      case 'age_18_or_over': return profile.is_18_or_older ?? true;
       default: return null;
     }
   }
@@ -898,14 +903,50 @@
     return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
   }
 
-  // ai: claude-sonnet-5 | 2026-10-08
-  // Exact match first, then substring containment either direction (handles
-  // a candidate with extra wrapping, e.g. "White (Not Hispanic or Latino)"
-  // vs. an option that's just "White"), then keyword-overlap scoring --
-  // same approach as findBankAnswer above, reused here because ATS-specific
-  // option wording (confirmed live on Greenhouse: "I am not a protected
-  // veteran" vs. a "standard" fallback of "I am not a veteran") varies just
-  // enough that neither exact nor substring matching alone is reliable.
+  // ai: claude-sonnet-5 | 2026-10-09
+  // A set rather than a single regex so hasNegation() can be checked against
+  // a token Set the same way candidate/option word-overlap is below.
+  const NEGATION_WORDS = new Set(['not', 'no', 'non', 'dont', 'doesnt', 'decline', 'without', 'never']);
+
+  function hasNegation(tokens) {
+    for (const t of tokens) {
+      if (NEGATION_WORDS.has(t)) return true;
+    }
+    return false;
+  }
+
+  function escapeRegExp(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  // \b only fires at a word/non-word character transition, so this rejects
+  // "man" inside "woman" (no transition between "wo" and "man", both word
+  // chars) while still matching "white" inside "white (not hispanic or
+  // latino)" (the space is a transition) -- a raw .includes() check gets
+  // both of those backwards.
+  function wordBoundaryContains(haystack, needle) {
+    if (!needle) return false;
+    return new RegExp(`\\b${escapeRegExp(needle)}\\b`).test(haystack);
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-09
+  // Fixes the High finding from the 2026-10-08 review: the prior substring
+  // pass's reverse-containment check ("woman".includes("man")) could select
+  // "Man" over "Woman (she/her)" for candidate "Woman" -- any short option
+  // that happens to be a letter-sequence inside a longer candidate matched,
+  // with no word-boundary check. Three passes now: exact match, then
+  // word-boundary containment (still handles a candidate with extra wrapping,
+  // e.g. "White (Not Hispanic or Latino)" vs. an option that's just "White",
+  // but rejects "man" inside "woman"; skipped as ambiguous if more than one
+  // option satisfies it for a given candidate), then keyword-overlap scoring
+  // -- same approach as findBankAnswer above, reused here because
+  // ATS-specific option wording (confirmed live on Greenhouse: "I am not a
+  // protected veteran" vs. a "standard" fallback of "I am not a veteran")
+  // varies just enough that exact/containment matching alone isn't reliable.
+  // The scoring pass requires negation agreement (both or neither side says
+  // "not"/"no"/...) so "I am not a veteran" can never score against "I
+  // identify as ... a protected veteran" on shared non-negation tokens alone,
+  // and rejects a tied top score rather than arbitrarily picking one option.
   function bestMatchingOption(options, candidates) {
     for (const candidate of candidates) {
       const normCandidate = normalizeOptionText(candidate);
@@ -916,29 +957,32 @@
     for (const candidate of candidates) {
       const normCandidate = normalizeOptionText(candidate);
       if (!normCandidate) continue;
-      const substr = options.find((o) => {
+      const matches = options.filter((o) => {
         const normOption = normalizeOptionText(o.textContent);
-        return normOption.includes(normCandidate) || normCandidate.includes(normOption);
+        return wordBoundaryContains(normOption, normCandidate) || wordBoundaryContains(normCandidate, normOption);
       });
-      if (substr) return substr;
+      if (matches.length === 1) return matches[0];
     }
-    let best = null;
     let bestScore = 0;
+    let bestOptions = [];
     for (const candidate of candidates) {
       const candidateTokens = new Set(normalizeOptionText(candidate).split(/\W+/).filter((w) => w.length > 2));
       if (candidateTokens.size === 0) continue;
+      const candidateNegated = hasNegation(candidateTokens);
       for (const option of options) {
         const optionTokens = new Set(normalizeOptionText(option.textContent).split(/\W+/).filter((w) => w.length > 2));
-        if (optionTokens.size === 0) continue;
+        if (optionTokens.size === 0 || hasNegation(optionTokens) !== candidateNegated) continue;
         const overlap = [...candidateTokens].filter((t) => optionTokens.has(t)).length;
         const score = overlap / Math.max(candidateTokens.size, optionTokens.size);
         if (score > bestScore) {
           bestScore = score;
-          best = option;
+          bestOptions = [option];
+        } else if (score === bestScore && score > 0 && !bestOptions.includes(option)) {
+          bestOptions.push(option);
         }
       }
     }
-    return bestScore >= 0.6 ? best : null;
+    return bestScore >= 0.6 && bestOptions.length === 1 ? bestOptions[0] : null;
   }
 
   // ai: claude-sonnet-5 | 2026-10-08

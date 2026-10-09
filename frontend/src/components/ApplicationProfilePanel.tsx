@@ -91,6 +91,8 @@ type ProfileFormState = {
   is_veteran: boolean | null;
   has_disability: boolean | null;
   current_company: string;
+  country: string;
+  is_18_or_older: boolean | null;
 };
 
 const emptyProfile: ProfileFormState = {
@@ -112,6 +114,8 @@ const emptyProfile: ProfileFormState = {
   is_veteran: null,
   has_disability: null,
   current_company: "",
+  country: "",
+  is_18_or_older: null,
 };
 
 interface AnswerFormState {
@@ -261,6 +265,8 @@ export default function ApplicationProfilePanel() {
           is_veteran: profile.is_veteran,
           has_disability: profile.has_disability,
           current_company: profile.current_company.trim() || null,
+          country: profile.country.trim() || null,
+          is_18_or_older: profile.is_18_or_older,
         }),
       });
       if (!res.ok) {
@@ -442,6 +448,19 @@ export default function ApplicationProfilePanel() {
               />
             </div>
             <div>
+              <label style={labelStyle}>Country</label>
+              <input
+                type="text"
+                value={profile.country || ""}
+                onChange={(e) => setProfile((p) => ({ ...p, country: e.target.value }))}
+                placeholder="e.g. United States"
+                style={fieldStyle}
+              />
+              <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                Used for both a residence/citizenship "Country" question and a phone number's country/dial-code picker — leave unset and the extension defaults to United States.
+              </span>
+            </div>
+            <div>
               <label style={labelStyle}>Authorized to work in the US?</label>
               <TriStateSelect
                 value={profile.work_authorized}
@@ -455,6 +474,15 @@ export default function ApplicationProfilePanel() {
               <TriStateSelect
                 value={profile.requires_visa_sponsorship}
                 onChange={(v) => setProfile((p) => ({ ...p, requires_visa_sponsorship: v }))}
+                yesLabel="Yes"
+                noLabel="No"
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Are you 18 years of age or older?</label>
+              <TriStateSelect
+                value={profile.is_18_or_older}
+                onChange={(v) => setProfile((p) => ({ ...p, is_18_or_older: v }))}
                 yesLabel="Yes"
                 noLabel="No"
               />
