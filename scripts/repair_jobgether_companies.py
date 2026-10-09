@@ -68,6 +68,7 @@ from backend.scanning.import_repair import (  # noqa: E402
     is_jobgether_placeholder_company,
     is_missing_company,
     jobgether_company_repair_updates,
+    post_repair_duplicate_check,
 )
 from backend.utils.url_safety import UnsafeUrlError  # noqa: E402
 from backend.utils.utils import get_repos  # noqa: E402
@@ -137,6 +138,17 @@ def main() -> None:
             if not args.dry_run:
                 repos["jobs"].update(_USER_ID, job_id, updates)
                 repos["conn"].commit()
+                # ai: claude-sonnet-5 | 2026-10-08
+                # Re-evaluate this job's duplicate status now that its real
+                # company is on file -- a stale duplicate_of_id set while
+                # every Jobgether row still shared the "Jobgether" placeholder
+                # company would otherwise point at an unrelated employer
+                # forever. See post_repair_duplicate_check's docstring.
+                updated_job = repos["jobs"].get_by_id(_USER_ID, job_id)
+                if updated_job:
+                    all_jobs = repos["jobs"].get_all_ordered(_USER_ID)
+                    if post_repair_duplicate_check(_USER_ID, repos["jobs"], updated_job, all_jobs):
+                        repos["conn"].commit()
             repaired += 1
 
         logger.info(

@@ -37,7 +37,7 @@ from __future__ import annotations
 import json  # ai: claude-fable-5 | 2026-07-17
 import re
 import time  # ai: claude-sonnet-5 | 2026-10-08
-from collections.abc import Iterator  # ai: claude-fable-5 | 2026-07-17
+from collections.abc import Collection, Iterator  # ai: claude-fable-5 | 2026-07-17
 from typing import Any, Protocol
 from urllib.error import (
     HTTPError as UrllibHTTPError,  # ai: claude-sonnet-5 | 2026-10-08
@@ -59,6 +59,14 @@ from backend.utils.url_safety import safe_urlopen  # ai: claude-sonnet-5 | 2026-
 # ai: claude-sonnet-5 | 2026-08-20
 class JobUpdater(Protocol):
     def update(self, user_id: int, job_id: int, fields: dict[str, Any]) -> None: ...
+    # ai: claude-sonnet-5 | 2026-10-08
+    def update_if_status_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        included_statuses: Collection[str],
+    ) -> dict[str, Any] | None: ...
 
 
 def is_missing_company(value: object) -> bool:
@@ -111,17 +119,51 @@ def post_repair_duplicate_check(
     fixed_job: dict[str, Any],
     all_jobs: list[dict[str, Any]],
 ) -> bool:
+    """Re-run duplicate detection for a job whose company was just repaired.
+
+    A company repair (e.g. the Jobgether placeholder-company fix) can
+    invalidate a duplicate_of_id that was set earlier against the job's old,
+    wrong company name -- that match was only possible because every
+    Jobgether row shared the literal company "Jobgether" at the time, so the
+    comparison scored a 100% company match against unrelated employers. Once
+    the real company is on file, re-checking must be able to *clear* that
+    stale link, not just set a new one -- otherwise the job is left pointing
+    at an unrelated company's listing forever.
+
+    duplicate_hint/duplicate_of_id are cleared regardless of the job's
+    current status -- they're descriptive/pointer fields, not user progress,
+    so there's nothing to protect there. status is only reset (back to
+    pending_review/triage) while the job is still sitting in the
+    possible_duplicate state the stale link put it in; a job the user has
+    since acted on (applied, skipped, etc.) keeps its real status.
+    """
     job_id = int(fixed_job["id"])
     job_title = str(fixed_job.get("job_title") or "")
     company = str(fixed_job.get("company") or "")
-    if not job_title or not company:
-        return False
     candidates = [j for j in all_jobs if int(j.get("id", -1)) != job_id]
-    match = DuplicateChecker().check(
-        job_title=job_title, company=company, sheet_jobs=candidates
+    match = (
+        DuplicateChecker().check(job_title=job_title, company=company, sheet_jobs=candidates)
+        if job_title and company
+        else None
     )
     if not match:
-        return False
+        if fixed_job.get("duplicate_of_id") is None:
+            return False
+        jobs_repo.update(user_id, job_id, {"duplicate_hint": None, "duplicate_of_id": None})
+        # ai: claude-sonnet-5 | 2026-10-08
+        # Conditioned on status still being "possible_duplicate" at write
+        # time (not just when `fixed_job` was read) so a concurrent /apply or
+        # /skip landing in this window isn't clobbered back to
+        # triage/pending_review -- see update_if_status_in's docstring.
+        if fixed_job.get("status") == "possible_duplicate":
+            fit_score = fixed_job.get("fit_score") or 0
+            jobs_repo.update_if_status_in(
+                user_id,
+                job_id,
+                {"status": "pending_review" if fit_score >= 70 else "triage"},
+                {"possible_duplicate"},
+            )
+        return True
     hint = (
         f'Possible duplicate of "{match["sheet_title"]}" '
         f'at {match["sheet_company"]} already in your sheet '

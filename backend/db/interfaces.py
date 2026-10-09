@@ -84,6 +84,13 @@ class IJobRepository(Protocol):
         fields: dict[str, Any],
         excluded_statuses: Collection[str],
     ) -> dict[str, Any] | None: ...
+    def update_if_status_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        included_statuses: Collection[str],
+    ) -> dict[str, Any] | None: ...
     def delete(self, user_id: int, job_id: int) -> None: ...
     def delete_email_sourced(self, user_id: int) -> None: ...
 

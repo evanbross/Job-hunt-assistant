@@ -101,7 +101,8 @@ export function useCompanyHistoryLookup(job: Job) {
       // points at a row that got silently filtered out of the list. Confirmed
       // reported live: job 5776 showed "Possible Duplicate of #5500" while
       // viewing job 5505's history, but #5500 itself never appeared.
-      const forceIncludeIds = alwaysIncludedIds(job);
+      const primaryForceIncludeIds = alwaysIncludedIds(job);
+      const forceIncludeIds = new Set(primaryForceIncludeIds);
       for (const row of withCurrent) {
         if (row.duplicate_of_id != null) forceIncludeIds.add(row.duplicate_of_id);
       }
@@ -116,7 +117,24 @@ export function useCompanyHistoryLookup(job: Job) {
       );
       const withDuplicateRefs = [...withCurrent, ...fetchedRefs.filter((row): row is ApplicationHistoryRow => Boolean(row))];
 
-      setRows(withDuplicateRefs.filter((row) => rowMatchesCompany(row.company, company) || forceIncludeIds.has(row.id ?? -1)));
+      // ai: claude-sonnet-5 | 2026-10-08
+      // primaryForceIncludeIds (the opened job's own duplicate hint + its
+      // dismissed candidates) always bypasses the company filter -- that's
+      // the point of the feature, surfacing a match the backend found even
+      // when the two companies are stored under different text variants. A
+      // *sibling* row's own duplicate_of_id (the forceIncludeIds addition
+      // above) only bypasses it if that referenced row's company still
+      // actually matches -- a stale cross-company duplicate_of_id left over
+      // from a since-corrected company name (see backend/scanning/
+      // import_repair.py post_repair_duplicate_check) must not leak an
+      // unrelated employer's listing into this dialog. Confirmed live: job
+      // 5606 (Penn Interactive) carried a stale duplicate_of_id pointing at
+      // job 5555 (Gametime), pulling Gametime into Penn Interactive's history.
+      setRows(
+        withDuplicateRefs.filter(
+          (row) => rowMatchesCompany(row.company, company) || primaryForceIncludeIds.has(row.id ?? -1)
+        )
+      );
       setError("");
     } catch (lookupError) {
       // ai: claude-sonnet-5 | 2026-07-09

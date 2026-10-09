@@ -490,6 +490,55 @@ class PostgresJobRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    # ai: claude-sonnet-5 | 2026-10-08
+    def update_if_status_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        included_statuses: Collection[str],
+    ) -> dict[str, Any] | None:
+        """Atomically update *job_id* with *fields*, but only if its current
+        status is one of *included_statuses*.
+
+        Mirrors update_if_status_not_in above but for callers whose write is
+        only valid while the job is still sitting in one specific status --
+        e.g. clearing a stale duplicate_of_id/duplicate_hint set by a since-
+        corrected false match is only safe while the job is still
+        "possible_duplicate"; if the user has since applied/skipped it in
+        the window between this caller's read and write, blindly overwriting
+        status would clobber that real progress (the same SELECT-then-write
+        race update_if_status_not_in was added to close).
+
+        Returns the updated row if the write was applied, or None if the
+        job's live status was not one of included_statuses or the job
+        doesn't exist.
+        """
+        if not fields:
+            return self.get_by_id(user_id, job_id)
+        unknown = set(fields.keys()) - self._ALLOWED_COLUMNS
+        if unknown:
+            raise ValueError(f"Attempt to update unknown columns: {unknown}")
+        if JobColumns.COMPANY in fields:
+            fields = {
+                **fields,
+                JobColumns.COMPANY_NORMALIZED: normalize_company_name(
+                    fields.get(JobColumns.COMPANY)
+                ),
+            }
+        set_clause = ", ".join(f"{k} = %s" for k in fields)
+        included = list(included_statuses)
+        where_extra = ""
+        if included:
+            where_extra = f" AND status IN ({', '.join(['%s'] * len(included))})"
+        cur = self._execute(
+            f"UPDATE jobs SET {set_clause} WHERE id = %s AND user_id = %s{where_extra}"
+            " RETURNING *",
+            [*fields.values(), job_id, user_id, *included],
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
     def delete(self, user_id: int, job_id: int) -> None:
         self._execute("DELETE FROM jobs WHERE id = %s AND user_id = %s", (job_id, user_id))
 
