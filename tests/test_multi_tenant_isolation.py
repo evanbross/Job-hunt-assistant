@@ -153,7 +153,17 @@ def test_users_cannot_fetch_each_others_job_by_id(client) -> None:
 
 def test_users_have_independent_application_profiles(client) -> None:
     _create_and_login(client, _USER_A_EMAIL)
-    put_a = client.put("/api/application-profile", json={"legal_name": "Alice A"})
+    # ai: claude-sonnet-5 | 2026-10-09 -- country/is_18_or_older added
+    # alongside legal_name so this real-Postgres round trip (schema column,
+    # repo allowlist, Flask request model, response, tenant isolation)
+    # actually exercises the new columns the 2026-10-08 review's fix added,
+    # closing the 2026-10-09 review's "no boundary-capable regression test"
+    # finding -- a fake-repo unit test can't catch a misspelled or missing
+    # column, this can.
+    put_a = client.put(
+        "/api/application-profile",
+        json={"legal_name": "Alice A", "country": "Canada", "is_18_or_older": True},
+    )
     assert put_a.status_code == 200
     client.post("/api/logout")
 
@@ -162,13 +172,18 @@ def test_users_have_independent_application_profiles(client) -> None:
     get_b = client.get("/api/application-profile").get_json()
     assert get_b is None or get_b.get("legal_name") != "Alice A"
 
-    put_b = client.put("/api/application-profile", json={"legal_name": "Bob B"})
+    put_b = client.put(
+        "/api/application-profile",
+        json={"legal_name": "Bob B", "country": "United States", "is_18_or_older": False},
+    )
     assert put_b.status_code == 200
     client.post("/api/logout")
 
     _login(client, _USER_A_EMAIL)
     get_a = client.get("/api/application-profile").get_json()
     assert get_a["legal_name"] == "Alice A"
+    assert get_a["country"] == "Canada"
+    assert get_a["is_18_or_older"] is True
 
 
 def test_users_have_independent_resumes(client) -> None:

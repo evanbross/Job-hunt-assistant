@@ -490,12 +490,23 @@ export default function JobQueue({
   }, []);
 
   // ai: claude-sonnet-5 | 2026-10-09
-  useEffect(() => {
-    fetch("/api/jobs/applied-companies")
-      .then((res) => res.json())
-      .then((data: AppliedCompanies) => setAppliedCompanies(new Set(Array.isArray(data) ? data : [])))
-      .catch(() => setAppliedCompanies(new Set()));
+  // Extracted so the "apply" handlers below can refresh this set in place
+  // after a successful apply, instead of only ever loading it once on mount
+  // (2026-10-09 review: the filter/count otherwise stayed stale -- a newly
+  // applied job's siblings at the same company kept showing until reload).
+  const fetchAppliedCompanies = useCallback(async () => {
+    try {
+      const res = await fetch("/api/jobs/applied-companies");
+      const data: AppliedCompanies = await res.json();
+      setAppliedCompanies(new Set(Array.isArray(data) ? data : []));
+    } catch {
+      /* no-op -- keep whatever was already loaded */
+    }
   }, []);
+
+  useEffect(() => {
+    fetchAppliedCompanies();
+  }, [fetchAppliedCompanies]);
 
   // ai: claude-sonnet-5 | 2026-08-11
   useEffect(() => {
@@ -693,6 +704,7 @@ export default function JobQueue({
       return;
     }
     setJobs((prev) => prev.filter((j) => j.id !== jobId));
+    await fetchAppliedCompanies();
   };
 
   const handleSkip = async (jobId: number, reason = "other", feedback = "", mismatchReasons: string[] = []) => {
@@ -869,6 +881,7 @@ export default function JobQueue({
         onTriageCountChange(updated.length);
         return updated;
       });
+      await fetchAppliedCompanies();
     } else {
       const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to mark job as applied");

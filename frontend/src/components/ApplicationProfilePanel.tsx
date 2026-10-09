@@ -457,7 +457,7 @@ export default function ApplicationProfilePanel() {
                 style={fieldStyle}
               />
               <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                Used for both a residence/citizenship "Country" question and a phone number's country/dial-code picker — leave unset and the extension defaults to United States.
+                Used for both a residence/citizenship "Country" question and a phone number's country/dial-code picker — the extension leaves the field unresolved if this is unset.
               </span>
             </div>
             <div>

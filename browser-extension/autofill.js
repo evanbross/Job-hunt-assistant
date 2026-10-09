@@ -395,8 +395,8 @@
     },
     // ai: claude-sonnet-5 | 2026-10-08
     // A screening question ("Are you over 18 years of Age?"). See
-    // boolValueForCategory's age_18_or_over case (2026-10-09): answers from
-    // profile.is_18_or_older, defaulting to "Yes" when unset.
+    // boolValueForCategory's age_18_or_over case: answers from
+    // profile.is_18_or_older, left unresolved when unset.
     { category: 'age_18_or_over', re: /\bover\s*18\b|\b18\s*years?\s*(of\s*age|old)\b|at least 18/i },
     // ai: claude-sonnet-5 | 2026-08-17
     { category: 'veteran_status', re: /veteran/i },
@@ -471,10 +471,12 @@
       // comment) -- correct only for a US-based single operator, wrong for a
       // second account, and also wrong if that bare "Country" label turned out
       // to be a residence/citizenship question instead (profile.country is the
-      // right answer for either). Falls back to the old hardcoded default only
-      // when the field is genuinely unset, so this operator's behavior doesn't
-      // change until they fill in ApplicationProfilePanel's new Country field.
-      case 'phone_country': return profile.country || 'United States';
+      // right answer for either). 2026-10-09 review follow-up: a hardcoded
+      // fallback for an *unset* field reintroduced the same cross-account bug
+      // one level down, so this now stays unresolved when unset, same as
+      // work_authorized/race/etc. -- this operator's own profile was
+      // backfilled once instead (scripts/backfill_existing_operator_country_and_age.py).
+      case 'phone_country': return profile.country ?? null;
       default: return null;
     }
   }
@@ -518,10 +520,13 @@
       // ai: claude-sonnet-5 | 2026-10-09
       // Closes the Medium finding from the 2026-10-08 review: this used to
       // always answer "Yes" with no backing profile field, correct only for
-      // the single operator this tool was built for. profile.is_18_or_older
-      // defaults to true when unset (?? true, not ?? null) so this operator's
-      // behavior doesn't change -- a second account can now override it.
-      case 'age_18_or_over': return profile.is_18_or_older ?? true;
+      // the single operator this tool was built for. 2026-10-09 review
+      // follow-up: defaulting an *unset* field to true reintroduced the same
+      // cross-account bug one level down, so this now stays unresolved when
+      // unset, same as veteran_status/disability_status above -- this
+      // operator's own profile was backfilled once instead
+      // (scripts/backfill_existing_operator_country_and_age.py).
+      case 'age_18_or_over': return profile.is_18_or_older ?? null;
       default: return null;
     }
   }
@@ -591,8 +596,14 @@
   // those. Only matters for <select>/combobox controls: setNativeValue's
   // plain-input branch only ever uses candidates[0] (the real city), so a
   // genuine city text field is unaffected by the extra fallbacks below.
+  // ai: claude-sonnet-5 | 2026-10-09
+  // Closes a Medium finding from the 2026-10-09 review: this used to hardcode
+  // 'United States' independently of the profile.country field added for the
+  // same purpose elsewhere (see profileValueForCategory's phone_country case),
+  // so a non-US profile still got a US fallback here. filter(Boolean) already
+  // drops it when unset, same as every other candidate list in this file.
   function locationFallbackCandidates(profile) {
-    return [profile.state, 'United States'].filter(Boolean);
+    return [profile.state, profile.country].filter(Boolean);
   }
 
   // Ordered candidate strings for a plain structured value (state, gender, ...) —

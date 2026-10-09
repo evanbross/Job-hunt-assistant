@@ -1484,9 +1484,12 @@ def _migrate(conn: Any) -> None:
     # dial-code picker, and always answered the "are you 18+" screening question
     # "Yes" -- correct only for the single operator this tool was built for, not
     # for a second account. Both are now real per-user profile fields instead of
-    # code-level constants (autofill.js falls back to the old hardcoded value
-    # only when a field is unset, so existing behavior for this operator doesn't
-    # change until they fill in their profile).
+    # code-level constants. (2026-10-09 review follow-up: autofill.js no longer
+    # falls back to those old hardcoded values when a field is unset -- see its
+    # own comments -- so no schema-level default belongs here either. The
+    # existing operator's profile is backfilled once via
+    # scripts/backfill_existing_operator_country_and_age.py instead of baking a
+    # cross-account default into this migration.)
     cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS country TEXT")
     cur.execute(
         "ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS is_18_or_older BOOLEAN"

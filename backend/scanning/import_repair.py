@@ -54,6 +54,9 @@ from backend.scanning.closed_req_scan_helpers import (  # ai: claude-sonnet-5 | 
 from backend.scoring.duplicate_checker import DuplicateChecker, companies_match
 from backend.utils.company_urls import company_from_ats_url
 from backend.utils.url_safety import safe_urlopen  # ai: claude-sonnet-5 | 2026-10-08
+from backend.utils.utils import (
+    USER_COMMITTED_JOB_STATUSES,  # ai: claude-sonnet-5 | 2026-10-09
+)
 
 
 # ai: claude-sonnet-5 | 2026-08-20
@@ -66,6 +69,14 @@ class JobUpdater(Protocol):
         job_id: int,
         fields: dict[str, Any],
         included_statuses: Collection[str],
+    ) -> dict[str, Any] | None: ...
+    # ai: claude-sonnet-5 | 2026-10-09
+    def update_if_status_not_in(
+        self,
+        user_id: int,
+        job_id: int,
+        fields: dict[str, Any],
+        excluded_statuses: Collection[str],
     ) -> dict[str, Any] | None: ...
 
 
@@ -130,12 +141,14 @@ def post_repair_duplicate_check(
     stale link, not just set a new one -- otherwise the job is left pointing
     at an unrelated company's listing forever.
 
-    duplicate_hint/duplicate_of_id are cleared regardless of the job's
+    duplicate_hint/duplicate_of_id are cleared or set regardless of the job's
     current status -- they're descriptive/pointer fields, not user progress,
-    so there's nothing to protect there. status is only reset (back to
-    pending_review/triage) while the job is still sitting in the
-    possible_duplicate state the stale link put it in; a job the user has
-    since acted on (applied, skipped, etc.) keeps its real status.
+    so there's nothing to protect there. status is only ever changed through
+    an atomic conditional update gated on USER_COMMITTED_JOB_STATUSES, the
+    same guard update_if_status_not_in's other callers use: a job the user
+    has already acted on (applied, skipped) keeps its real status no matter
+    which branch below runs, and a concurrent /apply or /skip landing between
+    this function's read and write can't be clobbered either.
     """
     job_id = int(fixed_job["id"])
     job_title = str(fixed_job.get("job_title") or "")
@@ -185,14 +198,20 @@ def post_repair_duplicate_check(
         if matched_job and matched_job.get("id") is not None
         else None
     )
+    # ai: claude-sonnet-5 | 2026-10-09
+    # duplicate_hint/duplicate_of_id are pointer fields -- always safe to
+    # write. status is the one field that's real user progress once it's
+    # "applied"/"skipped", so (closing the High finding from the 2026-10-09
+    # review) it's written through the same atomic conditional update the
+    # no-match branch above already uses, instead of folding it into the
+    # same unconditional jobs_repo.update() call as the pointer fields.
     jobs_repo.update(
         user_id,
         job_id,
-        {
-            "duplicate_hint": hint,
-            "duplicate_of_id": duplicate_of_id,
-            "status": "possible_duplicate",
-        },
+        {"duplicate_hint": hint, "duplicate_of_id": duplicate_of_id},
+    )
+    jobs_repo.update_if_status_not_in(
+        user_id, job_id, {"status": "possible_duplicate"}, USER_COMMITTED_JOB_STATUSES
     )
     return True
 
