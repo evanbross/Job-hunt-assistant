@@ -51,7 +51,11 @@ from backend.ai_provider import AIProviderClient
 from backend.celery_app import celery_app
 from backend.db.job_columns import JobColumns
 from backend.email.classification import email_date_from_message, get_subject_rule_match
-from backend.email.email_parser import EmailParser
+from backend.email.email_parser import (
+    NO_URL_JOB_SNIPPET_CHARS,
+    URL_JOB_SNIPPET_CHARS,
+    EmailParser,
+)
 from backend.email.email_source_filters import email_matches_source_filters
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
@@ -753,7 +757,15 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                             "JD enrichment failed for %s: %s", job_url_str, exc
                         )
 
-                raw_snippet = jd_text[:6000] if jd_text else email_body[:300]
+                # ai: claude-sonnet-5 | 2026-10-09 — a URL-less job never gets a
+                # second chance via enrichment, so its snippet needs a much
+                # larger cap to actually reach the JD past any lead-in boilerplate
+                if jd_text:
+                    raw_snippet = jd_text[:6000]
+                elif job_url_str:
+                    raw_snippet = email_body[:URL_JOB_SNIPPET_CHARS]
+                else:
+                    raw_snippet = email_body[:NO_URL_JOB_SNIPPET_CHARS]
 
                 # ai: claude-fable-5 | 2026-07-16
                 # MongoDB postings are hybrid unless they explicitly say remote;

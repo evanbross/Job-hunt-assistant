@@ -57,6 +57,19 @@ logger = logging.getLogger(__name__)
 
 MAX_EMAIL_BODY_CHARS = 20000
 
+# ai: claude-sonnet-5 | 2026-10-09
+# Jobs with an apply/detail URL get their full JD filled in later by
+# jd_enrichment (which fetches the URL), so a short preview snippet is
+# fine as raw_jd_snippet. Jobs with no URL (e.g. a recruiter email routed
+# through a platform's private-relay system, like a Dice "Private Email")
+# never go through that enrichment path — raw_jd_snippet is the only JD
+# text these jobs will ever have, so it needs to capture enough of the
+# body to actually reach the recruiter's message past any disclaimer/
+# trust-banner boilerplate the platform prepends (job 5458: a 300-char
+# cap landed entirely inside Dice's banner and never reached the JD).
+URL_JOB_SNIPPET_CHARS = 300
+NO_URL_JOB_SNIPPET_CHARS = 4000
+
 _URL_TOKEN_RE = re.compile(r"https?://[^\s<>\"'()]+")
 # ai: claude-sonnet-5 | 2026-07-10
 # The LLM is asked to echo tokens back as "[URL_N]" but sometimes drops the

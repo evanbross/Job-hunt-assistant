@@ -65,6 +65,8 @@ from backend.db import DuplicateJobUrlError
 from backend.db.job_columns import JobColumns
 from backend.email.classification import maybe_mark_source_email_read
 from backend.email.email_parser import (
+    NO_URL_JOB_SNIPPET_CHARS,
+    URL_JOB_SNIPPET_CHARS,
     EmailParser,
     fallback_job_url,
     normalize_title_company,
@@ -1220,12 +1222,18 @@ def reprocess_job(job_id: int) -> ResponseReturnValue:
         JobColumns.CERTAINTY_REASON: parsed.get("certainty_reason", ""),
         "sender_email": sender,
         JobColumns.CAPTURE_LABEL: subject,
-        "raw_jd_snippet": email_body[:300],
     }
     # Fill in parsed fields only if the stored value is empty
     for fld in ("company", "job_title", "url", "source"):
         if not job.get(fld) and parsed.get(fld):
             updates[fld] = parsed[fld]
+
+    # ai: claude-sonnet-5 | 2026-10-09 — a URL-less job never gets a second
+    # chance via enrichment, so its snippet needs a much larger cap to
+    # actually reach the JD past any lead-in boilerplate (see email_parser.py)
+    effective_url = str(updates.get("url") or job.get("url") or "")
+    snippet_chars = URL_JOB_SNIPPET_CHARS if effective_url else NO_URL_JOB_SNIPPET_CHARS
+    updates["raw_jd_snippet"] = email_body[:snippet_chars]
 
     with get_repos() as repos:
         repos["jobs"].update(user_id, job_id, updates)

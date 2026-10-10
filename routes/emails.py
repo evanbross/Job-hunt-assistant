@@ -54,7 +54,11 @@ from pydantic import (
 from backend.db.job_columns import JobColumns
 from backend.email.classification import email_date_from_message, get_subject_rule_match
 from backend.email.email_cleanup_service import EmailCleanupService
-from backend.email.email_parser import EmailParser
+from backend.email.email_parser import (
+    NO_URL_JOB_SNIPPET_CHARS,
+    URL_JOB_SNIPPET_CHARS,
+    EmailParser,
+)
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
 from backend.scoring.duplicate_checker import DuplicateChecker
@@ -495,7 +499,6 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
     with get_repos() as repos:
         feedback = repos["feedback"].find_match(user_id, sender, subject)
 
-    snippet = email_body[:300]
     scorer = FitScorer(user_id)
     dedup_checker = DuplicateChecker()
 
@@ -545,12 +548,16 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
             status = "possible_duplicate"
         else:
             status = "pending_review" if confidence == "high" else "triage"
+        job_url = str(parsed.get("url") or "")
+        snippet_chars = (
+            URL_JOB_SNIPPET_CHARS if job_url else NO_URL_JOB_SNIPPET_CHARS
+        )
         job_data: dict = {
             "company": parsed.get("company", ""),
             "job_title": parsed.get("job_title", ""),
-            "url": parsed.get("url", ""),
+            "url": job_url,
             "source": parsed.get("source", ""),
-            "raw_jd_snippet": snippet,
+            "raw_jd_snippet": email_body[:snippet_chars],
             "fit_score": None,
             "fit_reasoning": "",
             "status": status,
