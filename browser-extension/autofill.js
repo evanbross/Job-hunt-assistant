@@ -373,7 +373,12 @@
     // employer" — the old exact "current (company|employer)" pattern required
     // "current" immediately before the noun and missed this. Allow up to 20
     // chars of connecting words ("or previous ", "/previous ", etc.) between.
-    { category: 'current_company', re: /current[\w\s/]{0,20}(company|employer)/i },
+    // ai: claude-sonnet-5 | 2026-10-10
+    // "Please list your most recent employer" (reported live) used "recent"
+    // instead of "current" and fell through to the answer bank uncaught —
+    // this field already has a dedicated profile.current_company value, so
+    // it shouldn't need a per-wording answer-bank row to fill correctly.
+    { category: 'current_company', re: /(current|recent)[\w\s/]{0,20}(company|employer)/i },
     // ai: claude-sonnet-5 | 2026-08-14
     // Checked before the two single-concept patterns below — confirmed on
     // Greenhouse (Addepar posting): "authorized to work ... without Visa
