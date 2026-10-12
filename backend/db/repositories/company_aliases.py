@@ -44,9 +44,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Callable
 
+from backend.scoring.company_matching import normalize_company_name
+
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
-from backend.scoring.company_matching import normalize_company_name
 
 
 # ai: claude-sonnet-5 | 2026-10-12
