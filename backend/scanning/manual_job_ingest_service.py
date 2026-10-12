@@ -179,6 +179,7 @@ class ManualJobIngestService:
             # the full description from the job URL so scoring and the stored
             # snippet aren't based on near-empty text.
             job_url = str(parsed.get("url") or "").strip()
+            is_linkedin_job = "linkedin.com/jobs" in job_url.lower()
             # ai: claude-sonnet-5 | 2026-07-26
             # A LinkedIn DOM capture can be long yet still miss salary/compensation
             # (LinkedIn's own listing frequently omits it; it only shows up on the
@@ -220,17 +221,36 @@ class ManualJobIngestService:
                             job_url,
                             len(fetched_text),
                         )
-                    # ai: claude-sonnet-4-6 | 2026-06-27
-                    # Propagate company/title from the fetched job if the parser
-                    # couldn't extract them from the sparse captured text.
-                    if not (parsed.get("company") or "").strip() and fetched_job.get(
-                        "company"
-                    ):
-                        parsed["company"] = fetched_job["company"]
-                    if not (parsed.get("job_title") or "").strip() and fetched_job.get(
-                        "job_title"
-                    ):
-                        parsed["job_title"] = fetched_job["job_title"]
+                    fetched_company = str(fetched_job.get("company") or "").strip()
+                    fetched_title = str(fetched_job.get("job_title") or "").strip()
+                    # ai: claude-sonnet-5 | 2026-10-12
+                    # LinkedIn's live single-job DOM (what content.js scrapes) now
+                    # renders through a hashed/atomic CSS build with zero stable
+                    # class names or data-test attributes (confirmed live,
+                    # 2026-10-12) -- every old selector silently matches nothing
+                    # or the wrong element, and LinkedIn redesigns this page
+                    # often (see the 2026-10-06 search-page break above). Jobs
+                    # 6342/6343 shipped job_title="Rythm"/"Toast" (the company)
+                    # and company="United States (Remote)" (the location) this
+                    # way -- both already non-empty, so the old "only fill gaps"
+                    # fallback below never corrected them. The guest API fetched
+                    # here uses a different, long-stable server-rendered
+                    # template, so for LinkedIn it's trusted over the DOM capture
+                    # outright rather than only filling blanks.
+                    if is_linkedin_job:
+                        if fetched_company:
+                            parsed["company"] = fetched_company
+                        if fetched_title:
+                            parsed["job_title"] = fetched_title
+                    else:
+                        # ai: claude-sonnet-4-6 | 2026-06-27
+                        # Propagate company/title from the fetched job if the
+                        # parser couldn't extract them from the sparse captured
+                        # text.
+                        if not (parsed.get("company") or "").strip() and fetched_company:
+                            parsed["company"] = fetched_company
+                        if not (parsed.get("job_title") or "").strip() and fetched_title:
+                            parsed["job_title"] = fetched_title
         elif normalized_source_url:
             fetched_job = self._career_site_scanner.scan_single_job_url(
                 "Manual URL", normalized_source_url

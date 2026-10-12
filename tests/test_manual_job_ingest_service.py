@@ -367,6 +367,63 @@ def test_ingest_keeps_short_text_when_enrichment_returns_too_little() -> None:
     assert result.job["raw_jd_snippet"] == short_text[:6000]
 
 
+# ai: claude-sonnet-5 | 2026-10-12
+def test_ingest_prefers_fetched_company_and_title_for_linkedin_over_wrong_dom_capture() -> None:
+    """Jobs 6342/6343: LinkedIn's live single-job DOM (what content.js scrapes)
+    now renders through a hashed/atomic CSS build with no stable class names,
+    so the browser extension captured job_title="Rythm" (the company) and
+    company="United States (Remote)" (the location) -- both non-empty, so the
+    old "only fill gaps" fallback never corrected them. For LinkedIn URLs the
+    freshly fetched guest-API company/title must now win outright, not just
+    fill blanks."""
+    job_repo = StubJobRepo()
+    parser = StubParser(
+        [
+            {
+                "company": "United States (Remote)",
+                "job_title": "Rythm",
+                "url": "https://www.linkedin.com/jobs/view/4478560682/",
+                "source": "",
+                "certainty_level": "low",
+                "certainty_score": 40,
+                "certainty_reason": "",
+            }
+        ]
+    )
+    long_description = "Full job description text. " * 30  # >= 400 chars
+    scanner = StubCareerSiteScanner(
+        job={
+            "site_name": "LinkedIn",
+            "site_url": "https://www.linkedin.com/jobs/view/4478560682/",
+            "job_title": "Staff Backend Engineer",
+            "job_url": "https://www.linkedin.com/jobs/view/4478560682/",
+            "job_text": long_description,
+            "posted_at": None,
+            "confidence_level": "high",
+            "confidence_score": 100,
+            "company": "Rythm",
+        }
+    )
+    service = ManualJobIngestService(
+        _TEST_USER_ID,
+        job_repo,
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=parser,
+        scorer=StubScorer(score=85),
+        career_site_scanner=scanner,
+    )
+
+    result = service.ingest(
+        "Rythm\nCompany: United States (Remote)\n"
+        "URL: https://www.linkedin.com/jobs/view/4478560682/",
+        trigger="listener",
+    )
+
+    assert result.job["company"] == "Rythm"
+    assert result.job["job_title"] == "Staff Backend Engineer"
+
+
 def test_ingest_from_public_job_url_without_pasted_text() -> None:
     job_repo = StubJobRepo()
     service = ManualJobIngestService(

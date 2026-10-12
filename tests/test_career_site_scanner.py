@@ -344,6 +344,8 @@ def test_extract_offsite_apply_url_returns_none_when_absent() -> None:
 _LINKEDIN_GUEST_HTML = (
     '<h2 class="top-card-layout__title font-sans text-lg topcard__title">'
     "Senior Software Engineer</h2>"
+    '<a class="topcard__org-name-link topcard__flavor--black-link" '
+    'href="https://www.linkedin.com/company/prometric">Prometric</a>'
     "<div>Great backend role at Prometric.</div>"
     '<code id="applyUrl" style="display: none">'
     '"https:\\/\\/jobs.dayforcehcm.com\\/en-US\\/prometric\\/CANDIDATEPORTAL\\/jobs\\/65203"'
@@ -369,6 +371,7 @@ def test_linkedin_guest_api_appends_apply_page_text() -> None:
         )
 
     assert job["job_title"] == "Senior Software Engineer"
+    assert job["company"] == "Prometric"
     assert "Great backend role at Prometric." in job["job_text"]
     assert "Salary range: $110,000 - $120,000 per year." in job["job_text"]
     assert "Application page" in job["job_text"]
@@ -385,6 +388,7 @@ def test_linkedin_guest_api_survives_apply_page_fetch_failure() -> None:
         )
 
     assert job["job_title"] == "Senior Software Engineer"
+    assert job["company"] == "Prometric"
     assert "Great backend role at Prometric." in job["job_text"]
 
 
@@ -397,6 +401,31 @@ def test_linkedin_guest_api_falls_back_to_title_tag_when_h2_absent() -> None:
         )
 
     assert job["job_title"] == "Fallback Title"
+
+
+# ai: claude-sonnet-5 | 2026-10-12
+# Regression test for jobs 6342/6343: job_title="Rythm"/"Toast" (the company)
+# and company="United States (Remote)" (the location), caused by content.js's
+# live-DOM scrape breaking against LinkedIn's new hashed/atomic-CSS single-job
+# page (zero stable class names). The guest API fetched here is a separate,
+# long-stable server-rendered template unaffected by that redesign, and
+# manual_job_ingest_service.py now trusts it over the DOM capture for LinkedIn
+# URLs -- this covers that the scanner itself returns company when the
+# redesign-resistant org-name-link anchor is present, and empty (not a wrong
+# guess) when it's missing entirely.
+def test_linkedin_guest_api_company_absent_when_markup_missing() -> None:
+    scanner = CareerSiteScanner()
+    guest_html = (
+        '<h2 class="top-card-layout__title font-sans text-lg topcard__title">'
+        "Staff Engineer</h2>"
+        "<div>Some job text with no org-name-link markup at all here.</div>"
+    )
+    with patch("backend.scanning.career_site_scanner._fetch_html", return_value=guest_html):
+        job = scanner._linkedin_job_from_guest_api(
+            "LinkedIn", "https://www.linkedin.com/jobs/view/1/", "1"
+        )
+
+    assert job.get("company", "") == ""
 
 
 def test_linkedin_guest_api_title_untitled_when_neither_present() -> None:

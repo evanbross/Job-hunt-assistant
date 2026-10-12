@@ -239,6 +239,23 @@ _LINKEDIN_GUEST_TITLE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# ai: claude-sonnet-5 | 2026-10-12
+# Companion to the title regex above, same guest-API fragment. Added after
+# jobs 6342/6343 showed job_title="Rythm"/"Toast" (the company) and
+# company="United States (Remote)" (location) -- LinkedIn's live single-job
+# DOM (what content.js scrapes) now renders through a hashed/atomic CSS
+# build with zero stable class names or data-test attributes (confirmed
+# live, 2026-10-12), so every old content.js selector silently matches
+# nothing or the wrong element. This guest-API fragment is a different,
+# long-stable server-rendered template unaffected by that redesign -- see
+# the ingest-time company_and_title preference change in
+# manual_job_ingest_service.py that now trusts this over the DOM capture for
+# LinkedIn URLs.
+_LINKEDIN_GUEST_COMPANY_RE = re.compile(
+    r'<a\b[^>]*\bclass="[^"]*\btopcard__org-name-link\b[^"]*"[^>]*>(.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 # ai: claude-sonnet-5 | 2026-07-26
 _APPLY_URL_CODE_RE = re.compile(
@@ -1360,6 +1377,8 @@ class CareerSiteScanner:
             or _clean_text(" ".join(details.title_chunks))
             or "Untitled Job"
         )
+        company_match = _LINKEDIN_GUEST_COMPANY_RE.search(page_html)
+        company = _clean_text(company_match.group(1)) if company_match else ""
         page_text = _clean_text(" ".join(details.text_chunks))
         if not page_text:
             raise ValueError(f"LinkedIn guest API returned no text for job {job_id}")
@@ -1399,6 +1418,7 @@ class CareerSiteScanner:
             posted_at=None,
             confidence_level=confidence_level,
             confidence_score=confidence_score,
+            company=company,
         )
 
     # ai: claude-sonnet-4-6 | 2026-07-08
