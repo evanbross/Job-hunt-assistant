@@ -35,7 +35,7 @@
 // ai: claude-sonnet-5 | 2026-10-07
 import { SKIP_REASONS } from "./triagePanelUtils.ts";
 import { contactsMatchKey } from "./contactsUtils.ts";
-import type { CompanyJobCounts, Job } from "../types/jobs.ts";
+import type { CompanyAliasKeyMap, CompanyJobCounts, Job } from "../types/jobs.ts";
 
 export function scoreDeltaLabel(
   previousScore?: number | null,
@@ -150,8 +150,9 @@ export function importWarningTooltip(warnings?: string[] | null): string {
 // get_by_company() in backend/db/repositories/jobs.py) — keep both in sync.
 // Strips corporate suffixes (Corp/Corporation/Inc/LLC/...) so e.g. "Seeq" and
 // "Seeq Corporation" count as the same employer instead of two separate ones.
-export function companyCountKey(company?: string | null): string {
-  return contactsMatchKey(company);
+export function companyCountKey(company?: string | null, aliasMap?: CompanyAliasKeyMap): string {
+  const key = contactsMatchKey(company);
+  return (aliasMap && aliasMap[key]) || key;
 }
 
 // ai: claude-sonnet-5 | 2026-09-14
@@ -187,12 +188,13 @@ export function alwaysIncludedIds(job: Pick<Job, "duplicate_of_id" | "dismissed_
 export function hasCompanyHistoryAvailable(
   job: Pick<Job, "duplicate_of_id" | "dismissed_duplicate_ids" | "company">,
   companyJobCounts?: CompanyJobCounts | null,
+  aliasMap?: CompanyAliasKeyMap,
 ): boolean {
   if (alwaysIncludedIds(job).size > 0) return true;
   const company = String(job?.company || "").trim();
   if (!company) return false;
   if (!companyJobCounts) return true;
-  const count = companyJobCounts[companyCountKey(company)] ?? 0;
+  const count = companyJobCounts[companyCountKey(company, aliasMap)] ?? 0;
   return count > 1;
 }
 
@@ -203,8 +205,9 @@ export function hasCompanyHistoryAvailable(
 export function hasAppliedToCompany(
   job: Pick<Job, "company">,
   appliedCompanies: Set<string>,
+  aliasMap?: CompanyAliasKeyMap,
 ): boolean {
   const company = String(job?.company || "").trim();
   if (!company) return false;
-  return appliedCompanies.has(companyCountKey(company));
+  return appliedCompanies.has(companyCountKey(company, aliasMap));
 }

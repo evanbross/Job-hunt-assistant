@@ -2094,6 +2094,28 @@ def _create_tables(conn: Any) -> None:
             UNIQUE (user_id, company_normalized)
         )
         """,
+        # ai: claude-sonnet-5 | 2026-10-12
+        # Lets a user declare two company name variants as the same employer
+        # (e.g. "Block" / "Cash App") so the "hide companies I've applied to"
+        # filter, Company History, and the per-company job counts all agree
+        # on what counts as the same employer. See
+        # backend/db/repositories/company_aliases.py, and
+        # PostgresJobRepository's canonicalization helper in
+        # backend/db/repositories/jobs.py, which resolves every
+        # company_normalized write through this table.
+        """
+        CREATE TABLE IF NOT EXISTS company_aliases (
+            id                    SERIAL PRIMARY KEY,
+            user_id               INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            alias_company         TEXT NOT NULL,
+            alias_normalized      TEXT NOT NULL,
+            canonical_company     TEXT NOT NULL,
+            canonical_normalized  TEXT NOT NULL,
+            created_at            TEXT NOT NULL,
+            UNIQUE (user_id, alias_normalized),
+            CHECK (alias_normalized <> canonical_normalized)
+        )
+        """,
         # ai: claude-sonnet-5 | 2026-09-26
         # Per-user, per-device credentials for the browser extension. Only a
         # SHA-256 hash of the token is stored (tokens are 256-bit random values,

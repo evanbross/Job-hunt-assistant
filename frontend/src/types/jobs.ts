@@ -77,6 +77,16 @@ export interface Job {
 /** Map of normalized-company-key -> count of jobs on record, from GET /api/jobs/company-counts. */
 export type CompanyJobCounts = Record<string, number>;
 
+// ai: claude-sonnet-5 | 2026-10-12
+// {alias_normalized: canonical_normalized}, built from GET /api/company-aliases
+// (CompanyAlias[] in types/settings.ts) -- see CompanyAliasesSection in
+// SettingsPanel.tsx, where the user declares e.g. "Block" and "Cash App" as
+// the same employer. Threaded through companyCountKey (jobQueueUtils.ts) and
+// rowMatchesCompany (sheetUtils.ts) so a job's own company resolves to the
+// same identity the backend already stores in jobs.company_normalized (see
+// PostgresJobRepository._canonical_company_normalized).
+export type CompanyAliasKeyMap = Record<string, string>;
+
 /** Normalized company names with at least one 'applied' job, from GET /api/jobs/applied-companies. */
 export type AppliedCompanies = string[];
 

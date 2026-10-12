@@ -372,6 +372,47 @@ def get_jobs_applied_companies() -> ResponseReturnValue:
     return jsonify(sorted(companies))
 
 
+# ai: claude-sonnet-5 | 2026-10-12
+@jobs_bp.route("/company-aliases", methods=["GET"])
+def list_company_aliases() -> ResponseReturnValue:
+    """Every "these two company names are the same employer" pair the user
+    has declared (e.g. "Block" / "Cash App") -- see
+    backend/db/repositories/company_aliases.py."""
+    with get_repos() as repos:
+        aliases = repos["company_aliases"].list(current_user_id())
+    return jsonify(aliases)
+
+
+# ai: claude-sonnet-5 | 2026-10-12
+@jobs_bp.route("/company-aliases", methods=["POST"])
+def create_company_alias() -> ResponseReturnValue:
+    data = request.get_json(silent=True) or {}
+    alias_company = str(data.get("alias_company", "")).strip()
+    canonical_company = str(data.get("canonical_company", "")).strip()
+    if not alias_company or not canonical_company:
+        return jsonify({"error": "alias_company and canonical_company are required"}), 400
+    with get_repos() as repos:
+        try:
+            alias = repos["company_aliases"].upsert(
+                current_user_id(),
+                alias_company=alias_company,
+                canonical_company=canonical_company,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        repos["conn"].commit()
+    return jsonify(alias), 201
+
+
+# ai: claude-sonnet-5 | 2026-10-12
+@jobs_bp.route("/company-aliases/<int:alias_id>", methods=["DELETE"])
+def delete_company_alias(alias_id: int) -> ResponseReturnValue:
+    with get_repos() as repos:
+        repos["company_aliases"].delete(current_user_id(), alias_id)
+        repos["conn"].commit()
+    return jsonify({"status": "deleted"})
+
+
 # ai: claude-sonnet-4-6 | 2026-06-08
 @jobs_bp.route("/jobs/<int:job_id>", methods=["GET"])
 def get_job(job_id: int) -> ResponseReturnValue:

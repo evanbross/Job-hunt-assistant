@@ -276,17 +276,38 @@ class PostgresJobRepository(_BaseRepo):
         "skip_reason",
     )
 
+    # ai: claude-sonnet-5 | 2026-10-12
+    # Resolves a company name to the final company_normalized identity every
+    # write below stores -- normalize_company_name() first, then through any
+    # user-defined alias (see backend/db/repositories/company_aliases.py), so
+    # e.g. "Block" and "Cash App" land on the same value. insert(), update(),
+    # update_if_status_not_in(), update_if_status_in(), update_if_company_missing(),
+    # and get_by_company() all go through this one helper instead of each
+    # calling normalize_company_name() directly, so a future alias-resolution
+    # change can't apply to some of them and not others.
+    def _canonical_company_normalized(self, user_id: int, company: str | None) -> str:
+        normalized = normalize_company_name(company)
+        if not normalized:
+            return normalized
+        cur = self._execute(
+            "SELECT canonical_normalized FROM company_aliases"
+            " WHERE user_id = %s AND alias_normalized = %s",
+            (user_id, normalized),
+        )
+        row = cur.fetchone()
+        return row["canonical_normalized"] if row else normalized
+
     def get_by_company(self, user_id: int, company: str) -> list[dict[str, Any]]:
         """Return all jobs whose company matches, newest first.
 
-        Matching goes through normalize_company_name() (strips corporate suffixes
-        like "Corp"/"Corporation"/"Inc" and non-alphanumerics) rather than a plain
-        LOWER(TRIM()) comparison, so e.g. "Seeq" and "Seeq Corporation" are treated
-        as the same employer. See get_company_counts below, which must use the same
-        normalization so the two agree on what counts as a match. Only selects the
+        Matching goes through _canonical_company_normalized() (normalize_company_name(),
+        then alias resolution) rather than a plain LOWER(TRIM()) comparison, so e.g.
+        "Seeq" and "Seeq Corporation", or an aliased pair like "Block"/"Cash App", are
+        treated as the same employer. See get_company_counts below, which must use the
+        same resolution so the two agree on what counts as a match. Only selects the
         columns the Company History dialog actually displays (see JobCard.jsx /
         jobToHistoryRow) rather than every column, to keep the transfer small."""
-        target = normalize_company_name(company)
+        target = self._canonical_company_normalized(user_id, company)
         cur = self._execute(
             f"SELECT {', '.join(self._COMPANY_HISTORY_COLUMNS)} FROM jobs"
             " WHERE user_id = %s AND company_normalized = %s ORDER BY id DESC",
@@ -409,7 +430,12 @@ class PostgresJobRepository(_BaseRepo):
         # on each caller to remember it. See get_by_company()/get_company_counts()
         # below, which depend on this column staying in sync with `company`.
         if JobColumns.COMPANY in job:
-            job = {**job, JobColumns.COMPANY_NORMALIZED: normalize_company_name(job.get(JobColumns.COMPANY))}
+            job = {
+                **job,
+                JobColumns.COMPANY_NORMALIZED: self._canonical_company_normalized(
+                    user_id, job.get(JobColumns.COMPANY)
+                ),
+            }
         columns = ["user_id", *job.keys()]
         placeholders = ", ".join(["%s"] * len(columns))
         try:
@@ -447,7 +473,9 @@ class PostgresJobRepository(_BaseRepo):
         if JobColumns.COMPANY in fields:
             fields = {
                 **fields,
-                JobColumns.COMPANY_NORMALIZED: normalize_company_name(fields.get(JobColumns.COMPANY)),
+                JobColumns.COMPANY_NORMALIZED: self._canonical_company_normalized(
+                    user_id, fields.get(JobColumns.COMPANY)
+                ),
             }
         set_clause = ", ".join(f"{k} = %s" for k in fields)
         self._execute(
@@ -487,8 +515,8 @@ class PostgresJobRepository(_BaseRepo):
         if JobColumns.COMPANY in fields:
             fields = {
                 **fields,
-                JobColumns.COMPANY_NORMALIZED: normalize_company_name(
-                    fields.get(JobColumns.COMPANY)
+                JobColumns.COMPANY_NORMALIZED: self._canonical_company_normalized(
+                    user_id, fields.get(JobColumns.COMPANY)
                 ),
             }
         set_clause = ", ".join(f"{k} = %s" for k in fields)
@@ -536,8 +564,8 @@ class PostgresJobRepository(_BaseRepo):
         if JobColumns.COMPANY in fields:
             fields = {
                 **fields,
-                JobColumns.COMPANY_NORMALIZED: normalize_company_name(
-                    fields.get(JobColumns.COMPANY)
+                JobColumns.COMPANY_NORMALIZED: self._canonical_company_normalized(
+                    user_id, fields.get(JobColumns.COMPANY)
                 ),
             }
         set_clause = ", ".join(f"{k} = %s" for k in fields)
@@ -580,8 +608,8 @@ class PostgresJobRepository(_BaseRepo):
         if JobColumns.COMPANY in fields:
             fields = {
                 **fields,
-                JobColumns.COMPANY_NORMALIZED: normalize_company_name(
-                    fields.get(JobColumns.COMPANY)
+                JobColumns.COMPANY_NORMALIZED: self._canonical_company_normalized(
+                    user_id, fields.get(JobColumns.COMPANY)
                 ),
             }
         set_clause = ", ".join(f"{k} = %s" for k in fields)

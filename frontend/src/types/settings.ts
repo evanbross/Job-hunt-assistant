@@ -212,6 +212,18 @@ export interface RelevanceFeedback {
   created_at: string;
 }
 
+// ai: claude-sonnet-5 | 2026-10-12
+// Mirrors the `company_aliases` table and routes/jobs.py's
+// GET/POST /api/company-aliases jsonify shape.
+export interface CompanyAlias {
+  id: number;
+  alias_company: string;
+  alias_normalized: string;
+  canonical_company: string;
+  canonical_normalized: string;
+  created_at: string;
+}
+
 /** PUT /api/candidate-profile response (routes/settings.py). */
 export interface SaveCandidateProfileResult {
   char_count: number;

@@ -36,11 +36,15 @@ import { useState } from "react";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts";
 import { applicationRowFromSheet, jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.ts";
 import { alwaysIncludedIds } from "../utils/jobQueueUtils.ts";
-import type { ApplicationHistoryRow, ApplicationSheetResponse, Job } from "../types/jobs.ts";
+import type { ApplicationHistoryRow, ApplicationSheetResponse, CompanyAliasKeyMap, Job } from "../types/jobs.ts";
 import type { ApiErrorBody } from "../types/common.ts";
 
 // ai: claude-sonnet-4-6 | 2026-06-11
-export function useCompanyHistoryLookup(job: Job) {
+// ai: claude-sonnet-5 | 2026-10-12 -- aliasMap param added so the final
+// rowMatchesCompany filter below doesn't strip out jobs the backend's own
+// /api/jobs/by-company already correctly matched through a user-declared
+// alias (e.g. "Block" / "Cash App") -- see that filter's own comment.
+export function useCompanyHistoryLookup(job: Job, aliasMap?: CompanyAliasKeyMap) {
   const [opened, setOpened] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -132,7 +136,7 @@ export function useCompanyHistoryLookup(job: Job) {
       // job 5555 (Gametime), pulling Gametime into Penn Interactive's history.
       setRows(
         withDuplicateRefs.filter(
-          (row) => rowMatchesCompany(row.company, company) || primaryForceIncludeIds.has(row.id ?? -1)
+          (row) => rowMatchesCompany(row.company, company, aliasMap) || primaryForceIncludeIds.has(row.id ?? -1)
         )
       );
       setError("");

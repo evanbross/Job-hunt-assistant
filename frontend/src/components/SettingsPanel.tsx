@@ -55,6 +55,7 @@ import type {
   AppConfigResponse,
   BrowserCaptureQueueItem,
   BrowserCaptureQueueResponse,
+  CompanyAlias,
   EmailSource,
   EmailSubjectRule,
   JdHealthCheckResult,
@@ -97,6 +98,11 @@ const SETTINGS_TREE: SettingsTreeNode[] = [
       { id: "profile_settings", label: "Profile Settings" },
     ],
   },
+  // ai: claude-sonnet-5 | 2026-10-12 -- job 6072 (Block), applied to as
+  // "Cash App": the "hide companies I've applied to" filter and Company
+  // History both match on company_normalized alone, with no notion that
+  // two different legal/brand names are the same employer.
+  { id: "company_aliases", label: "Company Aliases" },
   {
     id: "email",
     label: "Email",
@@ -250,6 +256,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }: Setti
         {activeSection === "account" && <AccountSection />}
         {activeSection === "resume" && <ResumeUpload />}
         {activeSection === "application_profile" && <ApplicationProfilePanel />}
+        {activeSection === "company_aliases" && <CompanyAliasesSection />}
         {activeSection === "profile_settings" && <ProfileSettingsSection />}
         {activeSection === "sources" && <EmailSourcesSection />}
         {activeSection === "email_subject_rules" && <EmailSubjectRulesSection />}
@@ -1963,6 +1970,113 @@ function FetchQueueSection() {
                 </tr>
               );
             })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// ── Company Aliases ───────────────────────────────────────────────────────────
+
+interface CompanyAliasForm {
+  alias_company: string;
+  canonical_company: string;
+}
+
+const EMPTY_COMPANY_ALIAS_FORM: CompanyAliasForm = { alias_company: "", canonical_company: "" };
+
+// ai: claude-sonnet-5 | 2026-10-12
+function CompanyAliasesSection() {
+  const [aliases, setAliases] = useState<CompanyAlias[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState<CompanyAliasForm>(EMPTY_COMPANY_ALIAS_FORM);
+  const [saveError, setSaveError] = useState("");
+
+  useEffect(() => { fetchAliases(); }, []);
+
+  const fetchAliases = async () => {
+    const res = await fetch("/api/company-aliases");
+    const data = await res.json();
+    setAliases(Array.isArray(data) ? data : []);
+  };
+
+  const deleteAlias = async (id: number) => {
+    if (!window.confirm("Remove this alias?")) return;
+    const res = await fetch(`/api/company-aliases/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      window.alert(`Delete failed (${res.status})`);
+      return;
+    }
+    await fetchAliases();
+  };
+
+  const submitForm = async () => {
+    if (!form.alias_company.trim() || !form.canonical_company.trim()) return;
+    setSaveError("");
+    const res = await fetch("/api/company-aliases", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const data: CompanyAlias & ApiErrorBody = await res.json();
+    if (!res.ok) {
+      setSaveError(data.error || `Save failed (${res.status})`);
+      return;
+    }
+    setShowForm(false);
+    setForm(EMPTY_COMPANY_ALIAS_FORM);
+    fetchAliases();
+  };
+
+  return (
+    <div>
+      <SectionHeader
+        title="Company Aliases"
+        action={{ label: "Add Alias", onClick: () => { setSaveError(""); setForm(EMPTY_COMPANY_ALIAS_FORM); setShowForm(true); } }}
+      />
+      <p style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "14px" }}>
+        Declare two company names as the same employer (e.g. "Block" is also known as
+        "Cash App") so the "hide companies I've applied to" filter, Company History, and
+        job counts all treat them as one. Applies immediately to every job already on
+        record under either name.
+      </p>
+
+      {showForm && (
+        <div style={formBox}>
+          <div style={formGrid}>
+            <label style={labelStyle}>Company name
+              <input value={form.canonical_company} onChange={(e) => setForm({ ...form, canonical_company: e.target.value })} placeholder="Cash App" />
+            </label>
+            <label style={labelStyle}>Also known as
+              <input value={form.alias_company} onChange={(e) => setForm({ ...form, alias_company: e.target.value })} placeholder="Block" />
+            </label>
+          </div>
+          {saveError && <div style={{ color: "var(--red)", fontSize: "12px", marginTop: "8px" }}>{saveError}</div>}
+          <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+            <button className="btn-primary" onClick={submitForm}>Add</button>
+            <button className="btn-secondary" onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {aliases.length === 0 ? (
+        <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>No aliases declared yet.</p>
+      ) : (
+        <table style={tableStyle}>
+          <thead>
+            <tr>{["Company", "Also known as", ""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {aliases.map((a) => (
+              <tr key={a.id}>
+                <td style={tdStyle}>{a.canonical_company}</td>
+                <td style={tdStyle}>{a.alias_company}</td>
+                <td style={tdStyle}>
+                  <button className="btn-danger" style={{ padding: "3px 10px", fontSize: "12px" }} onClick={() => deleteAlias(a.id)}>Delete</button>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       )}

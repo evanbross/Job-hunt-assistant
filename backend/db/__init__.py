@@ -69,6 +69,7 @@ from .interfaces import (
     ICareerScanFailureRepository,
     ICareerScanResultRepository,
     ICareerSiteSourceRepository,
+    ICompanyAliasRepository,
     ICompanyRepository,
     IContactEmailRepository,
     IContactRepository,
@@ -111,6 +112,7 @@ from .repositories.career_scan_failures import PostgresCareerScanFailureReposito
 from .repositories.career_scan_results import PostgresCareerScanResultRepository
 from .repositories.career_site_sources import PostgresCareerSiteSourceRepository
 from .repositories.companies import PostgresCompanyRepository
+from .repositories.company_aliases import PostgresCompanyAliasRepository
 from .repositories.contact_emails import PostgresContactEmailRepository
 from .repositories.contacts import PostgresContactRepository
 from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseRepository
@@ -150,6 +152,7 @@ __all__ = [
     "ICareerScanFailureRepository",
     "ICareerScanResultRepository",
     "ICareerSiteSourceRepository",
+    "ICompanyAliasRepository",
     "ICompanyRepository",
     "IContactEmailRepository",
     "IContactRepository",
@@ -185,6 +188,7 @@ __all__ = [
     "PostgresCareerScanFailureRepository",
     "PostgresCareerScanResultRepository",
     "PostgresCareerSiteSourceRepository",
+    "PostgresCompanyAliasRepository",
     "PostgresCompanyRepository",
     "PostgresContactEmailRepository",
     "PostgresContactRepository",
@@ -368,6 +372,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "import_repair_history": PostgresImportRepairHistoryRepository(conn),
         "contacts": PostgresContactRepository(conn),
         "companies": PostgresCompanyRepository(conn),
+        "company_aliases": PostgresCompanyAliasRepository(conn),
         "title_rules": PostgresTitleRuleRepository(conn),
         "contact_emails": PostgresContactEmailRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),

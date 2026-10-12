@@ -39,6 +39,7 @@ import JobCard from "../JobCard.tsx";
 import { ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "../TriagePanel.tsx";
 import { jobMatchesSearch } from "../../utils/jobSearchUtils.ts";
 import { hasAppliedToCompany } from "../../utils/jobQueueUtils.ts";
+import type { CompanyAlias } from "../../types/settings.ts";
 import { contactsMatchKey } from "../../utils/contactsUtils.ts";
 import ReqClosedDialog from "../common/ReqClosedDialog.tsx";
 import { emailIdForRescan, extractSender, extractSubjectWords } from "../../utils/triagePanelUtils.ts";
@@ -70,6 +71,7 @@ import type {
   AppliedCompanies,
   ApplicationHistoryRow,
   BatchRefreshPopupState,
+  CompanyAliasKeyMap,
   CompanyJobCounts,
   DescriptionUpdatePopupState,
   Job,
@@ -312,6 +314,9 @@ export default function JobQueue({
   const [contactsByCompany, setContactsByCompany] = useState<ContactsByCompany>({});
   // ai: claude-sonnet-5 | 2026-08-19
   const [companyJobCounts, setCompanyJobCounts] = useState<CompanyJobCounts | null>(null);
+  // ai: claude-sonnet-5 | 2026-10-12 -- {alias_normalized: canonical_normalized},
+  // see CompanyAliasKeyMap's own comment in jobQueueUtils.ts.
+  const [companyAliasMap, setCompanyAliasMap] = useState<CompanyAliasKeyMap>({});
   // ai: claude-sonnet-5 | 2026-10-09
   const [appliedCompanies, setAppliedCompanies] = useState<Set<string>>(new Set());
   const [hideAppliedCompanies, setHideAppliedCompanies] = useState(false);
@@ -487,6 +492,20 @@ export default function JobQueue({
       .then((res) => res.json())
       .then((data) => setCompanyJobCounts(data && typeof data === "object" ? data : {}))
       .catch(() => setCompanyJobCounts({}));
+  }, []);
+
+  // ai: claude-sonnet-5 | 2026-10-12
+  useEffect(() => {
+    fetch("/api/company-aliases")
+      .then((res) => res.json())
+      .then((data: CompanyAlias[]) => {
+        const map: CompanyAliasKeyMap = {};
+        for (const a of Array.isArray(data) ? data : []) {
+          map[a.alias_normalized] = a.canonical_normalized;
+        }
+        setCompanyAliasMap(map);
+      })
+      .catch(() => setCompanyAliasMap({}));
   }, []);
 
   // ai: claude-sonnet-5 | 2026-10-09
@@ -1487,17 +1506,17 @@ export default function JobQueue({
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     if (showOnlyWithContacts && !jobHasContact(job)) return false;
-    if (hideAppliedCompanies && hasAppliedToCompany(job, appliedCompanies)) return false;
+    if (hideAppliedCompanies && hasAppliedToCompany(job, appliedCompanies, companyAliasMap)) return false;
     return true;
-  }), [jobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies]);
+  }), [jobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies, companyAliasMap]);
 
   const filteredTriageJobs = useMemo(() => triageJobs.filter((job) => {
     if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     if (showOnlyWithContacts && !jobHasContact(job)) return false;
-    if (hideAppliedCompanies && hasAppliedToCompany(job, appliedCompanies)) return false;
+    if (hideAppliedCompanies && hasAppliedToCompany(job, appliedCompanies, companyAliasMap)) return false;
     return true;
-  }), [triageJobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies]);
+  }), [triageJobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies, companyAliasMap]);
 
   // ai: claude-sonnet-5 | 2026-08-09
   const filteredUnreachableJobs = useMemo(
@@ -1519,9 +1538,9 @@ export default function JobQueue({
 
   // ai: claude-sonnet-5 | 2026-10-09
   const appliedCompanyCount = useMemo(
-    () => jobs.filter((j) => hasAppliedToCompany(j, appliedCompanies)).length
-      + (viewMode !== "queue" ? triageJobs.filter((j) => hasAppliedToCompany(j, appliedCompanies)).length : 0),
-    [jobs, triageJobs, viewMode, appliedCompanies],
+    () => jobs.filter((j) => hasAppliedToCompany(j, appliedCompanies, companyAliasMap)).length
+      + (viewMode !== "queue" ? triageJobs.filter((j) => hasAppliedToCompany(j, appliedCompanies, companyAliasMap)).length : 0),
+    [jobs, triageJobs, viewMode, appliedCompanies, companyAliasMap],
   );
 
   const showsQueue = viewMode === "queue" || viewMode === "both" || viewMode === "company";
@@ -2662,7 +2681,7 @@ export default function JobQueue({
         sortedTriageJobs.length === 0 ? (
           <div className="empty-state"><p>No triage jobs match your search.</p></div>
         ) : (
-          sortedTriageJobs.map((job) => renderJobOrTriageCard(job, null, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))
+          sortedTriageJobs.map((job) => renderJobOrTriageCard(job, null, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts, companyAliasMap))
         )
       ) : viewMode === "company" ? (
         companiesList.length === 0 ? (
@@ -2678,6 +2697,7 @@ export default function JobQueue({
               allSheetRows={allSheetRows}
               contactsByCompany={contactsByCompany}
               companyJobCounts={companyJobCounts}
+              companyAliasMap={companyAliasMap}
               onNavigateToJobCard={onNavigateToJobCard}
               onQueueApprove={handleApprove}
               onQueueReEvaluate={handleJobReEvaluate}
@@ -2748,7 +2768,7 @@ export default function JobQueue({
               setJobs((prev) => prev.filter((j) => j.id !== jobId));
               updateTriageCount();
             },
-          } satisfies QueueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))
+          } satisfies QueueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts, companyAliasMap))
         )
       ) : (
         /* viewMode === "queue" */
@@ -2769,6 +2789,7 @@ export default function JobQueue({
               onNavigateToJobCard={onNavigateToJobCard}
               contactsByCompany={contactsByCompany}
               companyJobCounts={companyJobCounts}
+              companyAliasMap={companyAliasMap}
               onUpdate={(jobId, updatedJob) => {
                 captureScrollAnchor(jobId);
                 if (updatedJob.fit_score !== job.fit_score || updatedJob.fit_reasoning !== job.fit_reasoning) {

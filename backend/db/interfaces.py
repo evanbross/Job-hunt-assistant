@@ -379,6 +379,14 @@ class ICompanyRepository(Protocol):
     def upsert(self, user_id: int, company_normalized: str, fields: dict[str, Any]) -> None: ...
 
 
+# ai: claude-sonnet-5 | 2026-10-12
+@runtime_checkable
+class ICompanyAliasRepository(Protocol):
+    def list(self, user_id: int) -> list[dict[str, Any]]: ...
+    def upsert(self, user_id: int, *, alias_company: str, canonical_company: str) -> dict[str, Any]: ...
+    def delete(self, user_id: int, alias_id: int) -> None: ...
+
+
 # ai: claude-sonnet-5 | 2026-09-28
 @runtime_checkable
 class ITitleRuleRepository(Protocol):

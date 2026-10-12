@@ -82,6 +82,7 @@ import type { GenerateCoverLetterResponse, GeneratePitchResponse, ResumeTailorRe
 import type {
   ApplicationHistoryRow,
   BatchRefreshPopupState,
+  CompanyAliasKeyMap,
   CompanyJobCounts,
   DescriptionUpdatePopupState,
   FitChatResponse,
@@ -214,14 +215,15 @@ interface DuplicateCardProps {
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
   contactsByCompany?: ContactsByCompany;
   companyJobCounts?: CompanyJobCounts | null;
+  companyAliasMap?: CompanyAliasKeyMap;
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }: DuplicateCardProps) {
-  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts, companyAliasMap }: DuplicateCardProps) {
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts, companyAliasMap);
   const companySheetRows = useMemo(
-    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
-    [allSheetRows, job.company],
+    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || "", companyAliasMap))),
+    [allSheetRows, job.company, companyAliasMap],
   );
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -251,7 +253,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
   });
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
-  const companyHistory = useCompanyHistoryLookup(job);
+  const companyHistory = useCompanyHistoryLookup(job, companyAliasMap);
   const triageReasoning = triageReasoningForJob(job);
   const penaltiesApplied = penaltiesAppliedForJob(job);
 
@@ -997,14 +999,15 @@ interface TriageCardProps {
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
   contactsByCompany?: ContactsByCompany;
   companyJobCounts?: CompanyJobCounts | null;
+  companyAliasMap?: CompanyAliasKeyMap;
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }: TriageCardProps) {
-  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
+function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts, companyAliasMap }: TriageCardProps) {
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts, companyAliasMap);
   const companySheetRows = useMemo(
-    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || ""))),
-    [allSheetRows, job.company],
+    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || "", companyAliasMap))),
+    [allSheetRows, job.company, companyAliasMap],
   );
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [editingUrl, setEditingUrl] = useState(false);
@@ -1047,7 +1050,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
   });
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
-  const companyHistory = useCompanyHistoryLookup(job);
+  const companyHistory = useCompanyHistoryLookup(job, companyAliasMap);
   const triageReasoning = triageReasoningForJob(job);
   const penaltiesApplied = penaltiesAppliedForJob(job);
   const rawJobDescription = jobDescriptionText(job);

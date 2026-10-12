@@ -33,7 +33,7 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-07
-import type { ApplicationHistoryRow, ApplicationSheetRow, Job } from "../types/jobs.ts";
+import type { ApplicationHistoryRow, ApplicationSheetRow, CompanyAliasKeyMap, Job } from "../types/jobs.ts";
 
 export function applicationRowFromSheet(row: ApplicationSheetRow): ApplicationHistoryRow {
   const cells = Array.isArray(row.cells) ? row.cells : [];
@@ -75,13 +75,33 @@ export function normalizeCompany(value?: string | null): string {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-16
-export function rowMatchesCompany(rowCompany?: string | null, targetCompany?: string | null): boolean {
+// ai: claude-sonnet-5 | 2026-10-12 -- aliasMap param added: without it, two
+// company names a user has explicitly declared as the same employer (e.g.
+// "Block" / "Cash App", see CompanyAliasesSection in SettingsPanel.tsx) never
+// match here no matter how exact the rest of this function's tolerance is,
+// since they share no text in common at all. aliasMap's keys/values are in
+// the same merged (no-space) form the "merged-word variants" check below
+// already computes, so the lookup reuses rowMerged/targetMerged directly
+// rather than recomputing them a different way.
+export function rowMatchesCompany(
+  rowCompany?: string | null,
+  targetCompany?: string | null,
+  aliasMap?: CompanyAliasKeyMap,
+): boolean {
   const rowName = normalizeCompany(rowCompany);
   const targetName = normalizeCompany(targetCompany);
   if (!rowName || !targetName) return false;
   if (rowName === targetName) return true;
   // Handle merged-word variants (e.g. "obsidiansecurity" vs "obsidian security")
-  return rowName.replace(/\s+/g, "") === targetName.replace(/\s+/g, "");
+  const rowMerged = rowName.replace(/\s+/g, "");
+  const targetMerged = targetName.replace(/\s+/g, "");
+  if (rowMerged === targetMerged) return true;
+  if (aliasMap) {
+    const resolvedRow = aliasMap[rowMerged] || rowMerged;
+    const resolvedTarget = aliasMap[targetMerged] || targetMerged;
+    if (resolvedRow === resolvedTarget) return true;
+  }
+  return false;
 }
 
 export function isAppliedStatus(status?: string | null): boolean {
