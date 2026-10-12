@@ -202,50 +202,6 @@ def test_parser_sends_later_digest_jobs_to_ai_client() -> None:
     assert late_job_title in sent_content
 
 
-def test_parser_extracts_all_linkedin_alert_cards_without_ai() -> None:
-    client = FakeParserClient()
-    parser = EmailParser(1, client=client)
-    body = """Your job alert for remote engineer
-Results from the new AI-powered job search
-
-Staff Software Engineer
-Gifthealth
-United States
-Fast growing
-View job: https://www.linkedin.com/comm/jobs/view/4389757103/
-
----------------------------------------------------------
-
-Staff Software Engineer
-OpenMined
-United States
-View job: https://www.linkedin.com/comm/jobs/view/4411273040/
-
----------------------------------------------------------
-
-Principal Software Engineer
-Devoted Health
-United States
-This company is actively hiring
-View job: https://www.linkedin.com/comm/jobs/view/4410403022/
-"""
-
-    jobs = parser.parse("LinkedIn job alert", "jobalerts-noreply@linkedin.com", body)
-
-    assert client.messages == []
-    assert [job["company"] for job in jobs] == [
-        "Gifthealth",
-        "OpenMined",
-        "Devoted Health",
-    ]
-    assert [job["job_title"] for job in jobs] == [
-        "Staff Software Engineer",
-        "Staff Software Engineer",
-        "Principal Software Engineer",
-    ]
-    assert all(job["source"] == "LinkedIn" for job in jobs)
-
-
 # ai: claude-sonnet-5 | 2026-07-10
 class TokenEchoingClient:
     """Simulates an LLM response that echoes a URL token without its brackets,

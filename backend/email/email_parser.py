@@ -235,12 +235,6 @@ class EmailParser:
         raw_html, when provided, enables HTML-based company extraction for sources
         like WTTJ that embed company names in image alt attributes.
         """
-        linkedin_jobs = _parse_linkedin_alert_jobs(subject, sender, body_snippet)
-        if linkedin_jobs:
-            return linkedin_jobs
-        jymbii_jobs = _parse_linkedin_jymbii_jobs(subject, sender, body_snippet)
-        if jymbii_jobs:
-            return jymbii_jobs
         wttj_jobs = _parse_welcome_to_the_jungle_jobs(
             sender, body_snippet, raw_html=raw_html
         )
@@ -463,24 +457,6 @@ def _trim_company_tail(value: str) -> str:
     return value.strip(" -–—\t\r\n")
 
 
-_LINKEDIN_SENDER_RE = re.compile(r"linkedin\.com", re.IGNORECASE)
-_LINKEDIN_VIEW_JOB_RE = re.compile(r"^View job:\s*(https?://\S+)", re.IGNORECASE)
-_LINKEDIN_SEPARATOR_RE = re.compile(r"^-{8,}$")
-_LINKEDIN_NON_JOB_LINES = {
-    "Fast growing",
-    "This company is actively hiring",
-}
-
-# Matches the anchor-text: URL format emitted by _HTMLTextExtractor for JYMBII emails.
-# Groups: (1) anchor text, (2) full URL, (3) numeric job ID
-_LINKEDIN_JYMBII_ANCHOR_RE = re.compile(
-    r"^(.+):\s+(https?://(?:www\.)?linkedin\.com/comm/jobs/view/(\d+)/[^\s<>()\"']*)",
-    re.IGNORECASE,
-)
-_LINKEDIN_COMM_JOB_URL_RE = re.compile(
-    r"https?://(?:www\.)?linkedin\.com/comm/jobs/view/\d+/",
-    re.IGNORECASE,
-)
 _WTTJ_SENDER_RE = re.compile(
     r"welcometothejungle\.com|welcome to the jungle", re.IGNORECASE
 )
@@ -548,135 +524,6 @@ def looks_like_wttj_misparsed_title(title: str) -> bool:
     if title.lstrip().startswith("("):
         return True
     return bool(_WTTJ_METADATA_LINE_RE.search(title))
-
-
-def _parse_linkedin_alert_jobs(
-    subject: str, sender: str, body_snippet: str
-) -> list[ParsedJob]:
-    if not _looks_like_linkedin_alert(subject, sender, body_snippet):
-        return []
-
-    lines = [line.strip() for line in body_snippet.splitlines()]
-    jobs: list[ParsedJob] = []
-    previous_boundary_idx = 0
-    seen_urls: set[str] = set()
-
-    for line_idx, line in enumerate(lines):
-        view_match = _LINKEDIN_VIEW_JOB_RE.match(line)
-        if not view_match:
-            if _LINKEDIN_SEPARATOR_RE.match(line):
-                previous_boundary_idx = line_idx + 1
-            continue
-
-        job_url = view_match.group(1).strip()
-        if job_url in seen_urls:
-            continue
-
-        block_lines = _linkedin_card_lines(lines[previous_boundary_idx:line_idx])
-        if len(block_lines) < 2:
-            continue
-
-        job_title, company = block_lines[0], block_lines[1]
-        jobs.append(
-            {
-                "company": company,
-                "job_title": job_title,
-                "url": job_url,
-                "source": "LinkedIn",
-                "certainty_level": "high",
-                "certainty_score": 95,
-                "certainty_reason": "Parsed from a LinkedIn job alert card with title, company, and View job URL.",
-            }
-        )
-        seen_urls.add(job_url)
-        previous_boundary_idx = line_idx + 1
-
-    return jobs
-
-
-def _looks_like_linkedin_alert(subject: str, sender: str, body_snippet: str) -> bool:
-    if not _LINKEDIN_SENDER_RE.search(sender):
-        return False
-    combined_text = f"{subject}\n{body_snippet}".lower()
-    return "job alert" in combined_text and "view job:" in combined_text
-
-
-def _linkedin_card_lines(raw_lines: list[str]) -> list[str]:
-    card_lines: list[str] = []
-    for raw_line in raw_lines:
-        line = raw_line.strip()
-        if not line:
-            continue
-        if _LINKEDIN_SEPARATOR_RE.match(line):
-            card_lines = []
-            continue
-        if line in _LINKEDIN_NON_JOB_LINES:
-            continue
-        if line.lower().startswith(("your job alert", "results from ", "because you")):
-            card_lines = []
-            continue
-        card_lines.append(line)
-    return card_lines
-
-
-def _parse_linkedin_jymbii_jobs(
-    subject: str, sender: str, body_snippet: str
-) -> list[ParsedJob]:
-    """Parse LinkedIn JYMBII ('Jobs You Might Be Interested In') digest emails.
-
-    The HTML extractor turns each job card anchor into lines like:
-        Principal Python Engineer: https://linkedin.com/comm/jobs/view/4422360760/?...
-        Needl · United States (Remote)   Actively recruiting: https://...same URL...
-
-    We group both by job ID, infer title (no '·') and company (has '·'), then
-    emit a canonical linkedin.com/jobs/view/JOBID/ URL.
-    """
-    if not _LINKEDIN_SENDER_RE.search(sender):
-        return []
-    if not _LINKEDIN_COMM_JOB_URL_RE.search(body_snippet):
-        return []
-
-    # job_id -> {title, company, url}
-    cards: dict[str, dict[str, str]] = {}
-
-    for raw_line in body_snippet.splitlines():
-        line = raw_line.strip()
-        m = _LINKEDIN_JYMBII_ANCHOR_RE.match(line)
-        if not m:
-            continue
-
-        anchor_text = m.group(1).strip()
-        job_id = m.group(3)
-
-        if job_id not in cards:
-            canonical_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
-            cards[job_id] = {"title": "", "company": "", "url": canonical_url}
-
-        if "·" in anchor_text:
-            # "Company · Location   Badge1   Badge2" → take everything before ·
-            company = anchor_text.split("·")[0].strip()
-            if company and not cards[job_id]["company"]:
-                cards[job_id]["company"] = company
-        else:
-            if anchor_text and not cards[job_id]["title"]:
-                cards[job_id]["title"] = anchor_text
-
-    results: list[ParsedJob] = []
-    for card in cards.values():
-        if not card["title"] or not card["company"]:
-            continue
-        results.append(
-            {
-                "company": card["company"],
-                "job_title": card["title"],
-                "url": card["url"],
-                "source": "LinkedIn",
-                "certainty_level": "high",
-                "certainty_score": 95,
-                "certainty_reason": "Parsed from LinkedIn job recommendation email card with title, company, and job URL.",
-            }
-        )
-    return results
 
 
 _TRACKING_DOMAIN_FRAGMENTS = frozenset(
