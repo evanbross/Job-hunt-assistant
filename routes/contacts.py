@@ -120,7 +120,8 @@ class ContactUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    interested: StrictBool = False
+    # ai: claude-sonnet-5 | 2026-10-13 -- tri-state: True/False/None = yes/no/undecided.
+    interested: StrictBool | None = None
     recruiter_type: RecruiterType | None = None
     email_address: str | None = None
     notes: str | None = None

@@ -320,6 +320,16 @@ def test_update_contact_only_writes_fields_that_were_sent(monkeypatch: pytest.Mo
     assert contacts.updates == [(1, {"interested": True})]
 
 
+# ai: claude-sonnet-5 | 2026-10-13
+def test_update_contact_can_set_interested_back_to_undecided(monkeypatch: pytest.MonkeyPatch) -> None:
+    contacts = FakeContactsRepo([{"id": 1}])
+    client = _contacts_client(monkeypatch, contacts)
+
+    response = client.patch("/api/contacts/1", json={"interested": None})
+    assert response.status_code == 200
+    assert contacts.updates == [(1, {"interested": None})]
+
+
 def test_update_contact_can_set_and_unset_recruiter_type(monkeypatch: pytest.MonkeyPatch) -> None:
     contacts = FakeContactsRepo([{"id": 1}])
     client = _contacts_client(monkeypatch, contacts)

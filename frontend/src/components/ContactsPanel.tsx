@@ -59,6 +59,55 @@ const RECRUITER_TYPES: { value: RecruiterType | ""; label: string }[] = [
   { value: "offshore_spam", label: "Offshore spam" },
 ];
 
+// ai: claude-sonnet-5 | 2026-10-13
+// Tri-state "Want to Email": true/false/null = yes/no/undecided (the DB
+// default for a never-reviewed contact -- see backend/db/schema.py's
+// contacts.interested migration). Rendered as three small dots so all three
+// states are always visible and one click away, rather than hidden behind a
+// cycle-through toggle.
+const INTERESTED_OPTIONS: { value: boolean | null; label: string; letter: string; color: string }[] = [
+  { value: true, label: "Yes", letter: "Y", color: "var(--green)" },
+  { value: false, label: "No", letter: "N", color: "var(--red)" },
+  { value: null, label: "Undecided", letter: "?", color: "var(--text-muted)" },
+];
+
+function InterestedToggle({
+  value,
+  onChange,
+  contactName,
+}: {
+  value: boolean | null | undefined;
+  onChange: (next: boolean | null) => void;
+  contactName: string;
+}) {
+  return (
+    <div role="radiogroup" aria-label={`Want to email ${contactName}`} style={{ display: "flex", gap: "4px" }}>
+      {INTERESTED_OPTIONS.map((option) => {
+        const selected = (value ?? null) === option.value;
+        return (
+          <button
+            key={option.label}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            aria-label={`${option.label} -- want to email ${contactName}`}
+            title={option.label}
+            onClick={() => onChange(option.value)}
+            style={{
+              ...interestedDotStyle,
+              borderColor: option.color,
+              background: selected ? option.color : "transparent",
+              color: selected ? "#fff" : option.color,
+            }}
+          >
+            {option.letter}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ai: claude-sonnet-5 | 2026-09-25
 function emailState(contact: Contact): EmailState {
   if (contact.emails.length === 0) return "none";
@@ -89,7 +138,8 @@ interface SortColumn {
 const SORT_COLUMNS: SortColumn[] = [
   // ai: gpt-5 | 2026-10-03
   { key: "outreach_score", label: "Priority", getValue: (c) => c.outreach_score ?? 0 },
-  { key: "interested", label: "Want to Email", getValue: (c) => (c.interested ? 1 : 0) },
+  // ai: claude-sonnet-5 | 2026-10-13 -- Yes > Undecided > No
+  { key: "interested", label: "Want to Email", getValue: (c) => (c.interested === true ? 2 : c.interested === false ? 0 : 1) },
   { key: "name", label: "Contact", getValue: (c) => (c.full_name || "").toLowerCase() },
   { key: "recruiter", label: "Recruiter", getValue: (c) => RECRUITER_RANK[c.recruiter_type || ""] ?? 0 },
   { key: "sent_email", label: "Sent Email", getValue: (c) => (c.emails.length > 0 ? 1 : 0) },
@@ -581,11 +631,10 @@ export default function ContactsPanel() {
                           >
                             {contact.outreach_score?.toFixed(1) ?? "—"}
                           </div>
-                          <input
-                            type="checkbox"
-                            checked={!!contact.interested}
-                            onChange={(e) => patchContact(contact.id, { interested: e.target.checked })}
-                            aria-label={`Want to email ${contact.full_name}`}
+                          <InterestedToggle
+                            value={contact.interested}
+                            onChange={(next) => patchContact(contact.id, { interested: next })}
+                            contactName={contact.full_name}
                           />
                           <div style={{ minWidth: 0 }}>
                             <div style={{ fontWeight: 600 }}>
@@ -807,4 +856,21 @@ const subtleText: CSSProperties = {
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
+};
+
+// ai: claude-sonnet-5 | 2026-10-13
+const interestedDotStyle: CSSProperties = {
+  width: "20px",
+  height: "20px",
+  borderRadius: "50%",
+  border: "1.5px solid",
+  fontSize: "10px",
+  fontWeight: 700,
+  lineHeight: 1,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  cursor: "pointer",
+  padding: 0,
+  flexShrink: 0,
 };

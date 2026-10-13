@@ -154,7 +154,7 @@ class PostgresContactRepository(_BaseRepo):
             DELETE FROM contacts c
             WHERE c.user_id = %s
               AND NOT (c.dedup_key = ANY(%s))
-              AND NOT c.interested
+              AND COALESCE(c.interested, FALSE) = FALSE
               AND c.recruiter_type IS NULL
               AND c.decided_by IS NULL
               AND c.notes IS NULL

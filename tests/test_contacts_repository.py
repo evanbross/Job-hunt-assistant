@@ -25,6 +25,7 @@ from backend.db import (
     PostgresContactRepository,
     PostgresUserAccountRepository,
     get_connection,
+    init_db,
 )
 from backend.db.row_level_security import set_current_user
 
@@ -212,7 +213,10 @@ def test_update_rejects_unknown_columns_and_scopes_to_user(pg_dsn: str) -> None:
         set_current_user(conn.cursor(), other_id)
         assert repo.update(other_id, contact_id, {"interested": True}) is False
         set_current_user(conn.cursor(), owner_id)
-        assert repo.get_all(owner_id)[0]["interested"] is False
+        # ai: claude-sonnet-5 | 2026-10-13 -- interested now defaults to NULL
+        # (undecided), not FALSE; the rejected update above must have left it
+        # untouched either way.
+        assert repo.get_all(owner_id)[0]["interested"] is None
     finally:
         conn.close()
 
@@ -362,5 +366,42 @@ def test_notes_survive_reimport_and_protect_contact_from_pruning(pg_dsn: str) ->
         assert set(listed) == {"Jane Doe", "Noted Nora"}
         assert listed["Jane Doe"]["notes"] == "Hiring manager at Acme"
         assert listed["Jane Doe"]["position"] == "Director"
+    finally:
+        conn.close()
+
+
+# ai: claude-sonnet-5 | 2026-10-13
+# Exercises the real one-time migration path in backend/db/schema.py's
+# _migrate(): a row written back when interested was NOT NULL DEFAULT FALSE
+# (simulated here by reverting the column, since pg_dsn's own init_db() has
+# already migrated it) must get backfilled to NULL (undecided) the next time
+# init_db() runs -- and a second init_db() run afterward must leave an
+# explicit FALSE set post-migration alone (the gate must not re-trigger).
+def test_migration_backfills_legacy_interested_false_to_undecided(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        repo.sync_import(user_id, [_import_row(full_name="Legacy Larry")])
+        legacy_id = repo.get_all(user_id)[0]["id"]
+
+        cur = conn.cursor()
+        cur.execute("ALTER TABLE contacts ALTER COLUMN interested SET DEFAULT FALSE")
+        cur.execute("UPDATE contacts SET interested = FALSE WHERE id = %s", (legacy_id,))
+        cur.execute("ALTER TABLE contacts ALTER COLUMN interested SET NOT NULL")
+        conn.commit()
+
+        init_db(pg_dsn)
+
+        cur.execute("SELECT interested FROM contacts WHERE id = %s", (legacy_id,))
+        assert cur.fetchone()["interested"] is None
+
+        assert repo.update(user_id, legacy_id, {"interested": False})
+        conn.commit()
+
+        init_db(pg_dsn)
+
+        cur.execute("SELECT interested FROM contacts WHERE id = %s", (legacy_id,))
+        assert cur.fetchone()["interested"] is False
     finally:
         conn.close()

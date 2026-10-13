@@ -147,6 +147,20 @@ def _has_column(cur: Any, table: str, column: str) -> bool:
     return cur.fetchone() is not None
 
 
+# ai: claude-sonnet-5 | 2026-10-13
+# Gates a one-time NOT NULL -> NULL backfill: once the column is already
+# nullable, the backfill must never run again, or it would stomp an
+# explicit FALSE a user set after the migration (see contacts.interested).
+def _column_is_not_null(cur: Any, table: str, column: str) -> bool:
+    cur.execute(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_name = %s AND column_name = %s AND table_schema = 'public'",
+        (table, column),
+    )
+    row = cur.fetchone()
+    return row is not None and row["is_nullable"] == "NO"
+
+
 # ai: claude-sonnet-5 | 2026-08-26
 def _has_table(cur: Any, table: str) -> bool:
     cur.execute(
@@ -1218,6 +1232,18 @@ def _migrate(conn: Any) -> None:
     cur.execute(
         "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS interested BOOLEAN NOT NULL DEFAULT FALSE"
     )
+    # ai: claude-sonnet-5 | 2026-10-13 -- interested becomes a real tri-state
+    # (true/false/NULL = yes/no/undecided) instead of just checked/unchecked.
+    # Every existing FALSE row predates this UI and was never an explicit "no"
+    # -- it's just the old NOT NULL DEFAULT FALSE column's default -- so the
+    # one-time backfill below reinterprets them all as undecided (NULL). This
+    # must run exactly once: gated on the column still being NOT NULL, so a
+    # user's explicit "No" set after this migration is never touched again.
+    was_not_null = _column_is_not_null(cur, "contacts", "interested")
+    cur.execute("ALTER TABLE contacts ALTER COLUMN interested DROP NOT NULL")
+    cur.execute("ALTER TABLE contacts ALTER COLUMN interested SET DEFAULT NULL")
+    if was_not_null:
+        cur.execute("UPDATE contacts SET interested = NULL WHERE interested = FALSE")
     # ai: claude-sonnet-5 | 2026-09-28 -- is_recruiter itself was retired in favor
     # of recruiter_type (see the migration below). Only add it back as a landing
     # spot for the legacy contact_type/is_recruiter backfill chain on an install
