@@ -525,6 +525,7 @@ export default function ContactsPanel() {
                 <div style={scrollArea}>
                   {visible.length > 0 && (
                     <div style={{ ...rowGrid, ...headerRow, ...stickyHeader }}>
+                      <span style={headerCell}>#</span>
                       <label style={headerCell}>
                         <input
                           type="checkbox"
@@ -554,7 +555,7 @@ export default function ContactsPanel() {
                       No contacts match these filters.
                     </div>
                   ) : (
-                    visible.map((contact) => {
+                    visible.map((contact, index) => {
                     const state = emailState(contact);
                     const profileUrl = safeHttpUrl(contact.profile_url);
                     const expanded = expandedId === contact.id;
@@ -564,6 +565,9 @@ export default function ContactsPanel() {
                     return (
                       <div key={contact.id} style={{ borderBottom: "1px solid var(--border)" }}>
                         <div style={rowGrid}>
+                          <div style={{ textAlign: "center", color: "var(--text-muted)", fontSize: "12px" }}>
+                            {index + 1}
+                          </div>
                           <input
                             type="checkbox"
                             checked={selectedIds.has(contact.id)}
@@ -720,8 +724,8 @@ const toolbar: CSSProperties = {
 
 const rowGrid: CSSProperties = {
   display: "grid",
-  // ai: gpt-5 | 2026-10-03
-  gridTemplateColumns: "64px 72px 90px minmax(0, 1fr) 150px 90px 230px 70px",
+  // ai: claude-sonnet-5 | 2026-10-13
+  gridTemplateColumns: "36px 64px 72px 90px minmax(0, 1fr) 150px 90px 230px 70px",
   alignItems: "center",
   gap: "12px",
   padding: "10px 14px",
