@@ -91,13 +91,44 @@ def repair_linkedin_company(
     existing_job: dict[str, Any],
     url: str,
 ) -> bool:
-    if not is_missing_company(existing_job.get("company")):
-        return False
+    """Fill in a missing company, or correct one that's wrong, for a LinkedIn job.
+
+    Unlike repair_existing_job_company, this never trusts a freshly *captured*
+    (browser-extension DOM scrape) company for LinkedIn -- content.js's
+    selectors broke against LinkedIn's hashed/atomic-CSS single-job redesign
+    (see project memory "linkedin-company-title-dom-bug") and there's no
+    stable selector left to restore them to, so a fresh DOM capture can't be
+    assumed more correct than what's already stored. This always verifies
+    against the LinkedIn guest jobs API instead, which uses a separate,
+    long-stable server-rendered template unaffected by that redesign.
+
+    Runs whenever the stored company is missing OR doesn't fuzzy-match the
+    freshly fetched one -- not just when missing, unlike the pre-2026-10-12
+    version of this function. A non-LinkedIn-platform caller should use
+    repair_existing_job_company instead, which only needs its own
+    already-captured data.
+    """
+    existing_company = str(existing_job.get("company") or "").strip()
     try:
         fetched = CareerSiteScanner().scan_single_job_url("LinkedIn", url)
-        raw_title = fetched["job_title"]
     except Exception:
         return False
+
+    fetched_company = str(fetched.get("company") or "").strip()
+    if fetched_company:
+        if existing_company and companies_match(existing_company, fetched_company):
+            return False
+        if existing_company == fetched_company:
+            return False
+        jobs_repo.update(user_id, int(existing_job["id"]), {"company": fetched_company})
+        return True
+
+    if not is_missing_company(existing_company):
+        return False
+
+    # Guest API returned no company (e.g. _LINKEDIN_GUEST_COMPANY_RE didn't
+    # match some markup variant) -- fall back to parsing it out of the title.
+    raw_title = str(fetched.get("job_title") or "")
     clean = re.sub(r"\s*\|\s*LinkedIn\s*$", "", raw_title, flags=re.IGNORECASE).strip()
 
     # Format A: "Job Title at Company Name"

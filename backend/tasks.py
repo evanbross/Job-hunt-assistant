@@ -497,16 +497,31 @@ def run_import_task(
 
             existing_job = existing_job_by_url.get(url)
             if existing_job is not None:
-                repaired_ok = repair_existing_job_company(
-                    user_id, repos["jobs"], existing_job, url_row
-                )
+                # ai: claude-sonnet-5 | 2026-10-12
+                # LinkedIn never goes through repair_existing_job_company: that
+                # function trusts url_row's freshly *captured* company as the
+                # more-correct value, but content.js's DOM capture is broken
+                # for LinkedIn (hashed/atomic-CSS redesign, no stable
+                # selectors left -- see project memory
+                # "linkedin-company-title-dom-bug"). Jobs 6310 and 18 others
+                # got correctly backfilled, then silently reverted back to
+                # "United States (Remote)" the next time this ran against
+                # them, because the DOM capture kept resubmitting that same
+                # wrong value and this function treated it as fresher truth.
+                # repair_linkedin_company verifies against the LinkedIn guest
+                # API instead, which is unaffected by that redesign, and
+                # handles both a missing and a present-but-wrong company.
+                if platform == "LinkedIn":
+                    repaired_ok = repair_linkedin_company(
+                        user_id, repos["jobs"], existing_job, url
+                    )
+                else:
+                    repaired_ok = repair_existing_job_company(
+                        user_id, repos["jobs"], existing_job, url_row
+                    )
                 if not repaired_ok:
                     repaired_ok = repair_ats_url_company(
                         user_id, repos["jobs"], existing_job
-                    )
-                if not repaired_ok and platform == "LinkedIn":
-                    repaired_ok = repair_linkedin_company(
-                        user_id, repos["jobs"], existing_job, url
                     )
                 if repaired_ok:
                     repaired += 1
