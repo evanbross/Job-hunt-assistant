@@ -47,6 +47,7 @@ import Modal from "./components/common/Modal.tsx";
 import MetricGrid, { MetricItem } from "./components/common/MetricGrid.tsx";
 import { ImportBreakdownDetails } from "./components/JobQueue/ImportSummaryPopup.tsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.ts";
+import { readStoredPref, writeStoredPref } from "./utils/storedPreference.ts";
 import type { SessionStatusResponse, AuthGoogleStartResponse } from "./types/auth.ts";
 import type { SetupStatusResponse } from "./types/setupWizard.ts";
 import type { ImportStatus } from "./types/importing.ts";
@@ -71,6 +72,9 @@ const VoiceQuery = lazy(() => import("./components/VoiceQuery/index.tsx"));
 // ai: claude-sonnet-5 | 2026-07-26 — Setup tab removed; the wizard now lives in Settings
 // ai: claude-sonnet-5 | 2026-08-13 — Phrase Book tab added
 // ai: claude-sonnet-5 | 2026-09-25 — Contacts tab added
+// ai: claude-sonnet-5 | 2026-10-13
+const LISTENER_IMPORT_DISMISSED_AT_KEY = "jha_listener_import_dismissed_at";
+
 const TABS = [
   { key: "queue", label: "Job Queue" },
   { key: "applications", label: "Applications" },
@@ -229,7 +233,14 @@ export default function App() {
   const [emailFocusId, setEmailFocusId] = useState<string | null>(null);
   const [focusedJobCard, setFocusedJobCard] = useState<FocusedJobCard | null>(null);
   const [listenerImportState, setListenerImportState] = useState<ImportStatus | null>(null);
-  const [listenerImportDismissedAt, setListenerImportDismissedAt] = useState("");
+  // ai: claude-sonnet-5 | 2026-10-13
+  // Persisted (not plain useState) so a page refresh doesn't forget the dialog was
+  // already dismissed — /api/import/status keeps returning the same finished
+  // listener import's result until a newer one runs, which would otherwise make
+  // the "Import complete" dialog reappear on every reload.
+  const [listenerImportDismissedAt, setListenerImportDismissedAt] = useState(
+    () => readStoredPref(LISTENER_IMPORT_DISMISSED_AT_KEY),
+  );
   const [setupComplete, setSetupComplete] = useState(true); // optimistic; corrected on mount
   const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined);
   const [showRecentChanges, setShowRecentChanges] = useState(false);
@@ -694,7 +705,11 @@ export default function App() {
         && (
           <ListenerImportDialog
             state={listenerImportState}
-            onClose={() => setListenerImportDismissedAt(listenerImportState.started_at || "")}
+            onClose={() => {
+              const dismissedAt = listenerImportState.started_at || "";
+              writeStoredPref(LISTENER_IMPORT_DISMISSED_AT_KEY, dismissedAt);
+              setListenerImportDismissedAt(dismissedAt);
+            }}
           />
         )}
 
