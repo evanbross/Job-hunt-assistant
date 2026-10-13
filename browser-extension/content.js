@@ -551,6 +551,74 @@
     });
   }
 
+  // ai: claude-sonnet-5 | 2026-10-12
+  // Extracts the JSON object value of `"key": { ... }` from a raw HTML string
+  // via brace-matching rather than a regex with a non-greedy DOTALL match --
+  // a naive /"posting":\s*(\{.*?\});/s truncates at the first "}" that closes
+  // an unrelated nested object (or appears inside a string value), which is
+  // common once descriptionHtml is in play. Mirrors
+  // backend/scanning/career_site_scanner.py's _json_object_after_key, which
+  // fetched job pages can't go through requestMainWorldValue for -- that
+  // bridge only reads window.__appData from a tab/frame that's actually
+  // loaded, not from HTML fetched separately as text.
+  function extractJsonObjectAfterKey(html, key) {
+    const keyMatch = new RegExp(`[{,]\\s*"${key}"\\s*:\\s*\\{`).exec(html);
+    if (!keyMatch) return null;
+    const start = keyMatch.index + keyMatch[0].length - 1; // position of '{'
+    let depth = 0, inStr = false, escaped = false, end = -1;
+    for (let i = start; i < html.length; i++) {
+      const ch = html[i];
+      if (inStr) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) { end = i + 1; break; }
+      }
+    }
+    if (end === -1) return null;
+    try { return JSON.parse(html.slice(start, end)); } catch { return null; }
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-12
+  // Ashby renamed the posting description field to descriptionHtml at some
+  // point after buildAshbyJobPayload was written -- descriptionPlainText and
+  // description no longer exist on a live posting (confirmed live against
+  // jobs.ashbyhq.com/clickup, 2026-10-12), so every single-job Ashby capture
+  // was silently shipping an empty description. Mirrors the already-correct
+  // descriptionHtml handling in career_site_scanner.py's _ashby_job_from_posting.
+  function ashbyPostingDescription(posting) {
+    if (!posting) return '';
+    return htmlToText(posting.descriptionHtml || '')
+      || posting.descriptionPlainText
+      || posting.description
+      || '';
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-12
+  // Board-level jobPostings entries (read by getAshbyBoardJobs) never carry a
+  // description at all -- confirmed live: Ashby's board payload only has
+  // title/location/team/workplace/employment fields. Fetching each posting's
+  // own page is the only way to get real JD content for a board capture.
+  // Same-origin fetch: content.js is on jobs.ashbyhq.com when this runs,
+  // whether that's a direct board visit or the iframe a company embeds on
+  // its own careers page (see detectPage's jobs.ashbyhq.com branch).
+  async function fetchAshbyPostingDescription(url) {
+    try {
+      const res = await fetch(url, { headers: { Accept: 'text/html,application/xhtml+xml' } });
+      if (!res.ok) return '';
+      const html = await res.text();
+      return ashbyPostingDescription(extractJsonObjectAfterKey(html, 'posting'));
+    } catch {
+      return '';
+    }
+  }
+
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -1265,7 +1333,7 @@
     const department = posting.departmentExternalName || posting.departmentName || '';
     const workplace = posting.workplaceType || '';
     const employment = posting.employmentType || '';
-    const desc = posting.descriptionPlainText || posting.description || '';
+    const desc = ashbyPostingDescription(posting);
 
     const lines = [];
     if (title) lines.push(title);
@@ -1282,6 +1350,14 @@
   // Company job-board page — turn the filtered jobPostings array (see
   // getAshbyBoardJobs) into one entry per listed posting, linking to that
   // posting's own single-job page via its id.
+  // ai: claude-sonnet-5 | 2026-10-12
+  // Board postings never carry a description (see fetchAshbyPostingDescription
+  // above) -- every job this used to send was metadata-only (title/company/
+  // URL/location) and got rejected server-side for having too little content.
+  // Dereference each posting's own page for the real JD instead, same
+  // unconditional per-job fetch pattern as buildWellfoundSearchPayload (no
+  // opt-in/cap: unlike Kforce/Insight Global's list captures, there is no
+  // usable alternative here).
   async function buildAshbySearchPayload() {
     const slug = location.pathname.split('/').filter(Boolean)[0] || '';
     const appData = await requestMainWorldValue('ashbyAppData');
@@ -1290,8 +1366,14 @@
     const teams = appData?.jobBoard?.teams || [];
     const teamById = new Map(teams.map(t => [t.id, t]));
 
-    const jobs = (await getAshbyBoardJobs()).map(p => {
+    const postings = await getAshbyBoardJobs();
+    const total = postings.length;
+    const jobs = [];
+    for (let i = 0; i < total; i++) {
+      const p = postings[i];
       const url = `https://jobs.ashbyhq.com/${slug}/${p.id}`;
+      sendProgress(`Fetching description ${i + 1} of ${total}…`, (i + 1) / total);
+      const description = await fetchAshbyPostingDescription(url);
       // ai: claude-sonnet-5 | 2026-10-07 -- departmentExternalName/departmentName
       // no longer exist on board postings (see resolveAshbyRootTeam above); the
       // team's own name is the closest available label.
@@ -1299,8 +1381,10 @@
       const meta = [department, p.locationExternalName || p.locationName, p.workplaceType, p.employmentType].filter(Boolean);
       const lines = [p.title, 'Company: ' + company, 'URL: ' + url];
       if (meta.length) lines.push(meta.join(' | '));
-      return { url, job_title: p.title, company, listing_text: lines.join('\n') };
-    });
+      if (description) lines.push('', description);
+      jobs.push({ url, job_title: p.title, company, listing_text: lines.join('\n') });
+      if (i < total - 1) await sleep(300);
+    }
 
     return JSON.stringify({ jobs, source: { url: location.href } });
   }
@@ -3127,14 +3211,20 @@
     });
   }
 
+  // ai: claude-sonnet-5 | 2026-10-12
+  // Exposed so popup.js can probe every frame for the real job-board frame in
+  // one chrome.scripting.executeScript({allFrames:true, func}) round trip
+  // (same pattern autofill.js already uses via window.__jhaDetectAutofillFrame)
+  // instead of only ever reaching frame 0 via chrome.tabs.sendMessage. Needed
+  // for ATS widgets a company embeds as a cross-origin iframe on its own
+  // careers page (confirmed live: clickup.com/careers embeds
+  // jobs.ashbyhq.com/clickup this way) -- frame 0's own detectPage() can't see
+  // into that iframe at all and falls back to a whole-page generic capture.
+  window.__jhaDetectPage = detectPage;
+
   // ─── Message Listener ──────────────────────────────────────────────────────
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.action === 'scan') {
-      detectPage().then(sendResponse);
-      return true; // keep channel open for async response
-    }
-
     if (message.action === 'build') {
       buildPayload(message.options || {})
         .then(result => sendResponse(result))

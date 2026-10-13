@@ -38,6 +38,16 @@ let activeTabId = null;
 let currentJobCount = 0;
 let isSending = false;
 let applicationFrameId = 0; // default: top frame
+// ai: claude-sonnet-5 | 2026-10-12
+// Which frame actually detected a job-shaped page -- usually 0 (top frame),
+// but a company can embed an ATS widget as a cross-origin iframe on its own
+// careers page (e.g. clickup.com/careers embeds jobs.ashbyhq.com/clickup),
+// in which case frame 0 only ever sees the generic page around it. See the
+// allFrames probe in DOMContentLoaded below.
+let captureFrameId = 0;
+// Generic/fallback detectPage() types that never win over a more specific
+// detection from another frame -- see the probe below.
+const GENERIC_PAGE_TYPES = new Set(['html', 'smartGeneric', 'blocked']);
 
 // ai: claude-sonnet-5 | 2026-08-24
 // Populated once at startup from chrome.storage; the full-description
@@ -85,10 +95,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab.id;
 
+  // ai: claude-sonnet-5 | 2026-10-12
+  // Inject into every frame (not just frame 0) and probe each one via
+  // window.__jhaDetectPage, same executeScript({allFrames, func}) pattern as
+  // the autofill-frame detection below -- this is what lets a cross-origin
+  // ATS iframe embedded on a company's own careers page win over the generic
+  // top-frame result. Prefer frame 0's result when it's already specific
+  // (keeps today's behavior unchanged for the vast majority of sites, which
+  // don't embed anything), otherwise take the first other frame that found
+  // something more specific than the generic fallback types.
   try {
-    await chrome.scripting.executeScript({ target: { tabId: activeTabId }, files: ['content.js'] });
-    const scanResult = await sendToTab({ action: 'scan' });
-    applyScanResult(scanResult);
+    await chrome.scripting.executeScript({ target: { tabId: activeTabId, allFrames: true }, files: ['content.js'] });
+    const frameResults = await chrome.scripting.executeScript({
+      target: { tabId: activeTabId, allFrames: true },
+      func: () => (window.__jhaDetectPage ? window.__jhaDetectPage() : null),
+    });
+    const topResult = frameResults.find(r => r.frameId === 0)?.result ?? null;
+    let winnerFrameId = 0;
+    let winnerResult = topResult;
+    if (!topResult || GENERIC_PAGE_TYPES.has(topResult.type)) {
+      const better = frameResults.find(r => r.frameId !== 0 && r.result && !GENERIC_PAGE_TYPES.has(r.result.type));
+      if (better) { winnerFrameId = better.frameId; winnerResult = better.result; }
+    }
+    captureFrameId = winnerFrameId;
+    applyScanResult(winnerResult);
   } catch {
     showNoAccess();
   }
@@ -391,12 +421,16 @@ function resetButton() {
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 // ai: gpt-5 | 2026-10-04
+// ai: claude-sonnet-5 | 2026-10-12 -- routes to captureFrameId instead of the
+// implicit frame-0 default, so a job board embedded as a cross-origin iframe
+// (see the allFrames probe in DOMContentLoaded) keeps getting the 'build'
+// message after 'scan' already found it there.
 function sendToTab(message, timeoutMs = 30000) {
   return new Promise(resolve => {
     const timeoutId = setTimeout(() => {
       resolve({ error: 'Capture timed out while building the payload. Reload the page and try again.' });
     }, timeoutMs);
-    chrome.tabs.sendMessage(activeTabId, message, response => {
+    chrome.tabs.sendMessage(activeTabId, message, { frameId: captureFrameId }, response => {
       clearTimeout(timeoutId);
       if (chrome.runtime.lastError) {
         resolve({ error: `Extension could not read this tab: ${chrome.runtime.lastError.message}` });
