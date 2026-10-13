@@ -58,10 +58,15 @@ export function resumeBasePattern(filename: string): string {
   return stripVersionSuffixes(stem).toLowerCase();
 }
 
+// ai: claude-sonnet-5 | 2026-10-13 — removed a startsWith/endsWith fallback that
+// matched any filename sharing basePattern as a prefix (e.g. "..._Old_Draft.pdf"
+// against base "..._resume"), not just differently-versioned copies of the same
+// resume. stripVersionSuffixes already normalizes both sides to the same stem
+// when they truly are version/date variants, so exact equality is sufficient.
 export function matchesResumePattern(candidateName: string, basePattern: string): boolean {
   if (!candidateName.toLowerCase().endsWith(".pdf")) return false;
   const candidateStem = stripVersionSuffixes(candidateName.replace(/\.pdf$/i, "")).toLowerCase();
-  return candidateStem === basePattern || candidateStem.startsWith(basePattern) || basePattern.startsWith(candidateStem);
+  return candidateStem === basePattern;
 }
 
 // Scans a connected folder for a PDF matching the current resume's filename
