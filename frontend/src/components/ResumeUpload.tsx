@@ -32,11 +32,17 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-sonnet-5 | 2026-10-13
 // ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { ApiErrorBody } from "../types/common.ts";
 import type { ResumeInfo } from "../types/resume.ts";
+import { loadResumeFolderHandle, saveResumeFolderHandle } from "../utils/resumeFolderHandleStore.ts";
+import { findNewerResumeInFolder } from "../utils/resumeFolderMatch.ts";
+import type { ResumeFolderCandidate } from "../utils/resumeFolderMatch.ts";
+
+const folderPickerSupported = typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 
 export default function ResumeUpload() {
   const [resume, setResume] = useState<ResumeInfo | null>(null);
@@ -44,12 +50,105 @@ export default function ResumeUpload() {
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // ai: claude-sonnet-5 | 2026-10-13
+  // Watch-folder state: a connected FileSystemDirectoryHandle lives only in
+  // this ref (handles aren't serializable to plain state); permission must be
+  // re-checked every load since Chromium doesn't persist the grant across
+  // browser restarts, only the handle itself (via IndexedDB).
+  const folderHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
+  const [folderConnected, setFolderConnected] = useState(false);
+  const [folderPermission, setFolderPermission] = useState<PermissionState | null>(null);
+  const [checkingFolder, setCheckingFolder] = useState(false);
+  const [candidate, setCandidate] = useState<ResumeFolderCandidate | null>(null);
+  const [updatingFromCandidate, setUpdatingFromCandidate] = useState(false);
+
   useEffect(() => {
     fetch("/api/resume")
       .then((r) => r.json())
       .then((data: ResumeInfo | null) => setResume(data))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!folderPickerSupported) return;
+    (async () => {
+      try {
+        const handle = await loadResumeFolderHandle();
+        if (!handle) return;
+        folderHandleRef.current = handle;
+        setFolderConnected(true);
+        setFolderPermission(await handle.queryPermission({ mode: "read" }));
+      } catch {
+        // IndexedDB unavailable or handle stale -- user can reconnect manually.
+      }
+    })();
+  }, []);
+
+  const checkFolderForNewerResume = async () => {
+    const handle = folderHandleRef.current;
+    if (!handle || !resume || folderPermission !== "granted") return;
+    setCheckingFolder(true);
+    try {
+      const found = await findNewerResumeInFolder(handle, resume.filename, resume.uploaded_at);
+      setCandidate(found);
+    } catch {
+      // Folder likely moved/deleted since connecting; nothing to surface.
+      setCandidate(null);
+    } finally {
+      setCheckingFolder(false);
+    }
+  };
+
+  useEffect(() => {
+    if (folderPermission === "granted") {
+      checkFolderForNewerResume();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderPermission, resume?.filename, resume?.uploaded_at]);
+
+  const handleConnectFolder = async () => {
+    try {
+      const handle = await window.showDirectoryPicker({ id: "resume-folder", mode: "read" });
+      folderHandleRef.current = handle;
+      await saveResumeFolderHandle(handle);
+      setFolderConnected(true);
+      setFolderPermission(await handle.queryPermission({ mode: "read" }));
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      setError("Could not connect folder: " + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+
+  const handleGrantFolderPermission = async () => {
+    const handle = folderHandleRef.current;
+    if (!handle) return;
+    try {
+      setFolderPermission(await handle.requestPermission({ mode: "read" }));
+    } catch (e) {
+      setError("Could not re-enable folder access: " + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+
+  const handleUseCandidate = async () => {
+    if (!candidate) return;
+    setUpdatingFromCandidate(true);
+    const form = new FormData();
+    form.append("file", candidate.file, candidate.name);
+    try {
+      const res = await fetch("/api/resume", { method: "POST", body: form });
+      const data: ResumeInfo & ApiErrorBody = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Upload failed");
+        return;
+      }
+      setResume(data);
+      setCandidate(null);
+    } catch (e) {
+      setError("Upload failed: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setUpdatingFromCandidate(false);
+    }
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -136,6 +235,73 @@ export default function ResumeUpload() {
 
         {error && <span style={{ color: "var(--red)", fontSize: "12px" }}>{error}</span>}
       </div>
+
+      {folderPickerSupported && resume && (
+        <div style={{ marginTop: "14px" }}>
+          {!folderConnected && (
+            <button
+              className="btn-secondary"
+              onClick={handleConnectFolder}
+              style={{ fontSize: "12px", padding: "6px 12px" }}
+            >
+              Connect resume folder…
+            </button>
+          )}
+
+          {folderConnected && folderPermission === "prompt" && (
+            <button
+              className="btn-secondary"
+              onClick={handleGrantFolderPermission}
+              style={{ fontSize: "12px", padding: "6px 12px" }}
+            >
+              Re-enable resume folder access
+            </button>
+          )}
+
+          {folderConnected && folderPermission === "granted" && !candidate && (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                {checkingFolder ? "Checking connected folder…" : "Connected folder checked for a newer resume."}
+              </span>
+              <button
+                className="btn-secondary"
+                disabled={checkingFolder}
+                onClick={checkFolderForNewerResume}
+                style={{ fontSize: "11px", padding: "3px 10px" }}
+              >
+                Check again
+              </button>
+            </div>
+          )}
+
+          {candidate && (
+            <div style={{ ...infoBox, background: "var(--surface)", borderColor: "var(--orange, #d08a3e)" }}>
+              <div style={{ fontSize: "13px" }}>
+                Found a newer resume in your connected folder: <strong>{candidate.name}</strong> (modified{" "}
+                {new Date(candidate.file.lastModified).toLocaleString()}).
+              </div>
+              <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+                <button
+                  className="btn-primary"
+                  disabled={updatingFromCandidate}
+                  onClick={handleUseCandidate}
+                  style={{ fontSize: "12px", padding: "4px 12px" }}
+                >
+                  {updatingFromCandidate ? "Updating…" : "Use this resume"}
+                </button>
+                <button
+                  className="btn-secondary"
+                  disabled={updatingFromCandidate}
+                  onClick={() => setCandidate(null)}
+                  style={{ fontSize: "12px", padding: "4px 12px" }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
