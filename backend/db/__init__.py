@@ -113,7 +113,7 @@ from .repositories.career_scan_results import PostgresCareerScanResultRepository
 from .repositories.career_site_sources import PostgresCareerSiteSourceRepository
 from .repositories.companies import PostgresCompanyRepository
 from .repositories.company_aliases import PostgresCompanyAliasRepository
-from .repositories.contact_emails import PostgresContactEmailRepository
+from .repositories.contact_outreach import PostgresContactEmailRepository
 from .repositories.contacts import PostgresContactRepository
 from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseRepository
 from .repositories.email_sources import PostgresEmailSourceRepository
