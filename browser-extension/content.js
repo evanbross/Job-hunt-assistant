@@ -903,15 +903,16 @@
     return buildLinkedInJobPayload(url);
   }
 
-  // ai: claude-sonnet-5 | 2026-10-06
+  // ai: claude-sonnet-5 | 2026-10-14
   // Same 2026-10 redesign as countLinkedInJobs above: title/company classes
   // are now atomic/hashed per build (e.g. "dj9lz8") and unusable as selectors.
-  // Confirmed live: every card's innerText renders a hidden a11y-label line
-  // first ("Selected, <title>" or "<title> (Verified job)" or a plain
-  // duplicate), then the real visible title line, then the company line --
-  // so title/company are read positionally (lines[1]/lines[2]) once the old
-  // classed selectors come up empty, rather than guessing new class names
-  // that will just get re-hashed on LinkedIn's next deploy.
+  // The positional fallback used to assume a hidden a11y-label line preceded
+  // the real title (lines[1]/lines[2]), but that's no longer true (confirmed
+  // live 2026-10-14, job 4468808388 "Staff Engineer"/"Cloud Campaign": no
+  // leading line, title is lines[0] and company is lines[1] directly) --
+  // read title/company from lines[0]/lines[1] once the old classed selectors
+  // come up empty, rather than guessing new class names that will just get
+  // re-hashed on LinkedIn's next deploy.
   function buildLinkedInSearchPayload() {
     const jobIds = new Set();
     const jobs = [];
@@ -942,8 +943,8 @@
 
       const url = `https://www.linkedin.com/jobs/view/${id}/`;
       const textLines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-      const title = titleEl?.innerText.trim() || textLines[1] || textLines[0] || 'Unknown Title';
-      const company = companyEl?.innerText.trim() || textLines[2] || '';
+      const title = titleEl?.innerText.trim() || textLines[0] || 'Unknown Title';
+      const company = companyEl?.innerText.trim() || textLines[1] || '';
 
       jobs.push({
         url,

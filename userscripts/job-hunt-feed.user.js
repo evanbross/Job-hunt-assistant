@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-10-06.01
+// @version      2026-10-14.01
 // @match        https://jobs.ashbyhq.com/vanta/*
 // @match        https://discord.com/careehrs*
 // @match        https://job-boards.greenhouse.io/*/jobs/*
@@ -461,10 +461,14 @@
                 '.job-card-container__company-link'
             );
 
+            // ai: claude-sonnet-5 | 2026-10-14
+            // Positional fallback was off by one: confirmed live (job 4468808388,
+            // "Staff Engineer"/"Cloud Campaign") title is lines[0] and company is
+            // lines[1] directly, with no leading hidden a11y-label line anymore.
             const textLines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
             const url = `https://www.linkedin.com/jobs/view/${id}/`;
-            const title = titleEl?.innerText.trim() || textLines[1] || textLines[0] || 'Unknown Title';
-            const company = companyEl?.innerText.trim() || textLines[2] || '';
+            const title = titleEl?.innerText.trim() || textLines[0] || 'Unknown Title';
+            const company = companyEl?.innerText.trim() || textLines[1] || '';
             const metadata = card.innerText.trim();
 
             jobs.push({
