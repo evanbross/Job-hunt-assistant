@@ -1,11 +1,47 @@
 # Quality gates: every merge request and every push to the default branch must pass
 # lint (Python and frontend), the production frontend build, and the full test suite
 # against a throwaway Postgres and Redis. Nothing here deploys anything.
+#
+# ai: claude-opus-5-5 | 2026-10-13
+# Each job runs only when a path it depends on changed (see the .*_changes anchors), so
+# an extension- or docs-only push doesn't spend ~20 runner-minutes on pytest -- in
+# Oct 2026 only 26 of 73 commits touched Python. A pipeline whose jobs all skip is not
+# created at all. Scheduled pipelines evaluate every `changes:` rule as true, so a
+# schedule (CI/CD > Schedules) runs the full set, including the dependency audits.
 
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+# Everything the Python lint/test jobs read. tests/ also reads a few non-Python files:
+# deploy/ and .gitignore (test_infra_hardening.py), shared/skip_reasons.json and
+# frontend/src/utils/triagePanelUtils.ts (test_skip_reasons_sync.py).
+.python_changes: &python_changes
+  - "backend/**/*"
+  - "routes/**/*"
+  - "tests/**/*"
+  - "scripts/**/*"
+  - "shared/**/*"
+  - "deploy/**/*"
+  - "prompts/**/*"
+  - "*.py"
+  - "*.md.example"
+  - ".env.example"
+  - ".gitignore"
+  - "pyproject.toml"
+  - "pyrightconfig.json"
+  - "uv.lock"
+  - ".python-version"
+  - "frontend/src/utils/triagePanelUtils.ts"
+  - ".gitlab-ci.yml"
+
+# The frontend imports shared/skip_reasons.json directly.
+.frontend_changes: &frontend_changes
+  - "frontend/**/*"
+  - "shared/**/*"
+  - ".gitlab-ci.yml"
 
 stages:
   - lint
@@ -27,6 +63,8 @@ variables:
 ruff:
   extends: .python
   stage: lint
+  rules:
+    - changes: *python_changes
   script:
     # --frozen: fail if uv.lock is out of date with pyproject.toml rather than re-resolving.
     - uv sync --frozen --only-group dev
@@ -35,6 +73,8 @@ ruff:
 frontend:
   stage: lint
   image: node:22-bookworm-slim
+  rules:
+    - changes: *frontend_changes
   cache:
     key:
       files: [frontend/package-lock.json]
@@ -54,6 +94,8 @@ frontend:
 pytest:
   extends: .python
   stage: test
+  rules:
+    - changes: *python_changes
   services:
     - name: postgres:17-alpine
       alias: postgres
@@ -93,6 +135,8 @@ pip-audit:
   extends: .python
   stage: audit
   allow_failure: true
+  rules:
+    - changes: ["pyproject.toml", "uv.lock", ".gitlab-ci.yml"]
   script:
     - uv export --frozen --no-dev --no-emit-project -o requirements-audit.txt
     - uvx pip-audit -r requirements-audit.txt --no-deps --disable-pip
@@ -101,6 +145,8 @@ npm-audit:
   stage: audit
   image: node:22-bookworm-slim
   allow_failure: true
+  rules:
+    - changes: ["frontend/package.json", "frontend/package-lock.json", ".gitlab-ci.yml"]
   script:
     - cd frontend
     - npm audit --audit-level=high
