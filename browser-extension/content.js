@@ -465,14 +465,29 @@
     return u.hostname === location.hostname || _KNOWN_ATS_RE.test(u.hostname);
   }
 
+  // ai: claude-opus-5-5 | 2026-10-14
+  // Career sites that filter client-side (e.g. redditinc.com/careers?locations=...
+  // &search=...) server-render every opening and just hide non-matching rows, so
+  // harvesting every anchor captured the whole unfiltered board (144 vs ~30).
+  // When some job links are visible and some aren't, the hidden ones are filtered
+  // out — drop them. When none are visible (collapsed accordion, "pick a
+  // department" landing view), keep them all rather than capturing nothing.
+  // Returns [{ link, u }] pairs so callers don't re-parse the URL.
+  function collectJobLinkAnchors() {
+    const matches = [];
+    document.querySelectorAll('a[href]').forEach(link => {
+      let u;
+      try { u = new URL(link.href); } catch { return; }
+      if (isJobLink(u)) matches.push({ link, u });
+    });
+    const isShown = el => (el.checkVisibility ? el.checkVisibility() : el.getClientRects().length > 0);
+    const visible = matches.filter(m => isShown(m.link));
+    return visible.length > 0 ? visible : matches;
+  }
+
   function countSmartGenericJobs() {
     const seen = new Set();
-    document.querySelectorAll('a[href]').forEach(a => {
-      try {
-        const u = new URL(a.href);
-        if (isJobLink(u)) seen.add(u.origin + u.pathname);
-      } catch { /* skip */ }
-    });
+    collectJobLinkAnchors().forEach(({ u }) => seen.add(u.origin + u.pathname));
     // The current page counts as a job too when it is one — see the matching
     // self-inclusion in buildSmartGenericPayload().
     try {
@@ -2534,10 +2549,7 @@
     const jobs = [];
 
     function collectJobLinks() {
-      document.querySelectorAll('a[href]').forEach(link => {
-        let u;
-        try { u = new URL(link.href); } catch { return; }
-        if (!isJobLink(u)) return;
+      collectJobLinkAnchors().forEach(({ link, u }) => { // ai: claude-opus-5-5 | 2026-10-14
         const url = u.origin + u.pathname; // strip query/hash to deduplicate
         if (seen.has(url)) return;
         seen.add(url);
