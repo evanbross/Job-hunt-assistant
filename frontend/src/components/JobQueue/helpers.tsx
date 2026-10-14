@@ -108,7 +108,7 @@ export function formatJobDetails(jobDetails?: ScanJobDetail[] | null) {
               {jobDetail.job_title || "Untitled job"}{jobDetail.company ? ` at ${jobDetail.company}` : ""}
             </div>
             <div style={{ overflowWrap: "anywhere" }}>
-              {jobDetail.outcome || formatScanDisposition(jobDetail.status)} · fit {score}{confidenceText}{duplicateText}
+              {jobDetail.outcome || formatScanDisposition(jobDetail.status)} · fit <strong style={{ color: "var(--text)" }}>{score}</strong>{confidenceText}{duplicateText}
             </div>
           </div>
         );

@@ -37,11 +37,13 @@ connection wrapper shared by every repository, plus get_connection()."""
 
 from __future__ import annotations
 
+import threading
 from datetime import date, datetime
 from typing import Any
 
 import psycopg2
 import psycopg2.extras
+from psycopg2 import pool as psycopg2_pool
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
@@ -57,23 +59,38 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     return result
 
 
-class _ReconnectingPgConn:
-    """
-    Wraps a psycopg2 connection with TCP keepalives and transparent reconnect.
+# ai: claude-sonnet-5 | 2026-10-13
+# One real psycopg2 connection pool per DSN, shared process-wide, so every
+# get_connection() call (routes via get_repos(), Celery tasks, scripts, and
+# every test fixture that opens its own connection) reuses a warm TCP/TLS
+# session instead of paying Neon's ~200ms handshake on every single call --
+# that handshake was dwarfing actual query time (sub-millisecond, even for
+# the Company History lookup) by three orders of magnitude. Keyed by DSN so
+# the production DATABASE_URL and a test suite's LOCAL_POSTGRES_* DSN never
+# share connections. SimpleConnectionPool, not ThreadedConnectionPool: the
+# latter's default key is the calling thread's id, so a second getconn() from
+# the *same* thread (e.g. tests/test_import_routes.py's race-simulation,
+# which deliberately opens two simultaneous connections from one thread) would
+# silently hand back the SAME connection instead of a second, independent one.
+# SimpleConnectionPool's default key is just an auto-incrementing counter, so
+# every getconn() call -- regardless of thread -- gets a genuinely distinct
+# connection, up to maxconn; we add our own lock since SimpleConnectionPool
+# does no internal locking.
+_POOL_LOCK = threading.Lock()
+_POOLS: dict[str, psycopg2_pool.SimpleConnectionPool] = {}
+_POOL_MIN_CONN = 1
+_POOL_MAX_CONN = 10
 
-    All repositories share one instance, so reconnect() replaces the underlying
-    psycopg2 connection in place — every repo and every conn.commit() caller
-    automatically uses the new connection without any re-wiring.
-    """
 
-    def __init__(self, dsn: str) -> None:
-        self._dsn = dsn
-        self._conn = self._connect()
-        self.autocommit = False
-
-    def _connect(self) -> Any:
-        conn = psycopg2.connect(
-            self._dsn,
+def _get_pool(dsn: str) -> psycopg2_pool.SimpleConnectionPool:
+    with _POOL_LOCK:
+        existing = _POOLS.get(dsn)
+        if existing is not None:
+            return existing
+        new_pool = psycopg2_pool.SimpleConnectionPool(
+            _POOL_MIN_CONN,
+            _POOL_MAX_CONN,
+            dsn,
             cursor_factory=psycopg2.extras.RealDictCursor,
             connect_timeout=10,  # ai: claude-fable-5 | 2026-07-14 — bound per-host TCP wait so a dead endpoint fails in seconds, not minutes
             keepalives=1,
@@ -81,8 +98,28 @@ class _ReconnectingPgConn:
             keepalives_interval=10,
             keepalives_count=5,
         )
-        conn.autocommit = False
-        return conn
+        _POOLS[dsn] = new_pool
+        return new_pool
+
+
+class _ReconnectingPgConn:
+    """
+    Wraps a pooled psycopg2 connection with transparent reconnect-on-drop.
+
+    All repositories share one instance, so reconnect() replaces the underlying
+    psycopg2 connection in place — every repo and every conn.commit() caller
+    automatically uses the new connection without any re-wiring. close() returns
+    the connection to its DSN's pool instead of closing the socket, so the next
+    get_connection() call for the same DSN reuses it rather than paying a fresh
+    TCP/TLS handshake.
+    """
+
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+        self._pool = _get_pool(dsn)
+        with _POOL_LOCK:
+            self._conn = self._pool.getconn()
+        self.autocommit = False
 
     def cursor(self) -> Any:
         return self._conn.cursor()
@@ -94,18 +131,39 @@ class _ReconnectingPgConn:
         self._conn.rollback()
 
     def close(self) -> None:
-        self._conn.close()
+        """Return the connection to the pool instead of closing the socket --
+        always rollback first so whichever caller is handed this connection
+        next never inherits an uncommitted transaction or stale session state
+        left behind by this one."""
+        try:
+            if self._conn.closed:
+                with _POOL_LOCK:
+                    self._pool.putconn(self._conn, close=True)
+                return
+            self._conn.rollback()
+            with _POOL_LOCK:
+                self._pool.putconn(self._conn)
+        except psycopg2.Error:
+            try:
+                with _POOL_LOCK:
+                    self._pool.putconn(self._conn, close=True)
+            except psycopg2.Error:
+                pass
 
     def reconnect(self) -> None:
-        """Replace the underlying connection with a fresh one after a drop."""
+        """Discard the (presumably dead) connection and check out a fresh one --
+        e.g. after Neon suspends an idle compute and drops every connection that
+        was sitting in the pool."""
         try:
-            self._conn.close()
-        except Exception:
+            with _POOL_LOCK:
+                self._pool.putconn(self._conn, close=True)
+        except psycopg2.Error:
             pass
-        self._conn = self._connect()
+        with _POOL_LOCK:
+            self._conn = self._pool.getconn()
 
 
 # ai: claude-sonnet-5 | 2026-07-25 — SQLite dialect support removed; Postgres only now
 def get_connection(dsn: str) -> Any:
-    """Open a Postgres database connection."""
+    """Get a pooled Postgres connection (see _get_pool above)."""
     return _ReconnectingPgConn(dsn)

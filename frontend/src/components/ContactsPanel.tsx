@@ -30,6 +30,8 @@ const PAGE_SIZE = 100;
 type View = "contacts" | "companies" | "titles";
 type EmailFilter = "all" | "emailed" | "not_emailed" | "awaiting" | "replied";
 type RecruiterFilter = "all" | "recruiter" | "not_recruiter";
+// ai: claude-sonnet-5 | 2026-10-13
+type InterestedFilter = "all" | "yes" | "no" | "tbd";
 type EmailState = "none" | "awaiting" | "replied";
 type SortDir = "asc" | "desc";
 
@@ -39,6 +41,17 @@ const EMAIL_FILTERS: { value: EmailFilter; label: string }[] = [
   { value: "not_emailed", label: "Not emailed" },
   { value: "awaiting", label: "Emailed, awaiting reply" },
   { value: "replied", label: "Replied" },
+];
+
+// ai: claude-sonnet-5 | 2026-10-13
+// Mirrors the tri-state INTERESTED_OPTIONS below (yes/no/undecided), as a
+// filter dropdown instead of a single "interested only" checkbox so "No" and
+// "Undecided" contacts can each be isolated too.
+const INTERESTED_FILTERS: { value: InterestedFilter; label: string }[] = [
+  { value: "all", label: "Want to email: all" },
+  { value: "yes", label: "Want to email: Yes" },
+  { value: "no", label: "Want to email: No" },
+  { value: "tbd", label: "Want to email: Undecided" },
 ];
 
 const RECRUITER_FILTERS: { value: RecruiterFilter; label: string }[] = [
@@ -163,13 +176,16 @@ interface FilterState {
   search: string;
   emailFilter: EmailFilter;
   recruiterFilter: RecruiterFilter;
-  interestedOnly: boolean;
+  interestedFilter: InterestedFilter;
   titleFilter: string | null;
 }
 
 // ai: claude-sonnet-5 | 2026-09-25
-function matchesFilters(contact: Contact, { search, emailFilter, recruiterFilter, interestedOnly, titleFilter }: FilterState): boolean {
-  if (interestedOnly && !contact.interested) return false;
+function matchesFilters(contact: Contact, { search, emailFilter, recruiterFilter, interestedFilter, titleFilter }: FilterState): boolean {
+  // ai: claude-sonnet-5 | 2026-10-13
+  if (interestedFilter === "yes" && contact.interested !== true) return false;
+  if (interestedFilter === "no" && contact.interested !== false) return false;
+  if (interestedFilter === "tbd" && contact.interested !== null) return false;
   if (titleFilter !== null && contact.normalized_title !== titleFilter) return false;
 
   const state = emailState(contact);
@@ -212,7 +228,7 @@ export default function ContactsPanel() {
   const [search, setSearch] = useState("");
   const [emailFilter, setEmailFilter] = useState<EmailFilter>("all");
   const [recruiterFilter, setRecruiterFilter] = useState<RecruiterFilter>("all");
-  const [interestedOnly, setInterestedOnly] = useState(false);
+  const [interestedFilter, setInterestedFilter] = useState<InterestedFilter>("all");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
   const [bulkPending, setBulkPending] = useState(false);
@@ -241,7 +257,7 @@ export default function ContactsPanel() {
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [search, emailFilter, recruiterFilter, interestedOnly, titleFilter]);
+  }, [search, emailFilter, recruiterFilter, interestedFilter, titleFilter]);
 
   const viewContactsForTitle = (normalizedTitle: string) => {
     setTitleFilter(normalizedTitle);
@@ -251,11 +267,10 @@ export default function ContactsPanel() {
   const filtered = useMemo(
     () =>
       contacts.filter((contact) =>
-        matchesFilters(contact, { search, emailFilter, recruiterFilter, interestedOnly, titleFilter }),
+        matchesFilters(contact, { search, emailFilter, recruiterFilter, interestedFilter, titleFilter }),
       ),
-    [contacts, search, emailFilter, recruiterFilter, interestedOnly, titleFilter],
+    [contacts, search, emailFilter, recruiterFilter, interestedFilter, titleFilter],
   );
-  const interestedCount = useMemo(() => contacts.filter((c) => c.interested).length, [contacts]);
 
   // ai: claude-sonnet-5 | 2026-10-02
   // Clicking a sortable column header sets it as the sort key; clicking the
@@ -501,6 +516,7 @@ export default function ContactsPanel() {
                   value={emailFilter}
                   onChange={(e) => setEmailFilter(e.target.value as EmailFilter)}
                   aria-label="Filter by email status"
+                  style={emailFilter !== "all" ? filterPillActive : filterPill}
                 >
                   {EMAIL_FILTERS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -512,6 +528,7 @@ export default function ContactsPanel() {
                   value={recruiterFilter}
                   onChange={(e) => setRecruiterFilter(e.target.value as RecruiterFilter)}
                   aria-label="Filter by recruiter"
+                  style={recruiterFilter !== "all" ? filterPillActive : filterPill}
                 >
                   {RECRUITER_FILTERS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -519,14 +536,18 @@ export default function ContactsPanel() {
                     </option>
                   ))}
                 </select>
-                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px" }}>
-                  <input
-                    type="checkbox"
-                    checked={interestedOnly}
-                    onChange={(e) => setInterestedOnly(e.target.checked)}
-                  />
-                  Want to email only ({interestedCount})
-                </label>
+                <select
+                  value={interestedFilter}
+                  onChange={(e) => setInterestedFilter(e.target.value as InterestedFilter)}
+                  aria-label="Filter by want to email"
+                  style={interestedFilter !== "all" ? filterPillActive : filterPill}
+                >
+                  {INTERESTED_FILTERS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div style={{ color: "var(--text-muted)", fontSize: "12px", margin: "0 2px 8px" }}>
@@ -769,6 +790,35 @@ const toolbar: CSSProperties = {
   alignItems: "center",
   gap: "10px",
   marginBottom: "10px",
+};
+
+// ai: claude-sonnet-5 | 2026-10-14
+// index.css's global `select { width: 100% }` rule (meant for form fields)
+// was stretching these filter dropdowns to the full toolbar width even
+// though their option text is short. Pill-shaped and width:auto (sized to
+// the selected option's text, like a job board's filter chips) rather than
+// the page-wide default. filterPillActive highlights a filter that's
+// narrowed the list away from "all", the same way job boards tint an
+// active filter chip.
+const filterPill: CSSProperties = {
+  width: "auto",
+  flex: "0 0 auto",
+  padding: "6px 28px 6px 14px",
+  fontSize: "12.5px",
+  fontWeight: 500,
+  borderRadius: "999px",
+  border: "1.5px solid var(--border)",
+  background: "var(--surface2)",
+  color: "var(--text-muted)",
+  cursor: "pointer",
+};
+
+const filterPillActive: CSSProperties = {
+  ...filterPill,
+  borderColor: "var(--accent)",
+  background: "var(--accent-light)",
+  color: "var(--accent)",
+  fontWeight: 600,
 };
 
 const rowGrid: CSSProperties = {

@@ -112,6 +112,22 @@ def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
     try:
         set_current_user(conn.cursor(), effective_user_id)
         conn.commit()
+    except psycopg2.OperationalError:
+        # ai: claude-sonnet-5 | 2026-10-13
+        # A pooled connection (see backend/db/connection.py) can go stale while
+        # idle between requests -- e.g. Neon suspends its compute after a few
+        # minutes with no activity and drops every connection sitting in the
+        # pool. Reconnect and retry once before falling back to the
+        # log-and-continue behavior below, so the common case (first request
+        # after the user has been away) doesn't silently lose its RLS identity
+        # on an otherwise-healthy connection.
+        conn.reconnect()
+        try:
+            set_current_user(conn.cursor(), effective_user_id)
+            conn.commit()
+        except psycopg2.Error as exc:
+            logger.warning("Could not set the row-level-security identity: %s", exc)
+            conn.rollback()
     except psycopg2.Error as exc:
         logger.warning("Could not set the row-level-security identity: %s", exc)
         conn.rollback()
