@@ -146,8 +146,7 @@ def main() -> None:
                 # forever. See post_repair_duplicate_check's docstring.
                 updated_job = repos["jobs"].get_by_id(_USER_ID, job_id)
                 if updated_job:
-                    all_jobs = repos["jobs"].get_all_ordered(_USER_ID)
-                    if post_repair_duplicate_check(_USER_ID, repos["jobs"], updated_job, all_jobs):
+                    if post_repair_duplicate_check(_USER_ID, repos["jobs"], updated_job):
                         repos["conn"].commit()
             repaired += 1
 

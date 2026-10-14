@@ -66,9 +66,8 @@ def test_match_does_not_overwrite_applied_status(pg_dsn: str) -> None:
         # A stale snapshot (as if read before the user applied) still says
         # status="applied" here too -- either way, the real row must win.
         fixed_job = repo.get_by_id(user_id, fixed_job_id)
-        all_jobs = repo.get_all_ordered(user_id)
 
-        found = post_repair_duplicate_check(user_id, repo, fixed_job, all_jobs)
+        found = post_repair_duplicate_check(user_id, repo, fixed_job)
 
         assert found is True
         updated = repo.get_by_id(user_id, fixed_job_id)
@@ -94,9 +93,8 @@ def test_match_sets_possible_duplicate_when_unacted(pg_dsn: str) -> None:
         conn.commit()
 
         fixed_job = repo.get_by_id(user_id, fixed_job_id)
-        all_jobs = repo.get_all_ordered(user_id)
 
-        found = post_repair_duplicate_check(user_id, repo, fixed_job, all_jobs)
+        found = post_repair_duplicate_check(user_id, repo, fixed_job)
 
         assert found is True
         updated = repo.get_by_id(user_id, fixed_job_id)
@@ -124,12 +122,11 @@ def test_match_does_not_overwrite_a_concurrent_apply(pg_dsn: str) -> None:
 
         # Stale snapshot taken before the concurrent apply below.
         fixed_job = repo.get_by_id(user_id, fixed_job_id)
-        all_jobs = repo.get_all_ordered(user_id)
 
         repo.update(user_id, fixed_job_id, {"status": "applied"})
         conn.commit()
 
-        found = post_repair_duplicate_check(user_id, repo, fixed_job, all_jobs)
+        found = post_repair_duplicate_check(user_id, repo, fixed_job)
 
         assert found is True
         updated = repo.get_by_id(user_id, fixed_job_id)

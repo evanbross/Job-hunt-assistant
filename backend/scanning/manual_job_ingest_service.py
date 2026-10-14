@@ -77,6 +77,9 @@ class IJobRepository(Protocol):
     def get_not_a_fit_with_feedback(
         self, user_id: int, limit: int = 20
     ) -> list[dict[str, Any]]: ...
+    def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]: ...
+    # ai: claude-sonnet-5 | 2026-10-14
+    def lock_for_duplicate_check(self, user_id: int) -> None: ...
 
 
 @runtime_checkable
@@ -326,13 +329,6 @@ class ManualJobIngestService:
                 "Enter a company name or job title when the parser cannot extract them."
             )
 
-        # ai: claude-sonnet-4-6 | 2026-06-09
-        duplicate_hint, duplicate_of_id = self._duplicate_hint_for(
-            job_title=job_title,
-            company=company,
-            sheet_jobs=sheet_jobs or [],
-        )
-
         score_result = self._scorer.score(
             job_title=job_title,
             company=company,
@@ -342,6 +338,29 @@ class ManualJobIngestService:
             fit_feedback=self._jobs_repo.get_not_a_fit_with_feedback(self._user_id),
         )
         fit_score = score_result["score"]
+
+        # ai: claude-sonnet-5 | 2026-10-14
+        # Decide the duplicate match last, immediately before the insert,
+        # under a per-user advisory lock -- never across the slow parser/
+        # JD-fetch/scoring work above (see lock_for_duplicate_check's
+        # docstring). `sheet_jobs` (the caller's own snapshot, taken before
+        # that slow work) is still honored, but a live read is always folded
+        # in too: that snapshot can be stale by the time we get here, whether
+        # from this method's own slow work or from a sibling Celery import
+        # batch / sequential repair-loop iteration (routes/import_.py's
+        # fix_unknown_companies) committing a duplicate in the meantime.
+        # Confirmed on jobs 5563/5582: two identical "Senior Software
+        # Engineer" / "Clover Health" Jobgether captures that never saw each
+        # other (or an older matching job) because of this exact staleness.
+        self._jobs_repo.lock_for_duplicate_check(self._user_id)
+        live_sheet_jobs = list(sheet_jobs or []) + self._jobs_repo.get_all_ordered(
+            self._user_id
+        )
+        duplicate_hint, duplicate_of_id = self._duplicate_hint_for(
+            job_title=job_title,
+            company=company,
+            sheet_jobs=live_sheet_jobs,
+        )
 
         status = "possible_duplicate"
         if not duplicate_hint:

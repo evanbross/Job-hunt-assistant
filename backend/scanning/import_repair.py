@@ -82,6 +82,9 @@ class JobUpdater(Protocol):
         fields: dict[str, Any],
         excluded_statuses: Collection[str],
     ) -> dict[str, Any] | None: ...
+    # ai: claude-sonnet-5 | 2026-10-14
+    def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]: ...
+    def lock_for_duplicate_check(self, user_id: int) -> None: ...
 
 
 def is_missing_company(value: object) -> bool:
@@ -177,7 +180,6 @@ def post_repair_duplicate_check(
     user_id: int,
     jobs_repo: JobUpdater,
     fixed_job: dict[str, Any],
-    all_jobs: list[dict[str, Any]],
 ) -> bool:
     """Re-run duplicate detection for a job whose company was just repaired.
 
@@ -198,7 +200,19 @@ def post_repair_duplicate_check(
     has already acted on (applied, skipped) keeps its real status no matter
     which branch below runs, and a concurrent /apply or /skip landing between
     this function's read and write can't be clobbered either.
+
+    all_jobs is deliberately NOT a parameter: every caller here is itself a
+    loop that repairs and re-checks several jobs in sequence (or, for
+    routes/import_.py's Celery import batches, several concurrent tasks for
+    the same user), each committing individually. A list fetched once before
+    that loop goes stale the moment the loop's own first write lands, so this
+    function always takes its own live read under lock_for_duplicate_check
+    instead -- a caller-supplied snapshot would let two jobs repaired in the
+    same run miss flagging each other (confirmed on jobs 5563/5582, see
+    lock_for_duplicate_check's docstring).
     """
+    jobs_repo.lock_for_duplicate_check(user_id)
+    all_jobs = jobs_repo.get_all_ordered(user_id)
     job_id = int(fixed_job["id"])
     job_title = str(fixed_job.get("job_title") or "")
     company = str(fixed_job.get("company") or "")

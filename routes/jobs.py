@@ -433,7 +433,6 @@ def create_manual_job() -> ResponseReturnValue:
 
     try:
         with get_repos() as repos:
-            known_jobs: list[dict] = repos["jobs"].get_all_ordered(user_id)
             service = ManualJobIngestService(
                 user_id,
                 repos["jobs"],
@@ -446,7 +445,6 @@ def create_manual_job() -> ResponseReturnValue:
                 source_name=body.source_name,
                 company_override=body.company_override,
                 job_title_override=body.job_title_override,
-                sheet_jobs=known_jobs,
             )
             repos["conn"].commit()
     except ValueError as exc:
@@ -1495,9 +1493,6 @@ def _run_wttj_repair(user_id: int) -> None:
     try:
         with get_repos(user_id) as repos:
             candidates = _wttj_repair_candidates(user_id, repos)
-            # ai: claude-fable-5 | 2026-07-17 — snapshot for post-repair duplicate
-            # checks; taken once here rather than per repaired row.
-            all_jobs_snapshot = repos["jobs"].get_all_ordered(user_id)
 
         total = len(candidates)
         with _wttj_repair_lock:
@@ -1626,9 +1621,7 @@ def _run_wttj_repair(user_id: int) -> None:
                 if job.get("status") in ("pending_review", "triage"):
                     updated_job = repos["jobs"].get_by_id(user_id, int(job["id"]))
                     if updated_job:
-                        post_repair_duplicate_check(
-                            user_id, repos["jobs"], updated_job, all_jobs_snapshot
-                        )
+                        post_repair_duplicate_check(user_id, repos["jobs"], updated_job)
                         repos["conn"].commit()
 
             title_fixed.append({**summary, **fix_updates, "url": url})

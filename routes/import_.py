@@ -794,7 +794,6 @@ def fix_unknown_companies() -> ResponseReturnValue:
     jobgether_jobs: list[dict] = []
     with get_repos() as repos:
         try:
-            all_jobs = repos["jobs"].get_all_ordered(user_id)
             batch = repos["jobs"].get_with_missing_company(user_id, limit=15)
             for job in batch:
                 url = str(job.get("url") or "")
@@ -813,9 +812,7 @@ def fix_unknown_companies() -> ResponseReturnValue:
                     repos["conn"].commit()
                     updated_job = repos["jobs"].get_by_id(user_id, int(job["id"]))
                     if updated_job:
-                        post_repair_duplicate_check(
-                            user_id, repos["jobs"], updated_job, all_jobs
-                        )
+                        post_repair_duplicate_check(user_id, repos["jobs"], updated_job)
                         repos["conn"].commit()
         except Exception as exc:
             repos["conn"].rollback()
@@ -840,7 +837,6 @@ def fix_unknown_companies() -> ResponseReturnValue:
     if jobgether_updates:
         with get_repos() as repos:
             try:
-                all_jobs = repos["jobs"].get_all_ordered(user_id)
                 for job_id, updates in jobgether_updates.items():
                     # ai: claude-sonnet-5 | 2026-10-09
                     # Atomic conditional write -- closes the race flagged in the
@@ -857,9 +853,7 @@ def fix_unknown_companies() -> ResponseReturnValue:
                         continue
                     fixed += 1
                     repos["conn"].commit()
-                    post_repair_duplicate_check(
-                        user_id, repos["jobs"], updated_job, all_jobs
-                    )
+                    post_repair_duplicate_check(user_id, repos["jobs"], updated_job)
                     repos["conn"].commit()
             except Exception as exc:
                 repos["conn"].rollback()

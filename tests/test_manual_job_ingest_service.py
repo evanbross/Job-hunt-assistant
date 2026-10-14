@@ -64,6 +64,13 @@ class StubJobRepo:
         assert user_id == _TEST_USER_ID
         return []
 
+    def get_all_ordered(self, user_id: int) -> list[dict]:
+        assert user_id == _TEST_USER_ID
+        return [dict(row) for row in self.inserted]
+
+    def lock_for_duplicate_check(self, user_id: int) -> None:
+        assert user_id == _TEST_USER_ID
+
 
 class StubResumeRepo:
     def get_latest(self, user_id: int) -> dict | None:

@@ -628,6 +628,26 @@ class PostgresJobRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    # ai: claude-sonnet-5 | 2026-10-14
+    def lock_for_duplicate_check(self, user_id: int) -> None:
+        """Serialize duplicate-check-then-write sections for one user.
+
+        Acquires a transaction-scoped Postgres advisory lock keyed on
+        user_id, released automatically at the caller's next COMMIT/ROLLBACK.
+        Callers that decide a job's duplicate status (ManualJobIngestService.
+        ingest(), post_repair_duplicate_check()) must call this immediately
+        before re-reading known jobs and immediately before the insert/update
+        that acts on that read -- never across the slow JD-fetch/LLM-scoring
+        work before it. Without this, two jobs processed by concurrent Celery
+        batches (routes/import_.py's _import_batches) or by the same
+        sequential repair loop (routes/import_.py's fix_unknown_companies)
+        can each read a snapshot that doesn't yet reflect the other's write
+        and both miss flagging each other as duplicates -- confirmed on jobs
+        5563/5582, two identical "Senior Software Engineer" / "Clover Health"
+        Jobgether captures that stayed unflagged against each other.
+        """
+        self._execute("SELECT pg_advisory_xact_lock(%s)", (user_id,))
+
     def delete(self, user_id: int, job_id: int) -> None:
         self._execute("DELETE FROM jobs WHERE id = %s AND user_id = %s", (job_id, user_id))
 

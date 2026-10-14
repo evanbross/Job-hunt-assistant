@@ -544,9 +544,7 @@ def run_import_task(
                     repos["conn"].commit()
                     updated = repos["jobs"].get_by_id(user_id, int(existing_job["id"]))
                     if updated:
-                        post_repair_duplicate_check(
-                            user_id, repos["jobs"], updated, known_jobs
-                        )
+                        post_repair_duplicate_check(user_id, repos["jobs"], updated)
                         repos["conn"].commit()
                 # ai: claude-sonnet-4-6 | 2026-06-22
                 incoming_len = len(incoming_text)
