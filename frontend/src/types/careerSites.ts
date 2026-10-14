@@ -46,6 +46,9 @@ export interface CareerSite {
   detected_platform?: string | null;
   last_captured_at?: string | null;
   recapture_interval_days: number;
+  /** Resume point for Workday/generic-HTML scans whose listing is larger than
+   * one scan's _MAX_JOBS_PER_SITE page; 0 means the next scan starts over. */
+  next_scan_offset?: number;
   created_at?: string | null;
   /** Only present on GET /api/career-sites/recapture-due rows (computed column). */
   next_capture_due_at?: string | null;

@@ -98,10 +98,11 @@ class _FakeScannerReturningSameJob:
 
     _job_url = "https://example.com/jobs/shared-posting"
 
-    def scan_site(self, *, site_name: str, site_url: str) -> dict:
+    def scan_site(self, *, site_name: str, site_url: str, scan_offset: int = 0) -> dict:
         return {
             "jobs": [_make_job(self._job_url, site_name=site_name, site_url=site_url)],
             "detected_platform": "generic",
+            "next_scan_offset": 0,
         }
 
     def pop_failures(self) -> list:

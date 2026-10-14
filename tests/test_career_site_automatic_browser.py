@@ -76,7 +76,7 @@ class _ScannerThatMustNotBeCalled:
     """Fails loudly if the scan loop ever attempts a direct fetch for an
     automatic_browser source -- that would defeat the whole point of the mode."""
 
-    def scan_site(self, *, site_name: str, site_url: str) -> dict:
+    def scan_site(self, *, site_name: str, site_url: str, scan_offset: int = 0) -> dict:
         raise AssertionError(
             f"direct scan_site() must not be called for an automatic_browser "
             f"source (site_name={site_name!r})"

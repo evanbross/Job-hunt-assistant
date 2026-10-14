@@ -1522,6 +1522,19 @@ def _migrate(conn: Any) -> None:
     )
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-10-14
+    # Workday-API and generic-HTML-scrape career-site scans cap discovery at
+    # _MAX_JOBS_PER_SITE (25) per pass with no pagination, so a site with more
+    # open roles than that always re-discovered the same first 25 on every
+    # scan and never saw the rest. next_scan_offset lets each pass remember
+    # where it left off and advance through the full listing across
+    # successive scans instead of restarting at the top every time.
+    cur.execute(
+        "ALTER TABLE career_site_sources ADD COLUMN IF NOT EXISTS"
+        " next_scan_offset INTEGER NOT NULL DEFAULT 0"
+    )
+    conn.commit()
+
 
 # ai: claude-sonnet-4-6 | 2026-06-09
 _HINT_TITLE_RE = re.compile(
@@ -1898,6 +1911,7 @@ def _create_tables(conn: Any) -> None:
             detected_platform       TEXT,
             last_captured_at        TEXT,
             recapture_interval_days INTEGER DEFAULT 7,
+            next_scan_offset        INTEGER NOT NULL DEFAULT 0,
             created_at              TEXT DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
         )
         """,

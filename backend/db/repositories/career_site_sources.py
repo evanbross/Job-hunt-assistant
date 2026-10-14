@@ -55,6 +55,7 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             "detected_platform",
             "last_captured_at",
             "recapture_interval_days",
+            "next_scan_offset",
             "created_at",
         }
     )

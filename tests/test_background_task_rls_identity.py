@@ -221,8 +221,8 @@ def test_run_board_search_task_reads_only_the_calling_users_jobs(
 
 
 class _FakeCareerSiteScannerNoJobs:
-    def scan_site(self, *, site_name: str, site_url: str) -> dict:
-        return {"jobs": [], "detected_platform": "generic"}
+    def scan_site(self, *, site_name: str, site_url: str, scan_offset: int = 0) -> dict:
+        return {"jobs": [], "detected_platform": "generic", "next_scan_offset": 0}
 
 
 class _FakeFitScorerForCareerScan:

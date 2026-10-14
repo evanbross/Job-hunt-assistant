@@ -134,6 +134,13 @@ class CareerSiteScanFailure(TypedDict):
 class ScanOutcome(TypedDict):
     jobs: list[CareerSiteJob]
     detected_platform: str
+    # ai: claude-sonnet-5 | 2026-10-14
+    # Offset to resume from on the *next* scan of this site -- only
+    # meaningful for the two uncapped-discovery-but-capped-fetch adapters
+    # (_scan_workday, _scan_generic; see _MAX_JOBS_PER_SITE). 0 for every
+    # other adapter, which always returns the site's full listing in one
+    # pass and has nothing to resume.
+    next_scan_offset: int
 
 
 class _LinkParser(HTMLParser):
@@ -967,7 +974,9 @@ class CareerSiteScanner:
         self._failures.clear()
         return failures
 
-    def scan_site(self, site_name: str, site_url: str) -> ScanOutcome:
+    def scan_site(
+        self, site_name: str, site_url: str, *, scan_offset: int = 0
+    ) -> ScanOutcome:
         parsed = urlparse(site_url)
         host = parsed.netloc.lower()
 
@@ -976,6 +985,7 @@ class CareerSiteScanner:
                 return ScanOutcome(
                     jobs=[self.scan_single_job_url(site_name, site_url)],
                     detected_platform="greenhouse",
+                    next_scan_offset=0,
                 )
             except Exception as exc:
                 self._record_failure(platform="greenhouse", stage="adapter", exc=exc)
@@ -990,6 +1000,7 @@ class CareerSiteScanner:
                 return ScanOutcome(
                     jobs=self._scan_greenhouse(site_name, site_url),
                     detected_platform="greenhouse",
+                    next_scan_offset=0,
                 )
             except Exception as exc:
                 self._record_failure(platform="greenhouse", stage="adapter", exc=exc)
@@ -1007,6 +1018,7 @@ class CareerSiteScanner:
                 return ScanOutcome(
                     jobs=self._scan_lever(site_name, site_url),
                     detected_platform="lever",
+                    next_scan_offset=0,
                 )
             except Exception as exc:
                 self._record_failure(platform="lever", stage="adapter", exc=exc)
@@ -1018,6 +1030,7 @@ class CareerSiteScanner:
                 return ScanOutcome(
                     jobs=[self.scan_single_job_url(site_name, site_url)],
                     detected_platform="workday",
+                    next_scan_offset=0,
                 )
             except Exception as exc:
                 self._record_failure(platform="workday", stage="adapter", exc=exc)
@@ -1029,9 +1042,13 @@ class CareerSiteScanner:
                 )
         elif "myworkdayjobs.com" in host:
             try:
+                workday_jobs, workday_next_offset = self._scan_workday(
+                    site_name, site_url, offset=scan_offset
+                )
                 return ScanOutcome(
-                    jobs=self._scan_workday(site_name, site_url),
+                    jobs=workday_jobs,
                     detected_platform="workday",
+                    next_scan_offset=workday_next_offset,
                 )
             except Exception as exc:
                 self._record_failure(platform="workday", stage="adapter", exc=exc)
@@ -1043,6 +1060,7 @@ class CareerSiteScanner:
                 return ScanOutcome(
                     jobs=self._scan_ashby(site_name, site_url),
                     detected_platform="ashby",
+                    next_scan_offset=0,
                 )
             except Exception as exc:
                 self._record_failure(platform="ashby", stage="adapter", exc=exc)
@@ -1061,6 +1079,7 @@ class CareerSiteScanner:
                         site_name, gh_board_url, display_url=site_url
                     ),
                     detected_platform="greenhouse",
+                    next_scan_offset=0,
                 )
             except Exception as exc:
                 self._record_failure(platform="greenhouse", stage="embedded", exc=exc)
@@ -1074,10 +1093,13 @@ class CareerSiteScanner:
         # Platform-specific adapter failed (or the URL is not a known platform);
         # fall back to the generic HTML scanner.
         try:
-            generic_jobs, fallback_platform = self._scan_generic(site_name, site_url)
+            generic_jobs, fallback_platform, generic_next_offset = self._scan_generic(
+                site_name, site_url, offset=scan_offset
+            )
             return ScanOutcome(
                 jobs=generic_jobs,
                 detected_platform=fallback_platform,
+                next_scan_offset=generic_next_offset,
             )
         except Exception as exc:
             self._record_failure(platform="generic", stage="fallback", exc=exc)
@@ -1668,7 +1690,20 @@ class CareerSiteScanner:
             )
         return _unique_jobs(jobs)
 
-    def _scan_workday(self, site_name: str, site_url: str) -> list[CareerSiteJob]:
+    # ai: claude-sonnet-5 | 2026-10-14
+    def _scan_workday(
+        self, site_name: str, site_url: str, *, offset: int = 0
+    ) -> tuple[list[CareerSiteJob], int]:
+        """Fetch one page of Workday postings and report where to resume.
+
+        Workday's CXS endpoint supports limit/offset directly, so a site with
+        more open roles than _MAX_JOBS_PER_SITE is paged through across
+        successive scans (next_scan_offset, persisted on the
+        career_site_sources row) instead of this always re-fetching page one.
+        A short page (fewer postings than requested) means the end of the
+        listing was reached -- including an out-of-range offset for a board
+        that shrank since the last scan -- so the next scan wraps back to 0.
+        """
         parts = _workday_parts(site_url)
         if not parts:
             raise ValueError("Could not infer Workday tenant/site from URL")
@@ -1677,8 +1712,13 @@ class CareerSiteScanner:
         parsed = urlparse(site_url)
         base = f"{parsed.scheme}://{parsed.netloc}"
         api_url = f"{base}/wday/cxs/{tenant}/{site_slug}/jobs"
-        data = _fetch_json(api_url, payload={"limit": _MAX_JOBS_PER_SITE, "offset": 0})
+        data = _fetch_json(
+            api_url, payload={"limit": _MAX_JOBS_PER_SITE, "offset": offset}
+        )
         postings = data.get("jobPostings", [])
+        next_offset = (
+            offset + _MAX_JOBS_PER_SITE if len(postings) == _MAX_JOBS_PER_SITE else 0
+        )
 
         jobs: list[CareerSiteJob] = []
         for row in postings[:_MAX_JOBS_PER_SITE]:
@@ -1707,16 +1747,27 @@ class CareerSiteScanner:
                     confidence_score=confidence_score,
                 )
             )
-        return _unique_jobs(jobs)
+        return _unique_jobs(jobs), next_offset
 
+    # ai: claude-sonnet-5 | 2026-10-14
     def _scan_generic(
-        self, site_name: str, site_url: str
-    ) -> tuple[list[CareerSiteJob], str]:
+        self, site_name: str, site_url: str, *, offset: int = 0
+    ) -> tuple[list[CareerSiteJob], str, int]:
+        """Scrape one page's worth of job links and report where to resume.
+
+        The listing page itself is fetched in full regardless of offset (one
+        HTML page, not paginated); what's capped is how many of its
+        discovered candidate links get their detail page fetched and scored
+        in this pass. offset slides that window through the already-fully-
+        discovered candidate list, so a listing with more links than
+        _MAX_JOBS_PER_SITE is worked through across successive scans instead
+        of this always re-fetching the same first _MAX_JOBS_PER_SITE pages.
+        """
         listing_html = _fetch_html(site_url)
 
         ashby_base = _detect_embedded_ashby_base_url(listing_html)
         if ashby_base:
-            return self._scan_ashby(site_name, ashby_base), "ashby"
+            return self._scan_ashby(site_name, ashby_base), "ashby", 0
 
         parser = _LinkParser()
         parser.feed(listing_html)
@@ -1735,8 +1786,21 @@ class CareerSiteScanner:
             seen_urls.add(full_url)
             candidates.append((full_url, text))
 
+        # ai: claude-sonnet-5 | 2026-10-14
+        # The candidate list above is already the site's *full* discovered
+        # link set (cheap -- one listing-page fetch, no per-job network call
+        # yet); offset only decides which _MAX_JOBS_PER_SITE-sized window of
+        # it gets the expensive per-job detail fetch this pass. An offset
+        # past the end (e.g. the listing shrank since the last scan) wraps
+        # back to the start instead of fetching nothing this pass.
+        window_start = offset if offset < len(candidates) else 0
+        window = candidates[window_start : window_start + _MAX_JOBS_PER_SITE]
+        next_offset = (
+            window_start + len(window) if window_start + len(window) < len(candidates) else 0
+        )
+
         results: list[CareerSiteJob] = []
-        for job_url, anchor_text in candidates[:_MAX_JOBS_PER_SITE]:
+        for job_url, anchor_text in window:
             try:
                 job_html = _fetch_html(job_url)
             except Exception as exc:
@@ -1773,7 +1837,7 @@ class CareerSiteScanner:
                 )
             )
 
-        return _unique_jobs(results), "generic"
+        return _unique_jobs(results), "generic", next_offset
 
     def _scan_ashby(self, site_name: str, site_url: str) -> list[CareerSiteJob]:
         parsed = urlparse(site_url)

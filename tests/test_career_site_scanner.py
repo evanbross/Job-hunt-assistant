@@ -50,6 +50,7 @@ from backend.scanning.career_site_scanner import (
     _is_greenhouse_single_job_url,
     _is_unsupported_greenhouse_search_url,
     _is_workday_single_job_url,
+    _MAX_JOBS_PER_SITE,
     _normalize_date,
     _unique_jobs,
     _workday_job_url,
@@ -221,7 +222,7 @@ def test_unique_jobs_deduplicates_by_url() -> None:
 def test_adapter_failure_is_captured_and_falls_back() -> None:
     scanner = CareerSiteScanner()
     with patch.object(scanner, "_scan_greenhouse", side_effect=TypeError("bad parser")):
-        with patch.object(scanner, "_scan_generic", return_value=([], "generic")):
+        with patch.object(scanner, "_scan_generic", return_value=([], "generic", 0)):
             outcome = scanner.scan_site("Acme", "https://boards.greenhouse.io/acme")
 
     assert outcome["jobs"] == []
@@ -251,7 +252,7 @@ def test_greenhouse_search_url_skips_board_adapter_failure() -> None:
 def test_pop_failures_clears_internal_buffer() -> None:
     scanner = CareerSiteScanner()
     with patch.object(scanner, "_scan_greenhouse", side_effect=RuntimeError("boom")):
-        with patch.object(scanner, "_scan_generic", return_value=([], "generic")):
+        with patch.object(scanner, "_scan_generic", return_value=([], "generic", 0)):
             scanner.scan_site("Acme", "https://boards.greenhouse.io/acme")
 
     assert len(scanner.pop_failures()) == 1
@@ -533,6 +534,106 @@ def test_workday_single_job_from_api_strips_html_content() -> None:
     assert job["posted_at"] == "2026-05-15"
 
 
+# ai: claude-sonnet-5 | 2026-10-14
+def _workday_posting(n: int) -> dict:
+    return {
+        "externalPath": f"/job/Role-{n}_JR{n}",
+        "title": f"Role {n}",
+        "bulletFields": [],
+        "postedOn": None,
+    }
+
+
+# ai: claude-sonnet-5 | 2026-10-14
+def test_scan_workday_advances_offset_on_a_full_page() -> None:
+    """A full page (postings == _MAX_JOBS_PER_SITE) means there may be more
+    beyond it, so the next scan should resume right after this page."""
+    scanner = CareerSiteScanner()
+    api_response = {
+        "jobPostings": [_workday_posting(n) for n in range(_MAX_JOBS_PER_SITE)]
+    }
+    with patch(
+        "backend.scanning.career_site_scanner._fetch_json", return_value=api_response
+    ) as fetch_json:
+        jobs, next_offset = scanner._scan_workday(
+            "Acme", "https://acme.wd1.myworkdayjobs.com/External", offset=50
+        )
+
+    assert len(jobs) == _MAX_JOBS_PER_SITE
+    assert next_offset == 50 + _MAX_JOBS_PER_SITE
+    _, kwargs = fetch_json.call_args
+    assert kwargs["payload"] == {"limit": _MAX_JOBS_PER_SITE, "offset": 50}
+
+
+# ai: claude-sonnet-5 | 2026-10-14
+def test_scan_workday_wraps_offset_on_a_short_page() -> None:
+    """Fewer postings than requested means the end of the listing was
+    reached (including an offset that overran a board that shrank), so the
+    next scan should wrap back to the start instead of fetching nothing."""
+    scanner = CareerSiteScanner()
+    api_response = {"jobPostings": [_workday_posting(1)]}
+    with patch(
+        "backend.scanning.career_site_scanner._fetch_json", return_value=api_response
+    ):
+        jobs, next_offset = scanner._scan_workday(
+            "Acme", "https://acme.wd1.myworkdayjobs.com/External", offset=75
+        )
+
+    assert len(jobs) == 1
+    assert next_offset == 0
+
+
+# ai: claude-sonnet-5 | 2026-10-14
+_GENERIC_LISTING_HTML = "".join(
+    f'<a href="/jobs/{n}">Role {n}</a>' for n in range(_MAX_JOBS_PER_SITE + 5)
+)
+_GENERIC_JOB_DETAIL_HTML = "<html><body><h1>Role</h1><p>Description text.</p></body></html>"
+
+
+def _generic_fetch_html_side_effect(url: str) -> str:
+    return _GENERIC_LISTING_HTML if url.endswith("/careers") else _GENERIC_JOB_DETAIL_HTML
+
+
+# ai: claude-sonnet-5 | 2026-10-14
+def test_scan_generic_windows_candidates_by_offset() -> None:
+    """The listing page is discovered in full every time (cheap); offset only
+    slides which _MAX_JOBS_PER_SITE-sized slice of already-discovered
+    candidates gets the expensive per-job detail fetch this pass."""
+    scanner = CareerSiteScanner()
+    with patch(
+        "backend.scanning.career_site_scanner._fetch_html",
+        side_effect=_generic_fetch_html_side_effect,
+    ):
+        jobs, platform, next_offset = scanner._scan_generic(
+            "Acme", "https://acme.example.com/careers", offset=_MAX_JOBS_PER_SITE
+        )
+
+    assert platform == "generic"
+    assert len(jobs) == 5  # only 5 candidates remain past the first _MAX_JOBS_PER_SITE
+    assert {job["job_url"] for job in jobs} == {
+        f"https://acme.example.com/jobs/{n}"
+        for n in range(_MAX_JOBS_PER_SITE, _MAX_JOBS_PER_SITE + 5)
+    }
+    assert next_offset == 0  # reached the end of the candidate list
+
+
+# ai: claude-sonnet-5 | 2026-10-14
+def test_scan_generic_wraps_offset_past_end_of_shrunk_candidate_list() -> None:
+    """An offset beyond the (now smaller) candidate list wraps to the start
+    instead of returning nothing for this pass."""
+    scanner = CareerSiteScanner()
+    with patch(
+        "backend.scanning.career_site_scanner._fetch_html",
+        side_effect=_generic_fetch_html_side_effect,
+    ):
+        jobs, _platform, next_offset = scanner._scan_generic(
+            "Acme", "https://acme.example.com/careers", offset=9999
+        )
+
+    assert len(jobs) == _MAX_JOBS_PER_SITE
+    assert next_offset == _MAX_JOBS_PER_SITE
+
+
 # ai: claude-sonnet-4-6 | 2026-06-14
 def test_scan_single_job_url_uses_workday_api_for_single_job_url() -> None:
     scanner = CareerSiteScanner()
@@ -578,6 +679,24 @@ def test_scan_site_uses_single_greenhouse_job_adapter() -> None:
     single_scan.assert_called_once()
     assert outcome["detected_platform"] == "greenhouse"
     assert outcome["jobs"] == [expected_job]
+    # A single-job adapter always returns everything there is; nothing to resume.
+    assert outcome["next_scan_offset"] == 0
+
+
+# ai: claude-sonnet-5 | 2026-10-14
+def test_scan_site_threads_scan_offset_into_workday_listing_adapter() -> None:
+    scanner = CareerSiteScanner()
+    with patch.object(
+        scanner, "_scan_workday", return_value=([], 150)
+    ) as workday_scan:
+        outcome = scanner.scan_site(
+            "Acme",
+            "https://acme.wd1.myworkdayjobs.com/External",
+            scan_offset=100,
+        )
+
+    workday_scan.assert_called_once_with("Acme", "https://acme.wd1.myworkdayjobs.com/External", offset=100)
+    assert outcome["next_scan_offset"] == 150
 
 
 # ai: claude-sonnet-5 | 2026-08-02

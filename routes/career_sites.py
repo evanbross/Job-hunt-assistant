@@ -665,7 +665,9 @@ def run_career_site_scan_task(
             # ── Scan this site (network only — no DB connection held) ────────────
             try:
                 outcome = scanner.scan_site(
-                    site_name=source_name, site_url=source_url
+                    site_name=source_name,
+                    site_url=source_url,
+                    scan_offset=int(source.get("next_scan_offset") or 0),
                 )
                 jobs = outcome["jobs"]
                 detected_platform = outcome["detected_platform"]
@@ -708,7 +710,16 @@ def run_career_site_scan_task(
             # ── Persist scan-only metadata (fast DB writes, nothing slow) ─────────
             with get_repos(user_id) as repos:
                 repos["career_sites"].update(
-                    user_id, current_source_id, {"detected_platform": detected_platform}
+                    user_id,
+                    current_source_id,
+                    {
+                        "detected_platform": detected_platform,
+                        # ai: claude-sonnet-5 | 2026-10-14 -- resume point for the
+                        # next scan of a site whose listing is larger than one
+                        # scan's _MAX_JOBS_PER_SITE page (Workday/generic only;
+                        # see ScanOutcome.next_scan_offset).
+                        "next_scan_offset": outcome["next_scan_offset"],
+                    },
                 )
                 repos["conn"].commit()
 
