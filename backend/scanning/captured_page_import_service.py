@@ -43,7 +43,10 @@ from html.parser import HTMLParser
 from typing import NotRequired, TypedDict
 from urllib.parse import ParseResult, parse_qs, urlencode, urljoin, urlparse
 
-from backend.scanning.career_site_scanner import workday_title_with_req_id
+from backend.scanning.career_site_scanner import (
+    is_job_board_url,
+    workday_title_with_req_id,
+)
 from backend.utils.company_urls import company_from_career_domain
 
 
@@ -341,6 +344,13 @@ class CapturedPageImportService:
                 if platform == "Wellfound"
                 else str(raw_job.get("company") or "").strip()
             )
+            # ai: claude-opus-5-5 | 2026-10-13
+            # A board root with nothing captured is a page that didn't render
+            # (job 6307: Shipt's bot-blocked Workday board came through as a
+            # title-less "job" via content.js's generic page fallback), not a
+            # posting. A titled row is kept: the user explicitly picked it.
+            if not job_title and is_job_board_url(public_url):
+                continue
             if not company and platform == "Wellfound":
                 company = self._company_from_wellfound_text(job_title, listing_text)
             if company:

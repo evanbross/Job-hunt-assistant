@@ -35,7 +35,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -43,7 +42,11 @@ from typing import Any, Protocol, runtime_checkable
 
 from backend.db.job_columns import JobColumns
 from backend.email.email_parser import EmailParser, ParsedJob
-from backend.scanning.career_site_scanner import CareerSiteScanner
+from backend.scanning.career_site_scanner import (
+    UNTITLED_JOB_TITLE,
+    CareerSiteScanner,
+    split_linkedin_page_title,
+)
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.job_validator import (
@@ -240,7 +243,7 @@ class ManualJobIngestService:
                     if is_linkedin_job:
                         if fetched_company:
                             parsed["company"] = fetched_company
-                        if fetched_title:
+                        if fetched_title and fetched_title != UNTITLED_JOB_TITLE:  # ai: claude-opus-5-5 | 2026-10-13
                             parsed["job_title"] = fetched_title
                     else:
                         # ai: claude-sonnet-4-6 | 2026-06-27
@@ -483,16 +486,10 @@ class ManualJobIngestService:
     def _company_and_title_from_fetched(
         source_url: str, page_title: str
     ) -> tuple[str, str]:
-        """For aggregator boards like LinkedIn, parse 'Title at Company | Site' page titles."""
+        """For aggregator boards like LinkedIn, split company out of the page title."""
         if "linkedin.com" not in source_url.lower():
             return "", page_title
-        clean = re.sub(
-            r"\s*\|\s*LinkedIn\s*$", "", page_title, flags=re.IGNORECASE
-        ).strip()
-        match = re.search(r"^(.+?)\s+at\s+(.+)$", clean)
-        if match:
-            return match.group(2).strip(), match.group(1).strip()
-        return "", clean
+        return split_linkedin_page_title(page_title)  # ai: claude-opus-5-5 | 2026-10-13
 
     @staticmethod
     def _is_manual_source(source: str) -> bool:

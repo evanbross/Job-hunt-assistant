@@ -34,6 +34,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from backend.scanning.captured_page_import_service import CapturedPageImportService
@@ -430,3 +432,41 @@ def test_rejects_empty_content() -> None:
 
     with pytest.raises(ValueError, match="Captured page content is required"):
         service.extract_public_job_urls("   ", "html")
+
+
+# ai: claude-opus-5-5 | 2026-10-13
+def test_json_capture_drops_titleless_board_root_row() -> None:
+    """Job 6307: Shipt's bot-blocked Workday board rendered nothing, and
+    content.js's generic page fallback submitted the board URL itself as a
+    title-less job. A board root with no title isn't a posting."""
+    board_url = (
+        "https://shipt.wd1.myworkdayjobs.com/Shipt_External"
+        "?locations=4bd7499177ed0171dd975e5b97008721"
+    )
+    payload = json.dumps(
+        {
+            "jobs": [
+                {
+                    "url": board_url,
+                    "job_title": "",
+                    "company": "",
+                    "listing_text": f"URL: {board_url}",
+                }
+            ],
+            "source": {"url": board_url},
+        }
+    )
+
+    analysis = CapturedPageImportService().analyze_capture(payload, "json")
+
+    assert analysis["urls"] == []
+
+
+def test_json_capture_keeps_titleless_single_job_row() -> None:
+    """A title-less single-job URL is still kept: the backend re-fetches its JD."""
+    job_url = "https://acme.wd1.myworkdayjobs.com/en-US/External/job/Remote/Engineer_JR123"
+    payload = json.dumps({"jobs": [{"url": job_url, "job_title": "", "listing_text": ""}]})
+
+    analysis = CapturedPageImportService().analyze_capture(payload, "json")
+
+    assert [row["url"] for row in analysis["urls"]] == [job_url]

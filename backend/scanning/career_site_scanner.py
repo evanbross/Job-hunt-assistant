@@ -228,6 +228,10 @@ def _html_to_text(html: str) -> str:
     return _clean_text(" ".join(parser.text_chunks))
 
 
+# ai: claude-opus-5-5 | 2026-10-13 — placeholder title for a page with no
+# parseable title; callers that trust a fetched title must skip this value.
+UNTITLED_JOB_TITLE = "Untitled Job"
+
 # ai: claude-sonnet-5 | 2026-08-03
 # The guest jobs API returns an HTML *fragment* (no <html>/<head>/<title>), so
 # _TextParser's title_chunks (fed by a literal <title> tag) is always empty
@@ -690,7 +694,7 @@ def _is_unsupported_greenhouse_search_url(parsed: ParseResult) -> bool:
 def is_job_board_url(url: str) -> bool:
     """Return True if url points to a job-board listing page rather than a single job.
 
-    Covers Greenhouse boards, Lever boards, and Ashby boards. Returns False for
+    Covers Greenhouse, Lever, Ashby, and Workday boards. Returns False for
     unknown platforms so callers treat unrecognized URLs as potential single jobs.
     """
     if not url:
@@ -715,6 +719,17 @@ def is_job_board_url(url: str) -> bool:
         # Board: jobs.ashbyhq.com/<board>  — one segment and no jobId query param
         return len(segments) <= 1 and not has_job_id
 
+    # ai: claude-opus-5-5 | 2026-10-13
+    # Board: <tenant>.wdN.myworkdayjobs.com/[<locale>/]<site> — job 6307 was the
+    # Shipt board root stored as a "job" because this returned False for it.
+    if "myworkdayjobs.com" in host:
+        site_segments = [
+            s
+            for s in parsed.path.split("/")
+            if s and not re.match(r"^[a-z]{2}-[A-Z]{2}$", s)
+        ]
+        return len(site_segments) == 1 and not _is_workday_single_job_url(parsed)
+
     return False
 
 
@@ -727,6 +742,43 @@ def _linkedin_job_id(parsed: ParseResult) -> str | None:
         return None
     m = _LINKEDIN_JOB_ID_RE.search(parsed.path)
     return m.group(1) if m else None
+
+
+_LINKEDIN_TITLE_SUFFIX_RE = re.compile(r"\s*\|\s*LinkedIn\s*$", re.IGNORECASE)
+
+
+# ai: claude-opus-5-5 | 2026-10-13
+def split_linkedin_page_title(page_title: str) -> tuple[str, str]:
+    """Split a LinkedIn public-page <title> into (company, job_title).
+
+    The guest jobs API fragment carries title/company in dedicated elements,
+    but when that API call fails (it's rate-limited) scan_single_job_url falls
+    back to the public /jobs/view page, whose only title source is a <title>
+    in one of two formats:
+      "Senior Engineer at Acme | LinkedIn"
+      "Acme hiring Senior Engineer in United States | LinkedIn"
+    Job 6384 (2026-10-13) stored job_title="Airbnb" after that fallback
+    returned the second format unparsed.
+
+    Only a title still carrying the "| LinkedIn" suffix is split: a clean
+    guest-API title such as "Software Engineer, Data at Scale" is returned
+    unchanged as ("", title), which also makes a second call a no-op.
+    """
+    clean, suffix_count = _LINKEDIN_TITLE_SUFFIX_RE.subn("", page_title)
+    clean = clean.strip()
+    if not suffix_count:
+        return "", clean
+    if " hiring " in clean:
+        company, _, rest = clean.partition(" hiring ")
+        # Location is always last; split on the *last* " in " so a title like
+        # "Engineer in Test" keeps its own " in ".
+        job_title = rest.rpartition(" in ")[0].strip() or rest.strip()
+        if company.strip() and job_title:
+            return company.strip(), job_title
+    at_match = re.search(r"^(.+?)\s+at\s+(.+)$", clean)
+    if at_match:
+        return at_match.group(2).strip(), at_match.group(1).strip()
+    return "", clean
 
 
 def _workday_parts(site_url: str) -> tuple[str, str] | None:
@@ -852,7 +904,7 @@ def validate_extraction(job: CareerSiteJob) -> ExtractionCheck:
     check alerts on (see COMMON_CODING_STANDARDS.md's Single Source of Truth).
     """
     title = (job.get("job_title") or "").strip()
-    if not title or title == "Untitled Job":
+    if not title or title == UNTITLED_JOB_TITLE:
         return ExtractionCheck(ok=False, reason=f"no real title extracted ({title!r})")
 
     text = (job.get("job_text") or "").strip()
@@ -883,7 +935,7 @@ def validate_board_scan(outcome: ScanOutcome) -> ExtractionCheck:
         return ExtractionCheck(ok=False, reason="no jobs found on board")
 
     real_titles = [
-        j for j in jobs if (j.get("job_title") or "").strip() not in ("", "Untitled Job")
+        j for j in jobs if (j.get("job_title") or "").strip() not in ("", UNTITLED_JOB_TITLE)
     ]
     if not real_titles:
         return ExtractionCheck(ok=False, reason="no job on the board has a real title")
@@ -1287,6 +1339,16 @@ class CareerSiteScanner:
 
         logger.info("scan_single_job_url: parsing HTML with generic detail-page parser")
         result = self._job_from_detail_page(site_name, final_url, page_html)
+        # ai: claude-opus-5-5 | 2026-10-13
+        # Reached for LinkedIn only when the guest API failed above — the
+        # public page's <title> packs company and title into one string.
+        if job_id or _linkedin_job_id(urlparse(final_url)):
+            fallback_company, fallback_title = split_linkedin_page_title(
+                result["job_title"]
+            )
+            result["job_title"] = fallback_title[:300]
+            if fallback_company:
+                result["company"] = fallback_company
         logger.info(
             "scan_single_job_url: completed in %.1fs total, job_text length=%d",
             time.monotonic() - t0,
@@ -1302,7 +1364,7 @@ class CareerSiteScanner:
         *,
         company: str | None = None,
     ) -> CareerSiteJob:
-        title = _clean_text(str(posting.get("title") or "")) or "Untitled Job"
+        title = _clean_text(str(posting.get("title") or "")) or UNTITLED_JOB_TITLE
         department = _clean_text(
             str(
                 posting.get("departmentExternalName")
@@ -1375,7 +1437,7 @@ class CareerSiteScanner:
         page_title = (
             (_clean_text(title_match.group(1)) if title_match else "")
             or _clean_text(" ".join(details.title_chunks))
-            or "Untitled Job"
+            or UNTITLED_JOB_TITLE
         )
         company_match = _LINKEDIN_GUEST_COMPANY_RE.search(page_html)
         company = _clean_text(company_match.group(1)) if company_match else ""
@@ -1445,7 +1507,7 @@ class CareerSiteScanner:
         data = _fetch_json(api_url, verify_ssl=verify_ssl)
         info = data.get("jobPostingInfo", {})
         title = workday_title_with_req_id(
-            _clean_text(str(info.get("title", ""))) or "Untitled Job", job_url
+            _clean_text(str(info.get("title", ""))) or UNTITLED_JOB_TITLE, job_url
         )
         location = _clean_text(str(info.get("location", "")))
         description = _html_to_text(str(info.get("jobDescription", "")))
@@ -1472,7 +1534,7 @@ class CareerSiteScanner:
         data = _fetch_json(
             f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{job_id}"
         )
-        title = _clean_text(data.get("title", "")) or "Untitled Job"
+        title = _clean_text(data.get("title", "")) or UNTITLED_JOB_TITLE
         company = _clean_text((data.get("company") or {}).get("name", "")) or token
         content = _html_to_text(data.get("content", ""))
         location = _clean_text((data.get("location") or {}).get("name", ""))
@@ -1522,7 +1584,7 @@ class CareerSiteScanner:
                 CareerSiteJob(
                     site_name=site_name,
                     site_url=stored_url,
-                    job_title=title[:300] or "Untitled Job",
+                    job_title=title[:300] or UNTITLED_JOB_TITLE,
                     job_url=job_url,
                     job_text=text[:8000],
                     posted_at=_normalize_date(
@@ -1540,7 +1602,7 @@ class CareerSiteScanner:
         details = _TextParser()
         details.feed(page_html)
 
-        page_title = _clean_text(" ".join(details.title_chunks)) or "Untitled Job"
+        page_title = _clean_text(" ".join(details.title_chunks)) or UNTITLED_JOB_TITLE
         page_text = _clean_text(" ".join(details.text_chunks))
         if not page_text:
             raise ValueError("No job text found on page")
@@ -1596,7 +1658,7 @@ class CareerSiteScanner:
                 CareerSiteJob(
                     site_name=site_name,
                     site_url=site_url,
-                    job_title=title[:300] or "Untitled Job",
+                    job_title=title[:300] or UNTITLED_JOB_TITLE,
                     job_url=job_url,
                     job_text=text[:8000],
                     posted_at=posted_at,
@@ -1623,7 +1685,7 @@ class CareerSiteScanner:
             external_path = str(row.get("externalPath", "")).strip()
             job_url = _workday_job_url(site_url, external_path)
             title = workday_title_with_req_id(
-                _clean_text(row.get("title", "")) or "Untitled Job", job_url
+                _clean_text(row.get("title", "")) or UNTITLED_JOB_TITLE, job_url
             )
             bullet_fields = row.get("bulletFields", [])
             metadata = " ".join(
@@ -1687,9 +1749,9 @@ class CareerSiteScanner:
             page_title = _clean_text(" ".join(details.title_chunks))
             anchor_title = _clean_text(anchor_text)
             if _is_generic_anchor(anchor_title):
-                job_title = page_title or anchor_title or "Untitled Job"
+                job_title = page_title or anchor_title or UNTITLED_JOB_TITLE
             else:
-                job_title = anchor_title or page_title or "Untitled Job"
+                job_title = anchor_title or page_title or UNTITLED_JOB_TITLE
 
             page_text = _clean_text(" ".join(details.text_chunks))
             if not page_text:

@@ -52,7 +52,13 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
-from backend.scanning.import_repair import repair_linkedin_company
+import pytest
+
+from backend.scanning.career_site_scanner import split_linkedin_page_title
+from backend.scanning.import_repair import (
+    apply_linkedin_repair,
+    repair_linkedin_company,
+)
 
 _USER_ID = 1
 _URL = "https://www.linkedin.com/jobs/view/4463769316/"
@@ -85,7 +91,11 @@ def test_repair_linkedin_company_corrects_wrong_but_present_company() -> None:
     (the location/workplace badge content.js mis-captured) must be corrected
     from the guest API's fetch, not left alone because it's "already set"."""
     jobs_repo = FakeJobUpdater()
-    existing_job = {"id": 6310, "company": "United States (Remote)"}
+    existing_job = {
+        "id": 6310,
+        "company": "United States (Remote)",
+        "job_title": "Staff Software Engineer",
+    }
     with patch(
         "backend.scanning.import_repair.CareerSiteScanner"
     ) as MockScanner:
@@ -100,7 +110,7 @@ def test_repair_linkedin_company_corrects_wrong_but_present_company() -> None:
 
 def test_repair_linkedin_company_fills_missing_company() -> None:
     jobs_repo = FakeJobUpdater()
-    existing_job = {"id": 1, "company": ""}
+    existing_job = {"id": 1, "company": "", "job_title": "Staff Software Engineer"}
     with patch("backend.scanning.import_repair.CareerSiteScanner") as MockScanner:
         MockScanner.return_value.scan_single_job_url.return_value = _fetched(
             company="Acme"
@@ -115,7 +125,7 @@ def test_repair_linkedin_company_noop_when_fetched_matches_existing() -> None:
     """A re-scan that confirms the stored company is already right must not
     churn the row (and must not be reported as a repair)."""
     jobs_repo = FakeJobUpdater()
-    existing_job = {"id": 2, "company": "Symetra"}
+    existing_job = {"id": 2, "company": "Symetra", "job_title": "Staff Software Engineer"}
     with patch("backend.scanning.import_repair.CareerSiteScanner") as MockScanner:
         MockScanner.return_value.scan_single_job_url.return_value = _fetched(
             company="Symetra"
@@ -130,7 +140,7 @@ def test_repair_linkedin_company_noop_on_fuzzy_match() -> None:
     """A re-cased or lightly-reformatted spelling of the same company must not
     be treated as a mismatch needing a correction."""
     jobs_repo = FakeJobUpdater()
-    existing_job = {"id": 3, "company": "acme corp"}
+    existing_job = {"id": 3, "company": "acme corp", "job_title": "Staff Software Engineer"}
     with patch("backend.scanning.import_repair.CareerSiteScanner") as MockScanner:
         MockScanner.return_value.scan_single_job_url.return_value = _fetched(
             company="Acme Corp"
@@ -148,7 +158,7 @@ def test_repair_linkedin_company_falls_back_to_title_parsing_when_guest_api_has_
     a job with no stored company must still fall back to the legacy
     title-parsing heuristics rather than giving up."""
     jobs_repo = FakeJobUpdater()
-    existing_job = {"id": 4, "company": ""}
+    existing_job = {"id": 4, "company": "", "job_title": "Backend Engineer"}
     with patch("backend.scanning.import_repair.CareerSiteScanner") as MockScanner:
         MockScanner.return_value.scan_single_job_url.return_value = _fetched(
             company="", job_title="Backend Engineer at Acme | LinkedIn"
@@ -168,3 +178,106 @@ def test_repair_linkedin_company_returns_false_on_fetch_failure() -> None:
 
     assert result is False
     assert jobs_repo.updates == []
+
+
+# ai: claude-opus-5-5 | 2026-10-13
+def test_apply_linkedin_repair_corrects_title_that_echoes_company() -> None:
+    """Job 6384: content.js's shifted LinkedIn DOM capture stored
+    job_title="Airbnb" (the company). A rescan must restore the real title."""
+    jobs_repo = FakeJobUpdater()
+    existing_job = {"id": 6384, "company": "Airbnb", "job_title": "Airbnb"}
+
+    result = apply_linkedin_repair(
+        _USER_ID,
+        jobs_repo,
+        existing_job,
+        _fetched(company="Airbnb", job_title="Senior Staff Software Engineer, Guest & Host"),
+    )
+
+    assert result is True
+    assert jobs_repo.updates == [
+        (_USER_ID, 6384, {"job_title": "Senior Staff Software Engineer, Guest & Host"})
+    ]
+
+
+def test_apply_linkedin_repair_leaves_a_real_title_alone() -> None:
+    """Only a blank or company-echo title is corrected, so a title the user
+    edited by hand survives every rescan."""
+    jobs_repo = FakeJobUpdater()
+    existing_job = {"id": 7, "company": "Airbnb", "job_title": "Staff Eng (edited)"}
+
+    result = apply_linkedin_repair(
+        _USER_ID,
+        jobs_repo,
+        existing_job,
+        _fetched(company="Airbnb", job_title="Senior Staff Software Engineer"),
+    )
+
+    assert result is False
+    assert jobs_repo.updates == []
+
+
+def test_apply_linkedin_repair_never_writes_the_untitled_placeholder() -> None:
+    jobs_repo = FakeJobUpdater()
+    existing_job = {"id": 8, "company": "Airbnb", "job_title": ""}
+
+    result = apply_linkedin_repair(
+        _USER_ID, jobs_repo, existing_job, _fetched(company="Airbnb", job_title="Untitled Job")
+    )
+
+    assert result is False
+    assert jobs_repo.updates == []
+
+
+def test_apply_linkedin_repair_splits_hiring_format_fallback_title() -> None:
+    """The public-page fallback <title> format seen on job 6384 when the
+    guest API call failed."""
+    jobs_repo = FakeJobUpdater()
+    existing_job = {"id": 9, "company": "United States (Remote)", "job_title": "Airbnb"}
+
+    result = apply_linkedin_repair(
+        _USER_ID,
+        jobs_repo,
+        existing_job,
+        _fetched(
+            company="",
+            job_title=(
+                "Airbnb hiring Senior Staff Software Engineer, Guest & Host "
+                "in United States | LinkedIn"
+            ),
+        ),
+    )
+
+    assert result is True
+    assert jobs_repo.updates == [
+        (
+            _USER_ID,
+            9,
+            {
+                "company": "Airbnb",
+                "job_title": "Senior Staff Software Engineer, Guest & Host",
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("page_title", "expected"),
+    [
+        (
+            "Acme hiring Senior Engineer in Seattle, WA | LinkedIn",
+            ("Acme", "Senior Engineer"),
+        ),
+        (
+            "Acme hiring Software Engineer in Test in United States | LinkedIn",
+            ("Acme", "Software Engineer in Test"),
+        ),
+        ("Acme hiring Senior Engineer | LinkedIn", ("Acme", "Senior Engineer")),
+        ("Backend Engineer at Acme | LinkedIn", ("Acme", "Backend Engineer")),
+        # A clean guest-API title has no suffix and must never be split.
+        ("Software Engineer, Data at Scale", ("", "Software Engineer, Data at Scale")),
+        ("Staff Engineer | LinkedIn", ("", "Staff Engineer")),
+    ],
+)
+def test_split_linkedin_page_title(page_title: str, expected: tuple[str, str]) -> None:
+    assert split_linkedin_page_title(page_title) == expected

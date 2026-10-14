@@ -141,6 +141,9 @@ def test_greenhouse_single_job_parts_rejects_search_path() -> None:
         "https://boards.greenhouse.io/embed/job_board?for=acme",
         "https://jobs.lever.co/acme",
         "https://jobs.ashbyhq.com/acme",
+        # ai: claude-opus-5-5 | 2026-10-13 — job 6307's Shipt board root
+        "https://shipt.wd1.myworkdayjobs.com/Shipt_External?locations=4bd7&timeType=aecc",
+        "https://acme.wd5.myworkdayjobs.com/en-US/External",
     ],
 )
 def test_is_job_board_url_accepts_board_listings(url: str) -> None:
@@ -160,6 +163,8 @@ def test_is_job_board_url_accepts_board_listings(url: str) -> None:
         "https://jobs.ashbyhq.com/acme/9b1a2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
         "https://jobs.ashbyhq.com/acme?jobId=abc123",
         "https://www.linkedin.com/jobs/view/999",
+        "https://acme.wd1.myworkdayjobs.com/en-US/External/job/Remote-USA/Staff-Engineer_JR123",
+        "https://acme.wd1.myworkdayjobs.com/",
     ],
 )
 def test_is_job_board_url_rejects_non_board_urls(url: str) -> None:
@@ -437,6 +442,36 @@ def test_linkedin_guest_api_title_untitled_when_neither_present() -> None:
         )
 
     assert job["job_title"] == "Untitled Job"
+
+
+# ai: claude-opus-5-5 | 2026-10-13
+def test_linkedin_public_page_fallback_splits_hiring_title() -> None:
+    """Job 6384: the guest API failed (rate-limited), the public /jobs/view
+    page fallback returned its raw <title>, and job_title="Airbnb" was stored.
+    The fallback must split that title into company + job title."""
+    scanner = CareerSiteScanner()
+    url = "https://www.linkedin.com/jobs/view/4432439363/"
+    public_html = (
+        "<html><head><title>Airbnb hiring Senior Staff Software Engineer, "
+        "Guest &amp; Host in United States | LinkedIn</title></head>"
+        "<body><main><h3>About the job</h3><p>"
+        + "Build guest and host experiences at scale. " * 20
+        + "</p></main></body></html>"
+    )
+    with (
+        patch.object(
+            scanner, "_linkedin_job_from_guest_api", side_effect=OSError("429")
+        ),
+        patch("backend.scanning.career_site_scanner.safe_urlopen") as mock_urlopen,
+    ):
+        mock_resp = mock_urlopen.return_value.__enter__.return_value
+        mock_resp.read.return_value = public_html.encode("utf-8")
+        mock_resp.headers.get_content_charset.return_value = "utf-8"
+        mock_resp.geturl.return_value = url
+        job = scanner.scan_single_job_url("", url)
+
+    assert job["company"] == "Airbnb"
+    assert job["job_title"] == "Senior Staff Software Engineer, Guest & Host"
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14

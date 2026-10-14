@@ -47,7 +47,11 @@ from urllib.request import Request  # ai: claude-sonnet-5 | 2026-10-08
 from backend.email.email_parser import (  # ai: claude-fable-5 | 2026-07-17
     looks_like_wttj_misparsed_title,
 )
-from backend.scanning.career_site_scanner import CareerSiteScanner
+from backend.scanning.career_site_scanner import (
+    UNTITLED_JOB_TITLE,
+    CareerSiteScanner,
+    split_linkedin_page_title,
+)
 from backend.scanning.closed_req_scan_helpers import (  # ai: claude-sonnet-5 | 2026-10-08
     rate_limit_backoff_seconds,
 )
@@ -108,51 +112,65 @@ def repair_linkedin_company(
     repair_existing_job_company instead, which only needs its own
     already-captured data.
     """
-    existing_company = str(existing_job.get("company") or "").strip()
+    # ai: claude-opus-5-5 | 2026-10-13
     try:
         fetched = CareerSiteScanner().scan_single_job_url("LinkedIn", url)
-    except Exception:
+    except (ValueError, OSError):
         return False
+    return apply_linkedin_repair(user_id, jobs_repo, existing_job, fetched)
 
-    fetched_company = str(fetched.get("company") or "").strip()
-    if fetched_company:
-        if existing_company and companies_match(existing_company, fetched_company):
-            return False
-        if existing_company == fetched_company:
-            return False
-        jobs_repo.update(user_id, int(existing_job["id"]), {"company": fetched_company})
-        return True
 
-    if not is_missing_company(existing_company):
+# ai: claude-opus-5-5 | 2026-10-13
+def apply_linkedin_repair(
+    user_id: int,
+    jobs_repo: JobUpdater,
+    existing_job: dict[str, Any],
+    fetched: dict[str, Any],
+) -> bool:
+    """repair_linkedin_company's decision half, given an already-fetched job.
+
+    Split out so run_import_task can hand in the result of its concurrent JD
+    prefetch instead of fetching every existing LinkedIn job a second time —
+    that doubled guest-API traffic on every listener rescan, and the guest
+    API's rate limiting is what pushes scan_single_job_url onto its weaker
+    public-page fallback (job 6384).
+
+    Also corrects a stored title that is just the company name (job 6384:
+    job_title="Airbnb"), the signature of content.js's broken LinkedIn DOM
+    capture shifting fields by one. Any other stored title is left alone so
+    a rescan never overwrites a title the user edited.
+    """
+    existing_company = str(existing_job.get("company") or "").strip()
+    existing_title = str(existing_job.get("job_title") or "").strip()
+    # A no-op for scan_single_job_url's own results (already split there);
+    # kept so a raw "... | LinkedIn" page title from any caller still parses.
+    title_company, parsed_title = split_linkedin_page_title(
+        str(fetched.get("job_title") or "")
+    )
+    fetched_company = str(fetched.get("company") or "").strip() or title_company
+
+    updates: dict[str, Any] = {}
+    if fetched_company and not (
+        existing_company and companies_match(existing_company, fetched_company)
+    ):
+        updates["company"] = fetched_company
+
+    title_is_company_echo = not existing_title or existing_title.casefold() in {
+        existing_company.casefold(),
+        fetched_company.casefold(),
+    }
+    if (
+        title_is_company_echo
+        and parsed_title
+        and parsed_title != UNTITLED_JOB_TITLE
+        and parsed_title != existing_title
+    ):
+        updates["job_title"] = parsed_title
+
+    if not updates:
         return False
-
-    # Guest API returned no company (e.g. _LINKEDIN_GUEST_COMPANY_RE didn't
-    # match some markup variant) -- fall back to parsing it out of the title.
-    raw_title = str(fetched.get("job_title") or "")
-    clean = re.sub(r"\s*\|\s*LinkedIn\s*$", "", raw_title, flags=re.IGNORECASE).strip()
-
-    # Format A: "Job Title at Company Name"
-    at_match = re.search(r"^.+?\s+at\s+(.+)$", clean)
-    if at_match:
-        company = at_match.group(1).strip()
-        if company:
-            jobs_repo.update(user_id, int(existing_job["id"]), {"company": company})
-            return True
-
-    # Format B: "Company Name hiring Job Title in Location"
-    if " hiring " in clean:
-        company, _, rest = clean.partition(" hiring ")
-        company = company.strip()
-        # Strip trailing " in <Location>" — location is always last in this format
-        job_title = re.sub(r"\s+in\s+.+$", "", rest).strip() or rest.strip()
-        if company:
-            updates: dict[str, Any] = {"company": company}
-            if job_title:
-                updates["job_title"] = job_title
-            jobs_repo.update(user_id, int(existing_job["id"]), updates)
-            return True
-
-    return False
+    jobs_repo.update(user_id, int(existing_job["id"]), updates)
+    return True
 
 
 def post_repair_duplicate_check(

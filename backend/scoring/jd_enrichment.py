@@ -79,6 +79,41 @@ def is_richer_description(incoming_text: str, existing_job: dict[str, Any]) -> b
     return len(incoming_text) > len(existing) + _ENRICH_ADVANTAGE_CHARS
 
 
+# ai: claude-opus-5-5 | 2026-10-13
+def unenriched_skip_reason(
+    incoming_len: int, existing_job: dict[str, Any]
+) -> tuple[str, bool]:
+    """Explain why a re-captured existing job's description wasn't updated.
+
+    Returns (reason, description_gap). description_gap is True only when the
+    stored JD is itself below the usable minimum, i.e. the job still lacks a
+    real description and nothing this import found could fill it. A short
+    capture alone isn't a gap: rescanning a search/list page yields only
+    ~200-char cards for jobs whose full JD is already stored — the
+    2026-10-13 LinkedIn listener rescan logged 22 such false alarms.
+    """
+    existing_len = len(job_description_text(existing_job))
+    if existing_len >= _ENRICH_MIN_CHARS:
+        return (
+            f"Job already in database with a full description ({existing_len} "
+            f"chars); captured content ({incoming_len} chars) was not richer.",
+            False,
+        )
+    if incoming_len < _ENRICH_MIN_CHARS:
+        return (
+            f"Captured content too short to update description ({incoming_len} "
+            f"chars captured; {_ENRICH_MIN_CHARS} required). The page may not "
+            f"have fully rendered, or the link may have expired.",
+            True,
+        )
+    return (
+        f"Captured content ({incoming_len} chars) was not significantly richer "
+        f"than the stored description ({existing_len} chars); need "
+        f"{existing_len + _ENRICH_ADVANTAGE_CHARS + 1} chars to trigger an update.",
+        True,
+    )
+
+
 def enrich_job_description(
     user_id: int,
     repos: dict[str, Any],

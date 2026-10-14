@@ -72,10 +72,10 @@ from backend.scanning.career_site_scanner import (
     validate_extraction,
 )
 from backend.scanning.import_repair import (
+    apply_linkedin_repair,
     post_repair_duplicate_check,
     repair_ats_url_company,
     repair_existing_job_company,
-    repair_linkedin_company,
 )
 from backend.scanning.manual_job_ingest_service import ManualJobIngestService
 from backend.scoring.auto_reject_rules import (
@@ -87,6 +87,7 @@ from backend.scoring.jd_enrichment import (
     enrich_job_description,
     is_richer_description,
     job_description_text,
+    unenriched_skip_reason,
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
 from backend.settings_service import get_setting
@@ -418,8 +419,12 @@ def run_import_task(
                     )
             existing_job_by_url[url] = existing_job
             if existing_job is not None:
-                if url.startswith("https://") and not is_richer_description(
-                    incoming_text, existing_job
+                # ai: claude-opus-5-5 | 2026-10-13
+                # LinkedIn existing jobs always need the fetch: the main loop's
+                # apply_linkedin_repair verifies company/title against it.
+                if url.startswith("https://") and (
+                    url_row.get("platform") == "LinkedIn"
+                    or not is_richer_description(incoming_text, existing_job)
                 ):
                     urls_needing_fetch.add(url)
             elif ManualJobIngestService.needs_jd_refetch(url, incoming_text):
@@ -508,12 +513,15 @@ def run_import_task(
                 # "United States (Remote)" the next time this ran against
                 # them, because the DOM capture kept resubmitting that same
                 # wrong value and this function treated it as fresher truth.
-                # repair_linkedin_company verifies against the LinkedIn guest
+                # apply_linkedin_repair verifies against the LinkedIn guest
                 # API instead, which is unaffected by that redesign, and
                 # handles both a missing and a present-but-wrong company.
                 if platform == "LinkedIn":
-                    repaired_ok = repair_linkedin_company(
-                        user_id, repos["jobs"], existing_job, url
+                    # ai: claude-opus-5-5 | 2026-10-13 — reuses the prefetch
+                    # instead of a second guest-API call per job.
+                    linkedin_fetched = prefetched_jd.get(url)
+                    repaired_ok = linkedin_fetched is not None and apply_linkedin_repair(
+                        user_id, repos["jobs"], existing_job, linkedin_fetched
                     )
                 else:
                     repaired_ok = repair_existing_job_company(
@@ -584,24 +592,19 @@ def run_import_task(
                         )
                     )
                     skip_reason = "Job already in database; description updated from captured content."
-                elif incoming_len < 300:
-                    skip_reason = (
-                        f"Captured content too short to update description "
-                        f"({incoming_len} chars captured; 300 required). "
-                        f"The page may not have fully rendered, or the link may have expired."
-                    )
-                    logger.warning(
-                        "skip: job %d — captured only %d chars (url=%s)",
-                        existing_job.get("id"),
-                        incoming_len,
-                        url,
-                    )
                 else:
-                    skip_reason = (
-                        f"Captured content ({incoming_len} chars) was not significantly "
-                        f"richer than the stored description ({existing_desc_len} chars); "
-                        f"need {existing_desc_len + 300} chars to trigger an update."
+                    # ai: claude-opus-5-5 | 2026-10-13
+                    skip_reason, description_gap = unenriched_skip_reason(
+                        incoming_len, existing_job
                     )
+                    if description_gap:
+                        logger.warning(
+                            "skip: job %d — captured only %d chars and stored JD is %d chars (url=%s)",
+                            existing_job.get("id"),
+                            incoming_len,
+                            existing_desc_len,
+                            url,
+                        )
                 skipped += 1
                 skipped_details.append(
                     _import_outcome_detail(
