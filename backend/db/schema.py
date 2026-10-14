@@ -47,6 +47,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from psycopg2 import sql
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
@@ -225,7 +226,7 @@ _PER_USER_TABLES: tuple[str, ...] = (
     "jd_health_check_targets",
     "jd_health_check_results",
     "contacts",
-    "contact_emails",
+    "contact_outreach",
     "extension_tokens",
     "cover_letter_phrases",
     "career_scan_digest_log",
@@ -1473,6 +1474,26 @@ def _migrate(conn: Any) -> None:
         )
     conn.commit()
 
+    # ai: claude-opus-5-5 | 2026-10-14
+    # LinkedIn outreach queue (Contacts tab). channel records how each logged
+    # outreach went out; every row that predates it was an email, which the
+    # column default backfills. outreach_draft is the message last prepared
+    # for a contact; outreach_draft_staged_at (UTC ISO 8601) marks it as
+    # waiting for the browser extension to paste into that contact's LinkedIn
+    # message box -- at most one contact per user is staged at a time (see
+    # PostgresContactRepository.stage_outreach_draft).
+    cur.execute(
+        "ALTER TABLE contact_outreach ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'email'"
+    )
+    if not _has_unique(cur, "contact_outreach", "contact_outreach_channel_check"):
+        cur.execute(
+            "ALTER TABLE contact_outreach ADD CONSTRAINT contact_outreach_channel_check"
+            " CHECK (channel IN ('email', 'linkedin'))"
+        )
+    cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS outreach_draft TEXT")
+    cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS outreach_draft_staged_at TEXT")
+    conn.commit()
+
     # ai: claude-sonnet-5 | 2026-10-01
     # jobs.company_normalized mirrors contacts.company_normalized's pattern
     # (normalize_company_name(), kept in sync by PostgresJobRepository's
@@ -1712,6 +1733,46 @@ def _create_tables(conn: Any) -> None:
             cur.execute(
                 "ALTER TABLE application_stage_statuses"
                 " RENAME CONSTRAINT stage_statuses_pkey TO application_stage_statuses_pkey"
+            )
+        conn.commit()
+
+    # ai: claude-opus-5-5 | 2026-10-14
+    # contact_emails renamed to contact_outreach: the log now also records
+    # LinkedIn messages (see its channel column), so "emails" no longer
+    # describes what it holds. Same ordering constraint as the renames above;
+    # dependent constraint/sequence/index names are renamed to what a fresh
+    # install creates so the two never diverge. Constraints are read from
+    # pg_constraint rather than listed by hand: besides the pkey/fkeys,
+    # PostgreSQL 18+ also names each NOT NULL constraint after the table. That
+    # constraint pass runs whenever the table exists, not only on the rename
+    # itself, so an install renamed before it covered NOT NULL constraints is
+    # converged too; with nothing left to rename it's a single no-op SELECT.
+    if _has_table(cur, "contact_emails") and not _has_table(cur, "contact_outreach"):
+        cur.execute("ALTER TABLE contact_emails RENAME TO contact_outreach")
+        cur.execute(
+            "ALTER SEQUENCE IF EXISTS contact_emails_id_seq RENAME TO contact_outreach_id_seq"
+        )
+        cur.execute(
+            "ALTER INDEX IF EXISTS idx_contact_emails_contact_id"
+            " RENAME TO idx_contact_outreach_contact_id"
+        )
+        cur.execute(
+            "ALTER INDEX IF EXISTS idx_contact_emails_user_id RENAME TO idx_contact_outreach_user_id"
+        )
+        conn.commit()
+    if _has_table(cur, "contact_outreach"):
+        cur.execute(
+            "SELECT conname FROM pg_constraint"
+            " WHERE conrelid = 'contact_outreach'::regclass AND conname LIKE %s",
+            ("contact\\_emails\\_%",),
+        )
+        for row in cur.fetchall():
+            old_name = row["conname"]
+            new_name = "contact_outreach_" + old_name[len("contact_emails_"):]
+            cur.execute(
+                sql.SQL("ALTER TABLE contact_outreach RENAME CONSTRAINT {} TO {}").format(
+                    sql.Identifier(old_name), sql.Identifier(new_name)
+                )
             )
         conn.commit()
 
@@ -2102,11 +2163,13 @@ def _create_tables(conn: Any) -> None:
             ON contacts (company_normalized)
         """,
         # ai: claude-sonnet-5 | 2026-09-25
-        # One row per outreach email the user logged to a contact. sent_at and
+        # One row per outreach message the user logged to a contact. sent_at and
         # response_received_at are UTC ISO 8601 timestamps
         # ('2026-09-25T18:30:00+00:00'); the frontend converts to/from local time.
+        # ai: claude-opus-5-5 | 2026-10-14 -- was contact_emails; channel column
+        # added in _migrate() (see the contact_outreach.channel block there).
         """
-        CREATE TABLE IF NOT EXISTS contact_emails (
+        CREATE TABLE IF NOT EXISTS contact_outreach (
             id                    SERIAL PRIMARY KEY,
             contact_id            INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
             sent_at               TEXT NOT NULL,
@@ -2114,8 +2177,8 @@ def _create_tables(conn: Any) -> None:
         )
         """,
         """
-        CREATE INDEX IF NOT EXISTS idx_contact_emails_contact_id
-            ON contact_emails (contact_id)
+        CREATE INDEX IF NOT EXISTS idx_contact_outreach_contact_id
+            ON contact_outreach (contact_id)
         """,
         # ai: claude-sonnet-5 | 2026-09-28
         # Per-user company attributes (recruiter-classification plan, build-order

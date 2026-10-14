@@ -79,26 +79,29 @@ class PostgresContactRepository(_BaseRepo):
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     # ai: claude-sonnet-5 | 2026-09-25
-    def list_with_emails(self, user_id: int) -> list[dict[str, Any]]:
+    # ai: claude-opus-5-5 | 2026-10-14 -- was list_with_emails; the aggregated
+    # log is now "outreach" (contact_outreach) and carries each entry's channel.
+    def list_with_outreach(self, user_id: int) -> list[dict[str, Any]]:
         cur = self._execute(
             # ai: gpt-5 | 2026-10-03
             """
             SELECT c.id, c.full_name, c.company_raw, c.company_normalized,
                    c.position, c.normalized_title,
                    c.profile_url, c.connected_on, c.email_address, c.interested,
-                   c.recruiter_type, c.decided_by, c.notes,
+                   c.recruiter_type, c.decided_by, c.notes, c.outreach_draft,
                    COALESCE(
                        json_agg(
                            json_build_object(
-                               'id', e.id,
-                               'sent_at', e.sent_at,
-                               'response_received_at', e.response_received_at
-                           ) ORDER BY e.sent_at, e.id
-                       ) FILTER (WHERE e.id IS NOT NULL),
+                               'id', o.id,
+                               'sent_at', o.sent_at,
+                               'response_received_at', o.response_received_at,
+                               'channel', o.channel
+                           ) ORDER BY o.sent_at, o.id
+                       ) FILTER (WHERE o.id IS NOT NULL),
                        '[]'::json
-                   ) AS emails
+                   ) AS outreach
             FROM contacts c
-            LEFT JOIN contact_emails e ON e.contact_id = c.id AND e.user_id = c.user_id
+            LEFT JOIN contact_outreach o ON o.contact_id = c.id AND o.user_id = c.user_id
             WHERE c.user_id = %s
             GROUP BY c.id
             ORDER BY lower(c.full_name), c.id
@@ -112,10 +115,10 @@ class PostgresContactRepository(_BaseRepo):
         """Merge a parsed LinkedIn export into the user's contacts.
 
         Rows already present (same dedup_key) are refreshed in place, keeping
-        the user's interested/recruiter_type/notes/email history; new rows are
+        the user's interested/recruiter_type/notes/outreach history; new rows are
         added. Contacts absent from the file are removed only if the user
         never acted on them -- anyone flagged, marked recruiter, manually
-        decided "not a recruiter" (decided_by='manual'), noted, or emailed is
+        decided "not a recruiter" (decided_by='manual'), noted, or contacted is
         kept."""
         for row in rows:
             unknown = set(row.keys()) - self._IMPORT_COLUMNS
@@ -158,7 +161,7 @@ class PostgresContactRepository(_BaseRepo):
               AND c.recruiter_type IS NULL
               AND c.decided_by IS NULL
               AND c.notes IS NULL
-              AND NOT EXISTS (SELECT 1 FROM contact_emails e WHERE e.contact_id = c.id)
+              AND NOT EXISTS (SELECT 1 FROM contact_outreach o WHERE o.contact_id = c.id)
             """,
             (user_id, file_keys),
         )
@@ -199,3 +202,81 @@ class PostgresContactRepository(_BaseRepo):
     def count(self, user_id: int) -> int:
         cur = self._execute("SELECT COUNT(*) AS cnt FROM contacts WHERE user_id = %s", (user_id,))
         return int(cur.fetchone()["cnt"])
+
+    # ai: claude-opus-5-5 | 2026-10-14
+    def get_by_id(self, user_id: int, contact_id: int) -> dict[str, Any] | None:
+        cur = self._execute(
+            "SELECT * FROM contacts WHERE id = %s AND user_id = %s", (contact_id, user_id)
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    # ai: claude-opus-5-5 | 2026-10-14
+    def stage_outreach_draft(
+        self, user_id: int, contact_id: int, draft: str, staged_at: str
+    ) -> bool:
+        """Save draft on the contact and mark it as the one draft waiting for
+        the browser extension, unstaging any other contact of this user's in
+        the same statement -- the extension pastes "the staged draft", so two
+        staged at once would make which one it gets ambiguous. Returns False
+        (and changes nothing) when the contact doesn't exist or belongs to
+        another user."""
+        cur = self._execute(
+            """
+            WITH target AS (
+                SELECT id FROM contacts WHERE id = %s AND user_id = %s
+            )
+            UPDATE contacts c
+            SET outreach_draft = CASE WHEN c.id = target.id THEN %s ELSE c.outreach_draft END,
+                outreach_draft_staged_at = CASE WHEN c.id = target.id THEN %s ELSE NULL END
+            FROM target
+            WHERE c.user_id = %s
+              AND (c.id = target.id OR c.outreach_draft_staged_at IS NOT NULL)
+            RETURNING c.id
+            """,
+            (contact_id, user_id, draft, staged_at, user_id),
+        )
+        return any(row["id"] == contact_id for row in cur.fetchall())
+
+    # ai: claude-opus-5-5 | 2026-10-14
+    def get_staged_outreach_draft(
+        self, user_id: int, staged_after: str
+    ) -> dict[str, Any] | None:
+        """The user's staged draft, if it was staged after staged_after (a UTC
+        ISO 8601 timestamp, compared as text -- every writer uses the same
+        isoformat(timespec="seconds") shape, so lexical order is time order).
+        An older stage is treated as abandoned rather than pasted into a
+        profile the user happens to open much later."""
+        cur = self._execute(
+            """
+            SELECT id, full_name, profile_url, outreach_draft
+            FROM contacts
+            WHERE user_id = %s AND outreach_draft_staged_at > %s
+            ORDER BY outreach_draft_staged_at DESC
+            LIMIT 1
+            """,
+            (user_id, staged_after),
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    # ai: claude-opus-5-5 | 2026-10-14
+    def claim_staged_outreach_draft(self, user_id: int, contact_id: int) -> bool:
+        """Unstage the contact's draft, returning True only for the caller
+        that actually unstaged it -- the WHERE re-checks staged_at, so of two
+        concurrent claims (e.g. the profile open in two tabs) only one wins
+        and the draft is pasted once."""
+        cur = self._execute(
+            "UPDATE contacts SET outreach_draft_staged_at = NULL"
+            " WHERE id = %s AND user_id = %s AND outreach_draft_staged_at IS NOT NULL",
+            (contact_id, user_id),
+        )
+        return cur.rowcount > 0
+
+    # ai: claude-opus-5-5 | 2026-10-14
+    def clear_outreach_draft(self, user_id: int, contact_id: int) -> None:
+        self._execute(
+            "UPDATE contacts SET outreach_draft = NULL, outreach_draft_staged_at = NULL"
+            " WHERE id = %s AND user_id = %s",
+            (contact_id, user_id),
+        )

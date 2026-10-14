@@ -20,26 +20,31 @@ import type { CSSProperties } from "react";
 import CompaniesReport from "./CompaniesReport.tsx";
 import ContactDetail from "./ContactDetail.tsx";
 import ContactsImport from "./ContactsImport.tsx";
+import OutreachQueue from "./OutreachQueue.tsx";
 import TitlesReport from "./TitlesReport.tsx";
+import { safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
 import { formatLocalDate } from "../utils/dateTimeUtils.ts";
-import type { Contact, ContactsListResponse } from "../types/contacts.ts";
+import type { Contact, ContactsListResponse, OutreachChannel } from "../types/contacts.ts";
 import type { RecruiterType } from "../types/contacts.ts";
 
 const PAGE_SIZE = 100;
 
-type View = "contacts" | "companies" | "titles";
-type EmailFilter = "all" | "emailed" | "not_emailed" | "awaiting" | "replied";
+// ai: claude-opus-5-5 | 2026-10-14 -- added "outreach" (the LinkedIn outreach queue)
+type View = "contacts" | "outreach" | "companies" | "titles";
+// ai: claude-opus-5-5 | 2026-10-14 -- was EmailFilter ("emailed"/"not_emailed"):
+// outreach now covers LinkedIn messages as well as emails.
+type OutreachFilter = "all" | "contacted" | "not_contacted" | "awaiting" | "replied";
 type RecruiterFilter = "all" | "recruiter" | "not_recruiter";
 // ai: claude-sonnet-5 | 2026-10-13
 type InterestedFilter = "all" | "yes" | "no" | "tbd";
-type EmailState = "none" | "awaiting" | "replied";
+type OutreachState = "none" | "awaiting" | "replied";
 type SortDir = "asc" | "desc";
 
-const EMAIL_FILTERS: { value: EmailFilter; label: string }[] = [
+const OUTREACH_FILTERS: { value: OutreachFilter; label: string }[] = [
   { value: "all", label: "All contacts" },
-  { value: "emailed", label: "Emailed" },
-  { value: "not_emailed", label: "Not emailed" },
-  { value: "awaiting", label: "Emailed, awaiting reply" },
+  { value: "contacted", label: "Contacted" },
+  { value: "not_contacted", label: "Not contacted" },
+  { value: "awaiting", label: "Contacted, awaiting reply" },
   { value: "replied", label: "Replied" },
 ];
 
@@ -48,10 +53,10 @@ const EMAIL_FILTERS: { value: EmailFilter; label: string }[] = [
 // filter dropdown instead of a single "interested only" checkbox so "No" and
 // "Undecided" contacts can each be isolated too.
 const INTERESTED_FILTERS: { value: InterestedFilter; label: string }[] = [
-  { value: "all", label: "Want to email: all" },
-  { value: "yes", label: "Want to email: Yes" },
-  { value: "no", label: "Want to email: No" },
-  { value: "tbd", label: "Want to email: Undecided" },
+  { value: "all", label: "Want to contact: all" },
+  { value: "yes", label: "Want to contact: Yes" },
+  { value: "no", label: "Want to contact: No" },
+  { value: "tbd", label: "Want to contact: Undecided" },
 ];
 
 const RECRUITER_FILTERS: { value: RecruiterFilter; label: string }[] = [
@@ -73,7 +78,7 @@ const RECRUITER_TYPES: { value: RecruiterType | ""; label: string }[] = [
 ];
 
 // ai: claude-sonnet-5 | 2026-10-13
-// Tri-state "Want to Email": true/false/null = yes/no/undecided (the DB
+// Tri-state "Want to Contact": true/false/null = yes/no/undecided (the DB
 // default for a never-reviewed contact -- see backend/db/schema.py's
 // contacts.interested migration). Rendered as three small dots so all three
 // states are always visible and one click away, rather than hidden behind a
@@ -94,7 +99,7 @@ function InterestedToggle({
   contactName: string;
 }) {
   return (
-    <div role="radiogroup" aria-label={`Want to email ${contactName}`} style={{ display: "flex", gap: "4px" }}>
+    <div role="radiogroup" aria-label={`Want to contact ${contactName}`} style={{ display: "flex", gap: "4px" }}>
       {INTERESTED_OPTIONS.map((option) => {
         const selected = (value ?? null) === option.value;
         return (
@@ -103,7 +108,7 @@ function InterestedToggle({
             type="button"
             role="radio"
             aria-checked={selected}
-            aria-label={`${option.label} -- want to email ${contactName}`}
+            aria-label={`${option.label} -- want to contact ${contactName}`}
             title={option.label}
             onClick={() => onChange(option.value)}
             style={{
@@ -122,13 +127,14 @@ function InterestedToggle({
 }
 
 // ai: claude-sonnet-5 | 2026-09-25
-function emailState(contact: Contact): EmailState {
-  if (contact.emails.length === 0) return "none";
-  return contact.emails.some((email) => email.response_received_at) ? "replied" : "awaiting";
+// ai: claude-opus-5-5 | 2026-10-14 -- was emailState over contact.emails
+function outreachState(contact: Contact): OutreachState {
+  if (contact.outreach.length === 0) return "none";
+  return contact.outreach.some((entry) => entry.response_received_at) ? "replied" : "awaiting";
 }
 
 // ai: claude-sonnet-5 | 2026-10-02
-const EMAIL_STATE_RANK: Record<EmailState, number> = { none: 0, awaiting: 1, replied: 2 };
+const OUTREACH_STATE_RANK: Record<OutreachState, number> = { none: 0, awaiting: 1, replied: 2 };
 
 // Recruiter column sorts by RECRUITER_TYPES' declared order (not-a-recruiter,
 // then unrated/motion/low/high/offshore), not raw alphabetical enum text --
@@ -152,47 +158,38 @@ const SORT_COLUMNS: SortColumn[] = [
   // ai: gpt-5 | 2026-10-03
   { key: "outreach_score", label: "Priority", getValue: (c) => c.outreach_score ?? 0 },
   // ai: claude-sonnet-5 | 2026-10-13 -- Yes > Undecided > No
-  { key: "interested", label: "Want to Email", getValue: (c) => (c.interested === true ? 2 : c.interested === false ? 0 : 1) },
+  { key: "interested", label: "Want to Contact", getValue: (c) => (c.interested === true ? 2 : c.interested === false ? 0 : 1) },
   { key: "name", label: "Contact", getValue: (c) => (c.full_name || "").toLowerCase() },
   { key: "recruiter", label: "Recruiter", getValue: (c) => RECRUITER_RANK[c.recruiter_type || ""] ?? 0 },
-  { key: "sent_email", label: "Sent Email", getValue: (c) => (c.emails.length > 0 ? 1 : 0) },
-  { key: "email_status", label: "Email status", getValue: (c) => EMAIL_STATE_RANK[emailState(c)] },
+  // ai: claude-opus-5-5 | 2026-10-14 -- were "sent_email"/"Sent Email" and "email_status"/"Email status"
+  { key: "contacted", label: "Contacted", getValue: (c) => (c.outreach.length > 0 ? 1 : 0) },
+  { key: "outreach_status", label: "Outreach status", getValue: (c) => OUTREACH_STATE_RANK[outreachState(c)] },
 ];
 
-// ai: claude-sonnet-5 | 2026-09-25
-// Profile URLs come from the imported CSV, so only http(s) may become a link
-// target -- a `javascript:` value in the file must never reach an href.
-function safeHttpUrl(value?: string | null): string | null {
-  if (!value) return null;
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.href : null;
-  } catch {
-    return null;
-  }
-}
+// ai: claude-opus-5-5 | 2026-10-14
+const CHANNEL_LABELS: Record<OutreachChannel, string> = { email: "Emailed", linkedin: "Messaged" };
 
 interface FilterState {
   search: string;
-  emailFilter: EmailFilter;
+  outreachFilter: OutreachFilter;
   recruiterFilter: RecruiterFilter;
   interestedFilter: InterestedFilter;
   titleFilter: string | null;
 }
 
 // ai: claude-sonnet-5 | 2026-09-25
-function matchesFilters(contact: Contact, { search, emailFilter, recruiterFilter, interestedFilter, titleFilter }: FilterState): boolean {
+function matchesFilters(contact: Contact, { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter }: FilterState): boolean {
   // ai: claude-sonnet-5 | 2026-10-13
   if (interestedFilter === "yes" && contact.interested !== true) return false;
   if (interestedFilter === "no" && contact.interested !== false) return false;
   if (interestedFilter === "tbd" && contact.interested !== null) return false;
   if (titleFilter !== null && contact.normalized_title !== titleFilter) return false;
 
-  const state = emailState(contact);
-  if (emailFilter === "emailed" && state === "none") return false;
-  if (emailFilter === "not_emailed" && state !== "none") return false;
-  if (emailFilter === "awaiting" && state !== "awaiting") return false;
-  if (emailFilter === "replied" && state !== "replied") return false;
+  const state = outreachState(contact);
+  if (outreachFilter === "contacted" && state === "none") return false;
+  if (outreachFilter === "not_contacted" && state !== "none") return false;
+  if (outreachFilter === "awaiting" && state !== "awaiting") return false;
+  if (outreachFilter === "replied" && state !== "replied") return false;
 
   if (recruiterFilter === "recruiter" && !contact.recruiter_type) return false;
   if (recruiterFilter === "not_recruiter" && contact.recruiter_type) return false;
@@ -202,15 +199,6 @@ function matchesFilters(contact: Contact, { search, emailFilter, recruiterFilter
   return [contact.full_name, contact.company_raw, contact.position, contact.notes].some((field) =>
     (field || "").toLowerCase().includes(needle),
   );
-}
-
-// ai: claude-sonnet-5 | 2026-09-25
-async function sendJson(url: string, method: string, body?: unknown): Promise<Response> {
-  return fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
 }
 
 type ContactPatchFields = Partial<Pick<Contact, "email_address" | "notes" | "interested" | "recruiter_type">>;
@@ -226,7 +214,7 @@ export default function ContactsPanel() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const [search, setSearch] = useState("");
-  const [emailFilter, setEmailFilter] = useState<EmailFilter>("all");
+  const [outreachFilter, setOutreachFilter] = useState<OutreachFilter>("all");
   const [recruiterFilter, setRecruiterFilter] = useState<RecruiterFilter>("all");
   const [interestedFilter, setInterestedFilter] = useState<InterestedFilter>("all");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -257,7 +245,7 @@ export default function ContactsPanel() {
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [search, emailFilter, recruiterFilter, interestedFilter, titleFilter]);
+  }, [search, outreachFilter, recruiterFilter, interestedFilter, titleFilter]);
 
   const viewContactsForTitle = (normalizedTitle: string) => {
     setTitleFilter(normalizedTitle);
@@ -267,9 +255,15 @@ export default function ContactsPanel() {
   const filtered = useMemo(
     () =>
       contacts.filter((contact) =>
-        matchesFilters(contact, { search, emailFilter, recruiterFilter, interestedFilter, titleFilter }),
+        matchesFilters(contact, { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter }),
       ),
-    [contacts, search, emailFilter, recruiterFilter, interestedFilter, titleFilter],
+    [contacts, search, outreachFilter, recruiterFilter, interestedFilter, titleFilter],
+  );
+
+  // ai: claude-opus-5-5 | 2026-10-14 -- same criteria as OutreachQueue's list, for the tab badge
+  const outreachQueueCount = useMemo(
+    () => contacts.filter((c) => c.interested === true && c.outreach.length === 0 && safeHttpUrl(c.profile_url)).length,
+    [contacts],
   );
 
   // ai: claude-sonnet-5 | 2026-10-02
@@ -375,9 +369,10 @@ export default function ContactsPanel() {
   const saveNotes = (contactId: number, value: string) =>
     patchContact(contactId, { notes: value === "" ? null : value });
 
-  const logEmail = async (contactId: number, sentAt: string) => {
+  // ai: claude-opus-5-5 | 2026-10-14 -- was logEmail; records the channel too
+  const logOutreach = async (contactId: number, sentAt: string, channel: OutreachChannel) => {
     try {
-      const res = await sendJson(`/api/contacts/${contactId}/emails`, "POST", { sent_at: sentAt });
+      const res = await sendJson(`/api/contacts/${contactId}/outreach`, "POST", { sent_at: sentAt, channel });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const created = await res.json();
       setContacts((prev) =>
@@ -385,7 +380,8 @@ export default function ContactsPanel() {
           c.id === contactId
             ? {
                 ...c,
-                emails: [...c.emails, created].sort(
+                outreach_draft: null,
+                outreach: [...c.outreach, created].sort(
                   (a, b) => a.sent_at.localeCompare(b.sent_at) || a.id - b.id,
                 ),
               }
@@ -395,13 +391,13 @@ export default function ContactsPanel() {
       // ai: gpt-5 | 2026-10-03
       await loadContacts();
     } catch (e) {
-      window.alert(`Could not log the email: ${e instanceof Error ? e.message : String(e)}`);
+      window.alert(`Could not log the message: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
-  const setResponse = async (contactId: number, emailId: number, receivedAt: string | null) => {
+  const setResponse = async (contactId: number, outreachId: number, receivedAt: string | null) => {
     try {
-      const res = await sendJson(`/api/contact-emails/${emailId}`, "PATCH", {
+      const res = await sendJson(`/api/contact-outreach/${outreachId}`, "PATCH", {
         response_received_at: receivedAt,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -410,8 +406,8 @@ export default function ContactsPanel() {
           c.id === contactId
             ? {
                 ...c,
-                emails: c.emails.map((email) =>
-                  email.id === emailId ? { ...email, response_received_at: receivedAt } : email,
+                outreach: c.outreach.map((entry) =>
+                  entry.id === outreachId ? { ...entry, response_received_at: receivedAt } : entry,
                 ),
               }
             : c,
@@ -424,19 +420,19 @@ export default function ContactsPanel() {
     }
   };
 
-  const deleteEmail = async (contactId: number, emailId: number) => {
+  const deleteOutreach = async (contactId: number, outreachId: number) => {
     try {
-      const res = await sendJson(`/api/contact-emails/${emailId}`, "DELETE");
+      const res = await sendJson(`/api/contact-outreach/${outreachId}`, "DELETE");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setContacts((prev) =>
         prev.map((c) =>
-          c.id === contactId ? { ...c, emails: c.emails.filter((e) => e.id !== emailId) } : c,
+          c.id === contactId ? { ...c, outreach: c.outreach.filter((entry) => entry.id !== outreachId) } : c,
         ),
       );
       // ai: gpt-5 | 2026-10-03
       await loadContacts();
     } catch (e) {
-      window.alert(`Could not remove the email: ${e instanceof Error ? e.message : String(e)}`);
+      window.alert(`Could not remove the entry: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -449,9 +445,9 @@ export default function ContactsPanel() {
         <div style={{ flex: 1 }}>
           <h2 style={titleStyle}>Contacts</h2>
           <p style={summaryStyle}>
-            Your LinkedIn connections. Check the ones you're interested in reaching, mark the
-            recruiters (or select several and mark them at once), and log the emails you send
-            and any replies.
+            Your LinkedIn connections. Mark the ones you want to reach, mark the recruiters (or
+            select several and mark them at once), and log the messages you send and any replies.
+            The Outreach queue walks you through messaging each "Yes" contact on LinkedIn.
           </p>
         </div>
         <div style={{ display: "flex", gap: "8px" }}>
@@ -460,6 +456,12 @@ export default function ContactsPanel() {
             onClick={() => setView("contacts")}
           >
             Contacts
+          </button>
+          <button
+            className={view === "outreach" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
+            onClick={() => setView("outreach")}
+          >
+            Outreach queue{outreachQueueCount > 0 ? ` (${outreachQueueCount})` : ""}
           </button>
           <button
             className={view === "companies" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
@@ -481,6 +483,7 @@ export default function ContactsPanel() {
         )}
       </div>
 
+      {view === "outreach" && <OutreachQueue contacts={contacts} onOutreachLogged={loadContacts} />}
       {view === "companies" && <CompaniesReport />}
       {view === "titles" && <TitlesReport onViewContactsForTitle={viewContactsForTitle} />}
       {view === "contacts" && (
@@ -513,12 +516,12 @@ export default function ContactsPanel() {
                   aria-label="Search contacts"
                 />
                 <select
-                  value={emailFilter}
-                  onChange={(e) => setEmailFilter(e.target.value as EmailFilter)}
-                  aria-label="Filter by email status"
-                  style={emailFilter !== "all" ? filterPillActive : filterPill}
+                  value={outreachFilter}
+                  onChange={(e) => setOutreachFilter(e.target.value as OutreachFilter)}
+                  aria-label="Filter by outreach status"
+                  style={outreachFilter !== "all" ? filterPillActive : filterPill}
                 >
-                  {EMAIL_FILTERS.map((option) => (
+                  {OUTREACH_FILTERS.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -539,7 +542,7 @@ export default function ContactsPanel() {
                 <select
                   value={interestedFilter}
                   onChange={(e) => setInterestedFilter(e.target.value as InterestedFilter)}
-                  aria-label="Filter by want to email"
+                  aria-label="Filter by want to contact"
                   style={interestedFilter !== "all" ? filterPillActive : filterPill}
                 >
                   {INTERESTED_FILTERS.map((option) => (
@@ -627,12 +630,13 @@ export default function ContactsPanel() {
                     </div>
                   ) : (
                     visible.map((contact, index) => {
-                    const state = emailState(contact);
+                    const state = outreachState(contact);
                     const profileUrl = safeHttpUrl(contact.profile_url);
                     const expanded = expandedId === contact.id;
-                    const lastSent = contact.emails.length
-                      ? contact.emails[contact.emails.length - 1].sent_at
+                    const lastOutreach = contact.outreach.length
+                      ? contact.outreach[contact.outreach.length - 1]
                       : null;
+                    const lastSent = lastOutreach?.sent_at ?? null;
                     return (
                       <div key={contact.id} style={{ borderBottom: "1px solid var(--border)" }}>
                         <div style={rowGrid}>
@@ -698,31 +702,31 @@ export default function ContactsPanel() {
                             title={
                               lastSent
                                 ? `Last sent ${formatLocalDate(lastSent)}`
-                                : "No email logged yet"
+                                : "No outreach logged yet"
                             }
                           >
-                            {contact.emails.length > 0 ? (
-                              <span aria-label={`Email sent to ${contact.full_name}`} style={{ color: "var(--green)" }}>
+                            {contact.outreach.length > 0 ? (
+                              <span aria-label={`Contacted ${contact.full_name}`} style={{ color: "var(--green)" }}>
                                 ✓
                               </span>
                             ) : (
-                              <span aria-label={`No email sent to ${contact.full_name}`} style={{ color: "var(--text-muted)" }}>
+                              <span aria-label={`Not contacted ${contact.full_name}`} style={{ color: "var(--text-muted)" }}>
                                 —
                               </span>
                             )}
                           </div>
                           <div>
-                            {state === "none" && <span className="badge badge-gray">Not emailed</span>}
-                            {state === "awaiting" && (
+                            {state === "none" && <span className="badge badge-gray">Not contacted</span>}
+                            {state === "awaiting" && lastOutreach && (
                               <span className="badge badge-orange">
-                                Emailed {formatLocalDate(lastSent)}
-                                {contact.emails.length > 1 ? ` (${contact.emails.length}x)` : ""} · no reply
+                                {CHANNEL_LABELS[lastOutreach.channel]} {formatLocalDate(lastSent)}
+                                {contact.outreach.length > 1 ? ` (${contact.outreach.length}x)` : ""} · no reply
                               </span>
                             )}
                             {state === "replied" && (
                               <span className="badge badge-green">
                                 Replied
-                                {contact.emails.length > 1 ? ` (${contact.emails.length} sent)` : ""}
+                                {contact.outreach.length > 1 ? ` (${contact.outreach.length} sent)` : ""}
                               </span>
                             )}
                           </div>
@@ -739,9 +743,9 @@ export default function ContactsPanel() {
                             contact={contact}
                             onSaveEmailAddress={saveEmailAddress}
                             onSaveNotes={saveNotes}
-                            onLogEmail={logEmail}
+                            onLogOutreach={logOutreach}
                             onSetResponse={setResponse}
-                            onDeleteEmail={deleteEmail}
+                            onDeleteOutreach={deleteOutreach}
                           />
                         )}
                       </div>

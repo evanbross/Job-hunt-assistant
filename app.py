@@ -55,7 +55,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import flask
@@ -74,6 +74,7 @@ from flask_cors import CORS
 
 import config
 from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
+from backend.contacts.outreach_drafts import claim_draft_for_page
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
 from backend.extension_auth.token_service import ExtensionTokenService
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
@@ -613,6 +614,21 @@ def _learn_application_answer(
     return answer
 
 
+# ai: claude-opus-5-5 | 2026-10-14
+def _claim_linkedin_outreach_draft(user_id: int, page_url: str) -> dict | None:
+    """Called when the extension finishes loading a LinkedIn profile page."""
+    with get_repos(user_id) as repos:
+        claimed = claim_draft_for_page(user_id, page_url, repos, datetime.now(UTC))
+        repos["conn"].commit()
+    if claimed is None:
+        return None
+    return {
+        "contact_id": claimed.contact_id,
+        "full_name": claimed.full_name,
+        "message": claimed.message,
+    }
+
+
 # Register generated Swagger docs after API routes are loaded and before the SPA
 # catch-all. The UI is available at /apidocs/ and the JSON spec at /apispec_1.json.
 # Building this only introspects app.url_map (already populated by the blueprint
@@ -736,6 +752,7 @@ def _init_runtime_state() -> None:
         get_resume_file=_get_resume_file_bytes,
         get_answers=_get_application_answers_for_listener,
         learn_answer=_learn_application_answer,
+        claim_outreach_draft=_claim_linkedin_outreach_draft,
         ws_tickets=_ws_tickets,
         trusted_proxies=trusted_proxies,
     )

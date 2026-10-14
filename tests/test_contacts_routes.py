@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 from flask import Flask
 
+from backend.ai_provider import AIProviderError
 from backend.db.interfaces import ContactSyncResult
 from routes.contacts import contacts_bp
 
@@ -57,6 +58,8 @@ class FakeContactsRepo:
         self.rows = rows or []
         self.updates: list[tuple[int, dict[str, Any]]] = []
         self.bulk_calls: list[tuple[list[int], str | None]] = []
+        self.staged: list[tuple[int, str, str]] = []
+        self.cleared: list[int] = []
 
     def get_all(self, user_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.rows]
@@ -65,8 +68,23 @@ class FakeContactsRepo:
         self.rows = rows
         return ContactSyncResult(added=len(rows), updated=0, removed=0)
 
-    def list_with_emails(self, user_id: int) -> list[dict[str, Any]]:
+    def list_with_outreach(self, user_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.rows]
+
+    # ai: claude-opus-5-5 | 2026-10-14
+    def get_by_id(self, user_id: int, contact_id: int) -> dict[str, Any] | None:
+        return next((dict(row) for row in self.rows if row.get("id") == contact_id), None)
+
+    def stage_outreach_draft(
+        self, user_id: int, contact_id: int, draft: str, staged_at: str
+    ) -> bool:
+        if not any(row.get("id") == contact_id for row in self.rows):
+            return False
+        self.staged.append((contact_id, draft, staged_at))
+        return True
+
+    def clear_outreach_draft(self, user_id: int, contact_id: int) -> None:
+        self.cleared.append(contact_id)
 
     def update(self, user_id: int, contact_id: int, fields: dict[str, Any]) -> bool:
         self.updates.append((contact_id, fields))
@@ -96,32 +114,37 @@ class FakeStageStatusesRepo:
         return [{"key": "rejected", "is_terminal": True}]
 
 
-class FakeContactEmailsRepo:
+# ai: claude-opus-5-5 | 2026-10-14 -- was FakeContactEmailsRepo
+class FakeContactOutreachRepo:
     def __init__(
-        self, contact_ids: set[int] | None = None, email_ids: set[int] | None = None
+        self, contact_ids: set[int] | None = None, outreach_ids: set[int] | None = None
     ) -> None:
         self.contact_ids = contact_ids or set()
-        self.email_ids = email_ids or set()
-        self.added: list[tuple[int, str]] = []
+        self.outreach_ids = outreach_ids or set()
+        self.added: list[tuple[int, str, str]] = []
         self.responses: dict[int, str | None] = {}
         self.deleted: list[int] = []
 
-    def add(self, user_id: int, contact_id: int, sent_at: str) -> dict[str, Any] | None:
+    def add(
+        self, user_id: int, contact_id: int, sent_at: str, channel: str
+    ) -> dict[str, Any] | None:
         if contact_id not in self.contact_ids:
             return None
-        self.added.append((contact_id, sent_at))
-        return {"id": 99, "sent_at": sent_at, "response_received_at": None}
+        self.added.append((contact_id, sent_at, channel))
+        return {"id": 99, "sent_at": sent_at, "response_received_at": None, "channel": channel}
 
-    def set_response(self, user_id: int, email_id: int, response_received_at: str | None) -> bool:
-        if email_id not in self.email_ids:
+    def set_response(
+        self, user_id: int, outreach_id: int, response_received_at: str | None
+    ) -> bool:
+        if outreach_id not in self.outreach_ids:
             return False
-        self.responses[email_id] = response_received_at
+        self.responses[outreach_id] = response_received_at
         return True
 
-    def delete(self, user_id: int, email_id: int) -> bool:
-        if email_id not in self.email_ids:
+    def delete(self, user_id: int, outreach_id: int) -> bool:
+        if outreach_id not in self.outreach_ids:
             return False
-        self.deleted.append(email_id)
+        self.deleted.append(outreach_id)
         return True
 
 
@@ -279,19 +302,31 @@ class FakeCompanyRepo:
         self.upserts.append((user_id, company_normalized, fields))
 
 
+# ai: claude-opus-5-5 | 2026-10-14
+class FakeCandidateProfilesRepo:
+    def __init__(self, content: str | None) -> None:
+        self.content = content
+
+    def get(self, user_id: int) -> dict[str, Any] | None:
+        return {"content": self.content} if self.content else None
+
+
 # ai: claude-sonnet-5 | 2026-09-25
 def _contacts_client(
     monkeypatch: pytest.MonkeyPatch,
     contacts: FakeContactsRepo | None = None,
-    emails: FakeContactEmailsRepo | None = None,
+    outreach: FakeContactOutreachRepo | None = None,
     companies: FakeCompanyRepo | None = None,
     title_rules: FakeTitleRuleRepo | None = None,
+    settings: FakeSettingsRepo | None = None,
+    candidate_profiles: FakeCandidateProfilesRepo | None = None,
 ) -> Any:
     repos = {
         "conn": FakeConnection(),
         "contacts": contacts or FakeContactsRepo(),
-        "contact_emails": emails or FakeContactEmailsRepo(),
-        "settings": FakeSettingsRepo(),
+        "contact_outreach": outreach or FakeContactOutreachRepo(),
+        "settings": settings or FakeSettingsRepo(),
+        "candidate_profiles": candidate_profiles or FakeCandidateProfilesRepo(None),
         "companies": companies or FakeCompanyRepo(),
         "title_rules": title_rules or FakeTitleRuleRepo(),
         "jobs": FakeJobsRepo(),
@@ -399,95 +434,95 @@ def test_update_contact_unknown_id_returns_404(monkeypatch: pytest.MonkeyPatch) 
     assert response.status_code == 404
 
 
-def test_log_contact_email_uses_supplied_date(monkeypatch: pytest.MonkeyPatch) -> None:
-    emails = FakeContactEmailsRepo(contact_ids={1})
-    client = _contacts_client(monkeypatch, emails=emails)
+def test_log_contact_outreach_uses_supplied_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    outreach = FakeContactOutreachRepo(contact_ids={1})
+    client = _contacts_client(monkeypatch, outreach=outreach)
 
-    response = client.post("/api/contacts/1/emails", json={"sent_at": "2026-09-20T15:30:00Z"})
+    response = client.post("/api/contacts/1/outreach", json={"sent_at": "2026-09-20T15:30:00Z", "channel": "email"})
     assert response.status_code == 201
-    assert emails.added == [(1, "2026-09-20T15:30:00+00:00")]
+    assert outreach.added == [(1, "2026-09-20T15:30:00+00:00", "email")]
 
 
-def test_log_contact_email_converts_offset_timestamp_to_utc(
+def test_log_contact_outreach_converts_offset_timestamp_to_utc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    emails = FakeContactEmailsRepo(contact_ids={1})
-    client = _contacts_client(monkeypatch, emails=emails)
+    outreach = FakeContactOutreachRepo(contact_ids={1})
+    client = _contacts_client(monkeypatch, outreach=outreach)
 
-    response = client.post("/api/contacts/1/emails", json={"sent_at": "2026-09-20T10:00:00-05:00"})
+    response = client.post("/api/contacts/1/outreach", json={"sent_at": "2026-09-20T10:00:00-05:00", "channel": "email"})
     assert response.status_code == 201
-    assert emails.added == [(1, "2026-09-20T15:00:00+00:00")]
+    assert outreach.added == [(1, "2026-09-20T15:00:00+00:00", "email")]
 
 
-def test_log_contact_email_defaults_to_today_utc(monkeypatch: pytest.MonkeyPatch) -> None:
-    emails = FakeContactEmailsRepo(contact_ids={1})
-    client = _contacts_client(monkeypatch, emails=emails)
+def test_log_contact_outreach_defaults_to_today_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    outreach = FakeContactOutreachRepo(contact_ids={1})
+    client = _contacts_client(monkeypatch, outreach=outreach)
 
-    response = client.post("/api/contacts/1/emails", json={})
+    response = client.post("/api/contacts/1/outreach", json={"channel": "email"})
     assert response.status_code == 201
-    assert emails.added[0][1].endswith("+00:00")
-    assert "T" in emails.added[0][1]
+    assert outreach.added[0][1].endswith("+00:00")
+    assert "T" in outreach.added[0][1]
 
 
 @pytest.mark.parametrize(
     "bad_date",
     ["2026-09-20", "2026-09-20T10:00:00", "2026-13-40T10:00:00Z", "yesterday", 20260920],
 )
-def test_log_contact_email_rejects_bad_timestamp(
+def test_log_contact_outreach_rejects_bad_timestamp(
     monkeypatch: pytest.MonkeyPatch, bad_date: object
 ) -> None:
-    emails = FakeContactEmailsRepo(contact_ids={1})
-    client = _contacts_client(monkeypatch, emails=emails)
+    outreach = FakeContactOutreachRepo(contact_ids={1})
+    client = _contacts_client(monkeypatch, outreach=outreach)
 
-    response = client.post("/api/contacts/1/emails", json={"sent_at": bad_date})
+    response = client.post("/api/contacts/1/outreach", json={"sent_at": bad_date, "channel": "email"})
     assert response.status_code == 400
-    assert emails.added == []
+    assert outreach.added == []
 
 
-def test_log_contact_email_unknown_contact_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_log_contact_outreach_unknown_contact_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _contacts_client(monkeypatch)
 
-    response = client.post("/api/contacts/1/emails", json={})
+    response = client.post("/api/contacts/1/outreach", json={"channel": "email"})
     assert response.status_code == 404
 
 
-def test_set_and_clear_email_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    emails = FakeContactEmailsRepo(email_ids={7})
-    client = _contacts_client(monkeypatch, emails=emails)
+def test_set_and_clear_outreach_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    outreach = FakeContactOutreachRepo(outreach_ids={7})
+    client = _contacts_client(monkeypatch, outreach=outreach)
 
     set_response = client.patch(
-        "/api/contact-emails/7", json={"response_received_at": "2026-09-22T09:15:00Z"}
+        "/api/contact-outreach/7", json={"response_received_at": "2026-09-22T09:15:00Z"}
     )
     assert set_response.status_code == 200
-    assert emails.responses == {7: "2026-09-22T09:15:00+00:00"}
+    assert outreach.responses == {7: "2026-09-22T09:15:00+00:00"}
 
-    clear_response = client.patch("/api/contact-emails/7", json={"response_received_at": None})
+    clear_response = client.patch("/api/contact-outreach/7", json={"response_received_at": None})
     assert clear_response.status_code == 200
-    assert emails.responses == {7: None}
+    assert outreach.responses == {7: None}
 
 
-def test_email_response_body_must_state_the_field(monkeypatch: pytest.MonkeyPatch) -> None:
-    emails = FakeContactEmailsRepo(email_ids={7})
-    client = _contacts_client(monkeypatch, emails=emails)
+def test_outreach_response_body_must_state_the_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    outreach = FakeContactOutreachRepo(outreach_ids={7})
+    client = _contacts_client(monkeypatch, outreach=outreach)
 
-    assert client.patch("/api/contact-emails/7", json={}).status_code == 400
-    assert emails.responses == {}
+    assert client.patch("/api/contact-outreach/7", json={}).status_code == 400
+    assert outreach.responses == {}
 
 
-def test_email_log_entry_unknown_id_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_outreach_log_entry_unknown_id_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _contacts_client(monkeypatch)
 
-    patch_response = client.patch("/api/contact-emails/1", json={"response_received_at": None})
+    patch_response = client.patch("/api/contact-outreach/1", json={"response_received_at": None})
     assert patch_response.status_code == 404
-    assert client.delete("/api/contact-emails/1").status_code == 404
+    assert client.delete("/api/contact-outreach/1").status_code == 404
 
 
-def test_delete_contact_email(monkeypatch: pytest.MonkeyPatch) -> None:
-    emails = FakeContactEmailsRepo(email_ids={7})
-    client = _contacts_client(monkeypatch, emails=emails)
+def test_delete_contact_outreach(monkeypatch: pytest.MonkeyPatch) -> None:
+    outreach = FakeContactOutreachRepo(outreach_ids={7})
+    client = _contacts_client(monkeypatch, outreach=outreach)
 
-    assert client.delete("/api/contact-emails/7").status_code == 200
-    assert emails.deleted == [7]
+    assert client.delete("/api/contact-outreach/7").status_code == 200
+    assert outreach.deleted == [7]
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -773,3 +808,149 @@ def test_apply_title_suggestions_rejects_invalid_body(
     response = client.post("/api/contacts/titles/suggest/apply", json=body)
     assert response.status_code == 400
     assert title_rules.set_calls == []
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def test_log_contact_outreach_requires_a_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    outreach = FakeContactOutreachRepo(contact_ids={1})
+    client = _contacts_client(monkeypatch, outreach=outreach)
+
+    assert client.post("/api/contacts/1/outreach", json={}).status_code == 400
+    assert client.post("/api/contacts/1/outreach", json={"channel": "fax"}).status_code == 400
+    assert outreach.added == []
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def test_log_linkedin_outreach_records_channel_and_clears_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contacts = FakeContactsRepo([{"id": 1}])
+    outreach = FakeContactOutreachRepo(contact_ids={1})
+    client = _contacts_client(monkeypatch, contacts, outreach=outreach)
+
+    response = client.post("/api/contacts/1/outreach", json={"channel": "linkedin"})
+    assert response.status_code == 201
+    assert response.get_json()["channel"] == "linkedin"
+    assert outreach.added[0][0] == 1 and outreach.added[0][2] == "linkedin"
+    assert contacts.cleared == [1]
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def test_log_outreach_for_unknown_contact_does_not_clear_a_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contacts = FakeContactsRepo([{"id": 1}])
+    client = _contacts_client(monkeypatch, contacts)
+
+    assert client.post("/api/contacts/1/outreach", json={"channel": "linkedin"}).status_code == 404
+    assert contacts.cleared == []
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def test_outreach_template_defaults_then_saves(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = FakeSettingsRepo()
+    client = _contacts_client(monkeypatch, settings=settings)
+
+    default = client.get("/api/contacts/outreach-template").get_json()["template"]
+    assert "{first_name}" in default
+
+    saved = client.put("/api/contacts/outreach-template", json={"template": "  Hey {first_name}!  "})
+    assert saved.status_code == 200
+    assert saved.get_json() == {"template": "Hey {first_name}!"}
+    assert settings.values["linkedin_outreach_template"] == "Hey {first_name}!"
+    assert client.get("/api/contacts/outreach-template").get_json() == {
+        "template": "Hey {first_name}!"
+    }
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+@pytest.mark.parametrize("bad_template", ["", "   ", "x" * 8001, None, 5])
+def test_outreach_template_rejects_bad_values(
+    monkeypatch: pytest.MonkeyPatch, bad_template: object
+) -> None:
+    settings = FakeSettingsRepo()
+    client = _contacts_client(monkeypatch, settings=settings)
+
+    response = client.put("/api/contacts/outreach-template", json={"template": bad_template})
+    assert response.status_code == 400
+    assert settings.values == {}
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def test_outreach_draft_renders_the_saved_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    contacts = FakeContactsRepo(
+        [{"id": 1, "full_name": "Jane Q Doe", "company_raw": "Acme", "position": "CTO"}]
+    )
+    settings = FakeSettingsRepo()
+    settings.values["linkedin_outreach_template"] = "Hi {first_name} ({position} at {company}) {x}"
+    client = _contacts_client(monkeypatch, contacts, settings=settings)
+
+    response = client.post("/api/contacts/1/outreach-draft", json={})
+    assert response.status_code == 200
+    assert response.get_json() == {"draft": "Hi Jane (CTO at Acme) {x}"}
+    assert client.post("/api/contacts/2/outreach-draft", json={}).status_code == 404
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+@pytest.mark.parametrize("profile", ["Seasoned backend engineer.", None])
+def test_outreach_draft_with_ai_passes_template_draft_and_profile(
+    monkeypatch: pytest.MonkeyPatch, profile: str | None
+) -> None:
+    contacts = FakeContactsRepo([{"id": 1, "full_name": "Jane Doe", "company_raw": "Acme"}])
+    settings = FakeSettingsRepo()
+    settings.values["linkedin_outreach_template"] = "Hi {first_name}"
+    calls: list[tuple[int, str, str]] = []
+
+    class FakeWriter:
+        def __init__(self, user_id: int) -> None:
+            self.user_id = user_id
+
+        def write(self, contact: dict[str, Any], template_draft: str, candidate_profile: str) -> str:
+            calls.append((contact["id"], template_draft, candidate_profile))
+            return "AI wrote this"
+
+    monkeypatch.setattr("routes.contacts.OutreachDraftWriter", FakeWriter)
+    client = _contacts_client(
+        monkeypatch,
+        contacts,
+        settings=settings,
+        candidate_profiles=FakeCandidateProfilesRepo(profile),
+    )
+
+    response = client.post("/api/contacts/1/outreach-draft", json={"use_ai": True})
+    assert response.status_code == 200
+    assert response.get_json() == {"draft": "AI wrote this"}
+    assert calls == [(1, "Hi Jane", profile or "")]
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def test_outreach_draft_ai_failure_returns_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FailingWriter:
+        def __init__(self, user_id: int) -> None:
+            pass
+
+        def write(self, contact: dict[str, Any], template_draft: str, candidate_profile: str) -> str:
+            raise AIProviderError("Anthropic API key is not configured.")
+
+    monkeypatch.setattr("routes.contacts.OutreachDraftWriter", FailingWriter)
+    client = _contacts_client(monkeypatch, FakeContactsRepo([{"id": 1, "full_name": "Jane"}]))
+
+    response = client.post("/api/contacts/1/outreach-draft", json={"use_ai": True})
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "Anthropic API key is not configured."}
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def test_stage_outreach_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+    contacts = FakeContactsRepo([{"id": 1}])
+    client = _contacts_client(monkeypatch, contacts)
+
+    response = client.post("/api/contacts/1/outreach-draft/stage", json={"draft": " Hi Jane "})
+    assert response.status_code == 200
+    staged_at = response.get_json()["staged_at"]
+    assert staged_at.endswith("+00:00")
+    assert contacts.staged == [(1, "Hi Jane", staged_at)]
+
+    assert client.post("/api/contacts/2/outreach-draft/stage", json={"draft": "Hi"}).status_code == 404
+    assert client.post("/api/contacts/1/outreach-draft/stage", json={"draft": " "}).status_code == 400
+    assert len(contacts.staged) == 1

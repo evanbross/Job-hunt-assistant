@@ -22,34 +22,42 @@ import {
   localInputToUtcIso,
   toLocalDateTimeInputValue,
 } from "../utils/dateTimeUtils.ts";
-import type { Contact, ContactEmail } from "../types/contacts.ts";
+import type { Contact, ContactOutreach, OutreachChannel } from "../types/contacts.ts";
 
 interface ContactDetailProps {
   contact: Contact;
   onSaveEmailAddress: (contactId: number, address: string) => Promise<boolean>;
   onSaveNotes: (contactId: number, notes: string) => Promise<boolean>;
-  onLogEmail: (contactId: number, sentAtUtc: string) => Promise<void>;
-  onSetResponse: (contactId: number, emailId: number, responseReceivedAt: string | null) => Promise<void>;
-  onDeleteEmail: (contactId: number, emailId: number) => Promise<void>;
+  // ai: claude-opus-5-5 | 2026-10-14 -- were onLogEmail/onDeleteEmail; logging takes a channel
+  onLogOutreach: (contactId: number, sentAtUtc: string, channel: OutreachChannel) => Promise<void>;
+  onSetResponse: (contactId: number, outreachId: number, responseReceivedAt: string | null) => Promise<void>;
+  onDeleteOutreach: (contactId: number, outreachId: number) => Promise<void>;
 }
+
+// ai: claude-opus-5-5 | 2026-10-14
+const CHANNEL_OPTIONS: { value: OutreachChannel; label: string }[] = [
+  { value: "linkedin", label: "LinkedIn message" },
+  { value: "email", label: "Email" },
+];
 
 // ai: claude-sonnet-5 | 2026-09-25
 /**
  * Expanded row body for one contact: editable email address plus the outreach
- * log (each email sent, and the date a reply came back, if any). All writes
- * go through the handlers the panel passes in.
+ * log (each email or LinkedIn message sent, and the date a reply came back,
+ * if any). All writes go through the handlers the panel passes in.
  */
 export default function ContactDetail({
   contact,
   onSaveEmailAddress,
   onSaveNotes,
-  onLogEmail,
+  onLogOutreach,
   onSetResponse,
-  onDeleteEmail,
+  onDeleteOutreach,
 }: ContactDetailProps) {
   const [addressDraft, setAddressDraft] = useState(contact.email_address || "");
   const [notesDraft, setNotesDraft] = useState(contact.notes || "");
   const [sentAtInput, setSentAtInput] = useState(toLocalDateTimeInputValue());
+  const [channel, setChannel] = useState<OutreachChannel>("linkedin");
   const [pending, setPending] = useState(false);
 
   const run = async (action: () => Promise<unknown>) => {
@@ -82,15 +90,15 @@ export default function ContactDetail({
   const handleLog = () => {
     const sentAtUtc = localInputToUtcIso(sentAtInput);
     if (!sentAtUtc) {
-      window.alert("Pick the date and time you sent the email.");
+      window.alert("Pick the date and time you sent the message.");
       return;
     }
-    run(() => onLogEmail(contact.id, sentAtUtc));
+    run(() => onLogOutreach(contact.id, sentAtUtc, channel));
   };
 
-  const handleDelete = (email: ContactEmail) => {
-    if (!window.confirm(`Remove the email logged on ${formatLocalDateTime(email.sent_at)}?`)) return;
-    run(() => onDeleteEmail(contact.id, email.id));
+  const handleDelete = (entry: ContactOutreach) => {
+    if (!window.confirm(`Remove the message logged on ${formatLocalDateTime(entry.sent_at)}?`)) return;
+    run(() => onDeleteOutreach(contact.id, entry.id));
   };
 
   return (
@@ -129,29 +137,32 @@ export default function ContactDetail({
         />
       </div>
 
-      <div style={{ ...fieldLabel, marginTop: "12px", marginBottom: "6px" }}>Emails sent</div>
-      {contact.emails.length === 0 ? (
+      <div style={{ ...fieldLabel, marginTop: "12px", marginBottom: "6px" }}>Outreach sent</div>
+      {contact.outreach.length === 0 ? (
         <div style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "8px" }}>
           None logged yet.
         </div>
       ) : (
         <ul style={{ listStyle: "none", margin: "0 0 8px", padding: 0 }}>
-          {contact.emails.map((email) => (
-            <li key={email.id} style={emailRow}>
-              <span style={{ minWidth: "150px", fontWeight: 600 }}>{formatLocalDateTime(email.sent_at)}</span>
-              {email.response_received_at ? (
+          {contact.outreach.map((entry) => (
+            <li key={entry.id} style={outreachRow}>
+              <span style={{ minWidth: "150px", fontWeight: 600 }}>{formatLocalDateTime(entry.sent_at)}</span>
+              <span className="badge badge-gray">
+                {CHANNEL_OPTIONS.find((option) => option.value === entry.channel)?.label ?? entry.channel}
+              </span>
+              {entry.response_received_at ? (
                 <span className="badge badge-green">
-                  Replied {formatLocalDateTime(email.response_received_at)}
+                  Replied {formatLocalDateTime(entry.response_received_at)}
                 </span>
               ) : (
                 <span className="badge badge-orange">No reply yet</span>
               )}
               <span style={{ flex: 1 }} />
-              {email.response_received_at ? (
+              {entry.response_received_at ? (
                 <button
                   className="btn-secondary btn-xs"
                   disabled={pending}
-                  onClick={() => run(() => onSetResponse(contact.id, email.id, null))}
+                  onClick={() => run(() => onSetResponse(contact.id, entry.id, null))}
                 >
                   Clear reply
                 </button>
@@ -159,7 +170,7 @@ export default function ContactDetail({
                 <button
                   className="btn-success btn-xs"
                   disabled={pending}
-                  onClick={() => run(() => onSetResponse(contact.id, email.id, new Date().toISOString()))}
+                  onClick={() => run(() => onSetResponse(contact.id, entry.id, new Date().toISOString()))}
                 >
                   Got a reply now
                 </button>
@@ -167,7 +178,7 @@ export default function ContactDetail({
               <button
                 className="btn-danger btn-xs"
                 disabled={pending}
-                onClick={() => handleDelete(email)}
+                onClick={() => handleDelete(entry)}
               >
                 Remove
               </button>
@@ -186,8 +197,20 @@ export default function ContactDetail({
           value={sentAtInput}
           onChange={(e) => setSentAtInput(e.target.value)}
         />
+        <select
+          value={channel}
+          onChange={(e) => setChannel(e.target.value as OutreachChannel)}
+          aria-label="How the message was sent"
+          style={{ width: "auto" }}
+        >
+          {CHANNEL_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
         <button className="btn-primary btn-sm" disabled={pending} onClick={handleLog}>
-          Log email sent
+          Log message sent
         </button>
       </div>
     </div>
@@ -215,7 +238,7 @@ const fieldLabel: CSSProperties = {
   minWidth: "90px",
 };
 
-const emailRow: CSSProperties = {
+const outreachRow: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "10px",

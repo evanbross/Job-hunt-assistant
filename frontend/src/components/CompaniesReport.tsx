@@ -17,6 +17,7 @@
 // ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
+import { sendJson } from "../utils/contactsUtils.ts";
 import type {
   CompaniesReportResponse,
   CompanyReportRow,
@@ -30,15 +31,6 @@ const WORKFORCE_OPTIONS: { value: CompanyWorkforce; label: string }[] = [
   { value: "onshore", label: "Onshore" },
   { value: "offshore_hybrid", label: "Offshore hybrid" },
 ];
-
-// ai: claude-sonnet-5 | 2026-09-28
-async function sendJson(url: string, method: string, body?: unknown): Promise<Response> {
-  return fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-}
 
 type CompanyPatchFields = Partial<Pick<CompanyReportRow, "is_agency" | "workforce" | "notes">>;
 

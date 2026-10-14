@@ -51,6 +51,7 @@ import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from email.message import Message
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -78,6 +79,9 @@ GetProfile = Callable[[int], dict[str, Any] | None]
 GetResumeFile = Callable[[int], tuple[bytes, str] | None]
 GetAnswers = Callable[[int], list[dict[str, Any]]]
 LearnAnswer = Callable[[int, str, str, str | None], dict[str, Any]]
+# ai: claude-opus-5-5 | 2026-10-14 -- (user_id, page_url) -> staged LinkedIn
+# outreach draft for that profile page, or None.
+ClaimOutreachDraft = Callable[[int, str], dict[str, Any] | None]
 
 # A wrong or revoked token is not a guessing risk (tokens are 256-bit) but it is load and
 # log noise, and a browser holding a revoked token retries forever. The failure limit is
@@ -87,13 +91,18 @@ AUTH_FAILURE_IP = Policy("listener-auth-failure-ip", 120, 900)
 # Per token: a runaway or abusive client cannot monopolise the listener for everyone else.
 TOKEN_REQUESTS = Policy("listener-token-requests", 600, 60)
 
+# ai: claude-opus-5-5 | 2026-10-14
+# A plain mapping (tests, callers) or BaseHTTPRequestHandler.headers, which is
+# an email.message.Message -- both support the .get() lookups used below.
+RequestHeaders = Mapping[str, str] | Message
+
 _BEARER_PREFIX = "bearer "
 _MAX_DISCARD_BYTES = 1024 * 1024
 _DISCARD_TIMEOUT_SECONDS = 1.0
 
 
 # ai: claude-sonnet-5 | 2026-09-26
-def bearer_token(headers: Mapping[str, str]) -> str:
+def bearer_token(headers: RequestHeaders) -> str:
     """Extract the token from an `Authorization: Bearer <token>` header, or ""."""
     value = str(headers.get("Authorization") or "").strip()
     if value.lower().startswith(_BEARER_PREFIX):
@@ -122,7 +131,7 @@ class ImportListenerRequestParser:
         self,
         *,
         path: str,
-        headers: Mapping[str, str],
+        headers: RequestHeaders,
         raw_body: bytes,
     ) -> ListenerCaptureRequest:
         parsed_url = urlparse(path)
@@ -191,7 +200,7 @@ class ImportListenerRequestParser:
         if "content" in payload:
             body = dict(payload)
         else:
-            body = {
+            body: dict[str, Any] = {  # ai: claude-opus-5-5 | 2026-10-14 -- typed: values aren't all str
                 "content": json.dumps(payload),
                 "format": "json",
             }
@@ -232,6 +241,7 @@ class JobImportListener:
         get_resume_file: GetResumeFile | None = None,
         get_answers: GetAnswers | None = None,
         learn_answer: LearnAnswer | None = None,
+        claim_outreach_draft: ClaimOutreachDraft | None = None,
         ws_tickets: WebSocketTicketStore | None = None,
         trusted_proxies: tuple[Network, ...] = (),
         rate_limiter: RateLimiter | None = None,
@@ -248,6 +258,7 @@ class JobImportListener:
         self._get_resume_file = get_resume_file
         self._get_answers = get_answers
         self._learn_answer = learn_answer
+        self._claim_outreach_draft = claim_outreach_draft
         self._ws_tickets = ws_tickets
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -270,6 +281,7 @@ class JobImportListener:
         get_resume_file = self._get_resume_file
         get_answers = self._get_answers
         learn_answer = self._learn_answer
+        claim_outreach_draft = self._claim_outreach_draft
         ws_tickets = self._ws_tickets
         trusted_proxies = self._trusted_proxies
         limiter = self._rate_limiter or get_rate_limiter()
@@ -430,22 +442,8 @@ class JobImportListener:
                     return
 
                 if path == "/application-answers":
-                    raw_body = self._read_body()
-                    if raw_body is None:
-                        return
-                    try:
-                        payload = json.loads(raw_body.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError):
-                        self._send_json(
-                            {"error": "Request JSON could not be parsed."},
-                            HTTPStatus.BAD_REQUEST,
-                        )
-                        return
-                    if not isinstance(payload, dict):
-                        self._send_json(
-                            {"error": "Request JSON must be an object."},
-                            HTTPStatus.BAD_REQUEST,
-                        )
+                    payload = self._read_json_object()
+                    if payload is None:
                         return
                     question_text = str(payload.get("question_text") or "").strip()
                     answer_text = str(payload.get("answer_text") or "").strip()
@@ -473,6 +471,33 @@ class JobImportListener:
                         )
                     return
 
+                # ai: claude-opus-5-5 | 2026-10-14
+                # Called by background.js each time a LinkedIn /in/ profile
+                # finishes loading; returns the draft the user staged for that
+                # contact in the Contacts tab's outreach queue, if any.
+                if path == "/linkedin-outreach/claim":
+                    payload = self._read_json_object()
+                    if payload is None:
+                        return
+                    page_url = str(payload.get("page_url") or "").strip()
+                    if not page_url:
+                        self._send_json(
+                            {"error": "page_url is required."}, HTTPStatus.BAD_REQUEST
+                        )
+                        return
+                    if claim_outreach_draft is None:
+                        self._send_json({"draft": None})
+                        return
+                    try:
+                        self._send_json({"draft": claim_outreach_draft(user_id, page_url)})
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("LinkedIn outreach draft claim failed: %s", exc)
+                        self._send_json(
+                            {"error": "Outreach draft unavailable."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                    return
+
                 raw_body = self._read_body()
                 if raw_body is None:
                     return
@@ -489,6 +514,30 @@ class JobImportListener:
 
                 payload, status_code = submit_capture(user_id, parsed_request.body)
                 self._send_json(payload, status_code)
+
+            # ai: claude-opus-5-5 | 2026-10-14 -- extracted from the
+            # /application-answers branch so /linkedin-outreach/claim shares it.
+            def _read_json_object(self) -> dict[str, Any] | None:
+                """Read the body as a JSON object; sends the error response and
+                returns None if it is missing, unparseable, or not an object."""
+                raw_body = self._read_body()
+                if raw_body is None:
+                    return None
+                try:
+                    payload = json.loads(raw_body.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self._send_json(
+                        {"error": "Request JSON could not be parsed."},
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return None
+                if not isinstance(payload, dict):
+                    self._send_json(
+                        {"error": "Request JSON must be an object."},
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return None
+                return payload
 
             def _discard_request_body(self) -> None:
                 """Drain at most _MAX_DISCARD_BYTES of an already-rejected request's
@@ -648,6 +697,7 @@ def start_job_import_listener(
     get_resume_file: GetResumeFile | None = None,
     get_answers: GetAnswers | None = None,
     learn_answer: LearnAnswer | None = None,
+    claim_outreach_draft: ClaimOutreachDraft | None = None,
     ws_tickets: WebSocketTicketStore | None = None,
     trusted_proxies: tuple[Network, ...] = (),
 ) -> JobImportListener | None:
@@ -682,6 +732,7 @@ def start_job_import_listener(
             get_resume_file=get_resume_file,
             get_answers=get_answers,
             learn_answer=learn_answer,
+            claim_outreach_draft=claim_outreach_draft,
             ws_tickets=ws_tickets,
             trusted_proxies=trusted_proxies,
         )

@@ -151,6 +151,7 @@ class _Recorder:
         self.learned: list[tuple[int, str, str, str | None]] = []
         self.captured: list[tuple[int, dict[str, Any]]] = []
         self.claimed_for: list[int] = []
+        self.outreach_claims: list[tuple[int, str]] = []
         self.auth_calls: list[str] = []
         self.auth_failure: Exception | None = None
 
@@ -176,6 +177,13 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
         recorder.captured.append((user_id, body))
         return {"received": body}, 200
 
+    # ai: claude-opus-5-5 | 2026-10-14
+    def fake_claim_outreach_draft(user_id: int, page_url: str) -> dict[str, Any] | None:
+        recorder.outreach_claims.append((user_id, page_url))
+        if not page_url.endswith("/in/jane"):
+            return None
+        return {"contact_id": 5, "full_name": "Jane", "message": f"Hi from user {user_id}"}
+
     def fake_claim(user_id: int) -> list[dict[str, Any]]:
         recorder.claimed_for.append(user_id)
         return [{"url": f"https://example.com/for-user-{user_id}"}]
@@ -193,6 +201,7 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
             {"id": 1, "question_text": "Security clearance?", "answer_text": f"answer-{user_id}"}
         ],
         learn_answer=fake_learn_answer,
+        claim_outreach_draft=fake_claim_outreach_draft,
         ws_tickets=tickets,
     )
     listener.start()
@@ -279,6 +288,7 @@ _PROTECTED_REQUESTS = [
     ("POST", "/capture"),
     ("POST", "/application-answers"),
     ("POST", "/ws-ticket"),
+    ("POST", "/linkedin-outreach/claim"),
 ]
 
 
@@ -294,6 +304,7 @@ def test_every_protected_route_rejects_a_missing_token(
     assert status == HTTPStatus.UNAUTHORIZED
     assert headers["WWW-Authenticate"] == "Bearer"
     assert recorder.captured == [] and recorder.learned == [] and recorder.claimed_for == []
+    assert recorder.outreach_claims == []
 
 
 @pytest.mark.parametrize(("method", "path"), _PROTECTED_REQUESTS)
@@ -374,6 +385,40 @@ def test_listener_learn_answer_rejects_blank_fields(running_listener: Any) -> No
     )
     assert status == HTTPStatus.BAD_REQUEST
     assert recorder.learned == []
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def test_linkedin_outreach_claim_is_for_the_caller_and_page(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    page = "https://www.linkedin.com/in/jane"
+
+    status, body, _ = _post_json(listener, "/linkedin-outreach/claim", {"page_url": page}, token=USER_B_TOKEN)
+    assert status == HTTPStatus.OK
+    assert json.loads(body) == {
+        "draft": {"contact_id": 5, "full_name": "Jane", "message": f"Hi from user {USER_B}"}
+    }
+
+    status, body, _ = _post_json(
+        listener, "/linkedin-outreach/claim", {"page_url": "https://www.linkedin.com/in/bob"}
+    )
+    assert status == HTTPStatus.OK
+    assert json.loads(body) == {"draft": None}
+    assert recorder.outreach_claims == [(USER_B, page), (USER_A, "https://www.linkedin.com/in/bob")]
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+@pytest.mark.parametrize("payload", [b"{}", b'{"page_url": "  "}', b"[]", b"not json"])
+def test_linkedin_outreach_claim_rejects_bad_bodies(running_listener: Any, payload: bytes) -> None:
+    listener, recorder, _ = running_listener
+    status, _, _ = _request(
+        listener,
+        "/linkedin-outreach/claim",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        body=payload,
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert recorder.outreach_claims == []
 
 
 def test_capture_is_submitted_for_the_authenticated_user(running_listener: Any) -> None:

@@ -91,9 +91,10 @@ def _role_score(contact: Mapping[str, Any]) -> float:
 
 # ai: gpt-5 | 2026-10-02
 def _relationship_score(contact: Mapping[str, Any], as_of: date) -> float:
-    emails = contact.get("emails") or []
-    if emails:
-        return 10.0 if any(email.get("response_received_at") for email in emails) else 5.0
+    # ai: claude-opus-5-5 | 2026-10-14 -- was contact["emails"] (renamed with contact_outreach)
+    outreach = contact.get("outreach") or []
+    if outreach:
+        return 10.0 if any(entry.get("response_received_at") for entry in outreach) else 5.0
 
     connected_on = _parse_date(contact.get("connected_on"))
     if connected_on is None:

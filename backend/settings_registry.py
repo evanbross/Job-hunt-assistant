@@ -289,6 +289,23 @@ SETTINGS: dict[str, SettingSpec] = {
         label="Notify Email", group="JD Health Check", placeholder="you@example.com",
         help_text="Sent only when a run has at least one failing target.",
     ),
+    # ai: claude-opus-5-5 | 2026-10-14
+    # Contacts tab outreach queue's message template. Hidden: it's a multi-line
+    # message edited in the queue itself, through the length-validated
+    # /api/contacts/outreach-template route (routes/contacts.py), not the
+    # generic single-line settings form. Placeholders are filled by
+    # backend/contacts/outreach_drafts.py's render_outreach_template().
+    "linkedin_outreach_template": SettingSpec(
+        scope="user", is_secret=False,
+        default=(
+            "Hi {first_name},\n\n"
+            "I hope you're doing well! I'm currently exploring new roles and noticed "
+            "you're at {company}. I'd love to hear how you like it there and whether "
+            "your team is hiring.\n\n"
+            "Thanks so much!"
+        ),
+        label="LinkedIn outreach template", group="Contacts", hidden=True,
+    ),
 }
 
 # Keys an admin may write via PUT /api/settings/system.
@@ -297,9 +314,11 @@ SYSTEM_SETTING_KEYS: frozenset[str] = frozenset(
 )
 
 # Keys a regular user may write via PUT /api/settings/user (secrets not
-# otherwise exposed through /api/config, e.g. AI provider keys).
+# otherwise exposed through /api/config, e.g. AI provider keys). Hidden keys
+# are excluded for the same reason as SYSTEM_SETTING_KEYS above: each is
+# written only by its own validating route.
 USER_SETTING_KEYS: frozenset[str] = frozenset(
-    key for key, spec in SETTINGS.items() if spec.scope == "user"
+    key for key, spec in SETTINGS.items() if spec.scope == "user" and not spec.hidden  # ai: claude-opus-5-5 | 2026-10-14
 )
 
 

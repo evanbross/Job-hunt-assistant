@@ -71,7 +71,7 @@ from .interfaces import (
     ICareerSiteSourceRepository,
     ICompanyAliasRepository,
     ICompanyRepository,
-    IContactEmailRepository,
+    IContactOutreachRepository,
     IContactRepository,
     ICoverLetterPhraseRepository,
     IEmailSourceRepository,
@@ -113,7 +113,7 @@ from .repositories.career_scan_results import PostgresCareerScanResultRepository
 from .repositories.career_site_sources import PostgresCareerSiteSourceRepository
 from .repositories.companies import PostgresCompanyRepository
 from .repositories.company_aliases import PostgresCompanyAliasRepository
-from .repositories.contact_outreach import PostgresContactEmailRepository
+from .repositories.contact_outreach import PostgresContactOutreachRepository
 from .repositories.contacts import PostgresContactRepository
 from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseRepository
 from .repositories.email_sources import PostgresEmailSourceRepository
@@ -154,7 +154,7 @@ __all__ = [
     "ICareerSiteSourceRepository",
     "ICompanyAliasRepository",
     "ICompanyRepository",
-    "IContactEmailRepository",
+    "IContactOutreachRepository",
     "IContactRepository",
     "IExtensionTokenRepository",
     "IGoogleTokenRepository",
@@ -190,7 +190,7 @@ __all__ = [
     "PostgresCareerSiteSourceRepository",
     "PostgresCompanyAliasRepository",
     "PostgresCompanyRepository",
-    "PostgresContactEmailRepository",
+    "PostgresContactOutreachRepository",
     "PostgresContactRepository",
     "PostgresExtensionTokenRepository",
     "PostgresGoogleTokenRepository",
@@ -374,7 +374,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "companies": PostgresCompanyRepository(conn),
         "company_aliases": PostgresCompanyAliasRepository(conn),
         "title_rules": PostgresTitleRuleRepository(conn),
-        "contact_emails": PostgresContactEmailRepository(conn),
+        "contact_outreach": PostgresContactOutreachRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),
         "google_tokens": PostgresGoogleTokenRepository(conn),
         "greenhouse_sessions": PostgresGreenhouseSessionRepository(conn),

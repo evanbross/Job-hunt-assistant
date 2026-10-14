@@ -125,7 +125,7 @@ def test_set_rule_applies_only_to_undecided_contacts(pg_dsn: str) -> None:
         conn.commit()
 
         assert decided_count == 1  # only the previously-undecided contact
-        by_name = {c["full_name"]: c for c in contacts.list_with_emails(user_id)}
+        by_name = {c["full_name"]: c for c in contacts.list_with_outreach(user_id)}
         assert by_name["Decided"]["recruiter_type"] == "high_reliability"
         assert by_name["Decided"]["decided_by"] == "manual"
         assert by_name["Undecided"]["recruiter_type"] == "unrated"
@@ -150,7 +150,7 @@ def test_set_rule_with_none_dismisses_the_title(pg_dsn: str) -> None:
         titles.set_rule(user_id, "talent manager", None)
         conn.commit()
 
-        contact = contacts.list_with_emails(user_id)[0]
+        contact = contacts.list_with_outreach(user_id)[0]
         assert contact["recruiter_type"] is None
         assert contact["decided_by"] == "title_rule"
         report = titles.titles_report(user_id)[0]
@@ -186,7 +186,7 @@ def test_undo_rule_resets_only_the_contacts_it_decided(pg_dsn: str) -> None:
         conn.commit()
 
         assert reset_count == 1
-        by_name = {c["full_name"]: c for c in contacts.list_with_emails(user_id)}
+        by_name = {c["full_name"]: c for c in contacts.list_with_outreach(user_id)}
         assert by_name["ByRule"]["recruiter_type"] is None
         assert by_name["ByRule"]["decided_by"] is None
         assert by_name["Manual"]["recruiter_type"] == "low_reliability", "manual decision must survive an undo"
@@ -217,7 +217,7 @@ def test_apply_all_rules_decides_new_undecided_contacts_matching_existing_rules(
 
         assert applied == 1
         second = next(
-            c for c in contacts.list_with_emails(user_id) if c["profile_url"].endswith("second")
+            c for c in contacts.list_with_outreach(user_id) if c["profile_url"].endswith("second")
         )
         assert second["recruiter_type"] == "high_reliability"
         assert second["decided_by"] == "title_rule"
@@ -244,7 +244,7 @@ def test_title_rules_are_scoped_to_the_owning_user(pg_dsn: str) -> None:
         contacts.sync_import(other_id, [_import_row()])
         conn.commit()
 
-        other_contact = contacts.list_with_emails(other_id)[0]
+        other_contact = contacts.list_with_outreach(other_id)[0]
         assert other_contact["recruiter_type"] is None, (
             "other account's matching-title contact must not be decided by the owner's rule"
         )

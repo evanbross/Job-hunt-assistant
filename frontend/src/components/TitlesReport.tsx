@@ -17,6 +17,7 @@
 // ai: claude-sonnet-5 | 2026-10-07
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
+import { sendJson } from "../utils/contactsUtils.ts";
 import type {
   RecruiterType,
   TitleReportRow,
@@ -39,15 +40,6 @@ const RECRUITER_TYPES: { value: RecruiterType; label: string }[] = [
 ];
 
 const QUICK_FILTERS = ["recruit", "talent", "sourc"];
-
-// ai: claude-sonnet-5 | 2026-09-28
-async function sendJson(url: string, method: string, body?: unknown): Promise<Response> {
-  return fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-}
 
 interface TitlesReportProps {
   onViewContactsForTitle?: (normalizedTitle: string) => void;

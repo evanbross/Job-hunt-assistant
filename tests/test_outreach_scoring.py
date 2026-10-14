@@ -28,7 +28,7 @@ def _contact(**overrides: object) -> dict[str, object]:
         "normalized_title": "",
         "recruiter_type": None,
         "connected_on": None,
-        "emails": [],
+        "outreach": [],
         "interested": False,
         "notes": None,
     }
@@ -101,12 +101,12 @@ def test_email_history_overrides_connection_tenure() -> None:
     as_of = date(2026, 10, 2)
     old_connection = as_of - timedelta(days=365 * 10)
     sent = score_contact(
-        _contact(connected_on=old_connection, emails=[{"response_received_at": None}]),
+        _contact(connected_on=old_connection, outreach=[{"response_received_at": None}]),
         {},
         as_of=as_of,
     )
     replied = score_contact(
-        _contact(connected_on=old_connection, emails=[{"response_received_at": "2026-01-01"}]),
+        _contact(connected_on=old_connection, outreach=[{"response_received_at": "2026-01-01"}]),
         {},
         as_of=as_of,
     )

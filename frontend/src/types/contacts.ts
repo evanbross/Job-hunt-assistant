@@ -32,14 +32,21 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+// ai: claude-opus-5-5 | 2026-10-14
+// Matches backend/db/schema.py's contact_outreach_channel_check constraint
+// (and routes/contacts.py's OutreachChannel).
+export type OutreachChannel = "email" | "linkedin";
+
 // ai: claude-sonnet-5 | 2026-10-07
-// Mirrors the `contacts`/`contact_emails` tables (backend/db/schema.py) plus
+// Mirrors the `contacts`/`contact_outreach` tables (backend/db/schema.py) plus
 // the computed fields routes/contacts.py's list_contacts() adds
 // (outreach_score via backend/contacts/outreach_scoring.py's score_contact).
-export interface ContactEmail {
+// ai: claude-opus-5-5 | 2026-10-14 -- was ContactEmail (contact_emails); gained channel
+export interface ContactOutreach {
   id: number;
   sent_at: string;
   response_received_at?: string | null;
+  channel: OutreachChannel;
 }
 
 export interface Contact {
@@ -56,8 +63,22 @@ export interface Contact {
   recruiter_type?: string | null;
   decided_by?: string | null;
   notes?: string | null;
-  emails: ContactEmail[];
+  // ai: claude-opus-5-5 | 2026-10-14
+  /** The LinkedIn message last staged for this contact in the outreach queue, until it's logged as sent. */
+  outreach_draft?: string | null;
+  outreach: ContactOutreach[];
   outreach_score?: number;
+}
+
+// ai: claude-opus-5-5 | 2026-10-14
+/** Response body of GET/PUT /api/contacts/outreach-template. */
+export interface OutreachTemplateResponse {
+  template: string;
+}
+
+/** Response body of POST /api/contacts/<id>/outreach-draft. */
+export interface OutreachDraftResponse {
+  draft: string;
 }
 
 /** Response body of GET /api/contacts (routes/contacts.py's list_contacts). */

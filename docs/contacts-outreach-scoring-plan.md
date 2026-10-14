@@ -9,7 +9,7 @@ the current job search, so the Contacts tab can be sorted by a single
 
 The `contacts` table already carries the signals that matter
 (`recruiter_type`, `company_normalized`, `normalized_title`, `connected_on`,
-`interested`), plus `contact_emails` for prior-outreach history. A small
+`interested`), plus `contact_outreach` for prior-outreach history. A small
 weighted sum over these is transparent, needs no training data, and is easy
 to re-tune by eye — the right tool here vs. a learned ranker.
 
@@ -27,7 +27,7 @@ to re-tune by eye — the right tool here vs. a learned ranker.
   column (`backend/contacts/contacts_import_service.py:106,181`). This is the
   "how long have I known them" signal the user asked about.
 - `contacts.interested` — manual flag, user-set.
-- `contact_emails` (joined in `list_with_emails`,
+- `contact_outreach` (joined in `list_with_outreach`,
   `backend/db/repositories/contacts.py:82`) — `sent_at`,
   `response_received_at` per contact. This is a *better* relationship signal
   than `connected_on` alone: someone you've already emailed and gotten a
@@ -40,7 +40,7 @@ to re-tune by eye — the right tool here vs. a learned ranker.
 |---|---|---|
 | Company relevance | 0.35 | 10 if `company_normalized` matches an active/target job's `company_normalized`; lower tiers for past applications or none |
 | Role relevance | 0.30 | from `recruiter_type` (`high_reliability`=10, `motion`=6, `unrated`=4, `low_reliability`=2, `offshore_spam`=0) blended with a title-keyword check for non-recruiters (hiring manager / engineering leadership titles score higher than unrelated ICs) |
-| Relationship strength | 0.25 | derived primarily from `contact_emails` history (prior reply > prior sent-no-reply > never contacted); falls back to `connected_on` tenure only when there's no email history |
+| Relationship strength | 0.25 | derived primarily from `contact_outreach` history (prior reply > prior sent-no-reply > never contacted); falls back to `connected_on` tenure only when there's no email history |
 | Engagement / interest | 0.10 | `interested` flag, presence of `notes` |
 
 ### Tenure curve (answers the "just added within 60 days" question)
@@ -66,7 +66,7 @@ proposal, not a final answer.
    `score_contact(contact: dict, target_companies: set[str]) -> float` — no DB
    calls inside it, just the weighted-sum math, so it's unit-testable in
    isolation (per `TESTING_STANDARDS.md`).
-2. **Backend:** wire it into the existing `list_with_emails` read path (likely
+2. **Backend:** wire it into the existing `list_with_outreach` read path (likely
    in `backend/contacts/contacts_service.py`) so the API response includes an
    `outreach_score` field per contact, computed from data already being
    fetched — no new query needed for the company-match check if `jobs` is

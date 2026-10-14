@@ -114,7 +114,7 @@ _ALL_TABLES = (
     "application_stages",
     "browser_capture_queue",
     "import_repair_history",
-    "contact_emails",
+    "contact_outreach",
     "extension_tokens",
     "google_oauth_tokens",
     "greenhouse_sessions",

@@ -772,3 +772,109 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 });
+
+// ─── LinkedIn outreach ─────────────────────────────────────────────────────
+// ai: claude-opus-5-5 | 2026-10-14
+// The app's Contacts > Outreach queue stages a message for one contact and
+// opens their LinkedIn profile. When that profile finishes loading, claim the
+// staged message from the listener (backend/contacts/outreach_drafts.py's
+// claim_draft_for_page -- one-shot, and only for the matching profile), then:
+//   1. ask linkedin-outreach.js for the profile's Message link and send the
+//      tab there (LinkedIn's Message is a full navigation to
+//      /messaging/thread/new/, not an overlay, so a script on the profile page
+//      would be torn down before it could fill anything in);
+//   2. when the messaging page finishes loading, have linkedin-outreach.js
+//      paste the message into the compose box. The user presses Send.
+// The message waits between the two page loads in chrome.storage.session,
+// not a module variable, so a service-worker suspension in between doesn't
+// lose it. The app also copies the message to the clipboard, which is what
+// the failure notifications below point the user at.
+const _LINKEDIN_PROFILE_RE = /^https:\/\/([a-z0-9-]+\.)?linkedin\.com\/in\/[^/?#]+/i;
+const _LINKEDIN_MESSAGING_RE = /^https:\/\/([a-z0-9-]+\.)?linkedin\.com\/messaging\//i;
+const _OUTREACH_PENDING_PREFIX = 'jhaOutreach:';
+const _OUTREACH_PENDING_TTL_MS = 2 * 60 * 1000;
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete' || !tab.url) return;
+  if (_LINKEDIN_MESSAGING_RE.test(tab.url)) {
+    fillPendingLinkedInMessage(tabId);
+  } else if (_LINKEDIN_PROFILE_RE.test(tab.url)) {
+    startLinkedInOutreach(tabId, tab.url);
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session.remove(`${_OUTREACH_PENDING_PREFIX}${tabId}`).catch(() => {});
+});
+
+async function sendToLinkedInOutreachScript(tabId, message) {
+  await chrome.scripting.executeScript({ target: { tabId }, files: ['linkedin-outreach.js'] });
+  return chrome.tabs.sendMessage(tabId, message);
+}
+
+async function startLinkedInOutreach(tabId, pageUrl) {
+  const settings = await loadSettings();
+  if (!settings.token) return; // not set up; nothing could have been staged for us
+  let draft;
+  try {
+    const res = await fetch(`${settings.listenerUrl}/linkedin-outreach/claim`, {
+      method: 'POST',
+      headers: jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ page_url: pageUrl }),
+    });
+    jhaReportAuth(res);
+    if (!res.ok) return;
+    ({ draft } = await res.json());
+  } catch {
+    return; // app not running -- an ordinary LinkedIn visit, not an outreach one
+  }
+  if (!draft) return;
+
+  try {
+    const found = await sendToLinkedInOutreachScript(tabId, { action: 'findLinkedInComposeUrl' });
+    if (!found?.ok) {
+      showNotification(
+        `No Message button on ${draft.full_name}'s profile (not a 1st-degree connection?). ` +
+          'Your message is on the clipboard.',
+        false
+      );
+      return;
+    }
+    await chrome.storage.session.set({
+      [`${_OUTREACH_PENDING_PREFIX}${tabId}`]: {
+        message: draft.message,
+        fullName: draft.full_name,
+        expiresAt: Date.now() + _OUTREACH_PENDING_TTL_MS,
+      },
+    });
+    await chrome.tabs.update(tabId, { url: found.url });
+  } catch (err) {
+    console.error('[JHA] LinkedIn outreach (profile step) failed:', err?.message || err);
+    showNotification(`Could not open the message box for ${draft.full_name}. Your message is on the clipboard.`, false);
+  }
+}
+
+async function fillPendingLinkedInMessage(tabId) {
+  const key = `${_OUTREACH_PENDING_PREFIX}${tabId}`;
+  const { [key]: pending } = await chrome.storage.session.get(key);
+  if (!pending) return;
+  await chrome.storage.session.remove(key); // one attempt per staged message
+  if (Date.now() > pending.expiresAt) return;
+
+  try {
+    const result = await sendToLinkedInOutreachScript(tabId, {
+      action: 'insertLinkedInOutreachDraft',
+      message: pending.message,
+    });
+    if (!result?.ok) {
+      showNotification(
+        `Couldn't paste your message to ${pending.fullName} (${result?.error || 'unknown error'}). ` +
+          "It's on the clipboard -- paste it into the message box.",
+        false
+      );
+    }
+  } catch (err) {
+    console.error('[JHA] LinkedIn outreach (messaging step) failed:', err?.message || err);
+    showNotification(`Couldn't paste your message to ${pending.fullName}. It's on the clipboard.`, false);
+  }
+}

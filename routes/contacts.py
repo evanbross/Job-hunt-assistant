@@ -33,7 +33,8 @@
 # =============================================================================
 
 """LinkedIn contacts import, company-match lookup, and Contacts-tab routes
-(interest/type flags and the outreach-email log)."""
+(interest/type flags, the outreach log, and the LinkedIn outreach queue's
+template/draft/stage routes)."""
 
 from __future__ import annotations
 
@@ -55,18 +56,28 @@ from pydantic import (
     field_validator,
 )
 
+from backend.ai_provider import AIProviderError
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.contacts_service import build_company_map
+from backend.contacts.outreach_drafts import (
+    MAX_OUTREACH_MESSAGE_LENGTH,
+    OutreachDraftWriter,
+    render_outreach_template,
+)
 from backend.contacts.outreach_scoring import score_contact
 from backend.contacts.title_suggestion_service import (
     finish_title_suggestions,
     prepare_title_suggestions,
 )
+from backend.settings_service import get_setting, set_setting
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
+    CandidateProfileMissingError,
     current_user_id,
+    get_candidate_profile,
     get_repos,
     invalid_request_response,
+    safe_error_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +111,12 @@ RecruiterType = Literal["unrated", "motion", "low_reliability", "high_reliabilit
 
 # Matches backend/db/repositories/companies.py's workforce CHECK constraint.
 CompanyWorkforce = Literal["unknown", "onshore", "offshore_hybrid"]
+
+# ai: claude-opus-5-5 | 2026-10-14
+# Matches backend/db/schema.py's contact_outreach_channel_check constraint.
+OutreachChannel = Literal["email", "linkedin"]
+
+_OUTREACH_TEMPLATE_SETTING = "linkedin_outreach_template"
 
 
 # ai: claude-sonnet-5 | 2026-09-28
@@ -206,20 +223,58 @@ class TitleSuggestApply(BaseModel):
 
 
 # ai: claude-sonnet-5 | 2026-09-25
-class ContactEmailCreate(BaseModel):
+# ai: claude-opus-5-5 | 2026-10-14 -- was ContactEmailCreate; channel is
+# required so a caller always states how the message went out.
+class ContactOutreachCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sent_at: UtcTimestamp | None = None
+    channel: OutreachChannel
 
 
 # ai: claude-sonnet-5 | 2026-09-25
-class ContactEmailResponseUpdate(BaseModel):
+# ai: claude-opus-5-5 | 2026-10-14 -- was ContactEmailResponseUpdate
+class ContactOutreachResponseUpdate(BaseModel):
     """response_received_at is required (no default) so a body must state
     explicitly whether a reply came in (a date) or is being cleared (null)."""
 
     model_config = ConfigDict(extra="forbid")
 
     response_received_at: UtcTimestamp | None
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def _normalize_outreach_message(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("message must not be empty")
+    if len(value) > MAX_OUTREACH_MESSAGE_LENGTH:
+        raise ValueError(f"message is limited to {MAX_OUTREACH_MESSAGE_LENGTH} characters")
+    return value
+
+
+OutreachMessage = Annotated[str, AfterValidator(_normalize_outreach_message)]
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+class OutreachTemplateUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template: OutreachMessage
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+class OutreachDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    use_ai: StrictBool = False
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+class OutreachDraftStage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft: OutreachMessage
 
 
 # ai: claude-sonnet-5 | 2026-07-25
@@ -279,7 +334,7 @@ def list_contacts() -> ResponseReturnValue:
     # ai: gpt-5 | 2026-10-03
     user_id = current_user_id()
     with get_repos() as repos:
-        contacts = repos["contacts"].list_with_emails(user_id)
+        contacts = repos["contacts"].list_with_outreach(user_id)
         # ai: gpt-5 | 2026-10-03
         terminal_statuses = {
             status["key"] for status in repos["stage_statuses"].get_all() if status["is_terminal"]
@@ -445,44 +500,130 @@ def apply_title_suggestions() -> ResponseReturnValue:
 
 
 # ai: claude-sonnet-5 | 2026-09-25
-@contacts_bp.route("/contacts/<int:contact_id>/emails", methods=["POST"])
-def log_contact_email(contact_id: int) -> ResponseReturnValue:
+# ai: claude-opus-5-5 | 2026-10-14 -- was POST /contacts/<id>/emails. Logging
+# outreach also clears the contact's prepared LinkedIn draft: the message it
+# was for has now gone out.
+@contacts_bp.route("/contacts/<int:contact_id>/outreach", methods=["POST"])
+def log_contact_outreach(contact_id: int) -> ResponseReturnValue:
     try:
-        body = ContactEmailCreate.model_validate(request.get_json(silent=True) or {})
+        body = ContactOutreachCreate.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
         return invalid_request_response(exc)
 
     sent_at = body.sent_at or datetime.now(UTC).isoformat(timespec="seconds")
+    user_id = current_user_id()
     with get_repos() as repos:
-        created = repos["contact_emails"].add(current_user_id(), contact_id, sent_at)
+        created = repos["contact_outreach"].add(user_id, contact_id, sent_at, body.channel)
         if created is None:
             return jsonify({"error": "Contact not found"}), 404
+        repos["contacts"].clear_outreach_draft(user_id, contact_id)
         repos["conn"].commit()
     return jsonify(created), 201
 
 
 # ai: claude-sonnet-5 | 2026-09-25
-@contacts_bp.route("/contact-emails/<int:email_id>", methods=["PATCH"])
-def update_contact_email_response(email_id: int) -> ResponseReturnValue:
+# ai: claude-opus-5-5 | 2026-10-14 -- was PATCH /contact-emails/<id>
+@contacts_bp.route("/contact-outreach/<int:outreach_id>", methods=["PATCH"])
+def update_contact_outreach_response(outreach_id: int) -> ResponseReturnValue:
     try:
-        body = ContactEmailResponseUpdate.model_validate(request.get_json(silent=True) or {})
+        body = ContactOutreachResponseUpdate.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
         return invalid_request_response(exc)
 
     with get_repos() as repos:
-        if not repos["contact_emails"].set_response(
-            current_user_id(), email_id, body.response_received_at
+        if not repos["contact_outreach"].set_response(
+            current_user_id(), outreach_id, body.response_received_at
         ):
-            return jsonify({"error": "Email not found"}), 404
+            return jsonify({"error": "Outreach entry not found"}), 404
         repos["conn"].commit()
     return jsonify({"ok": True})
 
 
 # ai: claude-sonnet-5 | 2026-09-25
-@contacts_bp.route("/contact-emails/<int:email_id>", methods=["DELETE"])
-def delete_contact_email(email_id: int) -> ResponseReturnValue:
+# ai: claude-opus-5-5 | 2026-10-14 -- was DELETE /contact-emails/<id>
+@contacts_bp.route("/contact-outreach/<int:outreach_id>", methods=["DELETE"])
+def delete_contact_outreach(outreach_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
-        if not repos["contact_emails"].delete(current_user_id(), email_id):
-            return jsonify({"error": "Email not found"}), 404
+        if not repos["contact_outreach"].delete(current_user_id(), outreach_id):
+            return jsonify({"error": "Outreach entry not found"}), 404
         repos["conn"].commit()
     return jsonify({"ok": True})
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+@contacts_bp.route("/contacts/outreach-template")
+def get_outreach_template() -> ResponseReturnValue:
+    user_id = current_user_id()
+    with get_repos() as repos:
+        template = get_setting(_OUTREACH_TEMPLATE_SETTING, user_id, repos)
+    return jsonify({"template": template})
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+@contacts_bp.route("/contacts/outreach-template", methods=["PUT"])
+def update_outreach_template() -> ResponseReturnValue:
+    try:
+        body = OutreachTemplateUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
+    with get_repos() as repos:
+        set_setting(_OUTREACH_TEMPLATE_SETTING, body.template, current_user_id(), repos)
+        repos["conn"].commit()
+    return jsonify({"template": body.template})
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+# Read-only: builds a draft for the user to review and edit. Nothing is saved
+# until they stage it (stage_outreach_draft below).
+@contacts_bp.route("/contacts/<int:contact_id>/outreach-draft", methods=["POST"])
+def build_outreach_draft(contact_id: int) -> ResponseReturnValue:
+    try:
+        body = OutreachDraftRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
+    user_id = current_user_id()
+    with get_repos() as repos:
+        contact = repos["contacts"].get_by_id(user_id, contact_id)
+        if contact is None:
+            return jsonify({"error": "Contact not found"}), 404
+        template = get_setting(_OUTREACH_TEMPLATE_SETTING, user_id, repos)
+        candidate_profile = ""
+        if body.use_ai:
+            try:
+                candidate_profile = get_candidate_profile(user_id, repos)
+            except CandidateProfileMissingError:
+                pass  # optional context: the AI personalizes from the template alone
+    # Connection released before the AI call
+    draft = render_outreach_template(template, contact)
+    if not body.use_ai:
+        return jsonify({"draft": draft})
+
+    try:
+        draft = OutreachDraftWriter(user_id).write(contact, draft, candidate_profile)
+    except AIProviderError as exc:
+        logger.warning("AI outreach draft failed for contact %d: %s", contact_id, exc)
+        return jsonify({"error": safe_error_message(exc, "AI draft failed")}), 502
+    return jsonify({"draft": draft})
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+# Saves the draft the user approved and marks it as the one the browser
+# extension should paste the next time this contact's LinkedIn profile opens
+# (see backend/contacts/outreach_drafts.py's claim_draft_for_page).
+@contacts_bp.route("/contacts/<int:contact_id>/outreach-draft/stage", methods=["POST"])
+def stage_outreach_draft(contact_id: int) -> ResponseReturnValue:
+    try:
+        body = OutreachDraftStage.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
+    staged_at = datetime.now(UTC).isoformat(timespec="seconds")
+    with get_repos() as repos:
+        if not repos["contacts"].stage_outreach_draft(
+            current_user_id(), contact_id, body.draft, staged_at
+        ):
+            return jsonify({"error": "Contact not found"}), 404
+        repos["conn"].commit()
+    return jsonify({"staged_at": staged_at})
