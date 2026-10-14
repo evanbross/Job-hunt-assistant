@@ -37,7 +37,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties } from "react";
 import JobCard from "../JobCard.tsx";
 import { ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "../TriagePanel.tsx";
-import { jobMatchesSearch } from "../../utils/jobSearchUtils.ts";
+import { jobMatchesSearch, JOB_SEARCH_FIELD_OPTIONS, type JobSearchField } from "../../utils/jobSearchUtils.ts";
 import { hasAppliedToCompany } from "../../utils/jobQueueUtils.ts";
 import type { CompanyAlias } from "../../types/settings.ts";
 import { contactsMatchKey } from "../../utils/contactsUtils.ts";
@@ -233,7 +233,12 @@ const backToTopButtonStyle: CSSProperties = {
 
 const VIEW_MODE_STORAGE_KEY = "jha.jobQueue.viewMode";
 const SORT_STORAGE_KEY = "jha.jobQueue.sort";
+// ai: claude-sonnet-5 | 2026-10-14 -- replaced the "All fields" checkbox with
+// a dropdown of discrete search fields; SEARCH_ALL_FIELDS_KEY (legacy
+// boolean) is still read once below to carry an existing "All fields"
+// preference forward as "all" instead of silently resetting it to "company".
 const SEARCH_ALL_FIELDS_KEY = "jha.jobQueue.searchAllFields";
+const SEARCH_FIELD_KEY = "jha.jobQueue.searchField";
 
 // ai: claude-sonnet-5 | 2026-10-07 -- exported: App.tsx types the
 // requestedViewMode it threads through focusedJobCard state against this
@@ -299,7 +304,11 @@ export default function JobQueue({
   const [jobs, setJobs] = useState<Job[]>([]);
   const [searchText, setSearchText] = useState(() => readStoredPref(JOB_QUEUE_SEARCH_STORAGE_KEY));
   const [debouncedSearchText, setDebouncedSearchText] = useState(searchText);
-  const [searchAllFields, setSearchAllFields] = useState(() => readStoredViewPref(SEARCH_ALL_FIELDS_KEY, "false") === "true");
+  const [searchField, setSearchField] = useState<JobSearchField>(() => {
+    const stored = readStoredViewPref(SEARCH_FIELD_KEY, "");
+    if (stored) return stored as JobSearchField;
+    return readStoredViewPref(SEARCH_ALL_FIELDS_KEY, "false") === "true" ? "all" : "company";
+  });
   const [viewMode, setViewMode] = useState<ViewMode>(() => readStoredViewPref(VIEW_MODE_STORAGE_KEY, "queue") as ViewMode);
   const [sortBy, setSortBy] = useState(() => {
     const stored = readStoredViewPref(SORT_STORAGE_KEY, "date_desc");
@@ -422,8 +431,8 @@ export default function JobQueue({
   }, [sortBy]);
 
   useEffect(() => {
-    try { window.localStorage.setItem(SEARCH_ALL_FIELDS_KEY, String(searchAllFields)); } catch { /* ignore */ }
-  }, [searchAllFields]);
+    try { window.localStorage.setItem(SEARCH_FIELD_KEY, searchField); } catch { /* ignore */ }
+  }, [searchField]);
 
   // Switch view mode when navigating to a specific job card
   useEffect(() => {
@@ -1503,25 +1512,25 @@ export default function JobQueue({
   );
 
   const filteredJobs = useMemo(() => jobs.filter((job) => {
-    if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
+    if (!jobMatchesSearch(job, debouncedSearchText, searchField)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     if (showOnlyWithContacts && !jobHasContact(job)) return false;
     if (hideAppliedCompanies && hasAppliedToCompany(job, appliedCompanies, companyAliasMap)) return false;
     return true;
-  }), [jobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies, companyAliasMap]);
+  }), [jobs, debouncedSearchText, searchField, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies, companyAliasMap]);
 
   const filteredTriageJobs = useMemo(() => triageJobs.filter((job) => {
-    if (!jobMatchesSearch(job, debouncedSearchText, searchAllFields)) return false;
+    if (!jobMatchesSearch(job, debouncedSearchText, searchField)) return false;
     if (showOnlyUnscored && job.fit_score != null) return false;
     if (showOnlyWithContacts && !jobHasContact(job)) return false;
     if (hideAppliedCompanies && hasAppliedToCompany(job, appliedCompanies, companyAliasMap)) return false;
     return true;
-  }), [triageJobs, debouncedSearchText, searchAllFields, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies, companyAliasMap]);
+  }), [triageJobs, debouncedSearchText, searchField, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies, companyAliasMap]);
 
   // ai: claude-sonnet-5 | 2026-08-09
   const filteredUnreachableJobs = useMemo(
-    () => unreachableJobs.filter((job) => jobMatchesSearch(job, debouncedSearchText, searchAllFields)),
-    [unreachableJobs, debouncedSearchText, searchAllFields],
+    () => unreachableJobs.filter((job) => jobMatchesSearch(job, debouncedSearchText, searchField)),
+    [unreachableJobs, debouncedSearchText, searchField],
   );
 
   const contactsCount = useMemo(
@@ -1993,15 +2002,15 @@ export default function JobQueue({
         />
 
         {searchText && (
-          <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={searchAllFields}
-              onChange={(e) => setSearchAllFields(e.target.checked)}
-              style={{ cursor: "pointer" }}
-            />
-            All fields
-          </label>
+          <select
+            value={searchField}
+            onChange={(e) => setSearchField(e.target.value as JobSearchField)}
+            style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", cursor: "pointer", fontSize: "12px", padding: "4px 8px", width: "fit-content" }}
+          >
+            {JOB_SEARCH_FIELD_OPTIONS.map((opt) => (
+              <option key={opt.key} value={opt.key}>{opt.label}</option>
+            ))}
+          </select>
         )}
 
         {unscoredCount > 0 && (

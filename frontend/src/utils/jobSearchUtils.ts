@@ -32,10 +32,21 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
-// ai: claude-sonnet-5 | 2026-10-07
+// ai: claude-sonnet-5 | 2026-10-14
 import type { Job } from "../types/jobs.ts";
+import { jobDescriptionText } from "./triagePanelUtils.ts";
 
 const REGEX_SPECIAL_CHARS = /[.+^${}()|[\]\\]/g;
+
+export type JobSearchField = "all" | "job_title" | "company" | "job_description" | "job_id";
+
+export const JOB_SEARCH_FIELD_OPTIONS: { key: JobSearchField; label: string }[] = [
+  { key: "all", label: "All Fields" },
+  { key: "job_title", label: "Job Title" },
+  { key: "company", label: "Company Name" },
+  { key: "job_description", label: "Job Description" },
+  { key: "job_id", label: "Job Id" },
+];
 
 // ai: claude-sonnet-4-6 | 2026-08-01
 // Converts a search term into a RegExp, treating * / % as "any sequence" and
@@ -48,7 +59,7 @@ function wildcardTermToRegex(term: string): RegExp {
   return new RegExp(pattern);
 }
 
-export function jobMatchesSearch(job: Job, searchText: string, searchAllFields = false): boolean {
+export function jobMatchesSearch(job: Job, searchText: string, searchField: JobSearchField = "company"): boolean {
   const terms = String(searchText || "")
     .trim()
     .toLowerCase()
@@ -57,8 +68,10 @@ export function jobMatchesSearch(job: Job, searchText: string, searchAllFields =
     .map(wildcardTermToRegex);
   if (terms.length === 0) return true;
 
-  const fields: (string | null | undefined)[] = searchAllFields
-    ? [
+  let fields: (string | null | undefined)[];
+  switch (searchField) {
+    case "all":
+      fields = [
         job.id == null ? "" : `#${job.id}`,
         job.company,
         job.job_title,
@@ -67,13 +80,27 @@ export function jobMatchesSearch(job: Job, searchText: string, searchAllFields =
         job.status,
         job.capture_label,
         job.sender_email,
-        job.raw_jd_snippet,
+        jobDescriptionText(job),
         job.fit_reasoning,
         job.duplicate_hint,
         job.date_found,
         job.fit_score == null ? "" : `${job.fit_score}`,
-      ]
-    : [job.company];
+      ];
+      break;
+    case "job_title":
+      fields = [job.job_title];
+      break;
+    case "job_description":
+      fields = [jobDescriptionText(job)];
+      break;
+    case "job_id":
+      fields = [job.id == null ? "" : `${job.id}`];
+      break;
+    case "company":
+    default:
+      fields = [job.company];
+      break;
+  }
 
   const haystack = fields
     .filter((value) => value !== null && value !== undefined)
