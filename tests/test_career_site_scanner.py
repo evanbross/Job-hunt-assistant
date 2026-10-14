@@ -38,6 +38,7 @@ from urllib.parse import urlparse
 import pytest
 
 from backend.scanning.career_site_scanner import (
+    _MAX_JOBS_PER_SITE,
     CareerSiteJob,
     CareerSiteScanner,
     ScanOutcome,
@@ -50,7 +51,6 @@ from backend.scanning.career_site_scanner import (
     _is_greenhouse_single_job_url,
     _is_unsupported_greenhouse_search_url,
     _is_workday_single_job_url,
-    _MAX_JOBS_PER_SITE,
     _normalize_date,
     _unique_jobs,
     _workday_job_url,
