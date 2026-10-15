@@ -43,6 +43,7 @@ from backend.scanning.career_site_scanner import (
     CareerSiteScanner,
     ScanOutcome,
     _detect_embedded_ashby_base_url,
+    _detect_embedded_greenhouse_token,
     _extract_json_array_by_key,
     _extract_offsite_apply_url,
     _greenhouse_board_token,
@@ -271,6 +272,19 @@ def test_detect_embedded_ashby_base_url() -> None:
     assert _detect_embedded_ashby_base_url(html) == "https://jobs.ashbyhq.com/change"
 
 
+# ai: claude-sonnet-5 | 2026-10-15
+def test_detect_embedded_greenhouse_token() -> None:
+    html = (
+        '<script src="https://boards.greenhouse.io/embed/job_board/js'
+        '?for=elationhealth"></script>'
+    )
+    assert _detect_embedded_greenhouse_token(html) == "elationhealth"
+
+
+def test_detect_embedded_greenhouse_token_returns_none_without_a_match() -> None:
+    assert _detect_embedded_greenhouse_token("<html><body>no widget here</body></html>") is None
+
+
 # ai: claude-sonnet-4-6 | 2026-06-14
 def test_html_to_text_strips_tags_and_collapses_whitespace() -> None:
     html = '<div class="content-intro"><h4>Breezeway’s   platform</h4>\n<p>helps  teams</p></div>'
@@ -473,6 +487,48 @@ def test_linkedin_public_page_fallback_splits_hiring_title() -> None:
 
     assert job["company"] == "Airbnb"
     assert job["job_title"] == "Senior Staff Software Engineer, Guest & Host"
+
+
+# ai: claude-sonnet-5 | 2026-10-15
+def test_scan_single_job_url_resolves_embedded_greenhouse_widget() -> None:
+    """Job 6457: a Matcha.fm digest link redirected to Elation Health's own
+    careers page, a React SPA whose static HTML embeds a Greenhouse widget
+    (<script src=".../embed/job_board/js?for=elationhealth">) but has no
+    server-rendered JD -- just nav/marketing chrome. Without resolving the
+    embedded widget, that chrome gets scraped as if it were the job
+    description, and the real JD (with location/salary) is lost."""
+    scanner = CareerSiteScanner()
+    url = "https://www.elationhealth.com/about-us/careers/?gh_jid=8265478"
+    careers_page_html = (
+        "<html><head><title>Careers at Elation Health</title>"
+        '<script src="https://boards.greenhouse.io/embed/job_board/js'
+        '?for=elationhealth"></script></head>'
+        "<body><nav>Platform Solutions EHR Billing</nav></body></html>"
+    )
+    api_response = {
+        "title": "Staff Software Engineer",
+        "company": None,
+        "location": {"name": "US- Remote"},
+        "content": "<p>Salary: $170,000 - $200,000/yr USD</p>",
+        "updated_at": "2026-10-01T00:00:00Z",
+    }
+    with (
+        patch("backend.scanning.career_site_scanner.safe_urlopen") as mock_urlopen,
+        patch(
+            "backend.scanning.career_site_scanner._fetch_json",
+            return_value=api_response,
+        ),
+    ):
+        mock_resp = mock_urlopen.return_value.__enter__.return_value
+        mock_resp.read.return_value = careers_page_html.encode("utf-8")
+        mock_resp.headers.get_content_charset.return_value = "utf-8"
+        mock_resp.geturl.return_value = url
+        job = scanner.scan_single_job_url("", url)
+
+    assert job["job_title"] == "Staff Software Engineer"
+    assert "Platform Solutions" not in job["job_text"]
+    assert job["job_text"].startswith("Location: US- Remote.")
+    assert "$170,000" in job["job_text"]
 
 
 # ai: claude-sonnet-4-6 | 2026-06-14

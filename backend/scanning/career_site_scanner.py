@@ -576,6 +576,23 @@ def _detect_embedded_ashby_base_url(listing_html: str) -> str | None:
     return f"https://jobs.ashbyhq.com/{board_token}"
 
 
+# ai: claude-sonnet-5 | 2026-10-15
+# Some companies embed a Greenhouse job-board widget on their own branded
+# domain (<script src="https://boards.greenhouse.io/embed/job_board/js?for=TOKEN">)
+# instead of linking to boards.greenhouse.io directly. Unlike
+# _EMBEDDED_GREENHOUSE_TOKENS below (a curated host allowlist for the listing
+# scan), this reads the token straight out of the page's own HTML, so it
+# works for any embedding domain scan_single_job_url encounters without
+# having to know about it ahead of time.
+def _detect_embedded_greenhouse_token(page_html: str) -> str | None:
+    match = re.search(
+        r"greenhouse\.io/embed/job_board/js\?(?:[^\"'\s]*&)?for=([A-Za-z0-9_-]+)",
+        page_html,
+        re.IGNORECASE,
+    )
+    return match.group(1).lower() if match else None
+
+
 def _extract_posted_date(page_text: str, time_datetimes: list[str]) -> str | None:
     for raw in time_datetimes:
         match = re.search(r"(20\d{2}-\d{2}-\d{2})", raw)
@@ -1342,6 +1359,42 @@ class CareerSiteScanner:
                         "scan_single_job_url: redirected LinkedIn API failed: %s", exc
                     )
 
+        # ai: claude-sonnet-5 | 2026-10-15
+        # A company's own branded careers page that embeds a Greenhouse
+        # widget (see _detect_embedded_greenhouse_token) has no server-
+        # rendered JD in its static HTML -- just nav/marketing chrome -- so
+        # without this the generic parser below scrapes that chrome as if it
+        # were the job description. gh_jid is Greenhouse's own "open this
+        # job in the embedded widget" query param; paired with the board
+        # token from the embed script tag, that's enough to hit the real
+        # Greenhouse API instead (job 6457: a Matcha.fm digest link
+        # redirected to Elation Health's careers page, captured as
+        # "Skip to content... Platform Solutions... EHR..." nav text instead
+        # of the actual JD/location/salary).
+        gh_jid = parse_qs(urlparse(final_url).query).get("gh_jid", [None])[0]
+        if gh_jid:
+            embedded_token = _detect_embedded_greenhouse_token(page_html)
+            if embedded_token:
+                logger.info(
+                    "scan_single_job_url: embedded Greenhouse widget detected "
+                    "(token=%s, gh_jid=%s)",
+                    embedded_token,
+                    gh_jid,
+                )
+                try:
+                    result = self._greenhouse_job_from_api(
+                        site_name, final_url, embedded_token, gh_jid
+                    )
+                    logger.info(
+                        "scan_single_job_url: embedded Greenhouse API succeeded in %.1fs total",
+                        time.monotonic() - t0,
+                    )
+                    return result
+                except Exception as exc:
+                    logger.info(
+                        "scan_single_job_url: embedded Greenhouse API failed: %s", exc
+                    )
+
         # Ashby single-job pages are JS-rendered; extract from embedded __NEXT_DATA__ JSON
         if "jobs.ashbyhq.com" in urlparse(final_url).netloc.lower():
             logger.info("scan_single_job_url: trying Ashby __NEXT_DATA__ extraction")
@@ -1553,6 +1606,17 @@ class CareerSiteScanner:
         if not parts:
             raise ValueError(f"Cannot extract board token/job ID from {job_url}")
         token, job_id = parts
+        return self._greenhouse_job_from_api(site_name, job_url, token, job_id)
+
+    # ai: claude-sonnet-5 | 2026-10-15
+    # Split out of _greenhouse_single_job_from_api so an embedded-widget
+    # caller (token from the page's HTML, job id from a gh_jid query param --
+    # see _detect_embedded_greenhouse_token) can reuse the same API fetch
+    # without also having a boards.greenhouse.io/<token>/jobs/<id>-shaped URL
+    # to extract them from.
+    def _greenhouse_job_from_api(
+        self, site_name: str, job_url: str, token: str, job_id: str
+    ) -> CareerSiteJob:
         data = _fetch_json(
             f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{job_id}"
         )
