@@ -40,42 +40,49 @@ importScripts('extension-auth.js');
 // _queueTabs: tabId → { url, siteName } — tabs currently loading for the queue.
 // _pendingCaptureTabs: Set of tabIds whose content script has been injected
 //   and we are waiting for a payloadReady message from.
-// _pendingQueueUrls: tabId → original queue URL — preserved after _queueTabs is
-//   deleted so postToApp can inject it into the payload for backend deduplication.
-//   Necessary because SPAs (e.g. WTTJ) redirect to a canonical URL that differs
-//   from the email-link URL stored in the queue, so mark_done_by_urls would
-//   otherwise never find a match and the item would loop indefinitely.
-// Both Maps/Sets are in-memory. If the service worker is killed mid-capture
-// those tabs become orphaned (they just never close); stale queue items are
-// reset after 10 minutes by the backend as a last-resort safety net. The
-// SPA-render delay before capture (see scheduleQueueCapture below) is
-// deliberately NOT a plain setTimeout, precisely so hitting that 10-minute
-// fallback is the rare case rather than the common one.
+// Both are in-memory and short-lived (set at tab creation, consumed once the
+// tab finishes its initial load), so the window where a service-worker
+// restart could wipe them is small; stale queue items are reset after 10
+// minutes by the backend as a last-resort safety net either way.
 // ai: claude-sonnet-4-6 | 2026-06-16
 const _queueTabs = new Map();
 const _pendingCaptureTabs = new Set();
-// ai: claude-sonnet-4-6 | 2026-06-21
-const _pendingQueueUrls = new Map();
 // ai: claude-sonnet-4-6 | 2026-06-22
 // _previousTabs: tabId → previousTabId — the tab that was active before the queue
 // tab was opened. Restored after the capture tab is removed so the user lands back
 // on the JHA tab rather than whatever the browser picks arbitrarily.
 const _previousTabs = new Map();
-// ai: claude-sonnet-4-6 | 2026-07-02
-// _pendingPurpose / _pendingJobId: tabId → queue item purpose/job_id, preserved
-// across the _queueTabs delete (same reason as _pendingQueueUrls) so triggerQueueCapture
-// and postToApp can route closed-req checks differently from job imports.
-const _pendingPurpose = new Map();
-const _pendingJobId = new Map();
-// ai: claude-sonnet-5 | 2026-10-06
-// _pendingSourceId: tabId → career_site_sources id, preserved across the
-// _queueTabs delete (same reason as the maps above) so postToApp can tag the
-// captured payload with capture_source_id — see backend/db/repositories/
-// browser_capture_queue.py's enqueue_for_source and routes/import_.py's
-// _resolve_capture_source, which resolves that id directly instead of
-// guessing the source from the captured URL.
-const _pendingSourceId = new Map();
 let _queuePolling = false;
+
+// ai: claude-sonnet-5 | 2026-10-15
+// Durable pending-capture state (queue_url, purpose, job_id, source_id),
+// keyed by tabId — chrome.storage.session, not a plain Map. The SPA-render
+// settle delay before a queued capture (scheduleQueueCapture below, up to
+// 5s) is long enough that Chrome suspends this MV3 service worker during
+// the wait; chrome.alarms reliably wakes it back up (see the WTTJ/Wellfound
+// fix below), but waking it re-runs this whole script from scratch, which
+// resets every top-level `const`/`let` to empty. A plain in-memory Map set
+// before the wait is therefore just empty when postToApp reads it
+// afterwards -- no error, no stuck tab, just capture_source_id (and
+// queue_url/purpose/job_id) silently missing from the next capture. This
+// was confirmed live 2026-10-15: every automatic_browser LinkedIn
+// search-results capture (always on the 5s settle-delay path) resolved to
+// the generic guessed "jobs LinkedIn" career_site_sources row instead of
+// the actual saved search it was queued for, because capture_source_id
+// never survived the wait. chrome.storage.session is held by Chrome itself
+// (isolated per extension, invisible to web pages) and survives a worker
+// restart within the same browser session, unlike a bare module-level Map.
+async function _setPendingCapture(tabId, data) {
+  await chrome.storage.session.set({ [`pendingCapture_${tabId}`]: data });
+}
+async function _getPendingCapture(tabId) {
+  const key = `pendingCapture_${tabId}`;
+  const result = await chrome.storage.session.get(key);
+  return result[key] || null;
+}
+async function _deletePendingCapture(tabId) {
+  await chrome.storage.session.remove(`pendingCapture_${tabId}`);
+}
 
 // ─── Queue-ready WebSocket push ────────────────────────────────────────────
 // Holds a WebSocket open to the backend (see backend/queue_websocket.py) so new
@@ -371,7 +378,7 @@ function _registeredDomain(hostname) {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-19
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!_queueTabs.has(tabId) || changeInfo.status !== 'complete') return;
 
   // If the page redirected to a foreign domain (e.g. a login wall), keep the tab open
@@ -385,17 +392,22 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // ai: claude-sonnet-4-6 | 2026-06-21
   if (expectedHost && actualHost && _registeredDomain(expectedHost) !== _registeredDomain(actualHost)) return;
 
-  // ai: claude-sonnet-4-6 | 2026-06-21
-  // Save the original queue URL before deleting from _queueTabs. SPAs (e.g. WTTJ)
-  // redirect to a canonical URL, so postToApp injects this into the payload so the
-  // backend can mark the correct queue item done even after the redirect.
-  _pendingQueueUrls.set(tabId, info.url);
-  // ai: claude-sonnet-4-6 | 2026-07-02
-  // Preserve purpose/jobId across the _queueTabs delete below so triggerQueueCapture
-  // and postToApp know this is a closed-req check rather than a job import.
-  _pendingPurpose.set(tabId, info.purpose || 'import');
-  if (info.jobId != null) _pendingJobId.set(tabId, info.jobId);
-  if (info.sourceId != null) _pendingSourceId.set(tabId, info.sourceId);
+  // ai: claude-sonnet-5 | 2026-10-15
+  // Save queue_url/purpose/jobId/sourceId into chrome.storage.session (not a
+  // Map) before deleting from _queueTabs -- see _setPendingCapture's comment
+  // above for why this needs to survive a possible service-worker restart
+  // during the settle delay that follows. SPAs (e.g. WTTJ) redirect to a
+  // canonical URL, so postToApp injects queue_url into the payload so the
+  // backend can mark the correct queue item done even after the redirect;
+  // purpose/jobId let triggerQueueCapture/postToApp route a closed-req check
+  // differently from a job import; sourceId lets the backend resolve
+  // capture_source_id directly instead of guessing the source from the URL.
+  await _setPendingCapture(tabId, {
+    queueUrl: info.url,
+    purpose: info.purpose || 'import',
+    jobId: info.jobId ?? null,
+    sourceId: info.sourceId ?? null,
+  });
   _queueTabs.delete(tabId);
   _pendingCaptureTabs.add(tabId);
   // ai: claude-sonnet-4-6 | 2026-06-21
@@ -452,17 +464,15 @@ function scheduleQueueCapture(tabId, delayMs) {
 async function triggerQueueCapture(tabId) {
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-    const purpose = _pendingPurpose.get(tabId) || 'import';
+    const pending = await _getPendingCapture(tabId);
+    const purpose = pending?.purpose || 'import';
     const action = purpose === 'closed_req' ? 'buildClosedReqCheck' : 'buildForBackground';
     chrome.tabs.sendMessage(tabId, { action });
   } catch (err) {
     // ai: claude-sonnet-4-6 | 2026-06-22
     console.error('[JHA] triggerQueueCapture failed for tab', tabId, ':', err?.message || err);
     _pendingCaptureTabs.delete(tabId);
-    _pendingQueueUrls.delete(tabId);
-    _pendingPurpose.delete(tabId);
-    _pendingJobId.delete(tabId);
-    _pendingSourceId.delete(tabId);
+    await _deletePendingCapture(tabId);
     const previousTabId = _previousTabs.get(tabId);
     _previousTabs.delete(tabId);
     chrome.tabs.remove(tabId).catch(() => {});
@@ -497,22 +507,22 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 });
 
 async function postToApp(payload, tabId, isQueueCapture = false, blockedSite = null, warning = null) {
-  // ai: claude-sonnet-4-6 | 2026-06-21
-  // Read and immediately delete the original queue URL before any await so it
-  // is not lost if another tab finishes concurrently and reuses the same tabId.
-  const originalQueueUrl = isQueueCapture && tabId != null ? _pendingQueueUrls.get(tabId) : null;
-  if (isQueueCapture && tabId != null) _pendingQueueUrls.delete(tabId);
+  // ai: claude-sonnet-5 | 2026-10-15
+  // Read and immediately delete the pending-capture record (chrome.storage.session,
+  // not a Map -- see _setPendingCapture's comment) so it is not left behind if
+  // another tab finishes concurrently and reuses the same tabId.
+  let originalQueueUrl = null, purpose = null, jobId = null, sourceId = null;
+  if (isQueueCapture && tabId != null) {
+    const pending = await _getPendingCapture(tabId);
+    originalQueueUrl = pending?.queueUrl ?? null;
+    purpose = pending?.purpose ?? null;
+    jobId = pending?.jobId ?? null;
+    sourceId = pending?.sourceId ?? null;
+    await _deletePendingCapture(tabId);
+  }
   // ai: claude-sonnet-4-6 | 2026-06-22
   const previousTabId = isQueueCapture && tabId != null ? _previousTabs.get(tabId) : null;
   if (isQueueCapture && tabId != null) _previousTabs.delete(tabId);
-  // ai: claude-sonnet-4-6 | 2026-07-02
-  const purpose = isQueueCapture && tabId != null ? _pendingPurpose.get(tabId) : null;
-  if (isQueueCapture && tabId != null) _pendingPurpose.delete(tabId);
-  const jobId = isQueueCapture && tabId != null ? _pendingJobId.get(tabId) : null;
-  if (isQueueCapture && tabId != null) _pendingJobId.delete(tabId);
-  // ai: claude-sonnet-5 | 2026-10-06
-  const sourceId = isQueueCapture && tabId != null ? _pendingSourceId.get(tabId) : null;
-  if (isQueueCapture && tabId != null) _pendingSourceId.delete(tabId);
 
   const settings = await loadSettings();
   const headers = jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' });
