@@ -82,6 +82,23 @@ def test_profile_upsert_creates_then_updates_single_row(pg_dsn: str) -> None:
         conn.close()
 
 
+# ai: claude-sonnet-5 | 2026-10-14
+def test_profile_upsert_stores_previous_employers_against_real_schema(pg_dsn: str) -> None:
+    """previous_employers is a new column (backend/db/schema.py's migration) --
+    execute the insert/read against the real schema per TESTING_STANDARDS.md."""
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationProfileRepository(conn)
+
+        created = repo.upsert(user_id, {"previous_employers": '["Acme", "Widget Co"]'})
+        conn.commit()
+        assert created["previous_employers"] == '["Acme", "Widget Co"]'
+        assert repo.get(user_id)["previous_employers"] == '["Acme", "Widget Co"]'
+    finally:
+        conn.close()
+
+
 def test_profile_upsert_rejects_unknown_column(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:

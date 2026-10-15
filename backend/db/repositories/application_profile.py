@@ -71,6 +71,7 @@ class PostgresApplicationProfileRepository(_BaseRepo):
             "current_company",
             "country",
             "is_18_or_older",
+            "previous_employers",
         }
     )
 

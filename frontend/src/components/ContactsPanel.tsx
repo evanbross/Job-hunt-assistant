@@ -22,10 +22,11 @@ import ContactDetail from "./ContactDetail.tsx";
 import ContactsImport from "./ContactsImport.tsx";
 import OutreachQueue from "./OutreachQueue.tsx";
 import TitlesReport from "./TitlesReport.tsx";
-import { safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
+import { contactsMatchKey, safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
 import { formatLocalDate } from "../utils/dateTimeUtils.ts";
 import type { Contact, ContactsListResponse, OutreachChannel } from "../types/contacts.ts";
 import type { RecruiterType } from "../types/contacts.ts";
+import type { ApplicationProfile } from "../types/applicationProfile.ts";
 
 const PAGE_SIZE = 100;
 
@@ -175,15 +176,31 @@ interface FilterState {
   recruiterFilter: RecruiterFilter;
   interestedFilter: InterestedFilter;
   titleFilter: string | null;
+  companyFilter: string | null;
 }
 
 // ai: claude-sonnet-5 | 2026-09-25
-function matchesFilters(contact: Contact, { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter }: FilterState): boolean {
+function matchesFilters(
+  contact: Contact,
+  { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter }: FilterState,
+): boolean {
   // ai: claude-sonnet-5 | 2026-10-13
   if (interestedFilter === "yes" && contact.interested !== true) return false;
   if (interestedFilter === "no" && contact.interested !== false) return false;
   if (interestedFilter === "tbd" && contact.interested !== null) return false;
   if (titleFilter !== null && contact.normalized_title !== titleFilter) return false;
+  // ai: claude-sonnet-5 | 2026-10-14 -- "former coworkers" filter, sourced
+  // from the user's own Previous Employers list (Application Profile tab).
+  // Substring match (not exact) on the same corporate-suffix-stripping
+  // normalizer used elsewhere, so "Google" matches "Google LLC" (suffix
+  // stripped) as well as "Google Cloud" or "Alphabet/Google" (substring) --
+  // deliberately looser than the exact-match normalizer's other call sites.
+  if (
+    companyFilter !== null &&
+    !contactsMatchKey(contact.company_raw).includes(contactsMatchKey(companyFilter))
+  ) {
+    return false;
+  }
 
   const state = outreachState(contact);
   if (outreachFilter === "contacted" && state === "none") return false;
@@ -207,6 +224,8 @@ type ContactPatchFields = Partial<Pick<Contact, "email_address" | "notes" | "int
 export default function ContactsPanel() {
   const [view, setView] = useState<View>("contacts");
   const [titleFilter, setTitleFilter] = useState<string | null>(null); // normalized_title, set by TitlesReport's count link
+  const [companyFilter, setCompanyFilter] = useState<string | null>(null);
+  const [previousEmployers, setPreviousEmployers] = useState<string[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -243,9 +262,18 @@ export default function ContactsPanel() {
     loadContacts();
   }, []);
 
+  // ai: claude-sonnet-5 | 2026-10-14 -- source list for the company filter
+  // below; user-maintained in the Application Profile tab.
+  useEffect(() => {
+    fetch("/api/application-profile")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: ApplicationProfile | null) => setPreviousEmployers(data?.previous_employers ?? []))
+      .catch(() => setPreviousEmployers([]));
+  }, []);
+
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [search, outreachFilter, recruiterFilter, interestedFilter, titleFilter]);
+  }, [search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter]);
 
   const viewContactsForTitle = (normalizedTitle: string) => {
     setTitleFilter(normalizedTitle);
@@ -255,9 +283,9 @@ export default function ContactsPanel() {
   const filtered = useMemo(
     () =>
       contacts.filter((contact) =>
-        matchesFilters(contact, { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter }),
+        matchesFilters(contact, { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter }),
       ),
-    [contacts, search, outreachFilter, recruiterFilter, interestedFilter, titleFilter],
+    [contacts, search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter],
   );
 
   // ai: claude-opus-5-5 | 2026-10-14 -- same criteria as OutreachQueue's list, for the tab badge
@@ -551,6 +579,22 @@ export default function ContactsPanel() {
                     </option>
                   ))}
                 </select>
+                {previousEmployers.length > 0 && (
+                  <select
+                    value={companyFilter ?? ""}
+                    onChange={(e) => setCompanyFilter(e.target.value || null)}
+                    aria-label="Filter by former employer"
+                    title="Show only contacts who worked at one of your previous employers (set in the Application Profile tab)"
+                    style={companyFilter !== null ? filterPillActive : filterPill}
+                  >
+                    <option value="">Former coworkers: any company</option>
+                    {previousEmployers.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               <div style={{ color: "var(--text-muted)", fontSize: "12px", margin: "0 2px 8px" }}>

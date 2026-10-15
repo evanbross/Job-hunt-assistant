@@ -53,6 +53,7 @@ _FAKE_USER_ID = 1
 class FakeApplicationProfileRepo:
     def __init__(self, row: dict[str, Any] | None = None) -> None:
         self.row = row
+        self.last_upsert_fields: dict[str, Any] | None = None
 
     def get(self, user_id: int) -> dict[str, Any] | None:
         assert user_id == _FAKE_USER_ID
@@ -60,7 +61,21 @@ class FakeApplicationProfileRepo:
 
     def upsert(self, user_id: int, fields: dict[str, Any]) -> dict[str, Any]:
         assert user_id == _FAKE_USER_ID
+        # ai: claude-sonnet-5 | 2026-10-14 -- a snapshot independent of self.row,
+        # which the route mutates in place after this returns (see
+        # _with_decoded_previous_employers) and would otherwise make this look
+        # like it never received the raw JSON-encoded string.
+        self.last_upsert_fields = dict(fields)
         self.row = {**(self.row or {"id": 1}), **fields}
+        return self.row
+
+
+class FakeResumeRepo:
+    def __init__(self, row: dict[str, Any] | None = None) -> None:
+        self.row = row
+
+    def get_latest(self, user_id: int) -> dict[str, Any] | None:
+        assert user_id == _FAKE_USER_ID
         return self.row
 
 
@@ -160,6 +175,77 @@ def test_update_application_profile_partial_update_preserves_other_fields(
     assert data["city"] == "Mebane, NC"
     assert data["work_authorized"] is True
     assert data["requires_visa_sponsorship"] is False
+
+
+def test_update_application_profile_stores_previous_employers_as_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """previous_employers is stored as a JSON-encoded TEXT column (same
+    convention as jobs.dismissed_duplicate_ids) -- the route must encode on
+    the way in and decode on the way out so the frontend only ever sees a
+    real array, never the raw stored string."""
+    repos = {"conn": FakeConnection(), "application_profile": FakeApplicationProfileRepo()}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.put(
+        "/api/application-profile",
+        json={"previous_employers": ["Acme", "Widget Co"]},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["previous_employers"] == ["Acme", "Widget Co"]
+    # the repo (standing in for the DB) only ever sees the JSON-encoded string
+    assert repos["application_profile"].last_upsert_fields["previous_employers"] == '["Acme", "Widget Co"]'
+
+    get_response = client.get("/api/application-profile")
+    assert get_response.get_json()["previous_employers"] == ["Acme", "Widget Co"]
+
+
+def test_update_application_profile_dedupes_previous_employers_case_insensitively(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repos = {"conn": FakeConnection(), "application_profile": FakeApplicationProfileRepo()}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.put(
+        "/api/application-profile",
+        json={"previous_employers": [" Acme ", "acme", "", "Widget Co"]},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["previous_employers"] == ["Acme", "Widget Co"]
+
+
+def test_scan_resume_requires_a_resume_on_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"conn": FakeConnection(), "resume": FakeResumeRepo(None)}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.post("/api/application-profile/scan-resume")
+    assert response.status_code == 409
+
+
+def test_scan_resume_returns_employers(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"conn": FakeConnection(), "resume": FakeResumeRepo({"content": "Worked at Acme Corp"})}
+    client = _make_app(repos, monkeypatch).test_client()
+    monkeypatch.setattr(
+        "routes.application_profile.scan_resume_for_previous_employers",
+        lambda user_id, resume_text: (["Acme Corp"], None),
+    )
+
+    response = client.post("/api/application-profile/scan-resume")
+    assert response.status_code == 200
+    assert response.get_json()["employers"] == ["Acme Corp"]
+
+
+def test_scan_resume_surfaces_ai_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"conn": FakeConnection(), "resume": FakeResumeRepo({"content": "Worked at Acme Corp"})}
+    client = _make_app(repos, monkeypatch).test_client()
+    monkeypatch.setattr(
+        "routes.application_profile.scan_resume_for_previous_employers",
+        lambda user_id, resume_text: ([], "ANTHROPIC_API_KEY is not set"),
+    )
+
+    response = client.post("/api/application-profile/scan-resume")
+    assert response.status_code == 502
 
 
 def test_update_application_profile_rejects_invalid_body(monkeypatch: pytest.MonkeyPatch) -> None:

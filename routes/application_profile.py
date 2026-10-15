@@ -39,17 +39,42 @@ consumed by the browser extension's autofill feature."""
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 
+from backend.resume_employer_scan_service import scan_resume_for_previous_employers
 from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
 application_profile_bp = Blueprint("application_profile", __name__)
+
+
+# ai: claude-sonnet-5 | 2026-10-14
+# previous_employers is stored as a JSON-encoded TEXT column (same convention
+# as jobs.dismissed_duplicate_ids) -- decode it here so the API always hands
+# the frontend a real array, never the raw stored string.
+def _with_decoded_previous_employers(profile: dict[str, Any] | None) -> dict[str, Any] | None:
+    if profile is None:
+        return None
+    raw = profile.get("previous_employers")
+    # Tolerate an already-decoded list too, not just the raw stored string --
+    # a caller's dict may be reused/aliased across calls (confirmed via a test
+    # fake standing in for the DB row), so decoding must not assume `raw` is
+    # always still a string. A non-mutating copy avoids compounding that.
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw) if raw else []
+        except json.JSONDecodeError:
+            decoded = []
+    else:
+        decoded = raw or []
+    return {**profile, "previous_employers": decoded}
 
 
 class ApplicationProfileUpdate(BaseModel):
@@ -73,6 +98,23 @@ class ApplicationProfileUpdate(BaseModel):
     current_company: str | None = None
     country: str | None = None
     is_18_or_older: bool | None = None
+    previous_employers: list[str] | None = None
+
+    @field_validator("previous_employers")
+    @classmethod
+    def _clean_previous_employers(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for name in value:
+            stripped = name.strip()
+            key = stripped.lower()
+            if not stripped or key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(stripped)
+        return cleaned
 
 
 class ApplicationAnswerCreate(BaseModel):
@@ -93,7 +135,7 @@ class ApplicationAnswerCreate(BaseModel):
 def get_application_profile() -> ResponseReturnValue:
     with get_repos() as repos:
         profile = repos["application_profile"].get(current_user_id())
-    return jsonify(profile)
+    return jsonify(_with_decoded_previous_employers(profile))
 
 
 @application_profile_bp.route("/application-profile", methods=["PUT"])
@@ -108,12 +150,37 @@ def update_application_profile() -> ResponseReturnValue:
     # out every other saved field. model_dump() without it fills in every
     # field's default (None), which upsert() would then write as an explicit
     # overwrite — confirmed to actually wipe a live profile via a partial PUT.
+    fields = body.model_dump(exclude_unset=True)
+    if "previous_employers" in fields:
+        fields["previous_employers"] = json.dumps(fields["previous_employers"] or [])
+
     with get_repos() as repos:
-        profile = repos["application_profile"].upsert(
-            current_user_id(), body.model_dump(exclude_unset=True)
-        )
+        profile = repos["application_profile"].upsert(current_user_id(), fields)
         repos["conn"].commit()
-    return jsonify(profile)
+    return jsonify(_with_decoded_previous_employers(profile))
+
+
+# ai: claude-sonnet-5 | 2026-10-14
+# Preview only -- returns suggestions for the Previous Employers field; the
+# user's own Save click on the profile form is what persists any of them
+# (same "nothing here writes to the DB" shape as the Titles report's AI
+# suggestions). The resume read happens inside `with get_repos()` and the
+# AI call happens after it exits, per the project's connection-lifetime-vs-
+# slow-external-work rule -- AIProviderClient opens its own short-lived
+# connection for the per-user provider/key settings it needs.
+@application_profile_bp.route("/application-profile/scan-resume", methods=["POST"])
+def scan_resume_for_employers() -> ResponseReturnValue:
+    user_id = current_user_id()
+    with get_repos() as repos:
+        resume = repos["resume"].get_latest(user_id)
+    resume_text = (resume or {}).get("content") or ""
+    if not resume_text.strip():
+        return jsonify({"error": "No resume on file to scan. Upload one first."}), 409
+
+    employers, error = scan_resume_for_previous_employers(user_id, resume_text)
+    if error:
+        return jsonify({"error": f"Resume scan failed: {error}"}), 502
+    return jsonify({"employers": employers})
 
 
 @application_profile_bp.route("/application-answers", methods=["GET"])

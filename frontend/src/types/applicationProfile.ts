@@ -58,6 +58,8 @@ export interface ApplicationProfile {
   current_company: string | null;
   country: string | null;
   is_18_or_older: boolean | null;
+  /** Decoded from the stored JSON array server-side; always a real array, never a raw string. */
+  previous_employers: string[] | null;
 }
 
 /** One row of GET /api/application-answers (application_answers table). */

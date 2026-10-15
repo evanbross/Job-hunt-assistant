@@ -881,6 +881,13 @@ def _migrate(conn: Any) -> None:
     # with and always left it unresolved.
     cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS race TEXT")
 
+    # ai: claude-sonnet-5 | 2026-10-14
+    # JSON-encoded array of company names the user has previously worked at
+    # (same TEXT-holding-JSON convention as jobs.dismissed_duplicate_ids) --
+    # user-maintained in the Application Profile tab, used to source the
+    # Contacts tab's "former coworkers" company filter.
+    cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS previous_employers TEXT")
+
     conn.commit()
 
     _backfill_duplicate_of_id(conn)  # ai: claude-sonnet-5 | 2026-07-25

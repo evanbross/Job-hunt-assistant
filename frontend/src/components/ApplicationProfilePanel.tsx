@@ -93,6 +93,7 @@ type ProfileFormState = {
   current_company: string;
   country: string;
   is_18_or_older: boolean | null;
+  previous_employers: string[];
 };
 
 const emptyProfile: ProfileFormState = {
@@ -116,6 +117,7 @@ const emptyProfile: ProfileFormState = {
   current_company: "",
   country: "",
   is_18_or_older: null,
+  previous_employers: [],
 };
 
 interface AnswerFormState {
@@ -181,6 +183,8 @@ export default function ApplicationProfilePanel() {
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [newEmployerInput, setNewEmployerInput] = useState("");
+  const [scanningResume, setScanningResume] = useState(false);
 
   const [answers, setAnswers] = useState<ApplicationAnswer[]>([]);
   const [loadingAnswers, setLoadingAnswers] = useState(true);
@@ -267,6 +271,7 @@ export default function ApplicationProfilePanel() {
           current_company: profile.current_company.trim() || null,
           country: profile.country.trim() || null,
           is_18_or_older: profile.is_18_or_older,
+          previous_employers: profile.previous_employers,
         }),
       });
       if (!res.ok) {
@@ -280,6 +285,52 @@ export default function ApplicationProfilePanel() {
       setSavingProfile(false);
     }
   };
+
+  function addPreviousEmployer() {
+    const value = newEmployerInput.trim();
+    if (!value) return;
+    setProfile((p) =>
+      p.previous_employers.some((name) => name.toLowerCase() === value.toLowerCase())
+        ? p
+        : { ...p, previous_employers: [...p.previous_employers, value] },
+    );
+    setNewEmployerInput("");
+  }
+
+  function removePreviousEmployer(name: string) {
+    setProfile((p) => ({ ...p, previous_employers: p.previous_employers.filter((e) => e !== name) }));
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-14
+  // Preview only -- merges suggestions into local form state so the user can
+  // review/remove before the normal Save button persists anything, rather
+  // than writing AI-guessed values straight into a real profile record.
+  async function handleScanResume() {
+    setScanningResume(true);
+    try {
+      const res = await fetch("/api/application-profile/scan-resume", { method: "POST" });
+      const data: { employers?: string[] } & ApiErrorBody = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `Scan failed (${res.status})`);
+      }
+      const found = data.employers || [];
+      if (found.length === 0) {
+        window.alert("No employers found on your resume.");
+        return;
+      }
+      setProfile((p) => {
+        const existingKeys = new Set(p.previous_employers.map((name) => name.toLowerCase()));
+        const additions = found.filter((name) => !existingKeys.has(name.toLowerCase()));
+        return additions.length > 0
+          ? { ...p, previous_employers: [...p.previous_employers, ...additions] }
+          : p;
+      });
+    } catch (e) {
+      window.alert("Resume scan failed: " + describeFetchError(e));
+    } finally {
+      setScanningResume(false);
+    }
+  }
 
   const handleAddAnswer = async () => {
     const question_text = addForm.question_text.trim();
@@ -580,6 +631,71 @@ export default function ApplicationProfilePanel() {
                 onChange={(e) => setProfile((p) => ({ ...p, current_company: e.target.value }))}
                 style={fieldStyle}
               />
+            </div>
+            <div>
+              <label style={labelStyle}>Previous employers</label>
+              <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "-2px", marginBottom: "6px" }}>
+                Companies you've worked at before — used to filter the Contacts tab to former coworkers.
+              </p>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={scanningResume}
+                onClick={handleScanResume}
+                style={{ fontSize: "12px", padding: "5px 10px", marginBottom: "8px" }}
+                title="Suggests companies from your uploaded resume — review and remove any before saving."
+              >
+                {scanningResume ? "Scanning resume…" : "Scan resume for companies"}
+              </button>
+              {profile.previous_employers.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "8px" }}>
+                  {profile.previous_employers.map((name) => (
+                    <span key={name} className="badge badge-gray">
+                      {name}
+                      <button
+                        type="button"
+                        onClick={() => removePreviousEmployer(name)}
+                        aria-label={`Remove ${name}`}
+                        style={{
+                          marginLeft: "6px",
+                          border: "none",
+                          background: "none",
+                          cursor: "pointer",
+                          color: "inherit",
+                          fontSize: "13px",
+                          lineHeight: 1,
+                          padding: 0,
+                        }}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: "6px" }}>
+                <input
+                  type="text"
+                  value={newEmployerInput}
+                  onChange={(e) => setNewEmployerInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addPreviousEmployer();
+                    }
+                  }}
+                  placeholder="Add a company…"
+                  style={{ ...fieldStyle, flex: 1 }}
+                />
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={addPreviousEmployer}
+                  style={{ fontSize: "12px", padding: "6px 10px" }}
+                >
+                  Add
+                </button>
+              </div>
             </div>
             <button
               className="btn-primary"
