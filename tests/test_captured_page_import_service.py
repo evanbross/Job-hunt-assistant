@@ -297,6 +297,51 @@ def test_analyzes_bookmarklet_json_capture() -> None:
     assert analysis["source"]["url"] == "https://wellfound.com/jobs"
 
 
+def test_json_capture_keeps_linkedin_ai_insight() -> None:
+    service = CapturedPageImportService()
+    payload = """
+    {
+      "jobs": [
+        {
+          "url": "https://www.linkedin.com/jobs/view/4471961609/",
+          "job_title": "Principal Backend Engineer",
+          "company": "Mango Voice",
+          "listing_text": "Principal Backend Engineer\\nCompany: Mango Voice",
+          "ai_insight": "You'd be a top applicant, based on your skills, experience, and chances of hearing back"
+        }
+      ]
+    }
+    """
+
+    analysis = service.analyze_capture(payload, "json")
+
+    assert len(analysis["urls"]) == 1
+    assert analysis["urls"][0]["ai_insight"] == (
+        "You'd be a top applicant, based on your skills, experience, and chances of hearing back"
+    )
+
+
+def test_json_capture_omits_blank_ai_insight() -> None:
+    service = CapturedPageImportService()
+    payload = """
+    {
+      "jobs": [
+        {
+          "url": "https://www.linkedin.com/jobs/view/4471961609/",
+          "job_title": "Principal Backend Engineer",
+          "company": "Mango Voice",
+          "listing_text": "Principal Backend Engineer\\nCompany: Mango Voice",
+          "ai_insight": ""
+        }
+      ]
+    }
+    """
+
+    analysis = service.analyze_capture(payload, "json")
+
+    assert "ai_insight" not in analysis["urls"][0]
+
+
 def test_auto_detects_bookmarklet_json_capture() -> None:
     service = CapturedPageImportService()
     payload = """

@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-10-14.01
+// @version      2026-10-14.02
 // @match        https://jobs.ashbyhq.com/vanta/*
 // @match        https://discord.com/careehrs*
 // @match        https://job-boards.greenhouse.io/*/jobs/*
@@ -347,6 +347,24 @@
         };
     }
 
+    // ai: claude-sonnet-5 | 2026-10-14
+    // Mirrors content.js's linkedInAiInsight(): LinkedIn's "AI-powered job
+    // assessment" module (Premium feature) only renders on the search-detail
+    // pane / after an explicit "Show match details" click, so this only finds
+    // something in the split-view capture flow. `.job-details-module` is
+    // reused by several unrelated modules (confirmed live), so the match is
+    // anchored on the module whose own <h2> is the assessment heading.
+    function linkedInAiInsight() {
+        const modules = document.querySelectorAll('.job-details-module');
+        for (const mod of modules) {
+            const heading = mod.querySelector('h2');
+            if (!heading || !/AI-powered job assessment/i.test(heading.innerText || '')) continue;
+            const p = mod.querySelector('p');
+            if (p && p.innerText.trim()) return p.innerText.trim();
+        }
+        return '';
+    }
+
     async function buildLinkedInJobPayload() {
         // Try to expand the truncated description before grabbing text.
         const seeMoreBtn = document.querySelector(
@@ -411,18 +429,18 @@
                 job_title: title,
                 company: company,
                 listing_text: lines.join('\n'),
+                ai_insight: linkedInAiInsight(),
             }],
         });
     }
 
-    // ai: claude-sonnet-5 | 2026-10-06
+    // ai: claude-sonnet-5 | 2026-10-14
     // Same 2026-10 redesign as updateBtnText above: title/company classes are
-    // now atomic/hashed per build and unusable as selectors. Confirmed live:
-    // every card's innerText renders a hidden a11y-label line first
-    // ("Selected, <title>" / "<title> (Verified job)" / a plain duplicate),
-    // then the real visible title line, then the company line -- so
-    // title/company fall back to reading those lines positionally
-    // (lines[1]/lines[2]) when the old classed selectors come up empty.
+    // now atomic/hashed per build and unusable as selectors. The positional
+    // fallback used to assume a hidden a11y-label line preceded the real
+    // title (lines[1]/lines[2]), but that's no longer true (confirmed live
+    // 2026-10-14: title is lines[0] and company is lines[1] directly, with
+    // no leading line) -- see the content.js fix this mirrors.
     function buildLinkedInSearchPayload() {
         const jobIds = new Set();
         const jobs = [];
@@ -470,12 +488,15 @@
             const title = titleEl?.innerText.trim() || textLines[0] || 'Unknown Title';
             const company = companyEl?.innerText.trim() || textLines[1] || '';
             const metadata = card.innerText.trim();
+            // ai: claude-sonnet-5 | 2026-10-14 — mirrors content.js's extraction.
+            const aiInsight = card.querySelector('.job-card-container__job-insight-text')?.innerText.trim() || '';
 
             jobs.push({
                 url: url,
                 job_title: title,
                 company: company,
                 listing_text: `${title}\nCompany: ${company}\nURL: ${url}\n\nSnippet:\n${metadata}`,
+                ai_insight: aiInsight,
             });
         });
 

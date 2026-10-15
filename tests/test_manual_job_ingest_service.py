@@ -247,6 +247,67 @@ def test_ingest_uses_manual_overrides_when_parser_is_incomplete() -> None:
     assert result.job["status"] == "pending_review"
 
 
+def test_ingest_stores_linkedin_ai_insight_when_given() -> None:
+    job_repo = StubJobRepo()
+    service = ManualJobIngestService(
+        _TEST_USER_ID,
+        job_repo,
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=StubParser(
+            [
+                {
+                    "company": "Mango Voice",
+                    "job_title": "Principal Backend Engineer",
+                    "url": "https://www.linkedin.com/jobs/view/4471961609/",
+                    "source": "",
+                    "certainty_level": "high",
+                    "certainty_score": 90,
+                    "certainty_reason": "",
+                }
+            ]
+        ),
+        scorer=StubScorer(score=80),
+    )
+
+    result = service.ingest(
+        "Principal Backend Engineer\nCompany: Mango Voice",
+        linkedin_ai_insight="You'd be a top applicant, based on your skills, experience, and chances of hearing back",
+    )
+
+    assert result.job["linkedin_ai_insight"] == (
+        "You'd be a top applicant, based on your skills, experience, and chances of hearing back"
+    )
+
+
+def test_ingest_leaves_linkedin_ai_insight_null_when_not_given() -> None:
+    job_repo = StubJobRepo()
+    service = ManualJobIngestService(
+        _TEST_USER_ID,
+        job_repo,
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=StubParser(
+            [
+                {
+                    "company": "Acme",
+                    "job_title": "Engineer",
+                    "url": "",
+                    "source": "",
+                    "certainty_level": "high",
+                    "certainty_score": 90,
+                    "certainty_reason": "",
+                }
+            ]
+        ),
+        scorer=StubScorer(score=80),
+    )
+
+    result = service.ingest("Pasted listing text")
+
+    assert result.job["linkedin_ai_insight"] is None
+
+
 def test_ingest_marks_possible_duplicate_when_sheet_match_exists() -> None:
     job_repo = StubJobRepo()
     parser = StubParser(

@@ -683,6 +683,7 @@ def run_import_task(
                     source_name=platform,
                     company_override=str(url_row.get("company") or ""),
                     job_title_override=str(url_row.get("job_title") or ""),
+                    linkedin_ai_insight=str(url_row.get("ai_insight") or ""),
                     sheet_jobs=known_jobs,
                     trigger=body.get("import_trigger", "ui"),
                     prefetched_jd=prefetched_jd,  # ai: claude-sonnet-5 | 2026-08-26

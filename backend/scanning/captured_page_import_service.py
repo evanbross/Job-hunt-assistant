@@ -57,6 +57,7 @@ class ExtractedJobUrl(TypedDict):
     company: NotRequired[str]
     job_title: NotRequired[str]
     listing_text: NotRequired[str]
+    ai_insight: NotRequired[str]
 
 
 class CapturedSourceGuess(TypedDict):
@@ -344,6 +345,9 @@ class CapturedPageImportService:
                 if platform == "Wellfound"
                 else str(raw_job.get("company") or "").strip()
             )
+            # ai: claude-sonnet-5 | 2026-10-14 — content.js/the userscript only
+            # ever populate this for LinkedIn captures; empty for every other site.
+            ai_insight = str(raw_job.get("ai_insight") or "").strip()
             # ai: claude-opus-5-5 | 2026-10-13
             # A board root with nothing captured is a page that didn't render
             # (job 6307: Shipt's bot-blocked Workday board came through as a
@@ -362,6 +366,8 @@ class CapturedPageImportService:
                 result["job_title"] = job_title
             if listing_text:
                 result["listing_text"] = listing_text
+            if ai_insight:
+                result["ai_insight"] = ai_insight
             results.append(result)
 
         source = self._source_from_json(raw_source)

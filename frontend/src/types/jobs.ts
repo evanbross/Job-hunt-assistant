@@ -72,6 +72,7 @@ export interface Job {
   salary_min?: number | null;
   salary_max?: number | null;
   unreachable_since?: string | null;
+  linkedin_ai_insight?: string | null;
 }
 
 /** Map of normalized-company-key -> count of jobs on record, from GET /api/jobs/company-counts. */

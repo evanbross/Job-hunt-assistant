@@ -76,6 +76,11 @@ class JobColumns:
     SALARY_MIN = "salary_min"
     SALARY_MAX = "salary_max"
     UNREACHABLE_SINCE = "unreachable_since"
+    # ai: claude-sonnet-5 | 2026-10-14 — LinkedIn's own "You'd be a top
+    # applicant"-style AI match assessment, captured verbatim from the search
+    # card badge or the detail-pane "AI-powered job assessment" module. Only
+    # ever populated for LinkedIn captures; NULL for every other source.
+    LINKEDIN_AI_INSIGHT = "linkedin_ai_insight"
 
     @classmethod
     def all(cls) -> frozenset[str]:

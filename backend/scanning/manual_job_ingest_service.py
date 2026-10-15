@@ -130,6 +130,7 @@ class ManualJobIngestService:
         source_name: str = "",
         company_override: str = "",
         job_title_override: str = "",
+        linkedin_ai_insight: str = "",
         sheet_jobs: list[dict[str, Any]] | None = None,
         trigger: str = "ui",
         prefetched_jd: dict[str, dict[str, Any] | None] | None = None,  # ai: claude-sonnet-5 | 2026-08-26
@@ -144,6 +145,7 @@ class ManualJobIngestService:
         normalized_source_url = source_url.strip()
         normalized_company_override = company_override.strip()
         normalized_job_title_override = job_title_override.strip()
+        normalized_linkedin_ai_insight = linkedin_ai_insight.strip()
         if not normalized_text and not normalized_source_url:
             raise ValueError("Job listing text or a public job URL is required.")
 
@@ -386,6 +388,7 @@ class ManualJobIngestService:
             "sender_email": None,
             JobColumns.CAPTURE_LABEL: email_subject,
             JobColumns.CERTAINTY_SCORE: parsed.get("certainty_score", 50),
+            JobColumns.LINKEDIN_AI_INSIGHT: normalized_linkedin_ai_insight or None,
         }
         job_dict, import_warnings = normalize_and_validate(job_dict)
         job_dict["import_warnings"] = import_warnings_to_json(import_warnings)

@@ -110,6 +110,57 @@ def test_postgres_backend_initializes_and_supports_repositories(pg_dsn: str) -> 
         conn.close()
 
 
+# ai: claude-sonnet-5 | 2026-10-14
+def test_jobs_linkedin_ai_insight_round_trips_through_real_schema(pg_dsn: str) -> None:
+    """linkedin_ai_insight is a new jobs column (backend/db/schema.py's
+    migration) -- execute the insert/read against the real schema per
+    TESTING_STANDARDS.md rather than trusting a fake repo's dict passthrough."""
+    repos = open_repositories(pg_dsn)
+    try:
+        account = repos["user_accounts"].create_pending(
+            "ai-insight@example.com", "seed-ai-insight@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
+
+        job_id = repos["jobs"].insert(
+            user_id,
+            {
+                "dedup_key": "ai-insight-1",
+                "company": "Mango Voice",
+                "job_title": "Principal Backend Engineer",
+                "url": "https://www.linkedin.com/jobs/view/4471961609/",
+                "source": "LinkedIn",
+                "status": "pending_review",
+                "date_found": "2026-10-14",
+                "linkedin_ai_insight": "You'd be a top applicant, based on your skills, experience, and chances of hearing back",
+            },
+        )
+        repos["conn"].commit()
+
+        stored = repos["jobs"].get_by_id(user_id, job_id)
+        assert stored["linkedin_ai_insight"] == (
+            "You'd be a top applicant, based on your skills, experience, and chances of hearing back"
+        )
+
+        other_job_id = repos["jobs"].insert(
+            user_id,
+            {
+                "dedup_key": "ai-insight-2",
+                "company": "Acme",
+                "job_title": "Engineer",
+                "url": "https://example.com/jobs/ai-insight-2",
+                "source": "manual",
+                "status": "pending_review",
+                "date_found": "2026-10-14",
+            },
+        )
+        repos["conn"].commit()
+        assert repos["jobs"].get_by_id(user_id, other_job_id)["linkedin_ai_insight"] is None
+    finally:
+        repos["conn"].close()
+
+
 def test_open_repositories_selects_postgres_implementations(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:

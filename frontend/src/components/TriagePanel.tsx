@@ -49,6 +49,7 @@ import { isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.ts";
 import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.ts";
 import UndoEditNotice from "./common/UndoEditNotice.tsx";
 import SalaryBadge from "./common/SalaryBadge.tsx";
+import LinkedInInsightBadge from "./common/LinkedInInsightBadge.tsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.ts";
 import { fitReasoningBullets } from "../utils/fitScoringUtils.ts";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts"; // ai: claude-fable-5 | 2026-07-15
@@ -611,6 +612,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           {/* ai: claude-sonnet-5 | 2026-07-25 */}
           <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
           <SalaryBadge job={job} />
+          <LinkedInInsightBadge job={job} />
           <button
             type="button"
             className="btn-secondary"
@@ -1656,6 +1658,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           {/* ai: claude-sonnet-5 | 2026-07-25 */}
           <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
           <SalaryBadge job={job} />
+          <LinkedInInsightBadge job={job} />
           {companySheetRows !== null && companySheetRows.length > 0 && (
             <span
               className={`badge ${companyHistoryBadgeClass(companySheetRows)}`}

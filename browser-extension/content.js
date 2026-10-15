@@ -795,6 +795,27 @@
     });
   }
 
+  // ai: claude-sonnet-5 | 2026-10-14
+  // LinkedIn's "AI-powered job assessment" module (Premium feature --
+  // "You'd be a top applicant, based on your skills, experience, and chances
+  // of hearing back") only renders on the search-results detail pane and the
+  // standalone job page *after* the user clicks "Show match details" -- it's
+  // not present on a freshly-loaded standalone /jobs/view/ page, so this only
+  // finds something in the split-view capture flow. `.job-details-module` is
+  // reused by several unrelated modules (confirmed live), so the match is
+  // anchored on the module whose own <h2> is the assessment heading rather
+  // than guessing a module-specific class name.
+  function linkedInAiInsight() {
+    const modules = document.querySelectorAll('.job-details-module');
+    for (const mod of modules) {
+      const heading = mod.querySelector('h2');
+      if (!heading || !/AI-powered job assessment/i.test(heading.innerText || '')) continue;
+      const p = mod.querySelector('p');
+      if (p && p.innerText.trim()) return p.innerText.trim();
+    }
+    return '';
+  }
+
   // ai: claude-sonnet-5 | 2026-08-25
   // urlOverride lets buildLinkedInSearchDetailPayload reuse this same
   // extraction against the search page's inline detail pane (confirmed live:
@@ -866,7 +887,9 @@
       lines.push('', jobPageBodyText().slice(0, 12000));
     }
 
-    return JSON.stringify({ jobs: [{ url, job_title: title, company, listing_text: lines.join('\n') }] });
+    return JSON.stringify({
+      jobs: [{ url, job_title: title, company, listing_text: lines.join('\n'), ai_insight: linkedInAiInsight() }],
+    });
   }
 
   // ai: claude-sonnet-5 | 2026-08-25
@@ -945,12 +968,18 @@
       const textLines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
       const title = titleEl?.innerText.trim() || textLines[0] || 'Unknown Title';
       const company = companyEl?.innerText.trim() || textLines[1] || '';
+      // ai: claude-sonnet-5 | 2026-10-14
+      // The compact per-card AI match badge ("You'd be a top applicant") --
+      // confirmed live as a stable, semantically-named class (unlike the
+      // hashed title/company classes above).
+      const aiInsight = card.querySelector('.job-card-container__job-insight-text')?.innerText.trim() || '';
 
       jobs.push({
         url,
         job_title: title,
         company,
         listing_text: `${title}\nCompany: ${company}\nURL: ${url}\n\nSnippet:\n${card.innerText.trim()}`,
+        ai_insight: aiInsight,
       });
     });
 

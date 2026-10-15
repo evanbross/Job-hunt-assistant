@@ -44,6 +44,7 @@ import CompanyHistoryDialog from "./common/CompanyHistoryDialog.tsx";
 import SnoozeModal from "./common/SnoozeModal.tsx";
 import ContactsBadge from "./common/ContactsBadge.tsx";
 import SalaryBadge from "./common/SalaryBadge.tsx";
+import LinkedInInsightBadge from "./common/LinkedInInsightBadge.tsx";
 import UndoEditNotice from "./common/UndoEditNotice.tsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.ts";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.ts";
@@ -981,6 +982,7 @@ function JobCard({
           <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
           <span className="badge badge-accent">{job.source || "?"}</span>
           <SalaryBadge job={job} />
+          <LinkedInInsightBadge job={job} />
         </div>
       </div>
 

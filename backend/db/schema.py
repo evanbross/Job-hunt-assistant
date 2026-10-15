@@ -636,6 +636,9 @@ def _migrate(conn: Any) -> None:
         # failure or exhausted browser-extension retries), independent of the job's
         # own status/stage — cleared the next time a scan gets a real response.
         ("unreachable_since", "TEXT"),
+        # ai: claude-sonnet-5 | 2026-10-14 — LinkedIn's own AI match assessment
+        # ("You'd be a top applicant..."), captured verbatim when present.
+        ("linkedin_ai_insight", "TEXT"),
     ]:
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {defn}")
 
