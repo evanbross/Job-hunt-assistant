@@ -148,6 +148,62 @@ class FakeContactOutreachRepo:
         return True
 
 
+# ai: claude-sonnet-5 | 2026-10-15
+class FakeContactEmploymentHistoryRepo:
+    def __init__(
+        self, contact_ids: set[int] | None = None, entry_ids: set[int] | None = None
+    ) -> None:
+        self.contact_ids = contact_ids or set()
+        self.entry_ids = entry_ids or set()
+        self.rows: dict[int, dict[str, Any]] = {}
+        self.updates: list[tuple[int, dict[str, Any]]] = []
+        self.deleted: list[int] = []
+
+    def list_for_contact(self, user_id: int, contact_id: int) -> list[dict[str, Any]]:
+        return [row for row in self.rows.values() if row.get("contact_id") == contact_id]
+
+    def add(
+        self,
+        user_id: int,
+        contact_id: int,
+        *,
+        company: str,
+        title: str,
+        start_date: str | None,
+        end_date: str | None,
+        source: str,
+        captured_at: str,
+    ) -> dict[str, Any] | None:
+        if contact_id not in self.contact_ids:
+            return None
+        row = {
+            "id": 99,
+            "contact_id": contact_id,
+            "company": company,
+            "title": title,
+            "start_date": start_date,
+            "end_date": end_date,
+            "source": source,
+            "captured_at": captured_at,
+        }
+        self.rows[99] = row
+        return row
+
+    def update(self, user_id: int, entry_id: int, fields: dict[str, Any]) -> dict[str, Any] | None:
+        if entry_id not in self.entry_ids:
+            return None
+        self.updates.append((entry_id, fields))
+        row = self.rows.setdefault(entry_id, {"id": entry_id})
+        row.update(fields)
+        return row
+
+    def delete(self, user_id: int, entry_id: int) -> bool:
+        if entry_id not in self.entry_ids:
+            return False
+        self.deleted.append(entry_id)
+        return True
+
+
 class FakeSettingsRepo:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
@@ -316,6 +372,7 @@ def _contacts_client(
     monkeypatch: pytest.MonkeyPatch,
     contacts: FakeContactsRepo | None = None,
     outreach: FakeContactOutreachRepo | None = None,
+    employment_history: FakeContactEmploymentHistoryRepo | None = None,
     companies: FakeCompanyRepo | None = None,
     title_rules: FakeTitleRuleRepo | None = None,
     settings: FakeSettingsRepo | None = None,
@@ -325,6 +382,7 @@ def _contacts_client(
         "conn": FakeConnection(),
         "contacts": contacts or FakeContactsRepo(),
         "contact_outreach": outreach or FakeContactOutreachRepo(),
+        "contact_employment_history": employment_history or FakeContactEmploymentHistoryRepo(),
         "settings": settings or FakeSettingsRepo(),
         "candidate_profiles": candidate_profiles or FakeCandidateProfilesRepo(None),
         "companies": companies or FakeCompanyRepo(),
@@ -483,6 +541,98 @@ def test_log_contact_outreach_unknown_contact_returns_404(monkeypatch: pytest.Mo
     client = _contacts_client(monkeypatch)
 
     response = client.post("/api/contacts/1/outreach", json={"channel": "email"})
+    assert response.status_code == 404
+
+
+# ai: claude-sonnet-5 | 2026-10-15
+def test_list_contact_employment_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    history = FakeContactEmploymentHistoryRepo()
+    history.rows[1] = {"id": 1, "contact_id": 1, "company": "Watchfire", "title": "Engineer"}
+    client = _contacts_client(monkeypatch, employment_history=history)
+
+    response = client.get("/api/contacts/1/employment-history")
+    assert response.status_code == 200
+    assert response.get_json() == [{"id": 1, "contact_id": 1, "company": "Watchfire", "title": "Engineer"}]
+
+
+def test_add_contact_employment_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    history = FakeContactEmploymentHistoryRepo(contact_ids={1})
+    client = _contacts_client(monkeypatch, employment_history=history)
+
+    response = client.post(
+        "/api/contacts/1/employment-history",
+        json={"company": "Watchfire", "title": "Engineer", "start_date": "2015", "end_date": "2018"},
+    )
+    assert response.status_code == 201
+    data = response.get_json()
+    assert data["company"] == "Watchfire"
+    assert data["start_date"] == "2015"
+    assert data["end_date"] == "2018"
+    assert data["source"] == "manual"
+
+
+def test_add_contact_employment_history_requires_company(monkeypatch: pytest.MonkeyPatch) -> None:
+    history = FakeContactEmploymentHistoryRepo(contact_ids={1})
+    client = _contacts_client(monkeypatch, employment_history=history)
+
+    response = client.post("/api/contacts/1/employment-history", json={"company": "   "})
+    assert response.status_code == 400
+    assert history.rows == {}
+
+
+def test_add_contact_employment_history_unknown_contact_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _contacts_client(monkeypatch)
+
+    response = client.post("/api/contacts/1/employment-history", json={"company": "Watchfire"})
+    assert response.status_code == 404
+
+
+def test_update_contact_employment_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    history = FakeContactEmploymentHistoryRepo(entry_ids={7})
+    client = _contacts_client(monkeypatch, employment_history=history)
+
+    response = client.patch("/api/contact-employment-history/7", json={"end_date": "2019"})
+    assert response.status_code == 200
+    assert history.updates == [(7, {"end_date": "2019"})]
+
+
+def test_update_contact_employment_history_unknown_id_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _contacts_client(monkeypatch)
+
+    response = client.patch("/api/contact-employment-history/7", json={"end_date": "2019"})
+    assert response.status_code == 404
+
+
+def test_update_contact_employment_history_rejects_blank_company(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = FakeContactEmploymentHistoryRepo(entry_ids={7})
+    client = _contacts_client(monkeypatch, employment_history=history)
+
+    response = client.patch("/api/contact-employment-history/7", json={"company": "   "})
+    assert response.status_code == 400
+    assert history.updates == []
+
+
+def test_delete_contact_employment_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    history = FakeContactEmploymentHistoryRepo(entry_ids={7})
+    client = _contacts_client(monkeypatch, employment_history=history)
+
+    response = client.delete("/api/contact-employment-history/7")
+    assert response.status_code == 200
+    assert history.deleted == [7]
+
+
+def test_delete_contact_employment_history_unknown_id_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _contacts_client(monkeypatch)
+
+    response = client.delete("/api/contact-employment-history/7")
     assert response.status_code == 404
 
 

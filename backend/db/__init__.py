@@ -71,6 +71,7 @@ from .interfaces import (
     ICareerSiteSourceRepository,
     ICompanyAliasRepository,
     ICompanyRepository,
+    IContactEmploymentHistoryRepository,
     IContactOutreachRepository,
     IContactRepository,
     ICoverLetterPhraseRepository,
@@ -103,6 +104,8 @@ from .repositories.audit_log import PostgresAuditLogRepository
 from .repositories.browser_capture_queue import (
     BROWSER_QUEUE_CLAIM_BATCH_SIZE,
     BROWSER_QUEUE_MAX_RETRIES,
+    CAPTURE_QUEUE_ORIGIN_LABELS,
+    CaptureQueueOrigin,
     PostgresBrowserCaptureQueueRepository,
 )
 from .repositories.candidate_profiles import PostgresCandidateProfileRepository
@@ -113,6 +116,9 @@ from .repositories.career_scan_results import PostgresCareerScanResultRepository
 from .repositories.career_site_sources import PostgresCareerSiteSourceRepository
 from .repositories.companies import PostgresCompanyRepository
 from .repositories.company_aliases import PostgresCompanyAliasRepository
+from .repositories.contact_employment_history import (
+    PostgresContactEmploymentHistoryRepository,
+)
 from .repositories.contact_outreach import PostgresContactOutreachRepository
 from .repositories.contacts import PostgresContactRepository
 from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseRepository
@@ -154,6 +160,7 @@ __all__ = [
     "ICareerSiteSourceRepository",
     "ICompanyAliasRepository",
     "ICompanyRepository",
+    "IContactEmploymentHistoryRepository",
     "IContactOutreachRepository",
     "IContactRepository",
     "IExtensionTokenRepository",
@@ -176,6 +183,8 @@ __all__ = [
     "IUserSettingsRepository",
     "BROWSER_QUEUE_CLAIM_BATCH_SIZE",
     "BROWSER_QUEUE_MAX_RETRIES",
+    "CAPTURE_QUEUE_ORIGIN_LABELS",
+    "CaptureQueueOrigin",
     "PostgresApplicationAnswerRepository",
     "PostgresApplicationProfileRepository",
     "PostgresAuditLogRepository",
@@ -190,6 +199,7 @@ __all__ = [
     "PostgresCareerSiteSourceRepository",
     "PostgresCompanyAliasRepository",
     "PostgresCompanyRepository",
+    "PostgresContactEmploymentHistoryRepository",
     "PostgresContactOutreachRepository",
     "PostgresContactRepository",
     "PostgresExtensionTokenRepository",
@@ -375,6 +385,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "company_aliases": PostgresCompanyAliasRepository(conn),
         "title_rules": PostgresTitleRuleRepository(conn),
         "contact_outreach": PostgresContactOutreachRepository(conn),
+        "contact_employment_history": PostgresContactEmploymentHistoryRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),
         "google_tokens": PostgresGoogleTokenRepository(conn),
         "greenhouse_sessions": PostgresGreenhouseSessionRepository(conn),

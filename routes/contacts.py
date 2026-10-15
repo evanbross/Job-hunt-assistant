@@ -550,6 +550,134 @@ def delete_contact_outreach(outreach_id: int) -> ResponseReturnValue:
     return jsonify({"ok": True})
 
 
+_MAX_EMPLOYMENT_FIELD_LENGTH = 300
+
+
+# ai: claude-sonnet-5 | 2026-10-15
+# One row per employment stint, distinct from the contact's own
+# company_raw/position (always just their current/latest). source defaults
+# to "manual" -- a future per-contact LinkedIn capture (triggered one contact
+# at a time, not a bulk job, to avoid LinkedIn's bot-throttling) would pass
+# its own source value instead.
+class ContactEmploymentHistoryCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    company: str
+    title: str = ""
+    start_date: str | None = None
+    end_date: str | None = None
+    source: str = "manual"
+
+    @field_validator("company")
+    @classmethod
+    def _company_required(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("company must not be empty")
+        if len(stripped) > _MAX_EMPLOYMENT_FIELD_LENGTH:
+            raise ValueError(f"company is limited to {_MAX_EMPLOYMENT_FIELD_LENGTH} characters")
+        return stripped
+
+    @field_validator("title", "source")
+    @classmethod
+    def _strip_required_text(cls, value: str) -> str:
+        return value.strip()[:_MAX_EMPLOYMENT_FIELD_LENGTH]
+
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def _strip_optional_text(cls, value: str | None) -> str | None:
+        # Free text, not a strict date (see backend/db/schema.py's table
+        # comment) -- LinkedIn's own profile display is usually just "Month
+        # Year" or a bare year.
+        if value is None:
+            return None
+        stripped = value.strip()[:_MAX_EMPLOYMENT_FIELD_LENGTH]
+        return stripped or None
+
+
+class ContactEmploymentHistoryUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    company: str | None = None
+    title: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+
+    @field_validator("company")
+    @classmethod
+    def _company_not_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("company must not be empty")
+        return stripped[:_MAX_EMPLOYMENT_FIELD_LENGTH]
+
+    @field_validator("title", "start_date", "end_date")
+    @classmethod
+    def _strip_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()[:_MAX_EMPLOYMENT_FIELD_LENGTH]
+        return stripped or None
+
+
+@contacts_bp.route("/contacts/<int:contact_id>/employment-history")
+def list_contact_employment_history(contact_id: int) -> ResponseReturnValue:
+    with get_repos() as repos:
+        rows = repos["contact_employment_history"].list_for_contact(current_user_id(), contact_id)
+    return jsonify(rows)
+
+
+@contacts_bp.route("/contacts/<int:contact_id>/employment-history", methods=["POST"])
+def add_contact_employment_history(contact_id: int) -> ResponseReturnValue:
+    try:
+        body = ContactEmploymentHistoryCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
+    with get_repos() as repos:
+        created = repos["contact_employment_history"].add(
+            current_user_id(),
+            contact_id,
+            company=body.company,
+            title=body.title,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            source=body.source,
+            captured_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
+        if created is None:
+            return jsonify({"error": "Contact not found"}), 404
+        repos["conn"].commit()
+    return jsonify(created), 201
+
+
+@contacts_bp.route("/contact-employment-history/<int:entry_id>", methods=["PATCH"])
+def update_contact_employment_history(entry_id: int) -> ResponseReturnValue:
+    try:
+        body = ContactEmploymentHistoryUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
+    fields = body.model_dump(exclude_unset=True)
+    with get_repos() as repos:
+        updated = repos["contact_employment_history"].update(current_user_id(), entry_id, fields)
+        if updated is None:
+            return jsonify({"error": "Employment history entry not found"}), 404
+        repos["conn"].commit()
+    return jsonify(updated)
+
+
+@contacts_bp.route("/contact-employment-history/<int:entry_id>", methods=["DELETE"])
+def delete_contact_employment_history(entry_id: int) -> ResponseReturnValue:
+    with get_repos() as repos:
+        if not repos["contact_employment_history"].delete(current_user_id(), entry_id):
+            return jsonify({"error": "Employment history entry not found"}), 404
+        repos["conn"].commit()
+    return jsonify({"ok": True})
+
+
 # ai: claude-opus-5-5 | 2026-10-14
 @contacts_bp.route("/contacts/outreach-template")
 def get_outreach_template() -> ResponseReturnValue:

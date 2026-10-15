@@ -22,6 +22,7 @@ import psycopg2
 import pytest
 
 from backend.db import (
+    PostgresContactEmploymentHistoryRepository,
     PostgresContactOutreachRepository,
     PostgresContactRepository,
     PostgresUserAccountRepository,
@@ -294,6 +295,144 @@ def test_deleting_a_contact_cascades_to_its_outreach_log(pg_dsn: str) -> None:
 
         conn.cursor().execute("DELETE FROM contacts WHERE id = %s", (contact_id,))
         assert outreach_repo.set_response(user_id, created["id"], "2026-09-02") is False
+    finally:
+        conn.close()
+
+
+# ai: claude-sonnet-5 | 2026-10-15
+def test_employment_history_add_list_update_delete(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        history_repo = PostgresContactEmploymentHistoryRepository(conn)
+        repo.sync_import(user_id, [_import_row()])
+        contact_id = repo.get_all(user_id)[0]["id"]
+
+        created = history_repo.add(
+            user_id,
+            contact_id,
+            company="Watchfire",
+            title="Engineer",
+            start_date="2015",
+            end_date="2018",
+            source="manual",
+            captured_at="2026-10-15T00:00:00+00:00",
+        )
+        assert created is not None
+        assert created["company"] == "Watchfire"
+
+        rows = history_repo.list_for_contact(user_id, contact_id)
+        assert len(rows) == 1
+        assert rows[0]["id"] == created["id"]
+
+        updated = history_repo.update(user_id, created["id"], {"end_date": "2019"})
+        assert updated is not None
+        assert updated["end_date"] == "2019"
+
+        assert history_repo.delete(user_id, created["id"]) is True
+        assert history_repo.list_for_contact(user_id, contact_id) == []
+    finally:
+        conn.close()
+
+
+def test_employment_history_repo_is_scoped_to_owning_user(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        owner_id = _new_user(conn)
+        other_id = _new_user(conn, "other@example.com")
+        repo = PostgresContactRepository(conn)
+        history_repo = PostgresContactEmploymentHistoryRepository(conn)
+        set_current_user(conn.cursor(), owner_id)
+        repo.sync_import(owner_id, [_import_row()])
+        contact_id = repo.get_all(owner_id)[0]["id"]
+
+        set_current_user(conn.cursor(), other_id)
+        assert (
+            history_repo.add(
+                other_id,
+                contact_id,
+                company="Watchfire",
+                title="",
+                start_date=None,
+                end_date=None,
+                source="manual",
+                captured_at="2026-10-15T00:00:00+00:00",
+            )
+            is None
+        )
+
+        set_current_user(conn.cursor(), owner_id)
+        created = history_repo.add(
+            owner_id,
+            contact_id,
+            company="Watchfire",
+            title="",
+            start_date=None,
+            end_date=None,
+            source="manual",
+            captured_at="2026-10-15T00:00:00+00:00",
+        )
+        assert created is not None
+
+        set_current_user(conn.cursor(), other_id)
+        assert history_repo.update(other_id, created["id"], {"company": "x"}) is None
+        assert history_repo.delete(other_id, created["id"]) is False
+        assert history_repo.list_for_contact(other_id, contact_id) == []
+
+        set_current_user(conn.cursor(), owner_id)
+        assert history_repo.delete(owner_id, created["id"]) is True
+    finally:
+        conn.close()
+
+
+def test_deleting_a_contact_cascades_to_its_employment_history(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        history_repo = PostgresContactEmploymentHistoryRepository(conn)
+        repo.sync_import(user_id, [_import_row()])
+        contact_id = repo.get_all(user_id)[0]["id"]
+        created = history_repo.add(
+            user_id,
+            contact_id,
+            company="Watchfire",
+            title="",
+            start_date=None,
+            end_date=None,
+            source="manual",
+            captured_at="2026-10-15T00:00:00+00:00",
+        )
+        assert created is not None
+
+        conn.cursor().execute("DELETE FROM contacts WHERE id = %s", (contact_id,))
+        assert history_repo.update(user_id, created["id"], {"company": "x"}) is None
+    finally:
+        conn.close()
+
+
+def test_employment_history_update_rejects_unknown_columns(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        history_repo = PostgresContactEmploymentHistoryRepository(conn)
+        repo.sync_import(user_id, [_import_row()])
+        contact_id = repo.get_all(user_id)[0]["id"]
+        created = history_repo.add(
+            user_id,
+            contact_id,
+            company="Watchfire",
+            title="",
+            start_date=None,
+            end_date=None,
+            source="manual",
+            captured_at="2026-10-15T00:00:00+00:00",
+        )
+        assert created is not None
+        with pytest.raises(ValueError, match="unknown columns"):
+            history_repo.update(user_id, created["id"], {"not_a_real_column": "x"})
     finally:
         conn.close()
 

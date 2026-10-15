@@ -2190,6 +2190,34 @@ def _create_tables(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_contact_outreach_contact_id
             ON contact_outreach (contact_id)
         """,
+        # ai: claude-sonnet-5 | 2026-10-15
+        # One row per employment stint a contact has had (not just their
+        # current company_raw/position) -- populated manually or by a future
+        # per-contact LinkedIn profile scrape, triggered one contact at a time
+        # by the user rather than any automatic bulk job, to avoid the same
+        # bot-throttling the job-search scanners already hit on LinkedIn (see
+        # project memory "linkedin-company-title-dom-bug" and the Shipt
+        # Workday bot-block). start_date/end_date are free text (not strict
+        # ISO dates) since LinkedIn's own profile display is usually just
+        # "Month Year", sometimes only a year, and end_date is blank/NULL for
+        # a still-current role.
+        """
+        CREATE TABLE IF NOT EXISTS contact_employment_history (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            contact_id  INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            company     TEXT NOT NULL,
+            title       TEXT NOT NULL DEFAULT '',
+            start_date  TEXT,
+            end_date    TEXT,
+            source      TEXT NOT NULL DEFAULT 'manual',
+            captured_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_contact_employment_history_contact_id
+            ON contact_employment_history (contact_id)
+        """,
         # ai: claude-sonnet-5 | 2026-09-28
         # Per-user company attributes (recruiter-classification plan, build-order
         # item 2) -- a company only gets a row here once the user actually flags

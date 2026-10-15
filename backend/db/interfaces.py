@@ -41,6 +41,8 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from .repositories.browser_capture_queue import CaptureQueueOrigin
+
 
 # ai: claude-sonnet-5 | 2026-08-20 — every method gained a leading user_id
 # parameter (multi-tenancy migration).
@@ -330,10 +332,22 @@ class IJobStatusHistoryRepository(Protocol):
 
 @runtime_checkable
 class IBrowserCaptureQueueRepository(Protocol):
-    def enqueue(self, user_id: int, url: str, site_name: str) -> int: ...
+    def enqueue(
+        self,
+        user_id: int,
+        url: str,
+        site_name: str,
+        *,
+        origin: CaptureQueueOrigin,
+        origin_detail: str = "",
+    ) -> int: ...
     def enqueue_once_for_purpose(
         self, user_id: int, url: str, site_name: str, purpose: str, job_id: int
     ) -> int | None: ...
+    def enqueue_for_source(
+        self, user_id: int, url: str, site_name: str, source_id: int
+    ) -> int | None: ...
+    def find_latest_for_url(self, user_id: int, url: str) -> dict[str, Any] | None: ...
     def claim_pending(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]: ...
     def mark_done_by_urls(self, user_id: int, urls: list[str]) -> None: ...
     def mark_failed(self, user_id: int, item_id: int, error_msg: str) -> None: ...
@@ -465,3 +479,23 @@ class IContactOutreachRepository(Protocol):
         self, user_id: int, outreach_id: int, response_received_at: str | None
     ) -> bool: ...
     def delete(self, user_id: int, outreach_id: int) -> bool: ...
+
+
+# ai: claude-sonnet-5 | 2026-10-15
+@runtime_checkable
+class IContactEmploymentHistoryRepository(Protocol):
+    def list_for_contact(self, user_id: int, contact_id: int) -> list[dict[str, Any]]: ...
+    def add(
+        self,
+        user_id: int,
+        contact_id: int,
+        *,
+        company: str,
+        title: str,
+        start_date: str | None,
+        end_date: str | None,
+        source: str,
+        captured_at: str,
+    ) -> dict[str, Any] | None: ...
+    def update(self, user_id: int, entry_id: int, fields: dict[str, Any]) -> dict[str, Any] | None: ...
+    def delete(self, user_id: int, entry_id: int) -> bool: ...

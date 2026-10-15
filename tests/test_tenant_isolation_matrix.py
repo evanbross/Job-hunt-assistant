@@ -85,9 +85,13 @@ CASES: list[Case] = [
     _c("POST", "/api/career-sites/<int:source_id>/dismiss-recapture", source_id="career_site"),
     _c_no_control("POST", "/api/career-sites/<int:source_id>/scan", source_id="career_site"),
     _c("DELETE", "/api/company-aliases/<int:alias_id>", alias_id="company_alias"),
+    _c("DELETE", "/api/contact-employment-history/<int:entry_id>", entry_id="contact_employment_history"),
+    _c("PATCH", "/api/contact-employment-history/<int:entry_id>", {"company": "x"}, entry_id="contact_employment_history"),
     _c("DELETE", "/api/contact-outreach/<int:outreach_id>", outreach_id="contact_outreach"),
     _c("PATCH", "/api/contact-outreach/<int:outreach_id>", {"response_received_at": _TS}, outreach_id="contact_outreach"),
     _c("PATCH", "/api/contacts/<int:contact_id>", {"interested": True}, contact_id="contact"),
+    _c("GET", "/api/contacts/<int:contact_id>/employment-history", contact_id="contact"),
+    _c("POST", "/api/contacts/<int:contact_id>/employment-history", {"company": "x"}, contact_id="contact"),
     _c("POST", "/api/contacts/<int:contact_id>/outreach", {"sent_at": _TS, "channel": "linkedin"}, contact_id="contact"),
     _c("POST", "/api/contacts/<int:contact_id>/outreach-draft", {"use_ai": False}, contact_id="contact"),
     _c("POST", "/api/contacts/<int:contact_id>/outreach-draft/stage", {"draft": _MARKER}, contact_id="contact"),
@@ -140,7 +144,13 @@ CASES: list[Case] = [
 _SCOPED_NO_OP = "the DELETE/UPDATE is scoped by user_id, so it matches nothing and the route reports success anyway"
 _UNUSED_JOB_ID = "job_id is not used: the route works on the caller's own candidate profile"
 _OWN_GOOGLE = "authenticates to the caller's own Google account first; the id is a message id in that mailbox"
+# ai: claude-sonnet-5 | 2026-10-15
+_SCOPED_EMPTY_LIST = (
+    "the list is scoped by user_id AND contact_id, so a foreign contact_id"
+    " matches no rows and the route returns an empty list rather than erroring"
+)
 _NOT_REFUSED: dict[tuple[str, str], str] = {
+    ("GET", "/api/contacts/<int:contact_id>/employment-history"): _SCOPED_EMPTY_LIST,
     ("DELETE", "/api/application-answers/<int:answer_id>"): _SCOPED_NO_OP,
     ("DELETE", "/api/browser-capture-queue/<int:item_id>"): _SCOPED_NO_OP,
     ("DELETE", "/api/company-aliases/<int:alias_id>"): _SCOPED_NO_OP,
@@ -283,6 +293,9 @@ class Tenants:
                 ),
                 "contact": contact_id,
                 "contact_outreach": ins(cur, "contact_outreach", contact_id=contact_id, sent_at=_TS),
+                "contact_employment_history": ins(
+                    cur, "contact_employment_history", contact_id=contact_id, company=_MARKER, captured_at=_TS
+                ),
                 "subject_rule": ins(cur, "ack_patterns", pattern=_MARKER),
                 "scanned_email": None,
                 "token": ins(cur, "extension_tokens", token_hash=f"{_MARKER}-hash-{next(_SEQUENCE)}", token_prefix="jha_A", label=_MARKER, created_at=_TS),
