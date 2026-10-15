@@ -279,11 +279,27 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         # ai: claude-sonnet-4-6 | 2026-06-20
         # Also match by base URL (strip query) so token-bearing queue items (e.g. WTTJ
         # email links) are marked done when the captured URL has the token stripped.
+        # ai: claude-sonnet-5 | 2026-10-15
+        # Matching only 'processing' loses a capture that took close to (or past)
+        # claim_pending's 10-minute stale cutoff: the row gets reset back to
+        # 'pending' (or re-claimed into a fresh 'processing' row for a retry
+        # tab) in the window between this capture starting and it finally
+        # posting its result here, so the UPDATE below matched zero rows even
+        # though the capture had genuinely succeeded -- the row was left to be
+        # retried forever, each retry opening another browser tab for a job
+        # that was already correctly captured. Confirmed live 2026-10-15: a
+        # slow Workable page (via a Matcha.fm redirect) successfully updated
+        # its job row on an early attempt, but kept reopening a new tab every
+        # ~10 minutes afterward because the matching queue row never left
+        # 'processing'/'pending' limbo. 'pending' is safe to match here too --
+        # it still unambiguously means "not yet done or failed" for this URL,
+        # and a row already reclaimed into a new attempt by the time this
+        # runs just gets marked done harmlessly early instead of retried.
         self._execute(
             f"UPDATE browser_capture_queue SET status = 'done', updated_at = %s"
             f" WHERE user_id = %s"
             f" AND (url IN ({placeholders}) OR split_part(url, '?', 1) IN ({placeholders}))"
-            f" AND status = 'processing'",
+            f" AND status IN ('processing', 'pending')",
             [now, user_id, *urls, *urls],
         )
 
