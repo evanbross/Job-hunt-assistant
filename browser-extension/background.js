@@ -150,6 +150,23 @@ chrome.alarms.get('jha-queue-poll', (alarm) => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  // ai: claude-sonnet-5 | 2026-10-15
+  // _CAPTURE_TIMEOUT_ALARM_PREFIX ("jha-capture-timeout-") starts with
+  // _CAPTURE_ALARM_PREFIX ("jha-capture-"), so this check must come first --
+  // otherwise every timeout alarm would match the settle-delay branch below
+  // instead (parsing "timeout-<id>" as a tabId, which is NaN, silently
+  // no-opping the whole timeout).
+  if (alarm.name.startsWith(_CAPTURE_TIMEOUT_ALARM_PREFIX)) {
+    const tabId = parseInt(
+      alarm.name.slice(_CAPTURE_TIMEOUT_ALARM_PREFIX.length),
+      10
+    );
+    if (!Number.isNaN(tabId)) {
+      console.warn('[JHA] Capture tab', tabId, 'never responded -- abandoning it');
+      _abandonQueueTab(tabId);
+    }
+    return;
+  }
   // ai: claude-sonnet-5 | 2026-08-04
   // Fires a queue-capture trigger scheduled by scheduleQueueCapture(). Handled
   // here rather than a dedicated listener since chrome.alarms.onAlarm only
@@ -461,6 +478,35 @@ function scheduleQueueCapture(tabId, delayMs) {
   });
 }
 
+// ai: claude-sonnet-5 | 2026-10-15
+// Nothing previously bounded how long a queue-capture tab waits for content.js's
+// payloadReady response -- if the content script never responds (hung await,
+// a page whose capture logic throws before reaching its own try/catch, a CSP
+// block on script injection that still leaves the tab open), the tab just sat
+// there forever. The server's 10-minute stale-processing reset (see
+// claim_pending's comment above) would eventually re-claim the queue item and
+// try again, but that only opens ANOTHER tab -- it has no way to close the
+// orphaned one, so tabs accumulated indefinitely instead of ever being
+// cleaned up (confirmed live 2026-10-15: a Workable job page kept reopening
+// without ever closing). _CAPTURE_TIMEOUT_ALARM_PREFIX bounds the wait the
+// same MV3-safe way scheduleQueueCapture's settle delay already does
+// (chrome.alarms, not setTimeout, so it survives a service-worker
+// suspension) and gives up cleanly if nothing comes back in time.
+const _CAPTURE_TIMEOUT_ALARM_PREFIX = 'jha-capture-timeout-';
+const _CAPTURE_RESPONSE_TIMEOUT_MINUTES = 1.5;
+
+// Shared cleanup for a queue-capture tab that is being given up on, whether
+// because triggering it failed outright or because it never answered in time.
+async function _abandonQueueTab(tabId) {
+  chrome.alarms.clear(`${_CAPTURE_TIMEOUT_ALARM_PREFIX}${tabId}`);
+  _pendingCaptureTabs.delete(tabId);
+  await _deletePendingCapture(tabId);
+  const previousTabId = _previousTabs.get(tabId);
+  _previousTabs.delete(tabId);
+  chrome.tabs.remove(tabId).catch(() => {});
+  if (previousTabId) chrome.tabs.update(previousTabId, { active: true }).catch(() => {});
+}
+
 async function triggerQueueCapture(tabId) {
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
@@ -468,15 +514,13 @@ async function triggerQueueCapture(tabId) {
     const purpose = pending?.purpose || 'import';
     const action = purpose === 'closed_req' ? 'buildClosedReqCheck' : 'buildForBackground';
     chrome.tabs.sendMessage(tabId, { action });
+    chrome.alarms.create(`${_CAPTURE_TIMEOUT_ALARM_PREFIX}${tabId}`, {
+      delayInMinutes: _CAPTURE_RESPONSE_TIMEOUT_MINUTES,
+    });
   } catch (err) {
     // ai: claude-sonnet-4-6 | 2026-06-22
     console.error('[JHA] triggerQueueCapture failed for tab', tabId, ':', err?.message || err);
-    _pendingCaptureTabs.delete(tabId);
-    await _deletePendingCapture(tabId);
-    const previousTabId = _previousTabs.get(tabId);
-    _previousTabs.delete(tabId);
-    chrome.tabs.remove(tabId).catch(() => {});
-    if (previousTabId) chrome.tabs.update(previousTabId, { active: true }).catch(() => {});
+    await _abandonQueueTab(tabId);
   }
 }
 
@@ -502,7 +546,14 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.action !== 'payloadReady') return;
   const tabId = sender.tab?.id;
   const isQueueCapture = tabId !== undefined && _pendingCaptureTabs.has(tabId);
-  if (isQueueCapture) _pendingCaptureTabs.delete(tabId);
+  if (isQueueCapture) {
+    _pendingCaptureTabs.delete(tabId);
+    // ai: claude-sonnet-5 | 2026-10-15
+    // A real response arrived in time -- cancel the abandon-this-tab timeout
+    // scheduled by triggerQueueCapture so it doesn't fire later and close a
+    // tab that already completed normally.
+    chrome.alarms.clear(`${_CAPTURE_TIMEOUT_ALARM_PREFIX}${tabId}`);
+  }
   postToApp(message.payload, tabId, isQueueCapture, message.blocked ? message.site : null, message.warning);
 });
 
