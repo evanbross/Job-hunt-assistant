@@ -78,6 +78,10 @@ from backend.scanning.import_repair import (
     repair_existing_job_company,
 )
 from backend.scanning.manual_job_ingest_service import ManualJobIngestService
+from backend.scanning.platform_detection import (
+    LINKEDIN_SEARCH_PAGE_SIZE,
+    platform_for_site_url,
+)
 from backend.scoring.auto_reject_rules import (
     jd_blocklist_match,
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
@@ -830,6 +834,27 @@ def _record_capture_source(
             interval_value,
             default=4,
             field_name="recapture_interval_days",
+        )
+    # ai: claude-sonnet-5 | 2026-10-15
+    # automatic_browser LinkedIn sources have no listing-page fetch to
+    # discover the full candidate set up front (unlike _scan_generic/
+    # _scan_workday's next_scan_offset -- see career_site_scanner.py), so
+    # this is the only place that learns how many links the page the
+    # browser extension just captured actually returned (capture_total,
+    # threaded through task_body by routes/import_.py, constant across every
+    # batch of one capture so re-running this per batch is idempotent). A
+    # full page means more results may follow it, so advance past it; a
+    # short page means this search's results ended, so wrap back to the top
+    # for the next scheduled scan.
+    capture_total = body.get("capture_total")
+    if capture_total is not None and platform_for_site_url(
+        str(source.get("url") or "")
+    ) == "linkedin":
+        current_offset = int(source.get("next_scan_offset") or 0)
+        fields["next_scan_offset"] = (
+            current_offset + int(capture_total)
+            if int(capture_total) >= LINKEDIN_SEARCH_PAGE_SIZE
+            else 0
         )
     try:
         repos["career_sites"].update(user_id, source["id"], fields)

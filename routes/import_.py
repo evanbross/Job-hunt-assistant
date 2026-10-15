@@ -692,6 +692,12 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
         for key in ("queue_url", "url", "import_trigger", "recapture_interval_days")
         if key in body
     }
+    # ai: claude-sonnet-5 | 2026-10-15
+    # The full captured page's link count, independent of how _import_batches
+    # splits it across Celery tasks -- _record_capture_source needs this (not
+    # a single batch's size) to tell a full LinkedIn search-results page from
+    # a short/last one and decide whether to advance or wrap next_scan_offset.
+    task_body["capture_total"] = len(extracted)
     # ai: claude-sonnet-5 | 2026-10-05
     # Dispatch one batch at a time (not a list comprehension that only records
     # IDs after every .delay() succeeds) so a broker failure partway through

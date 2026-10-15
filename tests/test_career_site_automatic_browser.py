@@ -186,6 +186,146 @@ def test_scheduled_scan_does_not_requeue_source_already_in_flight(
     assert len(queue_rows) == 1
 
 
+# ai: claude-sonnet-5 | 2026-10-15
+def test_scheduled_scan_pages_linkedin_source_by_next_scan_offset(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A LinkedIn automatic_browser source with a nonzero next_scan_offset
+    must be enqueued with a `start` query param carrying that offset, instead
+    of always re-queuing the same saved search URL -- the bug reported
+    2026-10-15 where a periodic rescan kept re-capturing the same first page
+    of results instead of paging through 1..25, 26..50, etc."""
+    from routes import career_sites as career_sites_route
+
+    user_id = _new_user(pg_dsn, "linkedin-offset@example.com")
+    with get_repos(user_id) as repos:
+        set_current_user(repos["conn"].cursor(), user_id)
+        source_id = repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "LinkedIn Saved Search",
+                "url": "https://www.linkedin.com/jobs/search-results/?keywords=engineer",
+                "enabled": 1,
+                "collection_mode": "automatic_browser",
+                "recapture_interval_days": 7,
+                "next_scan_offset": 50,
+            },
+        )
+        repos["conn"].commit()
+
+    monkeypatch.setattr(career_sites_route, "CareerSiteScanner", _ScannerThatMustNotBeCalled)
+    monkeypatch.setattr(career_sites_route, "FitScorer", _FitScorerThatMustNotBeCalled)
+
+    career_sites_route.run_career_site_scan_task.apply(
+        args=(user_id,), kwargs={"trigger": "scheduled"}
+    ).result
+
+    with get_repos(user_id) as repos:
+        set_current_user(repos["conn"].cursor(), user_id)
+        queue_rows = [
+            r for r in repos["browser_capture_queue"].get_all(user_id)
+            if r["source_id"] == source_id
+        ]
+
+    assert len(queue_rows) == 1
+    assert "start=50" in queue_rows[0]["url"]
+    assert "keywords=engineer" in queue_rows[0]["url"]
+
+
+def test_record_capture_source_advances_offset_for_full_linkedin_page(
+    pg_dsn: str,
+) -> None:
+    """A capture that returned a full page (capture_total >= the LinkedIn
+    search page size) must advance next_scan_offset so the next scheduled
+    scan requests the following page instead of repeating this one."""
+    from backend.tasks import _record_capture_source
+
+    user_id = _new_user(pg_dsn, "offset-advance@example.com")
+    with get_repos(user_id) as repos:
+        set_current_user(repos["conn"].cursor(), user_id)
+        source_id = repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "LinkedIn Saved Search",
+                "url": "https://www.linkedin.com/jobs/search-results/?keywords=engineer",
+                "enabled": 1,
+                "collection_mode": "automatic_browser",
+                "recapture_interval_days": 7,
+            },
+        )
+        repos["conn"].commit()
+        source = repos["career_sites"].get_by_id(user_id, source_id)
+
+        _record_capture_source(user_id, source, repos, {"capture_total": 25})
+
+        updated = repos["career_sites"].get_by_id(user_id, source_id)
+
+    assert updated["next_scan_offset"] == 25
+
+
+def test_record_capture_source_wraps_offset_on_short_linkedin_page(
+    pg_dsn: str,
+) -> None:
+    """A capture that returned fewer links than a full page means this
+    search's results ended, so the offset must wrap back to 0 instead of
+    leaving the next scheduled scan requesting an empty/past-the-end page."""
+    from backend.tasks import _record_capture_source
+
+    user_id = _new_user(pg_dsn, "offset-wrap@example.com")
+    with get_repos(user_id) as repos:
+        set_current_user(repos["conn"].cursor(), user_id)
+        source_id = repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "LinkedIn Saved Search",
+                "url": "https://www.linkedin.com/jobs/search-results/?keywords=engineer",
+                "enabled": 1,
+                "collection_mode": "automatic_browser",
+                "recapture_interval_days": 7,
+                "next_scan_offset": 50,
+            },
+        )
+        repos["conn"].commit()
+        source = repos["career_sites"].get_by_id(user_id, source_id)
+
+        _record_capture_source(user_id, source, repos, {"capture_total": 8})
+
+        updated = repos["career_sites"].get_by_id(user_id, source_id)
+
+    assert updated["next_scan_offset"] == 0
+
+
+def test_record_capture_source_leaves_offset_alone_for_non_linkedin_source(
+    pg_dsn: str,
+) -> None:
+    """Wellfound/Shipt-style automatic_browser sources don't support
+    LinkedIn's `start` pagination scheme, so a capture for one must never
+    touch next_scan_offset."""
+    from backend.tasks import _record_capture_source
+
+    user_id = _new_user(pg_dsn, "offset-non-linkedin@example.com")
+    with get_repos(user_id) as repos:
+        set_current_user(repos["conn"].cursor(), user_id)
+        source_id = repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "Shipt",
+                "url": "https://shipt.wd1.myworkdayjobs.com/Shipt_External",
+                "enabled": 1,
+                "collection_mode": "automatic_browser",
+                "recapture_interval_days": 7,
+            },
+        )
+        repos["conn"].commit()
+        source = repos["career_sites"].get_by_id(user_id, source_id)
+
+        _record_capture_source(user_id, source, repos, {"capture_total": 25})
+
+        updated = repos["career_sites"].get_by_id(user_id, source_id)
+
+    assert updated["next_scan_offset"] == 0
+
+
 def test_enqueue_for_source_dedupes_then_requeues_after_done(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

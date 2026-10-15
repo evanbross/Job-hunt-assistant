@@ -68,7 +68,10 @@ from backend.db import (
 from backend.db.job_columns import JobColumns
 from backend.scanning.career_scan_digest import send_career_scan_digest
 from backend.scanning.career_site_scanner import CareerSiteScanner
-from backend.scanning.platform_detection import platform_for_site_url
+from backend.scanning.platform_detection import (
+    linkedin_search_url_with_offset,
+    platform_for_site_url,
+)
 from backend.scanning.schedulers import configure_career_site_scheduler
 from backend.scoring.auto_reject_rules import (
     jd_blocklist_match,
@@ -589,16 +592,28 @@ def run_career_site_scan_task(
                 source.get("collection_mode") == "automatic_browser"
                 or _host in _MANUAL_CAPTURE_ONLY_HOSTS
             ):
+                # ai: claude-sonnet-5 | 2026-10-15
+                # LinkedIn search-results URLs support a `start` page offset;
+                # without this a scheduled scan re-queues the exact same saved
+                # URL every tick and keeps re-capturing the same first ~25
+                # results (next_scan_offset is advanced/reset in
+                # _record_capture_source once the capture completes and we
+                # know how many links that page actually returned).
+                capture_url = source_url
+                if platform_for_site_url(source_url) == "linkedin":
+                    capture_url = linkedin_search_url_with_offset(
+                        source_url, int(source.get("next_scan_offset") or 0)
+                    )
                 with get_repos(user_id) as repos:
                     queued_id = repos["browser_capture_queue"].enqueue_for_source(
-                        user_id, source_url, source_name, current_source_id
+                        user_id, capture_url, source_name, current_source_id
                     )
                     repos["conn"].commit()
                 if queued_id is not None:
                     logger.info(
                         "Queued %s (%s) for browser capture (queue id %d)",
                         source_name,
-                        source_url,
+                        capture_url,
                         queued_id,
                     )
                     site_report["error"] = "Queued for browser capture."
