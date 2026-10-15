@@ -9,11 +9,18 @@
 # created at all. Scheduled pipelines evaluate every `changes:` rule as true, so a
 # schedule (CI/CD > Schedules) runs the full set, including the dependency audits.
 
+# ai: claude-sonnet-5 | 2026-10-15
+# Disabled: runs are no longer triggered on GitLab's shared runners (to stop
+# spending CI minutes/credits) in favor of running the same checks locally
+# before pushing. Every job definition below is left intact -- to re-enable,
+# restore the three commented-out rules (merge_request_event, pushes to the
+# default branch, and scheduled pipelines) and delete the `when: never` line.
 workflow:
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_PIPELINE_SOURCE == "schedule"
+    # - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    # - if: $CI_PIPELINE_SOURCE == "schedule"
+    - when: never
 
 # Everything the Python lint/test jobs read. tests/ also reads a few non-Python files:
 # deploy/ and .gitignore (test_infra_hardening.py), shared/skip_reasons.json and
