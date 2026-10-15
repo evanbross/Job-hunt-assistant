@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-10-14.02
+// @version      2026-10-15.01
 // @match        https://jobs.ashbyhq.com/vanta/*
 // @match        https://discord.com/careehrs*
 // @match        https://job-boards.greenhouse.io/*/jobs/*
@@ -484,9 +484,17 @@
             // "Staff Engineer"/"Cloud Campaign") title is lines[0] and company is
             // lines[1] directly, with no leading hidden a11y-label line anymore.
             const textLines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+            // ai: claude-sonnet-5 | 2026-10-15
+            // Collapse immediately-adjacent duplicate lines before indexing --
+            // confirmed live (job 4407130909, "UpSmith"): some cards repeat the
+            // title line a second time (likely a hidden a11y label) before the
+            // real company line, which made the naive lines[1] fallback read
+            // that duplicate instead of the company. Other cards have no such
+            // duplicate, so this must collapse rather than always skip line 0.
+            const dedupedLines = textLines.filter((line, i) => i === 0 || line !== textLines[i - 1]);
             const url = `https://www.linkedin.com/jobs/view/${id}/`;
-            const title = titleEl?.innerText.trim() || textLines[0] || 'Unknown Title';
-            const company = companyEl?.innerText.trim() || textLines[1] || '';
+            const title = titleEl?.innerText.trim() || dedupedLines[0] || 'Unknown Title';
+            const company = companyEl?.innerText.trim() || dedupedLines[1] || '';
             const metadata = card.innerText.trim();
             // ai: claude-sonnet-5 | 2026-10-14 — mirrors content.js's extraction.
             const aiInsight = card.querySelector('.job-card-container__job-insight-text')?.innerText.trim() || '';

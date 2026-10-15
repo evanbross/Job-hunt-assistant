@@ -966,8 +966,16 @@
 
       const url = `https://www.linkedin.com/jobs/view/${id}/`;
       const textLines = card.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-      const title = titleEl?.innerText.trim() || textLines[0] || 'Unknown Title';
-      const company = companyEl?.innerText.trim() || textLines[1] || '';
+      // ai: claude-sonnet-5 | 2026-10-15
+      // Collapse immediately-adjacent duplicate lines before indexing -- confirmed
+      // live (job 4407130909, "UpSmith"): some cards repeat the title line a
+      // second time (likely a hidden a11y label) before the real company line,
+      // which made the naive lines[1] fallback read that duplicate instead of
+      // the company. Other cards (job 4468808388, "Cloud Campaign") have no
+      // such duplicate, so this must collapse rather than always skip line 0.
+      const dedupedLines = textLines.filter((line, i) => i === 0 || line !== textLines[i - 1]);
+      const title = titleEl?.innerText.trim() || dedupedLines[0] || 'Unknown Title';
+      const company = companyEl?.innerText.trim() || dedupedLines[1] || '';
       // ai: claude-sonnet-5 | 2026-10-14
       // The compact per-card AI match badge ("You'd be a top applicant") --
       // confirmed live as a stable, semantically-named class (unlike the
