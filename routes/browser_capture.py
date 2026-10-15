@@ -42,7 +42,7 @@ from urllib.parse import urlparse
 from flask import Blueprint, jsonify, request
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from backend.db import BROWSER_QUEUE_MAX_RETRIES
+from backend.db import BROWSER_QUEUE_MAX_RETRIES, CaptureQueueOrigin
 from backend.utils.utils import current_user_id, get_repos, invalid_request_response
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ def enqueue_url() -> tuple:
     try:
         with get_repos() as repos:
             item_id = repos["browser_capture_queue"].enqueue(
-                current_user_id(), raw_url, site_name
+                current_user_id(), raw_url, site_name, origin=CaptureQueueOrigin.MANUAL
             )
             repos["conn"].commit()
         return jsonify({"id": item_id, "url": raw_url, "site_name": site_name}), 201

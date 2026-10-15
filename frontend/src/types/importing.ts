@@ -149,6 +149,19 @@ export interface ImportCaptureSource {
   url?: string;
 }
 
+// ai: claude-opus-5-5 | 2026-10-14
+/** Where a capture came from (routes/import_.py's _describe_capture_origin).
+ * queue_* fields are "" unless the capture came off the browser capture queue;
+ * queue_reason is a label from CAPTURE_QUEUE_ORIGIN_LABELS and queue_detail its
+ * specifics (e.g. the email sender and subject for an email-scan link). */
+export interface ImportCaptureOrigin {
+  channel: string;
+  page_url: string;
+  queue_reason: string;
+  queue_detail: string;
+  queued_at: string;
+}
+
 /** One suggestion from _capture_source_suggestions, offered when a bulk
  * import can't tell which saved career site a captured page belongs to. */
 export interface CaptureSourceSuggestion {
@@ -236,6 +249,7 @@ export interface ImportStatus {
   trigger?: string;
   started_at?: string;
   capture_source?: ImportCaptureSource | null;
+  capture_origin?: ImportCaptureOrigin | null;
   steps?: ImportProgressStep[];
   import_id?: string | null;
   task_id?: string | null;

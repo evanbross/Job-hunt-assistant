@@ -61,7 +61,7 @@ from pydantic import (
 )
 
 import config
-from backend.db import DuplicateJobUrlError
+from backend.db import CaptureQueueOrigin, DuplicateJobUrlError
 from backend.db.job_columns import JobColumns
 from backend.email.classification import maybe_mark_source_email_read
 from backend.email.email_parser import (
@@ -1104,7 +1104,13 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
         site_name = urlparse(url).netloc
         try:
             with get_repos() as repos:
-                repos["browser_capture_queue"].enqueue(user_id, url, site_name)
+                repos["browser_capture_queue"].enqueue(  # ai: claude-opus-5-5 | 2026-10-14
+                    user_id,
+                    url,
+                    site_name,
+                    origin=CaptureQueueOrigin.REFRESH_FROM_URL,
+                    origin_detail=f"Job #{job_id}",
+                )
                 repos["conn"].commit()
             logger.info(
                 "refresh-from-url: queued job %d (%s) for browser extension capture",
@@ -2190,7 +2196,13 @@ def _attempt_import_repair(
                 str(working.get("source") or "").strip() or urlparse(capture_url).netloc
             )
             try:
-                repos["browser_capture_queue"].enqueue(user_id, capture_url, site_name)
+                repos["browser_capture_queue"].enqueue(  # ai: claude-opus-5-5 | 2026-10-14
+                    user_id,
+                    capture_url,
+                    site_name,
+                    origin=CaptureQueueOrigin.IMPORT_REPAIR,
+                    origin_detail=f"Job #{job.get('id')}",
+                )
             except Exception as exc:
                 logger.warning(
                     "Import repair: failed to enqueue browser capture for job %s: %s",

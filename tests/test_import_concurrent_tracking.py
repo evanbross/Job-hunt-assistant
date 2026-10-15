@@ -47,12 +47,18 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from flask import Flask
+from flask.testing import FlaskClient
 
 import routes.import_ as import_routes
 from routes.import_ import ImportProgressState, import_bp
 
+_USER_ID = 1
+_OTHER_USER_ID = 2
 
-def _state(*, running: bool, started_at: str, task_id: str | None = None) -> ImportProgressState:
+
+def _state(
+    *, running: bool, started_at: str, task_id: str | None = None, user_id: int = _USER_ID
+) -> ImportProgressState:
     return ImportProgressState(
         running=running,
         phase="matching" if running else "done",
@@ -60,6 +66,7 @@ def _state(*, running: bool, started_at: str, task_id: str | None = None) -> Imp
         message="",
         trigger="ui",
         started_at=started_at,
+        user_id=user_id,
         task_id=task_id,
     )
 
@@ -80,8 +87,8 @@ def test_two_concurrent_imports_are_tracked_independently() -> None:
         )
 
         with import_routes._imports_lock:
-            found_a = import_routes._lookup_import_locked("import-a")
-            found_b = import_routes._lookup_import_locked("import-b")
+            found_a = import_routes._lookup_import_locked("import-a", _USER_ID)
+            found_b = import_routes._lookup_import_locked("import-b", _USER_ID)
 
         assert found_a is not None and found_a[0] == "import-a"
         assert found_b is not None and found_b[0] == "import-b"
@@ -101,7 +108,7 @@ def test_lookup_without_import_id_falls_back_to_most_recent() -> None:
         )
 
         with import_routes._imports_lock:
-            found = import_routes._lookup_import_locked("")
+            found = import_routes._lookup_import_locked("", _USER_ID)
 
         assert found is not None
         assert found[0] == "newer"
@@ -116,8 +123,36 @@ def test_lookup_unknown_import_id_returns_none() -> None:
             "known", _state(running=True, started_at="2026-08-12T10:00:00+00:00")
         )
         with import_routes._imports_lock:
-            found = import_routes._lookup_import_locked("does-not-exist")
+            found = import_routes._lookup_import_locked("does-not-exist", _USER_ID)
         assert found is None
+    finally:
+        _clear_tracked_imports()
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def test_lookup_never_returns_another_users_import() -> None:
+    _clear_tracked_imports()
+    try:
+        import_routes._set_import_progress(
+            "mine", _state(running=True, started_at="2026-08-12T10:00:00+00:00")
+        )
+        import_routes._set_import_progress(
+            "theirs",
+            _state(
+                running=True,
+                started_at="2026-08-12T10:05:00+00:00",
+                user_id=_OTHER_USER_ID,
+            ),
+        )
+        with import_routes._imports_lock:
+            fallback = import_routes._lookup_import_locked("", _USER_ID)
+            explicit = import_routes._lookup_import_locked("theirs", _USER_ID)
+            none_of_mine = import_routes._lookup_import_locked("", 99)
+
+        # The newer import belongs to someone else, so the fallback must skip it.
+        assert fallback is not None and fallback[0] == "mine"
+        assert explicit is None
+        assert none_of_mine is None
     finally:
         _clear_tracked_imports()
 
@@ -201,13 +236,29 @@ def _make_fake_async_result(by_id: dict[str, _FakeAsyncResult]):
 
 def _make_app(monkeypatch: pytest.MonkeyPatch, by_id: dict[str, _FakeAsyncResult]) -> Flask:
     app = Flask(__name__)
+    app.secret_key = "test"
     app.register_blueprint(import_bp, url_prefix="/api")
     monkeypatch.setattr(import_routes, "AsyncResult", _make_fake_async_result(by_id))
     return app
 
 
+# ai: claude-opus-5-5 | 2026-10-14
+def _client(app: Flask, user_id: int = _USER_ID) -> FlaskClient:
+    client = app.test_client()
+    with client.session_transaction() as flask_session:
+        flask_session["user_id"] = user_id
+    return client
+
+
 def _seed_import(
-    import_id: str, task_ids: list[str], *, started_at: str, total: int = 2
+    import_id: str,
+    task_ids: list[str],
+    *,
+    started_at: str,
+    total: int = 2,
+    user_id: int = _USER_ID,
+    capture_source: dict | None = None,
+    capture_origin: dict | None = None,
 ) -> None:
     import_routes._set_import_progress(
         import_id,
@@ -218,7 +269,10 @@ def _seed_import(
             message="",
             trigger="ui",
             started_at=started_at,
+            user_id=user_id,
             total=total,
+            capture_source=capture_source,
+            capture_origin=capture_origin,
             task_ids=task_ids,
         ),
     )
@@ -238,7 +292,7 @@ def test_import_status_still_running_with_mixed_pending_and_success(
             "imp-1", ["t1", "t2"], started_at=datetime.now(UTC).isoformat(timespec="seconds")
         )
 
-        response = app.test_client().get("/api/import/status?import_id=imp-1")
+        response = _client(app).get("/api/import/status?import_id=imp-1")
         data = response.get_json()
 
         assert data["running"] is True
@@ -263,7 +317,7 @@ def test_import_status_reports_timeout_for_a_dead_worker(
         ).isoformat(timespec="seconds")
         _seed_import("imp-2", ["t1"], started_at=stale_started_at, total=1)
 
-        response = app.test_client().get("/api/import/status?import_id=imp-2")
+        response = _client(app).get("/api/import/status?import_id=imp-2")
         data = response.get_json()
 
         assert data["running"] is False
@@ -296,7 +350,7 @@ def test_import_status_grace_period_scales_with_batch_count(
         ).isoformat(timespec="seconds")
         _seed_import("imp-3", task_ids, started_at=elapsed_started_at, total=10)
 
-        response = app.test_client().get("/api/import/status?import_id=imp-3")
+        response = _client(app).get("/api/import/status?import_id=imp-3")
         data = response.get_json()
 
         assert data["running"] is True
@@ -319,7 +373,7 @@ def test_import_status_done_aggregates_all_successful_batches(
             "imp-4", ["t1", "t2"], started_at=datetime.now(UTC).isoformat(timespec="seconds"), total=4
         )
 
-        response = app.test_client().get("/api/import/status?import_id=imp-4")
+        response = _client(app).get("/api/import/status?import_id=imp-4")
         data = response.get_json()
 
         assert data["running"] is False
@@ -344,12 +398,99 @@ def test_import_status_reports_error_for_a_failed_batch(
             "imp-5", ["t1", "t2"], started_at=datetime.now(UTC).isoformat(timespec="seconds"), total=2
         )
 
-        response = app.test_client().get("/api/import/status?import_id=imp-5")
+        response = _client(app).get("/api/import/status?import_id=imp-5")
         data = response.get_json()
 
         assert data["running"] is False
         assert data["phase"] == "error"
         assert "1 failed" in data["message"]
+    finally:
+        _clear_tracked_imports()
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+_ORIGIN = {
+    "channel": "Browser extension \u2014 capture queue",
+    "page_url": "https://jobs.example.com/1",
+    "queue_reason": "Email scan",
+    "queue_detail": 'Alerts <a@example.com> \u2014 "New jobs"',
+    "queued_at": "2026-10-14T09:00:00+00:00",
+}
+
+
+def test_import_status_reports_origin_and_source_when_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_tracked_imports()
+    try:
+        by_id = {"t1": _FakeAsyncResult("t1", "SUCCESS", result={"queued": 1, "total": 1})}
+        app = _make_app(monkeypatch, by_id)
+        _seed_import(
+            "imp-o1",
+            ["t1"],
+            started_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            total=1,
+            capture_source={"name": "Example Careers"},
+            capture_origin=_ORIGIN,
+        )
+
+        data = _client(app).get("/api/import/status").get_json()
+
+        assert data["phase"] == "done"
+        assert data["capture_origin"] == _ORIGIN
+        # Batch results carry no capture_source here; the tracked one fills in.
+        assert data["capture_source"] == {"name": "Example Careers"}
+    finally:
+        _clear_tracked_imports()
+
+
+def test_import_status_keeps_origin_and_source_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The error payload used to hard-code capture_source=None, hiding where a
+    failed import came from exactly when the user needs it most."""
+    _clear_tracked_imports()
+    try:
+        by_id = {"t1": _FakeAsyncResult("t1", "FAILURE", result="boom")}
+        app = _make_app(monkeypatch, by_id)
+        _seed_import(
+            "imp-o2",
+            ["t1"],
+            started_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            total=1,
+            capture_source={"name": "Example Careers"},
+            capture_origin=_ORIGIN,
+        )
+
+        data = _client(app).get("/api/import/status?import_id=imp-o2").get_json()
+
+        assert data["phase"] == "error"
+        assert data["capture_origin"] == _ORIGIN
+        assert data["capture_source"] == {"name": "Example Careers"}
+    finally:
+        _clear_tracked_imports()
+
+
+def test_import_status_never_shows_another_users_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_tracked_imports()
+    try:
+        by_id = {"t1": _FakeAsyncResult("t1", "SUCCESS", result={"queued": 1, "total": 1})}
+        app = _make_app(monkeypatch, by_id)
+        _seed_import(
+            "theirs",
+            ["t1"],
+            started_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            user_id=_OTHER_USER_ID,
+            capture_origin=_ORIGIN,
+        )
+
+        fallback = _client(app).get("/api/import/status").get_json()
+        explicit = _client(app).get("/api/import/status?import_id=theirs").get_json()
+
+        assert fallback["phase"] == "idle" and fallback["capture_origin"] is None
+        assert explicit["phase"] == "idle" and explicit["capture_origin"] is None
     finally:
         _clear_tracked_imports()
 
@@ -422,6 +563,11 @@ def _patch_queue_import_capture_prelude(
         yield {"conn": _FakeConn()}
 
     monkeypatch.setattr(import_routes, "get_repos", _fake_get_repos)
+    monkeypatch.setattr(
+        import_routes,
+        "_describe_capture_origin",
+        lambda user_id, body, trigger: dict(_ORIGIN),
+    )
 
 
 def test_partial_dispatch_failure_revokes_prior_batches_and_returns_tracked_error(

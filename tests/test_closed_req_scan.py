@@ -46,7 +46,7 @@ from flask.testing import FlaskClient
 
 import config
 import routes.applications as applications_module  # ai: claude-fable-5 | 2026-07-17
-from backend.db import open_repositories
+from backend.db import CaptureQueueOrigin, open_repositories
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
 from backend.db.row_level_security import set_current_user
 from backend.scanning.closed_req_scan_helpers import (  # ai: claude-fable-5 | 2026-07-17
@@ -1191,7 +1191,12 @@ def test_closed_req_browser_queue_snapshot_counts_by_status(
             user_id, ["https://www.linkedin.com/jobs/view/1/"]
         )  # 1: processing -> done
         # An unrelated import-purpose row must not be counted.
-        queue_repo.enqueue(user_id, "https://boards.greenhouse.io/foo/jobs/1", "Greenhouse")
+        queue_repo.enqueue(
+            user_id,
+            "https://boards.greenhouse.io/foo/jobs/1",
+            "Greenhouse",
+            origin=CaptureQueueOrigin.MANUAL,
+        )
         repos["conn"].commit()
 
         snapshot = _closed_req_browser_queue_snapshot(repos, user_id)

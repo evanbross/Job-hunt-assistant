@@ -35,7 +35,14 @@
 // ai: claude-sonnet-5 | 2026-10-07
 import Modal from "../common/Modal.tsx";
 import MetricGrid, { MetricItem } from "../common/MetricGrid.tsx";
-import type { ImportFailureDetail, ImportOutcomeDetail, ImportSummary } from "../../types/importing.ts";
+import { formatLocalDateTime } from "../../utils/dateTimeUtils.ts";
+import type {
+  ImportCaptureOrigin,
+  ImportCaptureSource,
+  ImportFailureDetail,
+  ImportOutcomeDetail,
+  ImportSummary,
+} from "../../types/importing.ts";
 
 interface ImportSummaryPopupProps {
   summary: ImportSummary;
@@ -64,6 +71,47 @@ export default function ImportSummaryPopup({ summary, onClose }: ImportSummaryPo
 
       <ImportBreakdownDetails summary={summary} />
     </Modal>
+  );
+}
+
+// ai: claude-opus-5-5 | 2026-10-14
+interface ImportOriginDetailsProps {
+  origin?: ImportCaptureOrigin | null;
+  source?: ImportCaptureSource | null;
+}
+
+/** "Where did this import come from" block: how it arrived, the page that was
+ * captured, the career site it was filed under, and -- for a capture-queue
+ * pickup -- why that URL was queued (e.g. the email sender and subject). */
+export function ImportOriginDetails({ origin, source }: ImportOriginDetailsProps) {
+  const rows: { label: string; value: string; href?: string }[] = [];
+  if (origin?.channel) rows.push({ label: "Received via", value: origin.channel });
+  if (origin?.queue_reason) {
+    const queuedAt = origin.queued_at ? ` (${formatLocalDateTime(origin.queued_at)})` : "";
+    rows.push({ label: "Queued by", value: `${origin.queue_reason}${queuedAt}` });
+  }
+  if (origin?.queue_detail) rows.push({ label: "Details", value: origin.queue_detail });
+  if (origin?.page_url) rows.push({ label: "Captured page", value: origin.page_url, href: origin.page_url });
+  const sourceLabel = source?.name || source?.url || "";
+  if (sourceLabel) rows.push({ label: "Career site", value: sourceLabel, href: source?.url || undefined });
+  if (rows.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: "14px", borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
+      <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>
+        Origin
+      </div>
+      <dl style={{ display: "grid", gridTemplateColumns: "max-content minmax(0, 1fr)", columnGap: "12px", rowGap: "4px", margin: 0, fontSize: "12px", lineHeight: 1.5 }}>
+        {rows.map((row) => (
+          <div key={row.label} style={{ display: "contents" }}>
+            <dt style={{ color: "var(--text-muted)" }}>{row.label}</dt>
+            <dd style={{ margin: 0, color: "var(--text)", overflowWrap: "anywhere" }}>
+              {row.href ? <a href={row.href} target="_blank" rel="noreferrer">{row.value}</a> : row.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }
 
@@ -152,9 +200,17 @@ export function ImportBreakdownDetails({ summary, compact = false }: ImportBreak
             <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "6px" }}>
               {section.rows.map((row, index) => (
                 <li key={`${section.key}-${row.url || row.job_title || "import-row"}-${index}`} style={{ fontSize: "12px", lineHeight: 1.5 }}>
+                  {/* ai: claude-opus-5-5 | 2026-10-14 */}
                   <div style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={row.url}>
-                    {failureLabel(row)}
+                    {importRowLabel(row)}
                   </div>
+                  {(row.platform || row.url) && (
+                    <div style={{ color: "var(--text-muted)", fontSize: "11px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {row.platform && <span>{row.platform}</span>}
+                      {row.platform && row.url && " · "}
+                      {row.url && <a href={row.url} target="_blank" rel="noreferrer" title={row.url}>{row.url}</a>}
+                    </div>
+                  )}
                   <div style={{ color: section.tone, overflowWrap: "anywhere" }}>
                     {row.reason}
                     {"error_type" in row && row.error_type && ` (${row.error_type}${row.stage ? ` during ${row.stage}` : ""})`}
@@ -246,9 +302,11 @@ function normalizeImportFailures(summary: ImportSummary): ImportFailureDetail[] 
   return normalized;
 }
 
-function failureLabel(failure: ImportBreakdownRow | ImportBreakdownFailureRow): string {
-  const title = failure.job_title || "Imported job";
-  const company = failure.company ? ` at ${failure.company}` : "";
-  const source = failure.platform ? `${failure.platform}: ` : "";
-  return failure.url || `${source}${title}${company}`;
+// ai: claude-opus-5-5 | 2026-10-14 -- leads with the job itself; platform and
+// URL now render on their own line instead of the URL replacing the title.
+function importRowLabel(row: ImportBreakdownRow | ImportBreakdownFailureRow): string {
+  if (!row.job_title && !row.company) return row.url ? "Imported job" : "Imported job (no details returned)";
+  const title = row.job_title || "Untitled job";
+  const company = row.company ? ` at ${row.company}` : "";
+  return `${title}${company}`;
 }

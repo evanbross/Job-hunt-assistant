@@ -25,6 +25,7 @@ from contextlib import contextmanager
 import pytest
 from flask import Flask
 
+from backend.db import CaptureQueueOrigin
 from routes.browser_capture import browser_capture_bp
 
 _TEST_USER_ID = 1
@@ -35,7 +36,16 @@ def _make_app(monkeypatch: pytest.MonkeyPatch, enqueue_calls: list[tuple]) -> Fl
     app.register_blueprint(browser_capture_bp, url_prefix="/api")
 
     class FakeQueueRepo:
-        def enqueue(self, user_id: int, url: str, site_name: str) -> int:
+        def enqueue(
+            self,
+            user_id: int,
+            url: str,
+            site_name: str,
+            *,
+            origin: CaptureQueueOrigin,
+            origin_detail: str = "",
+        ) -> int:
+            assert origin == CaptureQueueOrigin.MANUAL  # ai: claude-opus-5-5 | 2026-10-14
             enqueue_calls.append((user_id, url, site_name))
             return 42
 

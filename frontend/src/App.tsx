@@ -45,7 +45,7 @@ import StatsBar from "./components/StatsBar.tsx";
 import RecentChangesModal from "./components/RecentChangesModal.tsx";
 import Modal from "./components/common/Modal.tsx";
 import MetricGrid, { MetricItem } from "./components/common/MetricGrid.tsx";
-import { ImportBreakdownDetails } from "./components/JobQueue/ImportSummaryPopup.tsx";
+import { ImportBreakdownDetails, ImportOriginDetails } from "./components/JobQueue/ImportSummaryPopup.tsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.ts";
 import { readStoredPref, writeStoredPref } from "./utils/storedPreference.ts";
 import type { SessionStatusResponse, AuthGoogleStartResponse } from "./types/auth.ts";
@@ -851,6 +851,9 @@ function ListenerImportDialog({ state, onClose }: ListenerImportDialogProps) {
           )}
         </div>
       )}
+
+      {/* ai: claude-opus-5-5 | 2026-10-14 */}
+      <ImportOriginDetails origin={state.capture_origin} source={state.capture_source} />
 
       {!running && result && (
         <div style={{ marginTop: "18px", paddingTop: "14px", borderTop: "1px solid var(--border)" }}>

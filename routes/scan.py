@@ -49,6 +49,7 @@ from googleapiclient.errors import HttpError
 import config
 from backend.ai_provider import AIProviderClient
 from backend.celery_app import celery_app
+from backend.db import CaptureQueueOrigin
 from backend.db.job_columns import JobColumns
 from backend.email.classification import email_date_from_message, get_subject_rule_match
 from backend.email.email_parser import (
@@ -943,8 +944,12 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                     job_repo.insert(user_id, item["job_data"])
                     if item["capture_url"]:
                         try:
-                            repos["browser_capture_queue"].enqueue(
-                                user_id, item["capture_url"], item["capture_source"]
+                            repos["browser_capture_queue"].enqueue(  # ai: claude-opus-5-5 | 2026-10-14
+                                user_id,
+                                item["capture_url"],
+                                item["capture_source"],
+                                origin=CaptureQueueOrigin.EMAIL_SCAN,
+                                origin_detail=f'{sender} — "{subject}"',
                             )
                         except Exception as exc:
                             logger.warning(

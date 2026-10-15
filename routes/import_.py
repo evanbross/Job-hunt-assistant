@@ -51,6 +51,7 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from backend.celery_app import celery_app
+from backend.db import CAPTURE_QUEUE_ORIGIN_LABELS
 from backend.scanning.captured_page_import_service import CapturedPageImportService
 from backend.scanning.import_dump import dump_import_capture
 from backend.scanning.import_repair import (
@@ -110,11 +111,15 @@ class ImportProgressState:
     message: str
     trigger: str
     started_at: str
+    # ai: claude-opus-5-5 | 2026-10-14 -- owner of this import; /import/status and
+    # /import/reset only ever see the calling user's entries.
+    user_id: int
     total: int = 0
     result: dict[str, Any] | None = None
     current_job_url: str = ""
     current_platform: str = ""
     capture_source: dict[str, Any] | None = None
+    capture_origin: dict[str, Any] | None = None  # ai: claude-opus-5-5 | 2026-10-14 -- see _describe_capture_origin
     steps: list[dict[str, str]] = field(default_factory=list)
     task_id: str | None = None  # ai: claude-sonnet-5 | 2026-08-12 — set once the Celery task is dispatched
     task_ids: list[str] = field(default_factory=list)
@@ -132,6 +137,7 @@ class ImportProgressState:
             "trigger": self.trigger,
             "started_at": self.started_at,
             "capture_source": self.capture_source,
+            "capture_origin": self.capture_origin,
             "steps": self.steps or _import_steps(self.phase, self.running),
             "task_id": self.task_id,
             "task_ids": self.task_ids,
@@ -193,6 +199,7 @@ def _prune_finished_imports_locked() -> None:
 # ai: claude-sonnet-5 | 2026-08-12
 def _lookup_import_locked(
     import_id: str,
+    user_id: int,
 ) -> tuple[str, ImportProgressState] | None:
     """Must be called while holding _imports_lock.
 
@@ -203,13 +210,18 @@ def _lookup_import_locked(
     is only meaningful pre-dispatch (it's never flipped back to False once a
     Celery task_id is attached — real completion is read from Celery), so it
     is not a reliable filter here.
+
+    Only user_id's own imports are visible: an import_id belonging to another
+    user is treated as unknown, and the fallback never crosses accounts.
     """
+    # ai: claude-opus-5-5 | 2026-10-14
     if import_id:
         state = _active_imports.get(import_id)
-        return (import_id, state) if state is not None else None
-    if not _active_imports:
+        return (import_id, state) if state is not None and state.user_id == user_id else None
+    own = [(key, state) for key, state in _active_imports.items() if state.user_id == user_id]
+    if not own:
         return None
-    return max(_active_imports.items(), key=lambda kv: kv[1].started_at)
+    return max(own, key=lambda kv: kv[1].started_at)
 
 
 # ai: claude-sonnet-5 | 2026-08-23 — threaded user_id through to career_sites_repo
@@ -316,6 +328,45 @@ def _aggregate_batch_results(batch_results: list[dict]) -> dict[str, Any]:
         if result.get("capture_source") is not None:
             combined["capture_source"] = result["capture_source"]
     return combined
+
+
+# ai: claude-opus-5-5 | 2026-10-14
+def _describe_capture_origin(user_id: int, body: dict, trigger: str) -> dict[str, str]:
+    """Describe where a capture came from, for the import dialog's Origin block.
+
+    A capture the extension pulled off the browser capture queue carries the
+    original queue_url (see background.js's _pendingQueueUrls); that queue row
+    records why the URL was queued (CaptureQueueOrigin) -- e.g. the sender and
+    subject of the email an email-scan link came from. A listener capture with
+    no queue_url was captured manually from whatever page the user was on.
+    """
+    page_url = str(body.get("url") or "").strip()
+    queue_url = str(body.get("queue_url") or "").strip()
+    if trigger == "listener":
+        channel = (
+            "Browser extension — capture queue"
+            if queue_url
+            else "Browser extension — manual capture"
+        )
+    else:
+        channel = "Pasted or uploaded in Job Queue import"
+    origin = {
+        "channel": channel,
+        "page_url": page_url or queue_url,
+        "queue_reason": "",
+        "queue_detail": "",
+        "queued_at": "",
+    }
+    if not queue_url:
+        return origin
+    with get_repos(user_id) as repos:
+        queue_row = repos["browser_capture_queue"].find_latest_for_url(user_id, queue_url)
+    if queue_row:
+        origin_key = str(queue_row.get("origin") or "")
+        origin["queue_reason"] = CAPTURE_QUEUE_ORIGIN_LABELS.get(origin_key, origin_key)
+        origin["queue_detail"] = str(queue_row.get("origin_detail") or "")
+        origin["queued_at"] = str(queue_row.get("created_at") or "")
+    return origin
 
 
 def _dismiss_capture_queue_item(user_id: int, page_url: str | None) -> None:
@@ -475,16 +526,26 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
     dump_import_capture(body)
     import_id = uuid.uuid4().hex
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    capture_origin = _describe_capture_origin(user_id, body, trigger)  # ai: claude-opus-5-5 | 2026-10-14
+
+    # ai: claude-opus-5-5 | 2026-10-14 -- every progress snapshot of this import
+    # shares its owner, trigger, start time, and origin.
+    def _state(**fields: Any) -> ImportProgressState:
+        return ImportProgressState(
+            trigger=trigger,
+            started_at=started_at,
+            user_id=user_id,
+            capture_origin=capture_origin,
+            **fields,
+        )
 
     _set_import_progress(
         import_id,
-        ImportProgressState(
+        _state(
             running=True,
             phase="receiving",
             progress=5,
             message="Job description received from browser stream.",
-            trigger=trigger,
-            started_at=started_at,
         ),
     )
 
@@ -500,13 +561,11 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
     try:
         _set_import_progress(
             import_id,
-            ImportProgressState(
+            _state(
                 running=True,
                 phase="filtering",
                 progress=18,
                 message="Filtering captured page content for job links.",
-                trigger=trigger,
-                started_at=started_at,
             ),
         )
         analysis = CapturedPageImportService().analyze_capture(
@@ -517,13 +576,11 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
         _dismiss_capture_queue_item(user_id, page_url)
         _set_import_progress(
             import_id,
-            ImportProgressState(
+            _state(
                 running=False,
                 phase="error",
                 progress=0,
                 message=str(exc),
-                trigger=trigger,
-                started_at=started_at,
             ),
         )
         return {"error": str(exc), "import_id": import_id}, 400
@@ -532,13 +589,11 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
         _dismiss_capture_queue_item(user_id, page_url)
         _set_import_progress(
             import_id,
-            ImportProgressState(
+            _state(
                 running=False,
                 phase="error",
                 progress=0,
                 message="Captured page analysis failed.",
-                trigger=trigger,
-                started_at=started_at,
             ),
         )
         return {"error": "Captured page analysis failed", "import_id": import_id}, 500
@@ -550,13 +605,11 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
         _dismiss_capture_queue_item(user_id, page_url)
         _set_import_progress(
             import_id,
-            ImportProgressState(
+            _state(
                 running=False,
                 phase="done",
                 progress=100,
                 message="No job links were found in the captured page.",
-                trigger=trigger,
-                started_at=started_at,
                 result={"queued": 0, "skipped": 0, "failed": 0, "jobs": []},
             ),
         )
@@ -570,13 +623,11 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
 
     _set_import_progress(
         import_id,
-        ImportProgressState(
+        _state(
             running=True,
             phase="filtering",
             progress=32,
             message=f"Found {len(extracted)} job link{'s' if len(extracted) != 1 else ''}; resolving source.",
-            trigger=trigger,
-            started_at=started_at,
             total=len(extracted),
         ),
     )
@@ -589,13 +640,11 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
         except ValueError as exc:
             _set_import_progress(
                 import_id,
-                ImportProgressState(
+                _state(
                     running=False,
                     phase="error",
                     progress=0,
                     message=str(exc),
-                    trigger=trigger,
-                    started_at=started_at,
                 ),
             )
             return {"error": str(exc), "import_id": import_id}, 400
@@ -603,15 +652,13 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
             payload, status_code = source_error
             _set_import_progress(
                 import_id,
-                ImportProgressState(
+                _state(
                     running=False,
                     phase="error",
                     progress=0,
                     message=str(
                         payload.get("error") or "Capture source could not be resolved."
                     ),
-                    trigger=trigger,
-                    started_at=started_at,
                     total=len(extracted),
                 ),
             )
@@ -620,13 +667,11 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
 
     _set_import_progress(
         import_id,
-        ImportProgressState(
+        _state(
             running=True,
             phase="matching",
             progress=45,
             message=f"Sending {len(extracted)} filtered job link{'s' if len(extracted) != 1 else ''} for matching.",
-            trigger=trigger,
-            started_at=started_at,
             total=len(extracted),
             capture_source=capture_source,
         ),
@@ -769,17 +814,22 @@ class ResetImportRequest(BaseModel):
 
 @import_bp.route("/import/reset", methods=["POST"])
 def reset_import() -> ResponseReturnValue:
-    """Force-clear a stuck import (or, without import_id, all tracked imports)."""
+    """Force-clear a stuck import (or, without import_id, all of the caller's tracked imports)."""
     try:
         body = ResetImportRequest.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
         return invalid_request_response(exc)
     import_id = body.import_id or request.args.get("import_id", "").strip()
+    user_id = current_user_id()
+    # ai: claude-opus-5-5 | 2026-10-14 -- only ever clears the caller's own imports
     with _imports_lock:
-        if import_id:
-            _active_imports.pop(import_id, None)
-        else:
-            _active_imports.clear()
+        owned = [
+            key
+            for key, state in _active_imports.items()
+            if state.user_id == user_id and (not import_id or key == import_id)
+        ]
+        for key in owned:
+            del _active_imports[key]
     logger.info(
         "Import state force-reset by user request%s",
         f" (import_id={import_id})" if import_id else " (all tracked imports)",
@@ -955,6 +1005,7 @@ def _idle_status_payload() -> dict[str, Any]:
         "trigger": "ui",
         "started_at": "",
         "capture_source": None,
+        "capture_origin": None,
         "steps": _import_steps("idle", False),
         "import_id": None,
         "task_id": None,
@@ -972,8 +1023,9 @@ def _idle_status_payload() -> dict[str, Any]:
 @import_bp.route("/import/status")
 def import_status() -> ResponseReturnValue:
     import_id = str(request.args.get("import_id") or "").strip()
+    user_id = current_user_id()  # ai: claude-opus-5-5 | 2026-10-14
     with _imports_lock:
-        found = _lookup_import_locked(import_id)
+        found = _lookup_import_locked(import_id, user_id)
     if found is None:
         return jsonify(_idle_status_payload())
     key, tracked = found
@@ -1051,7 +1103,8 @@ def import_status() -> ResponseReturnValue:
                 "current_platform": meta.get("current_platform", ""),
                 "trigger": trigger,
                 "started_at": started_at,
-                "capture_source": meta.get("capture_source"),
+                "capture_source": meta.get("capture_source") or tracked.capture_source,
+                "capture_origin": tracked.capture_origin,
                 "steps": _import_steps(str(meta.get("phase", "processing")), True),
                 "queued": aggregate["queued"] + int(meta.get("queued") or 0),
                 "skipped": aggregate["skipped"] + int(meta.get("skipped") or 0),
@@ -1079,7 +1132,8 @@ def import_status() -> ResponseReturnValue:
                 "current_platform": "",
                 "trigger": trigger,
                 "started_at": started_at,
-                "capture_source": aggregate.get("capture_source"),
+                "capture_source": aggregate.get("capture_source") or tracked.capture_source,
+                "capture_origin": tracked.capture_origin,
                 "steps": _import_steps("done", False),
                 "import_id": key,
                 "task_id": task_ids[0],
@@ -1110,7 +1164,8 @@ def import_status() -> ResponseReturnValue:
             "current_platform": "",
             "trigger": trigger,
             "started_at": started_at,
-            "capture_source": None,
+            "capture_source": aggregate.get("capture_source") or tracked.capture_source,  # ai: claude-opus-5-5 | 2026-10-14
+            "capture_origin": tracked.capture_origin,
             "steps": _import_steps("error", False),
             "import_id": key,
             "task_id": task_ids[0],

@@ -844,6 +844,18 @@ def _migrate(conn: Any) -> None:
     cur.execute(
         "ALTER TABLE browser_capture_queue" " ADD COLUMN IF NOT EXISTS source_id INTEGER"
     )
+    # ai: claude-opus-5-5 | 2026-10-14 -- origin records why a URL was queued
+    # (see CaptureQueueOrigin) and origin_detail the human-readable specifics
+    # (e.g. the email sender/subject), so the import dialog can say where a
+    # queued capture came from instead of only how many jobs it produced.
+    cur.execute(
+        "ALTER TABLE browser_capture_queue"
+        " ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT ''"
+    )
+    cur.execute(
+        "ALTER TABLE browser_capture_queue"
+        " ADD COLUMN IF NOT EXISTS origin_detail TEXT NOT NULL DEFAULT ''"
+    )
 
     # ai: claude-sonnet-5 | 2026-08-12
     # raw_email_snippet renamed to raw_jd_snippet: the column holds the
@@ -2133,7 +2145,9 @@ def _create_tables(conn: Any) -> None:
             retry_count INTEGER NOT NULL DEFAULT 0,
             purpose     TEXT NOT NULL DEFAULT 'import',
             job_id      INTEGER,
-            source_id   INTEGER
+            source_id   INTEGER,
+            origin        TEXT NOT NULL DEFAULT '',
+            origin_detail TEXT NOT NULL DEFAULT ''
         )
         """,
         """

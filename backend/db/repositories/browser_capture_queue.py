@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any
 
 from ..base import _BaseRepo
@@ -49,6 +50,32 @@ BROWSER_QUEUE_MAX_RETRIES = 5
 BROWSER_QUEUE_CLAIM_BATCH_SIZE = 10
 
 
+# ai: claude-opus-5-5 | 2026-10-14
+class CaptureQueueOrigin(StrEnum):
+    """Why a URL was put on the browser capture queue (browser_capture_queue.origin).
+
+    Rows queued before this column existed carry '' — see CAPTURE_QUEUE_ORIGIN_LABELS.
+    """
+
+    EMAIL_SCAN = "email_scan"
+    REFRESH_FROM_URL = "refresh_from_url"
+    IMPORT_REPAIR = "import_repair"
+    MANUAL = "manual"
+    CAREER_SITE = "career_site"
+    STATUS_CHECK = "status_check"
+
+
+CAPTURE_QUEUE_ORIGIN_LABELS: dict[str, str] = {
+    CaptureQueueOrigin.EMAIL_SCAN: "Email scan",
+    CaptureQueueOrigin.REFRESH_FROM_URL: "Re-fetch from URL",
+    CaptureQueueOrigin.IMPORT_REPAIR: "Import repair",
+    CaptureQueueOrigin.MANUAL: "Added to the capture queue manually",
+    CaptureQueueOrigin.CAREER_SITE: "Scheduled career-site capture",
+    CaptureQueueOrigin.STATUS_CHECK: "Job status check",
+    "": "Unknown (queued before origin tracking)",
+}
+
+
 # ai: claude-sonnet-5 | 2026-08-20 — every method gained a leading user_id
 # parameter (multi-tenancy migration). Note: the standalone import-listener
 # HTTP server (backend/scanning/import_listener.py, a separate process/port)
@@ -61,7 +88,17 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
     """Queue of URLs to be captured by the browser extension."""
 
     # ai: claude-sonnet-4-6 | 2026-06-20
-    def enqueue(self, user_id: int, url: str, site_name: str) -> int:
+    # ai: claude-opus-5-5 | 2026-10-14 -- origin/origin_detail are keyword-only and
+    # origin is required, so no caller can queue a URL without saying why.
+    def enqueue(
+        self,
+        user_id: int,
+        url: str,
+        site_name: str,
+        *,
+        origin: CaptureQueueOrigin,
+        origin_detail: str = "",
+    ) -> int:
         """Insert a URL into the queue, or return the existing row id if it is already active."""
         now = datetime.now(UTC).isoformat(timespec="seconds")
         existing = self._execute(
@@ -74,9 +111,10 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         if existing:
             return existing["id"]
         cur = self._execute(
-            "INSERT INTO browser_capture_queue (user_id, url, site_name, status, created_at, updated_at)"
-            " VALUES (%s, %s, %s, 'pending', %s, %s) RETURNING id",
-            (user_id, url, site_name, now, now),
+            "INSERT INTO browser_capture_queue"
+            " (user_id, url, site_name, status, origin, origin_detail, created_at, updated_at)"
+            " VALUES (%s, %s, %s, 'pending', %s, %s, %s, %s) RETURNING id",  # ai: claude-opus-5-5 | 2026-10-14
+            (user_id, url, site_name, str(origin), origin_detail, now, now),
         )
         return cur.fetchone()["id"]
 
@@ -109,9 +147,20 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         now = datetime.now(UTC).isoformat(timespec="seconds")
         cur = self._execute(
             "INSERT INTO browser_capture_queue"
-            " (user_id, url, site_name, status, purpose, job_id, created_at, updated_at)"
-            " VALUES (%s, %s, %s, 'pending', %s, %s, %s, %s) RETURNING id",
-            (user_id, url, site_name, purpose, job_id, now, now),
+            " (user_id, url, site_name, status, purpose, job_id, origin, origin_detail,"
+            "  created_at, updated_at)"
+            " VALUES (%s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s) RETURNING id",  # ai: claude-opus-5-5 | 2026-10-14
+            (
+                user_id,
+                url,
+                site_name,
+                purpose,
+                job_id,
+                str(CaptureQueueOrigin.STATUS_CHECK),
+                f"Job #{job_id} ({purpose})",
+                now,
+                now,
+            ),
         )
         return cur.fetchone()["id"]
 
@@ -139,11 +188,41 @@ class PostgresBrowserCaptureQueueRepository(_BaseRepo):
         now = datetime.now(UTC).isoformat(timespec="seconds")
         cur = self._execute(
             "INSERT INTO browser_capture_queue"
-            " (user_id, url, site_name, status, purpose, source_id, created_at, updated_at)"
-            " VALUES (%s, %s, %s, 'pending', 'import', %s, %s, %s) RETURNING id",
-            (user_id, url, site_name, source_id, now, now),
+            " (user_id, url, site_name, status, purpose, source_id, origin, origin_detail,"
+            "  created_at, updated_at)"
+            " VALUES (%s, %s, %s, 'pending', 'import', %s, %s, %s, %s, %s) RETURNING id",  # ai: claude-opus-5-5 | 2026-10-14
+            (
+                user_id,
+                url,
+                site_name,
+                source_id,
+                str(CaptureQueueOrigin.CAREER_SITE),
+                site_name,
+                now,
+                now,
+            ),
         )
         return cur.fetchone()["id"]
+
+    # ai: claude-opus-5-5 | 2026-10-14
+    def find_latest_for_url(self, user_id: int, url: str) -> dict[str, Any] | None:
+        """Return the most recent queue row for `url` (any status), or None.
+
+        Matches the same way enqueue()/mark_done_by_urls() do -- exact URL or the
+        URL with its query string stripped -- preferring an exact match, so a
+        token-bearing email link still resolves to the row it was queued as.
+        """
+        row = self._execute(
+            "SELECT id, url, site_name, purpose, job_id, source_id, origin, origin_detail,"
+            " created_at"
+            " FROM browser_capture_queue"
+            " WHERE user_id = %s"
+            " AND (url = %s OR split_part(url, '?', 1) = split_part(%s, '?', 1))"
+            " ORDER BY (url = %s) DESC, created_at DESC, id DESC"
+            " LIMIT 1",
+            (user_id, url, url, url),
+        ).fetchone()
+        return _row_to_dict(row) if row else None
 
     # ai: claude-sonnet-5 | 2026-07-23
     def claim_pending(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]:

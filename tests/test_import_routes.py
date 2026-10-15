@@ -37,21 +37,46 @@ from backend.db import (
     get_connection,
 )
 from backend.db.row_level_security import set_current_user
-from routes.import_ import _active_imports, import_bp
+from routes.import_ import ImportProgressState, _active_imports, import_bp
 
 
 def _make_app() -> Flask:
     app = Flask(__name__)
+    app.secret_key = "test"
     app.register_blueprint(import_bp, url_prefix="/api")
     return app
 
 
+# ai: claude-opus-5-5 | 2026-10-14 -- reset is now scoped to the session's
+# user, so tracked entries need a real owner and the client a session.
+_RESET_USER_ID = 1
+
+
+def _tracked(user_id: int = _RESET_USER_ID) -> ImportProgressState:
+    return ImportProgressState(
+        running=False,
+        phase="done",
+        progress=100,
+        message="",
+        trigger="ui",
+        started_at="2026-10-14T00:00:00+00:00",
+        user_id=user_id,
+    )
+
+
+def _logged_in_client(user_id: int = _RESET_USER_ID):
+    client = _make_app().test_client()
+    with client.session_transaction() as flask_session:
+        flask_session["user_id"] = user_id
+    return client
+
+
 def test_reset_import_clears_one_tracked_import() -> None:
     _active_imports.clear()
-    _active_imports["abc"] = object()
-    _active_imports["xyz"] = object()
+    _active_imports["abc"] = _tracked()
+    _active_imports["xyz"] = _tracked()
 
-    client = _make_app().test_client()
+    client = _logged_in_client()
     response = client.post("/api/import/reset", json={"import_id": "abc"})
 
     assert response.status_code == 200
@@ -60,23 +85,39 @@ def test_reset_import_clears_one_tracked_import() -> None:
     _active_imports.clear()
 
 
-def test_reset_import_without_id_clears_everything() -> None:
+def test_reset_import_without_id_clears_everything_the_caller_owns() -> None:
     _active_imports.clear()
-    _active_imports["abc"] = object()
+    _active_imports["abc"] = _tracked()
+    _active_imports["def"] = _tracked()
 
-    client = _make_app().test_client()
+    client = _logged_in_client()
     response = client.post("/api/import/reset", json={})
 
     assert response.status_code == 200
     assert _active_imports == {}
 
 
+# ai: claude-opus-5-5 | 2026-10-14
+def test_reset_import_never_clears_another_users_imports() -> None:
+    _active_imports.clear()
+    _active_imports["mine"] = _tracked()
+    _active_imports["theirs"] = _tracked(user_id=_RESET_USER_ID + 1)
+
+    client = _logged_in_client()
+    client.post("/api/import/reset", json={"import_id": "theirs"})
+    assert "theirs" in _active_imports
+
+    client.post("/api/import/reset", json={})
+    assert list(_active_imports) == ["theirs"]
+    _active_imports.clear()
+
+
 def test_reset_import_falls_back_to_query_arg() -> None:
     _active_imports.clear()
-    _active_imports["abc"] = object()
-    _active_imports["xyz"] = object()
+    _active_imports["abc"] = _tracked()
+    _active_imports["xyz"] = _tracked()
 
-    client = _make_app().test_client()
+    client = _logged_in_client()
     response = client.post("/api/import/reset?import_id=abc", json={})
 
     assert response.status_code == 200
@@ -89,9 +130,9 @@ def test_reset_import_coerces_non_string_import_id_to_string() -> None:
     """Matches the pre-Pydantic route's str(...) coercion exactly -- a
     numeric import_id is stringified, not rejected."""
     _active_imports.clear()
-    _active_imports["123"] = object()
+    _active_imports["123"] = _tracked()
 
-    client = _make_app().test_client()
+    client = _logged_in_client()
     response = client.post("/api/import/reset", json={"import_id": 123})
 
     assert response.status_code == 200
