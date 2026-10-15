@@ -239,7 +239,20 @@ class ImportListenerRequestParser:
         if capture_source_id is not None:
             body["capture_source_id"] = capture_source_id
         body.setdefault("format", "html")
-        body.setdefault("recapture_interval_days", 4)
+        # ai: claude-sonnet-5 | 2026-10-15
+        # Do NOT default this the way "format" is defaulted above: this field
+        # round-trips into _record_capture_source's write to the resolved
+        # career_site_sources row (see backend/tasks.py), so defaulting it
+        # here for every single capture -- not just ones where the user
+        # actually chose a value -- silently overwrote a source's own
+        # explicitly configured recapture_interval_days back down to this
+        # default on every completed capture. Confirmed live 2026-10-15:
+        # "LinkedIn 1"'s user-configured 7-day interval was clobbered to 4
+        # the moment the capture_source_id fix above let its captures finally
+        # resolve to the right row. parse_positive_int's own default=4 (used
+        # by both _resolve_capture_source's new-source-creation path and
+        # _record_capture_source's interval_value is not None check) already
+        # covers the case where recapture_interval_days is genuinely absent.
         body["import_trigger"] = "listener"
         return ListenerCaptureRequest(body)
 

@@ -127,6 +127,27 @@ def test_listener_parser_wraps_bookmarklet_json() -> None:
 
 
 # ai: claude-sonnet-5 | 2026-10-15
+def test_listener_parser_does_not_default_recapture_interval_days_for_json_bodies() -> None:
+    """recapture_interval_days round-trips into _record_capture_source's write
+    to the resolved career_site_sources row (backend/tasks.py). Defaulting it
+    here for every JSON capture -- not just ones where the user actually chose
+    a value -- would silently overwrite a source's own explicitly configured
+    interval back down to the default on every completed scheduled capture, as
+    happened live to "LinkedIn 1"'s user-configured 7-day interval the moment
+    its captures started correctly resolving to the right source row."""
+    parser = ImportListenerRequestParser(max_bytes=1024)
+    payload = {"jobs": [{"url": "https://jobs.lever.co/acme/123"}]}
+
+    result = parser.parse(
+        path="/import",
+        headers={"Content-Type": "application/json"},
+        raw_body=json.dumps(payload).encode("utf-8"),
+    )
+
+    assert result.error == ""
+    assert "recapture_interval_days" not in result.body
+
+
 def test_listener_parser_surfaces_capture_source_id_for_a_jobs_array_payload() -> None:
     """A search-results capture (LinkedIn, Greenhouse, Ashby, ...) posts a
     top-level {"jobs": [...]} payload, which the parser wraps into
