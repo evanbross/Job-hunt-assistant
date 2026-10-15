@@ -170,6 +170,24 @@ const SORT_COLUMNS: SortColumn[] = [
 // ai: claude-opus-5-5 | 2026-10-14
 const CHANNEL_LABELS: Record<OutreachChannel, string> = { email: "Emailed", linkedin: "Messaged" };
 
+// ai: claude-sonnet-5 | 2026-10-15
+// Sentinel companyFilter value meaning "any of my previous employers," not a
+// single company -- distinct from null (no company filter at all, every
+// contact) and from a specific employer name (exact one picked).
+const ANY_FORMER_EMPLOYER = "__any_former_employer__";
+
+// ai: claude-sonnet-5 | 2026-10-15
+// Bidirectional substring check on two already-normalized (contactsMatchKey)
+// company strings. Neither side is reliably the "longer" one: a contact's
+// stored company can be a plainer/shorter form of a longer name on the
+// user's own employer list ("Aerva, Inc." vs. "Aerva by Watchfire"), or the
+// reverse ("Google" vs. a contact's "Google Cloud"). Guards against an empty
+// key matching everything ("".includes("") is true).
+function companyKeysOverlap(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  return a.includes(b) || b.includes(a);
+}
+
 interface FilterState {
   search: string;
   outreachFilter: OutreachFilter;
@@ -177,12 +195,13 @@ interface FilterState {
   interestedFilter: InterestedFilter;
   titleFilter: string | null;
   companyFilter: string | null;
+  previousEmployers: string[];
 }
 
 // ai: claude-sonnet-5 | 2026-09-25
 function matchesFilters(
   contact: Contact,
-  { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter }: FilterState,
+  { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter, previousEmployers }: FilterState,
 ): boolean {
   // ai: claude-sonnet-5 | 2026-10-13
   if (interestedFilter === "yes" && contact.interested !== true) return false;
@@ -195,9 +214,23 @@ function matchesFilters(
   // normalizer used elsewhere, so "Google" matches "Google LLC" (suffix
   // stripped) as well as "Google Cloud" or "Alphabet/Google" (substring) --
   // deliberately looser than the exact-match normalizer's other call sites.
-  if (
+  // ai: claude-sonnet-5 | 2026-10-15 -- must check both directions: a
+  // contact's stored company can be the shorter/plainer form of a longer
+  // employer name on the user's own list (e.g. previous_employers has
+  // "Aerva by Watchfire" but a contact's company_raw is just "Aerva, Inc."),
+  // and a one-directional "does the contact's name contain the filter" check
+  // never matches that (confirmed live: contact Jeremy Denham / "Aerva,
+  // Inc." didn't match "Aerva by Watchfire" until this fix).
+  if (companyFilter === ANY_FORMER_EMPLOYER) {
+    // ai: claude-sonnet-5 | 2026-10-15 -- matches ANY employer on the list,
+    // not just one picked from the dropdown.
+    const contactKey = contactsMatchKey(contact.company_raw);
+    if (!previousEmployers.some((name) => companyKeysOverlap(contactKey, contactsMatchKey(name)))) {
+      return false;
+    }
+  } else if (
     companyFilter !== null &&
-    !contactsMatchKey(contact.company_raw).includes(contactsMatchKey(companyFilter))
+    !companyKeysOverlap(contactsMatchKey(contact.company_raw), contactsMatchKey(companyFilter))
   ) {
     return false;
   }
@@ -283,9 +316,17 @@ export default function ContactsPanel() {
   const filtered = useMemo(
     () =>
       contacts.filter((contact) =>
-        matchesFilters(contact, { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter }),
+        matchesFilters(contact, {
+          search,
+          outreachFilter,
+          recruiterFilter,
+          interestedFilter,
+          titleFilter,
+          companyFilter,
+          previousEmployers,
+        }),
       ),
-    [contacts, search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter],
+    [contacts, search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter, previousEmployers],
   );
 
   // ai: claude-opus-5-5 | 2026-10-14 -- same criteria as OutreachQueue's list, for the tab badge
@@ -587,7 +628,13 @@ export default function ContactsPanel() {
                     title="Show only contacts who worked at one of your previous employers (set in the Application Profile tab)"
                     style={companyFilter !== null ? filterPillActive : filterPill}
                   >
-                    <option value="">Former coworkers: any company</option>
+                    {/* ai: claude-sonnet-5 | 2026-10-15 -- was "Former coworkers: any
+                    company", which reads as an active filter but value="" actually
+                    means no company filter at all (every contact, not just former
+                    coworkers) -- confirmed live, caused a non-coworker to show up
+                    while the user believed this was filtering. */}
+                    <option value="">Anyone from Any Company</option>
+                    <option value={ANY_FORMER_EMPLOYER}>Former coworkers (any of my employers)</option>
                     {previousEmployers.map((name) => (
                       <option key={name} value={name}>
                         {name}
@@ -715,7 +762,10 @@ export default function ContactsPanel() {
                                 contact.full_name
                               )}
                             </div>
-                            <div style={subtleText}>
+                            <div
+                              style={subtleText}
+                              title={[contact.position, contact.company_raw].filter(Boolean).join(" at ") || undefined}
+                            >
                               {[contact.position, contact.company_raw].filter(Boolean).join(" at ") ||
                                 "No title or company"}
                             </div>
