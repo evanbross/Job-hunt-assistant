@@ -219,6 +219,25 @@ class ImportListenerRequestParser:
         queue_url = str(payload.get("queue_url") or "").strip()
         if queue_url:
             body["queue_url"] = queue_url
+        # ai: claude-sonnet-5 | 2026-10-15
+        # Same reasoning as queue_url above, for capture_source_id: a "jobs"-array
+        # payload (every search-results capture -- LinkedIn, Greenhouse, Ashby, ...)
+        # takes the else branch above, which wraps the whole original payload as a
+        # *string* under body["content"] instead of copying its fields to the top
+        # level the way the "content" branch's `body = dict(payload)` does. Without
+        # this, capture_source_id (set by background.js's postToApp so the backend
+        # resolves the originating career_site_sources row directly -- see
+        # routes/import_.py's _resolve_capture_source) stayed buried inside that
+        # string, body.get("capture_source_id") always saw None, and every
+        # automatic_browser search-results capture fell through to guessing the
+        # source by URL instead -- confirmed live 2026-10-15: every scheduled
+        # LinkedIn search-results capture misattributed to a generic guessed
+        # "jobs LinkedIn" career_site_sources row instead of the actual saved
+        # search it was queued for, so that source's next_scan_offset/
+        # last_captured_at never advanced.
+        capture_source_id = payload.get("capture_source_id")
+        if capture_source_id is not None:
+            body["capture_source_id"] = capture_source_id
         body.setdefault("format", "html")
         body.setdefault("recapture_interval_days", 4)
         body["import_trigger"] = "listener"

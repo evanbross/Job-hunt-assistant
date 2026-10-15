@@ -126,6 +126,49 @@ def test_listener_parser_wraps_bookmarklet_json() -> None:
     assert json.loads(result.body["content"]) == payload
 
 
+# ai: claude-sonnet-5 | 2026-10-15
+def test_listener_parser_surfaces_capture_source_id_for_a_jobs_array_payload() -> None:
+    """A search-results capture (LinkedIn, Greenhouse, Ashby, ...) posts a
+    top-level {"jobs": [...]} payload, which the parser wraps into
+    body["content"] as a JSON string (see test_listener_parser_wraps_
+    bookmarklet_json). capture_source_id must still be copied to the top
+    level of body, the same way queue_url already is just below -- otherwise
+    _resolve_capture_source's body.get("capture_source_id") always sees None
+    and every automatic_browser scheduled scan falls through to guessing the
+    source by URL instead of using the source it was actually queued for."""
+    parser = ImportListenerRequestParser(max_bytes=1024)
+    payload = {
+        "jobs": [{"url": "https://www.linkedin.com/jobs/view/123/"}],
+        "queue_url": "https://www.linkedin.com/jobs/search-results/?keywords=engineer",
+        "capture_source_id": 11,
+    }
+
+    result = parser.parse(
+        path="/import",
+        headers={"Content-Type": "application/json"},
+        raw_body=json.dumps(payload).encode("utf-8"),
+    )
+
+    assert result.error == ""
+    assert result.body["capture_source_id"] == 11
+    assert result.body["queue_url"] == payload["queue_url"]
+    assert json.loads(result.body["content"]) == payload
+
+
+def test_listener_parser_omits_capture_source_id_when_the_extension_did_not_send_one() -> None:
+    parser = ImportListenerRequestParser(max_bytes=1024)
+    payload = {"jobs": [{"url": "https://jobs.lever.co/acme/123"}]}
+
+    result = parser.parse(
+        path="/import",
+        headers={"Content-Type": "application/json"},
+        raw_body=json.dumps(payload).encode("utf-8"),
+    )
+
+    assert result.error == ""
+    assert "capture_source_id" not in result.body
+
+
 def test_listener_parser_rejects_large_body() -> None:
     parser = ImportListenerRequestParser(max_bytes=5)
 
