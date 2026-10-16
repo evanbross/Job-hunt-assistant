@@ -2322,6 +2322,17 @@ def _create_tables(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_audit_log_user_created
             ON audit_log (user_id, created_at DESC)
         """,
+        # ai: claude-sonnet-5 | 2026-10-16 -- get_page_by_statuses() (the
+        # application-history list) filters on (user_id, status) and sorts by
+        # (date_found DESC, id DESC); idx_jobs_user_status covers the filter
+        # but not the sort, so Postgres still reads every matching row into a
+        # heapsort on every page. This index lets it walk straight to each
+        # page in already-sorted order instead -- a bigger win as the jobs
+        # table grows past the few thousand rows it's at today.
+        """
+        CREATE INDEX IF NOT EXISTS idx_jobs_user_status_date_id
+            ON jobs (user_id, status, date_found DESC, id DESC)
+        """,
     ]:
         cur.execute(stmt)
     conn.commit()

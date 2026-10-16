@@ -811,6 +811,9 @@ def test_history_page_query_paginates_searches_and_batches_stages(pg_dsn: str) -
         stages.insert(
             user_id, {"job_id": job_ids[0], "status": "applied", "date": "2026-05-01", "notes": None}
         )
+        # ai: claude-sonnet-5 | 2026-10-16 -- only job_ids[1] ("Beta") gets a
+        # description, so has_description can be checked both ways below.
+        jobs.update(user_id, job_ids[1], {"raw_jd_snippet": "We are looking for..."})
         conn.commit()
 
         first = jobs.get_page_by_statuses(user_id, ["applied"], limit=2, offset=0)
@@ -835,5 +838,16 @@ def test_history_page_query_paginates_searches_and_batches_stages(pg_dsn: str) -
         assert len(grouped[job_ids[0]]) == 1
         assert grouped[job_ids[1]] == []
         assert stages.get_by_job_ids(user_id, []) == {}
+
+        # ai: claude-sonnet-5 | 2026-10-16 -- the history list is a lightweight
+        # projection (JobColumns.history_summary() + has_description), not a
+        # SELECT *: job_description/raw_jd_snippet must never come back here,
+        # regardless of whether the job actually has one.
+        by_id = {job["id"]: job for job in first + second + third}
+        assert by_id[job_ids[1]]["has_description"] is True
+        assert by_id[job_ids[0]]["has_description"] is False
+        for job in by_id.values():
+            assert "job_description" not in job
+            assert "raw_jd_snippet" not in job
     finally:
         conn.close()

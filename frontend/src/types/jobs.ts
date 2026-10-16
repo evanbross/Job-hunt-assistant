@@ -167,8 +167,28 @@ export interface JobHistoryStage {
   created_at: string;
 }
 
-/** One row of GET /api/jobs/history's `jobs` array -- a Job plus its stage timeline. */
-export type JobHistoryEntry = Job & { stages: JobHistoryStage[] };
+// ai: claude-sonnet-5 | 2026-10-16
+// A deliberately lightweight projection, not the full Job row: GET
+// /api/jobs/history (JobColumns.history_summary() in backend/db/job_columns.py)
+// excludes job_description/raw_jd_snippet -- large TEXT blobs the history
+// list never displays inline -- and reports has_description instead so the
+// UI knows whether to show the "Job Description" toggle. HistoryPanel
+// fetches the real text lazily via GET /api/jobs/<id> only when a row with
+// has_description is expanded.
+export interface JobHistorySummary {
+  id: number;
+  company?: string | null;
+  job_title?: string | null;
+  url?: string | null;
+  source?: string | null;
+  fit_score?: number | null;
+  status?: string | null;
+  date_found?: string | null;
+  has_description: boolean;
+}
+
+/** One row of GET /api/jobs/history's `jobs` array -- a summary job plus its stage timeline. */
+export type JobHistoryEntry = JobHistorySummary & { stages: JobHistoryStage[] };
 
 /** Response body of GET /api/jobs/history. */
 export interface JobHistoryResponse {

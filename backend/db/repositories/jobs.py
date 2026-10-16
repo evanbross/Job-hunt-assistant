@@ -118,11 +118,20 @@ class PostgresJobRepository(_BaseRepo):
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     # ai: claude-sonnet-5 | 2026-09-20
+    # ai: claude-sonnet-5 | 2026-10-16 — narrowed from SELECT * to
+    # JobColumns.history_summary() plus a computed has_description flag.
+    # job_description/raw_jd_snippet are large TEXT blobs the history list
+    # never displays (only an expanded row's "Job Description" toggle does);
+    # pulling them for every row of every page was the dominant cost of this
+    # endpoint (measured ~150-380ms of a ~450ms request, almost entirely the
+    # extra bytes moving over the wire to Neon). get_by_id() still returns
+    # the full row for the lazy per-job fetch the UI makes on expand.
     def get_page_by_statuses(
         self, user_id: int, statuses: list[str], limit: int, offset: int, search: str = ""
     ) -> list[dict[str, Any]]:
-        """One page of jobs in `statuses`, newest first. `search` supports * and ? wildcards
-        and matches company, job_title, source, or date_found as a substring."""
+        """One page of jobs in `statuses`, newest first, with a `has_description` flag in
+        place of the full job_description/raw_jd_snippet text. `search` supports * and ?
+        wildcards and matches company, job_title, source, or date_found as a substring."""
         placeholders = ", ".join(["%s"] * len(statuses))
         params: list[Any] = [user_id, *statuses]
         search_clause = ""
@@ -134,9 +143,13 @@ class PostgresJobRepository(_BaseRepo):
                 " OR date_found::text ILIKE %s)"
             )
             params.extend([pattern] * 4)
+        columns = ", ".join(JobColumns.history_summary())
         # id DESC tie-break keeps page boundaries stable when many rows share a date_found.
         cur = self._execute(
-            f"SELECT * FROM jobs WHERE user_id = %s AND status IN ({placeholders}){search_clause}"
+            f"SELECT {columns},"
+            f" (COALESCE({JobColumns.JOB_DESCRIPTION}, '') != ''"
+            f"  OR COALESCE({JobColumns.RAW_JD_SNIPPET}, '') != '') AS has_description"
+            f" FROM jobs WHERE user_id = %s AND status IN ({placeholders}){search_clause}"
             " ORDER BY date_found DESC, id DESC LIMIT %s OFFSET %s",
             [*params, limit, offset],
         )

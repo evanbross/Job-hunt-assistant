@@ -38,6 +38,13 @@ import { jobDescriptionText } from "./triagePanelUtils.ts";
 
 const REGEX_SPECIAL_CHARS = /[.+^${}()|[\]\\]/g;
 
+// ai: claude-sonnet-5 | 2026-10-16 — below this, a substring match (e.g. a
+// bare "r" or "th") hits so much of the queue/triage list that it isn't a
+// useful filter; jobMatchesSearch below treats shorter text as "no filter
+// yet" rather than flooding the view. job_id is exempt (see jobMatchesSearch)
+// since a short numeric id is still a precise, deliberate search.
+const MIN_SEARCH_LENGTH = 3;
+
 export type JobSearchField = "all" | "job_title" | "company" | "job_description" | "job_id";
 
 export const JOB_SEARCH_FIELD_OPTIONS: { key: JobSearchField; label: string }[] = [
@@ -60,8 +67,12 @@ function wildcardTermToRegex(term: string): RegExp {
 }
 
 export function jobMatchesSearch(job: Job, searchText: string, searchField: JobSearchField = "company"): boolean {
-  const terms = String(searchText || "")
-    .trim()
+  const trimmed = String(searchText || "").trim();
+  if (searchField !== "job_id" && trimmed.length > 0 && trimmed.length < MIN_SEARCH_LENGTH) {
+    return true;
+  }
+
+  const terms = trimmed
     .toLowerCase()
     .split(/\s+/)
     .filter(Boolean)

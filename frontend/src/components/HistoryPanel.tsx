@@ -40,11 +40,15 @@ import { scoreTone } from "../utils/fitScoringUtils.ts";
 import { statusTone } from "../utils/jobQueueUtils.ts";
 import { formatJobDescription, jobDescriptionText } from "../utils/triagePanelUtils.ts";
 import { readStoredPref, writeStoredPref } from "../utils/storedPreference.ts";
-import type { JobHistoryEntry, JobHistoryResponse, JobHistoryStage } from "../types/jobs.ts";
+import type { Job, JobHistoryEntry, JobHistoryResponse, JobHistoryStage } from "../types/jobs.ts";
 
 const HISTORY_SEARCH_STORAGE_KEY = "jha.history.search";
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 300;
+// ai: claude-sonnet-5 | 2026-10-16 — below this, company/title/source/date
+// substrings match so much of the table (e.g. a bare "r" or "th") that the
+// server round trip isn't worth making; see effectiveSearch below.
+const MIN_SEARCH_LENGTH = 3;
 
 // ── Status definitions ────────────────────────────────────────────────────────
 
@@ -148,6 +152,12 @@ export default function HistoryPanel() {
   const [hasMore, setHasMore] = useState(false);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [descriptionOpen, setDescriptionOpen] = useState<Set<number>>(new Set());
+  // ai: claude-sonnet-5 | 2026-10-16
+  // GET /api/jobs/history no longer ships job_description/raw_jd_snippet (see
+  // JobHistorySummary) -- only has_description -- so the full text is fetched
+  // lazily, one job at a time, the first time its row is expanded.
+  const [descriptions, setDescriptions] = useState<Record<number, string>>({});
+  const [descriptionLoading, setDescriptionLoading] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState(() => readStoredPref(HISTORY_SEARCH_STORAGE_KEY));
   const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
   const latestRequestRef = useRef(0);
@@ -158,13 +168,18 @@ export default function HistoryPanel() {
     return () => clearTimeout(timer);
   }, [search]);
 
+  // Below MIN_SEARCH_LENGTH the typed text is treated as if the search box were
+  // empty -- a 1-2 character substring matches too much of the table to be useful,
+  // and it isn't worth the round trip to find that out.
+  const effectiveSearch = debouncedSearch.length >= MIN_SEARCH_LENGTH ? debouncedSearch : "";
+
   // Search is applied server-side (the client only ever holds the pages loaded so far), so
   // a request id discards responses that were overtaken by a newer search or page.
   const loadPage = useCallback(
     (offset: number) => {
       latestRequestRef.current += 1;
       const requestId = latestRequestRef.current;
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), q: debouncedSearch });
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), q: effectiveSearch });
       if (offset === 0) setLoading(true);
       else setLoadingMore(true);
       fetch(`/api/jobs/history?${params}`)
@@ -189,7 +204,7 @@ export default function HistoryPanel() {
           setLoadingMore(false);
         });
     },
-    [debouncedSearch]
+    [effectiveSearch]
   );
 
   useEffect(() => {
@@ -232,6 +247,24 @@ export default function HistoryPanel() {
       else next.add(id);
       return next;
     });
+    if (!(id in descriptions) && !descriptionLoading.has(id)) {
+      setDescriptionLoading((prev) => new Set(prev).add(id));
+      fetch(`/api/jobs/${id}`)
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Load failed: ${r.status}`))))
+        .then((job: Job) => {
+          setDescriptions((prev) => ({ ...prev, [id]: jobDescriptionText(job) }));
+        })
+        .catch(() => {
+          setDescriptions((prev) => ({ ...prev, [id]: "" }));
+        })
+        .finally(() => {
+          setDescriptionLoading((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        });
+    }
   };
 
   const handleStageAdded = (jobId: number, stage: JobHistoryStage) => {
@@ -267,7 +300,7 @@ export default function HistoryPanel() {
     return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
   }
 
-  if (!loading && jobs.length === 0 && !debouncedSearch) {
+  if (!loading && jobs.length === 0 && !effectiveSearch) {
     return (
       <div className="empty-state">
         <p style={{ fontSize: "32px" }}>📋</p>
@@ -296,6 +329,11 @@ export default function HistoryPanel() {
             boxSizing: "border-box",
           }}
         />
+        {search.trim().length > 0 && search.trim().length < MIN_SEARCH_LENGTH && (
+          <p style={{ margin: "4px 2px 0", fontSize: "11px", color: "var(--text-muted)" }}>
+            Type at least {MIN_SEARCH_LENGTH} characters to search.
+          </p>
+        )}
       </div>
       <div style={{ overflowX: "auto", background: "var(--surface)", borderRadius: "var(--radius-lg)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border)" }}>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -310,7 +348,7 @@ export default function HistoryPanel() {
           {jobs.length === 0 ? (
             <tr>
               <td colSpan={7} style={{ ...tdStyle, textAlign: "center", color: "var(--text-muted)", padding: "24px" }}>
-                {loading ? "Loading…" : `No jobs match "${debouncedSearch}"`}
+                {loading ? "Loading…" : `No jobs match "${effectiveSearch}"`}
               </td>
             </tr>
           ) : jobs.map((job) => {
@@ -319,9 +357,10 @@ export default function HistoryPanel() {
             const displayStatus = latestStage ? latestStage.status : job.status;
             const isOpen = expanded.has(job.id);
             const hasStages = stages.length > 0;
-            const rawDesc = jobDescriptionText(job);
+            const rawDesc = descriptions[job.id];
             const formattedDesc = rawDesc ? formatJobDescription(rawDesc) : null;
             const isDescOpen = descriptionOpen.has(job.id);
+            const isDescLoading = descriptionLoading.has(job.id);
 
             return (
               <React.Fragment key={job.id}>
@@ -390,16 +429,17 @@ export default function HistoryPanel() {
                         </div>
                       )}
 
-                      {formattedDesc && (
+                      {job.has_description && (
                         <div style={{ marginTop: "10px" }}>
                           <button
                             className="btn-secondary"
                             style={{ fontSize: "12px", padding: "4px 10px", marginBottom: "6px" }}
                             onClick={(e) => toggleDescription(e, job.id)}
+                            disabled={isDescLoading}
                           >
-                            {isDescOpen ? "Hide Description" : "Job Description"}
+                            {isDescLoading ? "Loading…" : isDescOpen ? "Hide Description" : "Job Description"}
                           </button>
-                          {isDescOpen && (
+                          {isDescOpen && formattedDesc && (
                             <div style={descriptionBoxStyle}>
                               {formattedDesc}
                             </div>

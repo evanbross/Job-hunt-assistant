@@ -90,3 +90,24 @@ class JobColumns:
             for name, value in vars(cls).items()
             if name.isupper() and isinstance(value, str)
         )
+
+    # ai: claude-sonnet-5 | 2026-10-16 — the application-history list view
+    # (routes/jobs.py's get_history_jobs) only ever displays these columns;
+    # JOB_DESCRIPTION/RAW_JD_SNIPPET are large TEXT blobs that used to be
+    # pulled (and shipped to the client) for every row on every page even
+    # though the UI only shows them once a row is expanded, which is why that
+    # endpoint was slow. Named here rather than inlined in the repository
+    # query so the summary/full-row contract stays visible in one place.
+    @classmethod
+    def history_summary(cls) -> tuple[str, ...]:
+        """Column names for the lightweight application-history list query."""
+        return (
+            cls.ID,
+            cls.COMPANY,
+            cls.JOB_TITLE,
+            cls.URL,
+            cls.SOURCE,
+            cls.FIT_SCORE,
+            cls.STATUS,
+            cls.DATE_FOUND,
+        )
