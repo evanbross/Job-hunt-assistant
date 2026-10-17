@@ -51,6 +51,18 @@ from ..connection import _row_to_dict
 
 
 # ai: claude-sonnet-5 | 2026-10-12
+# ai: claude-sonnet-5 | 2026-10-16 -- extracted from resolve_company_alias
+# below so PostgresJobRepository.get_by_company (backend/db/repositories/
+# jobs.py) can embed the exact same lookup as a correlated subquery of its
+# own SELECT, instead of either duplicating this SQL text a second time or
+# paying for a separate round trip to run it standalone first.
+CANONICAL_ALIAS_SUBQUERY = (
+    "SELECT canonical_normalized FROM company_aliases"
+    " WHERE user_id = %s AND alias_normalized = %s"
+)
+
+
+# ai: claude-sonnet-5 | 2026-10-12
 # The one place that reads company_aliases to resolve a normalized company
 # name -- both PostgresCompanyAliasRepository.delete() (re-deriving a job's
 # company_normalized after removing an alias) and PostgresJobRepository
@@ -61,11 +73,7 @@ from ..connection import _row_to_dict
 def resolve_company_alias(execute: Callable[[str, tuple], Any], user_id: int, normalized: str) -> str:
     if not normalized:
         return normalized
-    cur = execute(
-        "SELECT canonical_normalized FROM company_aliases"
-        " WHERE user_id = %s AND alias_normalized = %s",
-        (user_id, normalized),
-    )
+    cur = execute(CANONICAL_ALIAS_SUBQUERY, (user_id, normalized))
     row = cur.fetchone()
     return row["canonical_normalized"] if row else normalized
 

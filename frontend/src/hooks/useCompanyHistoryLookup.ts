@@ -34,9 +34,9 @@
 
 import { useState } from "react";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts";
-import { applicationRowFromSheet, jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.ts";
+import { jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.ts";
 import { alwaysIncludedIds } from "../utils/jobQueueUtils.ts";
-import type { ApplicationHistoryRow, ApplicationSheetResponse, CompanyAliasKeyMap, Job } from "../types/jobs.ts";
+import type { ApplicationHistoryRow, CompanyAliasKeyMap, Job, JobHistoryStage } from "../types/jobs.ts";
 import type { ApiErrorBody } from "../types/common.ts";
 
 // ai: claude-sonnet-4-6 | 2026-06-11
@@ -64,34 +64,23 @@ export function useCompanyHistoryLookup(job: Job, aliasMap?: CompanyAliasKeyMap)
       return;
     }
     try {
-      // Fetch both sources in parallel:
-      //   - sheet/applications: applied jobs (on_sheet flag set), with stage history
-      //   - jobs/by-company: ALL jobs in the DB for this company, any status
-      // Merge by id: sheet rows take precedence (they carry stage data). DB-only
-      // rows fill in queue/triage/skipped entries that never made it to the sheet.
-      const [sheetRes, dbRes] = await Promise.all([
-        fetch("/api/applications"),
-        fetch(`/api/jobs/by-company?company=${encodeURIComponent(company)}`),
-      ]);
-      if (!sheetRes.ok) {
-        const sheetErrorData: ApiErrorBody = await sheetRes.json().catch(() => ({}));
-        throw new Error(sheetErrorData.error || `Application lookup failed (${sheetRes.status})`);
+      // ai: claude-sonnet-5 | 2026-10-16 — used to also fetch GET /api/applications
+      // (every on_sheet job for the whole account, SELECT *) just to merge in stage
+      // history, since jobs/by-company didn't carry it. On a real account that was
+      // 832 rows / ~800ms for a single dialog open. by-company now attaches stages
+      // itself (routes/jobs.py's get_jobs_by_company), scoped to just this company's
+      // jobs, so that second fetch is gone entirely.
+      const dbRes = await fetch(`/api/jobs/by-company?company=${encodeURIComponent(company)}`);
+      if (!dbRes.ok) {
+        const dbErrorData: ApiErrorBody = await dbRes.json().catch(() => ({}));
+        throw new Error(dbErrorData.error || `Application lookup failed (${dbRes.status})`);
       }
-      const sheetData: ApplicationSheetResponse = await sheetRes.json();
-      const dbData: Job[] = dbRes.ok ? await dbRes.json() : [];
+      const dbData: (Job & { stages: JobHistoryStage[] })[] = await dbRes.json();
+      const dbRows = (Array.isArray(dbData) ? dbData : []).map(jobToHistoryRow);
 
-      const sheetRows = (Array.isArray(sheetData.rows) ? sheetData.rows : []).map(applicationRowFromSheet);
-      const sheetIds = new Set(sheetRows.map((r) => r.id));
-
-      // Convert DB jobs to history-row shape; skip any already present from the sheet
-      const dbRows = (Array.isArray(dbData) ? dbData : [])
-        .filter((j) => !sheetIds.has(j.id))
-        .map(jobToHistoryRow);
-
-      const merged = [...sheetRows, ...dbRows];
-      const withCurrent = merged.some((r) => r.id === job.id)
-        ? merged
-        : [jobToHistoryRow(job), ...merged];
+      const withCurrent = dbRows.some((r) => r.id === job.id)
+        ? dbRows
+        : [jobToHistoryRow(job), ...dbRows];
 
       // ai: claude-sonnet-5 | 2026-07-21
       // Force-include the current duplicate hint AND every previously dismissed

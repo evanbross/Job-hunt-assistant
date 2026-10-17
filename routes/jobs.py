@@ -345,8 +345,20 @@ def get_jobs_by_company() -> ResponseReturnValue:
     company = request.args.get("company", "").strip()
     if not company:
         return jsonify({"error": "company parameter is required"}), 400
+    user_id = current_user_id()
     with get_repos() as repos:
-        jobs = repos["jobs"].get_by_company(current_user_id(), company)
+        jobs = repos["jobs"].get_by_company(user_id, company)
+        # ai: claude-sonnet-5 | 2026-10-16
+        # The Company History dialog (useCompanyHistoryLookup.ts) used to get
+        # stage timelines by fetching the ENTIRE application sheet (GET
+        # /applications -- every on_sheet job for the user, SELECT * --
+        # 832 rows / ~800ms on a real account) just to merge in stages for the
+        # handful of jobs that happen to belong to this one company. Attaching
+        # stages here, scoped to only the jobs this query already matched,
+        # lets the dialog drop that sheet-wide fetch entirely.
+        stages_by_job = repos["stages"].get_by_job_ids(user_id, [job["id"] for job in jobs])
+        for job in jobs:
+            job["stages"] = stages_by_job[job["id"]]
     return jsonify(jobs)
 
 

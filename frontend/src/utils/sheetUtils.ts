@@ -33,7 +33,7 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-07
-import type { ApplicationHistoryRow, ApplicationSheetRow, CompanyAliasKeyMap, Job } from "../types/jobs.ts";
+import type { ApplicationHistoryRow, ApplicationSheetRow, CompanyAliasKeyMap, Job, JobHistoryStage } from "../types/jobs.ts";
 
 export function applicationRowFromSheet(row: ApplicationSheetRow): ApplicationHistoryRow {
   const cells = Array.isArray(row.cells) ? row.cells : [];
@@ -113,7 +113,12 @@ export function isAppliedStatus(status?: string | null): boolean {
 // Converts a jobs-DB row to the same shape that applicationRowFromSheet produces.
 // Used to inject the current job into company-history results so it always appears
 // as "this card" even when the job has not yet been added to the application sheet.
-export function jobToHistoryRow(job: Job): ApplicationHistoryRow {
+// ai: claude-sonnet-5 | 2026-10-16 — stages is optional and defaults to [] for plain
+// Job objects (e.g. the duplicate-reference lookup in useCompanyHistoryLookup.ts,
+// which fetches a bare GET /jobs/<id>); GET /jobs/by-company now attaches real
+// stage rows directly, so this no longer needs a Google-Sheet row as the only
+// source of stage data (see that route's own comment for why).
+export function jobToHistoryRow(job: Job & { stages?: JobHistoryStage[] }): ApplicationHistoryRow {
   return {
     id: job.id,
     company: String(job.company || "").trim(),
@@ -123,7 +128,7 @@ export function jobToHistoryRow(job: Job): ApplicationHistoryRow {
     title: String(job.job_title || "").trim(),
     url: String(job.url || "").trim(),
     notes: String(job.notes || "").trim(),
-    stages: [],
+    stages: (job.stages || []).map((s) => ({ id: s.id, status: s.status, date: s.date })),
     duplicate_of_id: job.duplicate_of_id ?? null,
     skip_reason: job.skip_reason ?? null,
   };

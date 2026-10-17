@@ -47,6 +47,7 @@ from backend.scoring.skip_reasons import REQ_CLOSED_ROW_FLAG, REQ_CLOSED_SKIP_RE
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
 from ..job_columns import JobColumns
+from .company_aliases import CANONICAL_ALIAS_SUBQUERY, resolve_company_alias
 
 logger = logging.getLogger(__name__)
 
@@ -300,31 +301,39 @@ class PostgresJobRepository(_BaseRepo):
     # change can't apply to some of them and not others.
     def _canonical_company_normalized(self, user_id: int, company: str | None) -> str:
         normalized = normalize_company_name(company)
-        if not normalized:
-            return normalized
-        cur = self._execute(
-            "SELECT canonical_normalized FROM company_aliases"
-            " WHERE user_id = %s AND alias_normalized = %s",
-            (user_id, normalized),
-        )
-        row = cur.fetchone()
-        return row["canonical_normalized"] if row else normalized
+        # ai: claude-sonnet-5 | 2026-10-16 -- was its own inline copy of this
+        # exact lookup; resolve_company_alias (backend/db/repositories/
+        # company_aliases.py) is the one place meant to run it, per that
+        # function's own docstring, which this call had silently stopped
+        # matching.
+        return resolve_company_alias(self._execute, user_id, normalized)
 
     def get_by_company(self, user_id: int, company: str) -> list[dict[str, Any]]:
         """Return all jobs whose company matches, newest first.
 
-        Matching goes through _canonical_company_normalized() (normalize_company_name(),
-        then alias resolution) rather than a plain LOWER(TRIM()) comparison, so e.g.
-        "Seeq" and "Seeq Corporation", or an aliased pair like "Block"/"Cash App", are
-        treated as the same employer. See get_company_counts below, which must use the
-        same resolution so the two agree on what counts as a match. Only selects the
-        columns the Company History dialog actually displays (see JobCard.jsx /
-        jobToHistoryRow) rather than every column, to keep the transfer small."""
-        target = self._canonical_company_normalized(user_id, company)
+        Matching resolves the same way _canonical_company_normalized() does
+        (normalize_company_name(), then alias resolution) -- so e.g. "Seeq" and
+        "Seeq Corporation", or an aliased pair like "Block"/"Cash App", are
+        treated as the same employer -- but inline as one query instead of a
+        separate alias lookup followed by the main SELECT. See
+        get_company_counts below, which must use the same resolution so the
+        two agree on what counts as a match. Only selects the columns the
+        Company History dialog actually displays (see JobCard.jsx /
+        jobToHistoryRow) rather than every column, to keep the transfer small.
+        """
+        # ai: claude-sonnet-5 | 2026-10-16 -- was _canonical_company_normalized()
+        # (its own round trip to company_aliases) followed by this SELECT; the
+        # Company History dialog calls this on every open, so folding the alias
+        # lookup into a subquery of the same statement saves a full network
+        # round trip to Neon each time, on top of this dialog's bigger fix
+        # (routes/jobs.py's get_jobs_by_company no longer also fetches the
+        # entire application sheet just to get stage history).
+        normalized = normalize_company_name(company)
         cur = self._execute(
             f"SELECT {', '.join(self._COMPANY_HISTORY_COLUMNS)} FROM jobs"
-            " WHERE user_id = %s AND company_normalized = %s ORDER BY id DESC",
-            (user_id, target),
+            f" WHERE user_id = %s AND company_normalized = COALESCE(({CANONICAL_ALIAS_SUBQUERY}), %s)"
+            " ORDER BY id DESC",
+            (user_id, user_id, normalized, normalized),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 

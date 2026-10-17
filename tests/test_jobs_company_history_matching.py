@@ -30,6 +30,7 @@ from backend.db import (
     get_connection,
     init_db,
 )
+from backend.db.repositories.company_aliases import PostgresCompanyAliasRepository
 from backend.db.row_level_security import set_current_user
 from backend.scoring.company_matching import normalize_company_name
 
@@ -71,6 +72,33 @@ def test_get_by_company_matches_across_corporate_suffix(pg_dsn: str) -> None:
             "Frontend Engineer",
             "Staff Engineer",
         }
+    finally:
+        conn.close()
+
+
+# ai: claude-sonnet-5 | 2026-10-16
+# get_by_company()'s alias resolution used to be a separate round trip
+# (_canonical_company_normalized) before this SELECT; it's now a correlated
+# subquery of the same statement (CANONICAL_ALIAS_SUBQUERY, shared with
+# resolve_company_alias in company_aliases.py). Nothing exercised the alias
+# path through get_by_company itself before this -- the corporate-suffix
+# test above only covers normalize_company_name(), not company_aliases.
+def test_get_by_company_matches_through_a_user_declared_alias(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user(conn)
+        repo = PostgresJobRepository(conn)
+        aliases = PostgresCompanyAliasRepository(conn)
+        repo.insert(user_id, {"company": "Block", "job_title": "Payments Engineer", "status": "applied"})
+        conn.commit()
+        aliases.upsert(user_id, alias_company="Cash App", canonical_company="Block")
+        conn.commit()
+
+        rows_by_alias = repo.get_by_company(user_id, "Cash App")
+        rows_by_canonical = repo.get_by_company(user_id, "Block")
+
+        assert {r["job_title"] for r in rows_by_alias} == {"Payments Engineer"}
+        assert {r["job_title"] for r in rows_by_canonical} == {"Payments Engineer"}
     finally:
         conn.close()
 
