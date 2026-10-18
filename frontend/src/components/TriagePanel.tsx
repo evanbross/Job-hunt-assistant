@@ -45,6 +45,7 @@ import StatusBadge from "./common/StatusBadge.tsx";
 import CompanyHistoryDialog from "./common/CompanyHistoryDialog.tsx";
 import ContactsBadge from "./common/ContactsBadge.tsx";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.ts";
+import { useLazyJobDetail } from "../hooks/useLazyJobDetail.ts";
 import { isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.ts";
 import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.ts";
 import UndoEditNotice from "./common/UndoEditNotice.tsx";
@@ -221,6 +222,21 @@ interface DuplicateCardProps {
 
 // ai: claude-sonnet-4-6 | 2026-06-23
 function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts, companyAliasMap }: DuplicateCardProps) {
+  // ai: claude-sonnet-5 | 2026-10-17 — GET /jobs/triage omits fit_reasoning/
+  // certainty_reason/job_description (see useLazyJobDetail); fetched lazily
+  // the first time "Show reasoning" or the description button is clicked.
+  const { detail: lazyDuplicateDetail, ensureLoaded: ensureLazyDuplicateDetailLoaded } = useLazyJobDetail(job.id);
+  const hasDescriptionDuplicate = job.has_description ?? Boolean(jobDescriptionText(job));
+  // ai: claude-sonnet-5 | 2026-10-17 — SalaryBadge's text-scrape fallback
+  // (salaryRangeForJob) reads raw_jd_snippet/fit_reasoning directly; feed it
+  // the lazily-resolved values so it self-corrects once "Show reasoning" has
+  // been opened, instead of permanently showing nothing for a job whose
+  // salary was never extracted into salary_min/salary_max.
+  const effectiveJobForSalaryDuplicate: Job = {
+    ...job,
+    raw_jd_snippet: lazyDuplicateDetail?.raw_jd_snippet ?? job.raw_jd_snippet ?? null,
+    fit_reasoning: lazyDuplicateDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
+  };
   const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts, companyAliasMap);
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || "", companyAliasMap))),
@@ -255,8 +271,14 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
   });
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
   const companyHistory = useCompanyHistoryLookup(job, companyAliasMap);
-  const triageReasoning = triageReasoningForJob(job);
-  const penaltiesApplied = penaltiesAppliedForJob(job);
+  const triageReasoning = triageReasoningForJob({
+    ...job,
+    fit_reasoning: lazyDuplicateDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
+    certainty_reason: lazyDuplicateDetail?.certainty_reason ?? job.certainty_reason ?? null,
+  });
+  const penaltiesApplied = penaltiesAppliedForJob({
+    fit_reasoning: lazyDuplicateDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
+  });
 
   const act = async (fn: () => Promise<void>, label: string) => {
     setLoadingAction(label);
@@ -611,7 +633,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           </button>
           {/* ai: claude-sonnet-5 | 2026-07-25 */}
           <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
-          <SalaryBadge job={job} />
+          <SalaryBadge job={effectiveJobForSalaryDuplicate} />
           <LinkedInInsightBadge job={job} />
           <button
             type="button"
@@ -684,7 +706,10 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           className="btn-secondary"
           style={{ fontSize: "12px", padding: "5px 11px" }}
           type="button"
-          onClick={() => setReasoningOpen((open) => !open)}
+          onClick={() => {
+            ensureLazyDuplicateDetailLoaded();
+            setReasoningOpen((open) => !open);
+          }}
         >
           {reasoningOpen ? "Hide reasoning" : "Show reasoning"}
         </button>
@@ -699,7 +724,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           }}
           disabled={loadingAction !== null}
         >
-          {job.job_description ? "Update description" : "Add description"}
+          {hasDescriptionDuplicate ? "Update description" : "Add description"}
         </button>
         {/* ai: claude-sonnet-4-6 | 2026-06-20 */}
         <button
@@ -1006,6 +1031,21 @@ interface TriageCardProps {
 
 // ai: claude-sonnet-4-6 | 2026-06-23
 function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts, companyAliasMap }: TriageCardProps) {
+  // ai: claude-sonnet-5 | 2026-10-17 — GET /jobs/triage omits fit_reasoning/
+  // certainty_reason/job_description (see useLazyJobDetail); fetched lazily
+  // the first time "Show reasoning" or "Job Description" is clicked.
+  const { detail: lazyTriageDetail, ensureLoaded: ensureLazyTriageDetailLoaded } = useLazyJobDetail(job.id);
+  const hasDescriptionTriage = job.has_description ?? Boolean(jobDescriptionText(job));
+  // ai: claude-sonnet-5 | 2026-10-17 — SalaryBadge's text-scrape fallback
+  // (salaryRangeForJob) reads raw_jd_snippet/fit_reasoning directly; feed it
+  // the lazily-resolved values so it self-corrects once either toggle has
+  // been opened, instead of permanently showing nothing for a job whose
+  // salary was never extracted into salary_min/salary_max.
+  const effectiveJobForSalaryTriage: Job = {
+    ...job,
+    raw_jd_snippet: lazyTriageDetail?.raw_jd_snippet ?? job.raw_jd_snippet ?? null,
+    fit_reasoning: lazyTriageDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
+  };
   const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts, companyAliasMap);
   const companySheetRows = useMemo(
     () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || "", companyAliasMap))),
@@ -1053,11 +1093,25 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
   });
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
   const companyHistory = useCompanyHistoryLookup(job, companyAliasMap);
-  const triageReasoning = triageReasoningForJob(job);
-  const penaltiesApplied = penaltiesAppliedForJob(job);
-  const rawJobDescription = jobDescriptionText(job);
+  const triageReasoning = triageReasoningForJob({
+    ...job,
+    fit_reasoning: lazyTriageDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
+    certainty_reason: lazyTriageDetail?.certainty_reason ?? job.certainty_reason ?? null,
+  });
+  const penaltiesApplied = penaltiesAppliedForJob({
+    fit_reasoning: lazyTriageDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
+  });
+  const rawJobDescription = jobDescriptionText({
+    job_description: lazyTriageDetail?.job_description ?? job.job_description ?? null,
+    raw_jd_snippet: lazyTriageDetail?.raw_jd_snippet ?? job.raw_jd_snippet ?? null,
+  });
   const jobDescription = formatJobDescription(rawJobDescription);
-  const descriptionUnavailable = isDescriptionUnavailable(rawJobDescription);
+  // ai: claude-sonnet-5 | 2026-10-17 — the unconditional "No description
+  // loaded" message below can't wait for a click to fetch the real text, so
+  // prefer the server-computed flag until rawJobDescription has real content.
+  const descriptionUnavailable = rawJobDescription
+    ? isDescriptionUnavailable(rawJobDescription)
+    : (job.description_unavailable ?? true);
 
   useEffect(() => {
     if (chatOpen && chatMessagesRef.current) {
@@ -1657,7 +1711,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           </button>
           {/* ai: claude-sonnet-5 | 2026-07-25 */}
           <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
-          <SalaryBadge job={job} />
+          <SalaryBadge job={effectiveJobForSalaryTriage} />
           <LinkedInInsightBadge job={job} />
           {companySheetRows !== null && companySheetRows.length > 0 && (
             <span
@@ -1742,7 +1796,10 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         <button
           className="btn-secondary"
           style={{ fontSize: "12px", padding: "4px 10px" }}
-          onClick={() => setReasoningOpen((open) => !open)}
+          onClick={() => {
+            ensureLazyTriageDetailLoaded();
+            setReasoningOpen((open) => !open);
+          }}
         >
           {reasoningOpen ? "Hide reasoning" : "Show reasoning"}
         </button>
@@ -1852,14 +1909,17 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
       )}
 
       {/* Job description */}
-      {jobDescription && (
+      {hasDescriptionTriage && (
         <div>
           <div style={descriptionActionRowStyle}>
             {!descriptionUnavailable && (
               <button
                 className="btn-secondary"
                 style={{ fontSize: "12px", padding: "4px 10px" }}
-                onClick={() => setDescriptionOpen((open) => !open)}
+                onClick={() => {
+                  ensureLazyTriageDetailLoaded();
+                  setDescriptionOpen((open) => !open);
+                }}
               >
                 {descriptionOpen ? "Hide Description" : "Job Description"}
               </button>
@@ -1875,7 +1935,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
               }}
               disabled={loadingAction !== null}
             >
-              {job.job_description ? "Update detailed description" : "Add detailed description"}
+              {hasDescriptionTriage ? "Update detailed description" : "Add detailed description"}
             </button>
             {descriptionUnavailable && (
               <span style={{ fontSize: "12px", color: "var(--orange)" }}>

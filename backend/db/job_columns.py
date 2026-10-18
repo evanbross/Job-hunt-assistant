@@ -111,3 +111,53 @@ class JobColumns:
             cls.STATUS,
             cls.DATE_FOUND,
         )
+
+    # ai: claude-sonnet-5 | 2026-10-17 — the Job Queue and Triage list views
+    # (routes/jobs.py's get_jobs, routes/fit.py's get_triage_jobs) each render
+    # their full job_description/raw_jd_snippet/fit_reasoning/certainty_reason
+    # text only behind a per-card "Job Description"/"Show reasoning" toggle
+    # that defaults closed (JobCard.tsx, TriagePanel.tsx) -- but the queries
+    # backing those lists were still SELECT *, eagerly shipping every one of
+    # those TEXT blobs for every row. Measured on a real account: /jobs/triage
+    # (triage + possible_duplicate, 2129 rows) was an 18.5MB response and a
+    # 1.5-2s query. Unlike history_summary() above (a short explicit
+    # allowlist), this is deliberately "every column except the ones proven
+    # lazy-only" -- these list views show nearly every other column
+    # unconditionally, so excluding is the safer direction: a column added to
+    # JobColumns later defaults to included here, not silently dropped.
+    _DISPLAY_LAZY_ONLY: frozenset[str] = frozenset(
+        {"job_description", "raw_jd_snippet", "fit_reasoning", "certainty_reason"}
+    )
+
+    @classmethod
+    def display_summary(cls) -> tuple[str, ...]:
+        """Column names for the Job Queue / Triage list queries -- every column
+        except the large TEXT fields those views only show after an explicit,
+        per-card expand click (see has_description in the repository methods
+        that use this for the two columns that get one)."""
+        return tuple(sorted(cls.all() - cls._DISPLAY_LAZY_ONLY))
+
+    # ai: claude-sonnet-5 | 2026-10-17 — routes/applications.py's
+    # get_application_sheet() builds each row's "cells" from exactly these
+    # fields (plus id/duplicate_of_id/skip_reason) and nothing else -- it
+    # never surfaces job_description/fit_reasoning/etc. at all, toggle or no
+    # toggle. Its backing query (get_sheet_entries) was still SELECT *
+    # though: on a real account (832 on_sheet rows) that meant pulling and
+    # discarding several MB of TEXT columns the response was never going to
+    # use, on every open of the Applications sheet, the Job Queue/Triage
+    # "N tracked" badge, and (until 2026-10-16) the Company History dialog.
+    @classmethod
+    def sheet_summary(cls) -> tuple[str, ...]:
+        """Column names for the Applications-sheet list query."""
+        return (
+            cls.ID,
+            cls.COMPANY,
+            cls.STATUS,
+            cls.SOURCE,
+            cls.DATE_FOUND,
+            cls.JOB_TITLE,
+            cls.URL,
+            cls.NOTES,
+            cls.DUPLICATE_OF_ID,
+            cls.SKIP_REASON,
+        )

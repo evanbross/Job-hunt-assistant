@@ -2715,7 +2715,10 @@ export default function JobQueue({
               onQueueRescanEmail={handleRescanEmail}
               onQueueUpdate={(jobId, updatedJob, originalJob) => {
                 captureScrollAnchor(jobId);
-                if (updatedJob.fit_score !== originalJob.fit_score || updatedJob.fit_reasoning !== originalJob.fit_reasoning) {
+                // ai: claude-sonnet-5 | 2026-10-17 — see the identical comment on the
+                // single-list onUpdate below: originalJob.fit_reasoning is no longer
+                // eagerly loaded (GET /jobs omits it), so fit_score alone decides.
+                if (updatedJob.fit_score !== originalJob.fit_score) {
                   setJobReEvaluatePopup({
                     company: updatedJob.company || originalJob.company || "",
                     fitReasoning: updatedJob.fit_reasoning,
@@ -2757,7 +2760,11 @@ export default function JobQueue({
             onRescanEmail: handleRescanEmail,
             onUpdate: (jobId, updatedJob, originalJob) => {
               captureScrollAnchor(jobId);
-              if (updatedJob.fit_score !== originalJob.fit_score || updatedJob.fit_reasoning !== originalJob.fit_reasoning) {
+              // ai: claude-sonnet-5 | 2026-10-17 — see the identical comment on the
+              // single-list onUpdate below: originalJob.fit_reasoning is no longer
+              // eagerly loaded (GET /jobs and GET /jobs/triage both omit it), so
+              // fit_score alone decides.
+              if (updatedJob.fit_score !== originalJob.fit_score) {
                 setJobReEvaluatePopup({
                   company: updatedJob.company || originalJob.company || "",
                   fitReasoning: updatedJob.fit_reasoning,
@@ -2801,7 +2808,13 @@ export default function JobQueue({
               companyAliasMap={companyAliasMap}
               onUpdate={(jobId, updatedJob) => {
                 captureScrollAnchor(jobId);
-                if (updatedJob.fit_score !== job.fit_score || updatedJob.fit_reasoning !== job.fit_reasoning) {
+                // ai: claude-sonnet-5 | 2026-10-17 — job.fit_reasoning is no longer
+                // eagerly loaded here (GET /jobs omits it; see useLazyJobDetail), so
+                // this can no longer diff against the real previous text -- comparing
+                // against undefined would make this fire on every single update.
+                // fit_score alone is a reliable proxy: a re-score that changes the
+                // reasoning text virtually always moves the score too.
+                if (updatedJob.fit_score !== job.fit_score) {
                   setJobReEvaluatePopup({
                     company: updatedJob.company || job.company || "",
                     fitReasoning: updatedJob.fit_reasoning,

@@ -52,6 +52,9 @@ class IJobRepository(Protocol):
     def get_by_statuses(
         self, user_id: int, statuses: list[str], exclude_snoozed: bool = False
     ) -> list[dict[str, Any]]: ...
+    def get_by_statuses_for_display(
+        self, user_id: int, statuses: list[str], exclude_snoozed: bool = False
+    ) -> list[dict[str, Any]]: ...
     def get_page_by_statuses(
         self, user_id: int, statuses: list[str], limit: int, offset: int, search: str = ""
     ) -> list[dict[str, Any]]: ...

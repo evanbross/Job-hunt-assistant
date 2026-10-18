@@ -48,6 +48,7 @@ import LinkedInInsightBadge from "./common/LinkedInInsightBadge.tsx";
 import UndoEditNotice from "./common/UndoEditNotice.tsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.ts";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.ts";
+import { useLazyJobDetail } from "../hooks/useLazyJobDetail.ts";
 import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.ts";
 import { parseImportWarnings, importWarningTooltip, hasCompanyHistoryAvailable } from "../utils/jobQueueUtils.ts";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts"; // ai: claude-fable-5 | 2026-07-15
@@ -116,6 +117,8 @@ function JobCard({
   companyAliasMap,
   defaultSnoozeDays,
 }: JobCardProps) {
+  // ai: claude-sonnet-5 | 2026-10-17
+  const { detail: lazyDetail, ensureLoaded: ensureLazyDetailLoaded } = useLazyJobDetail(job.id);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [descriptionEditOpen, setDescriptionEditOpen] = useState(false);
@@ -181,9 +184,15 @@ function JobCard({
 
   const score = job.fit_score;
   const sourceSummary = sourceSummaryForJob(job);
-  const reasoningText = reasoningWithoutPenaltySummary(job.fit_reasoning);
+  // ai: claude-sonnet-5 | 2026-10-17 — GET /jobs omits fit_reasoning/
+  // job_description (see useLazyJobDetail); fall back to the lazily-fetched
+  // detail once it's loaded, or to the job prop directly for a caller (e.g.
+  // ApplicationSheetPanel's job-detail dialog) that already passed the full row.
+  const effectiveFitReasoning = lazyDetail?.fit_reasoning ?? job.fit_reasoning ?? null;
+  const hasFitReasoning = job.has_fit_reasoning ?? Boolean(job.fit_reasoning);
+  const reasoningText = reasoningWithoutPenaltySummary(effectiveFitReasoning);
   const reasoningBullets = fitReasoningBullets(reasoningText);
-  const penaltiesApplied = penaltiesAppliedForJob(job);
+  const penaltiesApplied = penaltiesAppliedForJob({ fit_reasoning: effectiveFitReasoning });
 
   // Match each penalty to the reasoning bullet that best describes it so the
   // deduction can be shown inline. Words from the penalty's ruleText (>3 chars)
@@ -210,9 +219,29 @@ function JobCard({
 
   const showEmailOrigin = shouldShowEmailOrigin(job);
   const rescanEmailId = emailIdForRescan(job);
-  const jobDescription = jobDescriptionText(job);
+  const hasDescription = job.has_description ?? Boolean(jobDescriptionText(job));
+  // ai: claude-sonnet-5 | 2026-10-17 — SalaryBadge's text-scrape fallback
+  // (salaryRangeForJob) also reads raw_jd_snippet/fit_reasoning directly; feed
+  // it the same lazily-resolved values so it self-corrects once either toggle
+  // has been opened, instead of permanently showing nothing for a job whose
+  // salary was never extracted into the structured salary_min/salary_max
+  // fields and only appears as text in the body.
+  const effectiveJobForSalary: Job = {
+    ...job,
+    raw_jd_snippet: lazyDetail?.raw_jd_snippet ?? job.raw_jd_snippet ?? null,
+    fit_reasoning: lazyDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
+  };
+  const jobDescription = jobDescriptionText({
+    job_description: lazyDetail?.job_description ?? job.job_description ?? null,
+    raw_jd_snippet: lazyDetail?.raw_jd_snippet ?? job.raw_jd_snippet ?? null,
+  });
   // ai: claude-sonnet-4-6 | 2026-06-16
-  const descriptionUnavailable = isDescriptionUnavailable(jobDescription);
+  // ai: claude-sonnet-5 | 2026-10-17 — the unconditional "No description
+  // loaded" banner below can't wait for a click to fetch the real text, so
+  // prefer the server-computed flag until jobDescription has real content.
+  const descriptionUnavailable = jobDescription
+    ? isDescriptionUnavailable(jobDescription)
+    : (job.description_unavailable ?? true);
 
   const handleApprove = async () => {
     setLoading("approve");
@@ -287,9 +316,17 @@ function JobCard({
     setShowSkipMenu(false);
   };
 
-  const startDescriptionEdit = () => {
+  const startDescriptionEdit = async () => {
+    // ai: claude-sonnet-5 | 2026-10-17 — must have the real current text
+    // before prefilling the draft, or saving would silently blank out an
+    // existing description that just hadn't been fetched yet.
+    const loaded = await ensureLazyDetailLoaded();
+    const currentDescription = jobDescriptionText({
+      job_description: loaded?.job_description ?? job.job_description ?? null,
+      raw_jd_snippet: loaded?.raw_jd_snippet ?? job.raw_jd_snippet ?? null,
+    });
     setDescriptionOpen(true);
-    setDescriptionDraft(jobDescription);
+    setDescriptionDraft(currentDescription);
     setDescriptionError("");
     setDescriptionSaved(false);
     setDescriptionEditOpen(true);
@@ -680,11 +717,14 @@ function JobCard({
           onClick={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.preventDefault()}
         >
-          {jobDescription && !descriptionUnavailable && (
+          {hasDescription && !descriptionUnavailable && (
             <button
               type="button"
               style={contextMenuItemStyle}
-              onClick={() => runContextAction(() => setDescriptionOpen((open) => !open))}
+              onClick={() => runContextAction(() => {
+                ensureLazyDetailLoaded();
+                setDescriptionOpen((open) => !open);
+              })}
             >
               {descriptionOpen ? "Hide Description" : "Job Description"}
             </button>
@@ -981,7 +1021,7 @@ function JobCard({
           {/* ai: claude-sonnet-5 | 2026-07-25 */}
           <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
           <span className="badge badge-accent">{job.source || "?"}</span>
-          <SalaryBadge job={job} />
+          <SalaryBadge job={effectiveJobForSalary} />
           <LinkedInInsightBadge job={job} />
         </div>
       </div>
@@ -1107,12 +1147,15 @@ function JobCard({
       )}
 
       {/* Reasoning (collapsible) */}
-      {job.fit_reasoning && (
+      {hasFitReasoning && (
         <div style={{ marginTop: "10px" }}>
           <button
             className="btn-secondary"
             style={{ fontSize: "12px", padding: "4px 10px" }}
-            onClick={() => setReasoningOpen((o) => !o)}
+            onClick={() => {
+              ensureLazyDetailLoaded();
+              setReasoningOpen((o) => !o);
+            }}
           >
             {reasoningOpen ? "Hide reasoning" : "Show reasoning"}
           </button>

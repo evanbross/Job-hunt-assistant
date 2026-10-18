@@ -34,7 +34,6 @@
 
 // ai: claude-sonnet-5 | 2026-10-14
 import type { Job } from "../types/jobs.ts";
-import { jobDescriptionText } from "./triagePanelUtils.ts";
 
 const REGEX_SPECIAL_CHARS = /[.+^${}()|[\]\\]/g;
 
@@ -45,13 +44,20 @@ const REGEX_SPECIAL_CHARS = /[.+^${}()|[\]\\]/g;
 // since a short numeric id is still a precise, deliberate search.
 const MIN_SEARCH_LENGTH = 3;
 
-export type JobSearchField = "all" | "job_title" | "company" | "job_description" | "job_id";
+// ai: claude-sonnet-5 | 2026-10-17 — "job_description" was removed: this is a
+// client-side filter over whatever's already in memory, and GET /jobs and
+// GET /jobs/triage no longer ship job_description/raw_jd_snippet/
+// fit_reasoning/certainty_reason eagerly (see useLazyJobDetail.ts) -- a
+// per-card toggle fetch doesn't update this shared list, so the option would
+// silently match nothing. "all" below drops those same fields for the same
+// reason, and for consistency across jobs/triageJobs/unreachableJobs (which
+// still does fetch them) search behaves the same regardless of list.
+export type JobSearchField = "all" | "job_title" | "company" | "job_id";
 
 export const JOB_SEARCH_FIELD_OPTIONS: { key: JobSearchField; label: string }[] = [
   { key: "all", label: "All Fields" },
   { key: "job_title", label: "Job Title" },
   { key: "company", label: "Company Name" },
-  { key: "job_description", label: "Job Description" },
   { key: "job_id", label: "Job Id" },
 ];
 
@@ -91,8 +97,6 @@ export function jobMatchesSearch(job: Job, searchText: string, searchField: JobS
         job.status,
         job.capture_label,
         job.sender_email,
-        jobDescriptionText(job),
-        job.fit_reasoning,
         job.duplicate_hint,
         job.date_found,
         job.fit_score == null ? "" : `${job.fit_score}`,
@@ -100,9 +104,6 @@ export function jobMatchesSearch(job: Job, searchText: string, searchField: JobS
       break;
     case "job_title":
       fields = [job.job_title];
-      break;
-    case "job_description":
-      fields = [jobDescriptionText(job)];
       break;
     case "job_id":
       fields = [job.id == null ? "" : `${job.id}`];

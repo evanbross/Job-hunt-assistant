@@ -88,9 +88,64 @@ class DuplicateJobUrlError(Exception):
 class PostgresJobRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = JobColumns.all()
 
+    # ai: claude-sonnet-5 | 2026-10-17 — shared by get_all_by_status and
+    # get_by_statuses_for_display below, the two *display* queries behind the
+    # Job Queue and Triage lists. Both render job_description/raw_jd_snippet
+    # and fit_reasoning only behind a per-card toggle that defaults closed
+    # (JobCard.tsx / TriagePanel.tsx), so neither needs the real text eagerly
+    # -- just enough to know whether the "Job Description" / "Show reasoning"
+    # toggle has anything to show before the user clicks it and the full row
+    # is fetched via GET /jobs/<id>. See JobColumns.display_summary()'s own
+    # comment for the measured cost this replaced.
+    #
+    # description_unavailable mirrors frontend/src/utils/triagePanelUtils.ts's
+    # isDescriptionUnavailable() exactly (verified against every triage/
+    # possible_duplicate row on a real account: 0 mismatches) -- it has to be
+    # computed here in SQL, not deferred to the lazy fetch like has_description/
+    # has_fit_reasoning, because JobCard.tsx's "No description loaded" banner
+    # is NOT behind a toggle; it renders unconditionally on every card, and
+    # pulling the real text into Python just to classify it and throw it away
+    # would reintroduce the exact transfer cost this query was narrowed to
+    # avoid. Keep _TRACKING_DOMAINS in sync with that frontend list by hand --
+    # there's no single source of truth across the Python/TS boundary for a
+    # list this small and this stable.
+    _TRACKING_DOMAINS: tuple[str, ...] = (
+        "sendgrid.net",
+        "track.customer.io",
+        "mandrillapp.com",
+        "click.exacttarget.com",
+        "links.email",
+        "email.mg",
+    )
+
+    @classmethod
+    def _description_unavailable_sql(cls) -> str:
+        text = (
+            f"COALESCE({JobColumns.JOB_DESCRIPTION}, {JobColumns.RAW_JD_SNIPPET}, '')"
+        )
+        tracking_match = " OR ".join(
+            f"{text} ILIKE '%%{domain}%%'" for domain in cls._TRACKING_DOMAINS
+        )
+        return (
+            f"({text} = ''"
+            f" OR {text} ~ '^https?://[^[:space:]]+$'"
+            f" OR (LENGTH(TRIM({text})) < 400 AND ({tracking_match})))"
+        )
+
+    @classmethod
+    def _display_flag_columns_sql(cls) -> str:
+        return (
+            f"(COALESCE({JobColumns.JOB_DESCRIPTION}, '') != ''"
+            f" OR COALESCE({JobColumns.RAW_JD_SNIPPET}, '') != '') AS has_description,"
+            f" (COALESCE({JobColumns.FIT_REASONING}, '') != '') AS has_fit_reasoning,"
+            f" {cls._description_unavailable_sql()} AS description_unavailable"
+        )
+
     def get_all_by_status(self, user_id: int, status: str) -> list[dict[str, Any]]:
+        columns = ", ".join(JobColumns.display_summary())
         cur = self._execute(
-            "SELECT * FROM jobs WHERE user_id = %s AND status = %s"
+            f"SELECT {columns}, {self._display_flag_columns_sql()} FROM jobs"
+            " WHERE user_id = %s AND status = %s"
             " AND (snoozed_until IS NULL OR snoozed_until::date <= (NOW() AT TIME ZONE 'UTC')::date)"
             " ORDER BY fit_score DESC NULLS LAST",
             (user_id, status),
@@ -105,6 +160,13 @@ class PostgresJobRepository(_BaseRepo):
         # scan) must still see snoozed jobs so they don't re-create a
         # duplicate of one the user is just hiding temporarily. Only the
         # triage panel's own display query opts in.
+        # ai: claude-sonnet-5 | 2026-10-17 — this stays SELECT *: besides the
+        # triage display route, it's also called by duplicate-detection /
+        # re-scoring paths (jd_enrichment.rescore_active_queue_jobs,
+        # routes/fit.py's re-evaluate, routes/scan.py's board scan) that need
+        # the real job_description/raw_jd_snippet text to score against. The
+        # triage list itself now goes through get_by_statuses_for_display
+        # below instead, which is the one narrowed for display.
         placeholders = ", ".join(["%s"] * len(statuses))
         snooze_clause = (
             " AND (snoozed_until IS NULL OR snoozed_until::date <= (NOW() AT TIME ZONE 'UTC')::date)"
@@ -113,6 +175,29 @@ class PostgresJobRepository(_BaseRepo):
         )
         cur = self._execute(
             f"SELECT * FROM jobs WHERE user_id = %s AND status IN ({placeholders}){snooze_clause}"
+            " ORDER BY date_found DESC",
+            [user_id, *statuses],
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    # ai: claude-sonnet-5 | 2026-10-17
+    def get_by_statuses_for_display(
+        self, user_id: int, statuses: list[str], exclude_snoozed: bool = False
+    ) -> list[dict[str, Any]]:
+        """Same filter/order as get_by_statuses, narrowed to the columns the Triage
+        list actually displays (see _display_flag_columns_sql() above) -- used only by
+        that list's own route. Measured on a real account: triage + possible_duplicate
+        (2129 rows) was an 18.5MB response and a 1.5-2s query under the old SELECT *."""
+        placeholders = ", ".join(["%s"] * len(statuses))
+        snooze_clause = (
+            " AND (snoozed_until IS NULL OR snoozed_until::date <= (NOW() AT TIME ZONE 'UTC')::date)"
+            if exclude_snoozed
+            else ""
+        )
+        columns = ", ".join(JobColumns.display_summary())
+        cur = self._execute(
+            f"SELECT {columns}, {self._display_flag_columns_sql()} FROM jobs"
+            f" WHERE user_id = %s AND status IN ({placeholders}){snooze_clause}"
             " ORDER BY date_found DESC",
             [user_id, *statuses],
         )
@@ -257,14 +342,21 @@ class PostgresJobRepository(_BaseRepo):
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     # ai: claude-fable-5 | 2026-07-14
+    # ai: claude-sonnet-5 | 2026-10-17 — narrowed from SELECT * to
+    # JobColumns.sheet_summary(); see that method's own comment for why this
+    # route never needed the rest. On a real account (832 on_sheet rows) the
+    # old SELECT * took ~800ms, almost entirely the job_description/
+    # raw_jd_snippet/fit_reasoning/certainty_reason text its own response
+    # (routes/applications.py's _make_row) throws away immediately after.
     def get_sheet_entries(self, user_id: int) -> list[dict[str, Any]]:
         """Return only jobs that have been confirmed as applications (on_sheet flag set).
 
         Excludes triage, queue, skipped, and possible-duplicate jobs that share the
         same jobs table but have never been approved onto the application sheet.
         """
+        columns = ", ".join(JobColumns.sheet_summary())
         cur = self._execute(
-            "SELECT * FROM jobs"
+            f"SELECT {columns} FROM jobs"
             " WHERE user_id = %s AND on_sheet = 1"
             " ORDER BY date_found DESC NULLS LAST, id DESC",
             (user_id,),

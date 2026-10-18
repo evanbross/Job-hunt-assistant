@@ -73,6 +73,20 @@ export interface Job {
   salary_max?: number | null;
   unreachable_since?: string | null;
   linkedin_ai_insight?: string | null;
+  // ai: claude-sonnet-5 | 2026-10-17 — present only on GET /jobs and GET
+  // /jobs/triage's responses (JobColumns.display_summary() +
+  // _display_flag_columns_sql() in backend/db/repositories/jobs.py), which omit
+  // job_description/raw_jd_snippet/fit_reasoning/certainty_reason and stand
+  // these flags in instead -- see useLazyJobDetail.ts, which fetches the real
+  // text via GET /jobs/<id> the first time a card's own toggle for it opens.
+  // Absent (undefined) on every other Job-shaped response, where the real
+  // text is just present directly. description_unavailable mirrors
+  // isDescriptionUnavailable() in utils/triagePanelUtils.ts -- it's computed
+  // server-side (not deferred like the other two) because JobCard.tsx's "No
+  // description loaded" banner isn't behind a toggle.
+  has_description?: boolean;
+  has_fit_reasoning?: boolean;
+  description_unavailable?: boolean;
 }
 
 /** Map of normalized-company-key -> count of jobs on record, from GET /api/jobs/company-counts. */
