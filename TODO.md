@@ -164,11 +164,15 @@ Neon-backed install currently needs.
         from the earlier config-migration session) was deliberately left
         hand-parsed rather than folded into the Pydantic model — verified
         via `tests/test_ssrf_protection.py`, unchanged and still passing.
-- [ ] Still open (carried over, not re-checked in the 2026-09-28 pass):
-      - No frontend automated tests (no Vitest/RTL; `LoginPage.jsx` etc.
-        verified only via production build + manual smoke test) — growing
-        risk given `browser-extension/content.js`'s site-specific parsers
-        (RobertHalf, Oracle Fusion, etc.) also have zero coverage.
+- [ ] Still open (carried over, not re-checked since the 2026-09-28 pass):
+      - ~~No frontend automated tests~~ — partially addressed 2026-10-18:
+        vitest + RTL added as real test infra
+        ([[project_frontend_test_infra]]), with coverage for
+        `useLazyJobDetail`/`JobCard`/`TriagePanel`'s lazy-detail fetch. Most
+        of the frontend (`LoginPage.jsx` and everything else) still has zero
+        test coverage — only verified via production build + manual smoke
+        test. `browser-extension/content.js`'s site-specific parsers
+        (RobertHalf, Oracle Fusion, etc.) still have no test harness at all.
       - Shallow generated Swagger docs.
       - No test coverage for `GET /api/jobs/company-counts` /
         `get_company_counts()`.
