@@ -49,6 +49,7 @@ import { useLazyJobDetail } from "../hooks/useLazyJobDetail.ts";
 import { isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.ts";
 import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.ts";
 import UndoEditNotice from "./common/UndoEditNotice.tsx";
+import LazyDetailLoadError from "./LazyDetailLoadError.tsx";
 import SalaryBadge from "./common/SalaryBadge.tsx";
 import LinkedInInsightBadge from "./common/LinkedInInsightBadge.tsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.ts";
@@ -225,7 +226,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
   // ai: claude-sonnet-5 | 2026-10-17 — GET /jobs/triage omits fit_reasoning/
   // certainty_reason/job_description (see useLazyJobDetail); fetched lazily
   // the first time "Show reasoning" or the description button is clicked.
-  const { detail: lazyDuplicateDetail, ensureLoaded: ensureLazyDuplicateDetailLoaded } = useLazyJobDetail(job.id);
+  const { detail: lazyDuplicateDetail, error: lazyDuplicateDetailError, ensureLoaded: ensureLazyDuplicateDetailLoaded } = useLazyJobDetail(job.id);
   const hasDescriptionDuplicate = job.has_description ?? Boolean(jobDescriptionText(job));
   // ai: claude-sonnet-5 | 2026-10-17 — SalaryBadge's text-scrape fallback
   // (salaryRangeForJob) reads raw_jd_snippet/fit_reasoning directly; feed it
@@ -787,6 +788,9 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
         </button>
       </div>
 
+      {reasoningOpen && lazyDuplicateDetailError && (
+        <LazyDetailLoadError label="reasoning" onRetry={ensureLazyDuplicateDetailLoaded} />
+      )}
       {reasoningOpen && (
         <div style={reasoningBoxStyle}>
           <ul style={reasoningListStyle}>
@@ -1034,7 +1038,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
   // ai: claude-sonnet-5 | 2026-10-17 — GET /jobs/triage omits fit_reasoning/
   // certainty_reason/job_description (see useLazyJobDetail); fetched lazily
   // the first time "Show reasoning" or "Job Description" is clicked.
-  const { detail: lazyTriageDetail, ensureLoaded: ensureLazyTriageDetailLoaded } = useLazyJobDetail(job.id);
+  const { detail: lazyTriageDetail, error: lazyTriageDetailError, ensureLoaded: ensureLazyTriageDetailLoaded } = useLazyJobDetail(job.id);
   const hasDescriptionTriage = job.has_description ?? Boolean(jobDescriptionText(job));
   // ai: claude-sonnet-5 | 2026-10-17 — SalaryBadge's text-scrape fallback
   // (salaryRangeForJob) reads raw_jd_snippet/fit_reasoning directly; feed it
@@ -1873,6 +1877,9 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         >
           Tailor Resume
         </button>
+        {reasoningOpen && lazyTriageDetailError && (
+          <LazyDetailLoadError label="reasoning" onRetry={ensureLazyTriageDetailLoaded} />
+        )}
         {reasoningOpen && (
           <div style={reasoningBoxStyle}>
             <ul style={reasoningListStyle}>
@@ -1943,6 +1950,9 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
               </span>
             )}
           </div>
+          {descriptionOpen && !jobDescription && lazyTriageDetailError && (
+            <LazyDetailLoadError label="description" onRetry={ensureLazyTriageDetailLoaded} />
+          )}
           {descriptionOpen && !descriptionUnavailable && (
             <div style={descriptionBoxStyle}>
               {jobDescription}

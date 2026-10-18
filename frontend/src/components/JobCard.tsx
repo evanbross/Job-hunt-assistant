@@ -46,6 +46,7 @@ import ContactsBadge from "./common/ContactsBadge.tsx";
 import SalaryBadge from "./common/SalaryBadge.tsx";
 import LinkedInInsightBadge from "./common/LinkedInInsightBadge.tsx";
 import UndoEditNotice from "./common/UndoEditNotice.tsx";
+import LazyDetailLoadError from "./LazyDetailLoadError.tsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.ts";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.ts";
 import { useLazyJobDetail } from "../hooks/useLazyJobDetail.ts";
@@ -118,7 +119,7 @@ function JobCard({
   defaultSnoozeDays,
 }: JobCardProps) {
   // ai: claude-sonnet-5 | 2026-10-17
-  const { detail: lazyDetail, ensureLoaded: ensureLazyDetailLoaded } = useLazyJobDetail(job.id);
+  const { detail: lazyDetail, error: lazyDetailError, ensureLoaded: ensureLazyDetailLoaded } = useLazyJobDetail(job.id);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [descriptionEditOpen, setDescriptionEditOpen] = useState(false);
@@ -1159,7 +1160,10 @@ function JobCard({
           >
             {reasoningOpen ? "Hide reasoning" : "Show reasoning"}
           </button>
-          {reasoningOpen && (
+          {reasoningOpen && effectiveFitReasoning === null && lazyDetailError && (
+            <LazyDetailLoadError label="reasoning" onRetry={ensureLazyDetailLoaded} />
+          )}
+          {reasoningOpen && effectiveFitReasoning !== null && (
             <div style={reasoningBoxStyle}>
               <ul style={reasoningListStyle}>
                 {bulletsWithDeductions.map(({ bullet, deduction }, index) => (
@@ -1305,6 +1309,9 @@ function JobCard({
         </div>
       </div>
 
+      {descriptionOpen && !jobDescription && lazyDetailError && (
+        <LazyDetailLoadError label="description" onRetry={ensureLazyDetailLoaded} />
+      )}
       {descriptionOpen && jobDescription && !descriptionUnavailable && (
         <div style={descriptionBoxStyle}>
           {jobDescription}

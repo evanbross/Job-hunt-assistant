@@ -51,6 +51,11 @@ export type LazyJobDetail = Pick<Job, "job_description" | "raw_jd_snippet" | "fi
 export function useLazyJobDetail(jobId: number) {
   const [detail, setDetail] = useState<LazyJobDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  // ai: claude-sonnet-5 | 2026-10-18 — a failed fetch used to resolve to null
+  // with nothing recorded, so a caller had no way to tell "never fetched" apart
+  // from "fetched and failed" -- the toggle just opened onto an empty region
+  // with no error or retry affordance (2026-10-18 full review, Medium finding).
+  const [error, setError] = useState(false);
   const inFlightRef = useRef<Promise<LazyJobDetail | null> | null>(null);
 
   // ai: claude-sonnet-5 | 2026-10-17 — returns the resolved detail (not just
@@ -62,6 +67,7 @@ export function useLazyJobDetail(jobId: number) {
     if (detail) return Promise.resolve(detail);
     if (inFlightRef.current) return inFlightRef.current;
     setLoading(true);
+    setError(false);
     const request = fetch(`/api/jobs/${jobId}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Load failed: ${r.status}`))))
       .then((job: Job) => {
@@ -77,6 +83,7 @@ export function useLazyJobDetail(jobId: number) {
       .catch(() => {
         // Allow a retry on the next call instead of getting stuck empty.
         inFlightRef.current = null;
+        setError(true);
         return null;
       })
       .finally(() => setLoading(false));
@@ -84,5 +91,5 @@ export function useLazyJobDetail(jobId: number) {
     return request;
   }, [detail, jobId]);
 
-  return { detail, loading, ensureLoaded };
+  return { detail, loading, error, ensureLoaded };
 }
