@@ -101,8 +101,25 @@ Neon-backed install currently needs.
       committed same day, including a Critical bug (`AIProviderClient` never
       set the row-level-security identity, silently breaking every
       AI-backed feature) found while writing regression tests for the
-      review's other fixes. Next full pass should scope from `f7e50a9`
-      forward.
+      review's other fixes.
+- [x] A fresh full review ran 2026-10-18 covering `9650e3e..54f2511` plus the
+      `../infra` sibling project (`docs/code-review-2026-10-18-full.md`). Two
+      High, five Medium, and one Low finding; all but two fixed same day
+      (`ea176cf`, `38616e0`):
+      - Fixed: pooled-connection RLS identity fail-open, extension queue
+        misclassification after an MV3 worker restart, nullable PATCH 500 on
+        `contact_employment_history`, the operator backfill script's
+        hardcoded `user_id=1`, the connection pool's fixed size/no-wait
+        exhaustion (now configurable + bounded wait, ahead of going
+        multi-tenant), the two ruff import-order findings, and the
+        lazy-job-detail frontend's missing test coverage (also added vitest +
+        React Testing Library as the frontend's test infrastructure, since
+        none existed).
+      - Deliberately not fixed: the GitLab self-hosted-runner finding (CI
+        stays disabled — not spending more GitLab credits on it right now)
+        and the extension's own background.js test harness (no
+        Jest/chrome-mock infra exists for the extension; flagged, not built).
+      - Next full pass should scope from `38616e0` forward.
 - [x] **Inconsistent Pydantic validation across route modules.** Done
       2026-09-29: converted every hand-parsed `request.get_json()` route
       across `jobs.py`, `fit.py`, `career_sites.py`, `jd_health_check.py`,
