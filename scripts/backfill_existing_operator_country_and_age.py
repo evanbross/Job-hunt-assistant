@@ -15,7 +15,8 @@
 # =============================================================================
 
 # ai: claude-sonnet-5 | 2026-10-09
-"""One-off maintenance script: backfill this operator's application_profile
+# ai: claude-sonnet-5 | 2026-10-18 — generalized from a hardcoded _USER_ID=1
+"""One-off maintenance script: backfill one operator's application_profile
 row with the country/is_18_or_older values autofill.js used to hardcode.
 
 Root cause (fixed alongside this script, see browser-extension/autofill.js's
@@ -28,16 +29,23 @@ second account's unset field would also get this operator's answers). The
 2026-10-09 follow-up review flagged that: autofill.js now treats an unset
 field as unresolved, same as work_authorized/veteran_status/etc. already do.
 
-This operator's own prior behavior (US phone/residence, adult eligibility
-"Yes") is a one-time, explicit backfill of this one profile row instead of a
-schema- or code-level default, so it never leaks onto a different account.
-Only ever updates a field that's still NULL -- never overwrites a value the
-operator has actually set (including via ApplicationProfilePanel since this
-ran).
+A target operator's own prior behavior (US phone/residence, adult
+eligibility "Yes") is a one-time, explicit backfill of that one profile row
+instead of a schema- or code-level default, so it never leaks onto a
+different account. Only ever updates a field that's still NULL -- never
+overwrites a value the operator has actually set (including via
+ApplicationProfilePanel since this ran).
+
+The account is never assumed: the app supports multiple users, so there is
+no portable "the" operator across a restored, test, or newly seeded database
+(2026-10-18 full review, Medium finding -- this was flagged open since the
+2026-10-09 review as still hardcoding user_id=1).
 
 Usage:
-    python scripts/backfill_existing_operator_country_and_age.py          # apply
-    python scripts/backfill_existing_operator_country_and_age.py --dry-run
+    python scripts/backfill_existing_operator_country_and_age.py --user-id 1
+    python scripts/backfill_existing_operator_country_and_age.py --email evan@eross.com
+    python scripts/backfill_existing_operator_country_and_age.py --user-id 1 --dry-run
+    python scripts/backfill_existing_operator_country_and_age.py --user-id 1 --yes
 """
 
 from __future__ import annotations
@@ -57,20 +65,53 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_USER_ID = 1  # sole account in this single-tenant deployment (evan@eross.com)
+
+def _resolve_user_id(repos: dict, args: argparse.Namespace) -> int:
+    if args.user_id is not None:
+        account = repos["user_accounts"].get(args.user_id)
+        if account is None:
+            raise SystemExit(f"No account with id {args.user_id}.")
+        return account["id"]
+    account = repos["user_accounts"].get_by_email(args.email)
+    if account is None:
+        raise SystemExit(f"No account with email {args.email!r}.")
+    return account["id"]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--user-id", type=int, help="Account id to backfill.")
+    target.add_argument("--email", help="Account email to backfill.")
     parser.add_argument(
         "--dry-run", action="store_true", help="Report planned changes without writing them."
     )
+    parser.add_argument(
+        "--yes", action="store_true", help="Skip the confirmation prompt."
+    )
     args = parser.parse_args()
 
-    with get_repos(_USER_ID) as repos:
-        profile = repos["application_profile"].get(_USER_ID)
+    # user_accounts isn't RLS-protected (it's the identity table itself, looked up
+    # the same way routes/session_auth.py does with no session yet -- see
+    # backend/db/row_level_security.py's _EXCLUDED_FROM_RLS comment for the
+    # equivalent extension_tokens case), so this resolves/validates the target
+    # account before the RLS-protected application_profile lookup below needs a
+    # real identity to see anything at all.
+    with get_repos() as repos:
+        user_id = _resolve_user_id(repos, args)
+        account = repos["user_accounts"].get(user_id)
+
+    logger.info("Selected account: id=%d email=%s", user_id, account["email"])
+    if not args.dry_run and not args.yes:
+        confirmed = input(f"Backfill application_profile for {account['email']!r}? [y/N] ")
+        if confirmed.strip().lower() not in ("y", "yes"):
+            logger.info("Aborted -- no changes made.")
+            return
+
+    with get_repos(user_id) as repos:
+        profile = repos["application_profile"].get(user_id)
         if profile is None:
-            logger.info("No application_profile row for user %d -- nothing to backfill.", _USER_ID)
+            logger.info("No application_profile row for user %d -- nothing to backfill.", user_id)
             return
 
         fields: dict[str, object] = {}
@@ -85,7 +126,7 @@ def main() -> None:
 
         logger.info("Backfilling: %s", fields)
         if not args.dry_run:
-            repos["application_profile"].upsert(_USER_ID, fields)
+            repos["application_profile"].upsert(user_id, fields)
             repos["conn"].commit()
         logger.info("Done%s.", " (dry run — no writes made)" if args.dry_run else "")
 

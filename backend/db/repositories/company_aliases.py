@@ -49,7 +49,6 @@ from backend.scoring.company_matching import normalize_company_name
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
-
 # ai: claude-sonnet-5 | 2026-10-12
 # ai: claude-sonnet-5 | 2026-10-16 -- extracted from resolve_company_alias
 # below so PostgresJobRepository.get_by_company (backend/db/repositories/

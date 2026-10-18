@@ -542,19 +542,31 @@ async function triggerContextMenuCapture(tabId) {
 
 // ─── Message handler ───────────────────────────────────────────────────────
 
+// ai: claude-sonnet-5 | 2026-10-18
+// isQueueCapture must come from the durable chrome.storage.session record
+// (_getPendingCapture), not from _pendingCaptureTabs -- that in-memory Set is
+// wiped by the same service-worker restart the durable record exists to
+// survive (see _setPendingCapture's comment above), so after a restart this
+// listener was still reading the empty Set and silently treating every
+// queued capture as a plain manual one: no queue_url/purpose/job_id/
+// capture_source_id attached, and the queue tab left open forever instead of
+// closed. _pendingCaptureTabs is now only a same-worker-lifetime fast path
+// for clearing the capture-timeout alarm; the durable record is what decides
+// isQueueCapture. 2026-10-18 full review, High finding #2.
 chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.action !== 'payloadReady') return;
   const tabId = sender.tab?.id;
-  const isQueueCapture = tabId !== undefined && _pendingCaptureTabs.has(tabId);
-  if (isQueueCapture) {
-    _pendingCaptureTabs.delete(tabId);
-    // ai: claude-sonnet-5 | 2026-10-15
-    // A real response arrived in time -- cancel the abandon-this-tab timeout
-    // scheduled by triggerQueueCapture so it doesn't fire later and close a
-    // tab that already completed normally.
-    chrome.alarms.clear(`${_CAPTURE_TIMEOUT_ALARM_PREFIX}${tabId}`);
-  }
-  postToApp(message.payload, tabId, isQueueCapture, message.blocked ? message.site : null, message.warning);
+  (async () => {
+    const isQueueCapture = tabId !== undefined && (await _getPendingCapture(tabId)) !== null;
+    if (isQueueCapture) {
+      _pendingCaptureTabs.delete(tabId);
+      // A real response arrived in time -- cancel the abandon-this-tab timeout
+      // scheduled by triggerQueueCapture so it doesn't fire later and close a
+      // tab that already completed normally.
+      chrome.alarms.clear(`${_CAPTURE_TIMEOUT_ALARM_PREFIX}${tabId}`);
+    }
+    postToApp(message.payload, tabId, isQueueCapture, message.blocked ? message.site : null, message.warning);
+  })();
 });
 
 async function postToApp(payload, tabId, isQueueCapture = false, blockedSite = null, warning = null) {

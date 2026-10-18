@@ -42,6 +42,7 @@ from urllib.parse import urlparse
 import psycopg2
 from flask import has_request_context, jsonify, session
 from flask.typing import ResponseReturnValue
+from psycopg2 import pool as psycopg2_pool
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 import config
@@ -84,6 +85,16 @@ USER_COMMITTED_JOB_STATUSES: frozenset[str] = frozenset(
 )
 
 
+# ai: claude-sonnet-5 | 2026-10-18
+class DatabaseUnavailableError(RuntimeError):
+    """The RLS identity for this connection could not be established, even
+    after one reconnect-and-retry. Raised instead of yielding repos, because a
+    pooled connection (backend/db/connection.py) whose identity setup failed
+    must never be handed to a caller -- there is no way to tell, from the
+    caller's side, whether it is still carrying a previous request's tenant
+    identity."""
+
+
 @contextmanager
 def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
     """Open a DB connection and yield repos; always closes the connection on exit.
@@ -103,8 +114,23 @@ def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
     `repos["conn"].rollback()` elsewhere in this connection's lifetime (e.g. an
     IntegrityError retry) can't silently undo it -- only a still-uncommitted SET is
     rolled back with the transaction that made it.
+
+    Raises DatabaseUnavailableError instead of yielding if the identity cannot be
+    established even after a reconnect-and-retry (see backend/db/connection.py's
+    discard(), called here on that path): with connection pooling, a connection
+    returned to the pool in this state could otherwise be handed to a later,
+    different caller still carrying this request's (or an even earlier request's)
+    tenant identity -- fail-open, not fail-closed. 2026-10-18 full code review.
+
+    Also raises DatabaseUnavailableError (instead of a raw psycopg2.pool.PoolError)
+    if every pooled connection is checked out past the configured acquisition wait
+    (config.DB_POOL_ACQUIRE_TIMEOUT_SECONDS) -- a traffic burst against a healthy
+    database should look the same to a caller as any other transient unavailability.
     """
-    repos = open_repositories(config.DATABASE_URL)
+    try:
+        repos = open_repositories(config.DATABASE_URL)
+    except psycopg2_pool.PoolError as exc:
+        raise DatabaseUnavailableError("No database connection available") from exc
     conn = repos["conn"]
     effective_user_id = user_id
     if effective_user_id is None and has_request_context():
@@ -117,20 +143,23 @@ def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
         # A pooled connection (see backend/db/connection.py) can go stale while
         # idle between requests -- e.g. Neon suspends its compute after a few
         # minutes with no activity and drops every connection sitting in the
-        # pool. Reconnect and retry once before falling back to the
-        # log-and-continue behavior below, so the common case (first request
-        # after the user has been away) doesn't silently lose its RLS identity
-        # on an otherwise-healthy connection.
+        # pool. Reconnect and retry once before giving up, so the common case
+        # (first request after the user has been away) doesn't fail just
+        # because the connection it happened to check out was stale.
         conn.reconnect()
         try:
             set_current_user(conn.cursor(), effective_user_id)
             conn.commit()
         except psycopg2.Error as exc:
-            logger.warning("Could not set the row-level-security identity: %s", exc)
-            conn.rollback()
+            conn.discard()
+            raise DatabaseUnavailableError(
+                "Could not establish the database session identity"
+            ) from exc
     except psycopg2.Error as exc:
-        logger.warning("Could not set the row-level-security identity: %s", exc)
-        conn.rollback()
+        conn.discard()
+        raise DatabaseUnavailableError(
+            "Could not establish the database session identity"
+        ) from exc
     try:
         yield repos
     finally:

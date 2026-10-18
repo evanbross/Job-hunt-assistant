@@ -147,6 +147,17 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "") or (
     if POSTGRES_HOST and POSTGRES_DB and _pg_user
     else ""
 )
+
+# ai: claude-sonnet-5 | 2026-10-18
+# Pool sizing is explicit runtime configuration (backend/db/connection.py)
+# rather than a hardcoded constant: what's right for a single-operator
+# deployment isn't right for a multi-tenant one serving many concurrent
+# customers, and the right number also depends on how many web + Celery
+# worker processes share this one Postgres instance's own max_connections.
+# 2026-10-18 full review, Medium finding.
+DB_POOL_MIN_CONN: int = int(os.getenv("DB_POOL_MIN_CONN", "1"))
+DB_POOL_MAX_CONN: int = int(os.getenv("DB_POOL_MAX_CONN", "20"))
+DB_POOL_ACQUIRE_TIMEOUT_SECONDS: float = float(os.getenv("DB_POOL_ACQUIRE_TIMEOUT_SECONDS", "10"))
 # ai: claude-sonnet-5 | 2026-08-30 — retired as the storage for mutable
 # runtime settings (see load_runtime_config's old docstring in git history);
 # every value that used to live here now lives in system_settings/

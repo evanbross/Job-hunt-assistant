@@ -38,12 +38,17 @@ connection wrapper shared by every repository, plus get_connection()."""
 from __future__ import annotations
 
 import threading
+import time
 from datetime import date, datetime
 from typing import Any
 
 import psycopg2
 import psycopg2.extras
 from psycopg2 import pool as psycopg2_pool
+
+import config
+
+from .row_level_security import set_current_user
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
@@ -76,14 +81,26 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 # every getconn() call -- regardless of thread -- gets a genuinely distinct
 # connection, up to maxconn; we add our own lock since SimpleConnectionPool
 # does no internal locking.
-_POOL_LOCK = threading.Lock()
+# ai: claude-sonnet-5 | 2026-10-18
+# Pool size and acquisition wait are now runtime configuration (config.py's
+# DB_POOL_* settings) instead of a fixed constant -- a cloud deployment
+# serving many concurrent tenants needs a pool sized (and tuned) for its own
+# traffic and its own Postgres instance's max_connections, not whatever was
+# right for a single-operator deployment. A Condition (not a plain Lock) is
+# used so a caller arriving when the pool is fully checked out blocks and
+# retries for up to DB_POOL_ACQUIRE_TIMEOUT_SECONDS instead of failing
+# immediately -- psycopg2.pool.SimpleConnectionPool.getconn() itself has no
+# notion of waiting, it just raises PoolError the instant every connection is
+# in use. 2026-10-18 full review, Medium finding.
+_POOL_COND = threading.Condition()
 _POOLS: dict[str, psycopg2_pool.SimpleConnectionPool] = {}
-_POOL_MIN_CONN = 1
-_POOL_MAX_CONN = 10
+_POOL_MIN_CONN = config.DB_POOL_MIN_CONN
+_POOL_MAX_CONN = config.DB_POOL_MAX_CONN
+_POOL_ACQUIRE_TIMEOUT_SECONDS = config.DB_POOL_ACQUIRE_TIMEOUT_SECONDS
 
 
 def _get_pool(dsn: str) -> psycopg2_pool.SimpleConnectionPool:
-    with _POOL_LOCK:
+    with _POOL_COND:
         existing = _POOLS.get(dsn)
         if existing is not None:
             return existing
@@ -102,6 +119,30 @@ def _get_pool(dsn: str) -> psycopg2_pool.SimpleConnectionPool:
         return new_pool
 
 
+def _checkout(pool: psycopg2_pool.SimpleConnectionPool) -> Any:
+    """getconn() with a bounded wait instead of psycopg2's immediate PoolError
+    the moment every connection is checked out -- a caller arriving during a
+    brief burst gets to wait its turn (up to _POOL_ACQUIRE_TIMEOUT_SECONDS)
+    for whichever request finishes and calls _checkin() first, rather than
+    failing outright while the database itself is perfectly healthy."""
+    deadline = time.monotonic() + _POOL_ACQUIRE_TIMEOUT_SECONDS
+    with _POOL_COND:
+        while True:
+            try:
+                return pool.getconn()
+            except psycopg2_pool.PoolError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                _POOL_COND.wait(timeout=remaining)
+
+
+def _checkin(pool: psycopg2_pool.SimpleConnectionPool, conn: Any, close: bool = False) -> None:
+    with _POOL_COND:
+        pool.putconn(conn, close=close)
+        _POOL_COND.notify_all()  # wake any _checkout() waiting for capacity
+
+
 class _ReconnectingPgConn:
     """
     Wraps a pooled psycopg2 connection with transparent reconnect-on-drop.
@@ -117,8 +158,7 @@ class _ReconnectingPgConn:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._pool = _get_pool(dsn)
-        with _POOL_LOCK:
-            self._conn = self._pool.getconn()
+        self._conn = _checkout(self._pool)
         self.autocommit = False
 
     def cursor(self) -> Any:
@@ -134,33 +174,54 @@ class _ReconnectingPgConn:
         """Return the connection to the pool instead of closing the socket --
         always rollback first so whichever caller is handed this connection
         next never inherits an uncommitted transaction or stale session state
-        left behind by this one."""
+        left behind by this one.
+
+        Also clears the RLS identity GUC (backend/db/row_level_security.py)
+        before the connection goes back to the pool. This is defense in depth
+        behind get_repos()'s own discard-on-failure: as long as every
+        checkout path re-establishes its own identity before use, this is
+        redundant -- but it means a connection sitting in the pool never
+        carries a previous request's tenant identity as its resting state."""
         try:
             if self._conn.closed:
-                with _POOL_LOCK:
-                    self._pool.putconn(self._conn, close=True)
+                _checkin(self._pool, self._conn, close=True)
                 return
             self._conn.rollback()
-            with _POOL_LOCK:
-                self._pool.putconn(self._conn)
+            set_current_user(self._conn.cursor(), None)
+            self._conn.commit()
+            _checkin(self._pool, self._conn)
         except psycopg2.Error:
             try:
-                with _POOL_LOCK:
-                    self._pool.putconn(self._conn, close=True)
+                _checkin(self._pool, self._conn, close=True)
             except psycopg2.Error:
                 pass
+
+    def discard(self) -> None:
+        """Evict this connection from the pool rather than returning it --
+        used when the RLS identity could not be established (see get_repos()):
+        a connection in an indeterminate identity state must never be reused
+        by a later checkout, even mid-transaction-rollback. Best-effort
+        rollback first so the server-side connection isn't left mid-transaction
+        for whatever eventually closes the socket, but the outcome of that
+        rollback is irrelevant -- this connection is leaving the pool either way."""
+        try:
+            self._conn.rollback()
+        except psycopg2.Error:
+            pass
+        try:
+            _checkin(self._pool, self._conn, close=True)
+        except psycopg2.Error:
+            pass
 
     def reconnect(self) -> None:
         """Discard the (presumably dead) connection and check out a fresh one --
         e.g. after Neon suspends an idle compute and drops every connection that
         was sitting in the pool."""
         try:
-            with _POOL_LOCK:
-                self._pool.putconn(self._conn, close=True)
+            _checkin(self._pool, self._conn, close=True)
         except psycopg2.Error:
             pass
-        with _POOL_LOCK:
-            self._conn = self._pool.getconn()
+        self._conn = _checkout(self._pool)
 
 
 # ai: claude-sonnet-5 | 2026-07-25 — SQLite dialect support removed; Postgres only now

@@ -437,6 +437,44 @@ def test_employment_history_update_rejects_unknown_columns(pg_dsn: str) -> None:
         conn.close()
 
 
+# ai: claude-sonnet-5 | 2026-10-18
+def test_employment_history_company_and_title_are_not_null_at_the_db(pg_dsn: str) -> None:
+    """2026-10-18 full review, Medium finding: routes/contacts.py's
+    ContactEmploymentHistoryUpdate now rejects an explicit null for
+    company/title before it ever reaches this repository (see
+    tests/test_contacts_routes.py's rejects_null_company/rejects_null_title).
+    This is the real boundary that validation exists to protect -- proves the
+    column really is NOT NULL (backend/db/schema.py), so a future validator
+    regression would resurface as this IntegrityError, not a silent write."""
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        history_repo = PostgresContactEmploymentHistoryRepository(conn)
+        repo.sync_import(user_id, [_import_row()])
+        contact_id = repo.get_all(user_id)[0]["id"]
+        created = history_repo.add(
+            user_id,
+            contact_id,
+            company="Watchfire",
+            title="Engineer",
+            start_date=None,
+            end_date=None,
+            source="manual",
+            captured_at="2026-10-15T00:00:00+00:00",
+        )
+        assert created is not None
+        conn.commit()  # persist the setup so the rollbacks below only undo the failed UPDATE
+        with pytest.raises(psycopg2.errors.NotNullViolation):
+            history_repo.update(user_id, created["id"], {"company": None})
+        conn.rollback()
+        with pytest.raises(psycopg2.errors.NotNullViolation):
+            history_repo.update(user_id, created["id"], {"title": None})
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 # ai: claude-sonnet-5 | 2026-09-25
 def test_bulk_set_recruiter_updates_only_listed_contacts_owned_by_user(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)

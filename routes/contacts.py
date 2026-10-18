@@ -603,17 +603,26 @@ class ContactEmploymentHistoryUpdate(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
 
-    @field_validator("company")
+    # ai: claude-sonnet-5 | 2026-10-18
+    # company/title are NOT NULL columns (backend/db/schema.py), but this is a
+    # partial-update model built on exclude_unset=True -- a field simply being
+    # typed `str | None` so it can be *omitted* also let a client send an
+    # explicit JSON null, which passed validation (pydantic doesn't run
+    # field_validator on an omitted field's default, only on an explicitly
+    # provided one -- including null) and then hit the NOT NULL constraint as
+    # an unhandled IntegrityError -> 500 instead of a 400. 2026-10-18 full
+    # review, Medium finding.
+    @field_validator("company", "title")
     @classmethod
-    def _company_not_blank(cls, value: str | None) -> str | None:
+    def _required_field_not_null(cls, value: str | None) -> str:
         if value is None:
-            return None
+            raise ValueError("must not be null")
         stripped = value.strip()
         if not stripped:
-            raise ValueError("company must not be empty")
+            raise ValueError("must not be empty")
         return stripped[:_MAX_EMPLOYMENT_FIELD_LENGTH]
 
-    @field_validator("title", "start_date", "end_date")
+    @field_validator("start_date", "end_date")
     @classmethod
     def _strip_optional_text(cls, value: str | None) -> str | None:
         if value is None:

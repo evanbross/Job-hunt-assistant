@@ -33,7 +33,7 @@ import pytest
 import app as app_module
 import config
 from backend.db.row_level_security import set_current_user, tenant_tables
-from backend.utils.utils import get_repos
+from backend.utils.utils import DatabaseUnavailableError, get_repos
 from routes.voice import _execute_readonly
 
 # ai: claude-sonnet-5 | 2026-09-27
@@ -204,6 +204,59 @@ def test_get_repos_inside_a_request_uses_the_session_user(pg_dsn: str) -> None:
             rows = {r["dedup_key"] for r in cur.fetchall()}
 
     assert rows == {"a-job"}
+
+
+def test_a_failed_identity_setup_discards_the_connection_instead_of_reusing_it(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-18 full review, High finding #1: with connection pooling
+    (backend/db/connection.py), a pooled connection whose RLS identity setup
+    fails used to still be returned to the pool and handed to repos anyway --
+    fail-open, since a rollback can't undo a previously *committed* session
+    GUC. get_repos() must now discard that connection instead of reusing it.
+
+    The pool is forced down to a single connection so the same underlying
+    connection is guaranteed to be the one handed to both get_repos() calls
+    below -- proving this isn't just "some other idle connection happened to
+    be clean"."""
+    import backend.db.connection as connection_module
+
+    user_a, _ = _two_users(pg_dsn)
+    _seed_job(pg_dsn, user_a, "a-job")
+
+    connection_module._POOLS.pop(pg_dsn, None)  # start this DSN with a fresh pool
+    monkeypatch.setattr(connection_module, "_POOL_MAX_CONN", 1)
+    try:
+        with get_repos(user_a) as repos:
+            cur = repos["conn"].cursor()
+            cur.execute("SELECT dedup_key FROM jobs")
+            assert {r["dedup_key"] for r in cur.fetchall()} == {"a-job"}
+        # connection returned to the (size-1) pool here, identity cleared by close()
+
+        def _boom(cur: object, user_id: int | None) -> None:
+            raise psycopg2.OperationalError("simulated identity-setup failure")
+
+        monkeypatch.setattr("backend.utils.utils.set_current_user", _boom)
+
+        with pytest.raises(DatabaseUnavailableError):
+            with get_repos(999_999):  # never reached -- must not matter which id
+                pytest.fail("get_repos() must not yield when identity setup fails")
+
+        # Proof: the next checkout against this DSN must be a brand-new physical
+        # connection with no RLS identity ever set on it -- not the one from
+        # above, silently still carrying user_a's (or anyone else's) GUC.
+        # get_connection() itself never touches set_current_user, so the patch
+        # above doesn't need undoing first.
+        probe = connection_module.get_connection(pg_dsn)
+        try:
+            cur = probe.cursor()
+            cur.execute("SELECT current_setting('app.current_user_id', true) AS uid")
+            residue = cur.fetchone()["uid"]
+        finally:
+            probe.close()
+        assert residue is None
+    finally:
+        connection_module._POOLS.pop(pg_dsn, None)  # don't leak the size-1 pool to other tests
 
 
 def test_identity_survives_a_rollback_later_in_the_same_connection(pg_dsn: str) -> None:

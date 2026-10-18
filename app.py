@@ -103,6 +103,7 @@ from backend.security.startup import enforce_startup_secrets, normalize_app_env
 from backend.settings_service import get_setting
 from backend.utils.utils import (
     CandidateProfileMissingError,
+    DatabaseUnavailableError,
     get_repos,
     is_trusted_api_write_origin,
 )
@@ -473,6 +474,16 @@ def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
 def _candidate_profile_missing(exc: CandidateProfileMissingError) -> tuple[flask.Response, int]:
     """AI features need the caller's profile; say so plainly instead of a 500."""
     return jsonify({"error": str(exc), "code": "candidate_profile_missing"}), 409
+
+
+# ai: claude-sonnet-5 | 2026-10-18
+@app.errorhandler(DatabaseUnavailableError)
+def _database_unavailable(exc: DatabaseUnavailableError) -> tuple[flask.Response, int]:
+    """get_repos() raises this instead of yielding when a pooled connection's RLS
+    identity can't be established -- never leak the underlying exception detail,
+    just report the service as temporarily unavailable."""
+    logger.warning("Database session identity unavailable: %s", exc)
+    return jsonify({"error": "Database temporarily unavailable", "code": "database_unavailable"}), 503
 
 
 # ─── Blueprint registration ───────────────────────────────────────────────────

@@ -618,6 +618,50 @@ def test_update_contact_employment_history_rejects_blank_company(
     assert history.updates == []
 
 
+# ai: claude-sonnet-5 | 2026-10-18
+# 2026-10-18 full review, Medium finding: company/title are NOT NULL columns
+# (backend/db/schema.py), but the old validator let an explicit JSON null
+# through unchanged, so this reached the repository (and, with a real
+# connection, an unhandled IntegrityError -> 500) instead of being rejected
+# as a 400 here. tests/test_contacts_repository.py separately proves the
+# column really is NOT NULL, so this stays a true regression guard rather
+# than only asserting against the validator's own behavior.
+def test_update_contact_employment_history_rejects_null_company(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = FakeContactEmploymentHistoryRepo(entry_ids={7})
+    client = _contacts_client(monkeypatch, employment_history=history)
+
+    response = client.patch("/api/contact-employment-history/7", json={"company": None})
+    assert response.status_code == 400
+    assert history.updates == []
+
+
+def test_update_contact_employment_history_rejects_null_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = FakeContactEmploymentHistoryRepo(entry_ids={7})
+    client = _contacts_client(monkeypatch, employment_history=history)
+
+    response = client.patch("/api/contact-employment-history/7", json={"title": None})
+    assert response.status_code == 400
+    assert history.updates == []
+
+
+def test_update_contact_employment_history_still_allows_null_dates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """start_date/end_date are nullable columns -- explicit null must still work."""
+    history = FakeContactEmploymentHistoryRepo(entry_ids={7})
+    client = _contacts_client(monkeypatch, employment_history=history)
+
+    response = client.patch(
+        "/api/contact-employment-history/7", json={"end_date": None}
+    )
+    assert response.status_code == 200
+    assert history.updates == [(7, {"end_date": None})]
+
+
 def test_delete_contact_employment_history(monkeypatch: pytest.MonkeyPatch) -> None:
     history = FakeContactEmploymentHistoryRepo(entry_ids={7})
     client = _contacts_client(monkeypatch, employment_history=history)

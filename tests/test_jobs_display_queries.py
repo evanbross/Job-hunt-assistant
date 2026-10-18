@@ -46,7 +46,11 @@ calls) is untouched."""
 
 from __future__ import annotations
 
-from backend.db import PostgresJobRepository, PostgresUserAccountRepository, get_connection
+from backend.db import (
+    PostgresJobRepository,
+    PostgresUserAccountRepository,
+    get_connection,
+)
 from backend.db.row_level_security import set_current_user
 
 _HEAVY_COLUMNS = {"job_description", "raw_jd_snippet", "fit_reasoning", "certainty_reason"}
