@@ -194,9 +194,27 @@
       }
     }
 
-    // ai: claude-sonnet-4-6 | 2026-06-20
+    // ai: claude-sonnet-5 | 2026-10-18
+    // Jobanni is a split view like LinkedIn/Indeed/Insight Global/Oracle
+    // above -- a result list on the left (10 jobs per RSC page, paginated
+    // via a `from=` query param confirmed live by clicking "Next") and the
+    // currently-selected job's full detail on the right, auto-opened for the
+    // first card on page load. Unlike those DOM-driven split views, the list
+    // itself is fetched from the RSC API already (see buildJobanniListPayload),
+    // so "list" mode pages through `from` via fetch instead of clicking
+    // Next -- same outcome, no DOM pagination needed. See JOBANNI_LIST_CAP
+    // for why "list" mode doesn't walk every page for a broad query.
     if (host.includes('jobanni.com') && /^\/search/.test(path)) {
-      return { site: 'Jobanni', type: 'jobanni', jobCount: 0, description: 'Fetches job data via RSC API (~3s)' };
+      const total = jobanniTotalHits();
+      return {
+        site: 'Jobanni',
+        type: 'jobanniSplit',
+        jobCount: total,
+        description: total
+          ? `${total} jobs found — captures up to ${JOBANNI_LIST_CAP} via RSC API, or just the job shown on the right`
+          : 'Fetches job data via RSC API (~3s)',
+        captureModes: ['list', 'detail'],
+      };
     }
 
     if (host === 'hnhiring.com') {
@@ -2387,15 +2405,28 @@
     return JSON.stringify({ jobs, source: { url: location.href } });
   }
 
+  // ai: claude-sonnet-5 | 2026-10-18
+  // Jobanni aggregates the whole remote job market -- a broad query's total
+  // (seen live: 4584 for "software engineer") is nothing like a single
+  // company's ATS board, where the other "auto-fetches all pages" sites
+  // above (Phenom, Kforce, Insight Global) top out in the low hundreds.
+  // Bounds how many RSC pages buildJobanniListPayload will walk so "All
+  // results" finishes in a reasonable time instead of serially fetching
+  // thousands of rows.
+  const JOBANNI_LIST_CAP = 200;
+
+  function jobanniTotalHits() {
+    const m = document.body.innerText.match(/([\d,]+)\s+jobs?\s+found/i);
+    return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
+  }
+
   // ai: claude-sonnet-4-6 | 2026-06-20
   // Jobanni uses Next.js App Router with RSC.  The search results page streams
   // job data (including companyName) via the RSC navigation endpoint, exactly
   // as the server-side scanner does.  Fetching that endpoint from the content
   // script (same origin → no CORS) gives us accurate company names that the
   // generic DOM-walk cannot reliably extract.
-  async function buildJobanniPayload() {
-    sendProgress('Connecting to Jobanni RSC API…', 5);
-
+  async function jobanniBuildHash() {
     // Extract the Next.js build hash — it appears in _buildManifest.js script URLs.
     let buildHash = null;
     document.querySelectorAll('script[src*="/_next/static/"]').forEach(s => {
@@ -2409,34 +2440,16 @@
       const nextData = await requestMainWorldValue('jobanniNextData');
       buildHash = nextData?.buildId || null;
     }
-    if (!buildHash) {
-      return buildSmartGenericPayload();  // fallback
-    }
+    return buildHash;
+  }
 
-    // Build the RSC endpoint URL (same path+query, plus _rsc=<buildHash>).
-    const parsed = new URL(location.href);
-    const navSearch = parsed.search;         // keep original query params
-    const rscParams = new URLSearchParams(navSearch);
-    rscParams.set('_rsc', buildHash);
-    const rscUrl = `${parsed.origin}${parsed.pathname}?${rscParams}`;
-    const nextUrl = parsed.pathname + navSearch;
-
-    let rscText;
-    try {
-      const res = await fetch(rscUrl, {
-        headers: { 'RSC': '1', 'Next-Url': nextUrl },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      rscText = await res.text();
-    } catch {
-      return buildSmartGenericPayload();  // fallback
-    }
-
-    sendProgress('Parsing Jobanni job data…', 40);
-
+  // Parses one RSC response into {total, jobs}, or null if the stream didn't
+  // have the expected {"total":N,"jobs":[...]} shape (site layout changed,
+  // or this page/offset genuinely has nothing — caller decides which).
+  function jobanniParseRscJobs(rscText) {
     // Locate the {"total":N,"jobs":[...]} object in the RSC stream.
     const jobsStart = rscText.indexOf('{"total":');
-    if (jobsStart === -1) return buildSmartGenericPayload();
+    if (jobsStart === -1) return null;
 
     // Walk braces to find the matching closing brace (handles nested JSON cleanly).
     let depth = 0, inStr = false, esc = false, jobsEnd = -1;
@@ -2449,19 +2462,16 @@
       if (ch === '{') depth++;
       else if (ch === '}' && --depth === 0) { jobsEnd = i + 1; break; }
     }
-    if (jobsEnd === -1) return buildSmartGenericPayload();
+    if (jobsEnd === -1) return null;
 
     let jobsData;
     try {
       jobsData = JSON.parse(rscText.slice(jobsStart, jobsEnd));
     } catch {
-      return buildSmartGenericPayload();
+      return null;
     }
 
     const rawJobs = Array.isArray(jobsData.jobs) ? jobsData.jobs : [];
-    if (!rawJobs.length) return buildSmartGenericPayload();
-
-    sendProgress(`Found ${rawJobs.length} jobs, extracting descriptions…`, 60);
 
     // Resolve "$ref" description pointers to their T-format text blocks.
     // The blocks appear in the RSC stream after the jobs object: {ref}:T{hex_len},{text}
@@ -2500,11 +2510,114 @@
       })
       .filter(Boolean);
 
-    if (!jobs.length) return buildSmartGenericPayload();
+    return { total: typeof jobsData.total === 'number' ? jobsData.total : null, jobs };
+  }
 
-    sendProgress(`Sending ${jobs.length} jobs…`, 80);
+  // ai: claude-sonnet-5 | 2026-10-18
+  // "All results" mode: pages through the RSC endpoint, incrementing the
+  // `from=` query param by however many jobs the previous page returned (the
+  // same param Jobanni's own "Next" link updates -- confirmed live) until the
+  // reported total is reached or JOBANNI_LIST_CAP is hit.
+  async function buildJobanniListPayload() {
+    sendProgress('Connecting to Jobanni RSC API…', 5);
+
+    const buildHash = await jobanniBuildHash();
+    if (!buildHash) return buildSmartGenericPayload();  // fallback
+
+    const parsed = new URL(location.href);
+    const baseParams = new URLSearchParams(parsed.search);
+    baseParams.delete('from');
+
+    const allJobs = [];
+    let total = null;
+    let offset = 0;
+
+    while (allJobs.length < JOBANNI_LIST_CAP) {
+      const params = new URLSearchParams(baseParams);
+      if (offset > 0) params.set('from', String(offset));
+      const navSearch = `?${params}`;
+      const rscParams = new URLSearchParams(params);
+      rscParams.set('_rsc', buildHash);
+      const rscUrl = `${parsed.origin}${parsed.pathname}?${rscParams}`;
+
+      let rscText;
+      try {
+        const res = await fetch(rscUrl, {
+          headers: { 'RSC': '1', 'Next-Url': parsed.pathname + navSearch },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        rscText = await res.text();
+      } catch {
+        break; // stop paging on a fetch error; keep whatever was already captured
+      }
+
+      const page = jobanniParseRscJobs(rscText);
+      if (!page || !page.jobs.length) break;
+      if (total == null) total = page.total;
+
+      allJobs.push(...page.jobs);
+      const expected = Math.min(total || JOBANNI_LIST_CAP, JOBANNI_LIST_CAP);
+      sendProgress(`Fetched ${allJobs.length} of ${expected} jobs…`, Math.min(90, 10 + 80 * allJobs.length / expected));
+
+      offset += page.jobs.length;
+      if (total != null && allJobs.length >= total) break;
+    }
+
+    if (!allJobs.length) return buildSmartGenericPayload();
+
+    const jobs = allJobs.slice(0, JOBANNI_LIST_CAP);
+    sendProgress(`Sending ${jobs.length} jobs…`, 95);
     return JSON.stringify({
       jobs,
+      source: { url: location.href, name: 'Jobanni', platform: 'jobanni' },
+    });
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-18
+  // "This job only" mode: Jobanni's search page auto-opens the first result
+  // in a right-hand <article> detail pane (and re-renders it in place when a
+  // different card is clicked, no navigation) -- same split-view shape as
+  // Insight Global/Oracle above. The article's only two children are a fixed
+  // header block (title/company/location/remote badge) and the description
+  // body; stripping the header out of a clone before reading innerText avoids
+  // duplicating the title/company into listing_text (confirmed live: article
+  // has exactly 2 children, header class "pb-3 flex flex-col gap-1 not-prose").
+  function extractJobanniDetail() {
+    const article = document.querySelector('article');
+    const title = article?.querySelector('h1')?.textContent.trim() || '';
+    const company = article?.querySelector('h3')?.textContent.trim() || '';
+    const badges = article
+      ? [...article.querySelectorAll('.text-muted-foreground')].map(el => el.textContent.trim()).filter(Boolean)
+      : [];
+    const jobLocation = badges[0] || '';
+    const jobType = badges[1] || '';
+
+    let description = '';
+    if (article) {
+      const clone = article.cloneNode(true);
+      clone.querySelector('.pb-3')?.remove();
+      description = clone.innerText.trim();
+    }
+
+    const shareLink = [...document.querySelectorAll('a')]
+      .find(a => a.textContent.trim() === 'Share this page');
+    const url = shareLink?.href || location.href;
+
+    return { title, company, jobLocation, jobType, description, url };
+  }
+
+  function buildJobanniDetailPayload() {
+    const { title, company, jobLocation, jobType, description, url } = extractJobanniDetail();
+    const listing_text = [
+      title,
+      company && `Company: ${company}`,
+      `URL: ${url}`,
+      jobLocation && `Location: ${jobLocation}`,
+      jobType && `Type: ${jobType}`,
+      description && `\n${description}`,
+    ].filter(Boolean).join('\n');
+    return JSON.stringify({
+      jobs: [{ url, job_title: title, company, listing_text, platform: 'Jobanni' }],
       source: { url: location.href, name: 'Jobanni', platform: 'jobanni' },
     });
   }
@@ -3180,7 +3293,14 @@
         break;
       case 'kforceJob':        payload = buildKforceJobPayload(); break;
       case 'kforceSearch':     payload = await buildKforceSearchPayload(options); break;
-      case 'jobanni':          payload = await buildJobanniPayload(); break;
+      case 'jobanniSplit':
+        if (options.captureMode === 'detail') {
+          payload = buildJobanniDetailPayload();
+        } else {
+          payload = await buildJobanniListPayload();
+          warning = listCaptureWarning(payload, jobanniTotalHits());
+        }
+        break;
       case 'jobgetherJob':     payload = await buildJobgetherJobPayload(); break;
       case 'jobgetherMatches': payload = buildJobgetherMatchesPayload(); break;
       case 'oracleHcmJob':     payload = buildOracleHcmJobPayload(); break;
