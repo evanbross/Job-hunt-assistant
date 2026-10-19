@@ -206,12 +206,21 @@
     // for why "list" mode doesn't walk every page for a broad query.
     if (host.includes('jobanni.com') && /^\/search/.test(path)) {
       const total = jobanniTotalHits();
+      // ai: claude-sonnet-5 | 2026-10-18
+      // jobCount drives the popup's "Send N Jobs to App" button -- report
+      // what "All results" will actually fetch (capped by JOBANNI_LIST_CAP),
+      // not the raw site total, or the button promises far more than the
+      // capture delivers on a broad query (seen live: "1431 jobs" shown, but
+      // only 200 would ever be sent).
+      const cappedCount = total ? Math.min(total, JOBANNI_LIST_CAP) : 0;
       return {
         site: 'Jobanni',
         type: 'jobanniSplit',
-        jobCount: total,
+        jobCount: cappedCount,
         description: total
-          ? `${total} jobs found — captures up to ${JOBANNI_LIST_CAP} via RSC API, or just the job shown on the right`
+          ? total > JOBANNI_LIST_CAP
+            ? `${total} jobs found — captures the first ${JOBANNI_LIST_CAP} via RSC API, or just the job shown on the right`
+            : `${total} jobs found — captures all via RSC API, or just the job shown on the right`
           : 'Fetches job data via RSC API (~3s)',
         captureModes: ['list', 'detail'],
       };
