@@ -104,8 +104,8 @@ Neon-backed install currently needs.
       review's other fixes.
 - [x] A fresh full review ran 2026-10-18 covering `9650e3e..54f2511` plus the
       `../infra` sibling project (`docs/code-review-2026-10-18-full.md`). Two
-      High, five Medium, and one Low finding; all but two fixed same day
-      (`ea176cf`, `38616e0`):
+      High, five Medium, and one Low finding; all fixed (`ea176cf`,
+      `38616e0`, plus the extension-harness follow-up below):
       - Fixed: pooled-connection RLS identity fail-open, extension queue
         misclassification after an MV3 worker restart, nullable PATCH 500 on
         `contact_employment_history`, the operator backfill script's
@@ -115,10 +115,18 @@ Neon-backed install currently needs.
         lazy-job-detail frontend's missing test coverage (also added vitest +
         React Testing Library as the frontend's test infrastructure, since
         none existed).
-      - Deliberately not fixed: the GitLab self-hosted-runner finding (CI
-        stays disabled — not spending more GitLab credits on it right now)
-        and the extension's own background.js test harness (no
-        Jest/chrome-mock infra exists for the extension; flagged, not built).
+      - Follow-up (same review, built after the first pass): a real test
+        harness for `browser-extension/background.js` — Node's `vm` module
+        running the extension's classic (non-module) scripts in a mocked
+        `chrome.*` environment, with a fresh vm context per
+        `loadBackgroundScript()` call to simulate an MV3 service-worker
+        restart while `chrome.storage.session` persists across it (see
+        `browser-extension/test/chromeMock.js`). Added the regression test
+        the High finding above was missing — verified it actually fails
+        against the pre-fix `_pendingCaptureTabs.has(tabId)` logic, not just
+        that it passes against the fix.
+      - Deliberately not fixed: the GitLab self-hosted-runner finding — CI
+        stays disabled, not spending more GitLab credits on it right now.
       - Next full pass should scope from `38616e0` forward.
 - [x] **Inconsistent Pydantic validation across route modules.** Done
       2026-09-29: converted every hand-parsed `request.get_json()` route
@@ -166,14 +174,25 @@ Neon-backed install currently needs.
         via `tests/test_ssrf_protection.py`, unchanged and still passing.
 - [ ] Still open (carried over, not re-checked since the 2026-09-28 pass):
       - ~~No frontend automated tests~~ — partially addressed 2026-10-18:
-        vitest + RTL added as real test infra
-        ([[project_frontend_test_infra]]), with coverage for
+        vitest + RTL added as real test infra (see
+        `frontend/src/test/setup.ts`), with coverage for
         `useLazyJobDetail`/`JobCard`/`TriagePanel`'s lazy-detail fetch. Most
         of the frontend (`LoginPage.jsx` and everything else) still has zero
         test coverage — only verified via production build + manual smoke
-        test. `browser-extension/content.js`'s site-specific parsers
-        (RobertHalf, Oracle Fusion, etc.) still have no test harness at all.
-      - Shallow generated Swagger docs.
+        test.
+      - ~~No extension test harness~~ — addressed 2026-10-18: vitest +
+        a Node `vm`-based chrome mock (`browser-extension/test/chromeMock.js`)
+        now covers `background.js`'s queued-capture/payloadReady handling.
+        `content.js`'s site-specific parsers (RobertHalf, Oracle Fusion,
+        etc.) are not yet covered — the harness supports it (swap the `node`
+        vitest environment for `jsdom` to give `content.js` a `document`),
+        just not done yet.
+      - ~~Shallow generated Swagger docs~~ — fixed 2026-10-18: request-body
+        schemas are now read from each route's real Pydantic model (`$ref`
+        into a generated `definitions` section) instead of a generic
+        optional object, and a route's docstring (where present) becomes its
+        `description`. See `app.py`'s `_extract_request_model` and
+        `tests/test_swagger_docs.py`.
       - No test coverage for `GET /api/jobs/company-counts` /
         `get_company_counts()`.
 

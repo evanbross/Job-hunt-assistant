@@ -45,6 +45,7 @@ that background scan calls never trigger browser redirects.
 from __future__ import annotations
 
 import atexit
+import inspect
 import json
 import logging
 import os
@@ -55,6 +56,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -62,6 +64,7 @@ import flask
 import flask.json as flask_json
 import psycopg2
 from markupsafe import Markup
+from pydantic import BaseModel
 
 if not hasattr(flask, "Markup"):
     flask.Markup = Markup
@@ -396,11 +399,60 @@ def _swagger_tag_for_rule(rule_path: str) -> str:
     return segments[1].replace("-", " ").title()
 
 
+# ai: claude-sonnet-5 | 2026-10-18
+# Matches this codebase's consistent `<Model>.model_validate(request.get_json(...))`
+# pattern (see TODO.md's 2026-09-29 Pydantic validation entry) so the generated docs
+# can show the real request schema instead of a generic placeholder object.
+_MODEL_VALIDATE_RE = re.compile(r"\b([A-Z]\w*)\.model_validate\(")
+
+
+def _extract_request_model(view_func: Callable[..., object]) -> type[BaseModel] | None:
+    """Best-effort: the Pydantic model a route handler validates its request body
+    against, found by scanning the handler's own source for a `.model_validate(`
+    call and resolving that name through the handler's own module globals --
+    the same globals Python itself would use to resolve that name at call time,
+    so this never guesses at a mapping that isn't already true in the code.
+    Returns None for a route with no such call, or if source isn't available
+    (e.g. a dynamically built function) -- the caller falls back to the
+    previous generic placeholder schema."""
+    try:
+        source = inspect.getsource(view_func)
+    except (OSError, TypeError):
+        return None
+    match = _MODEL_VALIDATE_RE.search(source)
+    if not match:
+        return None
+    candidate = view_func.__globals__.get(match.group(1))
+    if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+        return candidate
+    return None
+
+
+def _swagger_body_schema(
+    view_func: Callable[..., object] | None, definitions: dict[str, object]
+) -> dict[str, object]:
+    model = _extract_request_model(view_func) if view_func is not None else None
+    if model is None:
+        return {"type": "object"}
+    # model_json_schema() can return shared sub-schemas under "$defs" for a
+    # model with nested Pydantic fields -- fold those into the same top-level
+    # `definitions` dict (Swagger 2.0's name for it) that ref_template points at,
+    # rather than leaving them stranded under the top model's own schema.
+    schema = model.model_json_schema(ref_template="#/definitions/{model}")
+    nested_definitions = schema.pop("$defs", None)
+    if nested_definitions:
+        definitions.update(nested_definitions)
+    definitions[model.__name__] = schema
+    return {"$ref": f"#/definitions/{model.__name__}"}
+
+
 def _swagger_operation_for_rule(
     endpoint: str,
     method: str,
     rule_path: str,
     path_parameters: list[dict[str, object]],
+    view_func: Callable[..., object] | None,
+    definitions: dict[str, object],
 ) -> dict[str, object]:
     parameters = list(path_parameters)
     if method in _SWAGGER_BODY_METHODS:
@@ -409,13 +461,18 @@ def _swagger_operation_for_rule(
                 "name": "body",
                 "in": "body",
                 "required": False,
-                "schema": {"type": "object"},
+                "schema": _swagger_body_schema(view_func, definitions),
             }
         )
 
+    # ai: claude-sonnet-5 | 2026-10-18 — a real per-route description (when the
+    # handler has a docstring) instead of just the title-cased endpoint name;
+    # still falls back to that for the ~70% of routes with no docstring.
+    docstring = inspect.getdoc(view_func) if view_func is not None else None
+    summary = docstring.splitlines()[0].strip() if docstring else endpoint.replace("_", " ").title()
     operation: dict[str, object] = {
         "tags": [_swagger_tag_for_rule(rule_path)],
-        "summary": endpoint.replace("_", " ").title(),
+        "summary": summary,
         "operationId": f"{endpoint}_{method.lower()}",
         "responses": {
             "200": {"description": "Successful response"},
@@ -423,6 +480,8 @@ def _swagger_operation_for_rule(
             "500": {"description": "Server error"},
         },
     }
+    if docstring:
+        operation["description"] = docstring
     if parameters:
         operation["parameters"] = parameters
     return operation
@@ -430,12 +489,14 @@ def _swagger_operation_for_rule(
 
 def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
     paths: dict[str, dict[str, object]] = {}
+    definitions: dict[str, object] = {}
     for url_rule in sorted(
         flask_app.url_map.iter_rules(), key=lambda route_rule: route_rule.rule
     ):
         if not url_rule.rule.startswith("/api/"):
             continue
 
+        view_func = flask_app.view_functions.get(url_rule.endpoint)
         swagger_path, path_parameters = _swagger_path_for_rule(url_rule.rule)
         path_item = paths.setdefault(swagger_path, {})
         for method in sorted(url_rule.methods - _SWAGGER_EXCLUDED_METHODS):
@@ -444,20 +505,26 @@ def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
                 method=method,
                 rule_path=url_rule.rule,
                 path_parameters=path_parameters,
+                view_func=view_func,
+                definitions=definitions,
             )
 
     return {
         "swagger": "2.0",
         "info": {
             "title": "Job Hunt Assistant API",
-            # ai: claude-sonnet-5 | 2026-07-23
+            # ai: claude-sonnet-5 | 2026-10-18 — request bodies now show the real
+            # Pydantic schema where one could be resolved (see
+            # _extract_request_model); responses are still a generic 200/400/500,
+            # since no route defines a response model this doc generator could
+            # read the same way.
             "description": (
                 "Auto-generated route inventory for the Job Hunt Assistant Flask "
-                "backend. Every request body is shown as a generic optional object and "
-                "every response as a generic 200/400/500 — this spec is NOT a real "
-                "request/response contract. Do not generate API clients from it; read "
-                "the route handler and its Pydantic models for actual field names, "
-                "required-ness, and status codes."
+                "backend. Request-body schemas are read directly from the route's "
+                "own Pydantic model where one is used (most POST/PUT/PATCH routes); "
+                "a route with no such call falls back to a generic optional object. "
+                "Every response is still shown as a generic 200/400/500 — read the "
+                "route handler for actual response shapes and status codes."
             ),
             "version": "0.1.0",
         },
@@ -466,6 +533,7 @@ def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
         "consumes": ["application/json"],
         "produces": ["application/json"],
         "paths": paths,
+        "definitions": definitions,
     }
 
 
