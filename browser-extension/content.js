@@ -2530,8 +2530,21 @@
   async function buildJobanniListPayload() {
     sendProgress('Connecting to Jobanni RSC API…', 5);
 
+    // ai: claude-sonnet-5 | 2026-10-18
+    // buildHash is best-effort, not required: confirmed live that Jobanni's
+    // RSC endpoint returns correctly paginated data across multiple `from=`
+    // offsets even with no `_rsc` value supplied at all -- it appears to be
+    // a client-side cache key the server doesn't actually validate. The
+    // single-page fetch this replaced bailed out to buildSmartGenericPayload()
+    // (a DOM-only scrape of whatever ~10 cards are currently rendered)
+    // whenever the hash lookup failed, which it reliably does on this page:
+    // the `/_next/static/` script-tag selector finds nothing, and the
+    // window.__NEXT_DATA__ fallback is a Pages Router global that Jobanni's
+    // App Router build doesn't set. That silent fallback was undetectable
+    // back when jobCount was always reported as 0, but once "All results"
+    // started promising a specific capped count, the mismatch between the
+    // promised count and the fallback's ~10-job reality became visible.
     const buildHash = await jobanniBuildHash();
-    if (!buildHash) return buildSmartGenericPayload();  // fallback
 
     const parsed = new URL(location.href);
     const baseParams = new URLSearchParams(parsed.search);
@@ -2546,7 +2559,7 @@
       if (offset > 0) params.set('from', String(offset));
       const navSearch = `?${params}`;
       const rscParams = new URLSearchParams(params);
-      rscParams.set('_rsc', buildHash);
+      if (buildHash) rscParams.set('_rsc', buildHash);
       const rscUrl = `${parsed.origin}${parsed.pathname}?${rscParams}`;
 
       let rscText;
