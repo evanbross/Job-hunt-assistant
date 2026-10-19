@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 ZombieTech LLC. All rights reserved.
-# Personal use only — see browser-extension copyright headers for full terms.
+# SPDX-License-Identifier: PolyForm-Strict-1.0.0
+# See LICENSE in the project root for the full terms.
 """
 Generates simple solid-colour PNG icons for the browser extension.
 Run once from the browser-extension directory:

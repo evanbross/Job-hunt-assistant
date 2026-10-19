@@ -1,8 +1,10 @@
 /*!
  * Copyright (c) 2026 ZombieTech LLC. All rights reserved.
  *
- * LICENSE: Personal Use Only
- * This source code is made available for personal, non-commercial use only.
+ * SPDX-License-Identifier: PolyForm-Strict-1.0.0
+ * See LICENSE in the project root for the full terms.
+ *
+ * Licensing inquiries: license@zombietech.biz
  */
 
 // ai: claude-sonnet-4-6 | 2026-07-03
