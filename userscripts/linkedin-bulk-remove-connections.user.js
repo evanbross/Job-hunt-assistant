@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkedIn Bulk Remove Connections
 // @namespace    https://zombietech.biz/tampermonkey
-// @version      2026-06-25
+// @version      2026-10-19
 // @description  Adds a "Remove All Visible" button to the LinkedIn connections page. Filter your connections first, then press the button.
 // @author       Evan Ross
 // @match        https://www.linkedin.com/mynetwork/invite-connect/connections/*
