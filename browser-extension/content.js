@@ -262,6 +262,31 @@
       if (/\/companies\/[^/?#]+\/jobs\/[^/?#]{2,}/.test(path) || /^\/jobs\/[^/?#]{2,}/.test(path)) {
         return { site: 'Welcome to the Jungle', type: 'wttjJob', jobCount: 1, description: 'Single job listing' };
       }
+      // ai: claude-sonnet-5 | 2026-10-20
+      // The dashboard homepage (/, no other path) renders five sections --
+      // Saved, Application Started, Applied, Interviewing, Seen -- each with
+      // its own [data-testid="preview-card"] list under a shared generic
+      // layout. Only "Saved" is jobs the user is still considering; without
+      // this branch the page fell through to the generic page-wide capture,
+      // which counted every card across all five sections (confirmed live:
+      // reported 18 instead of the 4 actually in Saved). Scoping to
+      // [data-testid="shortlist-section"] (the Saved section's own wrapper --
+      // confirmed via its "Saved" <h3 data-testid="section-title">) is what
+      // excludes the other four. React may still be rendering this client-side
+      // when detectPage first runs, so poll the same way buildWttjJobPayload
+      // does for its own <h1>.
+      if (path === '/') {
+        const pollDeadline = Date.now() + 5000;
+        let savedSection = document.querySelector('[data-testid="shortlist-section"]');
+        while (!savedSection && Date.now() < pollDeadline) {
+          await sleep(300);
+          savedSection = document.querySelector('[data-testid="shortlist-section"]');
+        }
+        if (savedSection) {
+          const count = savedSection.querySelectorAll('[data-testid="preview-card"]').length;
+          return { site: 'Welcome to the Jungle', type: 'wttjSaved', jobCount: count, description: `${count} saved jobs` };
+        }
+      }
     }
 
     if (host.includes('mongodb.com') && /\/careers/.test(path)) {
@@ -2908,6 +2933,41 @@
     });
   }
 
+  // ai: claude-sonnet-5 | 2026-10-20
+  // Dashboard homepage's "Saved" section only -- see detectPage's wttjSaved
+  // branch for why this must stay scoped to [data-testid="shortlist-section"]
+  // rather than querying preview-card page-wide. Each card's "View" link
+  // (excluding the sibling "Apply" link, which also matches /dashboard/jobs/)
+  // resolves to /dashboard/jobs/<id> -- an authenticated dashboard route, not
+  // the public /jobs/<company-slug>/<id> URL (confirmed: the same job id
+  // tPnUCSwy appears at both /dashboard/jobs/tPnUCSwy here and
+  // /jobs/batch-end/tPnUCSwy publicly, but the company-slug segment isn't
+  // derivable from the displayed company name). Captured as-is: the existing
+  // import pipeline already falls back to a browser-extension recapture when
+  // a WTTJ URL can't be fetched server-side (see project notes on the WTTJ
+  // ATS resolution gap), which applies here exactly the same as it would for
+  // any other WTTJ URL.
+  function buildWttjSavedPayload() {
+    const section = document.querySelector('[data-testid="shortlist-section"]');
+    const cards = section ? section.querySelectorAll('[data-testid="preview-card"]') : [];
+    const jobs = [];
+    cards.forEach(card => {
+      const company = (card.querySelector('[data-testid="job-company-name"]')?.innerText || '').trim();
+      const title = (card.querySelector('[data-testid="job-title"]')?.innerText || '').trim();
+      const viewLink = card.querySelector('a[href*="/dashboard/jobs/"]:not([data-testid="apply-button-link"])');
+      let url = '';
+      if (viewLink) {
+        try { url = new URL(viewLink.getAttribute('href'), location.href).href; } catch { /* leave blank */ }
+      }
+      if (!url) return;
+      const lines = [title];
+      if (company) lines.push(`Company: ${company}`);
+      lines.push(`URL: ${url}`);
+      jobs.push({ url, job_title: title, company, listing_text: lines.join('\n') });
+    });
+    return JSON.stringify({ jobs, source: { url: location.href } });
+  }
+
   // ─── Oracle Fusion Recruiting Cloud (Candidate Experience) ─────────────────
 
   // ai: claude-sonnet-5 | 2026-08-28
@@ -3293,6 +3353,7 @@
       case 'ashbyJob':         payload = await buildAshbyJobPayload(); break;
       case 'ashbySearch':      payload = await buildAshbySearchPayload(); break;
       case 'wttjJob':          payload = await buildWttjJobPayload(); break;
+      case 'wttjSaved':        payload = buildWttjSavedPayload(); break;
       case 'robertHalfJob':    payload = buildRobertHalfJobPayload(); break;
       case 'jibeJob':          payload = buildJibeJobPayload(); break;
       case 'jibeSearch':       payload = await buildJibeSearchPayload(); break;
