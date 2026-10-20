@@ -3292,7 +3292,7 @@
       case 'discordCareers':   payload = buildDiscordCareersPayload(); break;
       case 'ashbyJob':         payload = await buildAshbyJobPayload(); break;
       case 'ashbySearch':      payload = await buildAshbySearchPayload(); break;
-      case 'wttjJob':          payload = buildWttjJobPayload(); break;
+      case 'wttjJob':          payload = await buildWttjJobPayload(); break;
       case 'robertHalfJob':    payload = buildRobertHalfJobPayload(); break;
       case 'jibeJob':          payload = buildJibeJobPayload(); break;
       case 'jibeSearch':       payload = await buildJibeSearchPayload(); break;
