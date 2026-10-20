@@ -72,3 +72,28 @@ def normalize_stage_status(raw_status: object) -> str:
     status = str(raw_status or "").strip()
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
     return _STAGE_STATUS_ALIASES.get(normalized, normalized)
+
+
+# ai: claude-sonnet-5 | 2026-10-19
+def effective_application_status(job_status: object, stages: list[dict] | None) -> str:
+    """The status a user should see as "where this application currently
+    stands": the most recent application_stages row, falling back to the
+    job's own jobs.status when it has no stages yet.
+
+    *stages* must already be ordered oldest-to-newest (as every repository
+    method that loads them does -- see application_stages.py's ORDER BY date
+    ASC, created_at ASC, id ASC), so the last element is the latest stage.
+
+    This existed only inline in routes/applications.py's _make_row() (the
+    Applications Sheet) until 2026-10-19, when the Company History dialog was
+    found rendering raw jobs.status instead and showing a stale status next
+    to its own (correct) stage-history pills for the same job -- jobs.status
+    is never updated when a stage is added via POST /applications/<id>/stages,
+    so the two read differently the moment a job progresses past its first
+    stage. Every caller that shows a job's "current status" to a user must
+    go through this one function instead of re-deriving it, so a future rule
+    change (e.g. how ghosted/terminal stages should display) only has one
+    place to land.
+    """
+    latest_stage = stages[-1] if stages else None
+    return str((latest_stage or {}).get("status") or job_status or "")

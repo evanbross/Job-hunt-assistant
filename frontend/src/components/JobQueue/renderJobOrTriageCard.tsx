@@ -28,7 +28,7 @@
 // ai: claude-sonnet-5 | 2026-10-07
 import JobCard from "../JobCard.tsx";
 import { TriageCard, DuplicateCard } from "../TriagePanel.tsx";
-import type { ApplicationHistoryRow, CompanyAliasKeyMap, CompanyJobCounts, Job } from "../../types/jobs.ts";
+import type { ApplicationHistoryRow, CompanyJobCounts, Job } from "../../types/jobs.ts";
 import type { ContactsByCompany } from "../../types/contacts.ts";
 import type { QueueHandlers, TriageHandlers } from "../../types/jobQueue.ts";
 
@@ -41,7 +41,6 @@ export default function renderJobOrTriageCard(
   contactsByCompany: ContactsByCompany | undefined,
   defaultSnoozeDays: number,
   companyJobCounts: CompanyJobCounts | null | undefined,
-  companyAliasMap: CompanyAliasKeyMap | undefined,
 ) {
   if (job.status === "pending_review") {
     // queueHandlers is only ever null for callers that never render a
@@ -61,7 +60,6 @@ export default function renderJobOrTriageCard(
         onUpdate={(jobId, updatedJob) => handlers.onUpdate(jobId, updatedJob, job)}
         contactsByCompany={contactsByCompany}
         companyJobCounts={companyJobCounts}
-        companyAliasMap={companyAliasMap}
         defaultSnoozeDays={defaultSnoozeDays}
       />
     );
@@ -87,7 +85,6 @@ export default function renderJobOrTriageCard(
         onNavigateToJobCard={onNavigateToJobCard}
         contactsByCompany={contactsByCompany}
         companyJobCounts={companyJobCounts}
-        companyAliasMap={companyAliasMap}
       />
     );
   }
@@ -111,7 +108,6 @@ export default function renderJobOrTriageCard(
       onNavigateToJobCard={onNavigateToJobCard}
       contactsByCompany={contactsByCompany}
       companyJobCounts={companyJobCounts}
-      companyAliasMap={companyAliasMap}
     />
   );
 }

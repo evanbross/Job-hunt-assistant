@@ -57,7 +57,10 @@ from backend.scoring.skip_reasons import (
     REQ_CLOSED_SKIP_REASON,
     is_req_closed_job_row,
 )
-from backend.utils.stage_status_normalization import normalize_stage_status
+from backend.utils.stage_status_normalization import (
+    effective_application_status,
+    normalize_stage_status,
+)
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils.utils import (
     current_user_id,
@@ -260,7 +263,7 @@ def get_application_sheet() -> ResponseReturnValue:
         status_date = (latest_stage or {}).get("date") or job.get("date_found") or ""
         values = [
             job.get("company") or "",
-            (latest_stage or {}).get("status") or job.get("status") or "",
+            effective_application_status(job.get("status"), stages),
             job.get("source") or "",
             status_date,
             job.get("job_title") or "",
@@ -275,6 +278,10 @@ def get_application_sheet() -> ResponseReturnValue:
                 "duplicate_of_id"
             ),  # ai: claude-sonnet-4-6 | 2026-06-09
             "skip_reason": job.get("skip_reason"),  # ai: claude-sonnet-4-6 | 2026-06-10
+            # ai: claude-sonnet-5 | 2026-10-19 — see JobColumns.sheet_summary()'s
+            # matching comment: lets the frontend match rows to a company by
+            # this column's equality instead of re-deriving it client-side.
+            "company_normalized": job.get("company_normalized"),
         }
 
     return jsonify(
@@ -464,7 +471,7 @@ def run_mark_ghosts() -> tuple[dict, int]:
                 stages = stages_by_job_id.get(job["id"], [])
                 latest_stage = stages[-1] if stages else None
                 latest_status = normalize_stage_status(
-                    (latest_stage or {}).get("status") or job.get("status")
+                    effective_application_status(job.get("status"), stages)
                 )
                 latest_date = str(
                     (latest_stage or {}).get("date") or job.get("date_found") or ""
@@ -731,7 +738,7 @@ def _closed_req_candidates(repos: dict, user_id: int) -> list[tuple[dict, str, s
         stages = stages_by_job_id.get(job["id"], [])
         latest_stage = stages[-1] if stages else None
         latest_status = normalize_stage_status(
-            (latest_stage or {}).get("status") or job.get("status")
+            effective_application_status(job.get("status"), stages)
         )
         if latest_status in terminal_keys:
             continue

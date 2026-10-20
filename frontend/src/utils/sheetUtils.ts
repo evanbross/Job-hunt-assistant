@@ -26,7 +26,7 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-07
-import type { ApplicationHistoryRow, ApplicationSheetRow, CompanyAliasKeyMap, Job, JobHistoryStage } from "../types/jobs.ts";
+import type { ApplicationHistoryRow, ApplicationSheetRow, Job, JobHistoryStage } from "../types/jobs.ts";
 
 export function applicationRowFromSheet(row: ApplicationSheetRow): ApplicationHistoryRow {
   const cells = Array.isArray(row.cells) ? row.cells : [];
@@ -39,6 +39,7 @@ export function applicationRowFromSheet(row: ApplicationSheetRow): ApplicationHi
   return {
     id: row.row_number,
     company: cellValue(cells, 0),
+    company_normalized: row.company_normalized ?? null,
     status: cellValue(cells, 1),
     source: cellValue(cells, 2),
     date,
@@ -68,33 +69,22 @@ export function normalizeCompany(value?: string | null): string {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-16
-// ai: claude-sonnet-5 | 2026-10-12 -- aliasMap param added: without it, two
-// company names a user has explicitly declared as the same employer (e.g.
-// "Block" / "Cash App", see CompanyAliasesSection in SettingsPanel.tsx) never
-// match here no matter how exact the rest of this function's tolerance is,
-// since they share no text in common at all. aliasMap's keys/values are in
-// the same merged (no-space) form the "merged-word variants" check below
-// already computes, so the lookup reuses rowMerged/targetMerged directly
-// rather than recomputing them a different way.
+// ai: claude-sonnet-5 | 2026-10-19 -- used to re-normalize both company
+// strings and separately re-resolve aliases client-side (via a fetched
+// aliasMap) to decide "is this the same employer". That was a second,
+// independent implementation of PostgresJobRepository._canonical_company_normalized
+// with no way to catch the two drifting apart. Every row this is called with
+// now carries company_normalized straight from the backend (already
+// normalized AND alias-resolved, and kept that way retroactively whenever an
+// alias is added/removed -- see company_aliases.py's upsert()/delete()), so
+// comparing that column directly replaces the whole re-derivation.
 export function rowMatchesCompany(
-  rowCompany?: string | null,
-  targetCompany?: string | null,
-  aliasMap?: CompanyAliasKeyMap,
+  rowCompanyNormalized?: string | null,
+  targetCompanyNormalized?: string | null,
 ): boolean {
-  const rowName = normalizeCompany(rowCompany);
-  const targetName = normalizeCompany(targetCompany);
-  if (!rowName || !targetName) return false;
-  if (rowName === targetName) return true;
-  // Handle merged-word variants (e.g. "obsidiansecurity" vs "obsidian security")
-  const rowMerged = rowName.replace(/\s+/g, "");
-  const targetMerged = targetName.replace(/\s+/g, "");
-  if (rowMerged === targetMerged) return true;
-  if (aliasMap) {
-    const resolvedRow = aliasMap[rowMerged] || rowMerged;
-    const resolvedTarget = aliasMap[targetMerged] || targetMerged;
-    if (resolvedRow === resolvedTarget) return true;
-  }
-  return false;
+  return Boolean(
+    rowCompanyNormalized && targetCompanyNormalized && rowCompanyNormalized === targetCompanyNormalized
+  );
 }
 
 export function isAppliedStatus(status?: string | null): boolean {
@@ -112,16 +102,33 @@ export function isAppliedStatus(status?: string | null): boolean {
 // stage rows directly, so this no longer needs a Google-Sheet row as the only
 // source of stage data (see that route's own comment for why).
 export function jobToHistoryRow(job: Job & { stages?: JobHistoryStage[] }): ApplicationHistoryRow {
+  const stages = (job.stages || []).map((s) => ({ id: s.id, status: s.status, date: s.date }));
+  // ai: claude-sonnet-5 | 2026-10-19
+  // Prefer the server-computed effective_status (GET /jobs/by-company;
+  // effective_application_status() in backend/utils/stage_status_normalization.py)
+  // over re-deriving it here -- re-deriving it was the bug: jobs.status can go
+  // stale (POST /applications/<job_id>/stages only inserts into
+  // application_stages, never touches jobs.status), and a second copy of the
+  // "latest stage wins" formula in the frontend silently went missing that
+  // rule's exceptions as the backend one evolved. Only the bare GET /jobs/<id>
+  // reference-lookup path (useCompanyHistoryLookup.ts's missingIds fetch) lacks
+  // effective_status, since that endpoint doesn't attach stages at all -- the
+  // fallback below covers that one remaining case, not as a second source of
+  // truth but because stages is already [] there and the formula degrades to
+  // job.status either way.
+  const latestStage = stages.length > 0 ? stages[stages.length - 1] : null;
+  const status = job.effective_status ?? latestStage?.status ?? job.status;
   return {
     id: job.id,
     company: String(job.company || "").trim(),
-    status: String(job.status || "").trim(),
+    company_normalized: job.company_normalized ?? null,
+    status: String(status || "").trim(),
     source: String(job.source || "").trim(),
     date: String(job.date_found || "").trim(),
     title: String(job.job_title || "").trim(),
     url: String(job.url || "").trim(),
     notes: String(job.notes || "").trim(),
-    stages: (job.stages || []).map((s) => ({ id: s.id, status: s.status, date: s.date })),
+    stages,
     duplicate_of_id: job.duplicate_of_id ?? null,
     skip_reason: job.skip_reason ?? null,
   };

@@ -29,7 +29,7 @@
 import { useState } from "react";
 import type { CSSProperties } from "react";
 import renderJobOrTriageCard from "./renderJobOrTriageCard.tsx";
-import type { ApplicationHistoryRow, CompanyAliasKeyMap, CompanyJobCounts, Job } from "../../types/jobs.ts";
+import type { ApplicationHistoryRow, CompanyJobCounts, Job } from "../../types/jobs.ts";
 import type { ContactsByCompany } from "../../types/contacts.ts";
 import type { TriageHandlers } from "../../types/jobQueue.ts";
 
@@ -57,7 +57,6 @@ interface CompanyGroupProps {
   allSheetRows: ApplicationHistoryRow[] | null;
   contactsByCompany?: ContactsByCompany;
   companyJobCounts?: CompanyJobCounts | null;
-  companyAliasMap?: CompanyAliasKeyMap;
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
   onQueueApprove: (jobId: number) => Promise<void>;
   onQueueReEvaluate?: ((job: Job) => Promise<unknown>) | null;
@@ -69,7 +68,7 @@ interface CompanyGroupProps {
 }
 
 export default function CompanyGroup({
-  company, jobs, triageHandlers, allSheetRows, contactsByCompany, companyJobCounts, companyAliasMap, onNavigateToJobCard,
+  company, jobs, triageHandlers, allSheetRows, contactsByCompany, companyJobCounts, onNavigateToJobCard,
   onQueueApprove, onQueueReEvaluate, onQueueSkip, onQueueSnooze, onQueueRescanEmail, onQueueUpdate, defaultSnoozeDays,
 }: CompanyGroupProps) {
   const [open, setOpen] = useState(false);
@@ -110,7 +109,7 @@ export default function CompanyGroup({
       </div>
       {open && (
         <div style={{ borderTop: "1px solid var(--border)", padding: "12px 18px" }}>
-          {jobs.map((job) => renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts, companyAliasMap))}
+          {jobs.map((job) => renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))}
         </div>
       )}
     </div>

@@ -80,20 +80,17 @@ export interface Job {
   has_description?: boolean;
   has_fit_reasoning?: boolean;
   description_unavailable?: boolean;
+  // ai: claude-sonnet-5 | 2026-10-19 — present only on GET /jobs/by-company's
+  // response (routes/jobs.py's get_jobs_by_company), computed there via
+  // effective_application_status() so this dialog's badge can't drift from
+  // the Applications Sheet's own latest-stage-wins Status column again (see
+  // sheetUtils.ts's jobToHistoryRow). Absent on every other Job-shaped
+  // response.
+  effective_status?: string | null;
 }
 
 /** Map of normalized-company-key -> count of jobs on record, from GET /api/jobs/company-counts. */
 export type CompanyJobCounts = Record<string, number>;
-
-// ai: claude-sonnet-5 | 2026-10-12
-// {alias_normalized: canonical_normalized}, built from GET /api/company-aliases
-// (CompanyAlias[] in types/settings.ts) -- see CompanyAliasesSection in
-// SettingsPanel.tsx, where the user declares e.g. "Block" and "Cash App" as
-// the same employer. Threaded through companyCountKey (jobQueueUtils.ts) and
-// rowMatchesCompany (sheetUtils.ts) so a job's own company resolves to the
-// same identity the backend already stores in jobs.company_normalized (see
-// PostgresJobRepository._canonical_company_normalized).
-export type CompanyAliasKeyMap = Record<string, string>;
 
 /** Normalized company names with at least one 'applied' job, from GET /api/jobs/applied-companies. */
 export type AppliedCompanies = string[];
@@ -113,6 +110,13 @@ export interface ApplicationStage {
 export interface ApplicationHistoryRow {
   id: number | null;
   company: string;
+  // ai: claude-sonnet-5 | 2026-10-19 — the alias-resolved identity backend
+  // repositories already compute and persist (jobs.company_normalized; see
+  // PostgresJobRepository._canonical_company_normalized). Lets callers compare
+  // "is this the same employer as that row" by equality instead of
+  // re-normalizing + re-resolving aliases client-side (see rowMatchesCompany
+  // in sheetUtils.ts, and the companyAliasMap removal this field replaced).
+  company_normalized: string | null;
   status: string;
   source: string;
   date: string;
@@ -150,6 +154,8 @@ export interface ApplicationSheetRow {
   stages: ApplicationSheetStage[];
   duplicate_of_id: number | null;
   skip_reason: string | null;
+  // ai: claude-sonnet-5 | 2026-10-19 — see ApplicationHistoryRow's matching field.
+  company_normalized: string | null;
 }
 
 /** Response body of GET /api/applications (routes/applications.py's get_application_sheet). */

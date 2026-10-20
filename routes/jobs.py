@@ -94,7 +94,10 @@ from backend.scoring.skip_reasons import (
     VALID_SKIP_REASONS,  # ai: claude-fable-5 | 2026-07-16
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
-from backend.utils.stage_status_normalization import normalize_stage_status
+from backend.utils.stage_status_normalization import (
+    effective_application_status,
+    normalize_stage_status,
+)
 from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-17
     UnsafeUrlError,
     safe_urlopen,
@@ -352,6 +355,15 @@ def get_jobs_by_company() -> ResponseReturnValue:
         stages_by_job = repos["stages"].get_by_job_ids(user_id, [job["id"] for job in jobs])
         for job in jobs:
             job["stages"] = stages_by_job[job["id"]]
+            # ai: claude-sonnet-5 | 2026-10-19 — same derivation
+            # routes/applications.py's _make_row() uses for the Applications
+            # Sheet's Status column; computed here instead of left for the
+            # frontend to re-derive, so the two surfaces can't drift apart
+            # again the way they did for job 4669 (see
+            # effective_application_status's docstring).
+            job["effective_status"] = effective_application_status(
+                job.get("status"), job["stages"]
+            )
     return jsonify(jobs)
 
 
@@ -1410,7 +1422,7 @@ def _non_terminal_jobs(user_id: int, repos: dict) -> list[dict]:
     for job in jobs:
         stages = stages_by_job.get(job["id"], [])
         latest_status = normalize_stage_status(
-            (stages[-1] if stages else {}).get("status") or job.get("status")
+            effective_application_status(job.get("status"), stages)
         )
         if latest_status in terminal_keys:
             continue

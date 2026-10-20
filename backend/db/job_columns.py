@@ -153,4 +153,10 @@ class JobColumns:
             cls.NOTES,
             cls.DUPLICATE_OF_ID,
             cls.SKIP_REASON,
+            # ai: claude-sonnet-5 | 2026-10-19 — the alias-resolved identity
+            # frontend company-matching needs (TriagePanel.tsx's allSheetRows
+            # filter) so it can compare rows by this column's equality instead
+            # of re-normalizing company text and re-resolving aliases
+            # client-side.
+            cls.COMPANY_NORMALIZED,
         )

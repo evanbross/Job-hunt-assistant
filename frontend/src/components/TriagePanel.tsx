@@ -78,7 +78,6 @@ import type { GenerateCoverLetterResponse, GeneratePitchResponse, ResumeTailorRe
 import type {
   ApplicationHistoryRow,
   BatchRefreshPopupState,
-  CompanyAliasKeyMap,
   CompanyJobCounts,
   DescriptionUpdatePopupState,
   FitChatResponse,
@@ -211,11 +210,10 @@ interface DuplicateCardProps {
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
   contactsByCompany?: ContactsByCompany;
   companyJobCounts?: CompanyJobCounts | null;
-  companyAliasMap?: CompanyAliasKeyMap;
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts, companyAliasMap }: DuplicateCardProps) {
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }: DuplicateCardProps) {
   // ai: claude-sonnet-5 | 2026-10-17 — GET /jobs/triage omits fit_reasoning/
   // certainty_reason/job_description (see useLazyJobDetail); fetched lazily
   // the first time "Show reasoning" or the description button is clicked.
@@ -231,10 +229,10 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     raw_jd_snippet: lazyDuplicateDetail?.raw_jd_snippet ?? job.raw_jd_snippet ?? null,
     fit_reasoning: lazyDuplicateDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
   };
-  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts, companyAliasMap);
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const companySheetRows = useMemo(
-    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || "", companyAliasMap))),
-    [allSheetRows, job.company, companyAliasMap],
+    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company_normalized, job.company_normalized))),
+    [allSheetRows, job.company_normalized],
   );
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -264,7 +262,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
   });
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
-  const companyHistory = useCompanyHistoryLookup(job, companyAliasMap);
+  const companyHistory = useCompanyHistoryLookup(job);
   const triageReasoning = triageReasoningForJob({
     ...job,
     fit_reasoning: lazyDuplicateDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
@@ -1023,11 +1021,10 @@ interface TriageCardProps {
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
   contactsByCompany?: ContactsByCompany;
   companyJobCounts?: CompanyJobCounts | null;
-  companyAliasMap?: CompanyAliasKeyMap;
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts, companyAliasMap }: TriageCardProps) {
+function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }: TriageCardProps) {
   // ai: claude-sonnet-5 | 2026-10-17 — GET /jobs/triage omits fit_reasoning/
   // certainty_reason/job_description (see useLazyJobDetail); fetched lazily
   // the first time "Show reasoning" or "Job Description" is clicked.
@@ -1043,10 +1040,10 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     raw_jd_snippet: lazyTriageDetail?.raw_jd_snippet ?? job.raw_jd_snippet ?? null,
     fit_reasoning: lazyTriageDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
   };
-  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts, companyAliasMap);
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const companySheetRows = useMemo(
-    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company, job.company || "", companyAliasMap))),
-    [allSheetRows, job.company, companyAliasMap],
+    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company_normalized, job.company_normalized))),
+    [allSheetRows, job.company_normalized],
   );
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [editingUrl, setEditingUrl] = useState(false);
@@ -1089,7 +1086,7 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     return Number.isFinite(stored) && stored >= 1 ? stored : defaultSnoozeDays;
   });
   const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
-  const companyHistory = useCompanyHistoryLookup(job, companyAliasMap);
+  const companyHistory = useCompanyHistoryLookup(job);
   const triageReasoning = triageReasoningForJob({
     ...job,
     fit_reasoning: lazyTriageDetail?.fit_reasoning ?? job.fit_reasoning ?? null,

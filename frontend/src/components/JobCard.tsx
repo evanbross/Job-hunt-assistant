@@ -65,7 +65,6 @@ import type { ContactsByCompany } from "../types/contacts.ts";
 import type { GenerateCoverLetterResponse, GeneratePitchResponse, PitchType } from "../types/coverLetter.ts";
 import type { ResumeTailorResponse } from "../types/coverLetter.ts";
 import type {
-  CompanyAliasKeyMap,
   CompanyJobCounts,
   FitChatMessage,
   FitChatResponse,
@@ -87,7 +86,6 @@ interface JobCardProps {
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
   contactsByCompany?: ContactsByCompany;
   companyJobCounts?: CompanyJobCounts | null;
-  companyAliasMap?: CompanyAliasKeyMap;
   defaultSnoozeDays: number;
 }
 
@@ -108,7 +106,6 @@ function JobCard({
   onNavigateToJobCard,
   contactsByCompany,
   companyJobCounts,
-  companyAliasMap,
   defaultSnoozeDays,
 }: JobCardProps) {
   // ai: claude-sonnet-5 | 2026-10-17
@@ -150,8 +147,8 @@ function JobCard({
   const [undoSaving, setUndoSaving] = useState(false);
   const [coverLetter, setCoverLetter] = useState<string | null>(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
-  const companyHistory = useCompanyHistoryLookup(job, companyAliasMap);
-  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts, companyAliasMap);
+  const companyHistory = useCompanyHistoryLookup(job);
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
   const { contextMenu, setContextMenu, runContextAction } = useCardContextMenu();
 
   const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);

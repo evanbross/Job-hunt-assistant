@@ -29,15 +29,11 @@ import { useState } from "react";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts";
 import { jobToHistoryRow, rowMatchesCompany } from "../utils/sheetUtils.ts";
 import { alwaysIncludedIds } from "../utils/jobQueueUtils.ts";
-import type { ApplicationHistoryRow, CompanyAliasKeyMap, Job, JobHistoryStage } from "../types/jobs.ts";
+import type { ApplicationHistoryRow, Job, JobHistoryStage } from "../types/jobs.ts";
 import type { ApiErrorBody } from "../types/common.ts";
 
 // ai: claude-sonnet-4-6 | 2026-06-11
-// ai: claude-sonnet-5 | 2026-10-12 -- aliasMap param added so the final
-// rowMatchesCompany filter below doesn't strip out jobs the backend's own
-// /api/jobs/by-company already correctly matched through a user-declared
-// alias (e.g. "Block" / "Cash App") -- see that filter's own comment.
-export function useCompanyHistoryLookup(job: Job, aliasMap?: CompanyAliasKeyMap) {
+export function useCompanyHistoryLookup(job: Job) {
   const [opened, setOpened] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -77,8 +73,8 @@ export function useCompanyHistoryLookup(job: Job, aliasMap?: CompanyAliasKeyMap)
 
       // ai: claude-sonnet-5 | 2026-07-21
       // Force-include the current duplicate hint AND every previously dismissed
-      // candidate — even when their stored company name doesn't match the
-      // fuzzy threshold used by rowMatchesCompany.
+      // candidate — even when their stored company_normalized doesn't match
+      // this job's (see rowMatchesCompany below).
       // ai: claude-sonnet-5 | 2026-10-07
       // alwaysIncludedIds(job) only covers the opened job's own duplicate_of_id
       // -- a row merged in from the company query (e.g. a sibling job also
@@ -118,7 +114,7 @@ export function useCompanyHistoryLookup(job: Job, aliasMap?: CompanyAliasKeyMap)
       // job 5555 (Gametime), pulling Gametime into Penn Interactive's history.
       setRows(
         withDuplicateRefs.filter(
-          (row) => rowMatchesCompany(row.company, company, aliasMap) || primaryForceIncludeIds.has(row.id ?? -1)
+          (row) => rowMatchesCompany(row.company_normalized, job.company_normalized) || primaryForceIncludeIds.has(row.id ?? -1)
         )
       );
       setError("");

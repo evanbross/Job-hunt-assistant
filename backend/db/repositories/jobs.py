@@ -373,6 +373,11 @@ class PostgresJobRepository(_BaseRepo):
         "date_found",
         "duplicate_of_id",
         "skip_reason",
+        # ai: claude-sonnet-5 | 2026-10-19 — same reason as
+        # JobColumns.sheet_summary()'s matching addition: lets
+        # useCompanyHistoryLookup.ts compare rows by this column's equality
+        # instead of re-normalizing + re-resolving aliases client-side.
+        "company_normalized",
     )
 
     # ai: claude-sonnet-5 | 2026-10-12

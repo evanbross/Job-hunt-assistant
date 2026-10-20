@@ -27,8 +27,7 @@
 
 // ai: claude-sonnet-5 | 2026-10-07
 import { SKIP_REASONS } from "./triagePanelUtils.ts";
-import { contactsMatchKey } from "./contactsUtils.ts";
-import type { CompanyAliasKeyMap, CompanyJobCounts, Job } from "../types/jobs.ts";
+import type { CompanyJobCounts, Job } from "../types/jobs.ts";
 
 export function scoreDeltaLabel(
   previousScore?: number | null,
@@ -138,16 +137,6 @@ export function importWarningTooltip(warnings?: string[] | null): string {
   return warnings.map((code) => IMPORT_WARNING_LABELS[code] || code).join("\n");
 }
 
-// ai: claude-sonnet-5 | 2026-09-19
-// Mirrors normalize_company_name() (via the grouping key in get_company_counts() /
-// get_by_company() in backend/db/repositories/jobs.py) — keep both in sync.
-// Strips corporate suffixes (Corp/Corporation/Inc/LLC/...) so e.g. "Seeq" and
-// "Seeq Corporation" count as the same employer instead of two separate ones.
-export function companyCountKey(company?: string | null, aliasMap?: CompanyAliasKeyMap): string {
-  const key = contactsMatchKey(company);
-  return (aliasMap && aliasMap[key]) || key;
-}
-
 // ai: claude-sonnet-5 | 2026-09-14
 // Every duplicate candidate the job has ever been matched against — the current
 // hint plus every id previously dismissed via dismiss-duplicate. These are the
@@ -178,29 +167,33 @@ export function alwaysIncludedIds(job: Pick<Job, "duplicate_of_id" | "dismissed_
 // `companyJobCounts` is the bulk map from /api/jobs/company-counts; null means
 // it hasn't loaded yet, in which case the button stays enabled rather than
 // flashing disabled-then-enabled once counts arrive.
+// ai: claude-sonnet-5 | 2026-10-19 — used to recompute a lookup key from
+// job.company (normalize + resolve through a client-fetched alias map) that
+// had to independently agree with how the backend groups company-counts
+// (company_normalized). Every job now carries that exact column already
+// (PostgresJobRepository._canonical_company_normalized, kept in sync
+// retroactively when aliases change — see company_aliases.py's upsert()/
+// delete()), so this reads it directly instead of re-deriving it.
 export function hasCompanyHistoryAvailable(
-  job: Pick<Job, "duplicate_of_id" | "dismissed_duplicate_ids" | "company">,
+  job: Pick<Job, "duplicate_of_id" | "dismissed_duplicate_ids" | "company" | "company_normalized">,
   companyJobCounts?: CompanyJobCounts | null,
-  aliasMap?: CompanyAliasKeyMap,
 ): boolean {
   if (alwaysIncludedIds(job).size > 0) return true;
-  const company = String(job?.company || "").trim();
-  if (!company) return false;
+  const key = job?.company_normalized;
+  if (!key) return false;
   if (!companyJobCounts) return true;
-  const count = companyJobCounts[companyCountKey(company, aliasMap)] ?? 0;
+  const count = companyJobCounts[key] ?? 0;
   return count > 1;
 }
 
 // ai: claude-sonnet-5 | 2026-10-09
-// `appliedCompanies` is the bulk list from /api/jobs/applied-companies, already
-// normalized the same way companyCountKey() normalizes a job's own company —
-// keyed as a Set here for O(1) lookup in the job-queue filter below.
+// `appliedCompanies` is the bulk list from /api/jobs/applied-companies, keyed
+// by the same jobs.company_normalized column every job already carries (see
+// hasCompanyHistoryAvailable's comment above).
 export function hasAppliedToCompany(
-  job: Pick<Job, "company">,
+  job: Pick<Job, "company_normalized">,
   appliedCompanies: Set<string>,
-  aliasMap?: CompanyAliasKeyMap,
 ): boolean {
-  const company = String(job?.company || "").trim();
-  if (!company) return false;
-  return appliedCompanies.has(companyCountKey(company, aliasMap));
+  const key = job?.company_normalized;
+  return Boolean(key && appliedCompanies.has(key));
 }
