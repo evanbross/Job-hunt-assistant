@@ -49,7 +49,6 @@ import JobReEvaluatePopup from "./JobReEvaluatePopup.tsx";
 import type { JobReEvaluatePopupState } from "./JobReEvaluatePopup.tsx";
 import ScanSummaryPopup from "./ScanSummaryPopup.tsx";
 import ManualEvalDialog from "./ManualEvalDialog.tsx";
-import WttjRepairDialog from "./WttjRepairDialog.tsx";
 import ImportRepairDialog from "./ImportRepairDialog.tsx";
 import RescanImportDialog from "./RescanImportDialog.tsx";
 import CompanyGroup from "./CompanyGroup.tsx";
@@ -82,7 +81,6 @@ import type {
   ImportStatus,
   ImportSummary,
   RescanImportResult,
-  WttjRepairResult,
 } from "../../types/importing.ts";
 import type { AppConfigResponse } from "../../types/settings.ts";
 import type { RescanEmailResponse, ScanStatus, ScanSummary } from "../../types/scanning.ts";
@@ -360,8 +358,6 @@ export default function JobQueue({
   const [fixingCompanies, setFixingCompanies] = useState(false);
   const [fixProgress, setFixProgress] = useState<FixCompaniesProgress | null>(null);
   const [deletingUnknownCompanies, setDeletingUnknownCompanies] = useState(false);
-  const [wttjRepairRunning, setWttjRepairRunning] = useState(false);
-  const [wttjRepairDialog, setWttjRepairDialog] = useState<WttjRepairResult | null>(null);
   const [importRepairRunning, setImportRepairRunning] = useState(false);
   const [importRepairDialog, setImportRepairDialog] = useState<ImportRepairResult | null>(null);
   // ai: claude-sonnet-5 | 2026-07-10
@@ -373,8 +369,6 @@ export default function JobQueue({
   const reqClosedPollRef = useRef<number | undefined>(undefined);
   const reqClosedDismissedRef = useRef(false);
   const reqClosedBrowserDoneRef = useRef(0);
-  const wttjRepairPollRef = useRef<number | undefined>(undefined);
-  const wttjRepairDismissedRef = useRef(false);
   const importRepairPollRef = useRef<number | undefined>(undefined);
   const importRepairDismissedRef = useRef(false);
   const rescanImportPollRef = useRef<number | undefined>(undefined);
@@ -541,7 +535,6 @@ export default function JobQueue({
       clearInterval(importPollRef.current);
       clearInterval(reEvalPollRef.current);
       clearInterval(reqClosedPollRef.current);
-      clearInterval(wttjRepairPollRef.current);
       clearTimeout(reEvaluateResetTimeoutRef.current);
       clearTimeout(captureWatchRef.current.timeoutId ?? undefined);
     };
@@ -1270,42 +1263,6 @@ export default function JobQueue({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ai: claude-sonnet-4-6 | 2026-06-25
-  const startWttjRepair = async () => {
-    setMoreToolsOpen(false);
-    wttjRepairDismissedRef.current = false;
-    const res = await fetch("/api/jobs/repair-wttj-urls", { method: "POST" });
-    const data: ApiErrorBody = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      window.alert(data.error || `Repair failed to start (${res.status})`);
-      return;
-    }
-    setWttjRepairRunning(true);
-    setWttjRepairDialog({
-      running: true, progress: 0, total: 0, message: "", current_company: "", current_title: "", error: null,
-      repaired: [], url_only: [], title_fixed: [], failed: [], skipped: [],
-    });
-    clearInterval(wttjRepairPollRef.current);
-    wttjRepairPollRef.current = window.setInterval(pollWttjRepairStatus, 2500);
-  };
-
-  const pollWttjRepairStatus = async () => {
-    try {
-      const res = await fetch("/api/jobs/repair-wttj-urls/status");
-      const data: WttjRepairResult = await res.json();
-      if (!wttjRepairDismissedRef.current) setWttjRepairDialog(data);
-      if (!data.running) {
-        clearInterval(wttjRepairPollRef.current);
-        setWttjRepairRunning(false);
-        await fetchJobs();
-        await updateTriageCount();
-      }
-    } catch {
-      clearInterval(wttjRepairPollRef.current);
-      setWttjRepairRunning(false);
-    }
-  };
-
   // ai: claude-opus-4-8 | 2026-07-01
   const startImportRepair = async () => {
     setMoreToolsOpen(false);
@@ -1474,7 +1431,7 @@ export default function JobQueue({
   };
 
   const anyScanRunning = scanning || rescanAllRunning;
-  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning || wttjRepairRunning || importRepairRunning || rescanImportRunning;
+  const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning || importRepairRunning || rescanImportRunning;
 
   // ai: claude-sonnet-4-6 | 2026-06-26
   // All derived arrays are memoized so unrelated state changes (dialogs, hover,
@@ -2120,24 +2077,6 @@ export default function JobQueue({
                 {deletingUnknownCompanies ? "Deleting…" : "Delete Unknown Companies"}
               </button>
               <button
-                onClick={startWttjRepair}
-                disabled={anyQueueActionRunning}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  textAlign: "left",
-                  padding: "10px 14px",
-                  fontSize: "13px",
-                  background: "none",
-                  border: "none",
-                  color: "var(--text)",
-                  cursor: anyQueueActionRunning ? "not-allowed" : "pointer",
-                  opacity: anyQueueActionRunning ? 0.5 : 1,
-                }}
-              >
-                {wttjRepairRunning ? "Repairing…" : "Repair WTTJ Sendgrid URLs"}
-              </button>
-              <button
                 onClick={startImportRepair}
                 disabled={anyQueueActionRunning}
                 style={{
@@ -2262,16 +2201,6 @@ export default function JobQueue({
             reqClosedDismissedRef.current = true;
             setReqClosedDialogVisible(false);
             setReqClosedDialog(null);
-          }}
-        />
-      )}
-
-      {wttjRepairDialog && (
-        <WttjRepairDialog
-          result={wttjRepairDialog}
-          onClose={() => {
-            wttjRepairDismissedRef.current = true;
-            setWttjRepairDialog(null);
           }}
         />
       )}

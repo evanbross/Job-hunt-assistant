@@ -26,8 +26,8 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-07
-// Mirrors routes/jobs.py's WttjRepairState/RescanImportState/ImportRepairState
-// dataclasses and routes/import_.py's bulk-import result aggregation. The
+// Mirrors routes/jobs.py's RescanImportState/ImportRepairState dataclasses
+// and routes/import_.py's bulk-import result aggregation. The
 // backend itself declares these job-summary entries as plain `list[dict]`
 // (no dataclass/TypedDict there either), so these interfaces are built from
 // the literal dict keys each endpoint actually writes (summary = {"id",
@@ -52,15 +52,6 @@ interface RepairProgressBase {
   current_company: string;
   current_title: string;
   error: string | null;
-}
-
-/** GET /api/jobs/repair-wttj-jobs/status (routes/jobs.py's WttjRepairState). */
-export interface WttjRepairResult extends RepairProgressBase {
-  repaired: RepairJobSummary[];
-  url_only: RepairJobSummary[];
-  title_fixed: RepairJobSummary[];
-  failed: RepairJobSummary[];
-  skipped: RepairJobSummary[];
 }
 
 /** GET /api/jobs/rescan-broken-imports/status (routes/jobs.py's RescanImportState). */
