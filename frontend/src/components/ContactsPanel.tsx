@@ -269,6 +269,12 @@ export default function ContactsPanel() {
   // ai: gpt-5 | 2026-10-03
   const [sortKey, setSortKey] = useState("outreach_score");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  // ai: claude-opus-5-5 | 2026-10-21
+  // Contacts picked via a row's or the selection's "Message" button (null =
+  // the default outreach queue). outreachRunId remounts OutreachQueue on each
+  // new pick so its skipped/sent/draft state starts fresh.
+  const [outreachTargetIds, setOutreachTargetIds] = useState<number[] | null>(null);
+  const [outreachRunId, setOutreachRunId] = useState(0);
 
   const loadContacts = async () => {
     try {
@@ -375,6 +381,25 @@ export default function ContactsPanel() {
 
   const toggleSelectAllFiltered = (checked: boolean) =>
     setSelectedIds(checked ? new Set(filtered.map((c) => c.id)) : new Set());
+
+  // ai: claude-opus-5-5 | 2026-10-21
+  const messageContacts = (contactIds: number[]) => {
+    setOutreachTargetIds(contactIds);
+    setOutreachRunId((id) => id + 1);
+    setView("outreach");
+  };
+
+  // Selection in the table's current sort order, so the queue walks them in
+  // the order the user is looking at.
+  const messageSelected = () => {
+    messageContacts(sorted.filter((c) => selectedIds.has(c.id)).map((c) => c.id));
+    setSelectedIds(new Set());
+  };
+
+  const clearOutreachTarget = () => {
+    setOutreachTargetIds(null);
+    setOutreachRunId((id) => id + 1);
+  };
 
   const bulkSetRecruiter = async (recruiterType: RecruiterType | null) => {
     const ids = [...selectedIds];
@@ -509,7 +534,8 @@ export default function ContactsPanel() {
           <p style={summaryStyle}>
             Your LinkedIn connections. Mark the ones you want to reach, mark the recruiters (or
             select several and mark them at once), and log the messages you send and any replies.
-            The Outreach queue walks you through messaging each "Yes" contact on LinkedIn.
+            The Outreach queue walks you through messaging each "Yes" contact on LinkedIn, or use
+            Message on any contact (or a selection) to message just those.
           </p>
         </div>
         <div style={{ display: "flex", gap: "8px" }}>
@@ -545,7 +571,15 @@ export default function ContactsPanel() {
         )}
       </div>
 
-      {view === "outreach" && <OutreachQueue contacts={contacts} onOutreachLogged={loadContacts} />}
+      {view === "outreach" && (
+        <OutreachQueue
+          key={outreachRunId}
+          contacts={contacts}
+          targetIds={outreachTargetIds}
+          onClearTarget={clearOutreachTarget}
+          onOutreachLogged={loadContacts}
+        />
+      )}
       {view === "companies" && <CompaniesReport />}
       {view === "titles" && <TitlesReport onViewContactsForTitle={viewContactsForTitle} />}
       {view === "contacts" && (
@@ -644,6 +678,10 @@ export default function ContactsPanel() {
               {selectedIds.size > 0 && (
                 <div style={bulkBar}>
                   <strong>{selectedIds.size.toLocaleString()} selected</strong>
+                  {/* ai: claude-opus-5-5 | 2026-10-21 */}
+                  <button className="btn-primary btn-sm" disabled={bulkPending} onClick={messageSelected}>
+                    Message selected
+                  </button>
                   <select
                     value={bulkRecruiterType}
                     onChange={(e) => setBulkRecruiterType(e.target.value as RecruiterType)}
@@ -817,13 +855,25 @@ export default function ContactsPanel() {
                               </span>
                             )}
                           </div>
-                          <button
-                            className="btn-secondary btn-xs"
-                            onClick={() => setExpandedId(expanded ? null : contact.id)}
-                            aria-expanded={expanded}
-                          >
-                            {expanded ? "Close" : "Details"}
-                          </button>
+                          {/* ai: claude-opus-5-5 | 2026-10-21 -- added Message */}
+                          <div style={{ display: "flex", gap: "6px" }}>
+                            <button
+                              className="btn-secondary btn-xs"
+                              disabled={!profileUrl}
+                              onClick={() => messageContacts([contact.id])}
+                              title={profileUrl ? "Write a LinkedIn message to this contact" : "No LinkedIn profile URL"}
+                              aria-label={`Message ${contact.full_name}`}
+                            >
+                              Message
+                            </button>
+                            <button
+                              className="btn-secondary btn-xs"
+                              onClick={() => setExpandedId(expanded ? null : contact.id)}
+                              aria-expanded={expanded}
+                            >
+                              {expanded ? "Close" : "Details"}
+                            </button>
+                          </div>
                         </div>
                         {expanded && (
                           <ContactDetail
@@ -914,8 +964,8 @@ const filterPillActive: CSSProperties = {
 
 const rowGrid: CSSProperties = {
   display: "grid",
-  // ai: claude-sonnet-5 | 2026-10-13
-  gridTemplateColumns: "36px 64px 72px 90px minmax(0, 1fr) 150px 90px 230px 70px",
+  // ai: claude-opus-5-5 | 2026-10-21 -- last column widened for the Message button
+  gridTemplateColumns: "36px 64px 72px 90px minmax(0, 1fr) 150px 90px 230px 140px",
   alignItems: "center",
   gap: "12px",
   padding: "10px 14px",

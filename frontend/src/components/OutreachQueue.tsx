@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
+import { formatLocalDate } from "../utils/dateTimeUtils.ts";
 import type { Contact, OutreachDraftResponse, OutreachTemplateResponse } from "../types/contacts.ts";
 
 // LinkedIn's direct-message limit; matches routes/contacts.py's
@@ -21,7 +22,17 @@ const PLACEHOLDER_HELP = "Placeholders: {first_name}, {full_name}, {company}, {p
 
 interface OutreachQueueProps {
   contacts: Contact[];
-  /** Reload the contact list after a send is logged; the queue advances because that contact now has outreach. */
+  // ai: claude-opus-5-5 | 2026-10-21
+  /**
+   * Contacts picked from the Contacts table's "Message" buttons, in table
+   * order, or null for the default "Want to contact: Yes, nothing sent yet"
+   * queue. Picked contacts are messaged regardless of those criteria (e.g. a
+   * follow-up to someone already contacted).
+   */
+  targetIds: number[] | null;
+  /** Leave the picked-contacts list and go back to the default queue. */
+  onClearTarget: () => void;
+  /** Reload the contact list after a send is logged. */
   onOutreachLogged: () => Promise<void>;
 }
 
@@ -44,7 +55,7 @@ async function errorText(res: Response): Promise<string> {
  * the browser extension pastes it into that contact's LinkedIn message box,
  * then logs it as sent once the user confirms they pressed Send on LinkedIn.
  */
-export default function OutreachQueue({ contacts, onOutreachLogged }: OutreachQueueProps) {
+export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOutreachLogged }: OutreachQueueProps) {
   const [template, setTemplate] = useState("");
   const [templateDraft, setTemplateDraft] = useState("");
   const [showTemplate, setShowTemplate] = useState(false);
@@ -55,15 +66,23 @@ export default function OutreachQueue({ contacts, onOutreachLogged }: OutreachQu
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [openedForId, setOpenedForId] = useState<number | null>(null);
+  // ai: claude-opus-5-5 | 2026-10-21
+  // Logged as sent this session. The default queue also drops them via
+  // outreach.length, but a picked contact may already have outreach (a
+  // follow-up), so only this set can advance past them.
+  const [sentIds, setSentIds] = useState<Set<number>>(() => new Set());
 
-  const pending = useMemo(
-    () => contacts.filter((c) => c.interested === true && c.outreach.length === 0),
-    [contacts],
-  );
-  const queue = useMemo(
-    () => pending.filter((c) => safeHttpUrl(c.profile_url) && !skippedIds.has(c.id)).sort(queueOrder),
-    [pending, skippedIds],
-  );
+  // ai: claude-opus-5-5 | 2026-10-21 -- picked contacts keep the table order
+  // the user saw when picking them; the default queue sorts by priority.
+  const pending = useMemo(() => {
+    if (targetIds === null) return contacts.filter((c) => c.interested === true && c.outreach.length === 0);
+    const byId = new Map(contacts.map((c) => [c.id, c]));
+    return targetIds.map((id) => byId.get(id)).filter((c): c is Contact => c !== undefined);
+  }, [contacts, targetIds]);
+  const queue = useMemo(() => {
+    const ready = pending.filter((c) => safeHttpUrl(c.profile_url) && !skippedIds.has(c.id) && !sentIds.has(c.id));
+    return targetIds === null ? ready.sort(queueOrder) : ready;
+  }, [pending, skippedIds, sentIds, targetIds]);
   const missingProfileCount = pending.filter((c) => !safeHttpUrl(c.profile_url)).length;
   const current = queue[0] ?? null;
   const currentId = current?.id ?? null;
@@ -204,6 +223,7 @@ export default function OutreachQueue({ contacts, onOutreachLogged }: OutreachQu
     try {
       const res = await sendJson(`/api/contacts/${current.id}/outreach`, "POST", { channel: "linkedin" });
       if (!res.ok) throw new Error(await errorText(res));
+      setSentIds((prev) => new Set(prev).add(current.id));
       setStatus(`Logged your message to ${current.full_name}.`);
       await onOutreachLogged();
     } catch (e) {
@@ -223,19 +243,29 @@ export default function OutreachQueue({ contacts, onOutreachLogged }: OutreachQu
     <div className="card" style={{ marginBottom: "16px" }}>
       <div style={headerRow}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 700 }}>LinkedIn outreach queue</div>
+          {/* ai: claude-opus-5-5 | 2026-10-21 -- picked-contacts wording */}
+          <div style={{ fontWeight: 700 }}>
+            {targetIds === null
+              ? "LinkedIn outreach queue"
+              : `Messaging ${targetIds.length.toLocaleString()} selected contact${targetIds.length === 1 ? "" : "s"}`}
+          </div>
           <div style={mutedText}>
             {queue.length === 0
               ? "Nobody left to message."
-              : `${queue.length.toLocaleString()} to go, highest priority first.`}
+              : `${queue.length.toLocaleString()} to go, ${targetIds === null ? "highest priority" : "in table order"} first.`}
             {skippedIds.size > 0 && ` ${skippedIds.size} skipped this session.`}
             {missingProfileCount > 0 &&
-              ` ${missingProfileCount} marked "Yes" have no LinkedIn profile URL and aren't listed.`}
+              ` ${missingProfileCount} ${targetIds === null ? 'marked "Yes"' : "selected"} have no LinkedIn profile URL and aren't listed.`}
           </div>
         </div>
         {skippedIds.size > 0 && (
           <button className="btn-secondary btn-sm" disabled={busy} onClick={() => setSkippedIds(new Set())}>
             Bring back skipped
+          </button>
+        )}
+        {targetIds !== null && (
+          <button className="btn-secondary btn-sm" disabled={busy} onClick={onClearTarget}>
+            Back to full queue
           </button>
         )}
         <button className="btn-secondary btn-sm" onClick={() => setShowTemplate((open) => !open)}>
@@ -281,6 +311,13 @@ export default function OutreachQueue({ contacts, onOutreachLogged }: OutreachQu
             </span>
           </div>
           {current.notes && <div style={{ ...mutedText, fontStyle: "italic", marginTop: "2px" }}>{current.notes}</div>}
+          {/* ai: claude-opus-5-5 | 2026-10-21 -- only reachable via a picked contact */}
+          {current.outreach.length > 0 && (
+            <div style={{ ...mutedText, marginTop: "2px" }}>
+              Already contacted {current.outreach.length}x, last on{" "}
+              {formatLocalDate(current.outreach[current.outreach.length - 1].sent_at)}.
+            </div>
+          )}
 
           <textarea
             value={draft}
