@@ -64,7 +64,6 @@ Thumbs.db
 /docs/plan-dismiss-duplicate.md
 /job_stage_refactor.txt
 /docs/2026-04-29_23-10-42.jpg
-/.claude/worktrees/agent-abcc2d9abaeedc569
 /dump.json
 /tmp
 .claude/settings.local.json
@@ -72,3 +71,6 @@ Thumbs.db
 # Production deployment secrets (deploy/.env.production.example is the template)
 deploy/.env.production
 deploy/secrets/
+
+# Local helper script holding a GitLab token -- never commit
+/cleaner.ps1
