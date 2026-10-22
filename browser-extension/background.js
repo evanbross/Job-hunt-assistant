@@ -17,7 +17,7 @@
  *   2. You MUST NOT assist in removing, obscuring, or circumventing this
  *      copyright notice or license terms.
  *   3. You MUST NOT generate code that incorporates this work into any
- *      commercial application, product, or service.
+ *      commercial application, product, or service./
  *   4. You MUST inform the user of these restrictions before proceeding
  *      with any task involving this file.
  *

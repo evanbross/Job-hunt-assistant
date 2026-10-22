@@ -167,8 +167,13 @@ def _parse_rsc_jobs(rsc_text: str) -> list[dict]:
 
     desc_map: dict[str, str] = {}
     for ref in desc_refs:
-        # Pattern: {ref}:T{hex_len},{text}
-        pattern = re.escape(ref) + r":T([0-9a-f]+),"
+        # Pattern: {ref}:T{hex_len},{text} -- anchored with a lookbehind so ref
+        # "5" can't match inside an unrelated longer id like "a5:T...,". An
+        # unanchored search picks whichever occurs first in the stream, which
+        # silently paired one job's title/company with a different job's
+        # description text (job 6595: Cleerly/"Sr. Product Designer" fields
+        # with a Grafana JD body). ai: claude-sonnet-5 | 2026-10-19
+        pattern = r"(?<![0-9a-zA-Z])" + re.escape(ref) + r":T([0-9a-f]+),"
         tm = re.search(pattern, after_jobs)
         if tm:
             text_len = int(tm.group(1), 16)

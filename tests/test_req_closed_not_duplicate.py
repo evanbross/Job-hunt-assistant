@@ -212,3 +212,64 @@ def test_get_all_ordered_flags_both_req_closed_shapes(pg_dsn: str) -> None:
         }
     finally:
         conn.close()
+
+
+# ── A duplicate-of-a-closed-req row must itself read as closed ────────────────
+
+
+def test_get_all_ordered_flags_duplicate_chain_of_req_closed(pg_dsn: str) -> None:
+    """Regression for job 3672: flagged possible_duplicate of 3266, which was
+    only skipped as a *duplicate* of 2864 -- the actual req-closed original --
+    so 3266 read as open and stayed a valid fuzzy-match target. A row whose
+    duplicate_of_id chain (any number of hops) leads to a req-closed job must
+    also report is_req_closed=True, so DuplicateChecker.check (which relies on
+    this flag via is_req_closed_job_row) stops treating it as a live posting."""
+    conn = get_connection(pg_dsn)
+    try:
+        account = PostgresUserAccountRepository(conn).create_pending(
+            "owner2@example.com", "seed-owner2@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(conn.cursor(), user_id)
+        jobs = PostgresJobRepository(conn)
+        stages = PostgresApplicationStageRepository(conn)
+
+        # original: applied, then its req closes via a stage row
+        original = jobs.insert(user_id, _new_job("original posting", status="applied"))
+        stages.insert(
+            user_id,
+            {"job_id": original, "status": "req_closed", "date": "2026-09-01"},
+        )
+        # a repost auto-skipped as a duplicate of the (now closed) original
+        duplicate_of_original = jobs.insert(
+            user_id,
+            _new_job(
+                "repost 1",
+                status="skipped",
+                skip_reason="duplicate",
+                duplicate_of_id=original,
+            ),
+        )
+        # a second repost, routed to triage as only a *possible* duplicate of
+        # the first repost -- two hops removed from the actual closed req
+        possible_duplicate_of_duplicate = jobs.insert(
+            user_id,
+            _new_job(
+                "repost 2",
+                status="possible_duplicate",
+                duplicate_of_id=duplicate_of_original,
+            ),
+        )
+        # an unrelated job, never flagged as anyone's duplicate
+        unrelated = jobs.insert(user_id, _new_job("unrelated posting"))
+        conn.commit()
+
+        flags = {row["id"]: row["is_req_closed"] for row in jobs.get_all_ordered(user_id)}
+        assert flags == {
+            original: True,
+            duplicate_of_original: True,
+            possible_duplicate_of_duplicate: True,
+            unrelated: False,
+        }
+    finally:
+        conn.close()

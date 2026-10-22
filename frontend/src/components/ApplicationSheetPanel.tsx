@@ -936,6 +936,30 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
     }
   };
 
+  // ai: claude-sonnet-5 | 2026-10-21
+  const markRejected = async (row: ApplicationSheetRow) => {
+    setSavingKey(`reject:${row.row_number}`);
+    try {
+      const res = await fetch(`/api/applications/${row.row_number}/stages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "Rejected",
+          date: new Date().toLocaleDateString('en-CA'),
+          notes: "",
+        }),
+      });
+      if (!res.ok) {
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
+        window.alert(data.error || `Save failed (${res.status})`);
+        return;
+      }
+      await loadSheet();
+    } finally {
+      setSavingKey("");
+    }
+  };
+
   const confirmDuplicate = async (row: ApplicationSheetRow) => {
     setSavingKey(`confirm-dup:${row.row_number}`);
     try {
@@ -1425,6 +1449,16 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
                                 disabled={savingKey === `queue:${row.row_number}`}
                               >
                                 {savingKey === `queue:${row.row_number}` ? "Moving..." : "Move Back to Queue"}
+                              </button>
+                            )}
+                            {/* ai: claude-sonnet-5 | 2026-10-21 */}
+                            {["applied", "ghosted"].includes(normalizeStatus(getCell(row, trackingColumns.status).value)) && (
+                              <button
+                                className="btn-danger"
+                                onClick={() => markRejected(row)}
+                                disabled={!!savingKey}
+                              >
+                                {savingKey === `reject:${row.row_number}` ? "Marking…" : "Mark as Rejected"}
                               </button>
                             )}
                             {normalizeStatus(getCell(row, trackingColumns.status).value) === "possible_duplicate" && (

@@ -2508,7 +2508,14 @@
       if (typeof job.description !== 'string' || !job.description.startsWith('$')) return;
       const ref = job.description.slice(1);
       const escaped = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const m = afterJobs.match(new RegExp(escaped + ':T([0-9a-f]+),'));
+      // Lookbehind anchor so ref "5" can't match inside an unrelated longer
+      // id like "a5:T...,"  -- an unanchored search picks whichever occurs
+      // first in the stream, silently pairing one job's title/company with a
+      // different job's description text (job 6595, found 2026-10-19: title
+      // and company stayed correct since those come straight off the JSON,
+      // but the JD body got mismatched).
+      // ai: claude-sonnet-5 | 2026-10-19
+      const m = afterJobs.match(new RegExp('(?<![0-9a-zA-Z])' + escaped + ':T([0-9a-f]+),'));
       if (!m) return;
       const textLen = parseInt(m[1], 16);
       const blockStart = afterJobs.indexOf(m[0]) + m[0].length;

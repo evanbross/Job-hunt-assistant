@@ -88,9 +88,15 @@ def is_req_closed_job_row(job: dict) -> bool:
         the jobs row itself;
       * jobs already on the Applications Sheet: a 'req_closed' application_stages
         row, with the job keeping its own status.
-    The second shape isn't visible on the row, so JobsRepository.get_all_ordered
-    folds it into the REQ_CLOSED_ROW_FLAG column. Rows from any other query lack
-    that flag and are only recognised by the first shape.
+    Neither shape is visible on a job that was itself only ever skipped as a
+    *duplicate* of one of those rows (duplicate_of_id set, skip_reason
+    "duplicate") -- that row's own status/skip_reason/stages never say
+    "closed", even though it's a dead repost of a now-closed original once the
+    original closes. JobsRepository.get_all_ordered folds all of this into the
+    REQ_CLOSED_ROW_FLAG column by walking the duplicate_of_id chain (any
+    number of hops) and flagging a row closed if anything downstream in its
+    chain is closed by either direct shape. Rows from any other query lack
+    that flag and are only recognised by the first (direct) shape.
     """
     if job.get(REQ_CLOSED_ROW_FLAG):
         return True

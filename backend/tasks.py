@@ -48,6 +48,7 @@ import re
 import socket
 import time
 import urllib.error
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
@@ -177,6 +178,36 @@ def _llm_enrich_batch(user_id: int, url_rows: list[dict[str, Any]]) -> list[dict
             or not str(row.get("company") or "").strip()
         )
     ]
+    if not candidates:
+        return url_rows
+
+    # ai: claude-sonnet-5 | 2026-10-19
+    # Guard against a capture that couldn't isolate per-job content and handed
+    # several different URLs the exact same listing_text (job 6595: a Jobanni
+    # "All results" capture fell back to a generic DOM scrape whose per-card
+    # container walk landed on the whole results list instead of one card, so
+    # ~10 unrelated jobs all got the same shared blob and blank company).
+    # Bundling duplicates like that into the LLM call below just makes the
+    # model pick one job's title/company and apply it to every row sharing
+    # that text -- worse than leaving them blank, since a wrong confident
+    # value hides the failure and can even trip duplicate-detection into
+    # merging unrelated postings. A blob repeated across rows can't be
+    # correctly attributed to any one of them, so skip enrichment for all of
+    # them rather than guess.
+    text_counts = Counter(str(row.get("listing_text") or "") for _, row in candidates)
+    ambiguous = {text for text, count in text_counts.items() if count > 1}
+    if ambiguous:
+        logger.warning(
+            "LLM enrichment: %d row(s) share listing_text with another row in "
+            "this batch (capture likely failed to isolate per-job content); "
+            "skipping enrichment for those rows",
+            sum(text_counts[text] for text in ambiguous),
+        )
+        candidates = [
+            (i, row)
+            for i, row in candidates
+            if str(row.get("listing_text") or "") not in ambiguous
+        ]
     if not candidates:
         return url_rows
 

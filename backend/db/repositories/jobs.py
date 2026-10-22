@@ -302,23 +302,58 @@ class PostgresJobRepository(_BaseRepo):
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]:
-        # ai: claude-fable-5 | 2026-07-14
+        # ai: claude-sonnet-5 | 2026-10-21
         # on_sheet DESC keeps Applications Sheet jobs ahead of queue jobs —
         # _closed_req_candidates depends on that ordering.
         # ai: claude-sonnet-5 | 2026-09-23
-        # REQ_CLOSED_ROW_FLAG folds both req-closed storage shapes into one
-        # column so duplicate detection (the main consumer of these rows) can
-        # skip dead listings without a second query — see is_req_closed_job_row.
+        # REQ_CLOSED_ROW_FLAG folds req-closed status into one column so
+        # duplicate detection (the main consumer of these rows) can skip dead
+        # listings without a second query — see is_req_closed_job_row.
+        #
+        # ai: claude-sonnet-5 | 2026-10-21
+        # A job skipped as a duplicate of another job (duplicate_of_id set,
+        # skip_reason='duplicate') is itself a dead repost once that other job
+        # is later marked req closed — but its own row never gets a req_closed
+        # skip_reason or stage, so the two direct shapes below missed it. Job
+        # 3672 was flagged possible_duplicate of 3266, which was only skipped
+        # as a *duplicate* of 2864 — the actual req-closed original — so 3266
+        # read as "open" and stayed a valid fuzzy-match target. dup_chain walks
+        # duplicate_of_id (any number of hops, capped to guard against a bad
+        # cycle) and flags a row closed if it or anything downstream in its
+        # chain is closed by either direct shape.
         cur = self._execute(
-            "SELECT jobs.*, (("
-            " jobs.status = 'skipped' AND jobs.skip_reason = %s"
-            ") OR EXISTS ("
-            " SELECT 1 FROM application_stages s"
-            " WHERE s.job_id = jobs.id AND s.user_id = jobs.user_id AND s.status = %s"
-            f")) AS {REQ_CLOSED_ROW_FLAG}"
+            "WITH RECURSIVE dup_chain AS ("
+            " SELECT id AS start_id, id AS node_id, duplicate_of_id, 0 AS depth"
+            " FROM jobs WHERE user_id = %s"
+            " UNION ALL"
+            " SELECT dc.start_id, j.id, j.duplicate_of_id, dc.depth + 1"
+            " FROM dup_chain dc"
+            " JOIN jobs j ON j.id = dc.duplicate_of_id AND j.user_id = %s"
+            " WHERE dc.duplicate_of_id IS NOT NULL AND dc.depth < 10"
+            "), closed_nodes AS ("
+            " SELECT j.id,"
+            " (j.status = 'skipped' AND j.skip_reason = %s) AS self_closed,"
+            " EXISTS ("
+            "  SELECT 1 FROM application_stages s"
+            "  WHERE s.job_id = j.id AND s.user_id = j.user_id AND s.status = %s"
+            " ) AS stage_closed"
+            " FROM jobs j WHERE j.user_id = %s"
+            ")"
+            " SELECT jobs.*, EXISTS ("
+            " SELECT 1 FROM dup_chain dc"
+            " JOIN closed_nodes cn ON cn.id = dc.node_id"
+            " WHERE dc.start_id = jobs.id AND (cn.self_closed OR cn.stage_closed)"
+            f") AS {REQ_CLOSED_ROW_FLAG}"
             " FROM jobs WHERE jobs.user_id = %s"
             " ORDER BY jobs.on_sheet DESC, jobs.date_found DESC NULLS LAST, jobs.id DESC",
-            (REQ_CLOSED_SKIP_REASON, REQ_CLOSED_SKIP_REASON, user_id),
+            (
+                user_id,
+                user_id,
+                REQ_CLOSED_SKIP_REASON,
+                REQ_CLOSED_SKIP_REASON,
+                user_id,
+                user_id,
+            ),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
