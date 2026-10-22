@@ -63,13 +63,26 @@ export interface Contact {
   outreach_score?: number;
 }
 
-// ai: claude-opus-5-5 | 2026-10-14
-/** Response body of GET/PUT /api/contacts/outreach-template. */
-export interface OutreachTemplateResponse {
-  template: string;
+// ai: claude-opus-5-5 | 2026-10-21 -- was OutreachTemplateResponse (one unnamed template)
+/**
+ * A row of the `outreach_templates` table (backend/db/schema.py); the body of
+ * POST /api/outreach-templates and PUT /api/outreach-templates/<id>.
+ */
+export interface OutreachTemplate {
+  id: number;
+  title: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
 }
 
-/** Response body of POST /api/contacts/<id>/outreach-draft. */
+/** Response body of GET /api/outreach-templates. */
+export interface OutreachTemplateListResponse {
+  templates: OutreachTemplate[];
+}
+
+// ai: claude-opus-5-5 | 2026-10-14
+/** Response body of POST /api/contacts/<id>/outreach-draft/<template_id>. */
 export interface OutreachDraftResponse {
   draft: string;
 }

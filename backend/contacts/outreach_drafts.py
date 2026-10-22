@@ -9,8 +9,8 @@
 
 """LinkedIn outreach drafts for the Contacts tab's outreach queue.
 
-A draft is built from the user's saved template (placeholders filled from the
-contact), optionally rewritten per contact by the AI provider, then "staged"
+A draft is built from one of the user's named templates (placeholders filled
+from the contact), optionally rewritten per contact by the AI provider, then "staged"
 for the browser extension: when the user opens that contact's LinkedIn
 profile, the extension claims the staged draft (claim_draft_for_page below)
 and pastes it into the message box. The user always presses Send themselves.

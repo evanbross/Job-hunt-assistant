@@ -108,6 +108,7 @@ _ALL_TABLES = (
     "browser_capture_queue",
     "import_repair_history",
     "contact_outreach",
+    "outreach_templates",
     "extension_tokens",
     "google_oauth_tokens",
     "greenhouse_sessions",

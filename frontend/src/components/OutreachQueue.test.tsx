@@ -14,7 +14,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import OutreachQueue from "./OutreachQueue.tsx";
-import type { Contact } from "../types/contacts.ts";
+import type { Contact, OutreachTemplate } from "../types/contacts.ts";
 
 function contact(overrides: Partial<Contact> & { id: number; full_name: string }): Contact {
   return {
@@ -33,6 +33,9 @@ function jsonResponse(body: unknown) {
   return { ok: true, status: 200, json: () => Promise.resolve(body) };
 }
 
+// ai: claude-opus-5-5 | 2026-10-21
+const TEMPLATE: OutreachTemplate = { id: 7, title: "Coworkers", body: "Hi {first_name}", created_at: "t", updated_at: "t" };
+
 const CONTACTS: Contact[] = [
   contact({ id: 1, full_name: "Ada Default", interested: true, outreach_score: 9 }),
   contact({
@@ -49,8 +52,9 @@ describe("OutreachQueue picked contacts", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string) => {
-        if (url === "/api/contacts/outreach-template") return Promise.resolve(jsonResponse({ template: "Hi {first_name}" }));
-        if (url.endsWith("/outreach-draft")) return Promise.resolve(jsonResponse({ draft: "Hi there" }));
+        // ai: claude-opus-5-5 | 2026-10-21 -- named templates
+        if (url === "/api/outreach-templates") return Promise.resolve(jsonResponse({ templates: [TEMPLATE] }));
+        if (url.endsWith("/outreach-draft/7")) return Promise.resolve(jsonResponse({ draft: "Hi there" }));
         if (url.endsWith("/outreach")) return Promise.resolve(jsonResponse({ id: 99, sent_at: "2026-10-21T00:00:00Z", channel: "linkedin" }));
         return Promise.reject(new Error(`unexpected fetch ${url}`));
       }),
@@ -114,5 +118,76 @@ describe("OutreachQueue picked contacts", () => {
     expect(screen.getByText("LinkedIn outreach queue")).toBeInTheDocument();
     expect(screen.getByText("Ada Default")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to full queue" })).not.toBeInTheDocument();
+  });
+});
+
+// ai: claude-opus-5-5 | 2026-10-21
+describe("OutreachQueue named templates", () => {
+  const RECRUITERS: OutreachTemplate = { id: 8, title: "Recruiters", body: "Hello", created_at: "t", updated_at: "t" };
+  let templates: OutreachTemplate[];
+
+  beforeEach(() => {
+    localStorage.clear();
+    templates = [TEMPLATE, RECRUITERS];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/outreach-templates" && init?.method === "POST") {
+          const created = { id: 9, created_at: "t", updated_at: "t", ...JSON.parse(String(init.body)) };
+          return Promise.resolve({ ...jsonResponse(created), status: 201 });
+        }
+        if (url === "/api/outreach-templates") return Promise.resolve(jsonResponse({ templates }));
+        const draftMatch = /\/outreach-draft\/(\d+)$/.exec(url);
+        if (draftMatch) return Promise.resolve(jsonResponse({ draft: `draft from ${draftMatch[1]}` }));
+        return Promise.reject(new Error(`unexpected fetch ${url}`));
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const renderQueue = () =>
+    render(
+      <OutreachQueue contacts={CONTACTS} targetIds={[4]} onClearTarget={() => {}} onOutreachLogged={() => Promise.resolve()} />,
+    );
+
+  it("drafts from the first template, then redrafts and remembers the one picked", async () => {
+    renderQueue();
+    const draft = screen.getByLabelText("Message to Dee Undecided");
+    await waitFor(() => expect(draft).toHaveValue("draft from 7"));
+
+    fireEvent.change(screen.getByLabelText("Template"), { target: { value: "8" } });
+
+    await waitFor(() => expect(draft).toHaveValue("draft from 8"));
+    expect(localStorage.getItem("outreachTemplateId")).toBe("8");
+  });
+
+  it("starts from the remembered template", async () => {
+    localStorage.setItem("outreachTemplateId", "8");
+    renderQueue();
+    await waitFor(() => expect(screen.getByLabelText("Message to Dee Undecided")).toHaveValue("draft from 8"));
+  });
+
+  it("opens the template editor when there are none, and drafts from the first one created", async () => {
+    templates = [];
+    renderQueue();
+
+    const name = await screen.findByLabelText("Template name");
+    expect(screen.getByText(/None yet/)).toBeInTheDocument();
+    fireEvent.change(name, { target: { value: "Close coworkers" } });
+    fireEvent.change(screen.getByLabelText("Template message"), { target: { value: "Hey {first_name}" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create template" }));
+
+    await waitFor(() => expect(screen.getByLabelText("Message to Dee Undecided")).toHaveValue("draft from 9"));
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/outreach-templates",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ title: "Close coworkers", body: "Hey {first_name}" }),
+      }),
+    );
+    expect(screen.getByLabelText("Template")).toHaveValue("9");
   });
 });

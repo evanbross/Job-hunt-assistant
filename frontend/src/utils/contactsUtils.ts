@@ -16,6 +16,22 @@ export function contactsMatchKey(company?: string | null): string {
   return normalizeCompany(company).replace(/\s+/g, "");
 }
 
+// ai: claude-opus-5-5 | 2026-10-21 -- moved here from OutreachQueue so the
+// template manager shares them.
+// LinkedIn's direct-message limit; matches routes/contacts.py's
+// MAX_OUTREACH_MESSAGE_LENGTH (backend/contacts/outreach_drafts.py).
+export const MAX_OUTREACH_MESSAGE_LENGTH = 8000;
+// Matches routes/contacts.py's _MAX_OUTREACH_TEMPLATE_TITLE_LENGTH.
+export const MAX_OUTREACH_TEMPLATE_TITLE_LENGTH = 100;
+// The placeholders backend/contacts/outreach_drafts.py's render_outreach_template() fills.
+export const OUTREACH_PLACEHOLDER_HELP = "Placeholders: {first_name}, {full_name}, {company}, {position}";
+
+// Error message from a failed JSON response, or the HTTP status.
+export async function responseErrorText(res: Response): Promise<string> {
+  const body = await res.json().catch(() => ({}));
+  return typeof body?.error === "string" ? body.error : `HTTP ${res.status}`;
+}
+
 // ai: claude-opus-5-5 | 2026-10-14
 // JSON write helper shared by the Contacts tab's panels (was copy-pasted into
 // ContactsPanel, CompaniesReport, and TitlesReport).

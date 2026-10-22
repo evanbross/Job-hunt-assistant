@@ -50,6 +50,7 @@ from pydantic import (
 )
 
 from backend.ai_provider import AIProviderError
+from backend.db import DuplicateOutreachTemplateTitleError
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.contacts_service import build_company_map
 from backend.contacts.outreach_drafts import (
@@ -62,7 +63,6 @@ from backend.contacts.title_suggestion_service import (
     finish_title_suggestions,
     prepare_title_suggestions,
 )
-from backend.settings_service import get_setting, set_setting
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     CandidateProfileMissingError,
@@ -109,7 +109,8 @@ CompanyWorkforce = Literal["unknown", "onshore", "offshore_hybrid"]
 # Matches backend/db/schema.py's contact_outreach_channel_check constraint.
 OutreachChannel = Literal["email", "linkedin"]
 
-_OUTREACH_TEMPLATE_SETTING = "linkedin_outreach_template"
+# ai: claude-opus-5-5 | 2026-10-21
+_MAX_OUTREACH_TEMPLATE_TITLE_LENGTH = 100
 
 
 # ai: claude-sonnet-5 | 2026-09-28
@@ -249,11 +250,23 @@ def _normalize_outreach_message(value: str) -> str:
 OutreachMessage = Annotated[str, AfterValidator(_normalize_outreach_message)]
 
 
-# ai: claude-opus-5-5 | 2026-10-14
-class OutreachTemplateUpdate(BaseModel):
+# ai: claude-opus-5-5 | 2026-10-21
+def _normalize_outreach_template_title(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("title must not be empty")
+    if len(value) > _MAX_OUTREACH_TEMPLATE_TITLE_LENGTH:
+        raise ValueError(f"title is limited to {_MAX_OUTREACH_TEMPLATE_TITLE_LENGTH} characters")
+    return value
+
+
+# ai: claude-opus-5-5 | 2026-10-21 -- was OutreachTemplateUpdate (one unnamed
+# template); create and update both send the whole template.
+class OutreachTemplateWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    template: OutreachMessage
+    title: Annotated[str, AfterValidator(_normalize_outreach_template_title)]
+    body: OutreachMessage
 
 
 # ai: claude-opus-5-5 | 2026-10-14
@@ -680,34 +693,71 @@ def delete_contact_employment_history(entry_id: int) -> ResponseReturnValue:
     return jsonify({"ok": True})
 
 
-# ai: claude-opus-5-5 | 2026-10-14
-@contacts_bp.route("/contacts/outreach-template")
-def get_outreach_template() -> ResponseReturnValue:
-    user_id = current_user_id()
+# ai: claude-opus-5-5 | 2026-10-21
+@contacts_bp.route("/outreach-templates")
+def list_outreach_templates() -> ResponseReturnValue:
     with get_repos() as repos:
-        template = get_setting(_OUTREACH_TEMPLATE_SETTING, user_id, repos)
-    return jsonify({"template": template})
+        templates = repos["outreach_templates"].list_for_user(current_user_id())
+    return jsonify({"templates": templates})
 
 
-# ai: claude-opus-5-5 | 2026-10-14
-@contacts_bp.route("/contacts/outreach-template", methods=["PUT"])
-def update_outreach_template() -> ResponseReturnValue:
+# ai: claude-opus-5-5 | 2026-10-21
+@contacts_bp.route("/outreach-templates", methods=["POST"])
+def create_outreach_template() -> ResponseReturnValue:
     try:
-        body = OutreachTemplateUpdate.model_validate(request.get_json(silent=True) or {})
+        body = OutreachTemplateWrite.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
         return invalid_request_response(exc)
 
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     with get_repos() as repos:
-        set_setting(_OUTREACH_TEMPLATE_SETTING, body.template, current_user_id(), repos)
+        try:
+            template = repos["outreach_templates"].insert(current_user_id(), body.title, body.body, now)
+        except DuplicateOutreachTemplateTitleError:
+            return jsonify({"error": f'You already have a template titled "{body.title}"'}), 409
         repos["conn"].commit()
-    return jsonify({"template": body.template})
+    return jsonify(template), 201
+
+
+# ai: claude-opus-5-5 | 2026-10-21
+@contacts_bp.route("/outreach-templates/<int:template_id>", methods=["PUT"])
+def update_outreach_template(template_id: int) -> ResponseReturnValue:
+    try:
+        body = OutreachTemplateWrite.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    with get_repos() as repos:
+        try:
+            template = repos["outreach_templates"].update(
+                current_user_id(), template_id, body.title, body.body, now
+            )
+        except DuplicateOutreachTemplateTitleError:
+            return jsonify({"error": f'You already have a template titled "{body.title}"'}), 409
+        if template is None:
+            return jsonify({"error": "Template not found"}), 404
+        repos["conn"].commit()
+    return jsonify(template)
+
+
+# ai: claude-opus-5-5 | 2026-10-21
+@contacts_bp.route("/outreach-templates/<int:template_id>", methods=["DELETE"])
+def delete_outreach_template(template_id: int) -> ResponseReturnValue:
+    with get_repos() as repos:
+        if not repos["outreach_templates"].delete(current_user_id(), template_id):
+            return jsonify({"error": "Template not found"}), 404
+        repos["conn"].commit()
+    return jsonify({"ok": True})
 
 
 # ai: claude-opus-5-5 | 2026-10-14
 # Read-only: builds a draft for the user to review and edit. Nothing is saved
 # until they stage it (stage_outreach_draft below).
-@contacts_bp.route("/contacts/<int:contact_id>/outreach-draft", methods=["POST"])
-def build_outreach_draft(contact_id: int) -> ResponseReturnValue:
+# ai: claude-opus-5-5 | 2026-10-21 -- the template is now picked per draft
+# (template_id in the path) instead of the one saved template.
+@contacts_bp.route("/contacts/<int:contact_id>/outreach-draft/<int:template_id>", methods=["POST"])
+def build_outreach_draft(contact_id: int, template_id: int) -> ResponseReturnValue:
     try:
         body = OutreachDraftRequest.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
@@ -718,7 +768,9 @@ def build_outreach_draft(contact_id: int) -> ResponseReturnValue:
         contact = repos["contacts"].get_by_id(user_id, contact_id)
         if contact is None:
             return jsonify({"error": "Contact not found"}), 404
-        template = get_setting(_OUTREACH_TEMPLATE_SETTING, user_id, repos)
+        template = repos["outreach_templates"].get_by_id(user_id, template_id)
+        if template is None:
+            return jsonify({"error": "Template not found"}), 404
         candidate_profile = ""
         if body.use_ai:
             try:
@@ -726,7 +778,7 @@ def build_outreach_draft(contact_id: int) -> ResponseReturnValue:
             except CandidateProfileMissingError:
                 pass  # optional context: the AI personalizes from the template alone
     # Connection released before the AI call
-    draft = render_outreach_template(template, contact)
+    draft = render_outreach_template(template["body"], contact)
     if not body.use_ai:
         return jsonify({"draft": draft})
 

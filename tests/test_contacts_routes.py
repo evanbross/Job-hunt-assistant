@@ -18,6 +18,7 @@ import pytest
 from flask import Flask
 
 from backend.ai_provider import AIProviderError
+from backend.db import DuplicateOutreachTemplateTitleError
 from backend.db.interfaces import ContactSyncResult
 from routes.contacts import contacts_bp
 
@@ -208,6 +209,41 @@ class FakeSettingsRepo:
         self.values[key] = value
 
 
+# ai: claude-opus-5-5 | 2026-10-21
+class FakeOutreachTemplatesRepo:
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+        self.rows = rows or []
+
+    def list_for_user(self, user_id: int) -> list[dict[str, Any]]:
+        return sorted((dict(row) for row in self.rows), key=lambda row: row["title"].lower())
+
+    def get_by_id(self, user_id: int, template_id: int) -> dict[str, Any] | None:
+        return next((dict(row) for row in self.rows if row["id"] == template_id), None)
+
+    def insert(self, user_id: int, title: str, body: str, now: str) -> dict[str, Any]:
+        if any(row["title"] == title for row in self.rows):
+            raise DuplicateOutreachTemplateTitleError(title)
+        row = {"id": len(self.rows) + 1, "title": title, "body": body, "created_at": now, "updated_at": now}
+        self.rows.append(row)
+        return dict(row)
+
+    def update(
+        self, user_id: int, template_id: int, title: str, body: str, now: str
+    ) -> dict[str, Any] | None:
+        if any(row["title"] == title and row["id"] != template_id for row in self.rows):
+            raise DuplicateOutreachTemplateTitleError(title)
+        for row in self.rows:
+            if row["id"] == template_id:
+                row.update(title=title, body=body, updated_at=now)
+                return dict(row)
+        return None
+
+    def delete(self, user_id: int, template_id: int) -> bool:
+        before = len(self.rows)
+        self.rows = [row for row in self.rows if row["id"] != template_id]
+        return len(self.rows) < before
+
+
 # ai: claude-sonnet-5 | 2026-09-28
 class FakeTitleRuleRepo:
     def __init__(self, report: list[dict[str, Any]] | None = None) -> None:
@@ -370,6 +406,7 @@ def _contacts_client(
     title_rules: FakeTitleRuleRepo | None = None,
     settings: FakeSettingsRepo | None = None,
     candidate_profiles: FakeCandidateProfilesRepo | None = None,
+    templates: FakeOutreachTemplatesRepo | None = None,
 ) -> Any:
     repos = {
         "conn": FakeConnection(),
@@ -382,6 +419,7 @@ def _contacts_client(
         "title_rules": title_rules or FakeTitleRuleRepo(),
         "jobs": FakeJobsRepo(),
         "stage_statuses": FakeStageStatusesRepo(),
+        "outreach_templates": templates or FakeOutreachTemplatesRepo(),
     }
     return _make_app(repos, monkeypatch).test_client()
 
@@ -1033,49 +1071,104 @@ def test_log_outreach_for_unknown_contact_does_not_clear_a_draft(
     assert contacts.cleared == []
 
 
-# ai: claude-opus-5-5 | 2026-10-14
-def test_outreach_template_defaults_then_saves(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = FakeSettingsRepo()
-    client = _contacts_client(monkeypatch, settings=settings)
-
-    default = client.get("/api/contacts/outreach-template").get_json()["template"]
-    assert "{first_name}" in default
-
-    saved = client.put("/api/contacts/outreach-template", json={"template": "  Hey {first_name}!  "})
-    assert saved.status_code == 200
-    assert saved.get_json() == {"template": "Hey {first_name}!"}
-    assert settings.values["linkedin_outreach_template"] == "Hey {first_name}!"
-    assert client.get("/api/contacts/outreach-template").get_json() == {
-        "template": "Hey {first_name}!"
-    }
+# ai: claude-opus-5-5 | 2026-10-21
+def _template(template_id: int, title: str, body: str) -> dict[str, Any]:
+    return {"id": template_id, "title": title, "body": body, "created_at": "t", "updated_at": "t"}
 
 
-# ai: claude-opus-5-5 | 2026-10-14
-@pytest.mark.parametrize("bad_template", ["", "   ", "x" * 8001, None, 5])
+# ai: claude-opus-5-5 | 2026-10-21
+def test_outreach_templates_create_list_update_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+    templates = FakeOutreachTemplatesRepo()
+    client = _contacts_client(monkeypatch, templates=templates)
+
+    assert client.get("/api/outreach-templates").get_json() == {"templates": []}
+
+    created = client.post(
+        "/api/outreach-templates", json={"title": "  Recruiters ", "body": "  Hi {first_name}!  "}
+    )
+    assert created.status_code == 201
+    template = created.get_json()
+    assert (template["title"], template["body"]) == ("Recruiters", "Hi {first_name}!")
+    assert template["created_at"].endswith("+00:00")
+    client.post("/api/outreach-templates", json={"title": "close coworkers", "body": "Hey"})
+    listed = client.get("/api/outreach-templates").get_json()["templates"]
+    assert [t["title"] for t in listed] == ["close coworkers", "Recruiters"]
+
+    template_url = f"/api/outreach-templates/{template['id']}"
+    updated = client.put(template_url, json={"title": "Good recruiters", "body": "Hello"})
+    assert updated.status_code == 200
+    assert (updated.get_json()["title"], updated.get_json()["body"]) == ("Good recruiters", "Hello")
+
+    assert client.delete(template_url).status_code == 200
+    assert [t["title"] for t in templates.rows] == ["close coworkers"]
+    assert client.delete(template_url).status_code == 404
+    assert client.put(template_url, json={"title": "x", "body": "y"}).status_code == 404
+
+
+# ai: claude-opus-5-5 | 2026-10-21
+def test_outreach_template_duplicate_title_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    templates = FakeOutreachTemplatesRepo([_template(1, "Recruiters", "a"), _template(2, "Coworkers", "b")])
+    client = _contacts_client(monkeypatch, templates=templates)
+
+    assert client.post(
+        "/api/outreach-templates", json={"title": "Recruiters", "body": "c"}
+    ).status_code == 409
+    assert client.put(
+        "/api/outreach-templates/2", json={"title": "Recruiters", "body": "b"}
+    ).status_code == 409
+    assert [(t["title"], t["body"]) for t in templates.rows] == [("Recruiters", "a"), ("Coworkers", "b")]
+
+
+# ai: claude-opus-5-5 | 2026-10-21
+@pytest.mark.parametrize(
+    "bad_body",
+    [
+        {"title": "T", "body": ""},
+        {"title": "T", "body": "   "},
+        {"title": "T", "body": "x" * 8001},
+        {"title": "T", "body": None},
+        {"title": "T", "body": 5},
+        {"title": " ", "body": "Hi"},
+        {"title": "x" * 101, "body": "Hi"},
+        {"body": "Hi"},
+        {"title": "T"},
+        {"title": "T", "body": "Hi", "extra": 1},
+    ],
+)
 def test_outreach_template_rejects_bad_values(
-    monkeypatch: pytest.MonkeyPatch, bad_template: object
+    monkeypatch: pytest.MonkeyPatch, bad_body: dict[str, object]
 ) -> None:
-    settings = FakeSettingsRepo()
-    client = _contacts_client(monkeypatch, settings=settings)
+    templates = FakeOutreachTemplatesRepo([_template(1, "Recruiters", "a")])
+    client = _contacts_client(monkeypatch, templates=templates)
 
-    response = client.put("/api/contacts/outreach-template", json={"template": bad_template})
-    assert response.status_code == 400
-    assert settings.values == {}
+    assert client.post("/api/outreach-templates", json=bad_body).status_code == 400
+    assert client.put("/api/outreach-templates/1", json=bad_body).status_code == 400
+    assert templates.rows == [_template(1, "Recruiters", "a")]
 
 
-# ai: claude-opus-5-5 | 2026-10-14
-def test_outreach_draft_renders_the_saved_template(monkeypatch: pytest.MonkeyPatch) -> None:
+# ai: claude-opus-5-5 | 2026-10-21 -- renders the template picked by id
+def test_outreach_draft_renders_the_chosen_template(monkeypatch: pytest.MonkeyPatch) -> None:
     contacts = FakeContactsRepo(
         [{"id": 1, "full_name": "Jane Q Doe", "company_raw": "Acme", "position": "CTO"}]
     )
-    settings = FakeSettingsRepo()
-    settings.values["linkedin_outreach_template"] = "Hi {first_name} ({position} at {company}) {x}"
-    client = _contacts_client(monkeypatch, contacts, settings=settings)
+    templates = FakeOutreachTemplatesRepo(
+        [
+            _template(1, "Coworkers", "Hi {first_name} ({position} at {company}) {x}"),
+            _template(2, "Recruiters", "Hello {full_name}"),
+        ]
+    )
+    client = _contacts_client(monkeypatch, contacts, templates=templates)
 
-    response = client.post("/api/contacts/1/outreach-draft", json={})
+    response = client.post("/api/contacts/1/outreach-draft/1", json={})
     assert response.status_code == 200
     assert response.get_json() == {"draft": "Hi Jane (CTO at Acme) {x}"}
-    assert client.post("/api/contacts/2/outreach-draft", json={}).status_code == 404
+    assert client.post("/api/contacts/1/outreach-draft/2", json={}).get_json() == {
+        "draft": "Hello Jane Q Doe"
+    }
+    assert client.post("/api/contacts/2/outreach-draft/1", json={}).status_code == 404
+    missing_template = client.post("/api/contacts/1/outreach-draft/3", json={})
+    assert missing_template.status_code == 404
+    assert missing_template.get_json() == {"error": "Template not found"}
 
 
 # ai: claude-opus-5-5 | 2026-10-14
@@ -1084,8 +1177,7 @@ def test_outreach_draft_with_ai_passes_template_draft_and_profile(
     monkeypatch: pytest.MonkeyPatch, profile: str | None
 ) -> None:
     contacts = FakeContactsRepo([{"id": 1, "full_name": "Jane Doe", "company_raw": "Acme"}])
-    settings = FakeSettingsRepo()
-    settings.values["linkedin_outreach_template"] = "Hi {first_name}"
+    templates = FakeOutreachTemplatesRepo([_template(1, "General", "Hi {first_name}")])  # ai: claude-opus-5-5 | 2026-10-21
     calls: list[tuple[int, str, str]] = []
 
     class FakeWriter:
@@ -1100,11 +1192,11 @@ def test_outreach_draft_with_ai_passes_template_draft_and_profile(
     client = _contacts_client(
         monkeypatch,
         contacts,
-        settings=settings,
+        templates=templates,
         candidate_profiles=FakeCandidateProfilesRepo(profile),
     )
 
-    response = client.post("/api/contacts/1/outreach-draft", json={"use_ai": True})
+    response = client.post("/api/contacts/1/outreach-draft/1", json={"use_ai": True})
     assert response.status_code == 200
     assert response.get_json() == {"draft": "AI wrote this"}
     assert calls == [(1, "Hi Jane", profile or "")]
@@ -1120,9 +1212,13 @@ def test_outreach_draft_ai_failure_returns_502(monkeypatch: pytest.MonkeyPatch) 
             raise AIProviderError("Anthropic API key is not configured.")
 
     monkeypatch.setattr("routes.contacts.OutreachDraftWriter", FailingWriter)
-    client = _contacts_client(monkeypatch, FakeContactsRepo([{"id": 1, "full_name": "Jane"}]))
+    client = _contacts_client(
+        monkeypatch,
+        FakeContactsRepo([{"id": 1, "full_name": "Jane"}]),
+        templates=FakeOutreachTemplatesRepo([_template(1, "General", "Hi")]),  # ai: claude-opus-5-5 | 2026-10-21
+    )
 
-    response = client.post("/api/contacts/1/outreach-draft", json={"use_ai": True})
+    response = client.post("/api/contacts/1/outreach-draft/1", json={"use_ai": True})
     assert response.status_code == 502
     assert response.get_json() == {"error": "Anthropic API key is not configured."}
 

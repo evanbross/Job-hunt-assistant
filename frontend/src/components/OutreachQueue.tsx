@@ -10,15 +10,19 @@
 // ai: claude-opus-5-5 | 2026-10-14
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
+import OutreachTemplateManager from "./OutreachTemplateManager.tsx";
+import { MAX_OUTREACH_MESSAGE_LENGTH, responseErrorText, safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
 import { formatLocalDate } from "../utils/dateTimeUtils.ts";
-import type { Contact, OutreachDraftResponse, OutreachTemplateResponse } from "../types/contacts.ts";
+import type {
+  Contact,
+  OutreachDraftResponse,
+  OutreachTemplate,
+  OutreachTemplateListResponse,
+} from "../types/contacts.ts";
 
-// LinkedIn's direct-message limit; matches routes/contacts.py's
-// MAX_OUTREACH_MESSAGE_LENGTH (backend/contacts/outreach_drafts.py).
-const MAX_MESSAGE_LENGTH = 8000;
-
-const PLACEHOLDER_HELP = "Placeholders: {first_name}, {full_name}, {company}, {position}";
+// ai: claude-opus-5-5 | 2026-10-21
+// The template last picked in the queue, so a reload keeps using it.
+const TEMPLATE_STORAGE_KEY = "outreachTemplateId";
 
 interface OutreachQueueProps {
   contacts: Contact[];
@@ -43,22 +47,28 @@ function queueOrder(a: Contact, b: Contact): number {
   return (b.outreach_score ?? 0) - (a.outreach_score ?? 0) || a.full_name.localeCompare(b.full_name) || a.id - b.id;
 }
 
-async function errorText(res: Response): Promise<string> {
-  const body = await res.json().catch(() => ({}));
-  return typeof body?.error === "string" ? body.error : `HTTP ${res.status}`;
+// ai: claude-opus-5-5 | 2026-10-21
+function byTitle(a: OutreachTemplate, b: OutreachTemplate): number {
+  return a.title.toLowerCase().localeCompare(b.title.toLowerCase()) || a.id - b.id;
+}
+
+function rememberedTemplateId(templates: OutreachTemplate[]): number | null {
+  const remembered = Number(localStorage.getItem(TEMPLATE_STORAGE_KEY));
+  return templates.some((t) => t.id === remembered) ? remembered : (templates[0]?.id ?? null);
 }
 
 // ai: claude-opus-5-5 | 2026-10-14
 /**
  * Walks the "want to contact" list one person at a time: prepares a LinkedIn
- * message from the saved template (optionally rewritten by AI), stages it so
+ * message from the chosen template (optionally rewritten by AI), stages it so
  * the browser extension pastes it into that contact's LinkedIn message box,
  * then logs it as sent once the user confirms they pressed Send on LinkedIn.
  */
 export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOutreachLogged }: OutreachQueueProps) {
-  const [template, setTemplate] = useState("");
-  const [templateDraft, setTemplateDraft] = useState("");
-  const [showTemplate, setShowTemplate] = useState(false);
+  // ai: claude-opus-5-5 | 2026-10-21 -- named templates replace the single saved one
+  const [templates, setTemplates] = useState<OutreachTemplate[] | null>(null); // null until loaded
+  const [templateId, setTemplateId] = useState<number | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [skippedIds, setSkippedIds] = useState<Set<number>>(() => new Set());
   const [draft, setDraft] = useState("");
   const [draftEdited, setDraftEdited] = useState(false);
@@ -88,29 +98,34 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
   const currentId = current?.id ?? null;
   const profileUrl = safeHttpUrl(current?.profile_url);
 
+  const templatesLoaded = templates !== null;
+
+  // ai: claude-opus-5-5 | 2026-10-21
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/contacts/outreach-template")
+    fetch("/api/outreach-templates")
       .then(async (res) => {
-        if (!res.ok) throw new Error(await errorText(res));
-        return res.json() as Promise<OutreachTemplateResponse>;
+        if (!res.ok) throw new Error(await responseErrorText(res));
+        return res.json() as Promise<OutreachTemplateListResponse>;
       })
       .then((data) => {
         if (cancelled) return;
-        setTemplate(data.template);
-        setTemplateDraft(data.template);
+        setTemplates(data.templates);
+        setTemplateId(rememberedTemplateId(data.templates));
+        if (data.templates.length === 0) setShowTemplates(true);
       })
       .catch((e) => {
-        if (!cancelled) setStatus(`Could not load your message template: ${e instanceof Error ? e.message : String(e)}`);
+        if (!cancelled) setStatus(`Could not load your message templates: ${e instanceof Error ? e.message : String(e)}`);
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const requestDraft = async (contactId: number, useAi: boolean): Promise<string> => {
-    const res = await sendJson(`/api/contacts/${contactId}/outreach-draft`, "POST", { use_ai: useAi });
-    if (!res.ok) throw new Error(await errorText(res));
+  // ai: claude-opus-5-5 | 2026-10-21 -- takes the template to draft from
+  const requestDraft = async (contactId: number, fromTemplateId: number, useAi: boolean): Promise<string> => {
+    const res = await sendJson(`/api/contacts/${contactId}/outreach-draft/${fromTemplateId}`, "POST", { use_ai: useAi });
+    if (!res.ok) throw new Error(await responseErrorText(res));
     const data: OutreachDraftResponse = await res.json();
     return data.draft;
   };
@@ -119,8 +134,10 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
   // earlier, if any, otherwise start from the template. Read-only request, so
   // a StrictMode double-run is harmless; `cancelled` drops a stale response
   // if the queue moved on before it arrived.
+  // ai: claude-opus-5-5 | 2026-10-21 -- also reruns once the templates load,
+  // and leaves the draft empty when there is no template to start from.
   useEffect(() => {
-    if (currentId === null) return undefined;
+    if (currentId === null || !templatesLoaded) return undefined;
     const savedDraft = contacts.find((c) => c.id === currentId)?.outreach_draft;
     setOpenedForId(null);
     setDraftEdited(Boolean(savedDraft));
@@ -128,10 +145,11 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
       setDraft(savedDraft);
       return undefined;
     }
-    let cancelled = false;
     setDraft("");
+    if (templateId === null) return undefined;
+    let cancelled = false;
     setDraftLoading(true);
-    requestDraft(currentId, false)
+    requestDraft(currentId, templateId, false)
       .then((text) => {
         if (!cancelled) setDraft(text);
       })
@@ -145,17 +163,20 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
       cancelled = true;
     };
     // contacts is deliberately omitted: a reload after an unrelated edit must
-    // not throw away the draft being worked on for the same person.
+    // not throw away the draft being worked on for the same person. templateId
+    // too: picking a template redrafts through chooseTemplate(), which asks
+    // before replacing an edited draft.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentId]);
+  }, [currentId, templatesLoaded]);
 
-  const regenerate = async (useAi: boolean) => {
+  // ai: claude-opus-5-5 | 2026-10-21 -- takes the template explicitly, so a
+  // caller that just changed it doesn't read a stale templateId.
+  const loadDraft = async (fromTemplateId: number, useAi: boolean) => {
     if (currentId === null) return;
-    if (draftEdited && !window.confirm("Replace your edited draft?")) return;
     setDraftLoading(true);
     setStatus(useAi ? "Asking the AI for a personalized draft…" : "");
     try {
-      const text = await requestDraft(currentId, useAi);
+      const text = await requestDraft(currentId, fromTemplateId, useAi);
       setDraft(text);
       setDraftEdited(useAi);
       setStatus("");
@@ -166,22 +187,46 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
     }
   };
 
-  const saveTemplate = async () => {
-    setBusy(true);
-    try {
-      const res = await sendJson("/api/contacts/outreach-template", "PUT", { template: templateDraft });
-      if (!res.ok) throw new Error(await errorText(res));
-      const data: OutreachTemplateResponse = await res.json();
-      setTemplate(data.template);
-      setTemplateDraft(data.template);
-      setShowTemplate(false);
-      setStatus("Template saved.");
-      if (currentId !== null && !draftEdited) setDraft(await requestDraft(currentId, false));
-    } catch (e) {
-      window.alert(`Could not save the template: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setBusy(false);
-    }
+  // ai: claude-opus-5-5 | 2026-10-21
+  const regenerate = async (useAi: boolean) => {
+    if (templateId === null) return;
+    if (draftEdited && !window.confirm("Replace your edited draft?")) return;
+    await loadDraft(templateId, useAi);
+  };
+
+  // ai: claude-opus-5-5 | 2026-10-21
+  const selectTemplate = (nextId: number | null) => {
+    setTemplateId(nextId);
+    if (nextId !== null) localStorage.setItem(TEMPLATE_STORAGE_KEY, String(nextId));
+  };
+
+  // ai: claude-opus-5-5 | 2026-10-21
+  const chooseTemplate = async (nextId: number) => {
+    if (draftEdited && !window.confirm("Replace your edited draft with this template?")) return;
+    selectTemplate(nextId);
+    await loadDraft(nextId, false);
+  };
+
+  // ai: claude-opus-5-5 | 2026-10-21 -- an unedited draft follows changes to
+  // the template it came from.
+  const onTemplateSaved = async (saved: OutreachTemplate) => {
+    setTemplates((prev) => [...(prev ?? []).filter((t) => t.id !== saved.id), saved].sort(byTitle));
+    setStatus(`Saved the "${saved.title}" template.`);
+    if (templateId !== null && templateId !== saved.id) return;
+    selectTemplate(saved.id);
+    if (!draftEdited) await loadDraft(saved.id, false);
+  };
+
+  // ai: claude-opus-5-5 | 2026-10-21
+  const onTemplateDeleted = async (deletedId: number) => {
+    const remaining = (templates ?? []).filter((t) => t.id !== deletedId);
+    setTemplates(remaining);
+    if (templateId !== deletedId) return;
+    const nextId = remaining[0]?.id ?? null;
+    selectTemplate(nextId);
+    if (draftEdited) return;
+    if (nextId === null) setDraft("");
+    else await loadDraft(nextId, false);
   };
 
   const openInLinkedIn = async () => {
@@ -194,7 +239,7 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
     setBusy(true);
     try {
       const res = await sendJson(`/api/contacts/${current.id}/outreach-draft/stage`, "POST", { draft: message });
-      if (!res.ok) throw new Error(await errorText(res));
+      if (!res.ok) throw new Error(await responseErrorText(res));
       // Clipboard is the fallback if the extension can't reach the message
       // box (not a 1st-degree connection, LinkedIn layout change, extension off).
       let copied = true;
@@ -222,7 +267,7 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
     setBusy(true);
     try {
       const res = await sendJson(`/api/contacts/${current.id}/outreach`, "POST", { channel: "linkedin" });
-      if (!res.ok) throw new Error(await errorText(res));
+      if (!res.ok) throw new Error(await responseErrorText(res));
       setSentIds((prev) => new Set(prev).add(current.id));
       setStatus(`Logged your message to ${current.full_name}.`);
       await onOutreachLogged();
@@ -268,35 +313,24 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
             Back to full queue
           </button>
         )}
-        <button className="btn-secondary btn-sm" onClick={() => setShowTemplate((open) => !open)}>
-          {showTemplate ? "Hide template" : "Edit template"}
+        {/* ai: claude-opus-5-5 | 2026-10-21 */}
+        <button
+          className="btn-secondary btn-sm"
+          disabled={!templatesLoaded}
+          onClick={() => setShowTemplates((open) => !open)}
+        >
+          {showTemplates ? "Hide templates" : "Edit templates"}
         </button>
       </div>
 
-      {showTemplate && (
-        <div style={templateBox}>
-          <textarea
-            value={templateDraft}
-            rows={6}
-            maxLength={MAX_MESSAGE_LENGTH}
-            onChange={(e) => setTemplateDraft(e.target.value)}
-            aria-label="LinkedIn message template"
-            style={{ width: "100%", resize: "vertical" }}
-          />
-          <div style={{ ...mutedText, margin: "4px 0 8px" }}>{PLACEHOLDER_HELP}</div>
-          <div style={{ display: "flex", gap: "8px" }}>
-            <button
-              className="btn-primary btn-sm"
-              disabled={busy || !templateDraft.trim() || templateDraft === template}
-              onClick={saveTemplate}
-            >
-              Save template
-            </button>
-            <button className="btn-secondary btn-sm" disabled={busy} onClick={() => setTemplateDraft(template)}>
-              Revert
-            </button>
-          </div>
-        </div>
+      {/* ai: claude-opus-5-5 | 2026-10-21 */}
+      {showTemplates && templates !== null && (
+        <OutreachTemplateManager
+          templates={templates}
+          initialId={templateId}
+          onSaved={onTemplateSaved}
+          onDeleted={onTemplateDeleted}
+        />
       )}
 
       {current && (
@@ -319,10 +353,35 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
             </div>
           )}
 
+          {/* ai: claude-opus-5-5 | 2026-10-21 */}
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px" }}>
+            <label style={mutedText} htmlFor="outreach-template-choice">
+              Template
+            </label>
+            {templates !== null && templates.length > 0 ? (
+              <select
+                id="outreach-template-choice"
+                value={templateId ?? ""}
+                disabled={busy || draftLoading}
+                onChange={(e) => chooseTemplate(Number(e.target.value))}
+              >
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.title}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span style={mutedText}>
+                {templates === null ? "Loading…" : "None yet. Create one under \"Edit templates\"."}
+              </span>
+            )}
+          </div>
+
           <textarea
             value={draft}
             rows={7}
-            maxLength={MAX_MESSAGE_LENGTH}
+            maxLength={MAX_OUTREACH_MESSAGE_LENGTH}
             disabled={draftLoading}
             placeholder={draftLoading ? "Preparing a draft…" : "Your message"}
             onChange={(e) => {
@@ -330,17 +389,25 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
               setDraftEdited(true);
             }}
             aria-label={`Message to ${current.full_name}`}
-            style={{ width: "100%", resize: "vertical", marginTop: "10px" }}
+            style={{ width: "100%", resize: "vertical", marginTop: "6px" }}
           />
           <div style={{ ...mutedText, textAlign: "right" }}>
-            {draft.length.toLocaleString()} / {MAX_MESSAGE_LENGTH.toLocaleString()}
+            {draft.length.toLocaleString()} / {MAX_OUTREACH_MESSAGE_LENGTH.toLocaleString()}
           </div>
 
           <div style={actionRow}>
-            <button className="btn-secondary btn-sm" disabled={busy || draftLoading} onClick={() => regenerate(true)}>
+            <button
+              className="btn-secondary btn-sm"
+              disabled={busy || draftLoading || templateId === null}
+              onClick={() => regenerate(true)}
+            >
               Draft with AI
             </button>
-            <button className="btn-secondary btn-sm" disabled={busy || draftLoading} onClick={() => regenerate(false)}>
+            <button
+              className="btn-secondary btn-sm"
+              disabled={busy || draftLoading || templateId === null}
+              onClick={() => regenerate(false)}
+            >
               Reset to template
             </button>
             <span style={{ flex: 1 }} />
@@ -379,14 +446,6 @@ const headerRow: CSSProperties = {
 const mutedText: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
-};
-
-const templateBox: CSSProperties = {
-  marginTop: "12px",
-  padding: "10px 12px",
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
 };
 
 const actionRow: CSSProperties = {

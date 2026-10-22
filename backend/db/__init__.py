@@ -78,6 +78,7 @@ from .interfaces import (
     IJdHealthCheckTargetRepository,
     IJobRepository,
     IJobStatusHistoryRepository,
+    IOutreachTemplateRepository,
     IPenaltyRuleRepository,
     IRelevanceFeedbackRepository,
     IResumeRepository,
@@ -116,6 +117,10 @@ from .repositories.contact_outreach import PostgresContactOutreachRepository
 from .repositories.contacts import PostgresContactRepository
 from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseRepository
 from .repositories.email_sources import PostgresEmailSourceRepository
+from .repositories.outreach_templates import (
+    DuplicateOutreachTemplateTitleError,
+    PostgresOutreachTemplateRepository,
+)
 from .repositories.email_subject_rules import PostgresEmailSubjectRuleRepository
 from .repositories.extension_tokens import PostgresExtensionTokenRepository
 from .repositories.google_tokens import PostgresGoogleTokenRepository
@@ -167,6 +172,7 @@ __all__ = [
     "IJdHealthCheckTargetRepository",
     "IJobRepository",
     "IJobStatusHistoryRepository",
+    "IOutreachTemplateRepository",
     "IPenaltyRuleRepository",
     "IRelevanceFeedbackRepository",
     "IResumeRepository",
@@ -206,6 +212,7 @@ __all__ = [
     "PostgresJdHealthCheckTargetRepository",
     "PostgresJobRepository",
     "PostgresJobStatusHistoryRepository",
+    "PostgresOutreachTemplateRepository",
     "PostgresPenaltyRuleRepository",
     "PostgresRelevanceFeedbackRepository",
     "PostgresResumeRepository",
@@ -215,6 +222,7 @@ __all__ = [
     "PostgresUserAccountRepository",
     "PostgresUserSettingsRepository",
     "DuplicateJobUrlError",
+    "DuplicateOutreachTemplateTitleError",
     "db_startup_error",
     "get_connection",
     "init_db",
@@ -379,6 +387,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "title_rules": PostgresTitleRuleRepository(conn),
         "contact_outreach": PostgresContactOutreachRepository(conn),
         "contact_employment_history": PostgresContactEmploymentHistoryRepository(conn),
+        "outreach_templates": PostgresOutreachTemplateRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),
         "google_tokens": PostgresGoogleTokenRepository(conn),
         "greenhouse_sessions": PostgresGreenhouseSessionRepository(conn),

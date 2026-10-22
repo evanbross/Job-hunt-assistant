@@ -1509,6 +1509,25 @@ def _migrate(conn: Any) -> None:
     cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS outreach_draft_staged_at TEXT")
     conn.commit()
 
+    # ai: claude-opus-5-5 | 2026-10-21
+    # The single linkedin_outreach_template user setting became the
+    # outreach_templates table (several named templates). A user who had
+    # saved one keeps it as "General"; the setting row is then removed so this
+    # is a no-op on every later startup. Users who never saved one start with
+    # no templates and create their own in the outreach queue.
+    migrated_at = datetime.now(UTC).isoformat(timespec="seconds")
+    cur.execute(
+        """
+        INSERT INTO outreach_templates (user_id, title, body, created_at, updated_at)
+        SELECT user_id, 'General', value, %s, %s FROM user_settings
+        WHERE key = 'linkedin_outreach_template' AND TRIM(value) != ''
+        ON CONFLICT (user_id, title) DO NOTHING
+        """,
+        (migrated_at, migrated_at),
+    )
+    cur.execute("DELETE FROM user_settings WHERE key = 'linkedin_outreach_template'")
+    conn.commit()
+
     # ai: claude-sonnet-5 | 2026-10-01
     # jobs.company_normalized mirrors contacts.company_normalized's pattern
     # (normalize_company_name(), kept in sync by PostgresJobRepository's
@@ -2224,6 +2243,23 @@ def _create_tables(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_contact_employment_history_contact_id
             ON contact_employment_history (contact_id)
+        """,
+        # ai: claude-opus-5-5 | 2026-10-21
+        # Named LinkedIn outreach templates, one per kind of contact (close
+        # coworkers, recruiters, ...). Replaces the single
+        # linkedin_outreach_template user setting -- see the copy-over in
+        # _migrate(). The UNIQUE constraint name is referenced by
+        # backend/db/repositories/outreach_templates.py.
+        """
+        CREATE TABLE IF NOT EXISTS outreach_templates (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            title       TEXT NOT NULL,
+            body        TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            CONSTRAINT outreach_templates_user_id_title_key UNIQUE (user_id, title)
+        )
         """,
         # ai: claude-sonnet-5 | 2026-09-28
         # Per-user company attributes (recruiter-classification plan, build-order

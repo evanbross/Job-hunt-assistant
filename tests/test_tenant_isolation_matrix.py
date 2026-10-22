@@ -86,7 +86,13 @@ CASES: list[Case] = [
     _c("GET", "/api/contacts/<int:contact_id>/employment-history", contact_id="contact"),
     _c("POST", "/api/contacts/<int:contact_id>/employment-history", {"company": "x"}, contact_id="contact"),
     _c("POST", "/api/contacts/<int:contact_id>/outreach", {"sent_at": _TS, "channel": "linkedin"}, contact_id="contact"),
-    _c("POST", "/api/contacts/<int:contact_id>/outreach-draft", {"use_ai": False}, contact_id="contact"),
+    _c(
+        "POST",
+        "/api/contacts/<int:contact_id>/outreach-draft/<int:template_id>",
+        {"use_ai": False},
+        contact_id="contact",
+        template_id="outreach_template",
+    ),
     _c("POST", "/api/contacts/<int:contact_id>/outreach-draft/stage", {"draft": _MARKER}, contact_id="contact"),
     _c("DELETE", "/api/email-subject-rules/<int:rule_id>", rule_id="subject_rule"),
     _c("PUT", "/api/email-subject-rules/<int:rule_id>", {"pattern": "x"}, rule_id="subject_rule"),
@@ -124,6 +130,8 @@ CASES: list[Case] = [
     _c("POST", "/api/jobs/<int:job_id>/stages", {"status": "applied", "date": "2026-09-26"}, job_id="job"),
     _c("DELETE", "/api/jobs/<int:job_id>/stages/<int:stage_id>", job_id="job", stage_id="stage"),
     _c("POST", "/api/jobs/status-history/<int:history_id>/undo", history_id="history"),
+    _c("DELETE", "/api/outreach-templates/<int:template_id>", template_id="outreach_template"),
+    _c("PUT", "/api/outreach-templates/<int:template_id>", {"title": "x", "body": "y"}, template_id="outreach_template"),
     _c("DELETE", "/api/penalties/<int:rule_id>", rule_id="penalty"),
     _c("PUT", "/api/penalties/<int:rule_id>", {"rule_text": "x"}, rule_id="penalty"),
     _c("DELETE", "/api/phrase-book/<int:phrase_id>", phrase_id="phrase"),
@@ -288,6 +296,9 @@ class Tenants:
                 "contact_outreach": ins(cur, "contact_outreach", contact_id=contact_id, sent_at=_TS),
                 "contact_employment_history": ins(
                     cur, "contact_employment_history", contact_id=contact_id, company=_MARKER, captured_at=_TS
+                ),
+                "outreach_template": ins(
+                    cur, "outreach_templates", title=f"{_MARKER}-{next(_SEQUENCE)}", body=_MARKER, created_at=_TS, updated_at=_TS
                 ),
                 "subject_rule": ins(cur, "ack_patterns", pattern=_MARKER),
                 "scanned_email": None,
