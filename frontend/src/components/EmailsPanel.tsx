@@ -367,7 +367,6 @@ function EmailDetailModal({ email, movingToScanned, onMoveToScanned, rescanning,
 
 interface EmailsPanelProps {
   isAuthenticated: boolean;
-  onTriageCountChange?: (count: number) => void;
   focusEmailId?: string | null;
 }
 
@@ -375,7 +374,7 @@ type EmailFilter = "all" | "potential" | "acted";
 type SortCol = "date" | "status";
 type SortDir = "asc" | "desc";
 
-export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focusEmailId }: EmailsPanelProps) {
+export default function EmailsPanel({ isAuthenticated, focusEmailId }: EmailsPanelProps) {
   const [emails, setEmails] = useState<ScannedEmailRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<EmailFilter>("all");
@@ -476,11 +475,6 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
         if (refreshed) setDetailModalEmail(refreshed);
       }
       setRescanStatus({ emailId, loading: false, message: data.message || "Rescan complete.", jobs: data.jobs || [], error: false });
-      try {
-        const t = await fetch("/api/jobs/triage");
-        const td = await t.json();
-        onTriageCountChange?.(Array.isArray(td) ? td.length : 0);
-      } catch { /* no-op */ }
     } catch (e) {
       setRescanStatus({ emailId, loading: false, message: "Rescan failed: " + (e instanceof Error ? e.message : String(e)), jobs: null, error: true });
     } finally {
@@ -525,11 +519,6 @@ export default function EmailsPanel({ isAuthenticated, onTriageCountChange, focu
             setScanSummary(state.summary);
           }
           await fetchEmails(filter);
-          try {
-            const t = await fetch("/api/jobs/triage");
-            const td = await t.json();
-            onTriageCountChange?.(Array.isArray(td) ? td.length : 0);
-          } catch { /* no-op */ }
         }
       } catch {
         clearInterval(pollRef.current);

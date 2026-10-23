@@ -272,7 +272,6 @@ interface ScrollAnchor {
 }
 
 interface JobQueueProps {
-  onTriageCountChange: (count: number) => void;
   isAuthenticated: boolean;
   onNavigateToEmails?: ((emailId: string) => void) | null;
   onNavigateToHistory: () => void;
@@ -282,7 +281,6 @@ interface JobQueueProps {
 }
 
 export default function JobQueue({
-  onTriageCountChange,
   isAuthenticated,
   onNavigateToEmails,
   onNavigateToHistory,
@@ -429,13 +427,12 @@ export default function JobQueue({
       const data: Job[] = await res.json();
       const list = Array.isArray(data) ? data : [];
       setTriageJobs(list);
-      onTriageCountChange(list.length);
     } catch {
       /* no-op */
     } finally {
       setTriageLoading(false);
     }
-  }, [onTriageCountChange]);
+  }, []);
 
   useEffect(() => {
     if (viewMode === "queue") return;
@@ -574,13 +571,7 @@ export default function JobQueue({
         onDone?.();
         if (state.summary) setScanSummary(state.summary);
         await fetchJobs();
-        try {
-          const t = await fetch("/api/jobs/triage");
-          const td: Job[] = await t.json();
-          onTriageCountChange(Array.isArray(td) ? td.length : 0);
-        } catch {
-          /* no-op */
-        }
+        await refreshTriageJobs();
       }
     } catch {
       clearInterval(pollRef.current);
@@ -796,18 +787,20 @@ export default function JobQueue({
       setJobs((prev) => prev.map((queuedJob) => (queuedJob.id === data.id ? data : queuedJob)));
     } else {
       setJobs((prev) => prev.filter((queuedJob) => queuedJob.id !== job.id));
-      await updateTriageCount();
+      await refreshTriageJobs();
     }
 
     return data;
   };
 
-  const updateTriageCount = async () => {
+  // ai: claude-opus-5-5 | 2026-10-23 — renamed from updateTriageCount: the count
+  // it also reported fed App.tsx state nothing ever read, so all that's left is
+  // the list refresh (unlike fetchTriageJobs, it doesn't toggle triageLoading).
+  const refreshTriageJobs = async () => {
     try {
       const t = await fetch("/api/jobs/triage");
       const td: Job[] = await t.json();
       const list = Array.isArray(td) ? td : [];
-      onTriageCountChange(list.length);
       setTriageJobs(list);
     } catch {
       /* no-op */
@@ -825,11 +818,7 @@ export default function JobQueue({
       body: JSON.stringify({ sender_email: senderEmail, subject_pattern: subjectPattern }),
     });
     if (res.ok) {
-      setTriageJobs((prev) => {
-        const updated = prev.filter((j) => j.id !== job.id);
-        onTriageCountChange(updated.length);
-        return updated;
-      });
+      setTriageJobs((prev) => prev.filter((j) => j.id !== job.id));
     } else {
       const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to approve");
@@ -843,11 +832,7 @@ export default function JobQueue({
       body: JSON.stringify({ reason, feedback, mismatch_reasons: mismatchReasons }),
     });
     if (res.ok) {
-      setTriageJobs((prev) => {
-        const updated = prev.filter((j) => j.id !== job.id);
-        onTriageCountChange(updated.length);
-        return updated;
-      });
+      setTriageJobs((prev) => prev.filter((j) => j.id !== job.id));
     } else {
       const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to skip job");
@@ -871,11 +856,7 @@ export default function JobQueue({
   const handleTriageMarkApplied = async (job: Pick<Job, "id">) => {
     const res = await fetch(`/api/jobs/${job.id}/apply`, { method: "POST" });
     if (res.ok) {
-      setTriageJobs((prev) => {
-        const updated = prev.filter((j) => j.id !== job.id);
-        onTriageCountChange(updated.length);
-        return updated;
-      });
+      setTriageJobs((prev) => prev.filter((j) => j.id !== job.id));
       await fetchAppliedCompanies();
     } else {
       const err: ApiErrorBody = await res.json().catch(() => ({}));
@@ -891,11 +872,7 @@ export default function JobQueue({
       body: JSON.stringify({ days }),
     });
     if (res.ok) {
-      setTriageJobs((prev) => {
-        const updated = prev.filter((j) => j.id !== jobId);
-        onTriageCountChange(updated.length);
-        return updated;
-      });
+      setTriageJobs((prev) => prev.filter((j) => j.id !== jobId));
     } else {
       const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to snooze job");
@@ -913,11 +890,7 @@ export default function JobQueue({
       setTriageJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
       return;
     }
-    setTriageJobs((prev) => {
-      const next = prev.filter((j) => j.id !== job.id);
-      onTriageCountChange(next.length);
-      return next;
-    });
+    setTriageJobs((prev) => prev.filter((j) => j.id !== job.id));
     if (updated.status === "pending_review") {
       setJobs((prev) => (
         prev.some((j) => j.id === updated.id)
@@ -1065,7 +1038,6 @@ export default function JobQueue({
         nextJobs = nextJobs.filter((item) => item.id !== job.id);
       }
       setTriageJobs(nextJobs);
-      onTriageCountChange(nextJobs.length);
     });
   };
 
@@ -1077,7 +1049,7 @@ export default function JobQueue({
   // this re-fetches it fresh here rather than trusting possibly-stale state.
   //
   // Only `jobs` is kept in sync incrementally during the loop, mirroring
-  // handleTriageBatchRefreshFromUrls above — the trailing updateTriageCount()
+  // handleTriageBatchRefreshFromUrls above — the trailing refreshTriageJobs()
   // call is the sole, authoritative resync for triageJobs, so there's no need
   // to also patch it up mid-loop only to have that work overwritten.
   const handleQueueRefreshUnrated = async () => {
@@ -1088,7 +1060,6 @@ export default function JobQueue({
       if (Array.isArray(data)) {
         triageSource = data;
         setTriageJobs(data);
-        onTriageCountChange(data.length);
       }
     } catch {
       /* fall back to whatever triage data is already loaded */
@@ -1113,8 +1084,8 @@ export default function JobQueue({
     });
 
     // A refreshed triage job can graduate to pending_review (and vice versa);
-    // this is the authoritative resync for the triage list and its badge count.
-    await updateTriageCount();
+    // this is the authoritative resync for the triage list.
+    await refreshTriageJobs();
   };
 
   const handleReEvaluate = async () => {
@@ -1143,7 +1114,7 @@ export default function JobQueue({
             clearInterval(reEvalPollRef.current);
             if (state.result) setReEvaluateSummary(state.result);
             await fetchJobs();
-            await updateTriageCount();
+            await refreshTriageJobs();
             reEvaluateResetTimeoutRef.current = window.setTimeout(() => {
               setReEvaluating(false);
               setReEvaluateProgress(0);
@@ -1291,7 +1262,7 @@ export default function JobQueue({
         clearInterval(importRepairPollRef.current);
         setImportRepairRunning(false);
         await fetchJobs();
-        await updateTriageCount();
+        await refreshTriageJobs();
       }
     } catch {
       clearInterval(importRepairPollRef.current);
@@ -1328,7 +1299,7 @@ export default function JobQueue({
         clearInterval(rescanImportPollRef.current);
         setRescanImportRunning(false);
         await fetchJobs();
-        await updateTriageCount();
+        await refreshTriageJobs();
       }
     } catch {
       clearInterval(rescanImportPollRef.current);
@@ -1356,11 +1327,7 @@ export default function JobQueue({
         clearInterval(boardPollRef.current);
         setBoardSearching(false);
         await fetchJobs();
-        try {
-          const t = await fetch("/api/jobs/triage");
-          const td: Job[] = await t.json();
-          onTriageCountChange(Array.isArray(td) ? td.length : 0);
-        } catch { /* no-op */ }
+        await refreshTriageJobs();
       }
     } catch {
       clearInterval(boardPollRef.current);
@@ -1387,7 +1354,6 @@ export default function JobQueue({
         // Also refresh triage cards: imports can enrich existing triage jobs
         // (better description → re-score), but those cards were never updated.
         await fetchTriageJobs();
-        await updateTriageCount();
       }
     } catch {
       clearInterval(importPollRef.current);
@@ -1611,7 +1577,7 @@ export default function JobQueue({
       setManualCompanyOverride("");
       setManualJobTitleOverride("");
       await fetchJobs();
-      await updateTriageCount();
+      await refreshTriageJobs();
     } catch {
       window.alert("Failed to evaluate pasted job");
     } finally {
@@ -1752,7 +1718,7 @@ export default function JobQueue({
         setImportSummary(data as ImportSummary);
         setImportSubmitting(false);
         await fetchJobs();
-        await updateTriageCount();
+        await refreshTriageJobs();
       }
     } catch {
       window.alert("Failed to import jobs");
@@ -2638,7 +2604,7 @@ export default function JobQueue({
                   return;
                 }
                 setJobs((prev) => prev.filter((j) => j.id !== jobId));
-                updateTriageCount();
+                refreshTriageJobs();
               }}
             />
           ))
@@ -2684,7 +2650,7 @@ export default function JobQueue({
                 return;
               }
               setJobs((prev) => prev.filter((j) => j.id !== jobId));
-              updateTriageCount();
+              refreshTriageJobs();
             },
           } satisfies QueueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))
         )
@@ -2733,7 +2699,7 @@ export default function JobQueue({
                   return;
                 }
                 setJobs((prev) => prev.filter((j) => j.id !== jobId));
-                updateTriageCount();
+                refreshTriageJobs();
               }}
             />
           ))

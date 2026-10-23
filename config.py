@@ -177,7 +177,12 @@ DEFAULT_FIT_SCORER_PROMPT_PATH: Path = Path(
 )
 
 # ─── Redis / Celery ───────────────────────────────────────────────────────────
-REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:16379/0")  # ai: claude-sonnet-5 | 2026-09-20 — was 6379, in a Hyper-V exclusion range
+# ai: claude-opus-5-5 | 2026-10-23 — 127.0.0.1, not localhost: Windows resolves
+# localhost to ::1 first, and ../infra publishes Redis on IPv4 127.0.0.1 only, so
+# every new connection waited ~1s for the IPv6 attempt to fail (measured 1033ms vs
+# 4.6ms). Celery's result backend opens one per request thread, which made every
+# /api/import/status call pay it.
+REDIS_URL: str = os.getenv("REDIS_URL", "redis://127.0.0.1:16379/0")  # ai: claude-sonnet-5 | 2026-09-20 — was 6379, in a Hyper-V exclusion range
 # CA bundle used to verify the Redis server when REDIS_URL is rediss:// (TLS).
 REDIS_TLS_CA_FILE: str = os.getenv("REDIS_TLS_CA_FILE", "")
 

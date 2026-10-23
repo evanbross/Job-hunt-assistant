@@ -219,7 +219,6 @@ export default function App() {
     }
     return "queue";
   });
-  const [, setTriageCount] = useState(0);
   const [appAuthenticated, setAppAuthenticated] = useState<boolean | null>(null); // null | true | false — app login gate, distinct from Google authStatus below
   const [mustCompleteSetup, setMustCompleteSetup] = useState(false); // ai: claude-sonnet-5 | 2026-08-27 — default-admin bootstrap gate, see CompleteSetupPage.tsx
   const [authStatus, setAuthStatus] = useState<boolean | null>(null); // null | true | false
@@ -265,12 +264,10 @@ export default function App() {
     });
     setActiveTab("queue");
     localStorage.setItem("activeTab", "queue");
-    if (isTriageStatus) fetchTriageCount();
   };
 
   useEffect(() => {
     fetchAuthStatus();
-    fetchTriageCount();
     fetchSetupStatus();
 
     // Check if returning from OAuth flow
@@ -332,8 +329,15 @@ export default function App() {
     }
   };
 
+  // ai: claude-opus-5-5 | 2026-10-23 — setTimeout chain instead of
+  // setInterval: the next poll is only scheduled once the previous response
+  // lands. With setInterval, a status call that took longer than 1.2s
+  // (measured: ~21s during a running import) started a new request every
+  // tick regardless, so they piled up and starved every other request on the
+  // page of the browser's per-host connections.
   useEffect(() => {
     let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
     const pollListenerImportStatus = async () => {
       try {
         const res = await fetch("/api/import/status");
@@ -348,13 +352,15 @@ export default function App() {
       } catch {
         /* no-op */
       }
+      if (cancelled) return;
+      clearTimeout(timerId);
+      timerId = setTimeout(pollListenerImportStatus, 1200);
     };
 
     pollListenerImportStatus();
-    const intervalId = setInterval(pollListenerImportStatus, 1200);
     return () => {
       cancelled = true;
-      clearInterval(intervalId);
+      clearTimeout(timerId);
     };
   }, []);
 
@@ -435,16 +441,6 @@ export default function App() {
     setSettingsInitialSection(undefined);
     setActiveTab("queue");
     localStorage.setItem("activeTab", "queue");
-  };
-
-  const fetchTriageCount = async () => {
-    try {
-      const res = await fetch("/api/jobs/triage");
-      const data = await res.json();
-      setTriageCount(Array.isArray(data) ? data.length : 0);
-    } catch {
-      setTriageCount(0);
-    }
   };
 
   const startGoogleAuth = async () => {
@@ -667,7 +663,6 @@ export default function App() {
         <Suspense fallback={<div style={{ padding: "24px", color: "var(--text-muted)" }}>Loading…</div>}>
         {activeTab === "queue" && (
           <JobQueue
-            onTriageCountChange={setTriageCount}
             isAuthenticated={authStatus === true}
             onNavigateToEmails={navigateToEmails}
             onNavigateToHistory={navigateToHistory}
@@ -681,7 +676,6 @@ export default function App() {
         {activeTab === "emails" && (
           <EmailsPanel
             isAuthenticated={authStatus === true}
-            onTriageCountChange={setTriageCount}
             focusEmailId={emailFocusId}
           />
         )}
