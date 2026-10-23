@@ -29,9 +29,11 @@
 // These files are classic (non-module) scripts loaded by Chrome via
 // manifest.json's "service_worker"/<script> tags, not ES modules -- the
 // test/chromeMock.js harness runs them through Node's vm module in a plain
-// "node" environment (no DOM needed; a jsdom environment would be the right
-// call if content.js ever gets the same treatment, since that file touches
-// `document`).
+// "node" environment (no DOM needed).
+// ai: claude-opus-5-5 | 2026-10-23
+// content.js does need a DOM, but test/contentHarness.js builds its own JSDOM
+// per test (each needs a different page URL) rather than switching this
+// environment to "jsdom", so "node" stays correct for every test file.
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
