@@ -418,6 +418,30 @@
       };
     }
 
+    // ai: claude-opus-5-5 | 2026-10-23
+    // Classic iCIMS portals (careers-<company>.icims.com) render the real
+    // content inside a same-origin #icims_content_iframe -- the top frame has
+    // no job links at all, and the iframe's own links look generic, so both
+    // frames used to fall through to the generic types and the capture sent
+    // the empty wrapper page as one "Untitled job". See icimsContentDoc().
+    // A job page's own frame URL is checked first so any "similar jobs" cards a
+    // tenant shows beside the posting can't turn it into a search capture.
+    const icimsDoc = icimsContentDoc();
+    if (icimsDoc) {
+      if (_ICIMS_JOB_PATH_RE.test(icimsDoc.location.pathname)) {
+        return { site: icimsCompany(null), type: 'icimsJob', jobCount: 1, description: 'Single job listing' };
+      }
+      const cards = collectIcimsJobCards(icimsDoc);
+      if (cards.length > 0) {
+        return {
+          site: icimsCompany(null),
+          type: 'icimsSearch',
+          jobCount: cards.length,
+          description: `${cards.length} jobs — fetches full descriptions (~${Math.ceil(cards.length * 0.5)}s)`,
+        };
+      }
+    }
+
     // ai: claude-sonnet-5 | 2026-08-28
     // Oracle Fusion Recruiting Cloud ("Candidate Experience") career sites —
     // the app path is fixed across tenants even though the hostname is
@@ -2333,11 +2357,12 @@
   // ai: claude-sonnet-5 | 2026-08-28 — renamed from jibeJobLines: now shared
   // with buildRobertHalfJobPayload, which also builds listing text from a
   // JSON-LD JobPosting block.
-  function jobPostingLines({ title, company, reqId, url, description, fallbackText }) {
+  function jobPostingLines({ title, company, reqId, location: jobLocation, url, description, fallbackText }) {
     const lines = [];
     if (title) lines.push(title);
     if (company) lines.push('Company: ' + company);
     if (reqId) lines.push('Req ID: ' + reqId);
+    if (jobLocation) lines.push('Location: ' + jobLocation); // ai: claude-opus-5-5 | 2026-10-23
     lines.push('URL: ' + url);
     if (description) lines.push('', description);
     else if (fallbackText) lines.push('', fallbackText);
@@ -2430,6 +2455,132 @@
     }
 
     return JSON.stringify({ jobs, source: { url: location.href } });
+  }
+
+  // ─── iCIMS classic portals (careers-<company>.icims.com) ───────────────────
+
+  // ai: claude-opus-5-5 | 2026-10-23
+  // The document holding the iCIMS job content: this frame's own document when
+  // it is the content frame (the popup also probes every frame, which covers a
+  // company embedding iCIMS cross-origin on its own domain), otherwise the
+  // same-origin #icims_content_iframe of an icims.com wrapper page. Reading the
+  // iframe from the top frame keeps the context-menu capture working too, since
+  // that flow only ever messages frame 0.
+  function icimsContentDoc() {
+    if (document.querySelector('.iCIMS_JobsTable, .iCIMS_JobContent')) return document;
+    try {
+      const inner = document.querySelector('#icims_content_iframe')?.contentDocument;
+      if (inner?.querySelector('.iCIMS_JobsTable, .iCIMS_JobContent')) return inner;
+    } catch { /* cross-origin iframe -- the popup's per-frame probe handles it */ }
+    return null;
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-23
+  // companyFromHostname() only strips "careers." -- iCIMS tenants use
+  // "careers-<company>.icims.com", which it would turn into "Careers Cotiviti".
+  function icimsCompany(posting) {
+    if (posting?.hiringOrganization?.name) return posting.hiringOrganization.name;
+    const m = location.hostname.match(/^(?:careers|jobs)-(.+?)\.icims\.com$/i);
+    if (!m) return companyFromHostname();
+    return m[1].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-23
+  // Text of a card field whose value follows an sr-only "<label>" span
+  // (e.g. "Job Locations" → "US-Remote", "ID" → "2026-20757").
+  function icimsCardField(card, label) {
+    for (const lbl of card.querySelectorAll('.field-label')) {
+      if (lbl.textContent.trim().toLowerCase() !== label.toLowerCase()) continue;
+      const text = (lbl.parentElement?.textContent || '').replace(lbl.textContent, '').trim();
+      if (text) return text.replace(/\s+/g, ' ');
+    }
+    return '';
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-23
+  // Job links look like /jobs/<id>/<slug>/job?in_iframe=1. The "Welcome page" /
+  // "Log in" nav anchors share the iCIMS_Anchor class, hence the path check.
+  const _ICIMS_JOB_PATH_RE = /^\/jobs\/(\d+)\/[^/]+\/job\/?$/;
+
+  // ai: claude-opus-5-5 | 2026-10-23
+  function collectIcimsJobCards(doc) {
+    const seen = new Map(); // numeric job id → card info
+    doc.querySelectorAll('.iCIMS_JobsTable a.iCIMS_Anchor[href]').forEach(a => {
+      let u;
+      try { u = new URL(a.href); } catch { return; }
+      const m = u.pathname.match(_ICIMS_JOB_PATH_RE);
+      if (!m || seen.has(m[1])) return;
+      const card = a.closest('.iCIMS_JobCardItem, .row') || a;
+      const title = (card.querySelector('h3')?.textContent || a.textContent || '')
+        .replace(/^\s*Title\s*/i, '').trim();
+      seen.set(m[1], {
+        url: u.origin + u.pathname,
+        title,
+        reqId: icimsCardField(card, 'ID'),
+        location: icimsCardField(card, 'Job Locations'),
+        cardText: (card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500),
+      });
+    });
+    return [...seen.values()];
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-23
+  // Only the in_iframe=1 variant of a job page carries the JobPosting JSON-LD
+  // (confirmed live on careers-cotiviti.icims.com) -- the bare URL returns the
+  // wrapper page, which has none.
+  async function buildIcimsSearchPayload() {
+    const items = collectIcimsJobCards(icimsContentDoc());
+    const jobs = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      sendProgress(`Fetching job details... (${i + 1}/${items.length})`, (i + 1) / items.length);
+
+      let posting = null;
+      try {
+        const res = await fetch(item.url + '?in_iframe=1', { headers: { Accept: 'text/html,application/xhtml+xml' } });
+        if (res.ok) posting = readJobPostingLd(new DOMParser().parseFromString(await res.text(), 'text/html'));
+      } catch { /* keep card-level data */ }
+
+      const title = posting?.title || item.title;
+      const company = icimsCompany(posting);
+      const description = posting?.description ? htmlToText(posting.description) : '';
+
+      jobs.push({
+        url: item.url,
+        job_title: title,
+        company,
+        listing_text: jobPostingLines({
+          title, company, reqId: item.reqId, location: item.location, url: item.url,
+          description, fallbackText: item.cardText,
+        }),
+      });
+      if (i < items.length - 1) await sleep(400);
+    }
+
+    return JSON.stringify({ jobs, source: { url: location.href } });
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-23
+  function buildIcimsJobPayload() {
+    const doc = icimsContentDoc();
+    const posting = readJobPostingLd(doc);
+    const title = posting?.title || doc.querySelector('h1')?.textContent.trim() || '';
+    const company = icimsCompany(posting);
+    const description = posting?.description
+      ? htmlToText(posting.description)
+      : (doc.querySelector('.iCIMS_JobContent')?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 12000);
+    const url = location.origin + doc.location.pathname;
+
+    return JSON.stringify({
+      jobs: [{
+        url,
+        job_title: title,
+        company,
+        listing_text: jobPostingLines({ title, company, url, description }),
+      }],
+      source: { url: location.href },
+    });
   }
 
   // ai: claude-sonnet-5 | 2026-10-18
@@ -3364,6 +3515,8 @@
       case 'robertHalfJob':    payload = buildRobertHalfJobPayload(); break;
       case 'jibeJob':          payload = buildJibeJobPayload(); break;
       case 'jibeSearch':       payload = await buildJibeSearchPayload(); break;
+      case 'icimsJob':         payload = buildIcimsJobPayload(); break;
+      case 'icimsSearch':      payload = await buildIcimsSearchPayload(); break;
       case 'phenomSearch':     payload = await buildPhenomSearchPayload(); break;
       case 'insightGlobalSearch': payload = await buildInsightGlobalSearchPayload(); break;
       case 'insightGlobalSplit':
