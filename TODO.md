@@ -193,8 +193,11 @@ Neon-backed install currently needs.
         optional object, and a route's docstring (where present) becomes its
         `description`. See `app.py`'s `_extract_request_model` and
         `tests/test_swagger_docs.py`.
-      - No test coverage for `GET /api/jobs/company-counts` /
-        `get_company_counts()`.
+      - ~~No test coverage for `GET /api/jobs/company-counts` /
+        `get_company_counts()`~~ — resolved 2026-10-24: both are gone; each
+        Job Queue page now carries its cards' company summaries
+        (`backend/job_queue_company_summary.py`, `count_by_company()`),
+        covered by `tests/test_job_queue_listing.py`.
 
 ## Data quality / known issues
 

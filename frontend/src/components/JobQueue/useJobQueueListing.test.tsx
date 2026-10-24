@@ -164,6 +164,24 @@ describe("useJobQueueListing", () => {
     expect(requests[1].get("limit")).toBe("50");
   });
 
+  // ai: claude-opus-5-5 | 2026-10-24
+  it("keeps a listed job's company summary across an update, and reloads when its company changes", async () => {
+    const summary = { company_job_count: 3, company_application_statuses: { applied: 2 }, company_contacts: [] };
+    const requests = routeFetch({ 0: { jobs: [{ ...job(1), ...summary }], has_more: false } });
+    const { result } = renderHook(
+      () => useJobQueueListing({ ...FILTERS, view: "triage" }, { viewStatuses: ["triage"] }),
+      { wrapper: withBus(bus) },
+    );
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => bus.publish({ type: "update", job: { ...job(1), job_title: "Renamed" } }));
+    expect(result.current.jobs[0]).toMatchObject({ job_title: "Renamed", ...summary });
+    expect(requests).toHaveLength(1);
+
+    await act(async () => bus.publish({ type: "update", job: { ...job(1), company: "Elsewhere" } }));
+    await waitFor(() => expect(requests).toHaveLength(2));
+  });
+
   it("keeps an updated job whatever its status in the Unreachable view", async () => {
     routeFetch({ 0: { jobs: [job(1, "applied")], has_more: false } });
     const { result } = renderHook(

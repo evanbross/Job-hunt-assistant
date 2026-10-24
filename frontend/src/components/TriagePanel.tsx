@@ -26,7 +26,7 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-07
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import Modal from "./common/Modal.tsx";
 import CoverLetterModal from "./common/CoverLetterModal.tsx";
@@ -39,7 +39,7 @@ import CompanyHistoryDialog from "./common/CompanyHistoryDialog.tsx";
 import ContactsBadge from "./common/ContactsBadge.tsx";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.ts";
 import { useLazyJobDetail } from "../hooks/useLazyJobDetail.ts";
-import { isAppliedStatus, rowMatchesCompany } from "../utils/sheetUtils.ts";
+import { isAppliedStatus } from "../utils/sheetUtils.ts";
 import { arePropsEqualIgnoringFunctions } from "../utils/reactMemoUtils.ts";
 import UndoEditNotice from "./common/UndoEditNotice.tsx";
 import LazyDetailLoadError from "./LazyDetailLoadError.tsx";
@@ -72,13 +72,10 @@ import {
 } from "../utils/triagePanelUtils.ts";
 import { parseImportWarnings, importWarningTooltip, possibleDuplicateLabel, hasCompanyHistoryAvailable } from "../utils/jobQueueUtils.ts";
 import type { ApiErrorBody } from "../types/common.ts";
-import type { ContactsByCompany } from "../types/contacts.ts";
 import type { ChatMessage, PitchType } from "../types/coverLetter.ts";
 import type { GenerateCoverLetterResponse, GeneratePitchResponse, ResumeTailorResponse } from "../types/coverLetter.ts";
 import type {
-  ApplicationHistoryRow,
   BatchRefreshPopupState,
-  CompanyJobCounts,
   DescriptionUpdatePopupState,
   FitChatResponse,
   FitReclassification,
@@ -88,19 +85,28 @@ import type {
 } from "../types/jobs.ts";
 import type { SkipReason } from "../types/triage.ts";
 
-function companyRowSummary(rows: ApplicationHistoryRow[]): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const row of rows) {
-    const s = String(row.status || "No status").trim();
-    counts[s] = (counts[s] || 0) + 1;
-  }
-  return counts;
+// ai: claude-opus-5-5 | 2026-10-24 — reads the job's own
+// company_application_statuses (attached by GET /api/jobs/queue) instead of
+// filtering every tracked application on the account, fetched whole, per card.
+interface CompanyTrackedSummary {
+  count: number;
+  title: string;
+  badgeClass: string;
 }
 
-function companyHistoryBadgeClass(rows: ApplicationHistoryRow[]): string {
-  if (rows.some((row) => String(row.status || "").toLowerCase().includes("reject"))) return "badge-red";
-  if (rows.some((row) => isAppliedStatus(row.status))) return "badge-orange";
-  return "badge-gray";
+function companyTrackedSummary(job: Job): CompanyTrackedSummary | null {
+  const entries = Object.entries(job.company_application_statuses ?? {});
+  const count = entries.reduce((total, [, n]) => total + n, 0);
+  if (count === 0) return null;
+  const statuses = entries.map(([status]) => status);
+  let badgeClass = "badge-gray";
+  if (statuses.some((status) => status.toLowerCase().includes("reject"))) badgeClass = "badge-red";
+  else if (statuses.some((status) => isAppliedStatus(status))) badgeClass = "badge-orange";
+  return {
+    count,
+    title: entries.map(([status, n]) => `${n}× ${status.trim() || "No status"}`).join(" · "),
+    badgeClass,
+  };
 }
 
 interface CardContextMenuProps {
@@ -206,14 +212,11 @@ interface DuplicateCardProps {
   onRescanEmail?: ((job: Job) => Promise<void>) | null;
   onSnooze?: ((jobId: number, days: number) => Promise<void>) | null;
   defaultSnoozeDays?: number;
-  allSheetRows?: ApplicationHistoryRow[] | null;
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
-  contactsByCompany?: ContactsByCompany;
-  companyJobCounts?: CompanyJobCounts | null;
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }: DuplicateCardProps) {
+function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSkip, onReEvaluate, onRefreshFromUrl, onReprocessed, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, onNavigateToJobCard }: DuplicateCardProps) {
   // ai: claude-sonnet-5 | 2026-10-17 — GET /jobs/triage omits fit_reasoning/
   // certainty_reason/job_description (see useLazyJobDetail); fetched lazily
   // the first time "Show reasoning" or the description button is clicked.
@@ -229,11 +232,8 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     raw_jd_snippet: lazyDuplicateDetail?.raw_jd_snippet ?? job.raw_jd_snippet ?? null,
     fit_reasoning: lazyDuplicateDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
   };
-  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
-  const companySheetRows = useMemo(
-    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company_normalized, job.company_normalized))),
-    [allSheetRows, job.company_normalized],
-  );
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job);
+  const companyTracked = companyTrackedSummary(job);
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -544,13 +544,13 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           <div style={triageMetaTextStyle}>
             {job.date_found && <span>{job.date_found}</span>}
             <span>Certainty: {certaintyLabel(job)}</span>
-            {companySheetRows !== null && companySheetRows.length > 0 && (
+            {companyTracked && (
               <span
                 style={{ cursor: "pointer" }}
-                title={Object.entries(companyRowSummary(companySheetRows)).map(([s, n]) => `${n}× ${s}`).join(" · ")}
+                title={companyTracked.title}
                 onClick={companyHistory.open}
               >
-                {companySheetRows.length} tracked
+                {companyTracked.count} tracked
               </span>
             )}
             <span
@@ -624,7 +624,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
             Company History
           </button>
           {/* ai: claude-sonnet-5 | 2026-07-25 */}
-          <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
+          <ContactsBadge company={job.company} contacts={job.company_contacts} />
           <SalaryBadge job={effectiveJobForSalaryDuplicate} />
           <LinkedInInsightBadge job={job} />
           <button
@@ -1017,14 +1017,11 @@ interface TriageCardProps {
   onRescanEmail?: ((job: Job) => Promise<void>) | null;
   onSnooze?: ((jobId: number, days: number) => Promise<void>) | null;
   defaultSnoozeDays?: number;
-  allSheetRows?: ApplicationHistoryRow[] | null;
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
-  contactsByCompany?: ContactsByCompany;
-  companyJobCounts?: CompanyJobCounts | null;
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-23
-function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, allSheetRows = null, onNavigateToJobCard, contactsByCompany, companyJobCounts }: TriageCardProps) {
+function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, onRefreshFromUrl, onReprocessed, onDescriptionUpdated, onSkipDuplicate, onDismissDuplicate, onRescanEmail, onSnooze, defaultSnoozeDays = 7, onNavigateToJobCard }: TriageCardProps) {
   // ai: claude-sonnet-5 | 2026-10-17 — GET /jobs/triage omits fit_reasoning/
   // certainty_reason/job_description (see useLazyJobDetail); fetched lazily
   // the first time "Show reasoning" or "Job Description" is clicked.
@@ -1040,11 +1037,8 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
     raw_jd_snippet: lazyTriageDetail?.raw_jd_snippet ?? job.raw_jd_snippet ?? null,
     fit_reasoning: lazyTriageDetail?.fit_reasoning ?? job.fit_reasoning ?? null,
   };
-  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
-  const companySheetRows = useMemo(
-    () => (allSheetRows === null ? null : allSheetRows.filter((r) => rowMatchesCompany(r.company_normalized, job.company_normalized))),
-    [allSheetRows, job.company_normalized],
-  );
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job);
+  const companyTracked = companyTrackedSummary(job);
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [editingUrl, setEditingUrl] = useState(false);
   const [urlDraft, setUrlDraft] = useState("");
@@ -1704,17 +1698,17 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
             Company History
           </button>
           {/* ai: claude-sonnet-5 | 2026-07-25 */}
-          <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
+          <ContactsBadge company={job.company} contacts={job.company_contacts} />
           <SalaryBadge job={effectiveJobForSalaryTriage} />
           <LinkedInInsightBadge job={job} />
-          {companySheetRows !== null && companySheetRows.length > 0 && (
+          {companyTracked && (
             <span
-              className={`badge ${companyHistoryBadgeClass(companySheetRows)}`}
+              className={`badge ${companyTracked.badgeClass}`}
               style={{ cursor: "pointer" }}
-              title={Object.entries(companyRowSummary(companySheetRows)).map(([s, n]) => `${n}× ${s}`).join(" · ")}
+              title={companyTracked.title}
               onClick={companyHistory.open}
             >
-              {companySheetRows.length} tracked
+              {companyTracked.count} tracked
             </span>
           )}
           <button

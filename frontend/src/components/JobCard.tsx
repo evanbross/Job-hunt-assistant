@@ -61,11 +61,9 @@ import {
   platformLabelForUrl,
 } from "../utils/triagePanelUtils.ts";
 import type { ApiErrorBody } from "../types/common.ts";
-import type { ContactsByCompany } from "../types/contacts.ts";
 import type { GenerateCoverLetterResponse, GeneratePitchResponse, PitchType } from "../types/coverLetter.ts";
 import type { ResumeTailorResponse } from "../types/coverLetter.ts";
 import type {
-  CompanyJobCounts,
   FitChatMessage,
   FitChatResponse,
   FitReclassification,
@@ -84,8 +82,6 @@ interface JobCardProps {
   onDismissDuplicate?: ((jobId: number) => Promise<void>) | null;
   onRescanEmail?: ((job: Job) => Promise<void>) | null;
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
-  contactsByCompany?: ContactsByCompany;
-  companyJobCounts?: CompanyJobCounts | null;
   defaultSnoozeDays: number;
 }
 
@@ -104,8 +100,6 @@ function JobCard({
   onDismissDuplicate,
   onRescanEmail,
   onNavigateToJobCard,
-  contactsByCompany,
-  companyJobCounts,
   defaultSnoozeDays,
 }: JobCardProps) {
   // ai: claude-sonnet-5 | 2026-10-17
@@ -148,7 +142,7 @@ function JobCard({
   const [coverLetter, setCoverLetter] = useState<string | null>(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   const companyHistory = useCompanyHistoryLookup(job);
-  const companyHistoryAvailable = hasCompanyHistoryAvailable(job, companyJobCounts);
+  const companyHistoryAvailable = hasCompanyHistoryAvailable(job);
   const { contextMenu, setContextMenu, runContextAction } = useCardContextMenu();
 
   const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1010,7 +1004,7 @@ function JobCard({
             Company History
           </button>
           {/* ai: claude-sonnet-5 | 2026-07-25 */}
-          <ContactsBadge company={job.company} contactsByCompany={contactsByCompany} />
+          <ContactsBadge company={job.company} contacts={job.company_contacts} />
           <span className="badge badge-accent">{job.source || "?"}</span>
           <SalaryBadge job={effectiveJobForSalary} />
           <LinkedInInsightBadge job={job} />

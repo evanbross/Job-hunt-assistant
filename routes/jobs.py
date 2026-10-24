@@ -78,6 +78,7 @@ from backend.email.email_parser import (
     resolve_tracking_url,
 )
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
+from backend.job_queue_company_summary import attach_company_summaries
 from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
 from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.scanning.closed_req_scan_helpers import (
@@ -412,7 +413,9 @@ def get_job_queue_page() -> ResponseReturnValue:
                 limit = min(max(limit, position + 1 + _JOB_QUEUE_FOCUS_LOOKAHEAD), _JOB_QUEUE_FOCUS_LIMIT_MAX)
         # One extra row tells has_more without a separate COUNT query.
         jobs = repos["jobs"].list_queue_page(user_id, query, limit + 1, params.offset)
-    return jsonify({"jobs": jobs[:limit], "has_more": len(jobs) > limit})
+        page = jobs[:limit]
+        attach_company_summaries(repos, user_id, page)  # ai: claude-opus-5-5 | 2026-10-24
+    return jsonify({"jobs": page, "has_more": len(jobs) > limit})
 
 
 @jobs_bp.route("/jobs/queue/counts")
@@ -499,17 +502,6 @@ def get_jobs_by_company() -> ResponseReturnValue:
                 job.get("status"), job["stages"]
             )
     return jsonify(jobs)
-
-
-# ai: claude-sonnet-5 | 2026-08-19
-@jobs_bp.route("/jobs/company-counts")
-def get_jobs_company_counts() -> ResponseReturnValue:
-    """Bulk per-company job counts (keyed by lower/trimmed company name), so the
-    frontend can decide whether a job's Company History button has anything to
-    show without an extra fetch per card."""
-    with get_repos() as repos:
-        counts = repos["jobs"].get_company_counts(current_user_id())
-    return jsonify(counts)
 
 
 # ai: claude-sonnet-5 | 2026-10-12

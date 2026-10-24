@@ -503,7 +503,7 @@ class PostgresJobRepository(_BaseRepo):
         "Seeq Corporation", or an aliased pair like "Block"/"Cash App", are
         treated as the same employer -- but inline as one query instead of a
         separate alias lookup followed by the main SELECT. See
-        get_company_counts below, which must use the same resolution so the
+        count_by_company below, which must use the same resolution so the
         two agree on what counts as a match. Only selects the columns the
         Company History dialog actually displays (see JobCard.jsx /
         jobToHistoryRow) rather than every column, to keep the transfer small.
@@ -524,20 +524,41 @@ class PostgresJobRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    # ai: claude-sonnet-5 | 2026-09-19
-    def get_company_counts(self, user_id: int) -> dict[str, int]:
-        """Total job count per normalized company name (see normalize_company_name),
-        across every status. Used by the frontend to gray out the Company History
-        button when a job is the only one on record for its company — grouping by
-        the same company_normalized column get_by_company filters on, so the counts
-        always agree with what that lookup would return."""
+    # ai: claude-opus-5-5 | 2026-10-24 -- was get_company_counts(user_id),
+    # every company on the account, which the Job Queue fetched whole just to
+    # badge the cards on screen; now scoped to the companies a page shows.
+    def count_by_company(self, user_id: int, company_keys: list[str]) -> dict[str, int]:
+        """Total job count per company_normalized key in *company_keys*, across
+        every status. Decides whether a card's Company History button has
+        anything to show -- grouping by the same company_normalized column
+        get_by_company filters on, so the counts always agree with what that
+        lookup would return. Keys with no jobs are absent."""
+        if not company_keys:
+            return {}
         cur = self._execute(
             "SELECT company_normalized, count(*) AS cnt FROM jobs"
-            " WHERE user_id = %s AND TRIM(COALESCE(company, '')) != ''"
+            " WHERE user_id = %s AND company_normalized = ANY(%s)"
+            " AND TRIM(COALESCE(company, '')) != ''"
             " GROUP BY company_normalized",
-            (user_id,),
+            (user_id, company_keys),
         )
         return {row["company_normalized"]: row["cnt"] for row in cur.fetchall()}
+
+    # ai: claude-opus-5-5 | 2026-10-24
+    def get_sheet_entries_for_companies(
+        self, user_id: int, company_keys: list[str]
+    ) -> list[dict[str, Any]]:
+        """The application-sheet jobs (on_sheet, as get_sheet_entries) at the
+        companies in *company_keys* -- just what a card's "N tracked" badge
+        needs to work out each one's effective status."""
+        if not company_keys:
+            return []
+        cur = self._execute(
+            "SELECT id, status, company_normalized FROM jobs"
+            " WHERE user_id = %s AND on_sheet = 1 AND company_normalized = ANY(%s)",
+            (user_id, company_keys),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
 
     # ai: gpt-5 | 2026-10-03
     def get_outreach_company_relevance(

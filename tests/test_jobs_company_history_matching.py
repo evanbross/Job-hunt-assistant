@@ -10,7 +10,7 @@
 # ai: claude-sonnet-5 | 2026-09-19
 """Company History must find jobs at the same employer even when the company
 name was captured with a different corporate suffix (e.g. "Seeq" vs.
-"Seeq Corporation") — see get_by_company()/get_company_counts() in
+"Seeq Corporation") — see get_by_company()/count_by_company() in
 backend/db/repositories/jobs.py, which normalize through
 normalize_company_name() instead of a plain LOWER(TRIM()) comparison."""
 
@@ -96,7 +96,7 @@ def test_get_by_company_matches_through_a_user_declared_alias(pg_dsn: str) -> No
         conn.close()
 
 
-def test_get_company_counts_groups_across_corporate_suffix(pg_dsn: str) -> None:
+def test_count_by_company_groups_across_corporate_suffix(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_id = _make_user(conn)
@@ -109,10 +109,9 @@ def test_get_company_counts_groups_across_corporate_suffix(pg_dsn: str) -> None:
         repo.insert(user_id, {"company": "Acme Inc", "job_title": "Solo Role", "status": "triage"})
         conn.commit()
 
-        counts = repo.get_company_counts(user_id)
+        counts = repo.count_by_company(user_id, ["seeq", "acme", "nobody"])  # ai: claude-opus-5-5 | 2026-10-24
 
-        assert counts["seeq"] == 2
-        assert counts["acme"] == 1
+        assert counts == {"seeq": 2, "acme": 1}
     finally:
         conn.close()
 

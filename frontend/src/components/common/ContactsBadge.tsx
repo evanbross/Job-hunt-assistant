@@ -9,19 +9,20 @@
 
 // ai: claude-sonnet-5 | 2026-10-07
 import { useState } from "react";
-import { contactsMatchKey } from "../../utils/contactsUtils.ts";
 import ContactsAtCompanyDialog from "./ContactsAtCompanyDialog.tsx";
-import type { ContactsByCompany } from "../../types/contacts.ts";
+import type { CompanyMapContact } from "../../types/contacts.ts";
 
+// ai: claude-opus-5-5 | 2026-10-24 — takes the job's own company_contacts
+// (attached by GET /api/jobs/queue) instead of looking the company up in an
+// account-wide map.
 interface ContactsBadgeProps {
   company?: string | null;
-  contactsByCompany?: ContactsByCompany;
+  contacts?: CompanyMapContact[];
 }
 
 // ai: claude-sonnet-5 | 2026-07-25
-export default function ContactsBadge({ company, contactsByCompany = {} }: ContactsBadgeProps) {
+export default function ContactsBadge({ company, contacts = [] }: ContactsBadgeProps) {
   const [open, setOpen] = useState(false);
-  const contacts = contactsByCompany[contactsMatchKey(company)] ?? [];
 
   if (contacts.length === 0) return null;
 

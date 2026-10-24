@@ -33,7 +33,6 @@ import { ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBa
 import ReqClosedDialog from "../common/ReqClosedDialog.tsx";
 import LoadingSpinner from "../common/LoadingSpinner.tsx";
 import { emailIdForRescan, extractSender, extractSubjectWords } from "../../utils/triagePanelUtils.ts";
-import { applicationRowFromSheet } from "../../utils/sheetUtils.ts";
 import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../../utils/reqClosedScanStorage.ts";
 import { readStoredPref, writeStoredPref } from "../../utils/storedPreference.ts";
 import { runBatchRefreshFromUrls } from "../../utils/batchRefreshFromUrls.ts";
@@ -64,12 +63,9 @@ import renderJobOrTriageCard from "./renderJobOrTriageCard.tsx";
 import RecentChangesModal from "../RecentChangesModal.tsx";
 import UnreachablePanel from "./UnreachablePanel.tsx";
 import type { ApiErrorBody } from "../../types/common.ts";
-import type { ContactsByCompany } from "../../types/contacts.ts";
 import type { BoardSearchStatus } from "../../types/boardSearch.ts";
 import type {
-  ApplicationHistoryRow,
   BatchRefreshPopupState,
-  CompanyJobCounts,
   DescriptionUpdatePopupState,
   Job,
   JobQueueRefreshCandidate,
@@ -299,11 +295,6 @@ export default function JobQueue({
     const stored = readStoredViewPref(SORT_STORAGE_KEY, "date_desc");
     return stored === "fit_desc" ? "fit_desc_date_desc" : stored; // ai: claude-sonnet-5 | 2026-09-20 migrate old stored sort key
   });
-  const [allSheetRows, setAllSheetRows] = useState<ApplicationHistoryRow[] | null>(null);
-  // ai: claude-sonnet-5 | 2026-07-25
-  const [contactsByCompany, setContactsByCompany] = useState<ContactsByCompany>({});
-  // ai: claude-sonnet-5 | 2026-08-19
-  const [companyJobCounts, setCompanyJobCounts] = useState<CompanyJobCounts | null>(null);
   // ai: claude-sonnet-5 | 2026-10-09
   const [hideAppliedCompanies, setHideAppliedCompanies] = useState(false);
   // ai: claude-sonnet-5 | 2026-08-11
@@ -454,30 +445,6 @@ export default function JobQueue({
     if (!requestedViewMode) return;
     setViewMode(requestedViewMode);
   }, [requestedViewMode]);
-
-  useEffect(() => {
-    if (viewMode === "queue") return;
-    fetch("/api/applications")
-      .then((res) => res.json())
-      .then((data) => setAllSheetRows(Array.isArray(data.rows) ? data.rows.map(applicationRowFromSheet) : []))
-      .catch(() => setAllSheetRows([]));
-  }, [viewMode]);
-
-  // ai: claude-sonnet-5 | 2026-07-25
-  useEffect(() => {
-    fetch("/api/contacts/company-map")
-      .then((res) => res.json())
-      .then((data) => setContactsByCompany(data && typeof data === "object" ? data : {}))
-      .catch(() => setContactsByCompany({}));
-  }, []);
-
-  // ai: claude-sonnet-5 | 2026-08-19
-  useEffect(() => {
-    fetch("/api/jobs/company-counts")
-      .then((res) => res.json())
-      .then((data) => setCompanyJobCounts(data && typeof data === "object" ? data : {}))
-      .catch(() => setCompanyJobCounts({}));
-  }, []);
 
   // ai: claude-sonnet-5 | 2026-08-11
   useEffect(() => {
@@ -2396,9 +2363,6 @@ export default function JobQueue({
                 viewStatuses={viewStatuses}
                 triageHandlers={triageHandlers}
                 defaultSnoozeDays={defaultSnoozeDays}
-                allSheetRows={allSheetRows}
-                contactsByCompany={contactsByCompany}
-                companyJobCounts={companyJobCounts}
                 onNavigateToJobCard={onNavigateToJobCard}
                 onQueueApprove={handleApprove}
                 onQueueReEvaluate={handleJobReEvaluate}
@@ -2442,8 +2406,6 @@ export default function JobQueue({
                 onRescanEmail={handleRescanEmail}
                 defaultSnoozeDays={defaultSnoozeDays}
                 onNavigateToJobCard={onNavigateToJobCard}
-                contactsByCompany={contactsByCompany}
-                companyJobCounts={companyJobCounts}
                 onUpdate={(jobId, updatedJob) => handleQueueCardUpdate(jobId, updatedJob, job)}
               />
             ))
@@ -2457,7 +2419,7 @@ export default function JobQueue({
                 onRescanEmail: handleRescanEmail,
                 onUpdate: handleQueueCardUpdate,
               } satisfies QueueHandlers : null,
-              triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts,
+              triageHandlers, onNavigateToJobCard, defaultSnoozeDays,
             ))}
           <LoadMoreSentinel hasMore={listing.hasMore} loading={listing.loadingMore} itemCount={listing.jobs.length} onLoadMore={listing.loadMore} />
         </>

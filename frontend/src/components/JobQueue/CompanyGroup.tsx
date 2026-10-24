@@ -32,8 +32,7 @@ import renderJobOrTriageCard from "./renderJobOrTriageCard.tsx";
 import LoadMoreSentinel from "./LoadMoreSentinel.tsx";
 import LoadingSpinner from "../common/LoadingSpinner.tsx";
 import { useJobQueueListing, type JobQueueFilters } from "./useJobQueueListing.ts";
-import type { ApplicationHistoryRow, CompanyJobCounts, Job, JobQueueCompanyGroup } from "../../types/jobs.ts";
-import type { ContactsByCompany } from "../../types/contacts.ts";
+import type { Job, JobQueueCompanyGroup } from "../../types/jobs.ts";
 import type { TriageHandlers } from "../../types/jobQueue.ts";
 
 const companyGroupStyle: CSSProperties = {
@@ -61,9 +60,6 @@ interface CompanyGroupProps {
   filters: JobQueueFilters;
   viewStatuses: string[] | null | undefined;
   triageHandlers: TriageHandlers;
-  allSheetRows: ApplicationHistoryRow[] | null;
-  contactsByCompany?: ContactsByCompany;
-  companyJobCounts?: CompanyJobCounts | null;
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
   onQueueApprove: (jobId: number) => Promise<void>;
   onQueueReEvaluate?: ((job: Job) => Promise<unknown>) | null;
@@ -75,7 +71,7 @@ interface CompanyGroupProps {
 }
 
 export default function CompanyGroup({
-  group, filters, viewStatuses, triageHandlers, allSheetRows, contactsByCompany, companyJobCounts, onNavigateToJobCard,
+  group, filters, viewStatuses, triageHandlers, onNavigateToJobCard,
   onQueueApprove, onQueueReEvaluate, onQueueSkip, onQueueSnooze, onQueueRescanEmail, onQueueUpdate, defaultSnoozeDays,
 }: CompanyGroupProps) {
   const [open, setOpen] = useState(false);
@@ -122,7 +118,7 @@ export default function CompanyGroup({
             <LoadingSpinner label="Loading jobs…" />
           ) : (
             <>
-              {listing.jobs.map((job) => renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))}
+              {listing.jobs.map((job) => renderJobOrTriageCard(job, queueHandlers, triageHandlers, onNavigateToJobCard, defaultSnoozeDays))}
               <LoadMoreSentinel hasMore={listing.hasMore} loading={listing.loadingMore} itemCount={listing.jobs.length} onLoadMore={listing.loadMore} />
             </>
           )}

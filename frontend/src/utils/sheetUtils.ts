@@ -26,39 +26,7 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-07
-import type { ApplicationHistoryRow, ApplicationSheetRow, Job, JobHistoryStage } from "../types/jobs.ts";
-
-export function applicationRowFromSheet(row: ApplicationSheetRow): ApplicationHistoryRow {
-  const cells = Array.isArray(row.cells) ? row.cells : [];
-  const date = cellValue(cells, 3);
-  const rawStages = Array.isArray(row.stages) ? row.stages : [];
-  const hasAppliedStage = rawStages.some((s) => s.status === "applied");
-  const stages = hasAppliedStage || !date
-    ? rawStages
-    : [{ id: null, status: "applied", date }, ...rawStages];
-  return {
-    id: row.row_number,
-    company: cellValue(cells, 0),
-    company_normalized: row.company_normalized ?? null,
-    status: cellValue(cells, 1),
-    source: cellValue(cells, 2),
-    date,
-    title: cellValue(cells, 4),
-    url: cellValue(cells, 5),
-    notes: cellValue(cells, 6),
-    stages: stages.map((s) => ({ id: s.id ?? null, status: s.status, date: s.date ?? "" })),
-    duplicate_of_id: row.duplicate_of_id ?? null, // ai: claude-sonnet-4-6 | 2026-06-09
-    skip_reason: row.skip_reason ?? null, // ai: claude-sonnet-4-6 | 2026-06-10
-  };
-}
-
-export function cellValue(
-  cells: { column_index: number | string; value?: string | null }[],
-  columnIndex: number,
-): string {
-  const cell = cells.find((item) => Number(item.column_index) === columnIndex);
-  return String(cell?.value || "").trim();
-}
+import type { ApplicationHistoryRow, Job, JobHistoryStage } from "../types/jobs.ts";
 
 export function normalizeCompany(value?: string | null): string {
   return String(value || "")
@@ -93,7 +61,7 @@ export function isAppliedStatus(status?: string | null): boolean {
 }
 
 // ai: claude-sonnet-4-6 | 2026-06-26
-// Converts a jobs-DB row to the same shape that applicationRowFromSheet produces.
+// Converts a jobs-DB row to the Company History dialog's row shape.
 // Used to inject the current job into company-history results so it always appears
 // as "this card" even when the job has not yet been added to the application sheet.
 // ai: claude-sonnet-5 | 2026-10-16 — stages is optional and defaults to [] for plain

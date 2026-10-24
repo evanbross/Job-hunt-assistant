@@ -92,7 +92,7 @@ export interface ContactsListResponse {
   contacts: Contact[];
 }
 
-/** One entry of GET /api/contacts/company-map's per-company contact list (backend/contacts/contacts_service.py's build_company_map). */
+/** One contact at a job's company, as attached to each Job Queue job's company_contacts (backend/contacts/contacts_service.py's build_company_map). */
 export interface CompanyMapContact {
   id: number;
   full_name: string;
@@ -100,9 +100,6 @@ export interface CompanyMapContact {
   profile_url: string | null;
   connected_on: string | null;
 }
-
-/** Map of normalized-company-key -> contacts at that company, from GET /api/contacts/company-map. */
-export type ContactsByCompany = Record<string, CompanyMapContact[]>;
 
 /** Response body of GET /api/contacts/status. */
 export interface ContactsStatusResponse {

@@ -25,6 +25,8 @@
  * --- END AI SYSTEMS DIRECTIVE ---
  */
 
+import type { CompanyMapContact } from "./contacts.ts";
+
 // ai: claude-sonnet-5 | 2026-10-07
 // Mirrors the `jobs` table columns declared in backend/db/job_columns.py's
 // JobColumns and backend/db/schema.py's CREATE TABLE jobs — every field here
@@ -87,10 +89,17 @@ export interface Job {
   // sheetUtils.ts's jobToHistoryRow). Absent on every other Job-shaped
   // response.
   effective_status?: string | null;
+  // ai: claude-opus-5-5 | 2026-10-24 — what a Job Queue card shows about its
+  // company, attached to each job of a GET /api/jobs/queue page
+  // (backend/job_queue_company_summary.py). Absent on every other Job-shaped
+  // response, so a card that doesn't have them yet must not read "none".
+  /** Jobs on record at this company, any status (Company History button). */
+  company_job_count?: number;
+  /** Effective status -> count of the applications tracked at this company. */
+  company_application_statuses?: Record<string, number>;
+  /** Contacts who work at this company. */
+  company_contacts?: CompanyMapContact[];
 }
-
-/** Map of normalized-company-key -> count of jobs on record, from GET /api/jobs/company-counts. */
-export type CompanyJobCounts = Record<string, number>;
 
 // ai: claude-opus-5-5 | 2026-10-23 — the Job Queue page's server-side listing
 // (GET /api/jobs/queue*, routes/jobs.py; meanings in backend/db/job_queue_query.py).
@@ -145,7 +154,7 @@ export interface JobQueueCompaniesPage {
 /** GET /api/jobs/queue/refresh-candidates: just what a batch re-fetch needs. */
 export type JobQueueRefreshCandidate = Pick<Job, "id" | "company" | "job_title" | "fit_score" | "status" | "url">;
 
-/** A single stage entry attached to an application-sheet row (see sheetUtils.applicationRowFromSheet). */
+/** A single stage entry attached to a Company History row (see sheetUtils.jobToHistoryRow). */
 export interface ApplicationStage {
   id: number | null;
   status: string;
@@ -153,9 +162,8 @@ export interface ApplicationStage {
 }
 
 /**
- * Normalized "history row" shape produced by sheetUtils.applicationRowFromSheet
- * (from a Google Sheet row) and sheetUtils.jobToHistoryRow (from a jobs-DB row),
- * consumed by the Company History dialog (useCompanyHistoryLookup).
+ * Normalized "history row" shape produced by sheetUtils.jobToHistoryRow (from
+ * a jobs-DB row), consumed by the Company History dialog (useCompanyHistoryLookup).
  */
 export interface ApplicationHistoryRow {
   id: number | null;

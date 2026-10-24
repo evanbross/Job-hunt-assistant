@@ -52,7 +52,6 @@ from pydantic import (
 from backend.ai_provider import AIProviderError
 from backend.db import DuplicateOutreachTemplateTitleError
 from backend.contacts.contacts_import_service import ContactImportService
-from backend.contacts.contacts_service import build_company_map
 from backend.contacts.outreach_drafts import (
     MAX_OUTREACH_MESSAGE_LENGTH,
     OutreachDraftWriter,
@@ -325,13 +324,6 @@ def get_contacts_status() -> ResponseReturnValue:
         count = repos["contacts"].count(user_id)
         last_imported_at = repos["settings"].get(user_id, "contacts_last_imported_at")
     return jsonify({"count": count, "last_imported_at": last_imported_at})
-
-
-@contacts_bp.route("/contacts/company-map")
-def get_contacts_company_map() -> ResponseReturnValue:
-    with get_repos() as repos:
-        contacts = repos["contacts"].get_all(current_user_id())
-    return jsonify(build_company_map(contacts))
 
 
 # ai: claude-sonnet-5 | 2026-09-25

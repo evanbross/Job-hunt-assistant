@@ -7,9 +7,9 @@
 # Licensing inquiries: license@zombietech.biz
 # =============================================================================
 
-"""Groups imported contacts by normalized company name, so the frontend can
-fetch the whole map once and look up matches per job card client-side
-instead of issuing a request per company (see JobQueue/index.jsx)."""
+"""Groups imported contacts by normalized company name, so a page of Job
+Queue cards gets its connections from one query instead of one per company
+(see backend/job_queue_company_summary.py)."""
 
 from __future__ import annotations
 

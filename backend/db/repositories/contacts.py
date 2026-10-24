@@ -71,6 +71,20 @@ class PostgresContactRepository(_BaseRepo):
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
+    # ai: claude-opus-5-5 | 2026-10-24
+    def get_by_company_keys(self, user_id: int, company_keys: list[str]) -> list[dict[str, Any]]:
+        """Contacts at the companies in *company_keys* (company_normalized),
+        with the fields a job card's connections badge shows."""
+        if not company_keys:
+            return []
+        cur = self._execute(
+            "SELECT id, full_name, position, profile_url, connected_on, company_normalized"
+            " FROM contacts WHERE user_id = %s AND company_normalized = ANY(%s)"
+            " ORDER BY full_name, id",
+            (user_id, company_keys),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
     # ai: claude-sonnet-5 | 2026-09-25
     # ai: claude-opus-5-5 | 2026-10-14 -- was list_with_emails; the aggregated
     # log is now "outreach" (contact_outreach) and carries each entry's channel.

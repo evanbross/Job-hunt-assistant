@@ -252,6 +252,24 @@ function readCompaniesPage(data: unknown): { items: JobQueueCompanyGroup[]; hasM
 const jobId = (job: Job) => job.id;
 const companyKey = (group: JobQueueCompanyGroup) => group.company_key;
 
+// ai: claude-opus-5-5 | 2026-10-24
+// A published update is a card action's own response, which -- unlike a page
+// -- carries no company summary (backend/job_queue_company_summary.py). The
+// listed copy's still holds while the company is unchanged; after a company
+// edit it describes the old employer, so the list reloads instead.
+function sameCompany(listed: Job, updated: Job): boolean {
+  return listed.company === updated.company && listed.company_normalized === updated.company_normalized;
+}
+
+function withCompanySummary(listed: Job, updated: Job): Job {
+  return {
+    ...updated,
+    company_job_count: updated.company_job_count ?? listed.company_job_count,
+    company_application_statuses: updated.company_application_statuses ?? listed.company_application_statuses,
+    company_contacts: updated.company_contacts ?? listed.company_contacts,
+  };
+}
+
 export interface JobQueueListing {
   jobs: Job[];
   hasMore: boolean;
@@ -268,7 +286,8 @@ export interface JobQueueListing {
  * and tab badges still apply. Applies every change published on JobQueueChangeContext:
  * a removed job leaves; an updated job is replaced in place while its status
  * still belongs to this view (per `viewStatuses`; null for Unreachable, which
- * keeps it) and leaves otherwise; "reload" starts over. A job this list hasn't
+ * keeps it) and leaves otherwise -- keeping its company summary, or reloading
+ * the list if its company changed; "reload" starts over. A job this list hasn't
  * loaded is left for the next page or reload, since only the server knows
  * where it sorts. */
 export function useJobQueueListing(
@@ -334,11 +353,17 @@ export function useJobQueueListing(
         const updated = change.job;
         const statuses = viewStatusesRef.current;
         const staysInView = statuses == null || statuses.includes(updated.status || "");
+        let companyChanged = false;
         setItems((current) => (
           staysInView
-            ? current.map((job) => (job.id === updated.id ? updated : job))
+            ? current.map((job) => {
+              if (job.id !== updated.id) return job;
+              companyChanged = !sameCompany(job, updated);
+              return withCompanySummary(job, updated);
+            })
             : current.filter((job) => job.id !== updated.id)
         ));
+        if (companyChanged) reload();
       }
       // Several actions can land at once (a batch re-fetch); count once after.
       window.clearTimeout(countsTimerRef.current);

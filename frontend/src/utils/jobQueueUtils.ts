@@ -27,7 +27,7 @@
 
 // ai: claude-sonnet-5 | 2026-10-07
 import { SKIP_REASONS } from "./triagePanelUtils.ts";
-import type { CompanyJobCounts, Job } from "../types/jobs.ts";
+import type { Job } from "../types/jobs.ts";
 
 export function scoreDeltaLabel(
   previousScore?: number | null,
@@ -164,9 +164,11 @@ export function alwaysIncludedIds(job: Pick<Job, "duplicate_of_id" | "dismissed_
 // this job has a duplicate match (current or previously dismissed) that the
 // Company History dialog will force-include regardless of company-name text —
 // i.e. the dialog would actually show something beyond the current card.
-// `companyJobCounts` is the bulk map from /api/jobs/company-counts; null means
-// it hasn't loaded yet, in which case the button stays enabled rather than
-// flashing disabled-then-enabled once counts arrive.
+// ai: claude-opus-5-5 | 2026-10-24 — the count is the job's own
+// company_job_count (attached by GET /api/jobs/queue), not a lookup in the
+// account-wide /api/jobs/company-counts map that endpoint replaced. A job
+// without one (from any other response) keeps the button enabled, as the
+// map's not-loaded-yet state did.
 // ai: claude-sonnet-5 | 2026-10-19 — used to recompute a lookup key from
 // job.company (normalize + resolve through a client-fetched alias map) that
 // had to independently agree with how the backend groups company-counts
@@ -175,13 +177,10 @@ export function alwaysIncludedIds(job: Pick<Job, "duplicate_of_id" | "dismissed_
 // retroactively when aliases change — see company_aliases.py's upsert()/
 // delete()), so this reads it directly instead of re-deriving it.
 export function hasCompanyHistoryAvailable(
-  job: Pick<Job, "duplicate_of_id" | "dismissed_duplicate_ids" | "company" | "company_normalized">,
-  companyJobCounts?: CompanyJobCounts | null,
+  job: Pick<Job, "duplicate_of_id" | "dismissed_duplicate_ids" | "company_normalized" | "company_job_count">,
 ): boolean {
   if (alwaysIncludedIds(job).size > 0) return true;
-  const key = job?.company_normalized;
-  if (!key) return false;
-  if (!companyJobCounts) return true;
-  const count = companyJobCounts[key] ?? 0;
-  return count > 1;
+  if (!job?.company_normalized) return false;
+  if (job.company_job_count === undefined) return true;
+  return job.company_job_count > 1;
 }

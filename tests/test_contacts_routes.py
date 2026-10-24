@@ -338,42 +338,6 @@ def test_get_contacts_status(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
 
-def test_get_contacts_company_map_groups_by_normalized_company(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repos = {
-        "conn": FakeConnection(),
-        "contacts": FakeContactsRepo(
-            [
-                {
-                    "id": 1,
-                    "full_name": "Jane Doe",
-                    "company_normalized": "acme",
-                    "position": "Engineer",
-                    "profile_url": "https://linkedin.com/in/janedoe",
-                    "connected_on": "2024-01-15",
-                },
-                {
-                    "id": 2,
-                    "full_name": "No Company",
-                    "company_normalized": "",
-                    "position": "",
-                    "profile_url": None,
-                    "connected_on": None,
-                },
-            ]
-        ),
-        "settings": FakeSettingsRepo(),
-    }
-    client = _make_app(repos, monkeypatch).test_client()
-
-    response = client.get("/api/contacts/company-map")
-    assert response.status_code == 200
-    data = response.get_json()
-    assert list(data.keys()) == ["acme"]
-    assert data["acme"][0]["full_name"] == "Jane Doe"
-
-
 # ai: claude-sonnet-5 | 2026-09-28
 class FakeCompanyRepo:
     def __init__(self, report: list[dict[str, Any]] | None = None) -> None:

@@ -25,6 +25,7 @@ from flask import Flask
 
 import config
 from backend.db import (
+    PostgresApplicationStageRepository,
     PostgresCompanyAliasRepository,
     PostgresContactRepository,
     PostgresJobRepository,
@@ -427,3 +428,44 @@ def test_options_counts_companies_and_candidates_routes(client, db) -> None:
     assert [job["company"] for job in candidates] == ["Acme"]
     assert client.get("/api/jobs/queue/refresh-candidates?kind=everything").status_code == 400
     assert client.get("/api/jobs/queue/counts?view=both&limit=5").status_code == 400
+
+
+# ai: claude-opus-5-5 | 2026-10-24
+def test_page_route_attaches_each_jobs_company_summary(client, db) -> None:
+    """The badges each card used to work out from three account-wide maps
+    (/applications, /jobs/company-counts, /contacts/company-map): history and
+    applications match the alias-resolved company_normalized, applications
+    report their effective (latest-stage) status, and contacts match the
+    plain normalized company name."""
+    conn, repo, user_id = db
+    stages = PostgresApplicationStageRepository(conn)
+    rejected = _insert(repo, user_id, company="Cash App", status="applied", on_sheet=1, url="https://jobs.example/c1")
+    stages.insert(user_id, {"job_id": rejected, "status": "applied", "date": "2026-09-01", "notes": None})
+    stages.insert(user_id, {"job_id": rejected, "status": "rejected", "date": "2026-09-10", "notes": None})
+    _insert(repo, user_id, company="Cash App", status="applied", on_sheet=1, url="https://jobs.example/c2")
+    _insert(repo, user_id, company="Cash App", status="skipped", url="https://jobs.example/c3")  # not on the sheet
+    conn.commit()
+    PostgresCompanyAliasRepository(conn).upsert(user_id, alias_company="Block", canonical_company="Cash App")
+    block = _insert(repo, user_id, company="Block", status="triage", date_found="2026-10-02")
+    blank = _insert(repo, user_id, company="", status="triage", date_found="2026-10-01")
+    PostgresContactRepository(conn).sync_import(user_id, [{
+        "dedup_key": "contact-block", "full_name": "Grace Hopper", "company_raw": "Block, Inc.",
+        "company_normalized": "block", "position": "Recruiter", "normalized_title": "recruiter",
+        "profile_url": "https://www.linkedin.com/in/grace", "email_address": None, "connected_on": None,
+        "imported_at": "2026-10-01T00:00:00+00:00",
+    }])
+    conn.commit()
+    other_user = _make_user(conn, "queue-summary-other@example.com")
+    _insert(repo, other_user, company="Cash App", status="applied", on_sheet=1, url="https://jobs.example/other")
+    conn.commit()
+    _act_as(conn, user_id)
+
+    jobs = {job["id"]: job for job in client.get("/api/jobs/queue?view=triage&sort=date_desc").get_json()["jobs"]}
+
+    assert jobs[block]["company_job_count"] == 4
+    assert jobs[block]["company_application_statuses"] == {"rejected": 1, "applied": 1}
+    assert [contact["full_name"] for contact in jobs[block]["company_contacts"]] == ["Grace Hopper"]
+    assert set(jobs[block]["company_contacts"][0]) == {"id", "full_name", "position", "profile_url", "connected_on"}
+    assert jobs[blank]["company_job_count"] == 0
+    assert jobs[blank]["company_application_statuses"] == {}
+    assert jobs[blank]["company_contacts"] == []
