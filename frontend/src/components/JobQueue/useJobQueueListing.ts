@@ -86,6 +86,17 @@ export class JobQueueChangeBus {
 
 export const JobQueueChangeContext = createContext<JobQueueChangeBus | null>(null);
 
+// ai: claude-opus-5-5 | 2026-10-24
+/** The page's change bus. Throws outside a JobQueueChangeContext provider: a
+ * list with no bus to subscribe to would silently ignore every skip, approval
+ * and update -- which is how the main Job Queue list shipped (the component
+ * rendering the provider called these hooks itself, so it read null). */
+export function useJobQueueChangeBus(): JobQueueChangeBus {
+  const bus = useContext(JobQueueChangeContext);
+  if (!bus) throw new Error("Job Queue lists must render inside a JobQueueChangeContext provider");
+  return bus;
+}
+
 // ── Options ─────────────────────────────────────────────────────────────────
 
 export function useJobQueueOptions(): JobQueueOptions | null {
@@ -299,7 +310,7 @@ export function useJobQueueListing(
     withCounts?: boolean;
   },
 ): JobQueueListing {
-  const bus = useContext(JobQueueChangeContext);
+  const bus = useJobQueueChangeBus();  // ai: claude-opus-5-5 | 2026-10-24
   const queryString = jobQueueQueryString(filters);
   const list = usePagedList<Job>(
     "/api/jobs/queue",
@@ -340,7 +351,6 @@ export function useJobQueueListing(
 
   const { setItems, reload } = list;
   useEffect(() => {
-    if (!bus) return undefined;
     return bus.subscribe((change) => {
       if (change.type === "reload") {
         if (enabled) reload();
@@ -393,7 +403,7 @@ export interface JobQueueCompanies {
  * between groups or change a group's counts, so the loaded groups re-fetch
  * shortly after (keeping how many are loaded). */
 export function useJobQueueCompanies(filters: JobQueueFilters, enabled: boolean): JobQueueCompanies {
-  const bus = useContext(JobQueueChangeContext);
+  const bus = useJobQueueChangeBus();  // ai: claude-opus-5-5 | 2026-10-24
   const list = usePagedList<JobQueueCompanyGroup>(
     "/api/jobs/queue/companies",
     jobQueueQueryString(filters),
@@ -406,7 +416,7 @@ export function useJobQueueCompanies(filters: JobQueueFilters, enabled: boolean)
   const { reload } = list;
 
   useEffect(() => {
-    if (!bus || !enabled) return undefined;
+    if (!enabled) return undefined;
     const unsubscribe = bus.subscribe(() => {
       window.clearTimeout(timerRef.current);
       timerRef.current = window.setTimeout(reload, COUNTS_REFRESH_DELAY_MS);

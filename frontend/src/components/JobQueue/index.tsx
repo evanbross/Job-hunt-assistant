@@ -42,6 +42,7 @@ import LoadMoreSentinel from "./LoadMoreSentinel.tsx";
 import {
   JobQueueChangeBus,
   JobQueueChangeContext,
+  useJobQueueChangeBus,
   useJobQueueCompanies,
   useJobQueueListing,
   useJobQueueOptions,
@@ -275,7 +276,7 @@ interface JobQueueProps {
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
 }
 
-export default function JobQueue({
+function JobQueueContent({
   isAuthenticated,
   onNavigateToEmails,
   onNavigateToHistory,
@@ -370,7 +371,7 @@ export default function JobQueue({
   // The lists come from the server a page at a time (useJobQueueListing.ts):
   // it sorts, searches, filters and counts. Every action below reports what
   // it changed on changeBus, which updates each list on the page in place.
-  const [changeBus] = useState(() => new JobQueueChangeBus());
+  const changeBus = useJobQueueChangeBus();  // ai: claude-opus-5-5 | 2026-10-24 — owned by JobQueue below
   const queueOptions = useJobQueueOptions();
   const viewStatuses = queueOptions?.view_statuses[viewMode];
   const listFilters = useMemo((): JobQueueFilters => ({
@@ -1573,7 +1574,6 @@ export default function JobQueue({
   const unratedQueueRefreshDisabled = anyQueueActionRunning || isQueueUnratedRefreshing || unratedQueueRefreshableCount === 0;
 
   return (
-    <JobQueueChangeContext.Provider value={changeBus}>
     <div>
       {/* View mode selector */}
       <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginBottom: "16px" }}>
@@ -2437,6 +2437,18 @@ export default function JobQueue({
         </button>
       )}
     </div>
+  );
+}
+
+// ai: claude-opus-5-5 | 2026-10-24
+/** Owns the change bus, as its own component above JobQueueContent: a
+ * component's useContext reads the providers above it, not one it renders,
+ * so JobQueueContent's own lists would otherwise never see the bus. */
+export default function JobQueue(props: JobQueueProps) {
+  const [changeBus] = useState(() => new JobQueueChangeBus());
+  return (
+    <JobQueueChangeContext.Provider value={changeBus}>
+      <JobQueueContent {...props} />
     </JobQueueChangeContext.Provider>
   );
 }

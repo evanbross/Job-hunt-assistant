@@ -90,6 +90,7 @@ describe("useJobQueueListing", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("loads the first page and the counts, then the next page from where the list ends", async () => {
@@ -180,6 +181,12 @@ describe("useJobQueueListing", () => {
 
     await act(async () => bus.publish({ type: "update", job: { ...job(1), company: "Elsewhere" } }));
     await waitFor(() => expect(requests).toHaveLength(2));
+  });
+
+  // ai: claude-opus-5-5 | 2026-10-24
+  it("refuses to run outside a change-bus provider instead of never subscribing", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => renderHook(() => useJobQueueListing(FILTERS, { viewStatuses: null }))).toThrow(/JobQueueChangeContext/);
   });
 
   it("keeps an updated job whatever its status in the Unreachable view", async () => {
