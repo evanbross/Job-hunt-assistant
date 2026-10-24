@@ -146,7 +146,7 @@ def test_account_reports_password_pending_default_true_for_default_admin(client)
 
 def test_gate_blocks_ordinary_routes_while_setup_incomplete(client) -> None:
     _login_default_admin(client)
-    resp = client.get("/api/jobs")
+    resp = client.get("/api/jobs/queue?view=queue")
     assert resp.status_code == 403
     assert resp.get_json()["must_complete_setup"] is True
 
@@ -185,7 +185,7 @@ def test_changing_password_alone_does_not_clear_gate(client) -> None:
     resp = _change_password(client)
     assert resp.status_code == 200
     assert client.get("/api/session").get_json()["must_complete_setup"] is True
-    assert client.get("/api/jobs").status_code == 403
+    assert client.get("/api/jobs/queue?view=queue").status_code == 403
 
 
 def test_confirming_email_change_alone_does_not_clear_gate(client, sent_emails) -> None:
@@ -193,7 +193,7 @@ def test_confirming_email_change_alone_does_not_clear_gate(client, sent_emails) 
     resp = _request_and_confirm_email_change(client, sent_emails)
     assert resp.status_code == 200
     assert client.get("/api/session").get_json()["must_complete_setup"] is True
-    assert client.get("/api/jobs").status_code == 403
+    assert client.get("/api/jobs/queue?view=queue").status_code == 403
 
 
 def test_completing_password_then_email_clears_gate(client, sent_emails) -> None:
@@ -206,7 +206,7 @@ def test_completing_password_then_email_clears_gate(client, sent_emails) -> None
         "must_complete_setup": False,
         "deletion_requested_at": None,
     }
-    assert client.get("/api/jobs").status_code == 200
+    assert client.get("/api/jobs/queue?view=queue").status_code == 200
 
     # the default credential must no longer work at all
     client.post("/api/logout")
@@ -230,7 +230,7 @@ def test_completing_email_then_password_clears_gate(client, sent_emails) -> None
         "must_complete_setup": False,
         "deletion_requested_at": None,
     }
-    assert client.get("/api/jobs").status_code == 200
+    assert client.get("/api/jobs/queue?view=queue").status_code == 200
 
 
 # ai: claude-opus-5-5 | 2026-10-23
@@ -252,23 +252,23 @@ def test_gate_queries_the_db_until_setup_completes_then_once_per_session(
     monkeypatch.setattr(app_module, "get_repos", _counting_get_repos)
 
     _login_default_admin(client)
-    assert client.get("/api/jobs").status_code == 403
-    assert client.get("/api/jobs").status_code == 403
+    assert client.get("/api/jobs/queue?view=queue").status_code == 403
+    assert client.get("/api/jobs/queue?view=queue").status_code == 403
     assert gate_lookups == 2  # TRUE is never cached
 
     _change_password(client)
     _request_and_confirm_email_change(client, sent_emails)  # clears the flag in the DB
 
     gate_lookups = 0
-    assert client.get("/api/jobs").status_code == 200  # same session, no re-login needed
-    assert client.get("/api/jobs").status_code == 200
-    assert client.get("/api/jobs").status_code == 200
+    assert client.get("/api/jobs/queue?view=queue").status_code == 200  # same session, no re-login needed
+    assert client.get("/api/jobs/queue?view=queue").status_code == 200
+    assert client.get("/api/jobs/queue?view=queue").status_code == 200
     assert gate_lookups == 1  # FALSE looked up once, then remembered
 
     client.post("/api/logout")
     client.post("/api/login", json={"email": _NEW_EMAIL, "password": _NEW_PASSWORD})
     gate_lookups = 0
-    assert client.get("/api/jobs").status_code == 200
+    assert client.get("/api/jobs/queue?view=queue").status_code == 200
     assert gate_lookups == 1  # a new login starts from a cleared session and re-checks
 
 

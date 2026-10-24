@@ -10,8 +10,10 @@
 import { normalizeCompany } from "./sheetUtils.ts";
 
 // ai: claude-sonnet-5 | 2026-07-25
-// Mirrors normalize_company_name() in backend/company_matching.py — keep the
-// suffix list and operation order identical in both places.
+// Mirrors normalize_company_name() in backend/scoring/company_matching.py — keep the
+// suffix list and operation order identical in both places. (That module also
+// builds the SQL copy the Job Queue's "Know someone" filter runs, from the same
+// list -- ai: claude-opus-5-5 | 2026-10-23.)
 export function contactsMatchKey(company?: string | null): string {
   return normalizeCompany(company).replace(/\s+/g, "");
 }

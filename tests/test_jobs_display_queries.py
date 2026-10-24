@@ -26,16 +26,18 @@
 # =============================================================================
 
 # ai: claude-sonnet-5 | 2026-10-17
-"""get_all_by_status (Job Queue) and get_by_statuses_for_display (Triage) are
-the lightweight display projections behind GET /jobs and GET /jobs/triage --
-see JobColumns.display_summary()'s own comment for why: both used to be
-SELECT *, eagerly shipping job_description/raw_jd_snippet/fit_reasoning/
-certainty_reason for every row even though JobCard.tsx/TriagePanel.tsx only
-show that text behind a per-card toggle that defaults closed. This locks in
-the contract those two methods must keep: the four heavy columns are gone,
-has_description/has_fit_reasoning stand in for them, and get_by_statuses
-(the shared, non-display method duplicate-detection/re-scoring code still
-calls) is untouched."""
+# ai: claude-opus-5-5 | 2026-10-23 — the display projection now lives in
+# list_queue_page (GET /api/jobs/queue), which replaced get_all_by_status and
+# get_by_statuses_for_display; these tests moved onto it unchanged.
+"""list_queue_page is the lightweight display projection behind the Job Queue
+page's lists -- see JobColumns.display_summary()'s own comment for why: its
+predecessors used to be SELECT *, eagerly shipping job_description/
+raw_jd_snippet/fit_reasoning/certainty_reason for every row even though
+JobCard.tsx/TriagePanel.tsx only show that text behind a per-card toggle that
+defaults closed. This locks in the contract it must keep: the four heavy
+columns are gone, has_description/has_fit_reasoning stand in for them, and
+get_by_statuses (the shared, non-display method duplicate-detection/
+re-scoring code still calls) is untouched."""
 
 from __future__ import annotations
 
@@ -44,6 +46,7 @@ from backend.db import (
     PostgresUserAccountRepository,
     get_connection,
 )
+from backend.db.job_queue_query import JobQueueQuery, JobQueueView
 from backend.db.row_level_security import set_current_user
 
 _HEAVY_COLUMNS = {"job_description", "raw_jd_snippet", "fit_reasoning", "certainty_reason"}
@@ -58,7 +61,7 @@ def _make_user(conn) -> int:
     return account["id"]
 
 
-def test_get_all_by_status_omits_heavy_columns_and_computes_flags(pg_dsn: str) -> None:
+def test_queue_view_omits_heavy_columns_and_computes_flags(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_id = _make_user(conn)
@@ -79,7 +82,7 @@ def test_get_all_by_status_omits_heavy_columns_and_computes_flags(pg_dsn: str) -
         )
         conn.commit()
 
-        rows = repo.get_all_by_status(user_id, "pending_review")
+        rows = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.QUEUE), 100, 0)
 
         by_company = {r["company"]: r for r in rows}
         assert by_company["Acme"]["has_description"] is True
@@ -92,7 +95,7 @@ def test_get_all_by_status_omits_heavy_columns_and_computes_flags(pg_dsn: str) -
         conn.close()
 
 
-def test_get_by_statuses_for_display_omits_heavy_columns_and_computes_flags(pg_dsn: str) -> None:
+def test_triage_view_omits_heavy_columns_and_computes_flags(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_id = _make_user(conn)
@@ -113,7 +116,7 @@ def test_get_by_statuses_for_display_omits_heavy_columns_and_computes_flags(pg_d
         )
         conn.commit()
 
-        rows = repo.get_by_statuses_for_display(user_id, ["triage", "possible_duplicate"])
+        rows = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.TRIAGE), 100, 0)
 
         by_company = {r["company"]: r for r in rows}
         assert by_company["Acme"]["has_description"] is True
@@ -191,7 +194,7 @@ def test_display_queries_compute_description_unavailable_in_sql(pg_dsn: str) -> 
         )
         conn.commit()
 
-        rows = repo.get_by_statuses_for_display(user_id, ["triage"])
+        rows = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.TRIAGE), 100, 0)
         by_id = {r["id"]: r for r in rows}
 
         assert by_id[no_desc_id]["description_unavailable"] is True

@@ -390,18 +390,6 @@ def re_evaluate_status() -> ResponseReturnValue:
     )
 
 
-@fit_bp.route("/jobs/triage")
-def get_triage_jobs() -> ResponseReturnValue:
-    # ai: claude-sonnet-5 | 2026-10-17 — was get_by_statuses() (SELECT *);
-    # see get_by_statuses_for_display's own docstring for the measured cost
-    # that replaced (18.5MB / 1.5-2s on a real account's 2129 triage rows).
-    with get_repos() as repos:
-        jobs = repos["jobs"].get_by_statuses_for_display(
-            current_user_id(), ["triage", "possible_duplicate"], exclude_snoozed=True
-        )
-    return jsonify(jobs)
-
-
 # ai: claude-sonnet-5 | 2026-09-29
 class FitChatRequest(BaseModel):
     """POST /jobs/<id>/fit-chat body. See backend.utils.utils.parse_chat_messages

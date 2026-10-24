@@ -40,6 +40,7 @@ from flask.testing import FlaskClient
 import config
 import routes.applications as applications_module  # ai: claude-fable-5 | 2026-07-17
 from backend.db import CaptureQueueOrigin, open_repositories
+from backend.db.job_queue_query import JobQueueQuery, JobQueueView
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
 from backend.db.row_level_security import set_current_user
 from backend.scanning.closed_req_scan_helpers import (  # ai: claude-fable-5 | 2026-07-17
@@ -842,7 +843,8 @@ def test_run_req_closed_scan_sets_unreachable_since_on_direct_unreachable_result
 
     check_repos = _repos_as(user_id)
     try:
-        unreachable_ids = {j["id"] for j in check_repos["jobs"].get_unreachable(user_id)}
+        unreachable_view = JobQueueQuery(view=JobQueueView.UNREACHABLE)  # ai: claude-opus-5-5 | 2026-10-23
+        unreachable_ids = {j["id"] for j in check_repos["jobs"].list_queue_page(user_id, unreachable_view, 1000, 0)}
     finally:
         check_repos["conn"].close()
     assert job_id in unreachable_ids

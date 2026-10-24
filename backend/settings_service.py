@@ -32,11 +32,28 @@ scope + encryption are applied consistently in one place."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import config
 from backend.crypto import decrypt_secret, encrypt_secret
-from backend.settings_registry import SETTINGS
+from backend.settings_registry import SETTINGS, SettingSpec
+
+
+# ai: claude-opus-5-5 | 2026-10-23
+# The read-side rules, shared by the single-key functions below and by
+# SettingsSnapshot, so a bulk read can never resolve a value differently
+# from get_setting() / is_setting_configured().
+def _resolve_value(spec: SettingSpec, raw: str | None) -> str:
+    if raw is None:
+        return "" if spec.is_secret else spec.default
+    return decrypt_secret(raw) if spec.is_secret else raw
+
+
+def _resolve_configured(spec: SettingSpec, raw: str | None) -> bool:
+    if spec.is_secret:
+        return bool(raw)
+    return bool(raw) or bool(spec.default)
 
 
 def get_setting(key: str, user_id: int | None, repos: dict[str, Any]) -> str:
@@ -59,9 +76,7 @@ def get_setting(key: str, user_id: int | None, repos: dict[str, Any]) -> str:
         raw = repos["settings"].get(user_id, key)
     else:
         raw = repos["system_settings"].get(key)
-    if raw is None:
-        return "" if spec.is_secret else spec.default
-    return decrypt_secret(raw) if spec.is_secret else raw
+    return _resolve_value(spec, raw)  # ai: claude-opus-5-5 | 2026-10-23
 
 
 def set_setting(key: str, value: str, user_id: int | None, repos: dict[str, Any]) -> None:
@@ -90,9 +105,7 @@ def is_setting_configured(key: str, user_id: int | None, repos: dict[str, Any]) 
         raw = repos["settings"].get(user_id, key) if user_id is not None else None
     else:
         raw = repos["system_settings"].get(key)
-    if spec.is_secret:
-        return bool(raw)
-    return bool(raw) or bool(spec.default)
+    return _resolve_configured(spec, raw)  # ai: claude-opus-5-5 | 2026-10-23
 
 
 # ai: claude-sonnet-5 | 2026-08-30
@@ -114,3 +127,48 @@ def get_setting_int(
 ) -> int:
     """get_setting(), coerced to int via config.config_int()."""
     return config.config_int(get_setting(key, user_id, repos), default)
+
+
+# ai: claude-opus-5-5 | 2026-10-23
+class SettingsSnapshot:
+    """The stored values for a fixed set of keys, read up front by
+    load_settings() and resolved with exactly the same rules as get_setting()
+    and is_setting_configured(). For callers that read many keys at once:
+    each single-key call is its own query, so GET /api/config's 21 keys cost
+    ~700ms against Neon (~31ms per round trip); a snapshot costs one query
+    per scope. Asking for a key the snapshot wasn't loaded with raises
+    KeyError rather than silently returning a default."""
+
+    def __init__(self, raw_by_key: dict[str, str | None]) -> None:
+        self._raw_by_key = raw_by_key
+
+    def get(self, key: str) -> str:
+        return _resolve_value(SETTINGS[key], self._raw_by_key[key])
+
+    def get_bool(self, key: str, default: bool) -> bool:
+        return config.config_bool(self.get(key), default)
+
+    def get_int(self, key: str, default: int) -> int:
+        return config.config_int(self.get(key), default)
+
+    def is_configured(self, key: str) -> bool:
+        return _resolve_configured(SETTINGS[key], self._raw_by_key[key])
+
+
+def load_settings(
+    keys: Iterable[str], user_id: int | None, repos: dict[str, Any]
+) -> SettingsSnapshot:
+    """Read every key in *keys* (any mix of scopes) in at most one query per
+    scope. Same scope rules as get_setting(): an unknown key raises KeyError,
+    and a user-scoped key without a user_id raises ValueError."""
+    key_list = list(keys)
+    user_keys = [key for key in key_list if SETTINGS[key].scope == "user"]
+    system_keys = [key for key in key_list if SETTINGS[key].scope != "user"]
+    stored: dict[str, str] = {}
+    if user_keys:
+        if user_id is None:
+            raise ValueError(f"{user_keys} are user-scoped settings but no user_id was given")
+        stored.update(repos["settings"].get_many(user_id, user_keys))
+    if system_keys:
+        stored.update(repos["system_settings"].get_many(system_keys))
+    return SettingsSnapshot({key: stored.get(key) for key in key_list})

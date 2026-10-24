@@ -185,15 +185,3 @@ export function hasCompanyHistoryAvailable(
   const count = companyJobCounts[key] ?? 0;
   return count > 1;
 }
-
-// ai: claude-sonnet-5 | 2026-10-09
-// `appliedCompanies` is the bulk list from /api/jobs/applied-companies, keyed
-// by the same jobs.company_normalized column every job already carries (see
-// hasCompanyHistoryAvailable's comment above).
-export function hasAppliedToCompany(
-  job: Pick<Job, "company_normalized">,
-  appliedCompanies: Set<string>,
-): boolean {
-  const key = job?.company_normalized;
-  return Boolean(key && appliedCompanies.has(key));
-}

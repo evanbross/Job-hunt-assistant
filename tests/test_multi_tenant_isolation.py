@@ -123,7 +123,7 @@ def test_users_cannot_see_each_others_jobs_in_the_queue(client) -> None:
     _seed_job(user_b, dedup_key="b-1", url="https://example.com/b", title="Bob's job")
 
     _login(client, _USER_A_EMAIL)
-    queue = client.get("/api/jobs").get_json()
+    queue = client.get("/api/jobs/queue?view=queue").get_json()["jobs"]
     titles = {j["job_title"] for j in queue}
     assert "Alice's job" in titles
     assert "Bob's job" not in titles

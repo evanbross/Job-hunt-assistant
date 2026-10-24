@@ -37,6 +37,7 @@ import CareerSiteScanBanner from "./components/CareerSiteScanBanner.tsx";
 import StatsBar from "./components/StatsBar.tsx";
 import RecentChangesModal from "./components/RecentChangesModal.tsx";
 import Modal from "./components/common/Modal.tsx";
+import LoadingSpinner from "./components/common/LoadingSpinner.tsx";
 import MetricGrid, { MetricItem } from "./components/common/MetricGrid.tsx";
 import { ImportBreakdownDetails, ImportOriginDetails } from "./components/JobQueue/ImportSummaryPopup.tsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.ts";
@@ -499,7 +500,7 @@ export default function App() {
   if (pathname === "/verify-account") {
     const token = new URLSearchParams(window.location.search).get("token");
     return (
-      <Suspense fallback={null}>
+      <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
         <VerifyAccountPage token={token} onLoginSuccess={() => setAppAuthenticated(true)} />
       </Suspense>
     );
@@ -507,7 +508,7 @@ export default function App() {
   if (pathname === "/confirm-email-change") {
     const token = new URLSearchParams(window.location.search).get("token");
     return (
-      <Suspense fallback={null}>
+      <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
         <VerifyEmailChangePage token={token} />
       </Suspense>
     );
@@ -515,13 +516,13 @@ export default function App() {
   if (pathname === "/reset-password") {
     const token = new URLSearchParams(window.location.search).get("token");
     return (
-      <Suspense fallback={null}>
+      <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
         <ResetPasswordPage token={token} onLoginSuccess={() => setAppAuthenticated(true)} />
       </Suspense>
     );
   }
 
-  if (appAuthenticated === null) return null; // session check in flight
+  if (appAuthenticated === null) return <LoadingSpinner label="Loading…" fullPage />; // session check in flight — ai: claude-opus-5-5 | 2026-10-23, was a blank page
   if (appAuthenticated === false) {
     return (
       <LoginPage
@@ -537,7 +538,7 @@ export default function App() {
   }
   if (mustCompleteSetup) {
     return (
-      <Suspense fallback={null}>
+      <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
         <CompleteSetupPage onComplete={() => setMustCompleteSetup(false)} />
       </Suspense>
     );
@@ -660,7 +661,7 @@ export default function App() {
       {activeTab !== "settings" && <CareerSiteScanBanner />}
 
       <main style={styles.content}>
-        <Suspense fallback={<div style={{ padding: "24px", color: "var(--text-muted)" }}>Loading…</div>}>
+        <Suspense fallback={<LoadingSpinner label="Loading…" />}>{/* ai: claude-opus-5-5 | 2026-10-23 */}
         {activeTab === "queue" && (
           <JobQueue
             isAuthenticated={authStatus === true}

@@ -30,16 +30,24 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties } from "react";
 import JobCard from "../JobCard.tsx";
 import { ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "../TriagePanel.tsx";
-import { jobMatchesSearch, JOB_SEARCH_FIELD_OPTIONS, type JobSearchField } from "../../utils/jobSearchUtils.ts";
-import { hasAppliedToCompany } from "../../utils/jobQueueUtils.ts";
-import { contactsMatchKey } from "../../utils/contactsUtils.ts";
 import ReqClosedDialog from "../common/ReqClosedDialog.tsx";
+import LoadingSpinner from "../common/LoadingSpinner.tsx";
 import { emailIdForRescan, extractSender, extractSubjectWords } from "../../utils/triagePanelUtils.ts";
 import { applicationRowFromSheet } from "../../utils/sheetUtils.ts";
 import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../../utils/reqClosedScanStorage.ts";
 import { readStoredPref, writeStoredPref } from "../../utils/storedPreference.ts";
 import { runBatchRefreshFromUrls } from "../../utils/batchRefreshFromUrls.ts";
-import { sortJobList, readStoredViewPref } from "./helpers.tsx";
+import { readStoredViewPref } from "./helpers.tsx";
+// ai: claude-opus-5-5 | 2026-10-23
+import LoadMoreSentinel from "./LoadMoreSentinel.tsx";
+import {
+  JobQueueChangeBus,
+  JobQueueChangeContext,
+  useJobQueueCompanies,
+  useJobQueueListing,
+  useJobQueueOptions,
+  type JobQueueFilters,
+} from "./useJobQueueListing.ts";
 import FixCompaniesDialog from "./FixCompaniesDialog.tsx";
 import ProgressPopup from "./ProgressPopup.tsx";
 import ErrorList from "./ErrorList.tsx";
@@ -59,12 +67,13 @@ import type { ApiErrorBody } from "../../types/common.ts";
 import type { ContactsByCompany } from "../../types/contacts.ts";
 import type { BoardSearchStatus } from "../../types/boardSearch.ts";
 import type {
-  AppliedCompanies,
   ApplicationHistoryRow,
   BatchRefreshPopupState,
   CompanyJobCounts,
   DescriptionUpdatePopupState,
   Job,
+  JobQueueRefreshCandidate,
+  JobQueueViewKey,
   ManualJobCreateResponse,
   ReEvaluateAllSummary,
   ReEvaluatePopupState,
@@ -232,7 +241,8 @@ const SEARCH_FIELD_KEY = "jha.jobQueue.searchField";
 // ai: claude-sonnet-5 | 2026-10-07 -- exported: App.tsx types the
 // requestedViewMode it threads through focusedJobCard state against this
 // same union, instead of re-declaring it.
-export type ViewMode = "queue" | "triage" | "both" | "company" | "unreachable";
+// ai: claude-opus-5-5 | 2026-10-23 -- now an alias of the server listing's view keys.
+export type ViewMode = JobQueueViewKey;
 
 const VIEW_MODES: { key: ViewMode; label: string }[] = [
   { key: "queue", label: "Job Queue" },
@@ -240,17 +250,6 @@ const VIEW_MODES: { key: ViewMode; label: string }[] = [
   { key: "both", label: "Jobs & Triage" },
   { key: "company", label: "Company" },
   { key: "unreachable", label: "Unreachable" },
-];
-
-const SORT_OPTIONS = [
-  { key: "date_desc", label: "Newest first" },
-  { key: "date_asc", label: "Oldest first" },
-  { key: "fit_desc_date_desc", label: "Highest fit, newest first" },
-  { key: "fit_desc_date_asc", label: "Highest fit, oldest first" },
-  { key: "fit_asc", label: "Lowest fit" },
-  { key: "confidence_desc", label: "Highest confidence" },
-  { key: "confidence_asc", label: "Lowest confidence" },
-  { key: "company_asc", label: "Company A–Z" },
 ];
 
 interface ImportPayloadFields {
@@ -288,12 +287,11 @@ export default function JobQueue({
   requestedViewMode,
   onNavigateToJobCard,
 }: JobQueueProps) {
-  const [jobs, setJobs] = useState<Job[]>([]);
   const [searchText, setSearchText] = useState(() => readStoredPref(JOB_QUEUE_SEARCH_STORAGE_KEY));
   const [debouncedSearchText, setDebouncedSearchText] = useState(searchText);
-  const [searchField, setSearchField] = useState<JobSearchField>(() => {
+  const [searchField, setSearchField] = useState<string>(() => {
     const stored = readStoredViewPref(SEARCH_FIELD_KEY, "");
-    if (stored) return stored as JobSearchField;
+    if (stored) return stored;
     return readStoredViewPref(SEARCH_ALL_FIELDS_KEY, "false") === "true" ? "all" : "company";
   });
   const [viewMode, setViewMode] = useState<ViewMode>(() => readStoredViewPref(VIEW_MODE_STORAGE_KEY, "queue") as ViewMode);
@@ -301,17 +299,12 @@ export default function JobQueue({
     const stored = readStoredViewPref(SORT_STORAGE_KEY, "date_desc");
     return stored === "fit_desc" ? "fit_desc_date_desc" : stored; // ai: claude-sonnet-5 | 2026-09-20 migrate old stored sort key
   });
-  const [triageJobs, setTriageJobs] = useState<Job[]>([]);
-  const [triageLoading, setTriageLoading] = useState(false);
-  const [unreachableJobs, setUnreachableJobs] = useState<Job[]>([]);
-  const [unreachableLoading, setUnreachableLoading] = useState(false);
   const [allSheetRows, setAllSheetRows] = useState<ApplicationHistoryRow[] | null>(null);
   // ai: claude-sonnet-5 | 2026-07-25
   const [contactsByCompany, setContactsByCompany] = useState<ContactsByCompany>({});
   // ai: claude-sonnet-5 | 2026-08-19
   const [companyJobCounts, setCompanyJobCounts] = useState<CompanyJobCounts | null>(null);
   // ai: claude-sonnet-5 | 2026-10-09
-  const [appliedCompanies, setAppliedCompanies] = useState<Set<string>>(new Set());
   const [hideAppliedCompanies, setHideAppliedCompanies] = useState(false);
   // ai: claude-sonnet-5 | 2026-08-11
   const [defaultSnoozeDays, setDefaultSnoozeDays] = useState(4);
@@ -322,7 +315,6 @@ export default function JobQueue({
   const [showOnlyUnscored, setShowOnlyUnscored] = useState(false);
   // ai: claude-sonnet-5 | 2026-07-26
   const [showOnlyWithContacts, setShowOnlyWithContacts] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [scanState, setScanState] = useState<ScanStatus | null>(null);
   const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
@@ -383,6 +375,49 @@ export default function JobQueue({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moreToolsRef = useRef<HTMLDivElement>(null);
 
+  // ai: claude-opus-5-5 | 2026-10-23
+  // The lists come from the server a page at a time (useJobQueueListing.ts):
+  // it sorts, searches, filters and counts. Every action below reports what
+  // it changed on changeBus, which updates each list on the page in place.
+  const [changeBus] = useState(() => new JobQueueChangeBus());
+  const queueOptions = useJobQueueOptions();
+  const viewStatuses = queueOptions?.view_statuses[viewMode];
+  const listFilters = useMemo((): JobQueueFilters => ({
+    view: viewMode,
+    sort: sortBy,
+    search: debouncedSearchText,
+    searchField,
+    onlyUnscored: showOnlyUnscored,
+    onlyWithContacts: showOnlyWithContacts,
+    hideAppliedCompanies,
+  }), [viewMode, sortBy, debouncedSearchText, searchField, showOnlyUnscored, showOnlyWithContacts, hideAppliedCompanies]);
+  const listing = useJobQueueListing(listFilters, {
+    enabled: viewMode !== "company",
+    focusJobId: focusJobId ?? null,
+    viewStatuses,
+    withCounts: true,
+  });
+  const companies = useJobQueueCompanies(listFilters, viewMode === "company");
+  const counts = listing.counts;
+  const listLoaded = viewMode === "company" ? companies.loaded : listing.loaded;
+
+  const reloadLists = useCallback(() => changeBus.publish({ type: "reload" }), [changeBus]);
+  const removeJob = useCallback((jobId: number) => changeBus.publish({ type: "remove", jobId }), [changeBus]);
+  const updateJob = useCallback((job: Job) => changeBus.publish({ type: "update", job }), [changeBus]);
+  // Applying also matters to "Hide companies I've applied to": with it on,
+  // the company's other jobs leave the list too, which only the server knows.
+  const removeAppliedJob = useCallback((jobId: number) => {
+    changeBus.publish(hideAppliedCompanies ? { type: "reload" } : { type: "remove", jobId });
+  }, [changeBus, hideAppliedCompanies]);
+
+  // A sort or search field remembered from before the server owned the
+  // choices may no longer exist; the routes would reject it with a 400.
+  useEffect(() => {
+    if (!queueOptions) return;
+    if (!queueOptions.sorts.some((option) => option.key === sortBy)) setSortBy(queueOptions.sorts[0]?.key ?? "date_desc");
+    if (!queueOptions.search_fields.some((option) => option.key === searchField)) setSearchField("company");
+  }, [queueOptions, sortBy, searchField]);
+
   useEffect(() => {
     writeStoredPref(JOB_QUEUE_SEARCH_STORAGE_KEY, searchText);
   }, [searchText]);
@@ -420,44 +455,6 @@ export default function JobQueue({
     setViewMode(requestedViewMode);
   }, [requestedViewMode]);
 
-  const fetchTriageJobs = useCallback(async () => {
-    setTriageLoading(true);
-    try {
-      const res = await fetch("/api/jobs/triage");
-      const data: Job[] = await res.json();
-      const list = Array.isArray(data) ? data : [];
-      setTriageJobs(list);
-    } catch {
-      /* no-op */
-    } finally {
-      setTriageLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (viewMode === "queue") return;
-    fetchTriageJobs();
-  }, [viewMode, fetchTriageJobs]);
-
-  // ai: claude-sonnet-5 | 2026-08-09
-  const fetchUnreachableJobs = useCallback(async () => {
-    setUnreachableLoading(true);
-    try {
-      const res = await fetch("/api/jobs/unreachable");
-      const data: Job[] = await res.json();
-      setUnreachableJobs(Array.isArray(data) ? data : []);
-    } catch {
-      /* no-op */
-    } finally {
-      setUnreachableLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (viewMode !== "unreachable") return;
-    fetchUnreachableJobs();
-  }, [viewMode, fetchUnreachableJobs]);
-
   useEffect(() => {
     if (viewMode === "queue") return;
     fetch("/api/applications")
@@ -482,25 +479,6 @@ export default function JobQueue({
       .catch(() => setCompanyJobCounts({}));
   }, []);
 
-  // ai: claude-sonnet-5 | 2026-10-09
-  // Extracted so the "apply" handlers below can refresh this set in place
-  // after a successful apply, instead of only ever loading it once on mount
-  // (2026-10-09 review: the filter/count otherwise stayed stale -- a newly
-  // applied job's siblings at the same company kept showing until reload).
-  const fetchAppliedCompanies = useCallback(async () => {
-    try {
-      const res = await fetch("/api/jobs/applied-companies");
-      const data: AppliedCompanies = await res.json();
-      setAppliedCompanies(new Set(Array.isArray(data) ? data : []));
-    } catch {
-      /* no-op -- keep whatever was already loaded */
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchAppliedCompanies();
-  }, [fetchAppliedCompanies]);
-
   // ai: claude-sonnet-5 | 2026-08-11
   useEffect(() => {
     fetch("/api/config")
@@ -512,20 +490,7 @@ export default function JobQueue({
       .catch(() => {});
   }, []);
 
-  const fetchJobs = useCallback(async () => {
-    try {
-      const res = await fetch("/api/jobs");
-      const data: Job[] = await res.json();
-      setJobs(Array.isArray(data) ? data : []);
-    } catch {
-      /* no-op */
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    fetchJobs();
     return () => {
       clearInterval(pollRef.current);
       clearInterval(boardPollRef.current);
@@ -535,7 +500,7 @@ export default function JobQueue({
       clearTimeout(reEvaluateResetTimeoutRef.current);
       clearTimeout(captureWatchRef.current.timeoutId ?? undefined);
     };
-  }, [fetchJobs]);
+  }, []);
 
   // ai: claude-sonnet-5 | 2026-09-14
   // A rescan can delete this job (and any digest siblings) and create a
@@ -553,7 +518,7 @@ export default function JobQueue({
         window.alert(data.error || "Failed to rescan email");
         return;
       }
-      await Promise.all([fetchJobs(), fetchTriageJobs()]);
+      reloadLists();
       window.alert(data.message || "Email rescanned.");
     } catch {
       window.alert("Failed to rescan email");
@@ -570,8 +535,7 @@ export default function JobQueue({
         clearInterval(pollRef.current);
         onDone?.();
         if (state.summary) setScanSummary(state.summary);
-        await fetchJobs();
-        await refreshTriageJobs();
+        reloadLists();
       }
     } catch {
       clearInterval(pollRef.current);
@@ -652,7 +616,7 @@ export default function JobQueue({
         if (remaining === 0) break;
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
-      await fetchJobs();
+      reloadLists();
       setFixProgress((p) => (p ? { ...p, done: true } : p));
     } finally {
       setFixingCompanies(false);
@@ -671,7 +635,7 @@ export default function JobQueue({
         return;
       }
       const data: DeleteUnknownCompaniesResponse = await res.json();
-      await fetchJobs();
+      reloadLists();
       if (data.deleted > 0) {
         window.alert(`Deleted ${data.deleted} job${data.deleted === 1 ? "" : "s"} with unknown company.`);
       } else {
@@ -689,8 +653,7 @@ export default function JobQueue({
       alert(err.error || "Failed to approve job");
       return;
     }
-    setJobs((prev) => prev.filter((j) => j.id !== jobId));
-    await fetchAppliedCompanies();
+    removeAppliedJob(jobId);
   };
 
   const handleSkip = async (jobId: number, reason = "other", feedback = "", mismatchReasons: string[] = []) => {
@@ -700,7 +663,7 @@ export default function JobQueue({
       body: JSON.stringify({ reason, feedback, mismatch_reasons: mismatchReasons }),
     });
     if (res.ok) {
-      setJobs((prev) => prev.filter((j) => j.id !== jobId));
+      removeJob(jobId);
     }
   };
 
@@ -716,7 +679,7 @@ export default function JobQueue({
       window.alert(err.error || "Failed to restore job");
       return;
     }
-    await fetchJobs();
+    reloadLists();
   };
 
   const handleSnooze = async (jobId: number, days: number) => {
@@ -726,7 +689,7 @@ export default function JobQueue({
       body: JSON.stringify({ days }),
     });
     if (res.ok) {
-      setJobs((prev) => prev.filter((j) => j.id !== jobId));
+      removeJob(jobId);
     }
   };
 
@@ -783,28 +746,9 @@ export default function JobQueue({
       status: data.status,
     });
 
-    if (data.status === "pending_review") {
-      setJobs((prev) => prev.map((queuedJob) => (queuedJob.id === data.id ? data : queuedJob)));
-    } else {
-      setJobs((prev) => prev.filter((queuedJob) => queuedJob.id !== job.id));
-      await refreshTriageJobs();
-    }
+    updateJob(data);
 
     return data;
-  };
-
-  // ai: claude-opus-5-5 | 2026-10-23 — renamed from updateTriageCount: the count
-  // it also reported fed App.tsx state nothing ever read, so all that's left is
-  // the list refresh (unlike fetchTriageJobs, it doesn't toggle triageLoading).
-  const refreshTriageJobs = async () => {
-    try {
-      const t = await fetch("/api/jobs/triage");
-      const td: Job[] = await t.json();
-      const list = Array.isArray(td) ? td : [];
-      setTriageJobs(list);
-    } catch {
-      /* no-op */
-    }
   };
 
   // ── Triage handlers ───────────────────────────────────────────────────────────
@@ -818,7 +762,7 @@ export default function JobQueue({
       body: JSON.stringify({ sender_email: senderEmail, subject_pattern: subjectPattern }),
     });
     if (res.ok) {
-      setTriageJobs((prev) => prev.filter((j) => j.id !== job.id));
+      removeJob(job.id);
     } else {
       const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to approve");
@@ -832,7 +776,7 @@ export default function JobQueue({
       body: JSON.stringify({ reason, feedback, mismatch_reasons: mismatchReasons }),
     });
     if (res.ok) {
-      setTriageJobs((prev) => prev.filter((j) => j.id !== job.id));
+      removeJob(job.id);
     } else {
       const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to skip job");
@@ -856,8 +800,7 @@ export default function JobQueue({
   const handleTriageMarkApplied = async (job: Pick<Job, "id">) => {
     const res = await fetch(`/api/jobs/${job.id}/apply`, { method: "POST" });
     if (res.ok) {
-      setTriageJobs((prev) => prev.filter((j) => j.id !== job.id));
-      await fetchAppliedCompanies();
+      removeAppliedJob(job.id);
     } else {
       const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to mark job as applied");
@@ -872,7 +815,7 @@ export default function JobQueue({
       body: JSON.stringify({ days }),
     });
     if (res.ok) {
-      setTriageJobs((prev) => prev.filter((j) => j.id !== jobId));
+      removeJob(jobId);
     } else {
       const err: ApiErrorBody = await res.json().catch(() => ({}));
       window.alert(err.error || "Failed to snooze job");
@@ -881,23 +824,12 @@ export default function JobQueue({
 
   // ai: claude-sonnet-4-6 | 2026-06-25
   // A triage job that gets re-scored (via JD update, fit chat, re-fetch, or
-  // re-evaluate) can cross the pending_review threshold. It must move into
-  // the queue list, not just be dropped from triageJobs — otherwise it
-  // vanishes from the page until a full reload re-fetches both lists.
-  const handleTriageReprocessed = (job: Job, updated: Job) => {
-    const triageStatuses = new Set(["triage", "possible_duplicate"]);
-    if (triageStatuses.has(updated.status || "")) {
-      setTriageJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
-      return;
-    }
-    setTriageJobs((prev) => prev.filter((j) => j.id !== job.id));
-    if (updated.status === "pending_review") {
-      setJobs((prev) => (
-        prev.some((j) => j.id === updated.id)
-          ? prev.map((j) => (j.id === updated.id ? updated : j))
-          : [...prev, updated]
-      ));
-    }
+  // re-evaluate) can cross the pending_review threshold.
+  // ai: claude-opus-5-5 | 2026-10-23 — each list now decides for itself: one
+  // that shows the new status keeps the card (Jobs & Triage turns it into a
+  // queue card), one that doesn't drops it.
+  const handleTriageReprocessed = (_job: Job, updated: Job) => {
+    updateJob(updated);
   };
 
   const handleTriageDescriptionUpdated = (job: Job, updated: Job, previous: { previousScore?: number | null; previousStatus?: string | null }) => {
@@ -1025,67 +957,52 @@ export default function JobQueue({
     }
   };
 
-  const handleTriageBatchRefreshFromUrls = async () => {
-    const refreshable = triageJobs.filter((job) => job.status !== "possible_duplicate" && job.url);
-    if (refreshable.length === 0) return;
+  // ai: claude-opus-5-5 | 2026-10-23 — the batches run over the server's full
+  // candidate list (GET /api/jobs/queue/refresh-candidates, the same rows their
+  // buttons' counts count), since only a page of the list is loaded here.
+  const fetchRefreshCandidates = async (kind: "triage" | "unrated"): Promise<JobQueueRefreshCandidate[]> => {
+    const res = await fetch(`/api/jobs/queue/refresh-candidates?kind=${kind}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data: JobQueueRefreshCandidate[] = await res.json();
+    return Array.isArray(data) ? data : [];
+  };
 
-    let nextJobs = [...triageJobs];
-    await runBatchRefreshFromUrls(refreshable, setTriageBatchRefreshPopup as React.Dispatch<React.SetStateAction<BatchRefreshPopupState>>, (job, data) => {
-      const triageStatuses = new Set(["triage", "possible_duplicate"]);
-      if (triageStatuses.has(data.status || "")) {
-        nextJobs = nextJobs.map((item) => (item.id === data.id ? data : item));
-      } else {
-        nextJobs = nextJobs.filter((item) => item.id !== job.id);
-      }
-      setTriageJobs(nextJobs);
+  const handleTriageBatchRefreshFromUrls = async () => {
+    let refreshable: JobQueueRefreshCandidate[];
+    try {
+      refreshable = await fetchRefreshCandidates("triage");
+    } catch (err) {
+      window.alert(`Couldn't load the triage jobs to re-fetch: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (refreshable.length === 0) return;
+    await runBatchRefreshFromUrls(refreshable, setTriageBatchRefreshPopup as React.Dispatch<React.SetStateAction<BatchRefreshPopupState>>, (_job, data) => {
+      updateJob(data);
     });
   };
 
   // ai: claude-sonnet-5 | 2026-07-24
   // Re-fetches and re-scores every active job card that has never been rated
   // (fit_score is null) — queue (pending_review) AND triage/possible_duplicate
-  // cards alike, since "Needs score" counts both. triageJobs is only loaded
-  // lazily when viewMode !== "queue" (see fetchTriageJobs' effect above), so
-  // this re-fetches it fresh here rather than trusting possibly-stale state.
-  //
-  // Only `jobs` is kept in sync incrementally during the loop, mirroring
-  // handleTriageBatchRefreshFromUrls above — the trailing refreshTriageJobs()
-  // call is the sole, authoritative resync for triageJobs, so there's no need
-  // to also patch it up mid-loop only to have that work overwritten.
+  // cards alike, since "Needs score" counts both.
   const handleQueueRefreshUnrated = async () => {
-    let triageSource = triageJobs;
+    let refreshable: JobQueueRefreshCandidate[];
     try {
-      const res = await fetch("/api/jobs/triage");
-      const data: Job[] = await res.json();
-      if (Array.isArray(data)) {
-        triageSource = data;
-        setTriageJobs(data);
-      }
-    } catch {
-      /* fall back to whatever triage data is already loaded */
+      refreshable = await fetchRefreshCandidates("unrated");
+    } catch (err) {
+      window.alert(`Couldn't load the unrated jobs to refresh: ${err instanceof Error ? err.message : String(err)}`);
+      return;
     }
-
-    const refreshable = [...jobs, ...triageSource].filter((job) => job.fit_score == null && job.url);
     if (refreshable.length === 0) {
       window.alert("No unrated jobs with a URL to refresh.");
       return;
     }
-
-    let nextJobs = [...jobs];
-    await runBatchRefreshFromUrls(refreshable, setQueueUnratedRefreshPopup as React.Dispatch<React.SetStateAction<BatchRefreshPopupState>>, (job, data) => {
-      if (data.status === "pending_review") {
-        nextJobs = nextJobs.some((item) => item.id === data.id)
-          ? nextJobs.map((item) => (item.id === data.id ? data : item))
-          : [...nextJobs, data];
-      } else {
-        nextJobs = nextJobs.filter((item) => item.id !== job.id);
-      }
-      setJobs(nextJobs);
+    await runBatchRefreshFromUrls(refreshable, setQueueUnratedRefreshPopup as React.Dispatch<React.SetStateAction<BatchRefreshPopupState>>, (_job, data) => {
+      updateJob(data);
     });
-
-    // A refreshed triage job can graduate to pending_review (and vice versa);
-    // this is the authoritative resync for the triage list.
-    await refreshTriageJobs();
+    // A refreshed job can change lists (triage <-> queue) and sort position;
+    // start the lists over now that the batch is done.
+    reloadLists();
   };
 
   const handleReEvaluate = async () => {
@@ -1113,8 +1030,7 @@ export default function JobQueue({
           if (!state.running) {
             clearInterval(reEvalPollRef.current);
             if (state.result) setReEvaluateSummary(state.result);
-            await fetchJobs();
-            await refreshTriageJobs();
+            reloadLists();
             reEvaluateResetTimeoutRef.current = window.setTimeout(() => {
               setReEvaluating(false);
               setReEvaluateProgress(0);
@@ -1188,13 +1104,13 @@ export default function JobQueue({
       const browserDraining = (data.browser_queue?.remaining ?? 0) > 0;
       if (browserDone !== reqClosedBrowserDoneRef.current) {
         reqClosedBrowserDoneRef.current = browserDone;
-        await fetchJobs();
+        reloadLists();
       }
       if (!data.running && !browserDraining) {
         clearInterval(reqClosedPollRef.current);
         setReqClosedScanning(false);
         setReqClosedDialogVisible(false);
-        await fetchJobs();
+        reloadLists();
       }
     } catch {
       clearInterval(reqClosedPollRef.current);
@@ -1261,8 +1177,7 @@ export default function JobQueue({
       if (!data.running) {
         clearInterval(importRepairPollRef.current);
         setImportRepairRunning(false);
-        await fetchJobs();
-        await refreshTriageJobs();
+        reloadLists();
       }
     } catch {
       clearInterval(importRepairPollRef.current);
@@ -1298,8 +1213,7 @@ export default function JobQueue({
       if (!data.running) {
         clearInterval(rescanImportPollRef.current);
         setRescanImportRunning(false);
-        await fetchJobs();
-        await refreshTriageJobs();
+        reloadLists();
       }
     } catch {
       clearInterval(rescanImportPollRef.current);
@@ -1326,8 +1240,7 @@ export default function JobQueue({
       if (!state.running) {
         clearInterval(boardPollRef.current);
         setBoardSearching(false);
-        await fetchJobs();
-        await refreshTriageJobs();
+        reloadLists();
       }
     } catch {
       clearInterval(boardPollRef.current);
@@ -1349,11 +1262,10 @@ export default function JobQueue({
         clearInterval(importPollRef.current);
         setImportSubmitting(false);
         if (state.result) setImportSummary(state.result);
-        await fetchJobs();
-        // ai: claude-sonnet-4-6 | 2026-06-27
+                // ai: claude-sonnet-4-6 | 2026-06-27
         // Also refresh triage cards: imports can enrich existing triage jobs
         // (better description → re-score), but those cards were never updated.
-        await fetchTriageJobs();
+        reloadLists();
       }
     } catch {
       clearInterval(importPollRef.current);
@@ -1388,7 +1300,7 @@ export default function JobQueue({
         // Import finished after being observed as running — refresh triage cards.
         stopBrowserCaptureWatch();
         if (state.result) setImportSummary(state.result);
-        await fetchTriageJobs();
+        reloadLists();
       }
       // If not running and never seenRunning: extension hasn't captured yet — keep polling.
     } catch {
@@ -1399,101 +1311,7 @@ export default function JobQueue({
   const anyScanRunning = scanning || rescanAllRunning;
   const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning || importRepairRunning || rescanImportRunning;
 
-  // ai: claude-sonnet-4-6 | 2026-06-26
-  // All derived arrays are memoized so unrelated state changes (dialogs, hover,
-  // etc.) don't re-run the filter+sort chain on every render.
-  // ai: claude-sonnet-5 | 2026-07-26
-  const jobHasContact = useCallback(
-    (job: Job) => (contactsByCompany[contactsMatchKey(job.company)] ?? []).length > 0,
-    [contactsByCompany],
-  );
-
-  const filteredJobs = useMemo(() => jobs.filter((job) => {
-    if (!jobMatchesSearch(job, debouncedSearchText, searchField)) return false;
-    if (showOnlyUnscored && job.fit_score != null) return false;
-    if (showOnlyWithContacts && !jobHasContact(job)) return false;
-    if (hideAppliedCompanies && hasAppliedToCompany(job, appliedCompanies)) return false;
-    return true;
-  }), [jobs, debouncedSearchText, searchField, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies]);
-
-  const filteredTriageJobs = useMemo(() => triageJobs.filter((job) => {
-    if (!jobMatchesSearch(job, debouncedSearchText, searchField)) return false;
-    if (showOnlyUnscored && job.fit_score != null) return false;
-    if (showOnlyWithContacts && !jobHasContact(job)) return false;
-    if (hideAppliedCompanies && hasAppliedToCompany(job, appliedCompanies)) return false;
-    return true;
-  }), [triageJobs, debouncedSearchText, searchField, showOnlyUnscored, showOnlyWithContacts, jobHasContact, hideAppliedCompanies, appliedCompanies]);
-
-  // ai: claude-sonnet-5 | 2026-08-09
-  const filteredUnreachableJobs = useMemo(
-    () => unreachableJobs.filter((job) => jobMatchesSearch(job, debouncedSearchText, searchField)),
-    [unreachableJobs, debouncedSearchText, searchField],
-  );
-
-  const contactsCount = useMemo(
-    () => jobs.filter(jobHasContact).length
-      + (viewMode !== "queue" ? triageJobs.filter(jobHasContact).length : 0),
-    [jobs, triageJobs, viewMode, jobHasContact],
-  );
-
-  const unscoredCount = useMemo(
-    () => jobs.filter((j) => j.fit_score == null).length
-      + (viewMode !== "queue" ? triageJobs.filter((j) => j.fit_score == null).length : 0),
-    [jobs, triageJobs, viewMode],
-  );
-
-  // ai: claude-sonnet-5 | 2026-10-09
-  const appliedCompanyCount = useMemo(
-    () => jobs.filter((j) => hasAppliedToCompany(j, appliedCompanies)).length
-      + (viewMode !== "queue" ? triageJobs.filter((j) => hasAppliedToCompany(j, appliedCompanies)).length : 0),
-    [jobs, triageJobs, viewMode, appliedCompanies],
-  );
-
-  const showsQueue = viewMode === "queue" || viewMode === "both" || viewMode === "company";
   const showsTriage = viewMode === "triage" || viewMode === "both" || viewMode === "company";
-
-  const sortedQueueJobs = useMemo(
-    () => showsQueue ? sortJobList(filteredJobs, sortBy) : [],
-    [showsQueue, filteredJobs, sortBy],
-  );
-  const sortedTriageJobs = useMemo(
-    () => showsTriage ? sortJobList(filteredTriageJobs, sortBy) : [],
-    [showsTriage, filteredTriageJobs, sortBy],
-  );
-  const combinedJobs = useMemo(
-    () => (viewMode === "both" || viewMode === "company")
-      ? sortJobList([...filteredJobs, ...filteredTriageJobs], sortBy)
-      : [],
-    [viewMode, filteredJobs, filteredTriageJobs, sortBy],
-  );
-
-  // ai: claude-sonnet-5 | 2026-09-19
-  // Group by contactsMatchKey (same corporate-suffix-stripping normalizer as
-  // Company History / the queue-card button) rather than the raw trimmed
-  // string, so e.g. "Seeq" and "Seeq Corporation" land in one section instead
-  // of two. Each group's display label is its most common raw spelling.
-  const companiesMap = useMemo(
-    () => viewMode === "company"
-      ? combinedJobs.reduce<Record<string, { jobs: Job[]; labelCounts: Record<string, number> }>>((acc, job) => {
-          const rawCompany = String(job.company || "").trim() || "Unknown Company";
-          const key = contactsMatchKey(rawCompany) || "unknown-company";
-          if (!acc[key]) acc[key] = { jobs: [], labelCounts: {} };
-          acc[key].jobs.push(job);
-          acc[key].labelCounts[rawCompany] = (acc[key].labelCounts[rawCompany] || 0) + 1;
-          return acc;
-        }, {})
-      : {},
-    [viewMode, combinedJobs],
-  );
-  const companiesList = useMemo(
-    (): [string, Job[]][] => Object.values(companiesMap)
-      .map((group): [string, Job[]] => [
-        Object.entries(group.labelCounts).sort((a, b) => b[1] - a[1])[0][0],
-        group.jobs,
-      ])
-      .sort(([a], [b]) => a.localeCompare(b)),
-    [companiesMap],
-  );
 
   useEffect(() => {
     if (!focusJobId) return;
@@ -1503,14 +1321,14 @@ export default function JobQueue({
   }, [focusJobId]);
 
   useEffect(() => {
-    if (!focusJobId || loading) return undefined;
+    if (!focusJobId || !listLoaded) return undefined;
     const timeoutId = window.setTimeout(() => {
       const el = document.getElementById(`job-card-${focusJobId}`)
                || document.getElementById(`triage-card-${focusJobId}`);
       el?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 100);
     return () => window.clearTimeout(timeoutId);
-  }, [focusJobId, loading, viewMode]);
+  }, [focusJobId, listLoaded, viewMode]);
 
   // ai: claude-sonnet-4-6 | 2026-06-26
   // After a re-evaluate popup closes, scroll to the updated card. Re-sorting
@@ -1542,7 +1360,7 @@ export default function JobQueue({
     if (!el) return;
     const delta = el.getBoundingClientRect().top - anchor.top;
     if (delta !== 0) window.scrollBy(0, delta);
-  }, [jobs, triageJobs, sortBy, viewMode]);
+  }, [listing.jobs, sortBy, viewMode]);
 
   const handleManualSubmit = async () => {
     if (!manualListingText.trim() && !manualSourceUrl.trim()) {
@@ -1576,8 +1394,7 @@ export default function JobQueue({
       setManualSourceName("");
       setManualCompanyOverride("");
       setManualJobTitleOverride("");
-      await fetchJobs();
-      await refreshTriageJobs();
+      reloadLists();
     } catch {
       window.alert("Failed to evaluate pasted job");
     } finally {
@@ -1717,8 +1534,7 @@ export default function JobQueue({
         // Synchronous result (e.g. no URLs found)
         setImportSummary(data as ImportSummary);
         setImportSubmitting(false);
-        await fetchJobs();
-        await refreshTriageJobs();
+        reloadLists();
       }
     } catch {
       window.alert("Failed to import jobs");
@@ -1747,6 +1563,29 @@ export default function JobQueue({
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [moreToolsOpen]);
 
+  // ai: claude-opus-5-5 | 2026-10-23 — was three inline copies (Company,
+  // Jobs & Triage, Job Queue views). originalJob.fit_reasoning isn't loaded
+  // (GET /jobs/queue omits it; see useLazyJobDetail), so fit_score alone
+  // decides whether this was a re-score worth announcing: a re-score that
+  // changes the reasoning text virtually always moves the score too.
+  const handleQueueCardUpdate = (jobId: number, updatedJob: Job, originalJob: Job) => {
+    captureScrollAnchor(jobId);
+    if (updatedJob.fit_score !== originalJob.fit_score) {
+      setJobReEvaluatePopup({
+        company: updatedJob.company || originalJob.company || "",
+        fitReasoning: updatedJob.fit_reasoning,
+        heading: "Description re-evaluated",
+        jobId,
+        jobTitle: updatedJob.job_title || originalJob.job_title || "",
+        newScore: updatedJob.fit_score,
+        phase: "done",
+        previousScore: originalJob.fit_score,
+        status: updatedJob.status,
+      });
+    }
+    updateJob(updatedJob);
+  };
+
   const triageHandlers: TriageHandlers = {
     approve: handleTriageApprove,
     skip: handleTriageSkip,
@@ -1761,19 +1600,13 @@ export default function JobQueue({
   };
 
   const isBatchRefreshing = triageBatchRefreshPopup?.phase === "running";
-  const refreshableCount = useMemo(
-    () => triageJobs.filter((job) => job.status !== "possible_duplicate" && job.url).length,
-    [triageJobs],
-  );
+  const refreshableCount = counts?.refreshable_triage ?? 0;
   const isQueueUnratedRefreshing = queueUnratedRefreshPopup?.phase === "running";
-  const unratedQueueRefreshableCount = useMemo(
-    () => jobs.filter((job) => job.fit_score == null && job.url).length
-      + triageJobs.filter((job) => job.fit_score == null && job.url).length,
-    [jobs, triageJobs],
-  );
+  const unratedQueueRefreshableCount = counts?.unrated_refreshable ?? 0;
   const unratedQueueRefreshDisabled = anyQueueActionRunning || isQueueUnratedRefreshing || unratedQueueRefreshableCount === 0;
 
   return (
+    <JobQueueChangeContext.Provider value={changeBus}>
     <div>
       {/* View mode selector */}
       <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginBottom: "16px" }}>
@@ -1806,14 +1639,14 @@ export default function JobQueue({
                 style={{ display: "none" }}
               />
               {mode.label}
-              {mode.key === "triage" && triageJobs.length > 0 && (
+              {mode.key === "triage" && (counts?.triage ?? 0) > 0 && (
                 <span style={{ background: "#ff5c5c", borderRadius: "999px", color: "#fff", fontSize: "10px", fontWeight: 700, padding: "1px 7px" }}>
-                  {triageJobs.length}
+                  {counts?.triage}
                 </span>
               )}
-              {mode.key === "unreachable" && unreachableJobs.length > 0 && (
+              {mode.key === "unreachable" && (counts?.unreachable ?? 0) > 0 && (
                 <span style={{ background: "#ff5c5c", borderRadius: "999px", color: "#fff", fontSize: "10px", fontWeight: 700, padding: "1px 7px" }}>
-                  {unreachableJobs.length}
+                  {counts?.unreachable}
                 </span>
               )}
             </label>
@@ -1884,7 +1717,7 @@ export default function JobQueue({
           onChange={(e) => setSortBy(e.target.value)}
           style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", cursor: "pointer", fontSize: "12px", padding: "4px 8px", width: "fit-content" }}
         >
-          {SORT_OPTIONS.map((opt) => (
+          {(queueOptions?.sorts ?? [{ key: sortBy, label: "…" }]).map((opt) => (
             <option key={opt.key} value={opt.key}>{opt.label}</option>
           ))}
         </select>
@@ -1901,16 +1734,16 @@ export default function JobQueue({
         {searchText && (
           <select
             value={searchField}
-            onChange={(e) => setSearchField(e.target.value as JobSearchField)}
+            onChange={(e) => setSearchField(e.target.value)}
             style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", cursor: "pointer", fontSize: "12px", padding: "4px 8px", width: "fit-content" }}
           >
-            {JOB_SEARCH_FIELD_OPTIONS.map((opt) => (
+            {(queueOptions?.search_fields ?? [{ key: searchField, label: "…" }]).map((opt) => (
               <option key={opt.key} value={opt.key}>{opt.label}</option>
             ))}
           </select>
         )}
 
-        {unscoredCount > 0 && (
+        {(counts?.unscored ?? 0) > 0 && (
           <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
             <input
               type="checkbox"
@@ -1918,11 +1751,11 @@ export default function JobQueue({
               onChange={(e) => setShowOnlyUnscored(e.target.checked)}
               style={{ cursor: "pointer" }}
             />
-            Needs score ({unscoredCount})
+            Needs score ({counts?.unscored})
           </label>
         )}
 
-        {contactsCount > 0 && (
+        {(counts?.with_contacts ?? 0) > 0 && (
           <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
             <input
               type="checkbox"
@@ -1930,11 +1763,11 @@ export default function JobQueue({
               onChange={(e) => setShowOnlyWithContacts(e.target.checked)}
               style={{ cursor: "pointer" }}
             />
-            Know someone ({contactsCount})
+            Know someone ({counts?.with_contacts})
           </label>
         )}
 
-        {appliedCompanyCount > 0 && (
+        {(counts?.at_applied_company ?? 0) > 0 && (
           <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--text-muted)", whiteSpace: "nowrap", cursor: "pointer" }}>
             <input
               type="checkbox"
@@ -1942,19 +1775,13 @@ export default function JobQueue({
               onChange={(e) => setHideAppliedCompanies(e.target.checked)}
               style={{ cursor: "pointer" }}
             />
-            Hide companies I&apos;ve applied to ({appliedCompanyCount})
+            Hide companies I&apos;ve applied to ({counts?.at_applied_company})
           </label>
         )}
 
         {(() => {
-          const totalVisible = viewMode === "queue" ? filteredJobs.length
-            : viewMode === "triage" ? filteredTriageJobs.length
-            : viewMode === "unreachable" ? filteredUnreachableJobs.length
-            : combinedJobs.length;
-          const totalAll = viewMode === "queue" ? jobs.length
-            : viewMode === "triage" ? triageJobs.length
-            : viewMode === "unreachable" ? unreachableJobs.length
-            : jobs.length + triageJobs.length;
+          const totalVisible = counts?.total ?? 0;
+          const totalAll = counts?.total_all ?? 0;
           if (totalAll === 0) return null;
           return (
             <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
@@ -2541,169 +2368,99 @@ export default function JobQueue({
       )}
 
       {/* Content */}
-      {loading ? (
-        <p style={{ color: "var(--text-muted)" }}>Loading jobs…</p>
-      ) : viewMode === "queue" && jobs.length === 0 ? (
-        <div className="empty-state">
-          <p style={{ fontSize: "32px" }}>🎯</p>
-          <p>No jobs queued. Click "Scan Emails" to check your inbox.</p>
-        </div>
-      ) : viewMode === "triage" && triageLoading ? (
-        <p style={{ color: "var(--text-muted)" }}>Loading triage…</p>
-      ) : viewMode === "triage" && triageJobs.length === 0 ? (
-        <div className="empty-state">
-          <p style={{ fontSize: "32px" }}>✅</p>
-          <p>No emails waiting for review.</p>
-        </div>
-      ) : viewMode === "triage" ? (
-        sortedTriageJobs.length === 0 ? (
-          <div className="empty-state"><p>No triage jobs match your search.</p></div>
-        ) : (
-          sortedTriageJobs.map((job) => renderJobOrTriageCard(job, null, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))
-        )
-      ) : viewMode === "company" ? (
-        companiesList.length === 0 ? (
-          <div className="empty-state"><p>No jobs match your search.</p></div>
-        ) : (
-          companiesList.map(([company, companyJobs]) => (
-            <CompanyGroup
-              key={company}
-              company={company}
-              jobs={companyJobs}
-              triageHandlers={triageHandlers}
-              defaultSnoozeDays={defaultSnoozeDays}
-              allSheetRows={allSheetRows}
-              contactsByCompany={contactsByCompany}
-              companyJobCounts={companyJobCounts}
-              onNavigateToJobCard={onNavigateToJobCard}
-              onQueueApprove={handleApprove}
-              onQueueReEvaluate={handleJobReEvaluate}
-              onQueueSkip={handleSkip}
-              onQueueSnooze={handleSnooze}
-              onQueueRescanEmail={handleRescanEmail}
-              onQueueUpdate={(jobId, updatedJob, originalJob) => {
-                captureScrollAnchor(jobId);
-                // ai: claude-sonnet-5 | 2026-10-17 — see the identical comment on the
-                // single-list onUpdate below: originalJob.fit_reasoning is no longer
-                // eagerly loaded (GET /jobs omits it), so fit_score alone decides.
-                if (updatedJob.fit_score !== originalJob.fit_score) {
-                  setJobReEvaluatePopup({
-                    company: updatedJob.company || originalJob.company || "",
-                    fitReasoning: updatedJob.fit_reasoning,
-                    heading: "Description re-evaluated",
-                    jobId,
-                    jobTitle: updatedJob.job_title || originalJob.job_title || "",
-                    newScore: updatedJob.fit_score,
-                    phase: "done",
-                    previousScore: originalJob.fit_score,
-                    status: updatedJob.status,
-                  });
-                }
-                if (updatedJob.status === "pending_review") {
-                  setJobs((prev) => prev.map((j) => (j.id === jobId ? updatedJob : j)));
-                  return;
-                }
-                setJobs((prev) => prev.filter((j) => j.id !== jobId));
-                refreshTriageJobs();
-              }}
-            />
-          ))
-        )
+      {/* ai: claude-opus-5-5 | 2026-10-23 — the lists are server pages now
+          (useJobQueueListing.ts); a spinner until the first one arrives, and a
+          sentinel after each that loads the next as it scrolls into view. */}
+      {!listLoaded ? (
+        <LoadingSpinner label="Loading jobs…" />
       ) : viewMode === "unreachable" ? (
-        <UnreachablePanel
-          jobs={filteredUnreachableJobs}
-          loading={unreachableLoading}
-          onNavigateToJobCard={onNavigateToJobCard || (() => {})}
-          onCleared={(jobId) => setUnreachableJobs((prev) => prev.filter((j) => j.id !== jobId))}
-        />
-      ) : viewMode === "both" ? (
-        combinedJobs.length === 0 ? (
+        <>
+          <UnreachablePanel
+            jobs={listing.jobs}
+            loading={false}
+            onNavigateToJobCard={onNavigateToJobCard || (() => {})}
+            onCleared={removeJob}
+          />
+          <LoadMoreSentinel hasMore={listing.hasMore} loading={listing.loadingMore} itemCount={listing.jobs.length} onLoadMore={listing.loadMore} />
+        </>
+      ) : viewMode === "company" ? (
+        companies.groups.length === 0 ? (
           <div className="empty-state"><p>No jobs match your search.</p></div>
         ) : (
-          combinedJobs.map((job) => renderJobOrTriageCard(job, {
-            onApprove: handleApprove,
-            onReEvaluate: handleJobReEvaluate,
-            onSkip: handleSkip,
-            onSnooze: handleSnooze,
-            onRescanEmail: handleRescanEmail,
-            onUpdate: (jobId, updatedJob, originalJob) => {
-              captureScrollAnchor(jobId);
-              // ai: claude-sonnet-5 | 2026-10-17 — see the identical comment on the
-              // single-list onUpdate below: originalJob.fit_reasoning is no longer
-              // eagerly loaded (GET /jobs and GET /jobs/triage both omit it), so
-              // fit_score alone decides.
-              if (updatedJob.fit_score !== originalJob.fit_score) {
-                setJobReEvaluatePopup({
-                  company: updatedJob.company || originalJob.company || "",
-                  fitReasoning: updatedJob.fit_reasoning,
-                  heading: "Description re-evaluated",
-                  jobId,
-                  jobTitle: updatedJob.job_title || originalJob.job_title || "",
-                  newScore: updatedJob.fit_score,
-                  phase: "done",
-                  previousScore: originalJob.fit_score,
-                  status: updatedJob.status,
-                });
-              }
-              if (updatedJob.status === "pending_review") {
-                setJobs((prev) => prev.map((j) => (j.id === jobId ? updatedJob : j)));
-                return;
-              }
-              setJobs((prev) => prev.filter((j) => j.id !== jobId));
-              refreshTriageJobs();
-            },
-          } satisfies QueueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))
+          <>
+            {companies.groups.map((group) => (
+              <CompanyGroup
+                key={group.company_key}
+                group={group}
+                filters={listFilters}
+                viewStatuses={viewStatuses}
+                triageHandlers={triageHandlers}
+                defaultSnoozeDays={defaultSnoozeDays}
+                allSheetRows={allSheetRows}
+                contactsByCompany={contactsByCompany}
+                companyJobCounts={companyJobCounts}
+                onNavigateToJobCard={onNavigateToJobCard}
+                onQueueApprove={handleApprove}
+                onQueueReEvaluate={handleJobReEvaluate}
+                onQueueSkip={handleSkip}
+                onQueueSnooze={handleSnooze}
+                onQueueRescanEmail={handleRescanEmail}
+                onQueueUpdate={handleQueueCardUpdate}
+              />
+            ))}
+            <LoadMoreSentinel hasMore={companies.hasMore} loading={companies.loadingMore} itemCount={companies.groups.length} onLoadMore={companies.loadMore} />
+          </>
+        )
+      ) : listing.jobs.length === 0 ? (
+        (counts?.total_all ?? 0) === 0 && viewMode === "queue" ? (
+          <div className="empty-state">
+            <p style={{ fontSize: "32px" }}>🎯</p>
+            <p>No jobs queued. Click "Scan Emails" to check your inbox.</p>
+          </div>
+        ) : (counts?.total_all ?? 0) === 0 && viewMode === "triage" ? (
+          <div className="empty-state">
+            <p style={{ fontSize: "32px" }}>✅</p>
+            <p>No emails waiting for review.</p>
+          </div>
+        ) : (
+          <div className="empty-state">
+            <p>{viewMode === "triage" ? "No triage jobs match your search." : viewMode === "queue" ? "No queued jobs match your search." : "No jobs match your search."}</p>
+          </div>
         )
       ) : (
-        /* viewMode === "queue" */
-        sortedQueueJobs.length === 0 ? (
-          <div className="empty-state"><p>No queued jobs match your search.</p></div>
-        ) : (
-          sortedQueueJobs.map((job) => (
-            <JobCard
-              key={job.id}
-              job={job}
-              onApprove={handleApprove}
-              onReEvaluate={handleJobReEvaluate}
-              onSkip={handleSkip}
-              onSnooze={handleSnooze}
-              onDismissDuplicate={handleDismissDuplicate}
-              onRescanEmail={handleRescanEmail}
-              defaultSnoozeDays={defaultSnoozeDays}
-              onNavigateToJobCard={onNavigateToJobCard}
-              contactsByCompany={contactsByCompany}
-              companyJobCounts={companyJobCounts}
-              onUpdate={(jobId, updatedJob) => {
-                captureScrollAnchor(jobId);
-                // ai: claude-sonnet-5 | 2026-10-17 — job.fit_reasoning is no longer
-                // eagerly loaded here (GET /jobs omits it; see useLazyJobDetail), so
-                // this can no longer diff against the real previous text -- comparing
-                // against undefined would make this fire on every single update.
-                // fit_score alone is a reliable proxy: a re-score that changes the
-                // reasoning text virtually always moves the score too.
-                if (updatedJob.fit_score !== job.fit_score) {
-                  setJobReEvaluatePopup({
-                    company: updatedJob.company || job.company || "",
-                    fitReasoning: updatedJob.fit_reasoning,
-                    heading: "Description re-evaluated",
-                    jobId,
-                    jobTitle: updatedJob.job_title || job.job_title || "",
-                    newScore: updatedJob.fit_score,
-                    phase: "done",
-                    previousScore: job.fit_score,
-                    status: updatedJob.status,
-                  });
-                }
-                if (updatedJob.status === "pending_review") {
-                  setJobs((prev) => prev.map((j) => (j.id === jobId ? updatedJob : j)));
-                  return;
-                }
-                setJobs((prev) => prev.filter((j) => j.id !== jobId));
-                refreshTriageJobs();
-              }}
-            />
-          ))
-        )
+        <>
+          {viewMode === "queue"
+            ? listing.jobs.map((job) => (
+              <JobCard
+                key={job.id}
+                job={job}
+                onApprove={handleApprove}
+                onReEvaluate={handleJobReEvaluate}
+                onSkip={handleSkip}
+                onSnooze={handleSnooze}
+                onDismissDuplicate={handleDismissDuplicate}
+                onRescanEmail={handleRescanEmail}
+                defaultSnoozeDays={defaultSnoozeDays}
+                onNavigateToJobCard={onNavigateToJobCard}
+                contactsByCompany={contactsByCompany}
+                companyJobCounts={companyJobCounts}
+                onUpdate={(jobId, updatedJob) => handleQueueCardUpdate(jobId, updatedJob, job)}
+              />
+            ))
+            : listing.jobs.map((job) => renderJobOrTriageCard(
+              job,
+              viewMode === "both" ? {
+                onApprove: handleApprove,
+                onReEvaluate: handleJobReEvaluate,
+                onSkip: handleSkip,
+                onSnooze: handleSnooze,
+                onRescanEmail: handleRescanEmail,
+                onUpdate: handleQueueCardUpdate,
+              } satisfies QueueHandlers : null,
+              triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts,
+            ))}
+          <LoadMoreSentinel hasMore={listing.hasMore} loading={listing.loadingMore} itemCount={listing.jobs.length} onLoadMore={listing.loadMore} />
+        </>
       )}
 
       {showBackToTop && (
@@ -2718,5 +2475,6 @@ export default function JobQueue({
         </button>
       )}
     </div>
+    </JobQueueChangeContext.Provider>
   );
 }

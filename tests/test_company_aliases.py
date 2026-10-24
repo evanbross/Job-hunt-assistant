@@ -98,28 +98,6 @@ def test_get_by_company_matches_aliased_jobs_either_direction(pg_dsn: str) -> No
         conn.close()
 
 
-def test_get_applied_companies_reflects_alias(pg_dsn: str) -> None:
-    conn = get_connection(pg_dsn)
-    try:
-        user_id = _make_user(conn)
-        aliases = PostgresCompanyAliasRepository(conn)
-        jobs = PostgresJobRepository(conn)
-
-        jobs.insert(user_id, {"company": "Cash App", "job_title": "Applied Role", "status": "applied"})
-        conn.commit()
-        aliases.upsert(user_id, alias_company="Block", canonical_company="Cash App")
-        conn.commit()
-
-        block_job_id = jobs.insert(user_id, {"company": "Block", "job_title": "New Role", "status": "triage"})
-        conn.commit()
-
-        applied = jobs.get_applied_companies(user_id)
-        assert applied == {normalize_company_name("Cash App")}
-        assert jobs.get_by_id(user_id, block_job_id)["company_normalized"] in applied
-    finally:
-        conn.close()
-
-
 def test_delete_alias_reverts_backfilled_jobs(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:

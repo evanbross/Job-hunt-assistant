@@ -419,9 +419,7 @@ class FakeReEvaluateJobsRepo:
         self.jobs_by_id: dict[int, dict[str, Any]] = {j["id"]: dict(j) for j in jobs}
         self.updates_by_id: dict[int, dict[str, Any]] = {}
 
-    def get_by_statuses(
-        self, user_id: int, statuses: list[str], exclude_snoozed: bool = False
-    ) -> list[dict[str, Any]]:
+    def get_by_statuses(self, user_id: int, statuses: list[str]) -> list[dict[str, Any]]:
         assert user_id == _FAKE_USER_ID
         return [dict(j) for j in self.jobs_by_id.values() if j["status"] in statuses]
 

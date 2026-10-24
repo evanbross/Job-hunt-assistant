@@ -34,6 +34,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from .job_queue_query import JobQueueQuery, RefreshCandidateKind
 from .repositories.browser_capture_queue import CaptureQueueOrigin
 
 
@@ -41,12 +42,20 @@ from .repositories.browser_capture_queue import CaptureQueueOrigin
 # parameter (multi-tenancy migration).
 @runtime_checkable
 class IJobRepository(Protocol):
-    def get_all_by_status(self, user_id: int, status: str) -> list[dict[str, Any]]: ...
-    def get_by_statuses(
-        self, user_id: int, statuses: list[str], exclude_snoozed: bool = False
+    def get_by_statuses(self, user_id: int, statuses: list[str]) -> list[dict[str, Any]]: ...
+    # ai: claude-opus-5-5 | 2026-10-23 — the Job Queue page's listing (was
+    # get_all_by_status / get_by_statuses_for_display / get_unreachable /
+    # get_applied_companies, which shipped every row to the browser)
+    def list_queue_page(
+        self, user_id: int, query: JobQueueQuery, limit: int, offset: int
     ) -> list[dict[str, Any]]: ...
-    def get_by_statuses_for_display(
-        self, user_id: int, statuses: list[str], exclude_snoozed: bool = False
+    def queue_position(self, user_id: int, query: JobQueueQuery, job_id: int) -> int | None: ...
+    def count_queue(self, user_id: int, query: JobQueueQuery) -> dict[str, int]: ...
+    def list_queue_companies(
+        self, user_id: int, query: JobQueueQuery, limit: int, offset: int
+    ) -> list[dict[str, Any]]: ...
+    def list_refresh_candidates(
+        self, user_id: int, kind: RefreshCandidateKind
     ) -> list[dict[str, Any]]: ...
     def get_page_by_statuses(
         self, user_id: int, statuses: list[str], limit: int, offset: int, search: str = ""
@@ -68,13 +77,10 @@ class IJobRepository(Protocol):
     def get_sheet_entries(self, user_id: int) -> list[dict[str, Any]]: ...
     def get_by_company(self, user_id: int, company: str) -> list[dict[str, Any]]: ...
     def get_company_counts(self, user_id: int) -> dict[str, int]: ...
-    # ai: claude-sonnet-5 | 2026-10-09
-    def get_applied_companies(self, user_id: int) -> set[str]: ...
     # ai: gpt-5 | 2026-10-03
     def get_outreach_company_relevance(
         self, user_id: int, active_statuses: frozenset[str], terminal_stage_statuses: set[str]
     ) -> dict[str, float]: ...
-    def get_unreachable(self, user_id: int) -> list[dict[str, Any]]: ...
     def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]: ...
     # ai: claude-sonnet-5 | 2026-10-14
     def lock_for_duplicate_check(self, user_id: int) -> None: ...
@@ -205,6 +211,7 @@ class IApplicationAnswerRepository(Protocol):
 @runtime_checkable
 class IUserSettingsRepository(Protocol):
     def get(self, user_id: int, key: str, default: str | None = None) -> str | None: ...
+    def get_many(self, user_id: int, keys: list[str]) -> dict[str, str]: ...  # ai: claude-opus-5-5 | 2026-10-23
     def set(self, user_id: int, key: str, value: str) -> None: ...
 
 
@@ -212,6 +219,7 @@ class IUserSettingsRepository(Protocol):
 @runtime_checkable
 class ISystemSettingsRepository(Protocol):
     def get(self, key: str, default: str | None = None) -> str | None: ...
+    def get_many(self, keys: list[str]) -> dict[str, str]: ...  # ai: claude-opus-5-5 | 2026-10-23
     def set(self, key: str, value: str) -> None: ...
 
 

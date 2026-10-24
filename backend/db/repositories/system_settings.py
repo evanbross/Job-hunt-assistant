@@ -39,6 +39,13 @@ class PostgresSystemSettingsRepository(_BaseRepo):
         row = cur.fetchone()
         return row["value"] if row else default
 
+    # ai: claude-opus-5-5 | 2026-10-23
+    def get_many(self, keys: list[str]) -> dict[str, str]:
+        """Every stored value among *keys* in one query; a key with no row is
+        absent from the result. See settings_service.load_settings()."""
+        cur = self._execute("SELECT key, value FROM system_settings WHERE key = ANY(%s)", (keys,))
+        return {row["key"]: row["value"] for row in cur.fetchall()}
+
     def set(self, key: str, value: str) -> None:
         self._execute(
             "INSERT INTO system_settings (key, value, updated_at) VALUES (%s, %s, NOW())"

@@ -135,7 +135,7 @@ def test_session_status_before_login(client) -> None:
 
 
 def test_protected_route_rejects_unauthenticated_request(client) -> None:
-    resp = client.get("/api/jobs")
+    resp = client.get("/api/jobs/queue?view=queue")
     assert resp.status_code == 401
     assert resp.get_json() == {"error": "Not authenticated"}
 
@@ -294,7 +294,7 @@ def test_login_with_correct_credentials_grants_session(client) -> None:
 def test_login_grants_access_to_protected_routes(client) -> None:
     _seed_active_account()
     _login(client)
-    resp = client.get("/api/jobs")
+    resp = client.get("/api/jobs/queue?view=queue")
     assert resp.status_code == 200
 
 
@@ -398,7 +398,7 @@ def test_logout_clears_session(client) -> None:
     _login(client)
     assert client.post("/api/logout").status_code == 200
     assert client.get("/api/session").get_json()["authenticated"] is False
-    assert client.get("/api/jobs").status_code == 401
+    assert client.get("/api/jobs/queue?view=queue").status_code == 401
 
 
 # ─── account: get / update name ────────────────────────────────────────────

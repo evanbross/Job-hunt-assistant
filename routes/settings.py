@@ -67,10 +67,9 @@ from backend.settings_registry import (
     schema_for_scope,
 )
 from backend.settings_service import (
+    SettingsSnapshot,
     get_setting,
-    get_setting_bool,
-    get_setting_int,
-    is_setting_configured,
+    load_settings,
     set_setting,
 )
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
@@ -114,7 +113,10 @@ _RUNTIME_CONFIG_USER_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _read_user_settings_into(cfg: dict[str, object], user_id: int, repos: dict) -> None:
+# ai: claude-opus-5-5 | 2026-10-23 — both helpers read from one
+# SettingsSnapshot (one query) instead of a get_setting() query per key;
+# 21 sequential ~31ms round trips were ~700ms of GET /api/config.
+def _read_user_settings_into(cfg: dict[str, object], settings: SettingsSnapshot) -> None:
     """Merge every USER_SETTING_KEYS entry not in _RUNTIME_CONFIG_USER_KEYS
     into *cfg* -- secrets as a "_set" boolean (never the plaintext),
     everything else as its live value. The excluded keys are read
@@ -122,48 +124,38 @@ def _read_user_settings_into(cfg: dict[str, object], user_id: int, repos: dict) 
     bool/int coercion."""
     for key in USER_SETTING_KEYS - _RUNTIME_CONFIG_USER_KEYS:
         if SETTINGS[key].is_secret:
-            cfg[f"{key}_set"] = is_setting_configured(key, user_id, repos)
+            cfg[f"{key}_set"] = settings.is_configured(key)
         else:
-            cfg[key] = get_setting(key, user_id, repos)
+            cfg[key] = settings.get(key)
 
 
-def _read_runtime_config_user_settings(user_id: int, repos: dict) -> dict[str, object]:
+def _read_runtime_config_user_settings(settings: SettingsSnapshot) -> dict[str, object]:
     """Read every _RUNTIME_CONFIG_USER_KEYS entry with its proper JSON type.
     The single source of truth for that shape, shared by get_config() and
     update_config()'s response."""
     return {
-        "email_lookback_days": get_setting_int(
-            "email_lookback_days", user_id, repos, config.DEFAULT_EMAIL_LOOKBACK_DAYS
+        "email_lookback_days": settings.get_int(
+            "email_lookback_days", config.DEFAULT_EMAIL_LOOKBACK_DAYS
         ),
-        "scanned_email_label": get_setting("scanned_email_label", user_id, repos),
-        "move_successfully_processed_emails": get_setting_bool(
+        "scanned_email_label": settings.get("scanned_email_label"),
+        "move_successfully_processed_emails": settings.get_bool(
             "move_successfully_processed_emails",
-            user_id,
-            repos,
             config.DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
         ),
-        "candidate_timezone": get_setting("candidate_timezone", user_id, repos),
-        "ai_provider": get_setting("ai_provider", user_id, repos),
-        "anthropic_model": get_setting("anthropic_model", user_id, repos),
-        "openai_model": get_setting("openai_model", user_id, repos),
-        "ollama_base_url": get_setting("ollama_base_url", user_id, repos),
-        "ollama_model": get_setting("ollama_model", user_id, repos),
-        "jd_health_check_enabled": get_setting_bool(
-            "jd_health_check_enabled",
-            user_id,
-            repos,
-            config.DEFAULT_JD_HEALTH_CHECK_ENABLED,
+        "candidate_timezone": settings.get("candidate_timezone"),
+        "ai_provider": settings.get("ai_provider"),
+        "anthropic_model": settings.get("anthropic_model"),
+        "openai_model": settings.get("openai_model"),
+        "ollama_base_url": settings.get("ollama_base_url"),
+        "ollama_model": settings.get("ollama_model"),
+        "jd_health_check_enabled": settings.get_bool(
+            "jd_health_check_enabled", config.DEFAULT_JD_HEALTH_CHECK_ENABLED
         ),
-        "jd_health_check_time_utc": get_setting("jd_health_check_time_utc", user_id, repos),
-        "jd_health_check_frequency_days": get_setting_int(
-            "jd_health_check_frequency_days",
-            user_id,
-            repos,
-            config.DEFAULT_JD_HEALTH_CHECK_FREQUENCY_DAYS,
+        "jd_health_check_time_utc": settings.get("jd_health_check_time_utc"),
+        "jd_health_check_frequency_days": settings.get_int(
+            "jd_health_check_frequency_days", config.DEFAULT_JD_HEALTH_CHECK_FREQUENCY_DAYS
         ),
-        "jd_health_check_notify_email": get_setting(
-            "jd_health_check_notify_email", user_id, repos
-        ),
+        "jd_health_check_notify_email": settings.get("jd_health_check_notify_email"),
     }
 
 
@@ -181,9 +173,10 @@ def get_settings_schema() -> ResponseReturnValue:
 def get_config() -> ResponseReturnValue:
     user_id = current_user_id()
     with get_repos() as repos:
-        cfg = _read_runtime_config_user_settings(user_id, repos)
+        settings = load_settings(USER_SETTING_KEYS, user_id, repos)  # ai: claude-opus-5-5 | 2026-10-23
+        cfg = _read_runtime_config_user_settings(settings)
         cfg["default_snooze_days"] = config.DEFAULT_SNOOZE_DAYS
-        _read_user_settings_into(cfg, user_id, repos)
+        _read_user_settings_into(cfg, settings)
 
     return jsonify(cfg)
 
@@ -413,9 +406,10 @@ def update_config() -> ResponseReturnValue:
         # depend on writes actually persisting.
         repos["conn"].commit()
 
-        cfg = _read_runtime_config_user_settings(user_id, repos)
+        settings = load_settings(USER_SETTING_KEYS, user_id, repos)  # ai: claude-opus-5-5 | 2026-10-23
+        cfg = _read_runtime_config_user_settings(settings)
         cfg["default_snooze_days"] = config.DEFAULT_SNOOZE_DAYS
-        _read_user_settings_into(cfg, user_id, repos)
+        _read_user_settings_into(cfg, settings)
 
     return jsonify(cfg)
 
@@ -509,12 +503,13 @@ def test_ollama_connection() -> ResponseReturnValue:
 
 
 def _read_system_settings(repos: dict) -> dict[str, object]:
+    settings = load_settings(SYSTEM_SETTING_KEYS, None, repos)  # ai: claude-opus-5-5 | 2026-10-23 — one query, not one per key
     result: dict[str, object] = {}
     for key in SYSTEM_SETTING_KEYS:
         if SETTINGS[key].is_secret:
-            result[f"{key}_set"] = is_setting_configured(key, None, repos)
+            result[f"{key}_set"] = settings.is_configured(key)
         else:
-            result[key] = get_setting(key, None, repos)
+            result[key] = settings.get(key)
     return result
 
 

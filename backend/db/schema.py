@@ -1094,7 +1094,7 @@ def _migrate(conn: Any) -> None:
     # on every from-scratch bootstrap (e.g. CI's throwaway Postgres). A long-lived
     # local dev database never hit it because user_id was already backfilled from a
     # prior run. Every jobs query filters on (user_id, status)
-    # (get_all_by_status/get_by_statuses/get_page_by_statuses in
+    # (list_queue_page/get_by_statuses/get_page_by_statuses in
     # backend/db/repositories/jobs.py), but the only existing index on jobs was
     # user_id alone -- non-selective on a single-user instance, so queue/triage
     # fetches fell back to a full sequential scan.

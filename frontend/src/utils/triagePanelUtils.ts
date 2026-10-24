@@ -237,26 +237,6 @@ export function scoreDeltaLabel(previousScore?: number | null, newScore?: number
   return ` (${delta > 0 ? "+" : ""}${delta})`;
 }
 
-export function compareNullableScores(
-  leftScore?: number | null,
-  rightScore?: number | null,
-  direction?: "asc" | "desc",
-): number {
-  const leftMissing = leftScore === null || leftScore === undefined;
-  const rightMissing = rightScore === null || rightScore === undefined;
-  if (leftMissing && rightMissing) return 0;
-  if (leftMissing) return 1;
-  if (rightMissing) return -1;
-  const comparison = Number(leftScore) - Number(rightScore);
-  return direction === "desc" ? -comparison : comparison;
-}
-
-// Tiebreaker for fit-score sorts: newest date_found first, regardless of
-// whether the score sort itself is ascending or descending.
-export function compareByDateFoundDesc(a: Pick<Job, "date_found">, b: Pick<Job, "date_found">): number {
-  return new Date(b.date_found || 0).getTime() - new Date(a.date_found || 0).getTime();
-}
-
 export function dispositionLabel(status?: string | null): string {
   if (status === "pending_review") return "In Job Queue";
   if (status === "triage") return "Still triage";

@@ -56,6 +56,18 @@ from pydantic import (
 import config
 from backend.db import CaptureQueueOrigin, DuplicateJobUrlError
 from backend.db.job_columns import JobColumns
+from backend.db.job_queue_query import (
+    DEFAULT_SEARCH_FIELD,
+    DEFAULT_SORT,
+    JOB_QUEUE_SORTS,
+    JOB_SEARCH_FIELDS,
+    SEARCH_FIELDS_BY_KEY,
+    SORTS_BY_KEY,
+    VIEW_STATUSES,
+    JobQueueQuery,
+    JobQueueView,
+    RefreshCandidateKind,
+)
 from backend.email.classification import maybe_mark_source_email_read
 from backend.email.email_parser import (
     NO_URL_JOB_SNIPPET_CHARS,
@@ -301,21 +313,143 @@ def get_job_stats() -> ResponseReturnValue:
     return jsonify(stats)
 
 
-@jobs_bp.route("/jobs")
-def get_jobs() -> ResponseReturnValue:
-    with get_repos() as repos:
-        jobs = repos["jobs"].get_all_by_status(current_user_id(), "pending_review")
-    return jsonify(jobs)
+# ai: claude-opus-5-5 | 2026-10-23
+# The Job Queue page's server-side listing (backend/db/job_queue_query.py has
+# the why). Replaces GET /jobs, /jobs/triage, /jobs/unreachable and
+# /jobs/applied-companies, which each shipped a whole list to the browser.
+_JOB_QUEUE_PAGE_SIZE_MAX = 200
+# How far a "jump to this job" request may extend a page to include the job.
+_JOB_QUEUE_FOCUS_LIMIT_MAX = 1000
+_JOB_QUEUE_FOCUS_LOOKAHEAD = 10
 
 
-# ai: claude-sonnet-5 | 2026-08-09
-@jobs_bp.route("/jobs/unreachable")
-def get_unreachable_jobs() -> ResponseReturnValue:
-    """Jobs the closed-req scan couldn't get a response from on its most recent
-    check (see routes/applications.py's _persist_unreachable_flag), across every
-    pipeline status — the queue/triage tabs each only show one status slice."""
+class JobQueueListParams(BaseModel):
+    """Query string shared by every /jobs/queue listing route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    view: JobQueueView
+    sort: str = DEFAULT_SORT
+    search: str = Field("", max_length=200)
+    search_field: str = DEFAULT_SEARCH_FIELD
+    only_unscored: bool = False
+    only_with_contacts: bool = False
+    hide_applied_companies: bool = False
+    company_key: str | None = Field(None, max_length=300)
+
+    @field_validator("sort")
+    @classmethod
+    def _known_sort(cls, value: str) -> str:
+        if value not in SORTS_BY_KEY:
+            raise ValueError(f"sort must be one of: {', '.join(SORTS_BY_KEY)}")
+        return value
+
+    @field_validator("search_field")
+    @classmethod
+    def _known_search_field(cls, value: str) -> str:
+        if value not in SEARCH_FIELDS_BY_KEY:
+            raise ValueError(f"search_field must be one of: {', '.join(SEARCH_FIELDS_BY_KEY)}")
+        return value
+
+    def to_query(self) -> JobQueueQuery:
+        return JobQueueQuery(
+            view=self.view,
+            sort=self.sort,
+            search=self.search,
+            search_field=self.search_field,
+            only_unscored=self.only_unscored,
+            only_with_contacts=self.only_with_contacts,
+            hide_applied_companies=self.hide_applied_companies,
+            company_key=self.company_key,
+        )
+
+
+class JobQueuePageParams(JobQueueListParams):
+    limit: int = Field(50, ge=1, le=_JOB_QUEUE_PAGE_SIZE_MAX)
+    offset: int = Field(0, ge=0)
+    # Extend the first page far enough to include this job, so navigating to
+    # it from another tab can scroll to its card.
+    focus_job_id: int | None = None
+
+
+class JobQueueRefreshCandidatesParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: RefreshCandidateKind
+
+
+@jobs_bp.route("/jobs/queue/options")
+def get_job_queue_options() -> ResponseReturnValue:
+    """The Job Queue's sort and search-field choices, and which statuses each
+    view shows -- the frontend renders its dropdowns from these instead of
+    keeping its own copy of the keys this route's siblings validate against."""
+    return jsonify(
+        {
+            "sorts": [{"key": sort.key, "label": sort.label} for sort in JOB_QUEUE_SORTS],
+            "search_fields": [{"key": f.key, "label": f.label} for f in JOB_SEARCH_FIELDS],
+            "view_statuses": {
+                view.value: list(statuses) if statuses is not None else None
+                for view, statuses in VIEW_STATUSES.items()
+            },
+        }
+    )
+
+
+@jobs_bp.route("/jobs/queue")
+def get_job_queue_page() -> ResponseReturnValue:
+    """One page of the Job Queue listing, sorted, searched and filtered."""
+    try:
+        params = JobQueuePageParams.model_validate(request.args.to_dict())
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    query = params.to_query()
+    user_id = current_user_id()
+    limit = params.limit
     with get_repos() as repos:
-        jobs = repos["jobs"].get_unreachable(current_user_id())
+        if params.focus_job_id is not None and params.offset == 0:
+            position = repos["jobs"].queue_position(user_id, query, params.focus_job_id)
+            if position is not None:
+                limit = min(max(limit, position + 1 + _JOB_QUEUE_FOCUS_LOOKAHEAD), _JOB_QUEUE_FOCUS_LIMIT_MAX)
+        # One extra row tells has_more without a separate COUNT query.
+        jobs = repos["jobs"].list_queue_page(user_id, query, limit + 1, params.offset)
+    return jsonify({"jobs": jobs[:limit], "has_more": len(jobs) > limit})
+
+
+@jobs_bp.route("/jobs/queue/counts")
+def get_job_queue_counts() -> ResponseReturnValue:
+    """Every count the Job Queue page shows (see count_queue)."""
+    try:
+        params = JobQueueListParams.model_validate(request.args.to_dict())
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    with get_repos() as repos:
+        counts = repos["jobs"].count_queue(current_user_id(), params.to_query())
+    return jsonify(counts)
+
+
+@jobs_bp.route("/jobs/queue/companies")
+def get_job_queue_companies() -> ResponseReturnValue:
+    """One page of the Company view's groups, A-Z."""
+    try:
+        params = JobQueuePageParams.model_validate(request.args.to_dict())
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    with get_repos() as repos:
+        groups = repos["jobs"].list_queue_companies(
+            current_user_id(), params.to_query(), params.limit + 1, params.offset
+        )
+    return jsonify({"companies": groups[: params.limit], "has_more": len(groups) > params.limit})
+
+
+@jobs_bp.route("/jobs/queue/refresh-candidates")
+def get_job_queue_refresh_candidates() -> ResponseReturnValue:
+    """Every job a batch "Re-fetch Triage" / "Refresh unrated" run covers."""
+    try:
+        params = JobQueueRefreshCandidatesParams.model_validate(request.args.to_dict())
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    with get_repos() as repos:
+        jobs = repos["jobs"].list_refresh_candidates(current_user_id(), params.kind)
     return jsonify(jobs)
 
 
@@ -376,17 +510,6 @@ def get_jobs_company_counts() -> ResponseReturnValue:
     with get_repos() as repos:
         counts = repos["jobs"].get_company_counts(current_user_id())
     return jsonify(counts)
-
-
-# ai: claude-sonnet-5 | 2026-10-09
-@jobs_bp.route("/jobs/applied-companies")
-def get_jobs_applied_companies() -> ResponseReturnValue:
-    """Normalized company names (see normalize_company_name) with at least one
-    'applied' job, so the frontend can offer a job-queue filter for "companies
-    I haven't applied to yet" without fetching every job's full history."""
-    with get_repos() as repos:
-        companies = repos["jobs"].get_applied_companies(current_user_id())
-    return jsonify(sorted(companies))
 
 
 # ai: claude-sonnet-5 | 2026-10-12

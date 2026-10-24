@@ -66,8 +66,8 @@ export interface Job {
   salary_max?: number | null;
   unreachable_since?: string | null;
   linkedin_ai_insight?: string | null;
-  // ai: claude-sonnet-5 | 2026-10-17 — present only on GET /jobs and GET
-  // /jobs/triage's responses (JobColumns.display_summary() +
+  // ai: claude-sonnet-5 | 2026-10-17 — present only on GET /jobs/queue's
+  // responses (JobColumns.display_summary() +
   // _display_flag_columns_sql() in backend/db/repositories/jobs.py), which omit
   // job_description/raw_jd_snippet/fit_reasoning/certainty_reason and stand
   // these flags in instead -- see useLazyJobDetail.ts, which fetches the real
@@ -92,8 +92,58 @@ export interface Job {
 /** Map of normalized-company-key -> count of jobs on record, from GET /api/jobs/company-counts. */
 export type CompanyJobCounts = Record<string, number>;
 
-/** Normalized company names with at least one 'applied' job, from GET /api/jobs/applied-companies. */
-export type AppliedCompanies = string[];
+// ai: claude-opus-5-5 | 2026-10-23 — the Job Queue page's server-side listing
+// (GET /api/jobs/queue*, routes/jobs.py; meanings in backend/db/job_queue_query.py).
+export type JobQueueViewKey = "queue" | "triage" | "both" | "company" | "unreachable";
+
+export interface JobQueueOption {
+  key: string;
+  label: string;
+}
+
+/** GET /api/jobs/queue/options: the sort and search-field choices, and each
+ * view's statuses (null for Unreachable, which isn't a status slice). */
+export interface JobQueueOptions {
+  sorts: JobQueueOption[];
+  search_fields: JobQueueOption[];
+  view_statuses: Record<JobQueueViewKey, string[] | null>;
+}
+
+/** GET /api/jobs/queue */
+export interface JobQueuePage {
+  jobs: Job[];
+  has_more: boolean;
+}
+
+/** GET /api/jobs/queue/counts (PostgresJobRepository.count_queue). */
+export interface JobQueueCounts {
+  total_all: number;
+  total: number;
+  unscored: number;
+  with_contacts: number;
+  at_applied_company: number;
+  triage: number;
+  unreachable: number;
+  refreshable_triage: number;
+  unrated_refreshable: number;
+}
+
+/** One Company-view group header, from GET /api/jobs/queue/companies. */
+export interface JobQueueCompanyGroup {
+  company_key: string;
+  label: string;
+  total: number;
+  queue_count: number;
+  triage_count: number;
+}
+
+export interface JobQueueCompaniesPage {
+  companies: JobQueueCompanyGroup[];
+  has_more: boolean;
+}
+
+/** GET /api/jobs/queue/refresh-candidates: just what a batch re-fetch needs. */
+export type JobQueueRefreshCandidate = Pick<Job, "id" | "company" | "job_title" | "fit_score" | "status" | "url">;
 
 /** A single stage entry attached to an application-sheet row (see sheetUtils.applicationRowFromSheet). */
 export interface ApplicationStage {

@@ -57,14 +57,6 @@ class FakeJobsRepo:
         assert user_id == _TEST_USER_ID
         self.rows[job_id].update(fields)
 
-    def get_unreachable(self, user_id: int) -> list[dict[str, Any]]:
-        assert user_id == _TEST_USER_ID
-        return [
-            dict(row)
-            for row in self.rows.values()
-            if row.get("unreachable_since") is not None
-        ]
-
 
 def _make_client(jobs_repo: FakeJobsRepo, monkeypatch) -> Any:
     repos = {"conn": FakeConnection(), "jobs": jobs_repo}
@@ -73,25 +65,6 @@ def _make_client(jobs_repo: FakeJobsRepo, monkeypatch) -> Any:
     app = Flask(__name__)
     app.register_blueprint(jobs_bp, url_prefix="/api")
     return app.test_client()
-
-
-def test_get_unreachable_jobs_returns_only_flagged_jobs_across_statuses(monkeypatch) -> None:
-    """The Unreachable tab must surface jobs regardless of their pipeline status —
-    that's the whole point (queue/triage each only show one status slice)."""
-    jobs_repo = FakeJobsRepo(
-        [
-            {"id": 1, "company": "Acme", "job_title": "A", "status": "triage", "unreachable_since": "2026-08-01"},
-            {"id": 2, "company": "Beta", "job_title": "B", "status": "possible_duplicate", "unreachable_since": "2026-08-02"},
-            {"id": 3, "company": "Gamma", "job_title": "C", "status": "pending_review", "unreachable_since": None},
-        ]
-    )
-    client = _make_client(jobs_repo, monkeypatch)
-
-    res = client.get("/api/jobs/unreachable")
-
-    assert res.status_code == 200
-    ids = {row["id"] for row in res.get_json()}
-    assert ids == {1, 2}
 
 
 def test_clear_unreachable_dismisses_flag_without_touching_status(monkeypatch) -> None:

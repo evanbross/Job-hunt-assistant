@@ -26,39 +26,8 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-07
-import { compareByDateFoundDesc, compareNullableScores } from "../../utils/triagePanelUtils.ts";
 import { formatScanDisposition } from "../../utils/jobQueueUtils.ts";
-import type { Job } from "../../types/jobs.ts";
 import type { ScanEmailReportRow, ScanJobDetail } from "../../types/scanning.ts";
-
-export function sortJobList(list: Job[], sortKey: string): Job[] {
-  return [...list].sort((a, b) => {
-    if (sortKey === "date_desc" || sortKey === "date_asc") {
-      const da = new Date(a.date_found || 0).getTime();
-      const db = new Date(b.date_found || 0).getTime();
-      return sortKey === "date_desc" ? db - da : da - db;
-    }
-    if (sortKey === "fit_desc_date_desc" || sortKey === "fit_desc_date_asc") {
-      const scoreCompare = compareNullableScores(a.fit_score, b.fit_score, "desc");
-      if (scoreCompare !== 0) return scoreCompare;
-      const dateCompare = compareByDateFoundDesc(a, b);
-      return sortKey === "fit_desc_date_desc" ? dateCompare : -dateCompare;
-    }
-    if (sortKey === "fit_asc") {
-      const scoreCompare = compareNullableScores(a.fit_score, b.fit_score, "asc");
-      return scoreCompare !== 0 ? scoreCompare : compareByDateFoundDesc(a, b);
-    }
-    if (sortKey === "confidence_desc" || sortKey === "confidence_asc") {
-      const ca = a.certainty_score ?? (a.status === "possible_duplicate" ? -1 : 50);
-      const cb = b.certainty_score ?? (b.status === "possible_duplicate" ? -1 : 50);
-      return sortKey === "confidence_desc" ? cb - ca : ca - cb;
-    }
-    if (sortKey === "company_asc") {
-      return String(a.company || "").localeCompare(String(b.company || ""));
-    }
-    return 0;
-  });
-}
 
 export function readStoredViewPref(key: string, fallback: string): string {
   try { return window.localStorage.getItem(key) || fallback; } catch { return fallback; }

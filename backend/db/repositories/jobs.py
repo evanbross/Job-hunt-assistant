@@ -40,6 +40,20 @@ from backend.scoring.skip_reasons import REQ_CLOSED_ROW_FLAG, REQ_CLOSED_SKIP_RE
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
 from ..job_columns import JobColumns
+from ..job_queue_query import (
+    AT_APPLIED_COMPANY_SQL,
+    COMPANY_GROUP_KEY_SQL,
+    COMPANY_GROUP_LABEL_SQL,
+    HAS_CONTACT_SQL,
+    QUEUE_STATUSES,
+    REFRESH_CANDIDATE_SQL,
+    REFRESHABLE_TRIAGE_SQL,
+    UNRATED_REFRESHABLE_SQL,
+    JobQueueQuery,
+    JobQueueView,
+    RefreshCandidateKind,
+    view_where_sql,
+)
 from .company_aliases import CANONICAL_ALIAS_SUBQUERY, resolve_company_alias
 
 logger = logging.getLogger(__name__)
@@ -81,9 +95,10 @@ class DuplicateJobUrlError(Exception):
 class PostgresJobRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = JobColumns.all()
 
-    # ai: claude-sonnet-5 | 2026-10-17 — shared by get_all_by_status and
-    # get_by_statuses_for_display below, the two *display* queries behind the
-    # Job Queue and Triage lists. Both render job_description/raw_jd_snippet
+    # ai: claude-sonnet-5 | 2026-10-17 — shared by the *display* queries behind
+    # the Job Queue page (list_queue_page below; ai: claude-opus-5-5 |
+    # 2026-10-23, was get_all_by_status/get_by_statuses_for_display). Its cards
+    # render job_description/raw_jd_snippet
     # and fit_reasoning only behind a per-card toggle that defaults closed
     # (JobCard.tsx / TriagePanel.tsx), so neither needs the real text eagerly
     # -- just enough to know whether the "Job Description" / "Show reasoning"
@@ -134,65 +149,123 @@ class PostgresJobRepository(_BaseRepo):
             f" {cls._description_unavailable_sql()} AS description_unavailable"
         )
 
-    def get_all_by_status(self, user_id: int, status: str) -> list[dict[str, Any]]:
-        columns = ", ".join(JobColumns.display_summary())
-        cur = self._execute(
-            f"SELECT {columns}, {self._display_flag_columns_sql()} FROM jobs"
-            " WHERE user_id = %s AND status = %s"
-            " AND (snoozed_until IS NULL OR snoozed_until::date <= (NOW() AT TIME ZONE 'UTC')::date)"
-            " ORDER BY fit_score DESC NULLS LAST",
-            (user_id, status),
-        )
-        return [_row_to_dict(r) for r in cur.fetchall()]
-
-    def get_by_statuses(
-        self, user_id: int, statuses: list[str], exclude_snoozed: bool = False
-    ) -> list[dict[str, Any]]:
-        # ai: claude-sonnet-5 | 2026-09-14 — exclude_snoozed defaults False:
+    def get_by_statuses(self, user_id: int, statuses: list[str]) -> list[dict[str, Any]]:
+        # ai: claude-sonnet-5 | 2026-09-14 — includes snoozed jobs:
         # duplicate-detection callers (jd_enrichment, email rescan, board
-        # scan) must still see snoozed jobs so they don't re-create a
-        # duplicate of one the user is just hiding temporarily. Only the
-        # triage panel's own display query opts in.
-        # ai: claude-sonnet-5 | 2026-10-17 — this stays SELECT *: besides the
-        # triage display route, it's also called by duplicate-detection /
-        # re-scoring paths (jd_enrichment.rescore_active_queue_jobs,
-        # routes/fit.py's re-evaluate, routes/scan.py's board scan) that need
-        # the real job_description/raw_jd_snippet text to score against. The
-        # triage list itself now goes through get_by_statuses_for_display
-        # below instead, which is the one narrowed for display.
+        # scan) must still see them so they don't re-create a duplicate of
+        # one the user is just hiding temporarily.
+        # ai: claude-sonnet-5 | 2026-10-17 — this stays SELECT *: its
+        # duplicate-detection / re-scoring callers (jd_enrichment.
+        # rescore_active_queue_jobs, routes/fit.py's re-evaluate, routes/
+        # scan.py's board scan) need the real job_description/raw_jd_snippet
+        # text to score against. The Job Queue page's own lists go through
+        # list_queue_page below, which is the one narrowed for display.
+        # ai: claude-opus-5-5 | 2026-10-23 — dropped the exclude_snoozed flag:
+        # its only caller was the old triage display route.
         placeholders = ", ".join(["%s"] * len(statuses))
-        snooze_clause = (
-            " AND (snoozed_until IS NULL OR snoozed_until::date <= (NOW() AT TIME ZONE 'UTC')::date)"
-            if exclude_snoozed
-            else ""
-        )
         cur = self._execute(
-            f"SELECT * FROM jobs WHERE user_id = %s AND status IN ({placeholders}){snooze_clause}"
+            f"SELECT * FROM jobs WHERE user_id = %s AND status IN ({placeholders})"
             " ORDER BY date_found DESC",
             [user_id, *statuses],
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
-    # ai: claude-sonnet-5 | 2026-10-17
-    def get_by_statuses_for_display(
-        self, user_id: int, statuses: list[str], exclude_snoozed: bool = False
+    # ai: claude-opus-5-5 | 2026-10-23
+    # The Job Queue page's server-side listing -- see backend/db/
+    # job_queue_query.py for what each view/sort/filter means and why this
+    # replaced shipping every queue and triage row to the browser.
+    def _queue_where(self, user_id: int, query: JobQueueQuery) -> tuple[str, list[Any]]:
+        filter_sql, filter_params = query.filter_sql(user_id)
+        where = f"user_id = %s AND {view_where_sql(query.view)}"
+        if filter_sql:
+            where += f" AND {filter_sql}"
+        return where, [user_id, *filter_params]
+
+    def list_queue_page(
+        self, user_id: int, query: JobQueueQuery, limit: int, offset: int
     ) -> list[dict[str, Any]]:
-        """Same filter/order as get_by_statuses, narrowed to the columns the Triage
-        list actually displays (see _display_flag_columns_sql() above) -- used only by
-        that list's own route. Measured on a real account: triage + possible_duplicate
-        (2129 rows) was an 18.5MB response and a 1.5-2s query under the old SELECT *."""
-        placeholders = ", ".join(["%s"] * len(statuses))
-        snooze_clause = (
-            " AND (snoozed_until IS NULL OR snoozed_until::date <= (NOW() AT TIME ZONE 'UTC')::date)"
-            if exclude_snoozed
-            else ""
-        )
+        """One page of the Job Queue listing, in the query's sort order, with
+        the same lightweight display columns and flags the cards render
+        (_display_flag_columns_sql)."""
+        where, params = self._queue_where(user_id, query)
         columns = ", ".join(JobColumns.display_summary())
         cur = self._execute(
             f"SELECT {columns}, {self._display_flag_columns_sql()} FROM jobs"
-            f" WHERE user_id = %s AND status IN ({placeholders}){snooze_clause}"
-            " ORDER BY date_found DESC",
-            [user_id, *statuses],
+            f" WHERE {where} ORDER BY {query.order_by_sql()} LIMIT %s OFFSET %s",
+            [*params, limit, offset],
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def queue_position(self, user_id: int, query: JobQueueQuery, job_id: int) -> int | None:
+        """0-based position of *job_id* in the listing, or None if the job
+        isn't in it -- so a "jump to this job" navigation can load enough
+        pages to include it."""
+        where, params = self._queue_where(user_id, query)
+        cur = self._execute(
+            "SELECT pos FROM ("
+            f"SELECT id, ROW_NUMBER() OVER (ORDER BY {query.order_by_sql()}) - 1 AS pos"
+            f" FROM jobs WHERE {where}"
+            ") ranked WHERE id = %s",
+            [*params, job_id],
+        )
+        row = cur.fetchone()
+        return int(row["pos"]) if row else None
+
+    def count_queue(self, user_id: int, query: JobQueueQuery) -> dict[str, int]:
+        """Every count the Job Queue page shows, in one scan of the user's
+        jobs: the listing's size before and after the search/filters, the
+        filter toggles' counts (over the view, unfiltered, so a toggle shows
+        how many it would keep), both tab badges, and the two batch-refresh
+        buttons' counts."""
+        view_where = view_where_sql(query.view)
+        filter_sql, filter_params = query.filter_sql(user_id)
+        filtered_where = f"{view_where} AND {filter_sql}" if filter_sql else view_where
+        cur = self._execute(
+            "SELECT"
+            f" COUNT(*) FILTER (WHERE {view_where}) AS total_all,"
+            f" COUNT(*) FILTER (WHERE {filtered_where}) AS total,"
+            f" COUNT(*) FILTER (WHERE {view_where} AND fit_score IS NULL) AS unscored,"
+            f" COUNT(*) FILTER (WHERE {view_where} AND {HAS_CONTACT_SQL}) AS with_contacts,"
+            f" COUNT(*) FILTER (WHERE {view_where} AND {AT_APPLIED_COMPANY_SQL}) AS at_applied_company,"
+            f" COUNT(*) FILTER (WHERE {view_where_sql(JobQueueView.TRIAGE)}) AS triage,"
+            f" COUNT(*) FILTER (WHERE {view_where_sql(JobQueueView.UNREACHABLE)}) AS unreachable,"
+            f" COUNT(*) FILTER (WHERE {REFRESHABLE_TRIAGE_SQL}) AS refreshable_triage,"
+            f" COUNT(*) FILTER (WHERE {UNRATED_REFRESHABLE_SQL}) AS unrated_refreshable"
+            " FROM jobs WHERE user_id = %s",
+            [*filter_params, user_id, user_id],
+        )
+        return {key: int(value) for key, value in cur.fetchone().items()}
+
+    def list_queue_companies(
+        self, user_id: int, query: JobQueueQuery, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        """One page of Company-view groups (A-Z by label): each group's key
+        (pass it back as JobQueueQuery.company_key to list its jobs), its most
+        common company spelling, and how many of its jobs are queue vs triage."""
+        where, params = self._queue_where(user_id, query)
+        queue_statuses = ", ".join(f"'{status}'" for status in QUEUE_STATUSES)
+        cur = self._execute(
+            "SELECT company_key, label, total, queue_count, total - queue_count AS triage_count FROM ("
+            f"SELECT {COMPANY_GROUP_KEY_SQL} AS company_key,"
+            f" mode() WITHIN GROUP (ORDER BY {COMPANY_GROUP_LABEL_SQL}) AS label,"
+            " COUNT(*) AS total,"
+            f" COUNT(*) FILTER (WHERE status IN ({queue_statuses})) AS queue_count"
+            f" FROM jobs WHERE {where} GROUP BY 1"
+            ") company_groups ORDER BY lower(label), label, company_key LIMIT %s OFFSET %s",
+            [*params, limit, offset],
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+    def list_refresh_candidates(
+        self, user_id: int, kind: RefreshCandidateKind
+    ) -> list[dict[str, Any]]:
+        """Every job a batch re-fetch of *kind* runs over -- the same rows its
+        button's count (count_queue) counts. Only the fields the batch needs."""
+        cur = self._execute(
+            "SELECT id, company, job_title, fit_score, status, url FROM jobs"
+            f" WHERE user_id = %s AND {REFRESH_CANDIDATE_SQL[kind]}"
+            " ORDER BY date_found DESC NULLS LAST, id DESC",
+            (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
@@ -358,17 +431,6 @@ class PostgresJobRepository(_BaseRepo):
         return [_row_to_dict(r) for r in cur.fetchall()]
 
     # ai: claude-sonnet-5 | 2026-08-09
-    def get_unreachable(self, user_id: int) -> list[dict[str, Any]]:
-        """Jobs the closed-req scan couldn't get a response from on its most recent
-        check, regardless of their current pipeline status (queue/triage/possible
-        duplicate/applied) — see routes/applications.py's _persist_unreachable_flag."""
-        cur = self._execute(
-            "SELECT * FROM jobs WHERE user_id = %s AND unreachable_since IS NOT NULL"
-            " ORDER BY unreachable_since ASC, id DESC",
-            (user_id,),
-        )
-        return [_row_to_dict(r) for r in cur.fetchall()]
-
     # ai: claude-fable-5 | 2026-07-14
     # ai: claude-sonnet-5 | 2026-10-17 — narrowed from SELECT * to
     # JobColumns.sheet_summary(); see that method's own comment for why this
@@ -476,20 +538,6 @@ class PostgresJobRepository(_BaseRepo):
             (user_id,),
         )
         return {row["company_normalized"]: row["cnt"] for row in cur.fetchall()}
-
-    # ai: claude-sonnet-5 | 2026-10-09
-    def get_applied_companies(self, user_id: int) -> set[str]:
-        """Normalized company names (see normalize_company_name) with at least
-        one job whose status is 'applied' -- used by the frontend's "hide
-        companies I've already applied to" job-queue filter. Grouped on the
-        same company_normalized column get_company_counts/get_by_company use,
-        so all three agree on what counts as the same employer."""
-        cur = self._execute(
-            "SELECT DISTINCT company_normalized FROM jobs"
-            " WHERE user_id = %s AND status = 'applied' AND company_normalized <> ''",
-            (user_id,),
-        )
-        return {row["company_normalized"] for row in cur.fetchall()}
 
     # ai: gpt-5 | 2026-10-03
     def get_outreach_company_relevance(

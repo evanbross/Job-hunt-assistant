@@ -29,7 +29,10 @@
 import { useState } from "react";
 import type { CSSProperties } from "react";
 import renderJobOrTriageCard from "./renderJobOrTriageCard.tsx";
-import type { ApplicationHistoryRow, CompanyJobCounts, Job } from "../../types/jobs.ts";
+import LoadMoreSentinel from "./LoadMoreSentinel.tsx";
+import LoadingSpinner from "../common/LoadingSpinner.tsx";
+import { useJobQueueListing, type JobQueueFilters } from "./useJobQueueListing.ts";
+import type { ApplicationHistoryRow, CompanyJobCounts, Job, JobQueueCompanyGroup } from "../../types/jobs.ts";
 import type { ContactsByCompany } from "../../types/contacts.ts";
 import type { TriageHandlers } from "../../types/jobQueue.ts";
 
@@ -50,9 +53,13 @@ const companyGroupHeaderStyle: CSSProperties = {
   userSelect: "none",
 };
 
+// ai: claude-opus-5-5 | 2026-10-23 — takes the group's header (from GET
+// /api/jobs/queue/companies) instead of every job in it, and fetches its jobs
+// only once opened, through the same paged listing as the main list.
 interface CompanyGroupProps {
-  company: string;
-  jobs: Job[];
+  group: JobQueueCompanyGroup;
+  filters: JobQueueFilters;
+  viewStatuses: string[] | null | undefined;
   triageHandlers: TriageHandlers;
   allSheetRows: ApplicationHistoryRow[] | null;
   contactsByCompany?: ContactsByCompany;
@@ -68,12 +75,14 @@ interface CompanyGroupProps {
 }
 
 export default function CompanyGroup({
-  company, jobs, triageHandlers, allSheetRows, contactsByCompany, companyJobCounts, onNavigateToJobCard,
+  group, filters, viewStatuses, triageHandlers, allSheetRows, contactsByCompany, companyJobCounts, onNavigateToJobCard,
   onQueueApprove, onQueueReEvaluate, onQueueSkip, onQueueSnooze, onQueueRescanEmail, onQueueUpdate, defaultSnoozeDays,
 }: CompanyGroupProps) {
   const [open, setOpen] = useState(false);
-  const queueCount = jobs.filter((j) => j.status === "pending_review").length;
-  const triageCount = jobs.filter((j) => j.status !== "pending_review").length;
+  const listing = useJobQueueListing(
+    { ...filters, companyKey: group.company_key },
+    { enabled: open, viewStatuses },
+  );
 
   const queueHandlers = {
     onApprove: onQueueApprove,
@@ -91,25 +100,32 @@ export default function CompanyGroup({
           {open ? "▼" : "▶"}
         </span>
         <span style={{ color: "var(--text)", flex: 1, fontSize: "15px", fontWeight: 700 }}>
-          {company}
+          {group.label}
         </span>
         <span style={{ color: "var(--text-muted)", flexShrink: 0, fontSize: "13px" }}>
-          {jobs.length} job{jobs.length !== 1 ? "s" : ""}
+          {group.total} job{group.total !== 1 ? "s" : ""}
         </span>
-        {queueCount > 0 && (
+        {group.queue_count > 0 && (
           <span className="badge badge-gray" style={{ flexShrink: 0 }}>
-            {queueCount} queue
+            {group.queue_count} queue
           </span>
         )}
-        {triageCount > 0 && (
+        {group.triage_count > 0 && (
           <span className="badge badge-yellow" style={{ flexShrink: 0 }}>
-            {triageCount} triage
+            {group.triage_count} triage
           </span>
         )}
       </div>
       {open && (
         <div style={{ borderTop: "1px solid var(--border)", padding: "12px 18px" }}>
-          {jobs.map((job) => renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))}
+          {!listing.loaded ? (
+            <LoadingSpinner label="Loading jobs…" />
+          ) : (
+            <>
+              {listing.jobs.map((job) => renderJobOrTriageCard(job, queueHandlers, triageHandlers, allSheetRows, onNavigateToJobCard, contactsByCompany, defaultSnoozeDays, companyJobCounts))}
+              <LoadMoreSentinel hasMore={listing.hasMore} loading={listing.loadingMore} itemCount={listing.jobs.length} onLoadMore={listing.loadMore} />
+            </>
+          )}
         </div>
       )}
     </div>

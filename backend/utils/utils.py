@@ -41,6 +41,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 import config
 from backend.ai_provider import AIProviderError
 from backend.db import open_repositories
+from backend.db.job_queue_query import QUEUE_STATUSES, TRIAGE_STATUSES
 from backend.db.row_level_security import set_current_user
 
 logger = logging.getLogger(__name__)
@@ -49,13 +50,9 @@ _MAX_CHAT_MESSAGES = 12
 _MAX_CHAT_MESSAGE_LENGTH = 4000
 _MAX_RAW_CHAT_MESSAGES = 200
 
-ACTIVE_JOB_STATUSES: frozenset[str] = frozenset(
-    {
-        "pending_review",
-        "triage",
-        "possible_duplicate",
-    }
-)
+# ai: claude-opus-5-5 | 2026-10-23 — derived from the Job Queue's own view
+# definitions (backend/db/job_queue_query.py) instead of a second copy.
+ACTIVE_JOB_STATUSES: frozenset[str] = frozenset(QUEUE_STATUSES + TRIAGE_STATUSES)
 
 FIT_PANEL_STATUSES: frozenset[str] = frozenset(
     {

@@ -220,7 +220,7 @@ def test_the_account_stays_fully_usable_after_requesting_deletion(client) -> Non
     _login(client)
     client.post("/api/account/request-deletion", json={"password": _PASSWORD})
 
-    assert client.get("/api/jobs").status_code == 200
+    assert client.get("/api/jobs/queue?view=queue").status_code == 200
 
 
 def test_cancel_deletion_clears_the_timestamp(client) -> None:
