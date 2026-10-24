@@ -233,6 +233,45 @@ def test_completing_email_then_password_clears_gate(client, sent_emails) -> None
     assert client.get("/api/jobs").status_code == 200
 
 
+# ai: claude-opus-5-5 | 2026-10-23
+def test_gate_queries_the_db_until_setup_completes_then_once_per_session(
+    client, sent_emails, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_require_setup_completion remembers a FALSE must_complete_setup in the session
+    instead of re-querying user_accounts on every request -- but never remembers TRUE,
+    so a session still mid-setup keeps being checked (and blocked) against the DB."""
+    gate_lookups = 0
+    real_get_repos = app_module.get_repos
+
+    def _counting_get_repos(*args, **kwargs):
+        nonlocal gate_lookups
+        gate_lookups += 1
+        return real_get_repos(*args, **kwargs)
+
+    # app.py's own binding: only its before_request hooks use it, not /api/jobs itself.
+    monkeypatch.setattr(app_module, "get_repos", _counting_get_repos)
+
+    _login_default_admin(client)
+    assert client.get("/api/jobs").status_code == 403
+    assert client.get("/api/jobs").status_code == 403
+    assert gate_lookups == 2  # TRUE is never cached
+
+    _change_password(client)
+    _request_and_confirm_email_change(client, sent_emails)  # clears the flag in the DB
+
+    gate_lookups = 0
+    assert client.get("/api/jobs").status_code == 200  # same session, no re-login needed
+    assert client.get("/api/jobs").status_code == 200
+    assert client.get("/api/jobs").status_code == 200
+    assert gate_lookups == 1  # FALSE looked up once, then remembered
+
+    client.post("/api/logout")
+    client.post("/api/login", json={"email": _NEW_EMAIL, "password": _NEW_PASSWORD})
+    gate_lookups = 0
+    assert client.get("/api/jobs").status_code == 200
+    assert gate_lookups == 1  # a new login starts from a cleared session and re-checks
+
+
 def test_password_pending_default_flips_false_after_password_change(client) -> None:
     _login_default_admin(client)
     _change_password(client)

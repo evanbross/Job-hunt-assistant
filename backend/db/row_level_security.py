@@ -123,9 +123,10 @@ def enable_and_force(conn: Any) -> None:
 def set_current_user(cur: Any, user_id: int | None) -> None:
     """Set (or clear) the session GUC a connection's RLS policies read. `is_local=false`
     (the third argument) makes it last for the connection's session rather than just the
-    current transaction -- get_repos() commits right after calling this specifically so a
-    later `conn.rollback()` elsewhere in the request can't silently undo it (a rollback
-    only undoes a SET that is still part of the same, uncommitted transaction)."""
+    current transaction -- get_repos() runs this outside any transaction (autocommit,
+    see _ReconnectingPgConn.outside_transaction) specifically so a later
+    `conn.rollback()` elsewhere in the request can't silently undo it (a rollback only
+    undoes a SET that is still part of the same, uncommitted transaction)."""
     cur.execute(
         "SELECT set_config('app.current_user_id', %s, false)",
         (str(user_id) if user_id is not None else "",),

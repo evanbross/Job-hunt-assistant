@@ -103,10 +103,11 @@ def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
     - Otherwise left unset, which is fail-closed: policies deny every tenant-table row
       rather than defaulting to unrestricted.
 
-    Committed immediately, before the caller's own queries run, so a later
-    `repos["conn"].rollback()` elsewhere in this connection's lifetime (e.g. an
-    IntegrityError retry) can't silently undo it -- only a still-uncommitted SET is
-    rolled back with the transaction that made it.
+    Set outside any transaction (conn.outside_transaction(), autocommit), before the
+    caller's own queries run, so a later `repos["conn"].rollback()` elsewhere in this
+    connection's lifetime (e.g. an IntegrityError retry) can't silently undo it -- only
+    a SET made inside a still-uncommitted transaction is rolled back with it. (This used
+    to be BEGIN + SET + COMMIT; autocommit gives the same guarantee in one round trip.)
 
     Raises DatabaseUnavailableError instead of yielding if the identity cannot be
     established even after a reconnect-and-retry (see backend/db/connection.py's
@@ -129,8 +130,8 @@ def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
     if effective_user_id is None and has_request_context():
         effective_user_id = session.get("user_id")
     try:
-        set_current_user(conn.cursor(), effective_user_id)
-        conn.commit()
+        with conn.outside_transaction():  # ai: claude-opus-5-5 | 2026-10-23
+            set_current_user(conn.cursor(), effective_user_id)
     except psycopg2.OperationalError:
         # ai: claude-sonnet-5 | 2026-10-13
         # A pooled connection (see backend/db/connection.py) can go stale while
@@ -141,8 +142,8 @@ def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
         # because the connection it happened to check out was stale.
         conn.reconnect()
         try:
-            set_current_user(conn.cursor(), effective_user_id)
-            conn.commit()
+            with conn.outside_transaction():  # ai: claude-opus-5-5 | 2026-10-23
+                set_current_user(conn.cursor(), effective_user_id)
         except psycopg2.Error as exc:
             conn.discard()
             raise DatabaseUnavailableError(

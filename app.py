@@ -294,6 +294,9 @@ _SETUP_GATE_ALLOWLIST = frozenset(
     }
 )
 
+# ai: claude-opus-5-5 | 2026-10-23 — see _require_setup_completion.
+_SETUP_COMPLETE_SESSION_KEY = "setup_complete_verified"
+
 
 @app.before_request
 def _require_setup_completion() -> tuple[flask.Response, int] | None:
@@ -312,10 +315,21 @@ def _require_setup_completion() -> tuple[flask.Response, int] | None:
     user_id = session.get("user_id")
     if user_id is None:
         return None  # _require_app_login already handled this request
+    # ai: claude-opus-5-5 | 2026-10-23 — this ran a get_repos() (~280ms of Neon
+    # round trips) on every authenticated /api/* request. must_complete_setup
+    # only ever goes TRUE -> FALSE (user_accounts.mark_setup_complete is its sole
+    # writer), so once the DB says FALSE for this session it can't become TRUE
+    # again: remember that and skip the query. TRUE is never cached -- the gate
+    # stays fail-closed, re-checking the DB until setup really completes -- and
+    # _start_session()'s session.clear() means every new login re-checks once.
+    if session.get(_SETUP_COMPLETE_SESSION_KEY):
+        return None
     with get_repos() as repos:
         account = repos["user_accounts"].get(user_id)
     if account and account.get("must_complete_setup"):
         return jsonify({"error": "Complete account setup first", "must_complete_setup": True}), 403
+    if account:
+        session[_SETUP_COMPLETE_SESSION_KEY] = True
     return None
 
 

@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Any
 
@@ -163,6 +165,29 @@ class _ReconnectingPgConn:
     def rollback(self) -> None:
         self._conn.rollback()
 
+    # ai: claude-opus-5-5 | 2026-10-23
+    @contextmanager
+    def outside_transaction(self) -> Iterator[None]:
+        """Run the enclosed statements in autocommit mode: one round trip each,
+        with no implicit BEGIN before or COMMIT after. For session-level state
+        such as the RLS identity GUC (set_config(..., false)), which needs no
+        transaction and, set this way, is already outside any transaction a
+        later rollback() could undo. Measured against Neon (~31ms per round
+        trip), BEGIN + set_config + COMMIT on checkout and again on close() was
+        most of get_repos()'s ~280ms fixed cost per request.
+
+        The connection must not be mid-transaction on entry (psycopg2 refuses
+        to switch autocommit inside one) -- true at checkout, after reconnect(),
+        and in close() after its rollback(). The restore is skipped on a
+        connection the enclosed statement just broke, so a closed-connection
+        InterfaceError can't mask the OperationalError callers retry on."""
+        self._conn.autocommit = True
+        try:
+            yield
+        finally:
+            if not self._conn.closed:
+                self._conn.autocommit = False
+
     def close(self) -> None:
         """Return the connection to the pool instead of closing the socket --
         always rollback first so whichever caller is handed this connection
@@ -179,9 +204,9 @@ class _ReconnectingPgConn:
             if self._conn.closed:
                 _checkin(self._pool, self._conn, close=True)
                 return
-            self._conn.rollback()
-            set_current_user(self._conn.cursor(), None)
-            self._conn.commit()
+            self._conn.rollback()  # sends nothing when no transaction is open
+            with self.outside_transaction():  # ai: claude-opus-5-5 | 2026-10-23
+                set_current_user(self._conn.cursor(), None)
             _checkin(self._pool, self._conn)
         except psycopg2.Error:
             try:

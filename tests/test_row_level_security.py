@@ -270,6 +270,70 @@ def test_identity_survives_a_rollback_later_in_the_same_connection(pg_dsn: str) 
     assert rows == {"a-job"}
 
 
+# ai: claude-opus-5-5 | 2026-10-23
+# get_repos()/close() now set and clear the identity in autocommit mode (one round trip)
+# instead of BEGIN + set_config + COMMIT -- see _ReconnectingPgConn.outside_transaction.
+# The rollback-can't-undo-it guarantee is covered by the test above; these cover what
+# the autocommit switch itself could get wrong.
+
+
+def test_identity_is_set_and_the_connection_is_back_in_transactional_mode(pg_dsn: str) -> None:
+    user_a, _ = _two_users(pg_dsn)
+
+    with get_repos(user_a) as repos:
+        raw = repos["conn"].cursor().connection
+        assert raw.autocommit is False  # route code relies on commit()/rollback() grouping
+        assert raw.info.transaction_status == psycopg2.extensions.TRANSACTION_STATUS_IDLE
+        cur = repos["conn"].cursor()
+        cur.execute("SELECT current_setting('app.current_user_id', true) AS uid")
+        assert cur.fetchone()["uid"] == str(user_a)
+
+
+def test_close_clears_the_identity_on_the_pooled_connection(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Size-1 pool, as in the discard test above, so the probe is provably the same
+    physical connection get_repos() just returned -- not some other clean one."""
+    import backend.db.connection as connection_module
+
+    user_a, _ = _two_users(pg_dsn)
+    connection_module._POOLS.pop(pg_dsn, None)
+    monkeypatch.setattr(connection_module, "_POOL_MAX_CONN", 1)
+    try:
+        with get_repos(user_a) as repos:
+            returned = repos["conn"].cursor().connection
+
+        probe = connection_module.get_connection(pg_dsn)
+        try:
+            raw = probe.cursor().connection
+            assert raw is returned
+            assert raw.autocommit is False
+            cur = probe.cursor()
+            cur.execute("SELECT current_setting('app.current_user_id', true) AS uid")
+            assert cur.fetchone()["uid"] == ""  # cleared, not still user_a
+        finally:
+            probe.close()
+    finally:
+        connection_module._POOLS.pop(pg_dsn, None)
+
+
+def test_outside_transaction_restores_transactional_mode_after_a_failed_statement(
+    pg_dsn: str,
+) -> None:
+    user_a, _ = _two_users(pg_dsn)
+
+    with get_repos(user_a) as repos:
+        conn = repos["conn"]
+        with pytest.raises(psycopg2.errors.SyntaxError):
+            with conn.outside_transaction():
+                conn.cursor().execute("SELEC 1")
+        raw = conn.cursor().connection
+        assert raw.autocommit is False
+        cur = conn.cursor()
+        cur.execute("SELECT current_setting('app.current_user_id', true) AS uid")
+        assert cur.fetchone()["uid"] == str(user_a)  # still usable, identity intact
+
+
 # ─── extension_tokens: deliberately excluded ────────────────────────────────────
 
 
