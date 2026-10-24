@@ -39,11 +39,14 @@ class GoogleTokenStore:
             return None
         return Credentials.from_authorized_user_info(info, config.GMAIL_SCOPES)
 
-    def granted_scopes(self, user_id: int) -> list[str]:
-        """Scopes recorded in the stored token; reads only local state, so it
-        can never trigger a refresh or an auth flow."""
+    # ai: claude-opus-5-5 | 2026-10-24 — None (not []) when there is no token,
+    # so a caller learns "connected?" and the scopes from the one read.
+    def granted_scopes(self, user_id: int) -> list[str] | None:
+        """Scopes recorded in the stored token, or None when the user hasn't
+        connected Google; reads only local state, so it can never trigger a
+        refresh or an auth flow."""
         info = self._load_info(user_id)
-        return list(info.get("scopes") or []) if info else []
+        return None if info is None else list(info.get("scopes") or [])
 
     def save(self, user_id: int, credentials: Credentials) -> None:
         """Store (or replace) the user's token. The caller commits."""

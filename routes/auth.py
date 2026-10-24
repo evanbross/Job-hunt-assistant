@@ -105,17 +105,20 @@ def auth_status() -> ResponseReturnValue:
     # This only reads the caller's own stored token (no network call, no
     # refresh attempt), so it can't trigger auth itself.
     user_id = current_user_id()
+    # ai: claude-opus-5-5 | 2026-10-24 — one token read, not is_connected() + a second
     with get_repos() as repos:
-        store = GoogleTokenStore(repos["google_tokens"])
-        if not store.is_connected(user_id):
-            return jsonify({"authenticated": False, "has_send_scope": False})
         try:
-            scopes = store.granted_scopes(user_id)
+            scopes = GoogleTokenStore(repos["google_tokens"]).granted_scopes(user_id)
         except (ValueError, SettingsEncryptionKeyMissingError) as exc:
+            # A stored token exists (it's what failed to decrypt): still connected.
             logger.warning("Could not read stored Google token scopes: %s", exc)
             scopes = []
 
-    return jsonify({"authenticated": True, "has_send_scope": _GMAIL_SEND_SCOPE in scopes})
+    if scopes is None:
+        return jsonify({"authenticated": False, "has_send_scope": False})
+    return jsonify(
+        {"authenticated": True, "has_send_scope": _GMAIL_SEND_SCOPE in scopes}
+    )
 
 
 @auth_bp.route("/auth/google")

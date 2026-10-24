@@ -141,7 +141,7 @@ def test_saving_again_replaces_the_token_and_scopes_are_reported(pg_dsn: str) ->
     try:
         user_id = _new_user(conn)
         store = GoogleTokenStore(PostgresGoogleTokenRepository(conn))
-        assert store.granted_scopes(user_id) == []
+        assert store.granted_scopes(user_id) is None  # ai: claude-opus-5-5 | 2026-10-24
 
         store.save(user_id, make_credentials("old", scopes=["scope-a"]))
         store.save(user_id, make_credentials("new", scopes=["scope-a", SEND_SCOPE]))
@@ -522,3 +522,19 @@ def test_legacy_migration_leaves_unusable_or_undecryptable_files_in_place(
         assert token_file.exists()
     finally:
         conn.close()
+
+
+# ai: claude-opus-5-5 | 2026-10-24
+def test_status_counts_an_undecryptable_token_as_connected(pg_dsn: str, auth_client: Any) -> None:
+    """A stored token that no longer decrypts (SETTINGS_ENCRYPTION_KEY changed) is
+    still a connection the user has to fix or disconnect -- not "never connected"."""
+    client, ids, _session_user = auth_client
+    conn = get_connection(pg_dsn)
+    try:
+        set_current_user(conn.cursor(), ids["a"])
+        PostgresGoogleTokenRepository(conn).upsert(ids["a"], "not-a-fernet-token", "2026-10-24T00:00:00+00:00")
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert client.get("/api/auth/status").get_json() == {"authenticated": True, "has_send_scope": False}

@@ -60,49 +60,56 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 
 
 # ai: claude-sonnet-5 | 2026-10-13
-# One real psycopg2 connection pool per DSN, shared process-wide, so every
-# get_connection() call (routes via get_repos(), Celery tasks, scripts, and
-# every test fixture that opens its own connection) reuses a warm TCP/TLS
-# session instead of paying Neon's ~200ms handshake on every single call --
-# that handshake was dwarfing actual query time (sub-millisecond, even for
-# the Company History lookup) by three orders of magnitude. Keyed by DSN so
-# the production DATABASE_URL and a test suite's LOCAL_POSTGRES_* DSN never
-# share connections. SimpleConnectionPool, not ThreadedConnectionPool: the
-# latter's default key is the calling thread's id, so a second getconn() from
-# the *same* thread (e.g. tests/test_import_routes.py's race-simulation,
-# which deliberately opens two simultaneous connections from one thread) would
-# silently hand back the SAME connection instead of a second, independent one.
-# SimpleConnectionPool's default key is just an auto-incrementing counter, so
-# every getconn() call -- regardless of thread -- gets a genuinely distinct
-# connection, up to maxconn; we add our own lock since SimpleConnectionPool
-# does no internal locking.
+# One connection pool per DSN, shared process-wide, so every get_connection()
+# call (routes via get_repos(), Celery tasks, scripts, and every test fixture
+# that opens its own connection) reuses a warm TCP/TLS session instead of
+# paying Neon's ~200ms handshake on every single call -- that handshake was
+# dwarfing actual query time by three orders of magnitude. Keyed by DSN so the
+# production DATABASE_URL and a test suite's LOCAL_POSTGRES_* DSN never share
+# connections. Every checkout gets a distinct connection, even two from the
+# same thread (tests/test_import_routes.py's race simulation deliberately opens
+# two simultaneous connections from one thread).
 # ai: claude-sonnet-5 | 2026-10-18
-# Pool size and acquisition wait are now runtime configuration (config.py's
-# DB_POOL_* settings) instead of a fixed constant -- a cloud deployment
-# serving many concurrent tenants needs a pool sized (and tuned) for its own
-# traffic and its own Postgres instance's max_connections, not whatever was
-# right for a single-operator deployment. A Condition (not a plain Lock) is
-# used so a caller arriving when the pool is fully checked out blocks and
-# retries for up to DB_POOL_ACQUIRE_TIMEOUT_SECONDS instead of failing
-# immediately -- psycopg2.pool.SimpleConnectionPool.getconn() itself has no
-# notion of waiting, it just raises PoolError the instant every connection is
-# in use. 2026-10-18 full review, Medium finding.
-_POOL_COND = threading.Condition()
-_POOLS: dict[str, psycopg2_pool.SimpleConnectionPool] = {}
+# Pool size and acquisition wait are runtime configuration (config.py's
+# DB_POOL_* settings): a cloud deployment needs a pool sized for its own
+# traffic and its own Postgres instance's max_connections. A caller arriving
+# when every connection is checked out waits up to
+# DB_POOL_ACQUIRE_TIMEOUT_SECONDS for one to come back instead of failing
+# immediately. 2026-10-18 full review, Medium finding.
+# ai: claude-opus-5-5 | 2026-10-24
+# Our own pool, not psycopg2.pool.SimpleConnectionPool, which serialized every
+# burst of concurrent requests (each simultaneous request added ~175ms; the
+# page's four startup calls took ~900ms instead of ~190ms). Its putconn()
+# closes a returned connection whenever minconn are already idle, so with
+# DB_POOL_MIN_CONN=1 only one warm connection survived and every concurrent
+# request paid a fresh Neon handshake -- and its getconn() opens that
+# connection inside the lock we had to wrap it in, so those handshakes ran one
+# after another. This pool keeps every returned connection (up to max_conn)
+# and opens new ones outside its lock.
+_POOLS_LOCK = threading.Lock()
+_POOLS: dict[str, _ConnectionPool] = {}
 _POOL_MIN_CONN = config.DB_POOL_MIN_CONN
 _POOL_MAX_CONN = config.DB_POOL_MAX_CONN
 _POOL_ACQUIRE_TIMEOUT_SECONDS = config.DB_POOL_ACQUIRE_TIMEOUT_SECONDS
 
 
-def _get_pool(dsn: str) -> psycopg2_pool.SimpleConnectionPool:
-    with _POOL_COND:
-        existing = _POOLS.get(dsn)
-        if existing is not None:
-            return existing
-        new_pool = psycopg2_pool.SimpleConnectionPool(
-            _POOL_MIN_CONN,
-            _POOL_MAX_CONN,
-            dsn,
+# ai: claude-opus-5-5 | 2026-10-24
+class _ConnectionPool:
+    """At most max_conn connections to one DSN, min_conn of them opened up
+    front; every connection handed back in a reusable state stays open for
+    the next checkout."""
+
+    def __init__(self, dsn: str, min_conn: int, max_conn: int) -> None:
+        self._dsn = dsn
+        self._max_conn = max_conn
+        self._cond = threading.Condition()
+        self._idle: list[Any] = [self._connect() for _ in range(min_conn)]
+        self._checked_out: set[int] = set()  # id()s, so a stray checkin is refused
+        self._open = len(self._idle)  # idle + checked out + being opened
+
+    def _connect(self) -> Any:
+        return psycopg2.connect(
+            self._dsn,
             cursor_factory=psycopg2.extras.RealDictCursor,
             connect_timeout=10,  # ai: claude-fable-5 | 2026-07-14 — bound per-host TCP wait so a dead endpoint fails in seconds, not minutes
             keepalives=1,
@@ -110,32 +117,91 @@ def _get_pool(dsn: str) -> psycopg2_pool.SimpleConnectionPool:
             keepalives_interval=10,
             keepalives_count=5,
         )
-        _POOLS[dsn] = new_pool
-        return new_pool
 
-
-def _checkout(pool: psycopg2_pool.SimpleConnectionPool) -> Any:
-    """getconn() with a bounded wait instead of psycopg2's immediate PoolError
-    the moment every connection is checked out -- a caller arriving during a
-    brief burst gets to wait its turn (up to _POOL_ACQUIRE_TIMEOUT_SECONDS)
-    for whichever request finishes and calls _checkin() first, rather than
-    failing outright while the database itself is perfectly healthy."""
-    deadline = time.monotonic() + _POOL_ACQUIRE_TIMEOUT_SECONDS
-    with _POOL_COND:
-        while True:
-            try:
-                return pool.getconn()
-            except psycopg2_pool.PoolError:
+    def checkout(self, timeout: float) -> Any:
+        """An idle connection, else a new one while under max_conn, else wait
+        up to *timeout* seconds for one to be returned; PoolError after that."""
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while not self._idle and self._open >= self._max_conn:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise
-                _POOL_COND.wait(timeout=remaining)
+                    raise psycopg2_pool.PoolError("connection pool exhausted")
+                self._cond.wait(timeout=remaining)
+            if self._idle:
+                conn = self._idle.pop()
+                self._checked_out.add(id(conn))
+                return conn
+            self._open += 1  # claim the slot; the handshake happens unlocked
+        conn = None
+        try:
+            conn = self._connect()
+        finally:
+            if conn is None:
+                self._release_slot()
+        with self._cond:
+            self._checked_out.add(id(conn))
+        return conn
+
+    def checkin(self, conn: Any, close: bool = False) -> None:
+        """Keep *conn* for reuse, or close it: when asked to, when it's already
+        closed or its server connection is lost, or when an open transaction
+        on it can't be rolled back. PoolError for a connection this pool
+        didn't hand out, or one already returned."""
+        with self._cond:
+            if id(conn) not in self._checked_out:
+                raise psycopg2_pool.PoolError(
+                    "trying to return a connection not checked out from this pool"
+                )
+            self._checked_out.discard(id(conn))
+        if not close and not conn.closed:
+            status = conn.info.transaction_status
+            if status == psycopg2.extensions.TRANSACTION_STATUS_UNKNOWN:
+                close = True
+            elif status != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
+                try:
+                    conn.rollback()
+                except psycopg2.Error:
+                    close = True
+        if close or conn.closed:
+            try:
+                conn.close()
+            finally:
+                self._release_slot()
+            return
+        with self._cond:
+            self._idle.append(conn)
+            self._cond.notify()
+
+    def discard_idle(self) -> None:
+        """Close every idle connection. After one pooled connection turns out to
+        have been dropped (Neon suspending an idle compute drops them all), the
+        rest are presumed dead too -- otherwise a reconnect would just be handed
+        the next dead one."""
+        with self._cond:
+            stale, self._idle = self._idle, []
+            self._open -= len(stale)
+            self._cond.notify_all()
+        for conn in stale:
+            try:
+                conn.close()
+            except psycopg2.Error:
+                pass
+
+    def _release_slot(self) -> None:
+        with self._cond:
+            self._open -= 1
+            self._cond.notify()
 
 
-def _checkin(pool: psycopg2_pool.SimpleConnectionPool, conn: Any, close: bool = False) -> None:
-    with _POOL_COND:
-        pool.putconn(conn, close=close)
-        _POOL_COND.notify_all()  # wake any _checkout() waiting for capacity
+def _get_pool(dsn: str) -> _ConnectionPool:
+    with _POOLS_LOCK:
+        existing = _POOLS.get(dsn)
+        if existing is None:
+            existing = _POOLS[dsn] = _ConnectionPool(
+                dsn, _POOL_MIN_CONN, _POOL_MAX_CONN
+            )
+        return existing
 
 
 class _ReconnectingPgConn:
@@ -153,7 +219,7 @@ class _ReconnectingPgConn:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._pool = _get_pool(dsn)
-        self._conn = _checkout(self._pool)
+        self._conn = self._pool.checkout(_POOL_ACQUIRE_TIMEOUT_SECONDS)
         self.autocommit = False
 
     def cursor(self) -> Any:
@@ -202,15 +268,15 @@ class _ReconnectingPgConn:
         carries a previous request's tenant identity as its resting state."""
         try:
             if self._conn.closed:
-                _checkin(self._pool, self._conn, close=True)
+                self._pool.checkin(self._conn, close=True)
                 return
             self._conn.rollback()  # sends nothing when no transaction is open
             with self.outside_transaction():  # ai: claude-opus-5-5 | 2026-10-23
                 set_current_user(self._conn.cursor(), None)
-            _checkin(self._pool, self._conn)
+            self._pool.checkin(self._conn)
         except psycopg2.Error:
             try:
-                _checkin(self._pool, self._conn, close=True)
+                self._pool.checkin(self._conn, close=True)
             except psycopg2.Error:
                 pass
 
@@ -227,7 +293,7 @@ class _ReconnectingPgConn:
         except psycopg2.Error:
             pass
         try:
-            _checkin(self._pool, self._conn, close=True)
+            self._pool.checkin(self._conn, close=True)
         except psycopg2.Error:
             pass
 
@@ -236,10 +302,11 @@ class _ReconnectingPgConn:
         e.g. after Neon suspends an idle compute and drops every connection that
         was sitting in the pool."""
         try:
-            _checkin(self._pool, self._conn, close=True)
+            self._pool.checkin(self._conn, close=True)
         except psycopg2.Error:
             pass
-        self._conn = _checkout(self._pool)
+        self._pool.discard_idle()  # ai: claude-opus-5-5 | 2026-10-24 — they were dropped with this one
+        self._conn = self._pool.checkout(_POOL_ACQUIRE_TIMEOUT_SECONDS)
 
 
 # ai: claude-sonnet-5 | 2026-07-25 — SQLite dialect support removed; Postgres only now

@@ -108,3 +108,107 @@ def test_get_repos_reports_pool_exhaustion_as_database_unavailable(
                 pytest.fail("get_repos() must not yield when the pool is exhausted")
     finally:
         held.close()
+
+
+# ai: claude-opus-5-5 | 2026-10-24
+# psycopg2's SimpleConnectionPool (which _ConnectionPool replaced) closed any
+# returned connection once DB_POOL_MIN_CONN were idle and opened new ones under
+# the pool lock, so concurrent requests each paid a Neon handshake, one at a time.
+
+
+@pytest.fixture
+def fresh_pool(pg_dsn: str, monkeypatch: pytest.MonkeyPatch):
+    connection_module._POOLS.pop(pg_dsn, None)
+    monkeypatch.setattr(connection_module, "_POOL_MIN_CONN", 1)
+    monkeypatch.setattr(connection_module, "_POOL_MAX_CONN", 5)
+    yield pg_dsn
+    connection_module._POOLS.pop(pg_dsn, None)
+
+
+def _raw(conn: connection_module._ReconnectingPgConn) -> object:
+    return conn.cursor().connection
+
+
+def test_every_returned_connection_stays_open_for_reuse(fresh_pool: str) -> None:
+    first = [connection_module.get_connection(fresh_pool) for _ in range(3)]
+    first_raw = {id(_raw(conn)) for conn in first}
+    for conn in first:
+        conn.close()
+
+    second = [connection_module.get_connection(fresh_pool) for _ in range(3)]
+    try:
+        assert {id(_raw(conn)) for conn in second} == first_raw
+        assert all(not _raw(conn).closed for conn in second)
+    finally:
+        for conn in second:
+            conn.close()
+
+
+def test_new_connections_open_concurrently_not_one_at_a_time(
+    fresh_pool: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handshake_seconds = 0.3
+    real_connect = connection_module._ConnectionPool._connect
+
+    def _slow_connect(self: connection_module._ConnectionPool) -> object:
+        time.sleep(handshake_seconds)
+        return real_connect(self)
+
+    connection_module._get_pool(
+        fresh_pool
+    )  # opens its min_conn connection before the patch
+    monkeypatch.setattr(connection_module._ConnectionPool, "_connect", _slow_connect)
+    held = [
+        connection_module.get_connection(fresh_pool)
+    ]  # takes the one idle connection
+
+    opened: list[object] = []
+    threads = [
+        threading.Thread(
+            target=lambda: opened.append(connection_module.get_connection(fresh_pool))
+        )
+        for _ in range(4)
+    ]
+    started = time.monotonic()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    elapsed = time.monotonic() - started
+    try:
+        assert len(opened) == 4
+        assert elapsed < handshake_seconds * 2, (
+            f"4 handshakes took {elapsed:.2f}s -- serialized"
+        )
+    finally:
+        for conn in held + opened:
+            conn.close()
+
+
+def test_reconnect_drops_the_idle_connections_instead_of_reusing_one(
+    fresh_pool: str,
+) -> None:
+    idle = [connection_module.get_connection(fresh_pool) for _ in range(3)]
+    idle_raw = {id(_raw(conn)) for conn in idle}
+    for conn in idle:
+        conn.close()
+
+    conn = connection_module.get_connection(fresh_pool)
+    try:
+        conn.reconnect()
+        assert id(_raw(conn)) not in idle_raw
+        other = connection_module.get_connection(fresh_pool)
+        try:
+            assert id(_raw(other)) not in idle_raw
+        finally:
+            other.close()
+    finally:
+        conn.close()
+
+
+def test_returning_a_connection_twice_is_refused(fresh_pool: str) -> None:
+    pool = connection_module._get_pool(fresh_pool)
+    raw = pool.checkout(1)
+    pool.checkin(raw)
+    with pytest.raises(psycopg2.pool.PoolError):
+        pool.checkin(raw)
