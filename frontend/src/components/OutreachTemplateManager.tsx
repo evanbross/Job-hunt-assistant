@@ -55,6 +55,17 @@ export default function OutreachTemplateManager({ onDirtyChange }: OutreachTempl
   }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
+  // ai: claude-opus-5-5 | 2026-10-26
+  // Reloading or closing the page (or leaving it) with unsaved edits gets the
+  // browser's own "Leave site?" prompt. Only attached while dirty, so the page
+  // never asks otherwise.
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const warnBeforeUnload = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [dirty]);
+
   const open = (next: OutreachTemplate | null) => {
     setEditingId(next?.id ?? NEW_TEMPLATE);
     setTitle(next?.title ?? "");

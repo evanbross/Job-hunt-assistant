@@ -114,6 +114,27 @@ describe("OutreachTemplateManager", () => {
     expect(onDirtyChange).toHaveBeenLastCalledWith(false);
   });
 
+  // ai: claude-opus-5-5 | 2026-10-26
+  it("asks the browser to confirm leaving the page only while there are unsaved changes", async () => {
+    // dispatchEvent returns false when a listener called preventDefault().
+    const unloadAllowed = () => window.dispatchEvent(new Event("beforeunload", { cancelable: true }));
+    const { unmount } = render(<OutreachTemplateManager onDirtyChange={() => {}} />);
+
+    const message = await screen.findByLabelText("Template message");
+    await waitFor(() => expect(message).toHaveValue("Hi {first_name}"));
+    expect(unloadAllowed()).toBe(true);
+
+    fireEvent.change(message, { target: { value: "edited" } });
+    expect(unloadAllowed()).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Revert" }));
+    expect(unloadAllowed()).toBe(true);
+
+    fireEvent.change(message, { target: { value: "edited again" } });
+    unmount();
+    expect(unloadAllowed()).toBe(true);
+  });
+
   it("deletes a template and opens the next one", async () => {
     render(<OutreachTemplateManager onDirtyChange={() => {}} />);
 
