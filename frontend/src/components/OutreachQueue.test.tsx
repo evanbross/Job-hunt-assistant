@@ -73,6 +73,7 @@ describe("OutreachQueue picked contacts", () => {
         targetIds={[2, 3, 4]}
         onClearTarget={() => {}}
         onOutreachLogged={onOutreachLogged}
+        onManageTemplates={() => {}}
       />,
     );
 
@@ -102,6 +103,7 @@ describe("OutreachQueue picked contacts", () => {
         targetIds={[4]}
         onClearTarget={onClearTarget}
         onOutreachLogged={() => Promise.resolve()}
+        onManageTemplates={() => {}}
       />,
     );
 
@@ -112,7 +114,7 @@ describe("OutreachQueue picked contacts", () => {
 
   it("keeps the default queue to 'Yes' contacts with nothing sent", () => {
     render(
-      <OutreachQueue contacts={CONTACTS} targetIds={null} onClearTarget={() => {}} onOutreachLogged={() => Promise.resolve()} />,
+      <OutreachQueue contacts={CONTACTS} targetIds={null} onClearTarget={() => {}} onOutreachLogged={() => Promise.resolve()} onManageTemplates={() => {}} />,
     );
 
     expect(screen.getByText("LinkedIn outreach queue")).toBeInTheDocument();
@@ -150,7 +152,7 @@ describe("OutreachQueue named templates", () => {
 
   const renderQueue = () =>
     render(
-      <OutreachQueue contacts={CONTACTS} targetIds={[4]} onClearTarget={() => {}} onOutreachLogged={() => Promise.resolve()} />,
+      <OutreachQueue contacts={CONTACTS} targetIds={[4]} onClearTarget={() => {}} onOutreachLogged={() => Promise.resolve()} onManageTemplates={() => {}} />,
     );
 
   it("drafts from the first template, then redrafts and remembers the one picked", async () => {
@@ -170,24 +172,23 @@ describe("OutreachQueue named templates", () => {
     await waitFor(() => expect(screen.getByLabelText("Message to Dee Undecided")).toHaveValue("draft from 8"));
   });
 
-  it("opens the template editor when there are none, and drafts from the first one created", async () => {
+  // ai: claude-opus-5-5 | 2026-10-26 -- the editor moved to the Contacts section's Templates tab
+  it("sends the user to the Templates tab when there are no templates", async () => {
     templates = [];
-    renderQueue();
-
-    const name = await screen.findByLabelText("Template name");
-    expect(screen.getByText(/None yet/)).toBeInTheDocument();
-    fireEvent.change(name, { target: { value: "Close coworkers" } });
-    fireEvent.change(screen.getByLabelText("Template message"), { target: { value: "Hey {first_name}" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create template" }));
-
-    await waitFor(() => expect(screen.getByLabelText("Message to Dee Undecided")).toHaveValue("draft from 9"));
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/outreach-templates",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ title: "Close coworkers", body: "Hey {first_name}" }),
-      }),
+    const onManageTemplates = vi.fn();
+    render(
+      <OutreachQueue
+        contacts={CONTACTS}
+        targetIds={[4]}
+        onClearTarget={() => {}}
+        onOutreachLogged={() => Promise.resolve()}
+        onManageTemplates={onManageTemplates}
+      />,
     );
-    expect(screen.getByLabelText("Template")).toHaveValue("9");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create a template" }));
+    expect(onManageTemplates).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Message to Dee Undecided")).toHaveValue("");
+    expect(screen.queryByLabelText("Template name")).not.toBeInTheDocument();
   });
 });

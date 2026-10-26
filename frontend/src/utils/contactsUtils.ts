@@ -8,6 +8,7 @@
  */
 
 import { normalizeCompany } from "./sheetUtils.ts";
+import type { OutreachTemplate } from "../types/contacts.ts";
 
 // ai: claude-sonnet-5 | 2026-07-25
 // Mirrors normalize_company_name() in backend/scoring/company_matching.py — keep the
@@ -27,6 +28,24 @@ export const MAX_OUTREACH_MESSAGE_LENGTH = 8000;
 export const MAX_OUTREACH_TEMPLATE_TITLE_LENGTH = 100;
 // The placeholders backend/contacts/outreach_drafts.py's render_outreach_template() fills.
 export const OUTREACH_PLACEHOLDER_HELP = "Placeholders: {first_name}, {full_name}, {company}, {position}";
+
+// ai: claude-opus-5-5 | 2026-10-26 -- moved here from OutreachQueue so the
+// Templates tab opens on the template the queue last used.
+// The template last picked in the outreach queue, so a reload keeps using it.
+const TEMPLATE_STORAGE_KEY = "outreachTemplateId";
+
+export function byTemplateTitle(a: OutreachTemplate, b: OutreachTemplate): number {
+  return a.title.toLowerCase().localeCompare(b.title.toLowerCase()) || a.id - b.id;
+}
+
+export function rememberedTemplateId(templates: OutreachTemplate[]): number | null {
+  const remembered = Number(localStorage.getItem(TEMPLATE_STORAGE_KEY));
+  return templates.some((t) => t.id === remembered) ? remembered : (templates[0]?.id ?? null);
+}
+
+export function rememberTemplateId(templateId: number): void {
+  localStorage.setItem(TEMPLATE_STORAGE_KEY, String(templateId));
+}
 
 // Error message from a failed JSON response, or the HTTP status.
 export async function responseErrorText(res: Response): Promise<string> {

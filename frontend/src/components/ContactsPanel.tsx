@@ -14,6 +14,7 @@ import CompaniesReport from "./CompaniesReport.tsx";
 import ContactDetail from "./ContactDetail.tsx";
 import ContactsImport from "./ContactsImport.tsx";
 import OutreachQueue from "./OutreachQueue.tsx";
+import OutreachTemplateManager from "./OutreachTemplateManager.tsx";
 import TitlesReport from "./TitlesReport.tsx";
 import { contactsMatchKey, safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
 import { formatLocalDate } from "../utils/dateTimeUtils.ts";
@@ -24,7 +25,8 @@ import type { ApplicationProfile } from "../types/applicationProfile.ts";
 const PAGE_SIZE = 100;
 
 // ai: claude-opus-5-5 | 2026-10-14 -- added "outreach" (the LinkedIn outreach queue)
-type View = "contacts" | "outreach" | "companies" | "titles";
+// ai: claude-opus-5-5 | 2026-10-26 -- added "templates" (the outreach message templates)
+type View = "contacts" | "outreach" | "templates" | "companies" | "titles";
 // ai: claude-opus-5-5 | 2026-10-14 -- was EmailFilter ("emailed"/"not_emailed"):
 // outreach now covers LinkedIn messages as well as emails.
 type OutreachFilter = "all" | "contacted" | "not_contacted" | "awaiting" | "replied";
@@ -275,6 +277,9 @@ export default function ContactsPanel() {
   // new pick so its skipped/sent/draft state starts fresh.
   const [outreachTargetIds, setOutreachTargetIds] = useState<number[] | null>(null);
   const [outreachRunId, setOutreachRunId] = useState(0);
+  // ai: claude-opus-5-5 | 2026-10-26
+  // Unsaved edits in the Templates tab, so leaving it asks first.
+  const [templatesDirty, setTemplatesDirty] = useState(false);
 
   const loadContacts = async () => {
     try {
@@ -387,6 +392,21 @@ export default function ContactsPanel() {
     setOutreachTargetIds(contactIds);
     setOutreachRunId((id) => id + 1);
     setView("outreach");
+  };
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  // The tab bar is the only way out of the Templates tab (the other setView
+  // callers live in the Contacts, Outreach and Titles tabs).
+  const switchView = (next: View) => {
+    if (
+      view === "templates" &&
+      next !== "templates" &&
+      templatesDirty &&
+      !window.confirm("Discard your unsaved changes to this template?")
+    ) {
+      return;
+    }
+    setView(next);
   };
 
   // Selection in the table's current sort order, so the queue walks them in
@@ -541,25 +561,32 @@ export default function ContactsPanel() {
         <div style={{ display: "flex", gap: "8px" }}>
           <button
             className={view === "contacts" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
-            onClick={() => setView("contacts")}
+            onClick={() => switchView("contacts")}
           >
             Contacts
           </button>
           <button
             className={view === "outreach" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
-            onClick={() => setView("outreach")}
+            onClick={() => switchView("outreach")}
           >
             Outreach queue{outreachQueueCount > 0 ? ` (${outreachQueueCount})` : ""}
           </button>
+          {/* ai: claude-opus-5-5 | 2026-10-26 */}
+          <button
+            className={view === "templates" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
+            onClick={() => switchView("templates")}
+          >
+            Templates
+          </button>
           <button
             className={view === "companies" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
-            onClick={() => setView("companies")}
+            onClick={() => switchView("companies")}
           >
             Companies
           </button>
           <button
             className={view === "titles" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
-            onClick={() => setView("titles")}
+            onClick={() => switchView("titles")}
           >
             Titles
           </button>
@@ -578,8 +605,10 @@ export default function ContactsPanel() {
           targetIds={outreachTargetIds}
           onClearTarget={clearOutreachTarget}
           onOutreachLogged={loadContacts}
+          onManageTemplates={() => setView("templates")}
         />
       )}
+      {view === "templates" && <OutreachTemplateManager onDirtyChange={setTemplatesDirty} />}
       {view === "companies" && <CompaniesReport />}
       {view === "titles" && <TitlesReport onViewContactsForTitle={viewContactsForTitle} />}
       {view === "contacts" && (

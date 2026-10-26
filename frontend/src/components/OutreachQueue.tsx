@@ -10,8 +10,14 @@
 // ai: claude-opus-5-5 | 2026-10-14
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import OutreachTemplateManager from "./OutreachTemplateManager.tsx";
-import { MAX_OUTREACH_MESSAGE_LENGTH, responseErrorText, safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
+import {
+  MAX_OUTREACH_MESSAGE_LENGTH,
+  rememberTemplateId,
+  rememberedTemplateId,
+  responseErrorText,
+  safeHttpUrl,
+  sendJson,
+} from "../utils/contactsUtils.ts";
 import { formatLocalDate } from "../utils/dateTimeUtils.ts";
 import type {
   Contact,
@@ -19,10 +25,6 @@ import type {
   OutreachTemplate,
   OutreachTemplateListResponse,
 } from "../types/contacts.ts";
-
-// ai: claude-opus-5-5 | 2026-10-21
-// The template last picked in the queue, so a reload keeps using it.
-const TEMPLATE_STORAGE_KEY = "outreachTemplateId";
 
 interface OutreachQueueProps {
   contacts: Contact[];
@@ -38,6 +40,9 @@ interface OutreachQueueProps {
   onClearTarget: () => void;
   /** Reload the contact list after a send is logged. */
   onOutreachLogged: () => Promise<void>;
+  // ai: claude-opus-5-5 | 2026-10-26
+  /** Switch to the Templates tab (templates are edited there, not in the queue). */
+  onManageTemplates: () => void;
 }
 
 // ai: claude-opus-5-5 | 2026-10-14
@@ -47,16 +52,6 @@ function queueOrder(a: Contact, b: Contact): number {
   return (b.outreach_score ?? 0) - (a.outreach_score ?? 0) || a.full_name.localeCompare(b.full_name) || a.id - b.id;
 }
 
-// ai: claude-opus-5-5 | 2026-10-21
-function byTitle(a: OutreachTemplate, b: OutreachTemplate): number {
-  return a.title.toLowerCase().localeCompare(b.title.toLowerCase()) || a.id - b.id;
-}
-
-function rememberedTemplateId(templates: OutreachTemplate[]): number | null {
-  const remembered = Number(localStorage.getItem(TEMPLATE_STORAGE_KEY));
-  return templates.some((t) => t.id === remembered) ? remembered : (templates[0]?.id ?? null);
-}
-
 // ai: claude-opus-5-5 | 2026-10-14
 /**
  * Walks the "want to contact" list one person at a time: prepares a LinkedIn
@@ -64,11 +59,16 @@ function rememberedTemplateId(templates: OutreachTemplate[]): number | null {
  * the browser extension pastes it into that contact's LinkedIn message box,
  * then logs it as sent once the user confirms they pressed Send on LinkedIn.
  */
-export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOutreachLogged }: OutreachQueueProps) {
+export default function OutreachQueue({
+  contacts,
+  targetIds,
+  onClearTarget,
+  onOutreachLogged,
+  onManageTemplates,
+}: OutreachQueueProps) {
   // ai: claude-opus-5-5 | 2026-10-21 -- named templates replace the single saved one
   const [templates, setTemplates] = useState<OutreachTemplate[] | null>(null); // null until loaded
   const [templateId, setTemplateId] = useState<number | null>(null);
-  const [showTemplates, setShowTemplates] = useState(false);
   const [skippedIds, setSkippedIds] = useState<Set<number>>(() => new Set());
   const [draft, setDraft] = useState("");
   const [draftEdited, setDraftEdited] = useState(false);
@@ -112,7 +112,6 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
         if (cancelled) return;
         setTemplates(data.templates);
         setTemplateId(rememberedTemplateId(data.templates));
-        if (data.templates.length === 0) setShowTemplates(true);
       })
       .catch((e) => {
         if (!cancelled) setStatus(`Could not load your message templates: ${e instanceof Error ? e.message : String(e)}`);
@@ -194,39 +193,12 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
     await loadDraft(templateId, useAi);
   };
 
-  // ai: claude-opus-5-5 | 2026-10-21
-  const selectTemplate = (nextId: number | null) => {
-    setTemplateId(nextId);
-    if (nextId !== null) localStorage.setItem(TEMPLATE_STORAGE_KEY, String(nextId));
-  };
-
-  // ai: claude-opus-5-5 | 2026-10-21
+  // ai: claude-opus-5-5 | 2026-10-26 -- selectTemplate() folded in; it had no other caller once template editing moved to its own tab
   const chooseTemplate = async (nextId: number) => {
     if (draftEdited && !window.confirm("Replace your edited draft with this template?")) return;
-    selectTemplate(nextId);
+    setTemplateId(nextId);
+    rememberTemplateId(nextId);
     await loadDraft(nextId, false);
-  };
-
-  // ai: claude-opus-5-5 | 2026-10-21 -- an unedited draft follows changes to
-  // the template it came from.
-  const onTemplateSaved = async (saved: OutreachTemplate) => {
-    setTemplates((prev) => [...(prev ?? []).filter((t) => t.id !== saved.id), saved].sort(byTitle));
-    setStatus(`Saved the "${saved.title}" template.`);
-    if (templateId !== null && templateId !== saved.id) return;
-    selectTemplate(saved.id);
-    if (!draftEdited) await loadDraft(saved.id, false);
-  };
-
-  // ai: claude-opus-5-5 | 2026-10-21
-  const onTemplateDeleted = async (deletedId: number) => {
-    const remaining = (templates ?? []).filter((t) => t.id !== deletedId);
-    setTemplates(remaining);
-    if (templateId !== deletedId) return;
-    const nextId = remaining[0]?.id ?? null;
-    selectTemplate(nextId);
-    if (draftEdited) return;
-    if (nextId === null) setDraft("");
-    else await loadDraft(nextId, false);
   };
 
   const openInLinkedIn = async () => {
@@ -313,25 +285,7 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
             Back to full queue
           </button>
         )}
-        {/* ai: claude-opus-5-5 | 2026-10-21 */}
-        <button
-          className="btn-secondary btn-sm"
-          disabled={!templatesLoaded}
-          onClick={() => setShowTemplates((open) => !open)}
-        >
-          {showTemplates ? "Hide templates" : "Edit templates"}
-        </button>
       </div>
-
-      {/* ai: claude-opus-5-5 | 2026-10-21 */}
-      {showTemplates && templates !== null && (
-        <OutreachTemplateManager
-          templates={templates}
-          initialId={templateId}
-          onSaved={onTemplateSaved}
-          onDeleted={onTemplateDeleted}
-        />
-      )}
 
       {current && (
         <div style={{ marginTop: "14px" }}>
@@ -373,7 +327,17 @@ export default function OutreachQueue({ contacts, targetIds, onClearTarget, onOu
               </select>
             ) : (
               <span style={mutedText}>
-                {templates === null ? "Loading…" : "None yet. Create one under \"Edit templates\"."}
+                {/* ai: claude-opus-5-5 | 2026-10-26 */}
+                {templates === null ? (
+                  "Loading…"
+                ) : (
+                  <>
+                    None yet.{" "}
+                    <button className="btn-secondary btn-xs" onClick={onManageTemplates}>
+                      Create a template
+                    </button>
+                  </>
+                )}
               </span>
             )}
           </div>
