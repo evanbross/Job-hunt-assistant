@@ -94,7 +94,11 @@ export default function OutreachQueue({
     return targetIds === null ? ready.sort(queueOrder) : ready;
   }, [pending, skippedIds, sentIds, targetIds]);
   const missingProfileCount = pending.filter((c) => !safeHttpUrl(c.profile_url)).length;
-  const current = queue[0] ?? null;
+  // ai: claude-opus-5-5 | 2026-10-26 -- the contact picked from the "Up next"
+  // list, if any; falls back to the head of the queue once they leave it.
+  const [jumpedToId, setJumpedToId] = useState<number | null>(null);
+  const current = queue.find((c) => c.id === jumpedToId) ?? queue[0] ?? null;
+  const upNext = queue.filter((c) => c !== current);
   const currentId = current?.id ?? null;
   const profileUrl = safeHttpUrl(current?.profile_url);
 
@@ -241,6 +245,7 @@ export default function OutreachQueue({
       const res = await sendJson(`/api/contacts/${current.id}/outreach`, "POST", { channel: "linkedin" });
       if (!res.ok) throw new Error(await responseErrorText(res));
       setSentIds((prev) => new Set(prev).add(current.id));
+      setJumpedToId(null); // ai: claude-opus-5-5 | 2026-10-26 -- back to queue order
       setStatus(`Logged your message to ${current.full_name}.`);
       await onOutreachLogged();
     } catch (e) {
@@ -253,7 +258,17 @@ export default function OutreachQueue({
   const skip = () => {
     if (!current) return;
     setSkippedIds((prev) => new Set(prev).add(current.id));
+    setJumpedToId(null); // ai: claude-opus-5-5 | 2026-10-26 -- back to queue order
     setStatus(`Skipped ${current.full_name} for now.`);
+  };
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  // An unstaged draft only lives in this component, so moving to someone else
+  // would lose it; ask first, like the template picker does.
+  const jumpTo = (next: Contact) => {
+    if (draftEdited && current && !window.confirm(`Discard your edited draft to ${current.full_name}?`)) return;
+    setJumpedToId(next.id);
+    setStatus("");
   };
 
   return (
@@ -397,9 +412,58 @@ export default function OutreachQueue({
       )}
 
       {status && <div style={{ ...mutedText, marginTop: "10px" }}>{status}</div>}
+
+      {/* ai: claude-opus-5-5 | 2026-10-26 -- everyone else still to go, so the whole queue is visible */}
+      {upNext.length > 0 && (
+        <div style={{ marginTop: "16px" }}>
+          <div style={{ fontWeight: 600, marginBottom: "6px" }}>Up next ({upNext.length.toLocaleString()})</div>
+          <ul aria-label="Up next" style={upNextList}>
+            {upNext.map((c, i) => (
+              <li key={c.id} style={i === 0 ? { ...upNextRow, borderTop: "none" } : upNextRow}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ fontWeight: 600 }}>{c.full_name}</span>
+                  <span style={{ ...mutedText, marginLeft: "8px" }}>
+                    {[c.position, c.company_raw].filter(Boolean).join(" at ") || "No title or company"}
+                  </span>
+                </div>
+                <span style={mutedText} title="Weighted outreach priority">
+                  {c.outreach_score?.toFixed(1) ?? "—"}
+                </span>
+                <button
+                  className="btn-secondary btn-xs"
+                  disabled={busy}
+                  onClick={() => jumpTo(c)}
+                  aria-label={`Message ${c.full_name} now`}
+                >
+                  Message now
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
+
+// ai: claude-opus-5-5 | 2026-10-26
+const upNextList: CSSProperties = {
+  listStyle: "none",
+  margin: 0,
+  padding: 0,
+  maxHeight: "360px",
+  overflowY: "auto",
+  border: "1px solid var(--border)",
+  borderRadius: "6px",
+};
+
+const upNextRow: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "10px",
+  padding: "6px 10px",
+  borderTop: "1px solid var(--border)",
+};
 
 const headerRow: CSSProperties = {
   display: "flex",

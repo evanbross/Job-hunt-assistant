@@ -86,7 +86,8 @@ describe("OutreachQueue picked contacts", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "I sent it" }));
 
-    await waitFor(() => expect(screen.getByText("Dee Undecided")).toBeInTheDocument());
+    // ai: claude-opus-5-5 | 2026-10-26 -- Dee was already listed under "Up next"; check she's now the one being messaged
+    await waitFor(() => expect(screen.getByLabelText("Message to Dee Undecided")).toBeInTheDocument());
     expect(screen.queryByText("Ben Followup")).not.toBeInTheDocument();
     expect(onOutreachLogged).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledWith(
@@ -120,6 +121,76 @@ describe("OutreachQueue picked contacts", () => {
     expect(screen.getByText("LinkedIn outreach queue")).toBeInTheDocument();
     expect(screen.getByText("Ada Default")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to full queue" })).not.toBeInTheDocument();
+  });
+});
+
+// ai: claude-opus-5-5 | 2026-10-26
+describe("OutreachQueue up next list", () => {
+  const QUEUED: Contact[] = [
+    contact({ id: 11, full_name: "Ann Top", interested: true, outreach_score: 9 }),
+    contact({ id: 12, full_name: "Bo Middle", interested: true, outreach_score: 5, position: "Recruiter", company_raw: "Initech" }),
+    contact({ id: 13, full_name: "Cal Low", interested: true, outreach_score: 2 }),
+  ];
+
+  beforeEach(() => {
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/outreach-templates") return Promise.resolve(jsonResponse({ templates: [TEMPLATE] }));
+        if (url.endsWith("/outreach-draft/7")) return Promise.resolve(jsonResponse({ draft: "Hi there" }));
+        return Promise.reject(new Error(`unexpected fetch ${url}`));
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const renderQueue = () =>
+    render(
+      <OutreachQueue contacts={QUEUED} targetIds={null} onClearTarget={() => {}} onOutreachLogged={() => Promise.resolve()} onManageTemplates={() => {}} />,
+    );
+
+  it("lists everyone after the current contact, in queue order", () => {
+    renderQueue();
+
+    expect(screen.getByText("3 to go, highest priority first.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Message to Ann Top")).toBeInTheDocument();
+    expect(screen.getByText("Up next (2)")).toBeInTheDocument();
+    const rows = screen.getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining("Bo MiddleRecruiter at Initech5.0"),
+      expect.stringContaining("Cal Low"),
+    ]);
+  });
+
+  it("messages a listed contact now, then returns to queue order once they're skipped", async () => {
+    renderQueue();
+
+    fireEvent.click(screen.getByRole("button", { name: "Message Cal Low now" }));
+    expect(screen.getByLabelText("Message to Cal Low")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").map((r) => r.textContent)).toEqual([
+      expect.stringContaining("Ann Top"),
+      expect.stringContaining("Bo Middle"),
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip for now" }));
+    expect(screen.getByLabelText("Message to Ann Top")).toBeInTheDocument();
+  });
+
+  it("asks before leaving an edited draft for another contact", async () => {
+    renderQueue();
+    const draft = screen.getByLabelText("Message to Ann Top");
+    await waitFor(() => expect(draft).toHaveValue("Hi there"));
+    fireEvent.change(draft, { target: { value: "My own words" } });
+
+    vi.mocked(window.confirm).mockReturnValueOnce(false);
+    fireEvent.click(screen.getByRole("button", { name: "Message Bo Middle now" }));
+
+    expect(window.confirm).toHaveBeenCalledWith("Discard your edited draft to Ann Top?");
+    expect(screen.getByLabelText("Message to Ann Top")).toHaveValue("My own words");
   });
 });
 

@@ -408,16 +408,18 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
   // ai: claude-opus-5-5 | 2026-10-26
   // The tab bar is the only way out of the Templates tab (the other setView
   // callers live in the Contacts, Outreach and Titles tabs).
-  const switchView = (next: View) => {
+  // ai: claude-opus-5-5 | 2026-10-26 -- returns whether the switch happened
+  const switchView = (next: View): boolean => {
     if (
       view === "templates" &&
       next !== "templates" &&
       templatesDirty &&
       !window.confirm(DISCARD_TEMPLATE_CHANGES_PROMPT)
     ) {
-      return;
+      return false;
     }
     setView(next);
+    return true;
   };
 
   // Selection in the table's current sort order, so the queue walks them in
@@ -430,6 +432,15 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
   const clearOutreachTarget = () => {
     setOutreachTargetIds(null);
     setOutreachRunId((id) => id + 1);
+  };
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  // The tab's badge counts the full queue, so the tab always opens it; only
+  // the Message buttons open a picked-contacts run. Already on the full queue,
+  // it doesn't remount (which would forget this session's skips).
+  const openFullOutreachQueue = () => {
+    if (!switchView("outreach")) return;
+    if (outreachTargetIds !== null) clearOutreachTarget();
   };
 
   const bulkSetRecruiter = async (recruiterType: RecruiterType | null) => {
@@ -578,7 +589,7 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
           </button>
           <button
             className={view === "outreach" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
-            onClick={() => switchView("outreach")}
+            onClick={openFullOutreachQueue}
           >
             Outreach queue{outreachQueueCount > 0 ? ` (${outreachQueueCount})` : ""}
           </button>
