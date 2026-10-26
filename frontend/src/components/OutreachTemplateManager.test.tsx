@@ -9,7 +9,8 @@
 
 // ai: claude-opus-5-5 | 2026-10-26
 // Covers the Contacts section's Templates tab: it loads the templates itself,
-// opens on the one the outreach queue last used, and creates/edits/deletes.
+// opens on the one the outreach queue last used, lists them all, and
+// creates/edits/deletes.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import OutreachTemplateManager from "./OutreachTemplateManager.tsx";
@@ -68,7 +69,7 @@ describe("OutreachTemplateManager", () => {
     fireEvent.change(screen.getByLabelText("Template message"), { target: { value: "Hey {first_name}" } });
     fireEvent.click(screen.getByRole("button", { name: "Create template" }));
 
-    await waitFor(() => expect(screen.getByLabelText("Editing")).toHaveValue("9"));
+    await waitFor(() => expect(screen.getByRole("listitem", { current: true })).toHaveTextContent("Close coworkers"));
     expect(fetch).toHaveBeenCalledWith(
       "/api/outreach-templates",
       expect.objectContaining({
@@ -135,14 +136,77 @@ describe("OutreachTemplateManager", () => {
     expect(unloadAllowed()).toBe(true);
   });
 
-  it("deletes a template and opens the next one", async () => {
+  // ai: claude-opus-5-5 | 2026-10-26
+  it("lists every template with a preview of its message", async () => {
+    render(<OutreachTemplateManager onDirtyChange={() => {}} />);
+
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining("CoworkersHi {first_name}"),
+      expect.stringContaining("RecruitersHello"),
+    ]);
+    expect(screen.getByRole("listitem", { current: true })).toHaveTextContent("Coworkers");
+  });
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  it("opens a listed template for editing, asking first when there are unsaved changes", async () => {
+    render(<OutreachTemplateManager onDirtyChange={() => {}} />);
+
+    const message = await screen.findByLabelText("Template message");
+    await waitFor(() => expect(message).toHaveValue("Hi {first_name}"));
+    fireEvent.change(message, { target: { value: "edited" } });
+
+    vi.mocked(window.confirm).mockReturnValueOnce(false);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Recruiters" }));
+    expect(window.confirm).toHaveBeenCalledWith("Discard your unsaved changes to this template?");
+    expect(message).toHaveValue("edited");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Recruiters" }));
+    expect(screen.getByLabelText("Template name")).toHaveValue("Recruiters");
+    expect(screen.getByLabelText("Template message")).toHaveValue("Hello");
+  });
+
+  // ai: claude-opus-5-5 | 2026-10-26 -- Delete now lives on each list row
+  it("deletes the template being edited and opens the next one", async () => {
     render(<OutreachTemplateManager onDirtyChange={() => {}} />);
 
     await waitFor(() => expect(screen.getByLabelText("Template name")).toHaveValue("Coworkers"));
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete Coworkers" }));
 
     await waitFor(() => expect(screen.getByLabelText("Template name")).toHaveValue("Recruiters"));
+    expect(window.confirm).toHaveBeenCalledWith('Delete the "Coworkers" template?');
     expect(fetch).toHaveBeenCalledWith("/api/outreach-templates/7", expect.objectContaining({ method: "DELETE" }));
-    expect(screen.queryByRole("option", { name: "Coworkers" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  it("deletes another template without touching unsaved edits in the editor", async () => {
+    render(<OutreachTemplateManager onDirtyChange={() => {}} />);
+
+    const message = await screen.findByLabelText("Template message");
+    await waitFor(() => expect(message).toHaveValue("Hi {first_name}"));
+    fireEvent.change(message, { target: { value: "edited" } });
+    fireEvent.click(screen.getByRole("button", { name: "Delete Recruiters" }));
+
+    await waitFor(() => expect(screen.getByText('Deleted the "Recruiters" template.')).toBeInTheDocument());
+    expect(fetch).toHaveBeenCalledWith("/api/outreach-templates/8", expect.objectContaining({ method: "DELETE" }));
+    expect(screen.getByLabelText("Template message")).toHaveValue("edited");
+  });
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  it("keeps a template when its deletion is not confirmed", async () => {
+    render(<OutreachTemplateManager onDirtyChange={() => {}} />);
+
+    const message = await screen.findByLabelText("Template message");
+    await waitFor(() => expect(message).toHaveValue("Hi {first_name}"));
+    fireEvent.change(message, { target: { value: "edited" } });
+    vi.mocked(window.confirm).mockReturnValueOnce(false);
+    fireEvent.click(screen.getByRole("button", { name: "Delete Coworkers" }));
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      'Delete the "Coworkers" template? Your unsaved changes to it will be lost too.',
+    );
+    expect(fetch).not.toHaveBeenCalledWith("/api/outreach-templates/7", expect.anything());
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
   });
 });

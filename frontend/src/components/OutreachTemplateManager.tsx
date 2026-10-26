@@ -95,9 +95,11 @@ export default function OutreachTemplateManager({ onDirtyChange }: OutreachTempl
     };
   }, []);
 
-  const switchTo = (value: string) => {
+  // ai: claude-opus-5-5 | 2026-10-26 -- driven by the list's Edit buttons (was a dropdown)
+  const switchTo = (next: OutreachTemplate | null) => {
+    if ((next?.id ?? NEW_TEMPLATE) === editingId) return;
     if (dirty && !window.confirm(DISCARD_TEMPLATE_CHANGES_PROMPT)) return;
-    open(value === NEW_TEMPLATE ? null : ((templates ?? []).find((t) => t.id === Number(value)) ?? null));
+    open(next);
   };
 
   const save = async () => {
@@ -119,16 +121,20 @@ export default function OutreachTemplateManager({ onDirtyChange }: OutreachTempl
     }
   };
 
-  const remove = async () => {
-    if (!saved || !window.confirm(`Delete the "${saved.title}" template?`)) return;
+  // ai: claude-opus-5-5 | 2026-10-26 -- deletes any listed template, not just the one being edited
+  const remove = async (target: OutreachTemplate) => {
+    const editingTarget = target.id === editingId;
+    const lostEdits = editingTarget && dirty ? " Your unsaved changes to it will be lost too." : "";
+    if (!window.confirm(`Delete the "${target.title}" template?${lostEdits}`)) return;
     setBusy(true);
     try {
-      const res = await sendJson(`/api/outreach-templates/${saved.id}`, "DELETE");
+      const res = await sendJson(`/api/outreach-templates/${target.id}`, "DELETE");
       if (!res.ok) throw new Error(await responseErrorText(res));
-      const remaining = (templates ?? []).filter((t) => t.id !== saved.id);
+      const remaining = (templates ?? []).filter((t) => t.id !== target.id);
       setTemplates(remaining);
-      open(remaining[0] ?? null);
-      setStatus(`Deleted the "${saved.title}" template.`);
+      // Deleting some other template leaves the editor (and any edits in it) alone.
+      if (editingTarget) open(remaining[0] ?? null);
+      setStatus(`Deleted the "${target.title}" template.`);
     } catch (e) {
       window.alert(`Could not delete the template: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -145,23 +151,44 @@ export default function OutreachTemplateManager({ onDirtyChange }: OutreachTempl
       <div style={{ ...mutedText, marginBottom: "10px" }}>
         The outreach queue starts each LinkedIn message from one of these.
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-        <label style={mutedText} htmlFor="outreach-template-editing">
-          Editing
-        </label>
-        <select
-          id="outreach-template-editing"
-          value={String(editingId)}
-          disabled={busy}
-          onChange={(e) => switchTo(e.target.value)}
-        >
-          {templates.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.title}
-            </option>
-          ))}
-          <option value={NEW_TEMPLATE}>+ New template</option>
-        </select>
+      {/* ai: claude-opus-5-5 | 2026-10-26 -- every template listed with its own Edit/Delete (was an "Editing" dropdown) */}
+      {templates.length === 0 ? (
+        <div style={{ ...mutedText, marginBottom: "10px" }}>No templates yet. Create your first one below.</div>
+      ) : (
+        <ul aria-label="Message templates" style={templateList}>
+          {templates.map((t) => {
+            const current = t.id === editingId;
+            return (
+              <li key={t.id} aria-current={current ? "true" : undefined} style={current ? currentTemplateRow : templateRow}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600 }}>{t.title}</div>
+                  <div style={{ ...mutedText, ...singleLine }} title={t.body}>
+                    {t.body}
+                  </div>
+                </div>
+                {current ? (
+                  <span className="badge badge-accent">Editing</span>
+                ) : (
+                  <button className="btn-secondary btn-sm" disabled={busy} onClick={() => switchTo(t)} aria-label={`Edit ${t.title}`}>
+                    Edit
+                  </button>
+                )}
+                <button className="btn-danger btn-sm" disabled={busy} onClick={() => remove(t)} aria-label={`Delete ${t.title}`}>
+                  Delete
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "12px" }}>
+        <div style={{ fontWeight: 600 }}>{saved ? `Editing "${saved.title}"` : "New template"}</div>
+        <span style={{ flex: 1 }} />
+        {saved && (
+          <button className="btn-secondary btn-sm" disabled={busy} onClick={() => switchTo(null)}>
+            + New template
+          </button>
+        )}
       </div>
       <input
         type="text"
@@ -189,12 +216,6 @@ export default function OutreachTemplateManager({ onDirtyChange }: OutreachTempl
         <button className="btn-secondary btn-sm" disabled={busy || !dirty} onClick={() => open(saved)}>
           Revert
         </button>
-        <span style={{ flex: 1 }} />
-        {saved && (
-          <button className="btn-danger btn-sm" disabled={busy} onClick={remove}>
-            Delete
-          </button>
-        )}
       </div>
       {status && <div style={{ ...mutedText, marginTop: "10px" }}>{status}</div>}
     </div>
@@ -204,4 +225,34 @@ export default function OutreachTemplateManager({ onDirtyChange }: OutreachTempl
 const mutedText: CSSProperties = {
   color: "var(--text-muted)",
   fontSize: "12px",
+};
+
+// ai: claude-opus-5-5 | 2026-10-26
+const templateList: CSSProperties = {
+  listStyle: "none",
+  margin: 0,
+  padding: 0,
+  border: "1px solid var(--border)",
+  borderBottom: "none", // each row draws its own bottom border
+  borderRadius: "6px",
+  overflow: "hidden",
+};
+
+const templateRow: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  padding: "8px 10px",
+  borderBottom: "1px solid var(--border)",
+};
+
+const currentTemplateRow: CSSProperties = {
+  ...templateRow,
+  background: "var(--accent-light)",
+};
+
+const singleLine: CSSProperties = {
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
 };
