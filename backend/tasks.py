@@ -53,12 +53,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
 
+from celery.signals import task_postrun
 from googleapiclient.errors import HttpError
 
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
 from backend.db import DuplicateJobUrlError
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
+from backend.import_status_events import get_import_status_events
 from backend.scanning.career_site_scanner import (
     CareerSiteScanner,
     is_job_board_url,
@@ -340,6 +342,14 @@ def _find_duplicate_original(
     return None
 
 
+# ai: claude-opus-5-5 | 2026-10-24
+def _report_import_progress(task: Any, user_id: int, meta: dict[str, Any]) -> None:
+    """Record an import batch's progress where /api/import/status reads it, then
+    tell the user's open pages to re-read it (backend/import_status_events.py)."""
+    task.update_state(state="PROGRESS", meta=meta)
+    get_import_status_events().publish(user_id)
+
+
 @celery_app.task(bind=True)
 def run_import_task(
     self,
@@ -370,9 +380,10 @@ def run_import_task(
         total,
         f"  page={_page_ref}" if _page_ref else "",
     )
-    self.update_state(
-        state="PROGRESS",
-        meta={
+    _report_import_progress(
+        self,
+        user_id,
+        {
             "phase": "filtering",
             "progress": 0,
             "message": f"Preparing {total} filtered job{'s' if total != 1 else ''} for matching…",
@@ -464,9 +475,10 @@ def run_import_task(
     # held during this phase.
     prefetched_jd: dict[str, dict | None] = {}
     if urls_needing_fetch:
-        self.update_state(
-            state="PROGRESS",
-            meta={
+        _report_import_progress(
+            self,
+            user_id,
+            {
                 "phase": "fetching",
                 "progress": 0,
                 "message": (
@@ -510,9 +522,10 @@ def run_import_task(
             platform = str(url_row.get("platform") or "")
             incoming_text = str(url_row.get("listing_text") or "").strip()
 
-            self.update_state(
-                state="PROGRESS",
-                meta={
+            _report_import_progress(
+                self,
+                user_id,
+                {
                     "phase": "filtering",
                     "progress": round((i / total) * 100) if total else 0,
                     "message": f"Filtering job {i + 1} of {total} — {platform}…",
@@ -678,9 +691,10 @@ def run_import_task(
                 continue
 
             try:
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
+                _report_import_progress(
+                    self,
+                    user_id,
+                    {
                         "phase": "matching",
                         "progress": round(((i + 0.5) / total) * 100) if total else 0,
                         "message": f"Matching job {i + 1} of {total} against resume and duplicate history…",
@@ -841,6 +855,18 @@ def run_import_task(
             "failures": failures,
             "capture_source": capture_source,
         }
+
+
+# ai: claude-opus-5-5 | 2026-10-24
+@task_postrun.connect
+def _announce_import_batch_finished(sender: Any = None, args: tuple | None = None, **_kwargs: Any) -> None:
+    """Tell the user's open pages an import batch finished. task_postrun fires
+    after Celery has stored the batch's SUCCESS or FAILURE, so a page re-reading
+    /api/import/status right away sees it -- a publish from inside the task
+    could arrive before that state exists."""
+    if getattr(sender, "name", None) == run_import_task.name and args:
+        get_import_status_events().publish(args[0])
+
 
 
 # ai: claude-sonnet-5 | 2026-08-23 — threaded user_id through to career_sites_repo.update

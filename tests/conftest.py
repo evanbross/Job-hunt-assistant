@@ -56,6 +56,10 @@ os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026"
 
 import config  # noqa: E402
 from backend.db import init_db  # noqa: E402
+from backend.import_status_events import (  # noqa: E402
+    MemoryImportStatusEvents,
+    set_import_status_events,
+)
 from backend.security.rate_limiter import RateLimiter, set_rate_limiter  # noqa: E402
 from backend.security.task_ownership import (  # noqa: E402
     MemoryOwnerStore,
@@ -176,6 +180,31 @@ def isolated_task_ownership() -> Iterator[TaskOwnership]:
     set_task_ownership(ownership)
     yield ownership
     set_task_ownership(None)
+
+
+# ai: claude-opus-5-5 | 2026-10-24
+class RecordingImportStatusEvents(MemoryImportStatusEvents):
+    """In-memory import status signals that also remember who each was for."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.published: list[int] = []
+
+    def publish(self, user_id: int) -> None:
+        self.published.append(user_id)
+        super().publish(user_id)
+
+
+# ai: claude-opus-5-5 | 2026-10-24
+@pytest.fixture(autouse=True)
+def isolated_import_status_events() -> Iterator[RecordingImportStatusEvents]:
+    """Import status signals in memory, for the same reason as the rate limiter
+    above: otherwise every tracked import in a test would signal the running app's
+    open pages through the developer's real Redis."""
+    events = RecordingImportStatusEvents()
+    set_import_status_events(events)
+    yield events
+    set_import_status_events(None)
 
 
 # ai: claude-sonnet-5 | 2026-09-26

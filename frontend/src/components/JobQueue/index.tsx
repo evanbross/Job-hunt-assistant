@@ -36,6 +36,7 @@ import { emailIdForRescan, extractSender, extractSubjectWords } from "../../util
 import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../../utils/reqClosedScanStorage.ts";
 import { readStoredPref, writeStoredPref } from "../../utils/storedPreference.ts";
 import { runBatchRefreshFromUrls } from "../../utils/batchRefreshFromUrls.ts";
+import { useImportStatusChanges } from "../../hooks/useImportStatusChanges.ts";
 import { readStoredViewPref } from "./helpers.tsx";
 // ai: claude-opus-5-5 | 2026-10-23
 import LoadMoreSentinel from "./LoadMoreSentinel.tsx";
@@ -355,7 +356,10 @@ function JobQueueContent({
   const importRepairDismissedRef = useRef(false);
   const rescanImportPollRef = useRef<number | undefined>(undefined);
   const rescanImportDismissedRef = useRef(false);
-  const importPollRef = useRef<number | undefined>(undefined);
+  // ai: claude-opus-5-5 | 2026-10-24 — the import being watched, re-read on each
+  // import status signal (useImportStatusChanges below) instead of every 1.2s.
+  const [watchedImport, setWatchedImport] = useState<{ importId: string | null } | null>(null);
+  const [captureWatchActive, setCaptureWatchActive] = useState(false);
   // ai: claude-sonnet-4-6 | 2026-06-27
   // Tracks whether we are watching for a browser-capture-queue import to finish.
   // seenRunning: import was observed in the running state at least once.
@@ -462,7 +466,6 @@ function JobQueueContent({
     return () => {
       clearInterval(pollRef.current);
       clearInterval(boardPollRef.current);
-      clearInterval(importPollRef.current);
       clearInterval(reEvalPollRef.current);
       clearInterval(reqClosedPollRef.current);
       clearTimeout(reEvaluateResetTimeoutRef.current);
@@ -845,15 +848,15 @@ function JobQueueContent({
           previousScore: job.fit_score,
         });
         // ai: claude-sonnet-4-6 | 2026-06-27
-        // Start watching for the browser extension to capture and import the page.
-        // Poll every 5 s; when we see an import go running → done, refresh triage cards.
+        // Start watching for the browser extension to capture and import the page;
+        // when we see an import go running → done, refresh triage cards.
         stopBrowserCaptureWatch();
         captureWatchRef.current = {
           active: true,
           seenRunning: false,
           timeoutId: window.setTimeout(stopBrowserCaptureWatch, 300_000),
         };
-        importPollRef.current = window.setInterval(pollBrowserCaptureStatus, 5000);
+        setCaptureWatchActive(true);  // ai: claude-opus-5-5 | 2026-10-24 — was a 5s poll
         return;
       }
       // ai: claude-sonnet-4-6 | 2026-06-26
@@ -1227,7 +1230,7 @@ function JobQueueContent({
       const state: ImportStatus = await res.json();
       setImportState(state);
       if (!state.running) {
-        clearInterval(importPollRef.current);
+        setWatchedImport(null);  // ai: claude-opus-5-5 | 2026-10-24
         setImportSubmitting(false);
         if (state.result) setImportSummary(state.result);
                 // ai: claude-sonnet-4-6 | 2026-06-27
@@ -1236,19 +1239,19 @@ function JobQueueContent({
         reloadLists();
       }
     } catch {
-      clearInterval(importPollRef.current);
+      setWatchedImport(null);  // ai: claude-opus-5-5 | 2026-10-24
       setImportSubmitting(false);
     }
   };
 
   // ai: claude-sonnet-4-6 | 2026-06-27
-  // Polls import status after a triage job is queued for browser-extension capture.
+  // Watches import status after a triage job is queued for browser-extension capture.
   // The extension captures asynchronously (usually seconds via its WebSocket push,
   // up to 1 min via the polling fallback), so we cannot just check once.
-  // We keep polling until we see an import run AND finish, then refresh triage jobs.
+  // We keep watching until we see an import run AND finish, then refresh triage jobs.
   // Stops automatically after 5 minutes via the captureWatchRef.timeoutId fallback.
   const stopBrowserCaptureWatch = () => {
-    clearInterval(importPollRef.current);
+    setCaptureWatchActive(false);  // ai: claude-opus-5-5 | 2026-10-24
     clearTimeout(captureWatchRef.current.timeoutId ?? undefined);
     captureWatchRef.current = { active: false, seenRunning: false, timeoutId: null };
   };
@@ -1275,6 +1278,10 @@ function JobQueueContent({
       stopBrowserCaptureWatch();
     }
   };
+
+  // ai: claude-opus-5-5 | 2026-10-24
+  useImportStatusChanges(() => pollImportStatus(watchedImport?.importId), watchedImport !== null);
+  useImportStatusChanges(pollBrowserCaptureStatus, captureWatchActive);
 
   const anyScanRunning = scanning || rescanAllRunning;
   const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning || importRepairRunning || rescanImportRunning;
@@ -1411,7 +1418,7 @@ function JobQueueContent({
       window.alert("Force reset failed: " + (e instanceof Error ? e.message : String(e)));
       return;
     }
-    clearInterval(importPollRef.current);
+    setWatchedImport(null);  // ai: claude-opus-5-5 | 2026-10-24
     setImportSubmitting(false);
     setImportState(null);
   };
@@ -1494,10 +1501,9 @@ function JobQueueContent({
         // ai: claude-sonnet-5 | 2026-08-12
         // Background job started — poll for progress, scoped to this import_id
         // so it stays accurate even if another import starts concurrently.
-        const importId = data.import_id;
-        clearInterval(importPollRef.current);
+        const importId = data.import_id ?? null;
+        setWatchedImport({ importId });  // ai: claude-opus-5-5 | 2026-10-24 — re-read on each signal, not every 1.2s
         pollImportStatus(importId);
-        importPollRef.current = window.setInterval(() => pollImportStatus(importId), 1200);
       } else {
         // Synchronous result (e.g. no URLs found)
         setImportSummary(data as ImportSummary);

@@ -26,10 +26,11 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-07
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import LoginPage from "./components/LoginPage.tsx";
 import { apiFetch, UNAUTHENTICATED_EVENT } from "./utils/apiClient.ts";
+import { useImportStatusChanges } from "./hooks/useImportStatusChanges.ts";
 import JobQueue from "./components/JobQueue/index.tsx";
 import type { ViewMode } from "./components/JobQueue/index.tsx";
 import GoogleConnectionMenu from "./components/GoogleConnectionMenu.tsx";
@@ -330,40 +331,28 @@ export default function App() {
     }
   };
 
-  // ai: claude-opus-5-5 | 2026-10-23 — setTimeout chain instead of
-  // setInterval: the next poll is only scheduled once the previous response
-  // lands. With setInterval, a status call that took longer than 1.2s
-  // (measured: ~21s during a running import) started a new request every
-  // tick regardless, so they piled up and starved every other request on the
-  // page of the browser's per-host connections.
-  useEffect(() => {
-    let cancelled = false;
-    let timerId: ReturnType<typeof setTimeout> | undefined;
-    const pollListenerImportStatus = async () => {
-      try {
-        const res = await fetch("/api/import/status");
-        const data: ImportStatus = await res.json();
-        if (cancelled) return;
-        if (
-          data.trigger === "listener"
-          && (data.running || data.result || data.phase === "error")
-        ) {
-          setListenerImportState(data);
-        }
-      } catch {
-        /* no-op */
+  // ai: claude-opus-5-5 | 2026-10-24 — read once, then again only when the
+  // server signals a change (useImportStatusChanges), instead of polling every
+  // 1.2s around the clock; only while logged in, since the status is per user.
+  const refreshListenerImportStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/import/status");
+      if (!res.ok) return;
+      const data: ImportStatus = await res.json();
+      if (
+        data.trigger === "listener"
+        && (data.running || data.result || data.phase === "error")
+      ) {
+        setListenerImportState(data);
       }
-      if (cancelled) return;
-      clearTimeout(timerId);
-      timerId = setTimeout(pollListenerImportStatus, 1200);
-    };
-
-    pollListenerImportStatus();
-    return () => {
-      cancelled = true;
-      clearTimeout(timerId);
-    };
+    } catch {
+      /* keep the last state; the next signal or fallback re-reads it */
+    }
   }, []);
+  useEffect(() => {
+    if (appAuthenticated) refreshListenerImportStatus();
+  }, [appAuthenticated, refreshListenerImportStatus]);
+  useImportStatusChanges(refreshListenerImportStatus, appAuthenticated === true);
 
   // ai: claude-fable-5 | 2026-07-14 — backend/database health poll. Uses a
   // setTimeout chain (not setInterval) so a slow probe while the DB is timing
