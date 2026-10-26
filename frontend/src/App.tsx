@@ -240,16 +240,37 @@ export default function App() {
   const [showRecentChanges, setShowRecentChanges] = useState(false);
   const [showToptalPitch, setShowToptalPitch] = useState(false);
   const [backendHealth, setBackendHealth] = useState<BackendHealth>("ok");
+  // ai: claude-opus-5-5 | 2026-10-26
+  // A panel with unsaved edits (today only Contacts' Templates tab) -- leaving
+  // its section or logging out asks first, since either unmounts the editor.
+  const [unsavedChanges, setUnsavedChanges] = useState(false);
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  const confirmDiscardUnsaved = () =>
+    !unsavedChanges || window.confirm("You have unsaved changes. Leave this page and discard them?");
+
+  // ai: claude-opus-5-5 | 2026-10-26 -- one place remembers the section
+  // across reloads (was a localStorage.setItem beside every setActiveTab).
+  useEffect(() => {
+    localStorage.setItem("activeTab", activeTab);
+  }, [activeTab]);
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  // Every user-initiated section switch goes through here. Returns false when
+  // the user chose to stay, so callers skip their side effects.
+  const switchTab = (tabKey: string): boolean => {
+    if (tabKey !== activeTab && !confirmDiscardUnsaved()) return false;
+    setActiveTab(tabKey);
+    return true;
+  };
 
   const navigateToEmails = (emailId: string) => {
+    if (!switchTab(EMAILS_TAB_KEY)) return;
     setEmailFocusId(emailId);
-    setActiveTab(EMAILS_TAB_KEY);
-    localStorage.setItem("activeTab", EMAILS_TAB_KEY);
   };
 
   const navigateToHistory = () => {
-    setActiveTab(HISTORY_TAB_KEY);
-    localStorage.setItem("activeTab", HISTORY_TAB_KEY);
+    switchTab(HISTORY_TAB_KEY);
   };
 
   const navigateToJobCard = (jobId: number | null, status: string) => {
@@ -257,6 +278,7 @@ export default function App() {
       window.alert("That job is not currently on the Job Queue or Triage page.");
       return;
     }
+    if (!switchTab("queue")) return;
     const isTriageStatus = status === "triage" || status === "possible_duplicate";
     setFocusedJobCard({
       id: Number(jobId),
@@ -264,8 +286,6 @@ export default function App() {
       requestedViewMode: isTriageStatus ? "both" : undefined,
       requestedAt: Date.now(),
     });
-    setActiveTab("queue");
-    localStorage.setItem("activeTab", "queue");
   };
 
   useEffect(() => {
@@ -324,6 +344,7 @@ export default function App() {
   }, []);
 
   const handleLogout = async () => {
+    if (!confirmDiscardUnsaved()) return; // ai: claude-opus-5-5 | 2026-10-26
     try {
       await apiFetch("/api/logout", { method: "POST" });
     } finally {
@@ -416,10 +437,10 @@ export default function App() {
       const res = await fetch("/api/setup/status");
       const data: SetupStatusResponse = await res.json();
       setSetupComplete(data.complete);
+      // Unguarded: runs at startup or from Settings, where nothing can be unsaved.
       if (!data.complete) {
         setSettingsInitialSection("setup");
-        setActiveTab("settings");
-        localStorage.setItem("activeTab", "settings");
+        setActiveTab("settings"); // ai: claude-opus-5-5 | 2026-10-26
       }
     } catch {
       /* don't block app startup if setup endpoint is unreachable */
@@ -429,8 +450,7 @@ export default function App() {
   const handleSetupComplete = async () => {
     await fetchSetupStatus();
     setSettingsInitialSection(undefined);
-    setActiveTab("queue");
-    localStorage.setItem("activeTab", "queue");
+    switchTab("queue");
   };
 
   const startGoogleAuth = async () => {
@@ -550,10 +570,7 @@ export default function App() {
               <button
                 key={tab.key}
                 style={styles.tab(activeTab === tab.key)}
-                onClick={() => {
-                  setActiveTab(tab.key);
-                  localStorage.setItem("activeTab", tab.key);
-                }}
+                onClick={() => switchTab(tab.key)}
               >
                 {tab.label}
               </button>
@@ -635,9 +652,7 @@ export default function App() {
               className="btn-secondary"
               style={{ flexShrink: 0, fontSize: "12px" }}
               onClick={() => {
-                setSettingsInitialSection("setup");
-                setActiveTab("settings");
-                localStorage.setItem("activeTab", "settings");
+                if (switchTab("settings")) setSettingsInitialSection("setup");
               }}
             >
               Open Setup Wizard
@@ -669,7 +684,7 @@ export default function App() {
             focusEmailId={emailFocusId}
           />
         )}
-        {activeTab === "contacts" && <ContactsPanel />}
+        {activeTab === "contacts" && <ContactsPanel onUnsavedChangesChange={setUnsavedChanges} />}
         {activeTab === "phrasebook" && <PhraseBookPanel />}
         {activeTab === "settings" && (
           <SettingsPanel initialSection={settingsInitialSection} onSetupComplete={handleSetupComplete} />

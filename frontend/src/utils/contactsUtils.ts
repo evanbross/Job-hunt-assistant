@@ -34,6 +34,10 @@ export const OUTREACH_PLACEHOLDER_HELP = "Placeholders: {first_name}, {full_name
 // The template last picked in the outreach queue, so a reload keeps using it.
 const TEMPLATE_STORAGE_KEY = "outreachTemplateId";
 
+// ai: claude-opus-5-5 | 2026-10-26 -- shared by the template editor's own
+// switcher and the Contacts tab bar, so both ask the same question.
+export const DISCARD_TEMPLATE_CHANGES_PROMPT = "Discard your unsaved changes to this template?";
+
 export function byTemplateTitle(a: OutreachTemplate, b: OutreachTemplate): number {
   return a.title.toLowerCase().localeCompare(b.title.toLowerCase()) || a.id - b.id;
 }

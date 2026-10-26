@@ -44,7 +44,7 @@ describe("ContactsPanel Templates tab", () => {
   });
 
   const openTemplatesTab = async () => {
-    render(<ContactsPanel />);
+    render(<ContactsPanel onUnsavedChangesChange={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Templates" }));
     const message = await screen.findByLabelText("Template message");
     await waitFor(() => expect(message).toHaveValue("Hi {first_name}"));

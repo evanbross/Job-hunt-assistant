@@ -16,7 +16,7 @@ import ContactsImport from "./ContactsImport.tsx";
 import OutreachQueue from "./OutreachQueue.tsx";
 import OutreachTemplateManager from "./OutreachTemplateManager.tsx";
 import TitlesReport from "./TitlesReport.tsx";
-import { contactsMatchKey, safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
+import { DISCARD_TEMPLATE_CHANGES_PROMPT, contactsMatchKey, safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
 import { formatLocalDate } from "../utils/dateTimeUtils.ts";
 import type { Contact, ContactsListResponse, OutreachChannel } from "../types/contacts.ts";
 import type { RecruiterType } from "../types/contacts.ts";
@@ -248,8 +248,14 @@ function matchesFilters(
 
 type ContactPatchFields = Partial<Pick<Contact, "email_address" | "notes" | "interested" | "recruiter_type">>;
 
+// ai: claude-opus-5-5 | 2026-10-26
+interface ContactsPanelProps {
+  /** Told whenever unsaved edits appear or go away (and false on unmount), so leaving the section can ask first. */
+  onUnsavedChangesChange: (unsaved: boolean) => void;
+}
+
 // ai: claude-sonnet-5 | 2026-09-25
-export default function ContactsPanel() {
+export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelProps) {
   const [view, setView] = useState<View>("contacts");
   const [titleFilter, setTitleFilter] = useState<string | null>(null); // normalized_title, set by TitlesReport's count link
   const [companyFilter, setCompanyFilter] = useState<string | null>(null);
@@ -280,6 +286,11 @@ export default function ContactsPanel() {
   // ai: claude-opus-5-5 | 2026-10-26
   // Unsaved edits in the Templates tab, so leaving it asks first.
   const [templatesDirty, setTemplatesDirty] = useState(false);
+  // ai: claude-opus-5-5 | 2026-10-26
+  useEffect(() => {
+    onUnsavedChangesChange(templatesDirty);
+  }, [templatesDirty, onUnsavedChangesChange]);
+  useEffect(() => () => onUnsavedChangesChange(false), [onUnsavedChangesChange]);
 
   const loadContacts = async () => {
     try {
@@ -402,7 +413,7 @@ export default function ContactsPanel() {
       view === "templates" &&
       next !== "templates" &&
       templatesDirty &&
-      !window.confirm("Discard your unsaved changes to this template?")
+      !window.confirm(DISCARD_TEMPLATE_CHANGES_PROMPT)
     ) {
       return;
     }

@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import {
+  DISCARD_TEMPLATE_CHANGES_PROMPT,
   MAX_OUTREACH_MESSAGE_LENGTH,
   MAX_OUTREACH_TEMPLATE_TITLE_LENGTH,
   OUTREACH_PLACEHOLDER_HELP,
@@ -95,7 +96,7 @@ export default function OutreachTemplateManager({ onDirtyChange }: OutreachTempl
   }, []);
 
   const switchTo = (value: string) => {
-    if (dirty && !window.confirm("Discard your unsaved changes to this template?")) return;
+    if (dirty && !window.confirm(DISCARD_TEMPLATE_CHANGES_PROMPT)) return;
     open(value === NEW_TEMPLATE ? null : ((templates ?? []).find((t) => t.id === Number(value)) ?? null));
   };
 
