@@ -117,10 +117,6 @@ from .repositories.contact_outreach import PostgresContactOutreachRepository
 from .repositories.contacts import PostgresContactRepository
 from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseRepository
 from .repositories.email_sources import PostgresEmailSourceRepository
-from .repositories.outreach_templates import (
-    DuplicateOutreachTemplateTitleError,
-    PostgresOutreachTemplateRepository,
-)
 from .repositories.email_subject_rules import PostgresEmailSubjectRuleRepository
 from .repositories.extension_tokens import PostgresExtensionTokenRepository
 from .repositories.google_tokens import PostgresGoogleTokenRepository
@@ -132,6 +128,10 @@ from .repositories.job_status_history import PostgresJobStatusHistoryRepository
 
 # ai: claude-sonnet-5 | 2026-08-12
 from .repositories.jobs import DuplicateJobUrlError, PostgresJobRepository
+from .repositories.outreach_templates import (
+    DuplicateOutreachTemplateTitleError,
+    PostgresOutreachTemplateRepository,
+)
 from .repositories.penalty_rules import PostgresPenaltyRuleRepository
 from .repositories.relevance_feedback import PostgresRelevanceFeedbackRepository
 from .repositories.resumes import PostgresResumeRepository

@@ -50,7 +50,6 @@ from pydantic import (
 )
 
 from backend.ai_provider import AIProviderError
-from backend.db import DuplicateOutreachTemplateTitleError
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.outreach_drafts import (
     MAX_OUTREACH_MESSAGE_LENGTH,
@@ -62,6 +61,7 @@ from backend.contacts.title_suggestion_service import (
     finish_title_suggestions,
     prepare_title_suggestions,
 )
+from backend.db import DuplicateOutreachTemplateTitleError
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     CandidateProfileMissingError,
