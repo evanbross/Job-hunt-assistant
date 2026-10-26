@@ -448,6 +448,10 @@ def test_the_owner_is_not_refused_on_the_same_routes(tenants: Tenants) -> None:
 _LIST_ROUTES_NOT_EXERCISED = frozenset({
     "/api/auth/status",  # talks to Google
     "/api/system/health",
+    # ai: claude-opus-5-5 | 2026-10-25
+    # An endless event stream carrying no data, so reading its body never
+    # returns; its per-user channel is covered in test_import_status_events.py.
+    "/api/import/events",
 })
 
 
