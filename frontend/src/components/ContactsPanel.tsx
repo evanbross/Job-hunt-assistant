@@ -18,6 +18,7 @@ import OutreachTemplateManager from "./OutreachTemplateManager.tsx";
 import TitlesReport from "./TitlesReport.tsx";
 import { DISCARD_TEMPLATE_CHANGES_PROMPT, contactsMatchKey, safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
 import { formatLocalDate } from "../utils/dateTimeUtils.ts";
+import { readStoredPref, writeStoredPref } from "../utils/storedPreference.ts";
 import type { Contact, ContactsListResponse, OutreachChannel } from "../types/contacts.ts";
 import type { RecruiterType } from "../types/contacts.ts";
 import type { ApplicationProfile } from "../types/applicationProfile.ts";
@@ -31,8 +32,9 @@ type View = "contacts" | "outreach" | "templates" | "companies" | "titles";
 // outreach now covers LinkedIn messages as well as emails.
 type OutreachFilter = "all" | "contacted" | "not_contacted" | "awaiting" | "replied";
 type RecruiterFilter = "all" | "recruiter" | "not_recruiter";
-// ai: claude-sonnet-5 | 2026-10-13
-type InterestedFilter = "all" | "yes" | "no" | "tbd";
+// ai: claude-opus-5-5 | 2026-10-26 -- was InterestedFilter ("all" or one of
+// these); the filter is now any combination of them.
+type InterestedChoice = "yes" | "no" | "tbd";
 type OutreachState = "none" | "awaiting" | "replied";
 type SortDir = "asc" | "desc";
 
@@ -44,16 +46,20 @@ const OUTREACH_FILTERS: { value: OutreachFilter; label: string }[] = [
   { value: "replied", label: "Replied" },
 ];
 
-// ai: claude-sonnet-5 | 2026-10-13
-// Mirrors the tri-state INTERESTED_OPTIONS below (yes/no/undecided), as a
-// filter dropdown instead of a single "interested only" checkbox so "No" and
-// "Undecided" contacts can each be isolated too.
-const INTERESTED_FILTERS: { value: InterestedFilter; label: string }[] = [
-  { value: "all", label: "Want to contact: all" },
-  { value: "yes", label: "Want to contact: Yes" },
-  { value: "no", label: "Want to contact: No" },
-  { value: "tbd", label: "Want to contact: Undecided" },
+// ai: claude-opus-5-5 | 2026-10-26 -- was a single-choice dropdown; now
+// multi-choice toggles so e.g. Yes + Undecided can be shown together.
+// Mirrors the tri-state INTERESTED_OPTIONS below (yes/no/undecided).
+const INTERESTED_CHOICES: { value: InterestedChoice; label: string }[] = [
+  { value: "yes", label: "Yes" },
+  { value: "no", label: "No" },
+  { value: "tbd", label: "Undecided" },
 ];
+
+function interestedChoice(contact: Contact): InterestedChoice {
+  if (contact.interested === true) return "yes";
+  if (contact.interested === false) return "no";
+  return "tbd";
+}
 
 const RECRUITER_FILTERS: { value: RecruiterFilter; label: string }[] = [
   { value: "all", label: "Recruiters and others" },
@@ -187,10 +193,84 @@ interface FilterState {
   search: string;
   outreachFilter: OutreachFilter;
   recruiterFilter: RecruiterFilter;
-  interestedFilter: InterestedFilter;
+  interestedFilter: InterestedChoice[]; // empty = no filter
   titleFilter: string | null;
   companyFilter: string | null;
   previousEmployers: string[];
+}
+
+// ai: claude-opus-5-5 | 2026-10-26
+// The contacts list's filters, kept across visits and reloads. Each value is
+// checked against its option list on the way back in, so a stale or
+// hand-edited entry falls back to "all" instead of an option that no longer exists.
+const FILTERS_STORAGE_KEY = "contactsFilters";
+
+type StoredFilters = Omit<FilterState, "previousEmployers">;
+
+const DEFAULT_FILTERS: StoredFilters = {
+  search: "",
+  outreachFilter: "all",
+  recruiterFilter: "all",
+  interestedFilter: [],
+  titleFilter: null,
+  companyFilter: null,
+};
+
+function knownOption<T extends string>(options: { value: T }[], value: unknown, fallback: T): T {
+  return options.find((option) => option.value === value)?.value ?? fallback;
+}
+
+// Known choices in INTERESTED_CHOICES' order, deduplicated. A bare string is
+// accepted too, so a value saved before this became multi-choice still loads.
+function knownInterestedChoices(value: unknown): InterestedChoice[] {
+  const saved: unknown[] = Array.isArray(value) ? value : [value];
+  return INTERESTED_CHOICES.map((option) => option.value).filter((choice) => saved.includes(choice));
+}
+
+// ai: claude-opus-5-5 | 2026-10-26
+// The table's sort, kept across visits like the filters but under its own key
+// so Clear filters leaves it alone.
+const SORT_STORAGE_KEY = "contactsSort";
+
+interface StoredSort {
+  sortKey: string;
+  sortDir: SortDir;
+}
+
+const DEFAULT_SORT: StoredSort = { sortKey: "outreach_score", sortDir: "desc" };
+
+function loadStoredSort(): StoredSort {
+  try {
+    const saved: unknown = JSON.parse(readStoredPref(SORT_STORAGE_KEY, "{}"));
+    if (!saved || typeof saved !== "object") return DEFAULT_SORT;
+    const { sortKey, sortDir } = saved as Record<string, unknown>;
+    if (!SORT_COLUMNS.some((column) => column.key === sortKey)) return DEFAULT_SORT;
+    if (sortDir !== "asc" && sortDir !== "desc") return DEFAULT_SORT;
+    return { sortKey: sortKey as string, sortDir };
+  } catch {
+    return DEFAULT_SORT;
+  }
+}
+
+function loadStoredFilters(): StoredFilters {
+  let saved: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(readStoredPref(FILTERS_STORAGE_KEY, "{}"));
+    if (parsed && typeof parsed === "object") saved = parsed as Record<string, unknown>;
+  } catch {
+    /* corrupt value: use the defaults */
+  }
+  const stringOrNull = (value: unknown) => (typeof value === "string" ? value : null);
+  return {
+    search: typeof saved.search === "string" ? saved.search : DEFAULT_FILTERS.search,
+    outreachFilter: knownOption(OUTREACH_FILTERS, saved.outreachFilter, DEFAULT_FILTERS.outreachFilter),
+    recruiterFilter: knownOption(RECRUITER_FILTERS, saved.recruiterFilter, DEFAULT_FILTERS.recruiterFilter),
+    interestedFilter: knownInterestedChoices(saved.interestedFilter),
+    // "" is a real title filter ("(no title)"), so only a non-string is dropped.
+    titleFilter: stringOrNull(saved.titleFilter),
+    // Checked against the Previous Employers list once it loads (see activeCompanyFilter).
+    companyFilter: stringOrNull(saved.companyFilter),
+  };
 }
 
 // ai: claude-sonnet-5 | 2026-09-25
@@ -198,10 +278,8 @@ function matchesFilters(
   contact: Contact,
   { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter, previousEmployers }: FilterState,
 ): boolean {
-  // ai: claude-sonnet-5 | 2026-10-13
-  if (interestedFilter === "yes" && contact.interested !== true) return false;
-  if (interestedFilter === "no" && contact.interested !== false) return false;
-  if (interestedFilter === "tbd" && contact.interested !== null) return false;
+  // ai: claude-opus-5-5 | 2026-10-26
+  if (interestedFilter.length > 0 && !interestedFilter.includes(interestedChoice(contact))) return false;
   if (titleFilter !== null && contact.normalized_title !== titleFilter) return false;
   // ai: claude-sonnet-5 | 2026-10-14 -- "former coworkers" filter, sourced
   // from the user's own Previous Employers list (Application Profile tab).
@@ -257,8 +335,10 @@ interface ContactsPanelProps {
 // ai: claude-sonnet-5 | 2026-09-25
 export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelProps) {
   const [view, setView] = useState<View>("contacts");
-  const [titleFilter, setTitleFilter] = useState<string | null>(null); // normalized_title, set by TitlesReport's count link
-  const [companyFilter, setCompanyFilter] = useState<string | null>(null);
+  // ai: claude-opus-5-5 | 2026-10-26 -- filters start from the last visit's
+  const [initialFilters] = useState(loadStoredFilters);
+  const [titleFilter, setTitleFilter] = useState<string | null>(initialFilters.titleFilter); // normalized_title, set by TitlesReport's count link
+  const [companyFilter, setCompanyFilter] = useState<string | null>(initialFilters.companyFilter);
   const [previousEmployers, setPreviousEmployers] = useState<string[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
@@ -266,17 +346,18 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
   const [showImport, setShowImport] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
-  const [search, setSearch] = useState("");
-  const [outreachFilter, setOutreachFilter] = useState<OutreachFilter>("all");
-  const [recruiterFilter, setRecruiterFilter] = useState<RecruiterFilter>("all");
-  const [interestedFilter, setInterestedFilter] = useState<InterestedFilter>("all");
+  const [search, setSearch] = useState(initialFilters.search);
+  const [outreachFilter, setOutreachFilter] = useState<OutreachFilter>(initialFilters.outreachFilter);
+  const [recruiterFilter, setRecruiterFilter] = useState<RecruiterFilter>(initialFilters.recruiterFilter);
+  const [interestedFilter, setInterestedFilter] = useState<InterestedChoice[]>(initialFilters.interestedFilter);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
   const [bulkPending, setBulkPending] = useState(false);
   const [bulkRecruiterType, setBulkRecruiterType] = useState<RecruiterType>("unrated");
-  // ai: gpt-5 | 2026-10-03
-  const [sortKey, setSortKey] = useState("outreach_score");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  // ai: claude-opus-5-5 | 2026-10-26 -- starts from the last visit's sort (default: Priority, high first)
+  const [initialSort] = useState(loadStoredSort);
+  const [sortKey, setSortKey] = useState(initialSort.sortKey);
+  const [sortDir, setSortDir] = useState<SortDir>(initialSort.sortDir);
   // ai: claude-opus-5-5 | 2026-10-21
   // Contacts picked via a row's or the selection's "Message" button (null =
   // the default outreach queue). outreachRunId remounts OutreachQueue on each
@@ -319,9 +400,59 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
       .catch(() => setPreviousEmployers([]));
   }, []);
 
+  // ai: claude-opus-5-5 | 2026-10-26
+  // A remembered employer only applies while it's still on the Previous
+  // Employers list -- otherwise its dropdown would show a different option
+  // (or be hidden entirely) while the stale value silently kept filtering.
+  // Derived rather than reset, so a failed profile load doesn't erase it.
+  const activeCompanyFilter =
+    companyFilter === ANY_FORMER_EMPLOYER
+      ? previousEmployers.length > 0
+        ? companyFilter
+        : null
+      : companyFilter !== null && previousEmployers.includes(companyFilter)
+        ? companyFilter
+        : null;
+
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
+  }, [search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, activeCompanyFilter]);
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  useEffect(() => {
+    const stored: StoredFilters = { search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter };
+    writeStoredPref(FILTERS_STORAGE_KEY, JSON.stringify(stored));
   }, [search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter]);
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  useEffect(() => {
+    const stored: StoredSort = { sortKey, sortDir };
+    writeStoredPref(SORT_STORAGE_KEY, JSON.stringify(stored));
+  }, [sortKey, sortDir]);
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  const hasActiveFilters =
+    search.trim() !== "" ||
+    outreachFilter !== DEFAULT_FILTERS.outreachFilter ||
+    recruiterFilter !== DEFAULT_FILTERS.recruiterFilter ||
+    interestedFilter.length > 0 ||
+    titleFilter !== DEFAULT_FILTERS.titleFilter ||
+    activeCompanyFilter !== DEFAULT_FILTERS.companyFilter;
+
+  const clearFilters = () => {
+    setSearch(DEFAULT_FILTERS.search);
+    setOutreachFilter(DEFAULT_FILTERS.outreachFilter);
+    setRecruiterFilter(DEFAULT_FILTERS.recruiterFilter);
+    setInterestedFilter(DEFAULT_FILTERS.interestedFilter);
+    setTitleFilter(DEFAULT_FILTERS.titleFilter);
+    setCompanyFilter(DEFAULT_FILTERS.companyFilter);
+  };
+
+  // ai: claude-opus-5-5 | 2026-10-26
+  const toggleInterestedChoice = (choice: InterestedChoice) =>
+    setInterestedFilter((prev) =>
+      knownInterestedChoices(prev.includes(choice) ? prev.filter((c) => c !== choice) : [...prev, choice]),
+    );
 
   const viewContactsForTitle = (normalizedTitle: string) => {
     setTitleFilter(normalizedTitle);
@@ -337,11 +468,11 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
           recruiterFilter,
           interestedFilter,
           titleFilter,
-          companyFilter,
+          companyFilter: activeCompanyFilter,
           previousEmployers,
         }),
       ),
-    [contacts, search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, companyFilter, previousEmployers],
+    [contacts, search, outreachFilter, recruiterFilter, interestedFilter, titleFilter, activeCompanyFilter, previousEmployers],
   );
 
   // ai: claude-opus-5-5 | 2026-10-14 -- same criteria as OutreachQueue's list, for the tab badge
@@ -686,25 +817,36 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
                     </option>
                   ))}
                 </select>
-                <select
-                  value={interestedFilter}
-                  onChange={(e) => setInterestedFilter(e.target.value as InterestedFilter)}
+                {/* ai: claude-opus-5-5 | 2026-10-26 -- multi-choice toggles (was a single-choice select) */}
+                <div
+                  role="group"
                   aria-label="Filter by want to contact"
-                  style={interestedFilter !== "all" ? filterPillActive : filterPill}
+                  title="Pick any combination; none picked shows everyone"
+                  style={choiceGroup}
                 >
-                  {INTERESTED_FILTERS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  <span>Want to contact:</span>
+                  {INTERESTED_CHOICES.map((option) => {
+                    const picked = interestedFilter.includes(option.value);
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        aria-pressed={picked}
+                        onClick={() => toggleInterestedChoice(option.value)}
+                        style={picked ? choicePillActive : choicePill}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
                 {previousEmployers.length > 0 && (
                   <select
-                    value={companyFilter ?? ""}
+                    value={activeCompanyFilter ?? ""}
                     onChange={(e) => setCompanyFilter(e.target.value || null)}
                     aria-label="Filter by former employer"
                     title="Show only contacts who worked at one of your previous employers (set in the Application Profile tab)"
-                    style={companyFilter !== null ? filterPillActive : filterPill}
+                    style={activeCompanyFilter !== null ? filterPillActive : filterPill}
                   >
                     {/* ai: claude-sonnet-5 | 2026-10-15 -- was "Former coworkers: any
                     company", which reads as an active filter but value="" actually
@@ -720,6 +862,10 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
                     ))}
                   </select>
                 )}
+                {/* ai: claude-opus-5-5 | 2026-10-26 -- also clears the title filter bar above */}
+                <button className="btn-secondary btn-sm" disabled={!hasActiveFilters} onClick={clearFilters}>
+                  Clear filters
+                </button>
               </div>
 
               <div style={{ color: "var(--text-muted)", fontSize: "12px", margin: "0 2px 8px" }}>
@@ -999,7 +1145,12 @@ const filterPill: CSSProperties = {
   fontSize: "12.5px",
   fontWeight: 500,
   borderRadius: "999px",
-  border: "1.5px solid var(--border)",
+  // ai: claude-opus-5-5 | 2026-10-26 -- longhand, not `border`: filterPillActive
+  // overrides borderColor, and React warns (and can drop the color) when a
+  // rerender mixes the shorthand with its longhand.
+  borderWidth: "1.5px",
+  borderStyle: "solid",
+  borderColor: "var(--border)",
   background: "var(--surface2)",
   color: "var(--text-muted)",
   cursor: "pointer",
@@ -1011,6 +1162,20 @@ const filterPillActive: CSSProperties = {
   background: "var(--accent-light)",
   color: "var(--accent)",
   fontWeight: 600,
+};
+
+// ai: claude-opus-5-5 | 2026-10-26
+// Toggle buttons for a multi-choice filter: filterPill without the right
+// padding a select's dropdown arrow needs.
+const choicePill: CSSProperties = { ...filterPill, padding: "6px 14px", fontFamily: "inherit" };
+const choicePillActive: CSSProperties = { ...filterPillActive, padding: "6px 14px", fontFamily: "inherit" };
+
+const choiceGroup: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "4px",
+  fontSize: "12.5px",
+  color: "var(--text-muted)",
 };
 
 const rowGrid: CSSProperties = {
