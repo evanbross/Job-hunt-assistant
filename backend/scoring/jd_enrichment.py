@@ -20,7 +20,7 @@ from backend.db import IJobRepository, IPenaltyRuleRepository, IResumeRepository
 from backend.db.job_columns import JobColumns
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.job_validator import SCORING_FAILED_WARNING, remove_import_warning
-from backend.utils.utils import ACTIVE_JOB_STATUSES
+from backend.utils.utils import ACTIVE_JOB_STATUSES, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -173,17 +173,23 @@ def enrich_job_description(
         logger.warning("Re-scoring failed for enriched job %d: %s", job_id, exc)
 
 
-def rescore_active_queue_jobs(user_id: int, repos: dict[str, object]) -> dict[str, int]:
-    """Re-score active queue jobs after candidate profile changes."""
-    jobs_repo: IJobRepository = repos["jobs"]  # type: ignore[assignment]
-    resume_repo: IResumeRepository = repos["resume"]  # type: ignore[assignment]
-    penalties_repo: IPenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
+# ai: claude-opus-5-5 | 2026-10-28 -- opens its own short-lived connections
+# instead of borrowing the caller's: every score() is an AI call, and holding
+# one pooled connection across all of them could exhaust the pool.
+def rescore_active_queue_jobs(user_id: int) -> dict[str, int]:
+    """Re-score active queue jobs after candidate profile changes. The caller
+    must commit the profile change first -- the scorer reads the profile
+    through its own connection."""
+    with get_repos(user_id) as repos:
+        jobs_repo: IJobRepository = repos["jobs"]
+        resume_repo: IResumeRepository = repos["resume"]
+        penalties_repo: IPenaltyRuleRepository = repos["penalties"]
 
-    queue_jobs = jobs_repo.get_by_statuses(user_id, list(ACTIVE_JOB_STATUSES))
-    resume_row = resume_repo.get_latest(user_id)
-    resume_text: str = resume_row["content"] if resume_row else ""
-    penalty_rules: list[dict] = penalties_repo.get_enabled(user_id)
-    fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback(user_id)
+        queue_jobs = jobs_repo.get_by_statuses(user_id, list(ACTIVE_JOB_STATUSES))
+        resume_row = resume_repo.get_latest(user_id)
+        resume_text: str = resume_row["content"] if resume_row else ""
+        penalty_rules: list[dict] = penalties_repo.get_enabled(user_id)
+        fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback(user_id)
     scorer = FitScorer(user_id)
 
     rescored = 0
@@ -202,24 +208,26 @@ def rescore_active_queue_jobs(user_id: int, repos: dict[str, object]) -> dict[st
                 penalty_rules=penalty_rules,
                 fit_feedback=fit_feedback,
             )
-            jobs_repo.update(
-                user_id,
-                job["id"],
-                {
-                    "fit_score": result["score"],
-                    "fit_reasoning": result["reasoning"],
-                    "salary_min": result["salary_min"],
-                    "salary_max": result["salary_max"],
-                    # ai: claude-sonnet-5 | 2026-09-21
-                    "import_warnings": remove_import_warning(
-                        job.get("import_warnings"), SCORING_FAILED_WARNING
-                    ),
-                },
-            )
-            repos["conn"].commit()
+            # ai: claude-opus-5-5 | 2026-10-28 -- a failed write is discarded when
+            # get_repos closes the uncommitted connection, so no explicit rollback.
+            with get_repos(user_id) as repos:
+                repos["jobs"].update(
+                    user_id,
+                    job["id"],
+                    {
+                        "fit_score": result["score"],
+                        "fit_reasoning": result["reasoning"],
+                        "salary_min": result["salary_min"],
+                        "salary_max": result["salary_max"],
+                        # ai: claude-sonnet-5 | 2026-09-21
+                        "import_warnings": remove_import_warning(
+                            job.get("import_warnings"), SCORING_FAILED_WARNING
+                        ),
+                    },
+                )
+                repos["conn"].commit()
             rescored += 1
         except Exception as exc:
-            repos["conn"].rollback()
             logger.warning(
                 "Queue re-score failed for job %s: %s",
                 job.get("id"),

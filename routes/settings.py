@@ -48,6 +48,10 @@ from pydantic import (
 )
 
 import config
+from backend.candidate_profile_file_sync import (
+    SETTING_KEYS as CANDIDATE_PROFILE_SYNC_SETTING_KEYS,
+    notify_sync_settings_changed,
+)
 from backend.candidate_profile_service import (
     CandidateProfileUpdate,
     save_candidate_profile,
@@ -545,6 +549,8 @@ def update_system_settings() -> ResponseReturnValue:
 
         result = _read_system_settings(repos)
 
+    if data.keys() & CANDIDATE_PROFILE_SYNC_SETTING_KEYS:  # ai: claude-opus-5-5 | 2026-10-28
+        notify_sync_settings_changed()
     return jsonify(result)
 
 
@@ -854,9 +860,10 @@ def save_candidate_profile_text() -> ResponseReturnValue:
         # Committed before rescoring: the scorer reads the profile through its
         # own connection, so it must see the new text.
         repos["conn"].commit()
-        if profile_changed:
-            rescore_summary = rescore_active_queue_jobs(user_id, repos)
-            repos["conn"].commit()
+    # ai: claude-opus-5-5 | 2026-10-28 -- outside the with-block: re-scoring makes
+    # an AI call per queued job and opens its own connections for the writes.
+    if profile_changed:
+        rescore_summary = rescore_active_queue_jobs(user_id)
 
     return jsonify(
         {

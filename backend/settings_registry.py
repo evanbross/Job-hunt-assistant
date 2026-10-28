@@ -156,6 +156,31 @@ SETTINGS: dict[str, SettingSpec] = {
         default=str(config.DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES),
         label="Max Request Bytes", group="Import Listener",
     ),
+    # ai: claude-opus-5-5 | 2026-10-28
+    # System-scoped (admin-only) on purpose: this names a file on the server's
+    # disk, and a per-user path setting would let any account read any file the
+    # server can open into its own profile. See backend/candidate_profile_file_sync.py.
+    "candidate_profile_sync_path": SettingSpec(
+        scope="system", is_secret=False, default="",
+        label="Profile File Path", group="Candidate Profile File Sync",
+        placeholder="F:/Documents/Resume/candidate_profile.md",
+        help_text="Absolute path to a candidate profile file on this server. When the file is "
+        "saved and is newer than the account's stored profile, its text replaces the stored "
+        "profile. Leave blank to turn sync off.",
+    ),
+    "candidate_profile_sync_account_email": SettingSpec(
+        scope="system", is_secret=False, default="",
+        label="Account Email", group="Candidate Profile File Sync",
+        placeholder="you@example.com",
+        help_text="The account whose profile the file above replaces.",
+    ),
+    "candidate_profile_sync_last_synced_sha256": SettingSpec(
+        scope="system", is_secret=False, default="",
+        label="Last synced profile hash", group="Candidate Profile File Sync",
+        hidden=True,
+        help_text="Written only by the sync itself; detects a stored profile changed since the "
+        "last sync, which is backed up to a file before being replaced.",
+    ),
     # ─── Per-user ──────────────────────────────────────────────────────────────
     "anthropic_api_key": SettingSpec(
         scope="user", is_secret=True, default=config.ANTHROPIC_API_KEY,

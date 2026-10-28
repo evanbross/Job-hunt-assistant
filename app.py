@@ -69,6 +69,7 @@ from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 
 import config
+from backend.candidate_profile_file_sync import start_candidate_profile_file_sync
 from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
 from backend.contacts.outreach_drafts import claim_draft_for_page
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
@@ -1100,6 +1101,10 @@ if __name__ == "__main__":
     # doesn't need the Celery worker or a "which accounts" fan-out like the scheduler
     # above; started here just to keep every background daemon's startup in one place.
     start_data_lifecycle_scheduler()
+    # ai: claude-opus-5-5 | 2026-10-28 -- watches the admin-configured candidate
+    # profile file and copies it into the account's stored profile when it's
+    # newer. Idle until Settings > System > Candidate Profile File Sync is filled in.
+    start_candidate_profile_file_sync()
     # ai: claude-sonnet-5 | 2026-07-31
 
     def _register_with_caddy(name: str, port: int, scheme: str) -> bool:

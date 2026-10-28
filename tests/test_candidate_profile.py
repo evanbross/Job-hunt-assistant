@@ -206,7 +206,7 @@ def profile_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, d
     session_user = {"id": ids["a"]}
     rescored: list[int] = []
 
-    def fake_rescore(user_id: int, _repos: object) -> dict[str, int]:
+    def fake_rescore(user_id: int) -> dict[str, int]:
         rescored.append(user_id)
         return {"rescored": 3, "failed": 0}
 
