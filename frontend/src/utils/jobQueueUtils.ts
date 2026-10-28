@@ -78,10 +78,24 @@ export function jobCardTabForStatus(status?: string | null): string {
   return "";
 }
 
+// ai: claude-opus-5-5 | 2026-10-27 -- moved here from ApplicationSheetPanel's
+// FALLBACK_DISPLAY_NAMES (plus skipped) so StatusBadge and the stage pickers share it.
+// Statuses a job holds in the job queue (jobs.status), as opposed to
+// application stages. Some installs' application_stage_statuses table carries
+// rows for these too, so stage pickers leave them out.
+export const JOB_QUEUE_STATUS_LABELS: Record<string, string> = {
+  triage: "Triage",
+  pending_review: "In Job Queue",
+  possible_duplicate: "Possible Duplicate",
+  not_a_fit: "Not a Fit",
+  skipped: "Skipped",
+};
+
 export function statusTone(status?: string | null): string {
   const normalized = String(status || "").toLowerCase();
   if (normalized.includes("reject") || normalized.includes("skip") || normalized.includes("not_a_fit") || normalized.includes("ghosted") || normalized.includes("filled") || normalized.includes("noise") || normalized.includes("error")) return "red";
-  if (normalized.includes("applied") || normalized.includes("added") || normalized.includes("eval") || normalized.includes("created")) return "green";
+  // ai: claude-opus-5-5 | 2026-10-27 -- added "interview" (the interview_N stages)
+  if (normalized.includes("applied") || normalized.includes("added") || normalized.includes("eval") || normalized.includes("interview") || normalized.includes("created")) return "green";
   if (normalized.includes("duplicate") || normalized.includes("triage") || normalized.includes("pending") || normalized.includes("ack")) return "yellow";
   if (normalized.includes("waiting") || normalized.includes("active") || normalized.includes("eligible")) return "accent";
   return "gray";

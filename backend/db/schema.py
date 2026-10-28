@@ -67,18 +67,35 @@ logger = logging.getLogger(__name__)
 # ─── Seed data ────────────────────────────────────────────────────────────────
 
 # (key, label, sort_order, ghost_eligible, is_terminal)
+# ai: claude-opus-5-5 | 2026-10-27 -- eval_1..3 replaced by interview_1..4 and
+# code_eval (see _RENAMED_STAGE_STATUSES); sort orders spaced by 10. _seed_data()
+# now upserts these, so this list is authoritative for every key it names.
 _SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
-    ("applied", "Applied", 1, True, False),
-    ("waiting_call", "Waiting for Call", 2, True, False),
-    ("waiting_second", "Waiting for 2nd", 3, True, False),
-    ("eval_1", "Eval 1", 4, False, False),
-    ("eval_2", "Eval 2", 5, False, False),
-    ("eval_3", "Eval 3", 6, False, False),
-    ("rejected", "Rejected", 7, False, True),
-    ("job_filled", "Job Filled", 8, False, True),
-    ("req_closed", "Req Closed", 9, False, True),
-    ("ghosted", "Ghosted", 10, False, True),
+    ("applied", "Applied", 10, True, False),
+    ("waiting_call", "Waiting for Call", 20, True, False),
+    ("waiting_second", "Waiting for 2nd", 30, True, False),
+    ("interview_1", "Interview 1 - HR Screen", 40, False, False),
+    ("interview_2", "Interview 2", 50, False, False),
+    ("interview_3", "Interview 3", 60, False, False),
+    ("interview_4", "Interview 4", 70, False, False),
+    ("code_eval", "Code Eval", 80, False, False),
+    ("rejected", "Rejected", 90, False, True),
+    ("job_filled", "Job Filled", 100, False, True),
+    ("req_closed", "Req Closed", 110, False, True),
+    ("ghosted", "Ghosted", 120, False, True),
 ]
+
+# ai: claude-opus-5-5 | 2026-10-27
+# Retired stage key -> its replacement, applied to existing data by
+# _rename_application_stage_statuses(). eval_1..3 were the interview rounds;
+# eval_test ("Eval / Test", which older installs still carry from before it
+# left the seed list) was the coding test.
+_RENAMED_STAGE_STATUSES: dict[str, str] = {
+    "eval_1": "interview_1",
+    "eval_2": "interview_2",
+    "eval_3": "interview_3",
+    "eval_test": "code_eval",
+}
 
 _SEED_SOURCES: list[tuple[str, str, str]] = [
     ("LinkedIn Jobs", "sender_domain", "linkedin.com"),
@@ -1398,6 +1415,10 @@ def _migrate(conn: Any) -> None:
     # so a forgotten call site could still write an unrecognized status with
     # nothing catching it. ON UPDATE CASCADE so a future catalog key rename
     # doesn't orphan existing rows.
+    # ai: claude-opus-5-5 | 2026-10-27 -- renames first: the normalizer's
+    # aliases already point retired keys at their replacements, and rewriting
+    # a row to a key the catalog doesn't have yet would break the foreign key.
+    _rename_application_stage_statuses(conn)
     _normalize_and_backfill_application_stage_statuses(conn)
     if not _has_unique(cur, "application_stages", "application_stages_status_fkey"):
         cur.execute(
@@ -1661,6 +1682,48 @@ def _backfill_duplicate_of_id(conn: Any) -> None:
                 (matched_id, job_id),
             )
 
+    conn.commit()
+
+
+# ai: claude-opus-5-5 | 2026-10-27
+def _rename_application_stage_statuses(conn: Any) -> None:
+    """Move every use of a retired stage key (_RENAMED_STAGE_STATUSES) onto its
+    replacement, then drop the retired catalog row. Idempotent.
+
+    The catalog row is renamed in place when the new key doesn't exist yet, so
+    it keeps its colors and (via the foreign key's ON UPDATE CASCADE) carries
+    application_stages along; otherwise the stages are moved explicitly and the
+    old row deleted. Labels and sort orders are then set by _seed_data().
+    jobs.status and job_status_history aren't tied to the catalog by a foreign
+    key, so they're updated directly.
+    """
+    cur = conn.cursor()
+    for old_key, new_key in _RENAMED_STAGE_STATUSES.items():
+        cur.execute(
+            "SELECT key FROM application_stage_statuses WHERE key IN (%s, %s)",
+            (old_key, new_key),
+        )
+        present = {row["key"] for row in cur.fetchall()}
+        if old_key in present and new_key not in present:
+            cur.execute(
+                "UPDATE application_stage_statuses SET key = %s WHERE key = %s",
+                (new_key, old_key),
+            )
+        # A no-op after the cascade above; needed when both rows existed, or on
+        # a database that predates the foreign key.
+        cur.execute(
+            "UPDATE application_stages SET status = %s WHERE status = %s", (new_key, old_key)
+        )
+        cur.execute("DELETE FROM application_stage_statuses WHERE key = %s", (old_key,))
+        cur.execute("UPDATE jobs SET status = %s WHERE status = %s", (new_key, old_key))
+        cur.execute(
+            "UPDATE job_status_history SET from_status = %s WHERE from_status = %s",
+            (new_key, old_key),
+        )
+        cur.execute(
+            "UPDATE job_status_history SET to_status = %s WHERE to_status = %s",
+            (new_key, old_key),
+        )
     conn.commit()
 
 
@@ -2405,11 +2468,19 @@ def _seed_data(conn: Any) -> None:
             [(*row, seed_user_id) for row in _SEED_EMAIL_SUBJECT_RULES],
         )
 
+    # ai: claude-opus-5-5 | 2026-10-27 -- was ON CONFLICT DO NOTHING, which left
+    # existing installs on whatever labels/sort orders they were first seeded
+    # with (live data had Eval 1-3 sorting before Applied). Nothing edits these
+    # columns at runtime; colors aren't seeded, so they're left alone.
     cur.executemany(
         """
         INSERT INTO application_stage_statuses (key, label, sort_order, ghost_eligible, is_terminal)
         VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (key) DO NOTHING
+        ON CONFLICT (key) DO UPDATE SET
+            label = EXCLUDED.label,
+            sort_order = EXCLUDED.sort_order,
+            ghost_eligible = EXCLUDED.ghost_eligible,
+            is_terminal = EXCLUDED.is_terminal
         """,
         _SEED_STAGE_STATUSES,
     )

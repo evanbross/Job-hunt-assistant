@@ -26,13 +26,14 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-07
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import StatusBadge from "./common/StatusBadge.tsx";
 import { scoreTone } from "../utils/fitScoringUtils.ts";
-import { statusTone } from "../utils/jobQueueUtils.ts";
+import { JOB_QUEUE_STATUS_LABELS, statusTone } from "../utils/jobQueueUtils.ts";
 import { formatJobDescription, jobDescriptionText } from "../utils/triagePanelUtils.ts";
 import { readStoredPref, writeStoredPref } from "../utils/storedPreference.ts";
+import type { ApplicationStageStatus } from "../types/applications.ts";
 import type { Job, JobHistoryEntry, JobHistoryResponse, JobHistoryStage } from "../types/jobs.ts";
 
 const HISTORY_SEARCH_STORAGE_KEY = "jha.history.search";
@@ -45,17 +46,10 @@ const MIN_SEARCH_LENGTH = 3;
 
 // ── Status definitions ────────────────────────────────────────────────────────
 
-const STAGE_STATUS_OPTIONS = [
-  { key: "applied",        label: "Applied" },
-  { key: "waiting_call",   label: "Waiting for Call" },
-  { key: "waiting_second", label: "Waiting for 2nd" },
-  { key: "eval_1",         label: "Eval 1" },
-  { key: "eval_2",         label: "Eval 2" },
-  { key: "eval_3",         label: "Eval 3" },
-  { key: "rejected",       label: "Rejected" },
-  { key: "job_filled",     label: "Job was Filled" },
-  { key: "ghosted",        label: "Ghosted" },
-];
+// ai: claude-opus-5-5 | 2026-10-27
+// The stage options themselves come from GET /api/applications/stage-statuses
+// (was a hardcoded copy here, which had drifted: no Req Closed, and still Eval 1-3).
+const DEFAULT_NEW_STAGE_STATUS = "waiting_call";
 
 function ScoreBadge({ score }: { score?: number | null }) {
   return (
@@ -71,12 +65,18 @@ function ScoreBadge({ score }: { score?: number | null }) {
 
 interface AddStageFormProps {
   jobId: number;
+  // ai: claude-opus-5-5 | 2026-10-27
+  options: ApplicationStageStatus[];
   onAdded: (stage: JobHistoryStage) => void;
 }
 
-function AddStageForm({ jobId, onAdded }: AddStageFormProps) {
+function AddStageForm({ jobId, options, onAdded }: AddStageFormProps) {
   const today = new Date().toLocaleDateString('en-CA');
-  const [status, setStatus] = useState(STAGE_STATUS_OPTIONS[1].key); // default: waiting_call
+  // ai: claude-opus-5-5 | 2026-10-27 -- null until the user picks one, so the
+  // default can follow the options list once it loads.
+  const [pickedStatus, setPickedStatus] = useState<string | null>(null);
+  const status =
+    pickedStatus ?? options.find((s) => s.key === DEFAULT_NEW_STAGE_STATUS)?.key ?? options[0]?.key ?? "";
   const [stageDate, setStageDate] = useState(today);
   const [saving, setSaving] = useState(false);
 
@@ -96,7 +96,7 @@ function AddStageForm({ jobId, onAdded }: AddStageFormProps) {
       const stage: JobHistoryStage = await res.json();
       onAdded(stage);
       // Reset to next likely status
-      setStatus(STAGE_STATUS_OPTIONS[1].key);
+      setPickedStatus(null);
       setStageDate(today);
     } finally {
       setSaving(false);
@@ -110,10 +110,11 @@ function AddStageForm({ jobId, onAdded }: AddStageFormProps) {
       </span>
       <select
         value={status}
-        onChange={(e) => setStatus(e.target.value)}
+        onChange={(e) => setPickedStatus(e.target.value)}
         style={selectStyle}
+        aria-label="New stage status"
       >
-        {STAGE_STATUS_OPTIONS.map((s) => (
+        {options.map((s) => (
           <option key={s.key} value={s.key}>{s.label}</option>
         ))}
       </select>
@@ -126,7 +127,7 @@ function AddStageForm({ jobId, onAdded }: AddStageFormProps) {
       <button
         className="btn-primary"
         onClick={handleAdd}
-        disabled={saving}
+        disabled={saving || !status}
         style={{ fontSize: "12px", padding: "4px 10px", whiteSpace: "nowrap" }}
       >
         {saving ? "…" : "Add"}
@@ -155,6 +156,28 @@ export default function HistoryPanel() {
   const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
   const latestRequestRef = useRef(0);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  // ai: claude-opus-5-5 | 2026-10-27
+  const [stageStatuses, setStageStatuses] = useState<ApplicationStageStatus[]>([]);
+
+  useEffect(() => {
+    fetch("/api/applications/stage-statuses")
+      .then((res) => {
+        if (!res.ok) throw new Error(`Stage statuses load failed: ${res.status}`);
+        return res.json();
+      })
+      .then((data: ApplicationStageStatus[]) => setStageStatuses(Array.isArray(data) ? data : []))
+      .catch((err) => console.error(err));
+  }, []);
+
+  // Already in sort_order from the API.
+  const stageOptions = useMemo(
+    () => stageStatuses.filter((s) => !(s.key in JOB_QUEUE_STATUS_LABELS)),
+    [stageStatuses],
+  );
+  const stageLabels = useMemo(
+    () => Object.fromEntries(stageStatuses.map((s) => [s.key, s.label])) as Record<string, string>,
+    [stageStatuses],
+  );
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search.trim()), SEARCH_DEBOUNCE_MS);
@@ -375,7 +398,7 @@ export default function HistoryPanel() {
                   <td style={tdStyle}>{job.source || "—"}</td>
                   <td style={tdStyle}><ScoreBadge score={job.fit_score} /></td>
                   <td style={tdStyle}>
-                    <StatusBadge status={displayStatus} />
+                    <StatusBadge status={displayStatus} label={stageLabels[displayStatus ?? ""]} />
                     {hasStages && stages.length > 1 && (
                       <span style={{ marginLeft: "6px", fontSize: "10px", color: "var(--text-muted)" }}>
                         {stages.length} stages
@@ -403,7 +426,7 @@ export default function HistoryPanel() {
                                 <span style={{ fontSize: "12px", color: "var(--text-muted)", minWidth: "90px" }}>
                                   {stage.date}
                                 </span>
-                                <StatusBadge status={stage.status} />
+                                <StatusBadge status={stage.status} label={stageLabels[stage.status]} />
                                 {stage.notes && (
                                   <span style={{ fontSize: "12px", color: "var(--text-muted)", fontStyle: "italic" }}>
                                     {stage.notes}
@@ -443,6 +466,7 @@ export default function HistoryPanel() {
                       <div style={{ borderTop: "1px solid var(--border)", paddingTop: "10px" }}>
                         <AddStageForm
                           jobId={job.id}
+                          options={stageOptions}
                           onAdded={(stage) => handleStageAdded(job.id, stage)}
                         />
                       </div>

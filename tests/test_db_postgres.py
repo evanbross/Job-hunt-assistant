@@ -40,6 +40,7 @@ from backend.db import (
     PostgresUserAccountRepository,
     PostgresUserSettingsRepository,
     get_connection,
+    init_db,
     open_repositories,
 )
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
@@ -842,5 +843,74 @@ def test_history_page_query_paginates_searches_and_batches_stages(pg_dsn: str) -
         for job in by_id.values():
             assert "job_description" not in job
             assert "raw_jd_snippet" not in job
+    finally:
+        conn.close()
+
+
+# ai: claude-opus-5-5 | 2026-10-27
+def test_migrate_renames_eval_stages_to_interview_and_code_eval(pg_dsn: str) -> None:
+    """An install from before the interview stages: eval_1 exists without
+    interview_1 (renamed in place, keeping its colors), while eval_test sits
+    beside an already-seeded code_eval (merged into it). Every reference --
+    stages, jobs.status, and the status-history log -- follows, and the seed
+    then fixes labels and sort order."""
+    conn = get_connection(pg_dsn)
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM application_stage_statuses WHERE key = 'interview_1'")
+        cur.execute(
+            "INSERT INTO application_stage_statuses"
+            " (key, label, sort_order, ghost_eligible, is_terminal, color_bg, color_fg)"
+            " VALUES ('eval_1', 'Eval 1', 4, FALSE, FALSE, '#111111', '#eeeeee'),"
+            " ('eval_test', 'Eval / Test', 40, TRUE, FALSE, NULL, NULL)"
+        )
+        user_id = PostgresUserAccountRepository(conn).create_pending(
+            "stages@example.com", "seed-stages@example.com", "2099-01-01"
+        )["id"]
+        set_current_user(conn.cursor(), user_id)
+        jobs = PostgresJobRepository(conn)
+        stages = PostgresApplicationStageRepository(conn)
+        job_id = jobs.insert(
+            user_id,
+            {
+                "dedup_key": "eval-rename",
+                "company": "Acme",
+                "job_title": "Engineer",
+                "url": "https://example.com/jobs/eval-rename",
+                "source": "manual",
+                "status": "eval_test",
+                "date_found": "2026-10-01",
+            },
+        )
+        interview_stage = stages.insert(user_id, {"job_id": job_id, "status": "eval_1", "date": "2026-10-02"})
+        test_stage = stages.insert(user_id, {"job_id": job_id, "status": "eval_test", "date": "2026-10-03"})
+        cur.execute(
+            "INSERT INTO job_status_history (job_id, from_status, to_status, changed_at, trigger, user_id)"
+            " VALUES (%s, 'eval_1', 'eval_test', '2026-10-03T00:00:00', 'manual', %s)",
+            (job_id, user_id),
+        )
+        conn.commit()
+
+        init_db(pg_dsn)
+        init_db(pg_dsn)  # idempotent re-run, e.g. app restart
+
+        cur.execute("SELECT key, label, sort_order, color_bg FROM application_stage_statuses")
+        catalog = {row["key"]: row for row in cur.fetchall()}
+        assert "eval_1" not in catalog
+        assert "eval_test" not in catalog
+        assert catalog["interview_1"]["label"] == "Interview 1 - HR Screen"
+        assert catalog["interview_1"]["color_bg"] == "#111111"
+        assert catalog["code_eval"]["label"] == "Code Eval"
+        assert catalog["applied"]["sort_order"] < catalog["interview_1"]["sort_order"] < catalog["code_eval"]["sort_order"]
+
+        cur.execute("SELECT id, status FROM application_stages WHERE job_id = %s", (job_id,))
+        assert {row["id"]: row["status"] for row in cur.fetchall()} == {
+            interview_stage: "interview_1",
+            test_stage: "code_eval",
+        }
+        cur.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
+        assert cur.fetchone()["status"] == "code_eval"
+        cur.execute("SELECT from_status, to_status FROM job_status_history WHERE job_id = %s", (job_id,))
+        assert dict(cur.fetchone()) == {"from_status": "interview_1", "to_status": "code_eval"}
     finally:
         conn.close()

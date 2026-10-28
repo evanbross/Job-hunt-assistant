@@ -8,7 +8,7 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-07
-import { statusTone } from "../../utils/jobQueueUtils.ts";
+import { JOB_QUEUE_STATUS_LABELS, statusTone } from "../../utils/jobQueueUtils.ts";
 
 interface StatusBadgeProps {
   /** The status key (e.g., "applied", "rejected"). */
@@ -35,19 +35,22 @@ export default function StatusBadge({ status, label, tone }: StatusBadgeProps) {
 }
 
 function statusLabel(status: string): string {
+  // ai: claude-opus-5-5 | 2026-10-27 -- eval_1..3 replaced by the interview
+  // and code-eval stages; job-queue labels now come from the shared map.
+  // Stage labels mirror backend/db/schema.py's _SEED_STAGE_STATUSES for
+  // callers that don't load the catalog; pass `label` when you have it.
   const labels: Record<string, string> = {
+    ...JOB_QUEUE_STATUS_LABELS,
     applied: "Applied",
-    eval_1: "Eval 1",
-    eval_2: "Eval 2",
-    eval_3: "Eval 3",
+    code_eval: "Code Eval",
     ghosted: "Ghosted",
+    interview_1: "Interview 1 - HR Screen",
+    interview_2: "Interview 2",
+    interview_3: "Interview 3",
+    interview_4: "Interview 4",
     job_filled: "Job Filled",
-    not_a_fit: "Not a Fit",
-    pending_review: "In Job Queue",
-    possible_duplicate: "Possible Duplicate",
     rejected: "Rejected",
-    skipped: "Skipped",
-    triage: "Triage",
+    req_closed: "Req Closed",
     waiting_call: "Waiting for Call",
     waiting_second: "Waiting for 2nd",
   };

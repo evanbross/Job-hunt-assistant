@@ -34,6 +34,7 @@ import Modal from "./common/Modal.tsx";
 import ReqClosedDialog from "./common/ReqClosedDialog.tsx";
 import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../utils/reqClosedScanStorage.ts";
 import { readStoredPref, writeStoredPref } from "../utils/storedPreference.ts";
+import { JOB_QUEUE_STATUS_LABELS } from "../utils/jobQueueUtils.ts";
 import type {
   ApplicationSheetColumn,
   ApplicationSheetResponse,
@@ -61,9 +62,12 @@ const STATUS_FALLBACKS: Record<string, StatusStyle> = {
   rejected:           { background: "var(--red-light)", color: "var(--red)" },
   waiting_call:       { background: "var(--accent-light)", color: "var(--accent)" },
   waiting_second:     { background: "var(--orange-light)", color: "var(--orange)" },
-  eval_1:             { background: "var(--green-light)", color: "var(--green)" },
-  eval_2:             { background: "var(--green-light)", color: "var(--green)" },
-  eval_3:             { background: "var(--green-light)", color: "var(--green)" },
+  // ai: claude-opus-5-5 | 2026-10-27 -- were eval_1..3
+  interview_1:        { background: "var(--green-light)", color: "var(--green)" },
+  interview_2:        { background: "var(--green-light)", color: "var(--green)" },
+  interview_3:        { background: "var(--green-light)", color: "var(--green)" },
+  interview_4:        { background: "var(--green-light)", color: "var(--green)" },
+  code_eval:          { background: "var(--green-light)", color: "var(--green)" },
   job_filled:         { background: "var(--red-light)", color: "var(--red)" },
   req_closed:         { background: "var(--red-light)", color: "var(--red)" },
   ghosted:            { background: "var(--orange-light)", color: "var(--orange)" },
@@ -75,24 +79,21 @@ const STATUS_FALLBACKS: Record<string, StatusStyle> = {
 };
 
 // Fallback option list shown before the DB loads (or if the table is empty).
+// ai: claude-opus-5-5 | 2026-10-27 -- matches backend/db/schema.py's _SEED_STAGE_STATUSES labels
 const DEFAULT_STATUS_OPTIONS = [
   "Applied",
-  "Rejected",
   "Waiting for Call",
   "Waiting for 2nd",
-  "Need to do Eval",
-  "Job was filled",
+  "Interview 1 - HR Screen",
+  "Interview 2",
+  "Interview 3",
+  "Interview 4",
+  "Code Eval",
+  "Rejected",
+  "Job Filled",
+  "Req Closed",
   "Ghosted",
 ];
-
-// Job-queue statuses that live on jobs.status (not application_stages) and are
-// therefore not expected to be in the application_stage_statuses DB table.
-const FALLBACK_DISPLAY_NAMES: Record<string, string> = {
-  triage:             "Triage",
-  pending_review:     "In Job Queue",
-  possible_duplicate: "Possible Duplicate",
-  not_a_fit:          "Not a Fit",
-};
 
 const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
   company: 220,
@@ -155,7 +156,8 @@ function getStatusStyle(value?: string | null, colorMap: Record<string, StatusSt
     return STATUS_FALLBACKS.waiting_second;
   }
   if (normalizedValue.includes("waiting")) return STATUS_FALLBACKS.waiting_call;
-  if (normalizedValue.includes("eval")) return STATUS_FALLBACKS.eval_1;
+  // ai: claude-opus-5-5 | 2026-10-27 -- was eval_1, now gone
+  if (normalizedValue.includes("eval") || normalizedValue.includes("interview")) return STATUS_FALLBACKS.interview_1;
   if (normalizedValue.includes("filled")) return STATUS_FALLBACKS.job_filled;
   if (normalizedValue.includes("applied")) return STATUS_FALLBACKS.applied;
   if (normalizedValue.includes("ghost")) return STATUS_FALLBACKS.ghosted;
@@ -565,7 +567,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
   }, [sheet.rows, trackingColumns.status]);
 
   const statusLabelMap: Record<string, string> = useMemo(() => {
-    const map: Record<string, string> = { ...FALLBACK_DISPLAY_NAMES };
+    const map: Record<string, string> = { ...JOB_QUEUE_STATUS_LABELS };
     stageStatuses.forEach((s) => { map[s.key] = s.label; });
     return map;
   }, [stageStatuses]);
@@ -604,7 +606,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
     const overflowChips = Object.entries(statusCounts)
       .filter(([key]) => !knownKeys.has(key))
       .sort((a, b) => b[1] - a[1])
-      .map(([key, count]) => ({ key, label: FALLBACK_DISPLAY_NAMES[key] || key.replace(/_/g, " "), count }));
+      .map(([key, count]) => ({ key, label: JOB_QUEUE_STATUS_LABELS[key] || key.replace(/_/g, " "), count }));
     const total = Object.values(statusCounts).reduce((acc, n) => acc + n, 0);
     return [{ key: "all", label: "All", count: total }, ...statusChips, ...overflowChips];
   }, [sortedStageStatuses, statusCounts]);
