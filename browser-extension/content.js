@@ -22,6 +22,45 @@
   // numeric job id that both real Greenhouse single-job path shapes share.
   const _GH_JOB_PATH_RE = /^\/[^/]+\/jobs\/\d+(?:[/?#]|$)|^\/jobs\/[^/]+\/\d+(?:[/?#]|$)/;
 
+  const _GH_PUBLIC_BOARD_HOSTS = new Set(['job-boards.greenhouse.io', 'boards.greenhouse.io']);
+
+  // ai: claude-opus-5-5 | 2026-10-27
+  // A company's own careers page can show one Greenhouse posting through
+  // Greenhouse's JS embed (e.g. redventures.com/careers/positions/open?gh_jid=...),
+  // which renders it in a cross-origin iframe at
+  // job-boards.greenhouse.io/embed/job_app?for=<board slug>&token=<job id>.
+  // popup.js probes every frame, so this frame is the one that can capture it.
+  // Returns { slug, jobId } for that iframe, else null.
+  function greenhouseEmbeddedJob() {
+    if (!_GH_PUBLIC_BOARD_HOSTS.has(location.hostname) || location.pathname !== '/embed/job_app') return null;
+    const params = new URLSearchParams(location.search);
+    const slug = params.get('for');
+    const jobId = params.get('token');
+    return slug && /^\d+$/.test(jobId || '') ? { slug, jobId } : null;
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-27
+  // The same embed's board view (job-boards.greenhouse.io/embed/job_board?for=<slug>)
+  // links each posting to the company's own page with a gh_jid param, not to a
+  // greenhouse.io job path. Returns the board slug in that iframe, else null.
+  function greenhouseEmbeddedBoardSlug() {
+    if (!_GH_PUBLIC_BOARD_HOSTS.has(location.hostname) || location.pathname !== '/embed/job_board') return null;
+    return new URLSearchParams(location.search).get('for') || null;
+  }
+
+  // One URL per posting whichever view it was captured from, so they dedup.
+  function canonicalGreenhouseJobUrl(slug, jobId) {
+    return `https://job-boards.greenhouse.io/${encodeURIComponent(slug)}/jobs/${jobId}`;
+  }
+
+  // A link to a Greenhouse posting -> the URL to save it under, or null.
+  function greenhouseJobLinkUrl(u) {
+    if (u.hostname.includes('greenhouse.io') && _GH_JOB_PATH_RE.test(u.pathname)) return u.origin + u.pathname;
+    const boardSlug = greenhouseEmbeddedBoardSlug();
+    const jobId = u.searchParams.get('gh_jid');
+    return boardSlug && /^\d+$/.test(jobId || '') ? canonicalGreenhouseJobUrl(boardSlug, jobId) : null;
+  }
+
   // ai: claude-sonnet-5 | 2026-08-29
   // Known non-job utility sites (webmail, calendar, docs, chat) that a stray
   // "Send to Job Hunt App" click can hit — the generic smartGeneric/body-text
@@ -140,11 +179,13 @@
     // observed in the wild) and the two public board hosts job-boards.greenhouse.io /
     // boards.greenhouse.io (<slug>/jobs/<numeric-id> only). Checked first because the
     // search-page check below would otherwise also match.
-    const _GH_PUBLIC_BOARD_HOSTS = new Set(['job-boards.greenhouse.io', 'boards.greenhouse.io']);
+    // ai: claude-opus-5-5 | 2026-10-27 -- also the embedded single-job iframe
+    // (greenhouseEmbeddedJob), which the board check below used to claim as an
+    // empty "search" page, so the capture sent no jobs at all.
     const isGreenhouseHost = host === 'my.greenhouse.io' || _GH_PUBLIC_BOARD_HOSTS.has(host);
     if (
       isGreenhouseHost &&
-      (/^\/[^/]+\/jobs\/\d+/.test(path) || /^\/jobs\/[^/]+\/\d+/.test(path))
+      (/^\/[^/]+\/jobs\/\d+/.test(path) || /^\/jobs\/[^/]+\/\d+/.test(path) || greenhouseEmbeddedJob())
     ) {
       return { site: 'Greenhouse', type: 'greenhouseJob', jobCount: 1, description: 'Single job listing' };
     }
@@ -161,10 +202,11 @@
       // CSS attribute selectors match the raw href value, not the resolved URL, so
       // relative hrefs like /jobs/12345 would miss the greenhouse.io check. Use a.href
       // (always the resolved absolute URL) via JS iteration instead.
+      // ai: claude-opus-5-5 | 2026-10-27 -- via greenhouseJobLinkUrl, so the
+      // board embed's gh_jid links count too
       const count = [...document.querySelectorAll('a[href]')].filter(a => {
         try {
-          const u = new URL(a.href);
-          return u.hostname.includes('greenhouse.io') && _GH_JOB_PATH_RE.test(u.pathname);
+          return greenhouseJobLinkUrl(new URL(a.href)) !== null;
         } catch { return false; }
       }).length;
       return { site: 'Greenhouse', type: 'greenhouseSearch', jobCount: count, description: `${count}+ jobs (auto-scrolls to load all)` };
@@ -1535,34 +1577,45 @@
   // URL slug; document.title refines it when the "Job Title at Company Name" pattern
   // is present.
   function buildGreenhouseJobPayload() {
+    // ai: claude-opus-5-5 | 2026-10-27 -- the embed iframe's slug and id come
+    // from its query string, and it's saved under the posting's canonical
+    // board URL rather than the iframe's (Greenhouse redirects that URL to the
+    // company's own page when the company has one).
+    const embedded = greenhouseEmbeddedJob();
+    const jobUrl = embedded ? canonicalGreenhouseJobUrl(embedded.slug, embedded.jobId) : location.href;
     const pathParts = location.pathname.split('/').filter(Boolean);
-    const companySlug = (pathParts[0] === 'jobs' ? pathParts[1] : pathParts[0]) || '';
+    const companySlug = embedded ? embedded.slug : (pathParts[0] === 'jobs' ? pathParts[1] : pathParts[0]) || '';
     let company = companySlug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
     const titleAtMatch = document.title.match(/\bat\s+(.+?)(?:\s*[-–|]|$)/i);
     if (titleAtMatch) company = titleAtMatch[1].trim();
 
-    let title = pick(['h1.app-title', 'h1[class*="title"]', 'h1']);
+    let title = pick(['.job__title h1', 'h1.app-title', 'h1[class*="title"]', 'h1']);
     if (!title) {
       const docTitleMatch = document.title.match(/^(.+?)\s+at\s+/i);
       if (docTitleMatch) title = docTitleMatch[1].trim();
     }
     if (!title) title = document.title.replace(/\s*[-–|].*$/, '').trim();
 
-    const description = longestText([
+    // ai: claude-opus-5-5 | 2026-10-27 -- Greenhouse's current board layout
+    // (.job__description / .job__location) first: the generic containers
+    // below include <main>, which there also wraps the whole application form.
+    const description = longestText(['.job__description']) || longestText([
       '#content', '.content', '#job-details', '.job-description',
       '[class*="job-description"]', '[class*="job-details"]',
       'section', 'main',
     ]);
+    const jobLocation = pick(['.job__location']);
 
     const lines = [];
     if (title) lines.push(title);
     if (company) lines.push('Company: ' + company);
-    lines.push('URL: ' + location.href);
+    if (jobLocation) lines.push('Location: ' + jobLocation);
+    lines.push('URL: ' + jobUrl);
     if (description) lines.push('', description);
 
     return JSON.stringify({
-      jobs: [{ url: location.href, job_title: title, company, listing_text: lines.join('\n') }],
+      jobs: [{ url: jobUrl, job_title: title, company, listing_text: lines.join('\n') }],
     });
   }
 
@@ -1577,10 +1630,9 @@
       document.querySelectorAll('a[href]').forEach(a => {
         let u;
         try { u = new URL(a.href); } catch { return; }
-        if (!u.hostname.includes('greenhouse.io')) return;
-        if (!_GH_JOB_PATH_RE.test(u.pathname)) return;
-        const url = u.origin + u.pathname;
-        if (seen.has(url)) return;
+        // ai: claude-opus-5-5 | 2026-10-27 -- also the board embed's gh_jid links
+        const url = greenhouseJobLinkUrl(u);
+        if (!url || seen.has(url)) return;
         seen.add(url);
 
         const titleText = (a.innerText || '').split('\n')[0].trim();
