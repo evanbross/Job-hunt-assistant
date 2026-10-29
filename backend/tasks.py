@@ -60,7 +60,6 @@ from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
 from backend.db import DuplicateJobUrlError
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
-from backend.import_status_events import get_import_status_events
 from backend.scanning.career_site_scanner import (
     CareerSiteScanner,
     is_job_board_url,
@@ -91,6 +90,7 @@ from backend.scoring.jd_enrichment import (
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
 from backend.settings_service import get_setting
+from backend.user_events import UserEventTopic, get_user_events
 from backend.utils.utils import get_repos, parse_positive_int
 
 logger = logging.getLogger(__name__)
@@ -345,9 +345,9 @@ def _find_duplicate_original(
 # ai: claude-opus-5-5 | 2026-10-24
 def _report_import_progress(task: Any, user_id: int, meta: dict[str, Any]) -> None:
     """Record an import batch's progress where /api/import/status reads it, then
-    tell the user's open pages to re-read it (backend/import_status_events.py)."""
+    tell the user's open pages to re-read it (backend/user_events.py)."""
     task.update_state(state="PROGRESS", meta=meta)
-    get_import_status_events().publish(user_id)
+    get_user_events().publish(user_id, UserEventTopic.IMPORT_STATUS)
 
 
 @celery_app.task(bind=True)
@@ -865,7 +865,7 @@ def _announce_import_batch_finished(sender: Any = None, args: tuple | None = Non
     /api/import/status right away sees it -- a publish from inside the task
     could arrive before that state exists."""
     if getattr(sender, "name", None) == run_import_task.name and args:
-        get_import_status_events().publish(args[0])
+        get_user_events().publish(args[0], UserEventTopic.IMPORT_STATUS)
 
 
 

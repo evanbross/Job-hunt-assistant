@@ -224,3 +224,38 @@ export interface SaveCandidateProfileResult {
   rescore_summary?: { rescored: number; failed: number } | null;
   error?: string;
 }
+
+// ai: claude-opus-5-5 | 2026-10-28
+/** backend/candidate_profile_file_sync.py's FileSyncState values. */
+export type CandidateProfileFileState =
+  | "not_configured"
+  | "other_account"
+  | "invalid_path"
+  | "file_missing"
+  | "unreadable_file"
+  | "invalid_content"
+  | "up_to_date"
+  | "stored_is_newer"
+  | "dismissed"
+  | "reload_available";
+
+/** GET /api/candidate-profile/file-sync response (routes/settings.py). */
+export interface CandidateProfileFileStatus {
+  state: CandidateProfileFileState;
+  path: string;
+  file_sha256: string;
+  file_modified_at: string;
+  stored_updated_at: string;
+}
+
+/** GET /api/candidate-profile/file-sync/review response: the status plus a
+ * unified diff from the stored profile to the file. */
+export interface CandidateProfileFileReview extends CandidateProfileFileStatus {
+  diff: string[];
+}
+
+/** POST /api/candidate-profile/file-sync/load response. */
+export interface CandidateProfileFileLoadResult {
+  backup_path: string;
+  rescore_summary: { rescored: number; failed: number };
+}

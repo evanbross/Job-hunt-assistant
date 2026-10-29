@@ -69,7 +69,7 @@ from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 
 import config
-from backend.candidate_profile_file_sync import start_candidate_profile_file_sync
+from backend.candidate_profile_file_sync import start_candidate_profile_file_watcher
 from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
 from backend.contacts.outreach_drafts import claim_draft_for_page
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
@@ -573,6 +573,7 @@ from routes.career_sites import career_sites_bp
 from routes.contacts import contacts_bp
 from routes.cover_letter import cover_letter_bp
 from routes.emails import emails_bp
+from routes.events import events_bp  # ai: claude-opus-5-5 | 2026-10-28
 from routes.extension_tokens import extension_tokens_bp
 from routes.fit import fit_bp
 from routes.greenhouse import greenhouse_bp
@@ -596,6 +597,7 @@ app.register_blueprint(career_sites_bp, url_prefix="/api")
 app.register_blueprint(contacts_bp, url_prefix="/api")
 app.register_blueprint(cover_letter_bp, url_prefix="/api")
 app.register_blueprint(emails_bp, url_prefix="/api")
+app.register_blueprint(events_bp, url_prefix="/api")  # ai: claude-opus-5-5 | 2026-10-28
 app.register_blueprint(extension_tokens_bp, url_prefix="/api")
 app.register_blueprint(fit_bp, url_prefix="/api")
 app.register_blueprint(greenhouse_bp, url_prefix="/api")
@@ -1104,7 +1106,7 @@ if __name__ == "__main__":
     # ai: claude-opus-5-5 | 2026-10-28 -- watches the admin-configured candidate
     # profile file and copies it into the account's stored profile when it's
     # newer. Idle until Settings > System > Candidate Profile File Sync is filled in.
-    start_candidate_profile_file_sync()
+    start_candidate_profile_file_watcher()
     # ai: claude-sonnet-5 | 2026-07-31
 
     def _register_with_caddy(name: str, port: int, scheme: str) -> bool:

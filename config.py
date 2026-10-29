@@ -96,13 +96,6 @@ ACCOUNT_DELETION_GRACE_DAYS: int = int(os.getenv("ACCOUNT_DELETION_GRACE_DAYS", 
 DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS: float = float(
     os.getenv("DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS", "24")
 )
-# ai: claude-opus-5-5 | 2026-10-28
-# Safety-net re-check for backend/candidate_profile_file_sync.py. A filesystem
-# watcher is the primary trigger; this only bounds how long a missed event (or
-# a network drive that doesn't deliver them) can delay a sync.
-CANDIDATE_PROFILE_SYNC_FALLBACK_MINUTES: float = float(
-    os.getenv("CANDIDATE_PROFILE_SYNC_FALLBACK_MINUTES", "10")
-)
 # Retention periods for tables that are purely informational logs -- pruning them
 # only shortens history a user could otherwise scroll back through, never changes
 # what the app does. Deliberately excludes anything a feature depends on for

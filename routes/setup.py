@@ -50,6 +50,7 @@ from pydantic import (
 import config
 from backend.candidate_profile_service import (
     CandidateProfileUpdate,
+    announce_candidate_profile_changed,
     save_candidate_profile,
 )
 from backend.email.google_token_store import GoogleTokenStore
@@ -337,9 +338,11 @@ def setup_candidate_profile() -> Any:
     except ValidationError:
         return jsonify({"error": "Profile content cannot be empty"}), 400
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        save_candidate_profile(repos, current_user_id(), update.content)
+        save_candidate_profile(repos, user_id, update.content)
         repos["conn"].commit()
+    announce_candidate_profile_changed(user_id)  # ai: claude-opus-5-5 | 2026-10-28
     logger.info("Candidate profile saved (%d chars)", len(update.content))
 
     return jsonify({"ok": True, "char_count": len(update.content)})

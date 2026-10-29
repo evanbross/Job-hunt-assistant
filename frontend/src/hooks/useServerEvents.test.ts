@@ -8,10 +8,12 @@
  */
 
 // ai: claude-opus-5-5 | 2026-10-24
+// ai: claude-opus-5-5 | 2026-10-28 — renamed from useImportStatusChanges.test.ts; topics added
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Handler = () => void;
+type MessageHandler = (event: { data: unknown }) => void;
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -45,7 +47,7 @@ class FakeEventSource {
  * every other instance, never back to the sender. */
 class FakeBroadcastChannel {
   static all: FakeBroadcastChannel[] = [];
-  onmessage: Handler | null = null;
+  onmessage: MessageHandler | null = null;
   readonly name: string;
 
   constructor(name: string) {
@@ -53,9 +55,9 @@ class FakeBroadcastChannel {
     FakeBroadcastChannel.all.push(this);
   }
 
-  postMessage(): void {
+  postMessage(data: unknown): void {
     for (const other of FakeBroadcastChannel.all) {
-      if (other !== this && other.name === this.name) other.onmessage?.();
+      if (other !== this && other.name === this.name) other.onmessage?.({ data });
     }
   }
 
@@ -92,17 +94,17 @@ class FakeLockManager {
   }
 }
 
-type EventsModule = typeof import("./useImportStatusChanges.ts");
+type EventsModule = typeof import("./useServerEvents.ts");
 
 /** A fresh copy of the module: what each tab of the browser has its own of. */
 async function loadTab(): Promise<EventsModule> {
   vi.resetModules();
-  return import("./useImportStatusChanges.ts");
+  return import("./useServerEvents.ts");
 }
 
 const flush = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
-describe("import status changes", () => {
+describe("server events", () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
     FakeBroadcastChannel.all = [];
@@ -120,11 +122,11 @@ describe("import status changes", () => {
   it("signals on each pushed change and each (re)connect, and closes the stream with its last listener", async () => {
     const tab = await loadTab();
     const listener = vi.fn();
-    const unsubscribe = tab.subscribeImportStatusChanges(listener);
+    const unsubscribe = tab.subscribeServerEvents("import", listener);
     await flush();
 
     const [source] = FakeEventSource.open();
-    expect(source.url).toBe("/api/import/events");
+    expect(source.url).toBe("/api/events");
     source.emit("open");
     source.emit("import");
     expect(listener).toHaveBeenCalledTimes(2);
@@ -138,8 +140,8 @@ describe("import status changes", () => {
     const second = await loadTab();
     const firstListener = vi.fn();
     const secondListener = vi.fn();
-    const unsubscribeFirst = first.subscribeImportStatusChanges(firstListener);
-    second.subscribeImportStatusChanges(secondListener);
+    const unsubscribeFirst = first.subscribeServerEvents("import", firstListener);
+    second.subscribeServerEvents("import", secondListener);
     await flush();
 
     expect(FakeEventSource.open()).toHaveLength(1);
@@ -156,12 +158,48 @@ describe("import status changes", () => {
     expect(firstListener).toHaveBeenCalledTimes(1);
   });
 
+  it("routes each event to its own topic's listeners, and a reconnect to every topic, in every tab", async () => {
+    const first = await loadTab();
+    const second = await loadTab();
+    const importListener = vi.fn();
+    const profileListener = vi.fn();
+    const otherTabProfileListener = vi.fn();
+    first.subscribeServerEvents("import", importListener);
+    first.subscribeServerEvents("candidate-profile-file", profileListener);
+    second.subscribeServerEvents("candidate-profile-file", otherTabProfileListener);
+    await flush();
+
+    const [source] = FakeEventSource.open();
+    source.emit("candidate-profile-file");
+    expect(profileListener).toHaveBeenCalledTimes(1);
+    expect(otherTabProfileListener).toHaveBeenCalledTimes(1);
+    expect(importListener).not.toHaveBeenCalled();
+
+    source.emit("open");
+    expect(importListener).toHaveBeenCalledTimes(1);
+    expect(profileListener).toHaveBeenCalledTimes(2);
+    expect(otherTabProfileListener).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the stream open until the last listener of any topic leaves", async () => {
+    const tab = await loadTab();
+    const unsubscribeImport = tab.subscribeServerEvents("import", vi.fn());
+    const unsubscribeProfile = tab.subscribeServerEvents("candidate-profile-file", vi.fn());
+    await flush();
+    const [source] = FakeEventSource.open();
+
+    unsubscribeImport();
+    expect(source.closed).toBe(false);
+    unsubscribeProfile();
+    expect(source.closed).toBe(true);
+  });
+
   it("opens a stream per tab where Web Locks aren't available", async () => {
     Reflect.deleteProperty(navigator, "locks");
     const first = await loadTab();
     const second = await loadTab();
-    first.subscribeImportStatusChanges(vi.fn());
-    second.subscribeImportStatusChanges(vi.fn());
+    first.subscribeServerEvents("import", vi.fn());
+    second.subscribeServerEvents("import", vi.fn());
     expect(FakeEventSource.open()).toHaveLength(2);
   });
 
@@ -169,7 +207,7 @@ describe("import status changes", () => {
     const tab = await loadTab();
     let finish: () => void = () => {};
     const refresh = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
-    renderHook(() => tab.useImportStatusChanges(refresh));
+    renderHook(() => tab.useServerEvent("import", refresh));
     await flush();
     const [source] = FakeEventSource.open();
 
@@ -189,15 +227,15 @@ describe("import status changes", () => {
     vi.useFakeTimers();
     const tab = await loadTab();
     const refresh = vi.fn();
-    const { rerender } = renderHook(({ enabled }) => tab.useImportStatusChanges(refresh, enabled), {
+    const { rerender } = renderHook(({ enabled }) => tab.useServerEvent("import", refresh, { enabled }), {
       initialProps: { enabled: false },
     });
-    act(() => { vi.advanceTimersByTime(tab.IMPORT_STATUS_FALLBACK_MS); });
+    act(() => { vi.advanceTimersByTime(tab.SERVER_EVENT_FALLBACK_MS); });
     expect(refresh).not.toHaveBeenCalled();
     expect(FakeEventSource.open()).toHaveLength(0);
 
     rerender({ enabled: true });
-    act(() => { vi.advanceTimersByTime(tab.IMPORT_STATUS_FALLBACK_MS); });
+    act(() => { vi.advanceTimersByTime(tab.SERVER_EVENT_FALLBACK_MS); });
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 });

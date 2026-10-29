@@ -30,10 +30,11 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import LoginPage from "./components/LoginPage.tsx";
 import { apiFetch, UNAUTHENTICATED_EVENT } from "./utils/apiClient.ts";
-import { useImportStatusChanges } from "./hooks/useImportStatusChanges.ts";
+import { useServerEvent } from "./hooks/useServerEvents.ts";
 import JobQueue from "./components/JobQueue/index.tsx";
 import type { ViewMode } from "./components/JobQueue/index.tsx";
 import GoogleConnectionMenu from "./components/GoogleConnectionMenu.tsx";
+import CandidateProfileFileBanner from "./components/CandidateProfileFileBanner.tsx";
 import CareerSiteScanBanner from "./components/CareerSiteScanBanner.tsx";
 import StatsBar from "./components/StatsBar.tsx";
 import RecentChangesModal from "./components/RecentChangesModal.tsx";
@@ -353,7 +354,7 @@ export default function App() {
   };
 
   // ai: claude-opus-5-5 | 2026-10-24 — read once, then again only when the
-  // server signals a change (useImportStatusChanges), instead of polling every
+  // server signals a change (useServerEvent "import"), instead of polling every
   // 1.2s around the clock; only while logged in, since the status is per user.
   const refreshListenerImportStatus = useCallback(async () => {
     try {
@@ -373,7 +374,7 @@ export default function App() {
   useEffect(() => {
     if (appAuthenticated) refreshListenerImportStatus();
   }, [appAuthenticated, refreshListenerImportStatus]);
-  useImportStatusChanges(refreshListenerImportStatus, appAuthenticated === true);
+  useServerEvent("import", refreshListenerImportStatus, { enabled: appAuthenticated === true });
 
   // ai: claude-fable-5 | 2026-07-14 — backend/database health poll. Uses a
   // setTimeout chain (not setInterval) so a slow probe while the DB is timing
@@ -660,6 +661,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* ai: claude-opus-5-5 | 2026-10-28 — on every tab, Settings included: that's where the Career Profile page is */}
+      <CandidateProfileFileBanner />
 
       {/* ai: claude-sonnet-5 | 2026-07-26 — hide scan banner while in Settings so it doesn't push the Setup Wizard section off-screen */}
       {activeTab !== "settings" && <CareerSiteScanBanner />}

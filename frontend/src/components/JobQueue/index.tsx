@@ -36,7 +36,7 @@ import { emailIdForRescan, extractSender, extractSubjectWords } from "../../util
 import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../../utils/reqClosedScanStorage.ts";
 import { readStoredPref, writeStoredPref } from "../../utils/storedPreference.ts";
 import { runBatchRefreshFromUrls } from "../../utils/batchRefreshFromUrls.ts";
-import { useImportStatusChanges } from "../../hooks/useImportStatusChanges.ts";
+import { useServerEvent } from "../../hooks/useServerEvents.ts";
 import { readStoredViewPref } from "./helpers.tsx";
 // ai: claude-opus-5-5 | 2026-10-23
 import LoadMoreSentinel from "./LoadMoreSentinel.tsx";
@@ -357,7 +357,7 @@ function JobQueueContent({
   const rescanImportPollRef = useRef<number | undefined>(undefined);
   const rescanImportDismissedRef = useRef(false);
   // ai: claude-opus-5-5 | 2026-10-24 — the import being watched, re-read on each
-  // import status signal (useImportStatusChanges below) instead of every 1.2s.
+  // import status signal (useServerEvent "import" below) instead of every 1.2s.
   const [watchedImport, setWatchedImport] = useState<{ importId: string | null } | null>(null);
   const [captureWatchActive, setCaptureWatchActive] = useState(false);
   // ai: claude-sonnet-4-6 | 2026-06-27
@@ -1280,8 +1280,8 @@ function JobQueueContent({
   };
 
   // ai: claude-opus-5-5 | 2026-10-24
-  useImportStatusChanges(() => pollImportStatus(watchedImport?.importId), watchedImport !== null);
-  useImportStatusChanges(pollBrowserCaptureStatus, captureWatchActive);
+  useServerEvent("import", () => pollImportStatus(watchedImport?.importId), { enabled: watchedImport !== null });
+  useServerEvent("import", pollBrowserCaptureStatus, { enabled: captureWatchActive });
 
   const anyScanRunning = scanning || rescanAllRunning;
   const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning || importRepairRunning || rescanImportRunning;

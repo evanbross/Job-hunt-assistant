@@ -41,6 +41,7 @@ import logging
 from datetime import UTC, datetime
 
 from backend.ai_provider import AIMessage, AIProviderClient, AIProviderError
+from backend.candidate_profile_service import announce_candidate_profile_changed
 from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,7 @@ class CoverLetterStyleLearner:
                 self._user_id, updated, datetime.now(UTC).isoformat(timespec="seconds")
             )
             repos["conn"].commit()
+        announce_candidate_profile_changed(self._user_id)  # ai: claude-opus-5-5 | 2026-10-28
         return True
 
 

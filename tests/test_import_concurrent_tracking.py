@@ -44,7 +44,8 @@ from flask.testing import FlaskClient
 
 import routes.import_ as import_routes
 from routes.import_ import ImportProgressState, import_bp
-from tests.conftest import RecordingImportStatusEvents
+from backend.user_events import UserEventTopic
+from tests.conftest import RecordingUserEvents
 
 _USER_ID = 1
 _OTHER_USER_ID = 2
@@ -566,7 +567,7 @@ def _patch_queue_import_capture_prelude(
 
 # ai: claude-opus-5-5 | 2026-10-24
 def _tracked_state_at_each_publish(
-    monkeypatch: pytest.MonkeyPatch, events: RecordingImportStatusEvents
+    monkeypatch: pytest.MonkeyPatch, events: RecordingUserEvents
 ) -> list[tuple[str, list[str]] | None]:
     """(phase, task_ids) of the user's latest tracked import at each import
     status publish. Takes _imports_lock, so a publish made while holding it
@@ -574,11 +575,11 @@ def _tracked_state_at_each_publish(
     seen: list[tuple[str, list[str]] | None] = []
     publish = events.publish
 
-    def _publish(user_id: int) -> None:
+    def _publish(user_id: int, topic: UserEventTopic) -> None:
         with import_routes._imports_lock:
             found = import_routes._lookup_import_locked("", user_id)
         seen.append((found[1].phase, list(found[1].task_ids)) if found else None)
-        publish(user_id)
+        publish(user_id, topic)
 
     monkeypatch.setattr(events, "publish", _publish)
     return seen
@@ -586,10 +587,10 @@ def _tracked_state_at_each_publish(
 
 def test_partial_dispatch_failure_revokes_prior_batches_and_returns_tracked_error(
     monkeypatch: pytest.MonkeyPatch,
-    isolated_import_status_events: RecordingImportStatusEvents,
+    isolated_user_events: RecordingUserEvents,
 ) -> None:
     _clear_tracked_imports()
-    published = _tracked_state_at_each_publish(monkeypatch, isolated_import_status_events)
+    published = _tracked_state_at_each_publish(monkeypatch, isolated_user_events)
     try:
         # 25 urls -> two batches of [20, 5]; the second .delay() raises.
         extracted_urls = [{"url": f"https://example.com/jobs/{i}"} for i in range(25)]
@@ -623,10 +624,10 @@ def test_partial_dispatch_failure_revokes_prior_batches_and_returns_tracked_erro
 
 def test_full_dispatch_success_records_every_task_id(
     monkeypatch: pytest.MonkeyPatch,
-    isolated_import_status_events: RecordingImportStatusEvents,
+    isolated_user_events: RecordingUserEvents,
 ) -> None:
     _clear_tracked_imports()
-    published = _tracked_state_at_each_publish(monkeypatch, isolated_import_status_events)
+    published = _tracked_state_at_each_publish(monkeypatch, isolated_user_events)
     try:
         extracted_urls = [{"url": f"https://example.com/jobs/{i}"} for i in range(25)]
         _patch_queue_import_capture_prelude(monkeypatch, extracted_urls)

@@ -33,21 +33,18 @@ import logging
 import re
 import threading
 import uuid
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from urllib.error import URLError
 
-import redis
 from celery.result import AsyncResult
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from backend.celery_app import celery_app
 from backend.db import CAPTURE_QUEUE_ORIGIN_LABELS
-from backend.import_status_events import get_import_status_events
 from backend.scanning.captured_page_import_service import CapturedPageImportService
 from backend.scanning.import_dump import dump_import_capture
 from backend.scanning.import_repair import (
@@ -59,6 +56,7 @@ from backend.scanning.import_repair import (
 )
 from backend.scanning.platform_detection import platform_for_site_url, platform_label
 from backend.tasks import run_import_task
+from backend.user_events import UserEventTopic, get_user_events
 from backend.utils.url_safety import UnsafeUrlError
 from backend.utils.utils import (
     current_user_id,
@@ -78,9 +76,6 @@ _IMPORT_BATCH_SIZE = 20
 # version used -- long enough for a real batch to finish, short enough that
 # a dead worker doesn't look "running" indefinitely.
 _STUCK_TASK_TIMEOUT_SECONDS = 900
-# ai: claude-opus-5-5 | 2026-10-24 — see import_status_stream()
-_IMPORT_EVENTS_HEARTBEAT_SECONDS = 25
-_IMPORT_EVENTS_RETRY_MILLISECONDS = 10_000
 
 
 # ─── Active task tracking ─────────────────────────────────────────────────────
@@ -174,7 +169,7 @@ def _set_import_progress(import_id: str, state: ImportProgressState) -> None:
     with _imports_lock:
         _active_imports[import_id] = state
         _prune_finished_imports_locked()
-    get_import_status_events().publish(state.user_id)  # ai: claude-opus-5-5 | 2026-10-24
+    get_user_events().publish(state.user_id, UserEventTopic.IMPORT_STATUS)  # ai: claude-opus-5-5 | 2026-10-28
 
 
 # ai: claude-sonnet-5 | 2026-08-12
@@ -723,7 +718,7 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
             if state is not None:
                 state.task_id = task_ids[0]
                 state.task_ids = task_ids
-        get_import_status_events().publish(user_id)  # ai: claude-opus-5-5 | 2026-10-24
+        get_user_events().publish(user_id, UserEventTopic.IMPORT_STATUS)  # ai: claude-opus-5-5 | 2026-10-28
 
     if dispatch_error is not None:
         for task in tasks:
@@ -755,7 +750,7 @@ def queue_import_capture(body: dict, *, user_id: int, trigger: str = "ui") -> tu
                 state.running = False
                 state.phase = "error"
                 state.message = message
-        get_import_status_events().publish(user_id)  # ai: claude-opus-5-5 | 2026-10-24
+        get_user_events().publish(user_id, UserEventTopic.IMPORT_STATUS)  # ai: claude-opus-5-5 | 2026-10-28
         return {
             "error": message,
             "task_ids": [t.id for t in tasks],
@@ -838,7 +833,7 @@ def reset_import() -> ResponseReturnValue:
         ]
         for key in owned:
             del _active_imports[key]
-    get_import_status_events().publish(user_id)  # ai: claude-opus-5-5 | 2026-10-24
+    get_user_events().publish(user_id, UserEventTopic.IMPORT_STATUS)  # ai: claude-opus-5-5 | 2026-10-28
     logger.info(
         "Import state force-reset by user request%s",
         f" (import_id={import_id})" if import_id else " (all tracked imports)",
@@ -998,44 +993,6 @@ def import_and_queue_all_jobs() -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     payload, status_code = queue_import_capture(body, user_id=current_user_id())
     return jsonify(payload), status_code
-
-
-# ai: claude-opus-5-5 | 2026-10-24
-@import_bp.route("/import/events")
-def import_status_stream() -> ResponseReturnValue:
-    """Server-sent events: an `import` event each time the caller's import
-    status changes (backend/import_status_events.py), so the page re-reads
-    /import/status only then. The event is a signal, never the status itself.
-
-    A comment line every _IMPORT_EVENTS_HEARTBEAT_SECONDS keeps proxies from
-    timing the stream out and makes a closed tab's stream fail on its next
-    write, which ends the generator and its Redis subscription. If Redis is
-    unreachable the stream just ends; the browser reconnects after
-    _IMPORT_EVENTS_RETRY_MILLISECONDS and the page's fallback re-check covers
-    the gap. Each open stream holds one server thread (the threaded dev
-    server); a production WSGI server needs a worker type that tolerates
-    long-lived responses."""
-    user_id = current_user_id()
-
-    def stream() -> Iterator[str]:
-        events = get_import_status_events().listen(user_id, _IMPORT_EVENTS_HEARTBEAT_SECONDS)
-        try:
-            # Nothing is sent until the subscription is in place (listen's first
-            # item), so the page's re-read on `open` can't miss a change.
-            next(events)
-            yield f"retry: {_IMPORT_EVENTS_RETRY_MILLISECONDS}\n\n"
-            for changed in events:
-                yield "event: import\ndata: changed\n\n" if changed else ": keep-alive\n\n"
-        except (redis.RedisError, OSError) as exc:
-            logger.warning("Import status stream for user %s ended: %s", user_id, exc)
-        finally:
-            events.close()  # unsubscribe now, not whenever the generator is collected
-
-    return Response(
-        stream(),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
 
 
 # ai: claude-sonnet-5 | 2026-08-12

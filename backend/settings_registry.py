@@ -165,21 +165,29 @@ SETTINGS: dict[str, SettingSpec] = {
         label="Profile File Path", group="Candidate Profile File Sync",
         placeholder="F:/Documents/Resume/candidate_profile.md",
         help_text="Absolute path to a candidate profile file on this server. When the file is "
-        "saved and is newer than the account's stored profile, its text replaces the stored "
-        "profile. Leave blank to turn sync off.",
+        "saved and is newer than the account's stored profile, that account sees a banner "
+        "to review the changes and load the file. Leave blank to turn this off.",
     ),
     "candidate_profile_sync_account_email": SettingSpec(
         scope="system", is_secret=False, default="",
         label="Account Email", group="Candidate Profile File Sync",
         placeholder="you@example.com",
-        help_text="The account whose profile the file above replaces.",
+        help_text="The account whose profile the file above can replace.",
     ),
     "candidate_profile_sync_last_synced_sha256": SettingSpec(
         scope="system", is_secret=False, default="",
-        label="Last synced profile hash", group="Candidate Profile File Sync",
+        label="Last loaded profile hash", group="Candidate Profile File Sync",
         hidden=True,
-        help_text="Written only by the sync itself; detects a stored profile changed since the "
-        "last sync, which is backed up to a file before being replaced.",
+        help_text="Written only when the file is loaded; detects a stored profile changed since "
+        "then, which is backed up to a file before being replaced.",
+    ),
+    # ai: claude-opus-5-5 | 2026-10-28
+    "candidate_profile_sync_dismissed_sha256": SettingSpec(
+        scope="system", is_secret=False, default="",
+        label="Dismissed profile file hash", group="Candidate Profile File Sync",
+        hidden=True,
+        help_text="The version of the file the account chose not to load; it isn't offered "
+        "again until the file changes.",
     ),
     # ─── Per-user ──────────────────────────────────────────────────────────────
     "anthropic_api_key": SettingSpec(

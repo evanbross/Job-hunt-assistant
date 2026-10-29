@@ -17,6 +17,8 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
+from backend.user_events import UserEventTopic, get_user_events
+
 MAX_PROFILE_CHARS = 100_000
 
 
@@ -40,3 +42,13 @@ def save_candidate_profile(repos: dict[str, Any], user_id: int, content: str) ->
         return False
     profiles.upsert(user_id, content, datetime.now(UTC).isoformat(timespec="seconds"))
     return True
+
+
+# ai: claude-opus-5-5 | 2026-10-28
+def announce_candidate_profile_changed(user_id: int) -> None:
+    """Tell *user_id*'s open pages to re-check whether a profile file is
+    waiting to be loaded (backend/candidate_profile_file_sync.py), since that
+    depends on the stored profile as much as on the file. Call it after the
+    commit, never before: a page re-reading in between would see the old text
+    and get no second signal."""
+    get_user_events().publish(user_id, UserEventTopic.CANDIDATE_PROFILE_FILE)

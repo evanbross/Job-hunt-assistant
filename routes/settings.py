@@ -34,13 +34,14 @@ import logging
 import re
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Annotated, Any
 
 from flask import Blueprint, jsonify, request, session
 from flask.typing import ResponseReturnValue
 from pydantic import (
     BaseModel,
     ConfigDict,
+    StringConstraints,
     ValidationError,
     ValidationInfo,
     field_validator,
@@ -50,10 +51,16 @@ from pydantic import (
 import config
 from backend.candidate_profile_file_sync import (
     SETTING_KEYS as CANDIDATE_PROFILE_SYNC_SETTING_KEYS,
+)
+from backend.candidate_profile_file_sync import (
+    BackupFailedError,
+    FileChangedError,
+    candidate_profile_file_sync,
     notify_sync_settings_changed,
 )
 from backend.candidate_profile_service import (
     CandidateProfileUpdate,
+    announce_candidate_profile_changed,
     save_candidate_profile,
 )
 from backend.resume.resume_file_service import (
@@ -863,6 +870,7 @@ def save_candidate_profile_text() -> ResponseReturnValue:
     # ai: claude-opus-5-5 | 2026-10-28 -- outside the with-block: re-scoring makes
     # an AI call per queued job and opens its own connections for the writes.
     if profile_changed:
+        announce_candidate_profile_changed(user_id)
         rescore_summary = rescore_active_queue_jobs(user_id)
 
     return jsonify(
@@ -872,6 +880,75 @@ def save_candidate_profile_text() -> ResponseReturnValue:
             "rescore_summary": rescore_summary,
         }
     )
+
+
+# ─── Candidate profile file routes ────────────────────────────────────────────
+# ai: claude-opus-5-5 | 2026-10-28
+# The page's "your profile file changed -- review and load?" banner. Each route
+# acts only for the account the admin pointed the file at; anyone else gets
+# state "other_account" and a 409 for the actions. See
+# backend/candidate_profile_file_sync.py.
+
+
+class CandidateProfileFileAction(BaseModel):
+    """POST body for load/dismiss: the version of the file the caller reviewed,
+    so a file saved again in the meantime is refused, not acted on unseen."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+def _parse_file_action() -> CandidateProfileFileAction | None:
+    try:
+        return CandidateProfileFileAction.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return None
+
+
+_FILE_CHANGED_ERROR = "The profile file changed since you reviewed it. Review it again."
+
+
+@settings_bp.route("/candidate-profile/file-sync")
+def get_candidate_profile_file_status() -> ResponseReturnValue:
+    return jsonify(candidate_profile_file_sync.status(current_user_id()).as_dict())
+
+
+@settings_bp.route("/candidate-profile/file-sync/review")
+def review_candidate_profile_file() -> ResponseReturnValue:
+    status, diff = candidate_profile_file_sync.review(current_user_id())
+    return jsonify({**status.as_dict(), "diff": diff})
+
+
+@settings_bp.route("/candidate-profile/file-sync/load", methods=["POST"])
+def load_candidate_profile_file() -> ResponseReturnValue:
+    action = _parse_file_action()
+    if action is None:
+        return jsonify({"error": "Invalid request", "fields": ["file_sha256"]}), 400
+    user_id = current_user_id()
+    try:
+        result = candidate_profile_file_sync.load(user_id, action.file_sha256)
+    except FileChangedError:
+        return jsonify({"error": _FILE_CHANGED_ERROR}), 409
+    except BackupFailedError:
+        return jsonify(
+            {"error": "Could not back up the stored profile, so it was not replaced. Check the server log."}
+        ), 500
+    # Outside the sync's lock and connection, like the Settings save above.
+    rescore_summary = rescore_active_queue_jobs(user_id)
+    return jsonify({"backup_path": result.backup_path, "rescore_summary": rescore_summary})
+
+
+@settings_bp.route("/candidate-profile/file-sync/dismiss", methods=["POST"])
+def dismiss_candidate_profile_file() -> ResponseReturnValue:
+    action = _parse_file_action()
+    if action is None:
+        return jsonify({"error": "Invalid request", "fields": ["file_sha256"]}), 400
+    try:
+        candidate_profile_file_sync.dismiss(current_user_id(), action.file_sha256)
+    except FileChangedError:
+        return jsonify({"error": _FILE_CHANGED_ERROR}), 409
+    return jsonify({"status": "ok"})
 
 
 # ─── Resume routes ────────────────────────────────────────────────────────────

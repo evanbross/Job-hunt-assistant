@@ -56,9 +56,10 @@ os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026"
 
 import config  # noqa: E402
 from backend.db import init_db  # noqa: E402
-from backend.import_status_events import (  # noqa: E402
-    MemoryImportStatusEvents,
-    set_import_status_events,
+from backend.user_events import (  # noqa: E402
+    MemoryUserEvents,
+    UserEventTopic,
+    set_user_events,
 )
 from backend.security.rate_limiter import RateLimiter, set_rate_limiter  # noqa: E402
 from backend.security.task_ownership import (  # noqa: E402
@@ -183,28 +184,29 @@ def isolated_task_ownership() -> Iterator[TaskOwnership]:
 
 
 # ai: claude-opus-5-5 | 2026-10-24
-class RecordingImportStatusEvents(MemoryImportStatusEvents):
-    """In-memory import status signals that also remember who each was for."""
+# ai: claude-opus-5-5 | 2026-10-28 — topics added with backend/user_events.py
+class RecordingUserEvents(MemoryUserEvents):
+    """In-memory user event signals that also remember each (user, topic)."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.published: list[int] = []
+        self.published: list[tuple[int, UserEventTopic]] = []
 
-    def publish(self, user_id: int) -> None:
-        self.published.append(user_id)
-        super().publish(user_id)
+    def publish(self, user_id: int, topic: UserEventTopic) -> None:
+        self.published.append((user_id, topic))
+        super().publish(user_id, topic)
 
 
 # ai: claude-opus-5-5 | 2026-10-24
 @pytest.fixture(autouse=True)
-def isolated_import_status_events() -> Iterator[RecordingImportStatusEvents]:
-    """Import status signals in memory, for the same reason as the rate limiter
-    above: otherwise every tracked import in a test would signal the running app's
-    open pages through the developer's real Redis."""
-    events = RecordingImportStatusEvents()
-    set_import_status_events(events)
+def isolated_user_events() -> Iterator[RecordingUserEvents]:
+    """User event signals in memory, for the same reason as the rate limiter
+    above: otherwise every tracked import in a test would signal the running
+    app's open pages through the developer's real Redis."""
+    events = RecordingUserEvents()
+    set_user_events(events)
     yield events
-    set_import_status_events(None)
+    set_user_events(None)
 
 
 # ai: claude-sonnet-5 | 2026-09-26
