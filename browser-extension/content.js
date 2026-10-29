@@ -402,10 +402,22 @@
       };
     }
 
-    // ai: claude-sonnet-4-6 | 2026-06-17
+    // ai: claude-opus-5-5 | 2026-10-28
+    // The widgets search API (see phenomRefineSearch) sees the filters ticked
+    // on the page, so when it answers its total is the count to report. The
+    // older checks below remain for a Phenom site whose API this can't call.
     if (isPhenomSearchPage()) {
+      const company = phenomCompany();
+      const search = await phenomRefineSearch(0);
+      if (search) {
+        return {
+          site: company,
+          type: 'phenomSearch',
+          jobCount: search.totalHits,
+          description: `${search.totalHits} jobs — fetches every page and each full description`,
+        };
+      }
       const total = await phenomTotalHits();
-      const company = (document.title.match(/[-–]\s*(.+?)\s+Careers/i) || [])[1] || host;
       // ai: claude-sonnet-5 | 2026-10-09
       // See phenomVisibleTotal's comment -- filters applied through Cisco's
       // (or another Phenom site's) UI aren't visible to phenomTotalHits() at
@@ -1758,14 +1770,191 @@
     return null;
   }
 
+  // ai: claude-opus-5-5 | 2026-10-28
+  // Cisco-style "<x> - Cisco Careers" titles carry the company name; CVS's
+  // ("Search CVS Health Jobs | ...") doesn't, so fall back to the hostname.
+  // Captures prefer each job page's JSON-LD hiringOrganization over either.
+  function phenomCompany() {
+    return (document.title.match(/[-–]\s*(.+?)\s+Careers/i) || [])[1] || companyFromHostname();
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-28
+  // The phApp bootstrap script (the inline <script> holding csrfToken) also
+  // holds the site identity every widgets call has to echo back. Its config
+  // comes before the SSR'd job data in that script, so the first match of
+  // each key is the config value rather than a field of some job.
+  function phenomWidgetsConfig() {
+    const script = [...document.querySelectorAll('script:not([src])')]
+      .find(s => s.textContent.includes('"csrfToken"'));
+    if (!script) return null;
+    const read = key => (script.textContent.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`)) || [])[1] || '';
+    const config = {
+      csrfToken: read('csrfToken'),
+      refNum: read('refNum'),
+      pageId: read('pageId'),
+      siteType: read('siteType'),
+      country: read('country'),
+      lang: read('locale').toLowerCase(),
+      deviceType: read('deviceType') || 'desktop',
+    };
+    return config.csrfToken && config.refNum ? config : null;
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-28
+  // Ticked facet checkboxes, in the {field: [values]} shape the widgets API
+  // takes. Confirmed live on jobs.cvshealth.com: every facet checkbox carries
+  // data-ph-at-facetkey="facet-<field>" and data-ph-at-text="<value>".
+  function phenomSelectedFields() {
+    const selected = {};
+    for (const box of document.querySelectorAll('input[data-ph-at-id="facet-checkbox"]:checked')) {
+      const field = (box.getAttribute('data-ph-at-facetkey') || '').replace(/^facet-/, '');
+      const value = box.getAttribute('data-ph-at-text');
+      if (field && value) (selected[field] ||= []).push(value);
+    }
+    return selected;
+  }
+
+  const PHENOM_PAGE_SIZE = 10; // confirmed from siteConfig "size":"10"
+
+  // ai: claude-opus-5-5 | 2026-10-28
+  // One page of the search the user is looking at, via the same POST
+  // <origin>/widgets call Phenom's own JS makes when a filter is ticked.
+  // Worked out live on jobs.cvshealth.com after both older routes failed
+  // there: ticking a filter changes the list without changing the URL, and
+  // a fetch() of a "?from=10&s=1" page URL drops even the keywords (19,749
+  // results instead of 194) because the server only applies its stored
+  // search on a real navigation. Returns null when the page lacks the config,
+  // the call fails, or the total disagrees with the page's own "N results
+  // found" (a filter this can't see, like the location box) -- callers then
+  // use the older routes, so this is never worse than before.
+  async function phenomRefineSearch(from) {
+    const config = phenomWidgetsConfig();
+    if (!config) return null;
+    const { csrfToken, ...site } = config;
+    let result;
+    try {
+      const res = await fetch(location.origin + '/widgets', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+        body: JSON.stringify({
+          ...site,
+          pageName: 'search-results',
+          ddoKey: 'refineSearch',
+          keywords: new URLSearchParams(location.search).get('keywords') || '',
+          selected_fields: phenomSelectedFields(),
+          locationData: {}, // without it the API answers with zero hits
+          from,
+          size: PHENOM_PAGE_SIZE,
+          jobs: true,
+          counts: false,
+          global: true,
+          s: '1',
+        }),
+      });
+      if (!res.ok) return null;
+      result = (await res.json())?.refineSearch;
+    } catch {
+      return null;
+    }
+    const jobs = result?.data?.jobs;
+    if (!Array.isArray(jobs) || typeof result.totalHits !== 'number') return null;
+    const visibleTotal = phenomVisibleTotal();
+    if (visibleTotal != null && visibleTotal !== result.totalHits) return null;
+    return { totalHits: result.totalHits, jobs };
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-28
+  // Search results only carry a ~200-character descriptionTeaser, which the
+  // app discards as too short to score. Each job page has the full posting
+  // in a JobPosting JSON-LD block (9.5k characters on the CVS jobs checked).
+  async function fetchPhenomPosting(jobUrl) {
+    try {
+      const res = await fetch(jobUrl, { credentials: 'include', headers: { Accept: 'text/html,application/xhtml+xml' } });
+      if (!res.ok) return null;
+      return readJobPostingLd(new DOMParser().parseFromString(await res.text(), 'text/html'));
+    } catch {
+      return null;
+    }
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-28
+  // Shared by both capture routes below. posting is the job page's JSON-LD
+  // (null when it wasn't fetched or had none -- the teaser stands in then).
+  function phenomJobEntry(job, fallbackCompany, jobBase, posting) {
+    const title = job.title || '';
+    const slug = title.toLowerCase()
+      .replace(/[–—]/g, '-').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const url = `${jobBase}/job/${job.jobId}/${slug}`;
+    const company = posting?.hiringOrganization?.name || fallbackCompany;
+    const locs = (job.multi_location?.length ? job.multi_location : [job.location])
+      .filter(Boolean).join('; ');
+    // Cisco names the work-arrangement field RemoteType; CVS names it remote.
+    const workEnvironment = job.RemoteType || job.remote;
+    const description = posting?.description ? htmlToText(posting.description) : job.descriptionTeaser;
+
+    const lines = [
+      title,
+      `Company: ${company}`,
+      `URL: ${url}`,
+      locs && `Location: ${locs}`,
+      workEnvironment && `Work Environment: ${workEnvironment}`,
+      description && `\n${description}`,
+    ].filter(Boolean);
+
+    return { url, job_title: title, company, listing_text: lines.join('\n') };
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-28
+  // Every job in the search the user is looking at (filters included), each
+  // with its full description from its own page.
+  async function buildPhenomSearchPayload() {
+    const company = phenomCompany();
+    // Strip "/search-results…" to get the locale prefix for job detail URLs
+    const jobBase = location.origin + location.pathname.replace(/\/search-results.*$/, '');
+
+    const first = await phenomRefineSearch(0);
+    if (!first) return buildPhenomSearchPayloadFromPageUrls(company, jobBase);
+
+    const seen = new Set();
+    const listed = [];
+    const addJobs = jobs => jobs.forEach(job => {
+      if (seen.has(job.jobId)) return;
+      seen.add(job.jobId);
+      listed.push(job);
+    });
+    addJobs(first.jobs);
+
+    const totalPages = Math.ceil(first.totalHits / PHENOM_PAGE_SIZE);
+    for (let page = 1; page < totalPages; page++) {
+      sendProgress(`Listing jobs... page ${page + 1} of ${totalPages}`, undefined);
+      await sleep(400);
+      const next = await phenomRefineSearch(page * PHENOM_PAGE_SIZE);
+      if (!next) break;
+      addJobs(next.jobs);
+    }
+
+    const allJobs = [];
+    for (let i = 0; i < listed.length; i++) {
+      sendProgress(`Fetching job details... (${i + 1}/${listed.length})`, (i + 1) / listed.length);
+      const listingOnly = phenomJobEntry(listed[i], company, jobBase, null);
+      const posting = await fetchPhenomPosting(listingOnly.url);
+      allJobs.push(posting ? phenomJobEntry(listed[i], company, jobBase, posting) : listingOnly);
+      if (i < listed.length - 1) await sleep(400);
+    }
+
+    return allJobs.length
+      ? JSON.stringify({ jobs: allJobs, source: { url: location.href } })
+      : buildHtmlPayload();
+  }
+
   // ai: claude-sonnet-4-6 | 2026-06-17
   // Fetches every page of a Phenom People search-results page and aggregates jobs.
   // Page data is SSR'd into phApp.ddo.eagerLoadRefineSearch inside an inline <script>;
   // we read it from the raw HTML of each fetched page without needing eval or injection.
-  async function buildPhenomSearchPayload() {
-    const company = (document.title.match(/[-–]\s*(.+?)\s+Careers/i) || [])[1]
-      || location.hostname.replace(/^(?:careers|jobs)\./, '').split('.')[0];
-
+  // ai: claude-opus-5-5 | 2026-10-28 — now only the fallback for a Phenom
+  // site whose widgets API phenomRefineSearch() can't call.
+  async function buildPhenomSearchPayloadFromPageUrls(company, jobBase) {
     const totalHits = await phenomTotalHits();
     // ai: claude-sonnet-5 | 2026-10-09
     // Same disagreement check detectPage() already made for the preview
@@ -1784,19 +1973,15 @@
     baseUrl.searchParams.delete('from');
     baseUrl.searchParams.delete('s');
 
-    // Strip "/search-results…" to get the locale prefix for job detail URLs
-    const jobBase = location.origin + location.pathname.replace(/\/search-results.*$/, '');
-
-    const PAGE_SIZE = 10; // confirmed from siteConfig "size":"10"
-    const totalPages = Math.ceil(totalHits / PAGE_SIZE);
+    const totalPages = Math.ceil(totalHits / PHENOM_PAGE_SIZE);
     const seen = new Set();
     const allJobs = [];
 
     for (let page = 0; page < totalPages; page++) {
-      const from = page * PAGE_SIZE;
+      const from = page * PHENOM_PAGE_SIZE;
       sendProgress(
         `Fetching page ${page + 1} of ${totalPages}…`,
-        Math.min(from + PAGE_SIZE, totalHits) / totalHits
+        Math.min(from + PHENOM_PAGE_SIZE, totalHits) / totalHits
       );
 
       const pageUrl = new URL(baseUrl.href);
@@ -1817,27 +2002,10 @@
       for (const job of refineSearch.data.jobs) {
         if (seen.has(job.jobId)) continue;
         seen.add(job.jobId);
-
-        const title = job.title || '';
-        const slug = title.toLowerCase()
-          .replace(/[–—]/g, '-').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-        const url = `${jobBase}/job/${job.jobId}/${slug}`;
-        const locs = (job.multi_location?.length ? job.multi_location : [job.location])
-          .filter(Boolean).join('; ');
-
-        const lines = [
-          title,
-          `Company: ${company}`,
-          `URL: ${url}`,
-          locs && `Location: ${locs}`,
-          job.RemoteType && `Work Environment: ${job.RemoteType}`,
-          job.descriptionTeaser && `\n${job.descriptionTeaser}`,
-        ].filter(Boolean);
-
-        allJobs.push({ url, job_title: title, company, listing_text: lines.join('\n') });
+        allJobs.push(phenomJobEntry(job, company, jobBase, null));
       }
 
-      if (from + PAGE_SIZE < totalHits) await sleep(400);
+      if (from + PHENOM_PAGE_SIZE < totalHits) await sleep(400);
     }
 
     return allJobs.length
@@ -2927,10 +3095,14 @@
     const relNext = document.querySelector('a[rel="next"]');
     if (relNext && isSafeToClick(relNext)) return relNext;
 
-    const ariaNext = document.querySelector(
+    // ai: claude-opus-5-5 | 2026-10-28
+    // Check every match, not just the first: jobs.cvshealth.com puts hidden
+    // carousel arrows (aria-label="view next slide") ahead of the real
+    // pagination control, and stopping at the first one found no Next at all.
+    const ariaNext = [...document.querySelectorAll(
       'a[aria-label="Next"], a[aria-label*="next" i], button[aria-label="Next"], button[aria-label*="next" i]'
-    );
-    if (ariaNext && isSafeToClick(ariaNext)) return ariaNext;
+    )].find(isSafeToClick);
+    if (ariaNext) return ariaNext;
 
     for (const el of document.querySelectorAll('a, button')) {
       const text = (el.innerText || el.textContent || '').trim();

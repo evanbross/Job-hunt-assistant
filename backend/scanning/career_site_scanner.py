@@ -40,10 +40,11 @@ import re
 import socket
 import ssl
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from html import unescape
 from html.parser import HTMLParser
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 from urllib.error import URLError
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse, urlunparse
 from urllib.request import Request
@@ -316,6 +317,63 @@ _LD_JSON_SCRIPT_RE = re.compile(
 )
 
 
+# ai: claude-fable-5 | 2026-07-17
+# ai: claude-opus-5-5 | 2026-10-28 — moved here from import_repair.py so both
+# modules share one JSON-LD walker; now also unwraps a WebPage's mainEntity.
+def _iter_ld_nodes(data: object) -> Iterator[dict[str, Any]]:
+    """Yield every JSON-LD object in a parsed block, descending into lists,
+    @graph containers, and a WebPage's mainEntity."""
+    if isinstance(data, list):
+        for item in data:
+            yield from _iter_ld_nodes(item)
+    elif isinstance(data, dict):
+        yield data
+        yield from _iter_ld_nodes(data.get("@graph", []))
+        yield from _iter_ld_nodes(data.get("mainEntity", []))
+
+
+# ai: claude-opus-5-5 | 2026-10-28
+def iter_job_postings_ld(page_html: str) -> Iterator[dict[str, Any]]:
+    """Yield every schema.org JobPosting object in a page's JSON-LD blocks."""
+    for match in _LD_JSON_SCRIPT_RE.finditer(page_html):
+        try:
+            data = json.loads(match.group("json").strip())
+        except json.JSONDecodeError:
+            continue
+        for node in _iter_ld_nodes(data):
+            if node.get("@type") == "JobPosting":
+                yield node
+
+
+# ai: claude-opus-5-5 | 2026-10-28
+# Below this a JobPosting block is treated as a stub and the page is read
+# instead -- the same bar manual_job_ingest_service.py sets for a captured
+# description being worth keeping.
+_MIN_JOB_POSTING_LD_DESCRIPTION_CHARS = 400
+
+
+# ai: claude-opus-5-5 | 2026-10-28
+def _job_posting_ld_location(posting: dict[str, Any]) -> str:
+    """'Remote' for a TELECOMMUTE posting, else its first jobLocation's
+    "City, Region"."""
+    if str(posting.get("jobLocationType") or "").upper() == "TELECOMMUTE":
+        return "Remote"
+    locations = posting.get("jobLocation")
+    first = locations[0] if isinstance(locations, list) and locations else locations
+    address = first.get("address") if isinstance(first, dict) else None
+    if not isinstance(address, dict):
+        return ""
+    parts = (address.get("addressLocality"), address.get("addressRegion"))
+    return ", ".join(_clean_text(str(part)) for part in parts if part)
+
+
+# ai: claude-opus-5-5 | 2026-10-28
+def _job_posting_ld_employment_type(posting: dict[str, Any]) -> str:
+    employment = posting.get("employmentType")
+    values = employment if isinstance(employment, list) else [employment]
+    return ", ".join(_clean_text(str(value)).replace("_", " ").title() for value in values if value)
+
+
 def _wttj_canonical_url(url: str) -> str | None:
     """Strip query string/fragment from a WTTJ job URL, or None if there's none to strip.
 
@@ -342,13 +400,7 @@ def _wttj_ats_url_from_html(page_html: str) -> str | None:
     (including workplace type / hybrid-vs-remote) instead of WTTJ's own sparser
     aggregator copy.
     """
-    for match in _LD_JSON_SCRIPT_RE.finditer(page_html):
-        try:
-            data = json.loads(match.group("json").strip())
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(data, dict) or data.get("@type") != "JobPosting":
-            continue
+    for data in iter_job_postings_ld(page_html):
         identifier = data.get("identifier")
         url = identifier.get("value") if isinstance(identifier, dict) else identifier
         if not isinstance(url, str):
@@ -1405,6 +1457,23 @@ class CareerSiteScanner:
                 "scan_single_job_url: Ashby extraction found nothing, falling through to generic parser"
             )
 
+        # ai: claude-opus-5-5 | 2026-10-28
+        # A JobPosting JSON-LD block is the posting itself, written for search
+        # engines; the visible page around it can be anything. CVS Health's
+        # Phenom job pages carry a ~9.5k-character description there, while
+        # the generic parser below scraped 1.7k characters of chrome (a hidden
+        # "this job has been filled" template, carousel copy) -- short enough
+        # that every CVS capture was discarded as too short to score.
+        ld_job = self._job_from_job_posting_ld(site_name, final_url, page_html)
+        if ld_job is not None:
+            logger.info(
+                "scan_single_job_url: JobPosting JSON-LD used, completed in %.1fs total, "
+                "job_text length=%d",
+                time.monotonic() - t0,
+                len(ld_job["job_text"]),
+            )
+            return ld_job
+
         logger.info("scan_single_job_url: parsing HTML with generic detail-page parser")
         result = self._job_from_detail_page(site_name, final_url, page_html)
         # ai: claude-opus-5-5 | 2026-10-13
@@ -1674,6 +1743,47 @@ class CareerSiteScanner:
                 )
             )
         return _unique_jobs(jobs)
+
+    # ai: claude-opus-5-5 | 2026-10-28
+    def _job_from_job_posting_ld(
+        self, site_name: str, job_url: str, page_html: str
+    ) -> CareerSiteJob | None:
+        """The page's JobPosting JSON-LD as a job, or None when it has none
+        with a real description (some sites ship a title-only stub, which
+        would be worse than reading the page)."""
+        for posting in iter_job_postings_ld(page_html):
+            description = _html_to_text(str(posting.get("description") or ""))
+            if len(description) < _MIN_JOB_POSTING_LD_DESCRIPTION_CHARS:
+                continue
+            title = _clean_text(str(posting.get("title") or "")) or UNTITLED_JOB_TITLE
+            org = posting.get("hiringOrganization")
+            company = _clean_text(str(org.get("name") or "")) if isinstance(org, dict) else ""
+            metadata = ". ".join(
+                part
+                for part in (
+                    _job_posting_ld_location(posting),
+                    _job_posting_ld_employment_type(posting),
+                )
+                if part
+            )
+            text = f"{metadata}. {description}" if metadata else description
+            date_posted = str(posting.get("datePosted") or "")
+            posted_at = date_posted[:10] if re.match(r"\d{4}-\d{2}-\d{2}", date_posted) else None
+            confidence_level, confidence_score = _confidence_for(title, text)
+            job = CareerSiteJob(
+                site_name=site_name,
+                site_url=job_url,
+                job_title=title[:300],
+                job_url=job_url,
+                job_text=text[:8000],
+                posted_at=posted_at,
+                confidence_level=confidence_level,
+                confidence_score=confidence_score,
+            )
+            if company:
+                job["company"] = company
+            return job
+        return None
 
     def _job_from_detail_page(
         self, site_name: str, job_url: str, page_html: str

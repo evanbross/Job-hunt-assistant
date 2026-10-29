@@ -27,10 +27,8 @@
 
 from __future__ import annotations
 
-import json  # ai: claude-fable-5 | 2026-07-17
-import re
 import time  # ai: claude-sonnet-5 | 2026-10-08
-from collections.abc import Collection, Iterator  # ai: claude-fable-5 | 2026-07-17
+from collections.abc import Collection  # ai: claude-fable-5 | 2026-07-17
 from typing import Any, Protocol
 from urllib.error import (
     HTTPError as UrllibHTTPError,  # ai: claude-sonnet-5 | 2026-10-08
@@ -43,6 +41,7 @@ from backend.email.email_parser import (  # ai: claude-fable-5 | 2026-07-17
 from backend.scanning.career_site_scanner import (
     UNTITLED_JOB_TITLE,
     CareerSiteScanner,
+    iter_job_postings_ld,
     split_linkedin_page_title,
 )
 from backend.scanning.closed_req_scan_helpers import (  # ai: claude-sonnet-5 | 2026-10-08
@@ -322,24 +321,6 @@ def repair_existing_job_company(
     return True
 
 
-_LD_JSON_SCRIPT_RE = re.compile(
-    r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-# ai: claude-fable-5 | 2026-07-17
-def _iter_ld_nodes(data: object) -> Iterator[dict[str, Any]]:
-    """Yield every JSON-LD object in a parsed block, descending into lists
-    and @graph containers."""
-    if isinstance(data, list):
-        for item in data:
-            yield from _iter_ld_nodes(item)
-    elif isinstance(data, dict):
-        yield data
-        yield from _iter_ld_nodes(data.get("@graph", []))
-
-
 # ai: claude-fable-5 | 2026-07-17
 # ai: claude-sonnet-5 | 2026-10-06 — renamed from wttj_page_title_company: the
 # parsing is generic schema.org JobPosting extraction, not WTTJ-specific, and
@@ -353,22 +334,13 @@ def job_posting_title_company_from_html(page_html: str) -> tuple[str, str]:
     guesses. Returns ("", "") when no JobPosting block is present (e.g. a
     removed listing or an error page).
     """
-    for raw_block in _LD_JSON_SCRIPT_RE.findall(page_html):
-        try:
-            data = json.loads(raw_block)
-        except json.JSONDecodeError:
+    for node in iter_job_postings_ld(page_html):  # ai: claude-opus-5-5 | 2026-10-28
+        title = str(node.get("title") or "").strip()
+        if not title:
             continue
-        for node in _iter_ld_nodes(data):
-            if node.get("@type") != "JobPosting":
-                continue
-            title = str(node.get("title") or "").strip()
-            if not title:
-                continue
-            org = node.get("hiringOrganization")
-            company = (
-                str(org.get("name") or "").strip() if isinstance(org, dict) else ""
-            )
-            return title, company
+        org = node.get("hiringOrganization")
+        company = str(org.get("name") or "").strip() if isinstance(org, dict) else ""
+        return title, company
     return "", ""
 
 

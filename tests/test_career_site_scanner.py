@@ -25,6 +25,7 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
+import json
 from unittest.mock import patch
 from urllib.parse import urlparse
 
@@ -53,6 +54,7 @@ from backend.scanning.career_site_scanner import (
     _wttj_ats_url_from_html,
     _wttj_canonical_url,
     is_job_board_url,
+    iter_job_postings_ld,
     validate_board_scan,
     validate_extraction,
 )
@@ -1000,3 +1002,77 @@ def test_validate_board_scan_fails_when_every_job_low_confidence() -> None:
     check = validate_board_scan(outcome)
     assert not check["ok"]
     assert "confidence" in (check["reason"] or "")
+
+
+# ai: claude-opus-5-5 | 2026-10-28
+def _scan_single_page(url: str, page_html: str) -> CareerSiteJob:
+    scanner = CareerSiteScanner()
+    with patch("backend.scanning.career_site_scanner.safe_urlopen") as mock_urlopen:
+        mock_resp = mock_urlopen.return_value.__enter__.return_value
+        mock_resp.read.return_value = page_html.encode("utf-8")
+        mock_resp.headers.get_content_charset.return_value = "utf-8"
+        mock_resp.geturl.return_value = url
+        return scanner.scan_single_job_url("", url)
+
+
+# ai: claude-opus-5-5 | 2026-10-28
+def _job_posting_page(posting: dict, chrome: str) -> str:
+    return (
+        "<html><head><title>Staff Engineer in Work at Home | CVS Health Job</title>"
+        f'<script type="application/ld+json">{json.dumps(posting)}</script></head>'
+        f"<body>{chrome}</body></html>"
+    )
+
+
+# ai: claude-opus-5-5 | 2026-10-28
+def test_scan_single_job_url_prefers_job_posting_json_ld_over_page_chrome() -> None:
+    """2026-10-28 CVS Health bug: the generic parser read a Phenom job page's
+    hidden "job has been filled" template and carousel copy instead of the
+    posting, and every capture was discarded as too short to score."""
+    posting = {
+        "@context": "https://schema.org",
+        "@type": "JobPosting",
+        "title": "Staff Software Development Engineer",
+        "description": "<p>" + "Build digital health platforms at scale. " * 20 + "</p>",
+        "hiringOrganization": {"@type": "Organization", "name": "CVS Health"},
+        "jobLocationType": "TELECOMMUTE",
+        "employmentType": "FULL_TIME",
+        "datePosted": "2026-09-01T00:00:00.000Z",
+    }
+    chrome = "<p>We're sorry, the job you are trying to apply for has been filled.</p>"
+
+    job = _scan_single_page(
+        "https://jobs.cvshealth.com/us/en/job/R0993767",
+        _job_posting_page(posting, chrome),
+    )
+
+    assert job["job_title"] == "Staff Software Development Engineer"
+    assert job["company"] == "CVS Health"
+    assert job["job_text"].startswith("Remote. Full Time. Build digital health platforms")
+    assert "has been filled" not in job["job_text"]
+    assert job["posted_at"] == "2026-09-01"
+
+
+# ai: claude-opus-5-5 | 2026-10-28
+def test_scan_single_job_url_reads_the_page_when_json_ld_is_a_stub() -> None:
+    posting = {"@type": "JobPosting", "title": "Engineer", "description": "Apply now."}
+    chrome = "<main><p>" + "The real posting text lives in the page. " * 20 + "</p></main>"
+
+    job = _scan_single_page(
+        "https://careers.example.com/job/123", _job_posting_page(posting, chrome)
+    )
+
+    assert "The real posting text lives in the page." in job["job_text"]
+
+
+# ai: claude-opus-5-5 | 2026-10-28
+def test_iter_job_postings_ld_unwraps_graph_and_main_entity() -> None:
+    page_html = (
+        '<script type="application/ld+json">'
+        + json.dumps({"@graph": [{"@type": "WebSite"}, {"@type": "JobPosting", "title": "A"}]})
+        + "</script><script type='application/ld+json'>"
+        + json.dumps({"@type": "WebPage", "mainEntity": {"@type": "JobPosting", "title": "B"}})
+        + "</script>"
+    )
+
+    assert [posting["title"] for posting in iter_job_postings_ld(page_html)] == ["A", "B"]
