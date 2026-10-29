@@ -210,7 +210,12 @@ def post_repair_duplicate_check(
     company = str(fixed_job.get("company") or "")
     candidates = [j for j in all_jobs if int(j.get("id", -1)) != job_id]
     match = (
-        DuplicateChecker().check(job_title=job_title, company=company, sheet_jobs=candidates)
+        DuplicateChecker().check(
+            job_title=job_title,
+            company=company,
+            job_url=str(fixed_job.get("url") or ""),
+            sheet_jobs=candidates,
+        )
         if job_title and company
         else None
     )
@@ -238,21 +243,9 @@ def post_repair_duplicate_check(
         f'(title match: {match["title_score"]}%, '
         f'company match: {match["company_score"]}%)'
     )
-    # ai: claude-sonnet-4-6 | 2026-06-09
-    matched_job = next(
-        (
-            j
-            for j in candidates
-            if (j.get("company") or "") == match["sheet_company"]
-            and (j.get("job_title") or "") == match["sheet_title"]
-        ),
-        None,
-    )
-    duplicate_of_id = (
-        int(matched_job["id"])
-        if matched_job and matched_job.get("id") is not None
-        else None
-    )
+    # ai: claude-opus-5-5 | 2026-10-29
+    matched_id = match["row"].get("id")
+    duplicate_of_id = int(matched_id) if matched_id is not None else None
     # ai: claude-sonnet-5 | 2026-10-09
     # duplicate_hint/duplicate_of_id are pointer fields -- always safe to
     # write. status is the one field that's real user progress once it's

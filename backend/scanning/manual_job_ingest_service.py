@@ -354,6 +354,7 @@ class ManualJobIngestService:
         duplicate_hint, duplicate_of_id = self._duplicate_hint_for(
             job_title=job_title,
             company=company,
+            job_url=url,
             sheet_jobs=live_sheet_jobs,
         )
 
@@ -432,6 +433,7 @@ class ManualJobIngestService:
         *,
         job_title: str,
         company: str,
+        job_url: str,
         sheet_jobs: list[dict[str, Any]],
     ) -> tuple[str | None, int | None]:
         if not sheet_jobs or not job_title or not company:
@@ -439,6 +441,7 @@ class ManualJobIngestService:
         duplicate_match = self._duplicate_checker.check(
             job_title=job_title,
             company=company,
+            job_url=job_url,
             sheet_jobs=sheet_jobs,
         )
         if not duplicate_match:
@@ -449,16 +452,7 @@ class ManualJobIngestService:
             f"(title match: {duplicate_match['title_score']}%, "
             f"company match: {duplicate_match['company_score']}%)"
         )
-        matched_job = next(
-            (
-                j
-                for j in sheet_jobs
-                if (j.get("company") or "") == duplicate_match["sheet_company"]
-                and (j.get("job_title") or "") == duplicate_match["sheet_title"]
-            ),
-            None,
-        )
-        matched_id = matched_job.get("id") if matched_job else None
+        matched_id = duplicate_match["row"].get("id")  # ai: claude-opus-5-5 | 2026-10-29
         return hint, (int(matched_id) if matched_id is not None else None)
 
     @staticmethod

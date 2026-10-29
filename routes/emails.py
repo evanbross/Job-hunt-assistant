@@ -120,19 +120,10 @@ def find_existing_email_job_match(
     match = dedup_checker.check(
         job_title=str(parsed.get("job_title") or ""),
         company=str(parsed.get("company") or ""),
+        job_url=parsed_url,
         sheet_jobs=candidates,
     )
-    if not match:
-        return None
-    return next(
-        (
-            c
-            for c in candidates
-            if (c.get("company") or "") == match["sheet_company"]
-            and (c.get("job_title") or "") == match["sheet_title"]
-        ),
-        None,
-    )
+    return match["row"] if match else None  # ai: claude-opus-5-5 | 2026-10-29
 
 
 # ─── Scanned email routes ────────────────────────────────────────────────────

@@ -159,7 +159,7 @@ def test_duplicate_checker_itself_skips_req_closed_rows() -> None:
     closed = _tapcart_row(status="skipped", skip_reason="req_closed")
     flagged = _tapcart_row(id=2670, status="applied", is_req_closed=True)
     open_row = _tapcart_row(id=2671)
-    kwargs = {"job_title": "Sr. Full Stack Engineer", "company": "Tapcart"}
+    kwargs = {"job_title": "Sr. Full Stack Engineer", "company": "Tapcart", "job_url": ""}
     assert checker.check(sheet_jobs=[closed, flagged], **kwargs) is None
     assert checker.check(sheet_jobs=[closed, flagged, open_row], **kwargs) is not None
 

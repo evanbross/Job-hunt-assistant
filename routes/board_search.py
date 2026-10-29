@@ -276,7 +276,7 @@ def run_board_search_task(self, user_id: int) -> dict:
             # Fuzzy company+title dedup against sheet and existing DB rows
             if all_known_jobs and company and title:
                 if dup_checker.check(
-                    job_title=title, company=company, sheet_jobs=all_known_jobs
+                    job_title=title, company=company, job_url=url or "", sheet_jobs=all_known_jobs
                 ):
                     fuzzy_duplicates_skipped += 1
                     _update_board(

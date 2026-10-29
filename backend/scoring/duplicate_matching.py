@@ -17,11 +17,10 @@ normalization)."""
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Collection
-from urllib.parse import parse_qs, urlparse
 
 from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.scoring.posting_identity import is_same_posting
 from backend.scoring.skip_reasons import is_req_closed_job_row
 
 # Thresholds for treating a duplicate match as near-certain enough to auto-skip
@@ -53,40 +52,6 @@ def dismissed_duplicate_ids(job: dict) -> set[int]:
     return ids
 
 
-def extract_ashby_job_id(url: str) -> str | None:
-    """Return the Ashby job ID from an ashbyhq.com URL, or None for any other URL."""
-    if not url:
-        return None
-    try:
-        parsed = urlparse(url)
-        if "ashbyhq.com" not in parsed.netloc.lower():
-            return None
-        params = parse_qs(parsed.query)
-        job_id = (params.get("jobId") or params.get("ashby_jid") or [None])[0]
-        return job_id.strip() if isinstance(job_id, str) and job_id.strip() else None
-    except Exception:
-        return None
-
-
-def extract_linkedin_job_id(url: str) -> str | None:
-    """Return the LinkedIn numeric job ID from a linkedin.com jobs URL, or None.
-
-    LinkedIn sends different tracking URLs for the same posting across emails
-    (different trackingId, refId, etc.) but the job ID in the path is stable:
-      /jobs/view/4385602723/  →  "4385602723"
-    """
-    if not url:
-        return None
-    try:
-        parsed = urlparse(url)
-        if "linkedin.com" not in parsed.netloc.lower():
-            return None
-        m = re.search(r"/jobs/view/(\d+)", parsed.path)
-        return m.group(1) if m else None
-    except Exception:
-        return None
-
-
 # ai: claude-sonnet-4-6 | 2026-06-10
 def db_match_for_job(
     *,
@@ -109,7 +74,7 @@ def db_match_for_job(
     of (see dismissed_duplicate_ids); they are dropped from both candidate lists so
     no later re-score can resurrect a match the user has settled.
 
-    An exact URL/job-id match is otherwise flagged regardless of the matched job's
+    An exact URL/job-id match (see posting_identity.is_same_posting) is otherwise flagged regardless of the matched job's
     status — it is literally the same posting, and jobs.url carries a per-user unique
     index (jobs_url_unique_idx), so failing to recognise it would turn a re-import
     into a DuplicateJobUrlError rather than a clean "already tracked" result. Fuzzy
@@ -121,28 +86,11 @@ def db_match_for_job(
     known_jobs = [row for row in known_jobs if row.get("id") not in skip_ids]
 
     current_job_url = job_url.strip()
-    current_ashby_job_id = extract_ashby_job_id(current_job_url)
-    current_linkedin_job_id = extract_linkedin_job_id(current_job_url)
 
+    # ai: claude-opus-5-5 | 2026-10-29 -- is_same_posting covers the exact URL and
+    # every site job ID posting_identity knows (Ashby, LinkedIn, Phenom req IDs).
     exact_match = next(
-        (
-            row
-            for row in known_jobs
-            if (row.get("url") or "").strip()
-            and (
-                (row.get("url") or "").strip().lower() == current_job_url.lower()
-                or (
-                    current_ashby_job_id is not None
-                    and extract_ashby_job_id((row.get("url") or "").strip())
-                    == current_ashby_job_id
-                )
-                or (
-                    current_linkedin_job_id is not None
-                    and extract_linkedin_job_id((row.get("url") or "").strip())
-                    == current_linkedin_job_id
-                )
-            )
-        ),
+        (row for row in known_jobs if is_same_posting(row.get("url") or "", current_job_url)),
         None,
     )
     if exact_match is not None:
@@ -171,33 +119,25 @@ def db_match_for_job(
     # req-closed "Sr. React Native Engineer" on a 75% title score.) Only the
     # fuzzy path is filtered; an exact URL match is the same posting and must
     # still be recognised — see the docstring. DuplicateChecker.check skips
-    # these rows too; filtering here as well keeps the `matched` lookup below
-    # from landing on a req-closed row that shares the winner's company/title.
+    # these rows too.
     fuzzy_candidates = [row for row in known_jobs if not is_req_closed_job_row(row)]
     dup = dedup_checker.check(
         job_title=job_title,
         company=company,
+        job_url=current_job_url,
         sheet_jobs=fuzzy_candidates,
     )
     if dup is None:
         return None, None, None, None, None
 
-    matched = next(
-        (
-            row
-            for row in fuzzy_candidates
-            if (row.get("company") or "") == dup["sheet_company"]
-            and (row.get("job_title") or "") == dup["sheet_title"]
-        ),
-        None,
-    )
-    tracked_status = ((matched or {}).get("status") or "Tracked").strip()
+    matched = dup["row"]  # ai: claude-opus-5-5 | 2026-10-29
+    tracked_status = (matched.get("status") or "Tracked").strip()
     duplicate_hint = (
         f"Possible duplicate of \"{dup['sheet_title']}\" "
         f"at {dup['sheet_company']} already tracked "
         f"(title match: {dup['title_score']}%, company match: {dup['company_score']}%)"
     )
-    matched_id = matched.get("id") if matched else None
+    matched_id = matched.get("id")
     match_scores: dict[str, int] = {
         "title_score": dup["title_score"],
         "company_score": dup["company_score"],

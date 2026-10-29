@@ -43,8 +43,8 @@ from flask import Flask
 from flask.testing import FlaskClient
 
 import routes.import_ as import_routes
-from routes.import_ import ImportProgressState, import_bp
 from backend.user_events import UserEventTopic
+from routes.import_ import ImportProgressState, import_bp
 from tests.conftest import RecordingUserEvents
 
 _USER_ID = 1

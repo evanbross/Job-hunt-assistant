@@ -329,17 +329,12 @@ def _find_duplicate_original(
         return None
     candidates = [j for j in known_jobs if int(j.get("id") or 0) != new_id]
     match = DuplicateChecker().check(
-        job_title=job_title, company=company, sheet_jobs=candidates
+        job_title=job_title,
+        company=company,
+        job_url=str(new_job.get("url") or ""),
+        sheet_jobs=candidates,
     )
-    if not match:
-        return None
-    for job in candidates:
-        if (
-            str(job.get("company") or "") == match["sheet_company"]
-            and str(job.get("job_title") or "") == match["sheet_title"]
-        ):
-            return job
-    return None
+    return match["row"] if match else None  # ai: claude-opus-5-5 | 2026-10-29
 
 
 # ai: claude-opus-5-5 | 2026-10-24

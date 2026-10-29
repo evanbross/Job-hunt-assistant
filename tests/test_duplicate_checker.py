@@ -24,6 +24,7 @@ def _match(title_a: str, title_b: str) -> bool:
     result = checker.check(
         job_title=title_a,
         company="Acme",
+        job_url="",
         sheet_jobs=[{"company": "Acme", "job_title": title_b}],
     )
     return result is not None

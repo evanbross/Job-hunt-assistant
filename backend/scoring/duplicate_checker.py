@@ -34,6 +34,7 @@ from typing import TypedDict
 
 from rapidfuzz import fuzz
 
+from backend.scoring.posting_identity import are_distinct_postings
 from backend.scoring.skip_reasons import is_req_closed_job_row
 
 # Regex substitutions applied after lowercasing.
@@ -126,6 +127,10 @@ class DuplicateMatch(TypedDict):
     sheet_title: str
     company_score: int
     title_score: int
+    # ai: claude-opus-5-5 | 2026-10-29 -- the matched sheet_jobs row itself, so
+    # callers needn't re-find it by company+title, which can land on a
+    # different same-titled row (several CVS openings share a title).
+    row: dict
 
 
 def _split_camel_case(text: str) -> str:
@@ -231,13 +236,17 @@ class DuplicateChecker:
         self,
         job_title: str,
         company: str,
+        job_url: str,
         sheet_jobs: list[dict],
     ) -> DuplicateMatch | None:
         """
         Returns the best-matching sheet row as a DuplicateMatch, or None if no
         row clears both thresholds.
 
-        sheet_jobs: list of dicts with at least 'company' and 'job_title' keys.
+        job_url: the checked job's URL ("" when it has none). Required so no
+        caller can skip the distinct-posting rule below.
+        sheet_jobs: list of dicts with at least 'company' and 'job_title' keys
+        ('url' and 'id' when known).
         """
         norm_title = _normalize(job_title)
         own_seniority = _extract_seniority(norm_title)
@@ -259,6 +268,11 @@ class DuplicateChecker:
             # one place every fuzzy caller funnels through, so no call site can
             # forget it.
             if is_req_closed_job_row(row):
+                continue
+            # ai: claude-opus-5-5 | 2026-10-29
+            # Different job IDs on the same site are separate openings, however
+            # alike their titles (CVS lists several same-titled requisitions).
+            if are_distinct_postings(job_url, row.get("url") or ""):
                 continue
 
             # ai: claude-sonnet-5 | 2026-09-22 — extracted to _company_similarity, reused by companies_match
@@ -304,6 +318,7 @@ class DuplicateChecker:
                         sheet_title=sheet_title_raw,
                         company_score=c_score,
                         title_score=t_score,
+                        row=row,
                     )
 
         return best

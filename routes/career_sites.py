@@ -71,7 +71,7 @@ from backend.scoring.auto_reject_rules import (
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
 )
 from backend.scoring.duplicate_checker import DuplicateChecker
-from backend.scoring.duplicate_matching import db_match_for_job, extract_ashby_job_id
+from backend.scoring.duplicate_matching import db_match_for_job
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_enrichment import enrich_job_description, is_richer_description
 from backend.scoring.job_validator import (
@@ -801,61 +801,16 @@ def run_career_site_scan_task(
             site_duplicate_count = 0
             site_ignored_reasons: Counter[str] = Counter()
             for job in jobs:
-                sheet_status: str | None = None
-                tracking_source: str | None = None
                 current_job_url = (job.get("job_url") or "").strip()
-                current_ashby_job_id = extract_ashby_job_id(current_job_url)
-
-                exact_match = next(
-                    (
-                        row
-                        for row in known_jobs
-                        if (row.get("url") or "").strip()
-                        and (
-                            (row.get("url") or "").strip().lower()
-                            == current_job_url.lower()
-                            or (
-                                current_ashby_job_id is not None
-                                and extract_ashby_job_id(
-                                    (row.get("url") or "").strip()
-                                )
-                                == current_ashby_job_id
-                            )
-                        )
-                    ),
-                    None,
+                # ai: claude-opus-5-5 | 2026-10-29 -- was an inline copy of
+                # db_match_for_job that only knew Ashby job IDs.
+                sheet_status, tracking_source, _hint, _dup_id, _scores = db_match_for_job(
+                    job_title=str(job.get("job_title") or ""),
+                    company=str(job.get("site_name") or ""),
+                    job_url=current_job_url,
+                    known_jobs=known_jobs,
+                    dedup_checker=dedup_checker,
                 )
-                if exact_match is not None:
-                    sheet_status = (
-                        exact_match.get("status") or ""
-                    ).strip() or "Tracked"
-                    tracking_source = "db_url"
-                elif (
-                    (job.get("site_name") or "").strip()
-                    and (job.get("job_title") or "").strip()
-                    and known_jobs
-                ):
-                    dup = dedup_checker.check(
-                        job_title=job["job_title"],
-                        company=job["site_name"],
-                        sheet_jobs=known_jobs,
-                    )
-                    if dup is not None:
-                        matched = next(
-                            (
-                                row
-                                for row in known_jobs
-                                if (row.get("company") or "")
-                                == dup["sheet_company"]
-                                and (row.get("job_title") or "")
-                                == dup["sheet_title"]
-                            ),
-                            None,
-                        )
-                        sheet_status = (
-                            (matched or {}).get("status") or "Tracked"
-                        ).strip()
-                        tracking_source = "db_fuzzy"
 
                 local_job = local_job_by_url.get(current_job_url)
                 local_status = (local_job or {}).get("status")

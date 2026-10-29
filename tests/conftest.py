@@ -56,16 +56,16 @@ os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026"
 
 import config  # noqa: E402
 from backend.db import init_db  # noqa: E402
-from backend.user_events import (  # noqa: E402
-    MemoryUserEvents,
-    UserEventTopic,
-    set_user_events,
-)
 from backend.security.rate_limiter import RateLimiter, set_rate_limiter  # noqa: E402
 from backend.security.task_ownership import (  # noqa: E402
     MemoryOwnerStore,
     TaskOwnership,
     set_task_ownership,
+)
+from backend.user_events import (  # noqa: E402
+    MemoryUserEvents,
+    UserEventTopic,
+    set_user_events,
 )
 from tests.db_guard import (  # noqa: E402
     UnsafeTestDatabaseError,
