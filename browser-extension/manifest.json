@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Job Hunt Assistant",
   "description": "Capture job listings from any page and send them to Job Hunt Assistant",
-  "version": "1.32.4",
+  "version": "1.32.5",
   "permissions": ["activeTab", "scripting", "contextMenus", "storage", "notifications", "alarms", "tabs"],
   "host_permissions": ["http://localhost/*", "http://*.localhost/*", "https://*/*", "ws://localhost/*", "ws://*.localhost/*", "wss://*/*"],
   "background": {
@@ -37,7 +37,7 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "job-hunt-assistant@eross.com",
-      "strict_min_version": "109.0"
+      "strict_min_version": "128.0"
     }
   }
 }
