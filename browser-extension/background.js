@@ -546,6 +546,21 @@ async function triggerContextMenuCapture(tabId) {
 // closed. _pendingCaptureTabs is now only a same-worker-lifetime fast path
 // for clearing the capture-timeout alarm; the durable record is what decides
 // isQueueCapture. 2026-10-18 full review, High finding #2.
+// ai: claude-opus-5-5 | 2026-10-29
+// A queue capture that is still reporting progress hasn't stalled: restart its
+// abandon-this-tab alarm, so a long build (a Phenom search fetching each of
+// 50+ job pages) isn't closed mid-capture. Only an alarm triggerQueueCapture
+// already set is restarted -- popup and context-menu captures have none.
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (message.action !== 'progress') return;
+  const tabId = sender.tab?.id;
+  if (tabId === undefined) return;
+  const alarmName = `${_CAPTURE_TIMEOUT_ALARM_PREFIX}${tabId}`;
+  chrome.alarms.get(alarmName, alarm => {
+    if (alarm) chrome.alarms.create(alarmName, { delayInMinutes: _CAPTURE_RESPONSE_TIMEOUT_MINUTES });
+  });
+});
+
 chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.action !== 'payloadReady') return;
   const tabId = sender.tab?.id;

@@ -58,9 +58,14 @@ let currentCaptureMode = null;
 // warning later.
 let pendingWarningAck = null;
 
+// ai: claude-opus-5-5 | 2026-10-29
+// Restarts the in-flight sendToTab()'s timeout; null when none is waiting.
+let resetSendTimeout = null;
+
 // Receives progress messages from content script during long builds (e.g. Wellfound).
 chrome.runtime.onMessage.addListener(msg => {
   if (msg.action !== 'progress') return;
+  resetSendTimeout?.(); // ai: claude-opus-5-5 | 2026-10-29 -- a build still reporting progress hasn't stalled
   showStatus(msg.text, 'info');
   const wrap = document.getElementById('progress-wrap');
   const label = document.getElementById('progress-label');
@@ -418,13 +423,25 @@ function resetButton() {
 // implicit frame-0 default, so a job board embedded as a cross-origin iframe
 // (see the allFrames probe in DOMContentLoaded) keeps getting the 'build'
 // message after 'scan' already found it there.
+// ai: claude-opus-5-5 | 2026-10-29 -- the timeout now counts from the last
+// progress message, not from the start: a capture that fetches every job's
+// page (52 CVS jobs at ~1s each) is still working long after 30s, and only a
+// build that has stopped reporting progress has stalled.
 function sendToTab(message, timeoutMs = 30000) {
   return new Promise(resolve => {
-    const timeoutId = setTimeout(() => {
-      resolve({ error: 'Capture timed out while building the payload. Reload the page and try again.' });
-    }, timeoutMs);
+    let timeoutId;
+    const restartTimeout = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        resetSendTimeout = null;
+        resolve({ error: 'Capture timed out while building the payload. Reload the page and try again.' });
+      }, timeoutMs);
+    };
+    restartTimeout();
+    resetSendTimeout = restartTimeout;
     chrome.tabs.sendMessage(activeTabId, message, { frameId: captureFrameId }, response => {
       clearTimeout(timeoutId);
+      resetSendTimeout = null;
       if (chrome.runtime.lastError) {
         resolve({ error: `Extension could not read this tab: ${chrome.runtime.lastError.message}` });
         return;

@@ -26,8 +26,11 @@ function phAppScript() {
     phApp.ddo = ${JSON.stringify(ddo)};</script>`;
 }
 
-function searchPage({ resultsFound }) {
-  return `<html><head><title>Search CVS Health Jobs | Find Your Next Career Opportunity</title>${phAppScript()}</head>
+// ai: claude-opus-5-5 | 2026-10-29 -- recorded: what phenomSearchRecorder.js
+// left on <html data-jha-phenom-search> (the page's own latest search request).
+function searchPage({ resultsFound, recorded = null }) {
+  const recordedAttr = recorded ? ` data-jha-phenom-search='${JSON.stringify(recorded).replace(/'/g, "&#39;")}'` : "";
+  return `<html${recordedAttr}><head><title>Search CVS Health Jobs | Find Your Next Career Opportunity</title>${phAppScript()}</head>
     <body>
       <input type="checkbox" data-ph-at-id="facet-checkbox" data-ph-at-facetkey="facet-remote" data-ph-at-text="Remote" checked>
       <input type="checkbox" data-ph-at-id="facet-checkbox" data-ph-at-facetkey="facet-remote" data-ph-at-text="Hybrid">
@@ -119,11 +122,60 @@ describe("Phenom search page with filters ticked (jobs.cvshealth.com)", () => {
     expect(payload.jobs[1].listing_text).toContain("Full description of Software Engineer 2.");
   }, 20000);
 
+  // ai: claude-opus-5-5 | 2026-10-29
+  // The live 2026-10-29 CVS failure: a search rebuilt from the checkboxes
+  // disagreed with the page's count, while the page's own request (with its
+  // locationData radius) matched it.
+  it("replays the page's own recorded search request, paging only from/size", async () => {
+    const recorded = {
+      csrfToken: "refreshed-token",
+      body: {
+        ddoKey: "eagerLoadRefineSearch",
+        refNum: "CVSCHLUS",
+        keywords: "software",
+        selected_fields: { country: ["United States"], subCategory: ["Digital Engineering & Architecture"] },
+        locationData: { sliderRadius: 50, aboveMaxRadius: true, LocationUnit: "miles" },
+        jdsource: "facets",
+        counts: true,
+        from: 0,
+        size: 10,
+      },
+    };
+    const fetchMock = widgetsFetch();
+    const ctx = loadContentScript({ url: SEARCH_URL, html: searchPage({ resultsFound: 12, recorded }), fetchMock });
+    const { payload, warning } = await ctx.build();
+
+    expect(payload.jobs).toHaveLength(12);
+    expect(warning).toBeNull();
+    const widgetCalls = fetchMock.mock.calls.filter(([url]) => url === `${ORIGIN}/widgets`);
+    for (const [, init] of widgetCalls) {
+      expect(init.headers["X-CSRF-TOKEN"]).toBe("refreshed-token");
+      const { from, ...rest } = JSON.parse(init.body);
+      expect([0, 10]).toContain(from);
+      expect(rest).toEqual({ ...recorded.body, from: undefined, ddoKey: "refineSearch", counts: false, jobs: true, size: 10 });
+    }
+  }, 20000);
+
   it("does not trust the API when its total disagrees with the page's own count", async () => {
-    // e.g. a location-box filter the facet checkboxes don't show
+    // e.g. a filter that neither the checkboxes nor a recorded request show
     const ctx = loadContentScript({ url: SEARCH_URL, html: searchPage({ resultsFound: 7 }), fetchMock: widgetsFetch() });
     const page = await ctx.detectPage();
     expect(page.jobCount).toBe(7);
     expect(page.type).toBe("smartGeneric");
+    // ai: claude-opus-5-5 | 2026-10-29 -- and says why, so a fallback is diagnosable
+    expect(page.description).toContain("search API found 12, the page shows 7");
+  });
+
+  // ai: claude-opus-5-5 | 2026-10-29
+  // What reached the app on 2026-10-29: the on-screen 10 of 52, sent silently.
+  it("warns before sending a fallback capture short of the page's count", async () => {
+    const cards = Array.from({ length: 3 }, (_, i) =>
+      `<div><a href="${ORIGIN}/us/en/job/R200000${i}/engineer-${i}">Engineer ${i}</a><p>Remote, United States</p></div>`,
+    ).join("");
+    const html = searchPage({ resultsFound: 7 }).replace("</body>", `${cards}</body>`);
+    const { payload, warning } = await loadContentScript({ url: SEARCH_URL, html, fetchMock: widgetsFetch() }).build();
+
+    expect(payload.jobs.length).toBeLessThan(7);
+    expect(warning).toContain(`Captured only ${payload.jobs.length} of the 7 jobs`);
   });
 });

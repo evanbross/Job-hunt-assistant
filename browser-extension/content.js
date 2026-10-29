@@ -409,7 +409,7 @@
     if (isPhenomSearchPage()) {
       const company = phenomCompany();
       const search = await phenomRefineSearch(0);
-      if (search) {
+      if (!search.problem) {
         return {
           site: company,
           type: 'phenomSearch',
@@ -431,7 +431,8 @@
           site: company,
           type: 'smartGeneric',
           jobCount: smartCount,
-          description: `${smartCount} jobs detected (filtered — reading the current page)`,
+          // ai: claude-opus-5-5 | 2026-10-29 -- names why the full capture isn't available
+          description: `${smartCount} jobs detected (filtered — reading the current page only; ${search.problem})`,
         };
       }
       return {
@@ -1816,6 +1817,57 @@
 
   const PHENOM_PAGE_SIZE = 10; // confirmed from siteConfig "size":"10"
 
+  // ai: claude-opus-5-5 | 2026-10-29
+  // The page's own latest search request, as phenomSearchRecorder.js (in the
+  // page's JS world) recorded it -- null until the page has sent one (a
+  // search that was only loaded, never re-filtered), or if the recorder
+  // wasn't there yet (the extension was reloaded after the page was).
+  function recordedPhenomSearch() {
+    try {
+      const recorded = JSON.parse(document.documentElement.getAttribute('data-jha-phenom-search') || 'null');
+      return recorded?.body && typeof recorded.body === 'object' ? recorded : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-29
+  // The request body for one page of the search on screen. Replaying the
+  // page's own recorded request is exact; rebuilding it from the facet
+  // checkboxes misses what they don't show -- a CVS capture rebuilt that way
+  // disagreed with the page's count (2026-10-29), and the page's own request
+  // turned out to carry a 50-mile locationData radius among other fields.
+  function phenomSearchRequest(from) {
+    const recorded = recordedPhenomSearch();
+    const config = phenomWidgetsConfig();
+    const csrfToken = recorded?.csrfToken || config?.csrfToken;
+    if (recorded && csrfToken) {
+      return {
+        csrfToken,
+        body: { ...recorded.body, ddoKey: 'refineSearch', from, size: PHENOM_PAGE_SIZE, jobs: true, counts: false },
+      };
+    }
+    if (!config) return null;
+    const { csrfToken: configToken, ...site } = config;
+    return {
+      csrfToken: configToken,
+      body: {
+        ...site,
+        pageName: 'search-results',
+        ddoKey: 'refineSearch',
+        keywords: new URLSearchParams(location.search).get('keywords') || '',
+        selected_fields: phenomSelectedFields(),
+        locationData: {}, // without it the API answers with zero hits
+        from,
+        size: PHENOM_PAGE_SIZE,
+        jobs: true,
+        counts: false,
+        global: true,
+        s: '1',
+      },
+    };
+  }
+
   // ai: claude-opus-5-5 | 2026-10-28
   // One page of the search the user is looking at, via the same POST
   // <origin>/widgets call Phenom's own JS makes when a filter is ticked.
@@ -1823,45 +1875,48 @@
   // there: ticking a filter changes the list without changing the URL, and
   // a fetch() of a "?from=10&s=1" page URL drops even the keywords (19,749
   // results instead of 194) because the server only applies its stored
-  // search on a real navigation. Returns null when the page lacks the config,
-  // the call fails, or the total disagrees with the page's own "N results
-  // found" (a filter this can't see, like the location box) -- callers then
-  // use the older routes, so this is never worse than before.
+  // search on a real navigation.
+  // ai: claude-opus-5-5 | 2026-10-29 -- returns {problem} instead of null when
+  // the page lacks the config, the call fails, or the total disagrees with
+  // the page's own "N results found", so the popup can say why it fell back
+  // (callers then use the older routes, so this is never worse than before).
   async function phenomRefineSearch(from) {
-    const config = phenomWidgetsConfig();
-    if (!config) return null;
-    const { csrfToken, ...site } = config;
+    const request = phenomSearchRequest(from);
+    if (!request) return { problem: 'no search config on the page' };
     let result;
     try {
       const res = await fetch(location.origin + '/widgets', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
-        body: JSON.stringify({
-          ...site,
-          pageName: 'search-results',
-          ddoKey: 'refineSearch',
-          keywords: new URLSearchParams(location.search).get('keywords') || '',
-          selected_fields: phenomSelectedFields(),
-          locationData: {}, // without it the API answers with zero hits
-          from,
-          size: PHENOM_PAGE_SIZE,
-          jobs: true,
-          counts: false,
-          global: true,
-          s: '1',
-        }),
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': request.csrfToken },
+        body: JSON.stringify(request.body),
       });
-      if (!res.ok) return null;
+      if (!res.ok) return { problem: `search API answered HTTP ${res.status}` };
       result = (await res.json())?.refineSearch;
-    } catch {
-      return null;
+    } catch (err) {
+      return { problem: `search API call failed (${err?.message || err})` };
     }
     const jobs = result?.data?.jobs;
-    if (!Array.isArray(jobs) || typeof result.totalHits !== 'number') return null;
+    if (!Array.isArray(jobs) || typeof result.totalHits !== 'number') {
+      return { problem: 'search API answered without a job list' };
+    }
     const visibleTotal = phenomVisibleTotal();
-    if (visibleTotal != null && visibleTotal !== result.totalHits) return null;
+    if (visibleTotal != null && visibleTotal !== result.totalHits) {
+      return { problem: `search API found ${result.totalHits}, the page shows ${visibleTotal}` };
+    }
     return { totalHits: result.totalHits, jobs };
+  }
+
+  // ai: claude-opus-5-5 | 2026-10-29
+  // The DOM-scrape fallback for a Phenom search can't page past what's on
+  // screen when Next is a real link (jobs.cvshealth.com's is), so a capture
+  // short of the page's count must say so instead of importing 10 of 52.
+  function phenomFallbackWarning(jobsJson) {
+    const expected = phenomVisibleTotal();
+    let captured;
+    try { captured = JSON.parse(jobsJson).jobs.length; } catch { return null; }
+    if (expected == null || captured >= expected) return null;
+    return `Captured only ${captured} of the ${expected} jobs this search shows. Reload this page and try again; if it still falls short, the site's search has changed.`;
   }
 
   // ai: claude-opus-5-5 | 2026-10-28
@@ -1914,7 +1969,7 @@
     const jobBase = location.origin + location.pathname.replace(/\/search-results.*$/, '');
 
     const first = await phenomRefineSearch(0);
-    if (!first) return buildPhenomSearchPayloadFromPageUrls(company, jobBase);
+    if (first.problem) return buildPhenomSearchPayloadFromPageUrls(company, jobBase);
 
     const seen = new Set();
     const listed = [];
@@ -1930,7 +1985,7 @@
       sendProgress(`Listing jobs... page ${page + 1} of ${totalPages}`, undefined);
       await sleep(400);
       const next = await phenomRefineSearch(page * PHENOM_PAGE_SIZE);
-      if (!next) break;
+      if (next.problem) break;
       addJobs(next.jobs);
     }
 
@@ -3741,7 +3796,10 @@
       case 'jibeSearch':       payload = await buildJibeSearchPayload(); break;
       case 'icimsJob':         payload = buildIcimsJobPayload(); break;
       case 'icimsSearch':      payload = await buildIcimsSearchPayload(); break;
-      case 'phenomSearch':     payload = await buildPhenomSearchPayload(); break;
+      case 'phenomSearch':
+        payload = await buildPhenomSearchPayload();
+        warning = phenomFallbackWarning(payload); // ai: claude-opus-5-5 | 2026-10-29 -- its fallbacks can come up short too
+        break;
       case 'insightGlobalSearch': payload = await buildInsightGlobalSearchPayload(); break;
       case 'insightGlobalSplit':
         if (options.captureMode === 'detail') {
@@ -3789,7 +3847,10 @@
           payload = buildIndeedJobPayload();
         }
         break;
-      case 'smartGeneric':     payload = await buildSmartGenericPayload(); break;
+      case 'smartGeneric':
+        payload = await buildSmartGenericPayload();
+        if (isPhenomSearchPage()) warning = phenomFallbackWarning(payload); // ai: claude-opus-5-5 | 2026-10-29
+        break;
       // ai: claude-sonnet-4-6 | 2026-06-26
       // For pages that don't match a known platform, extract body text rather
       // than sending raw HTML. The HTML import path scans for job links, which
