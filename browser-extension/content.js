@@ -2384,7 +2384,7 @@
       firstPage.click();
       await sleep(1200);
     }
-    return buildSmartGenericPayload({ getLinkRoot: elasticSearchResultsList });
+    return buildSmartGenericPayload({ getLinkRoot: elasticSearchResultsList, company: 'Elastic' });
   }
 
   // ai: claude-sonnet-5 | 2026-08-23
@@ -3217,13 +3217,38 @@
 
   const _SMART_GENERIC_MAX_PAGES = 20;
 
+  // ai: claude-opus-5-5 | 2026-10-29
+  // A Next click that fetches its results from the server (jobs.elastic.co's
+  // /api/appSearch) can take longer than any fixed delay; a fixed 1.2s sleep
+  // read the unchanged page 1, saw no new jobs, and stopped paging at 20 of 23.
+  // Wait for the links themselves to change instead, capped so a click that
+  // loads nothing still ends the loop.
+  const _NEXT_PAGE_WAIT_MS = 10000;
+
+  function linkSignature(root) {
+    if (!root) return '';
+    return [...root.querySelectorAll('a[href]')].map(a => a.href).join('\n');
+  }
+
+  async function waitForLinksToChange(getLinkRoot, prevSignature) {
+    const deadline = Date.now() + _NEXT_PAGE_WAIT_MS;
+    while (Date.now() < deadline) {
+      await sleep(250);
+      if (linkSignature(getLinkRoot()) !== prevSignature) {
+        await sleep(250); // let the rest of the list finish rendering
+        return;
+      }
+    }
+  }
+
   // Generic job-link harvester — works on Phenom People (Cisco), Workday, Lever,
   // and any other career-site structure the specialised builders don't cover.
   // ai: claude-opus-5-5 | 2026-10-29
   // getLinkRoot, when given, returns the element to harvest from. It's a getter
   // rather than an element because a React results list can be replaced
-  // wholesale when the next page renders.
-  async function buildSmartGenericPayload({ getLinkRoot = () => document } = {}) {
+  // wholesale when the next page renders. company, when the caller already
+  // knows it, saves the backend an LLM call to guess it from each card.
+  async function buildSmartGenericPayload({ getLinkRoot = () => document, company = '' } = {}) {
     const seen = new Set();
     const jobs = [];
 
@@ -3261,7 +3286,7 @@
         lines.push('URL: ' + link.href); // use original href so redirect params are preserved
         if (cardText && cardText !== title) lines.push('', cardText);
 
-        jobs.push({ url: link.href, job_title: title, company: '', listing_text: lines.join('\n') });
+        jobs.push({ url: link.href, job_title: title, company, listing_text: lines.join('\n') });
       });
     }
 
@@ -3276,9 +3301,10 @@
       if (!nextControl) break;
 
       const prevCount = jobs.length;
+      const prevLinks = linkSignature(getLinkRoot());
       sendProgress(`Loading more jobs... (${jobs.length} found)`, undefined);
       nextControl.click();
-      await sleep(1200);
+      await waitForLinksToChange(getLinkRoot, prevLinks); // ai: claude-opus-5-5 | 2026-10-29 -- was a fixed sleep(1200)
       collectJobLinks();
       if (jobs.length === prevCount) break;
     }

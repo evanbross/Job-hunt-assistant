@@ -71,8 +71,37 @@ describe("jobs.elastic.co search results", () => {
       "https://jobs.elastic.co/jobs/engineering/united-states/senior-software-engineer/8069178",
       "https://jobs.elastic.co/jobs/engineering/united-states/principal-software-engineer-security-elasticsearch/8082612",
     ]);
-    expect(payload.jobs[1].job_title).toBe("Principal Software Engineer - Security - Elasticsearch");
+    expect(payload.jobs[1]).toMatchObject({
+      job_title: "Principal Software Engineer - Security - Elasticsearch",
+      company: "Elastic",
+    });
   });
+
+  // ai: claude-opus-5-5 | 2026-10-29
+  // Live capture stopped at 20 of 23: page 2 comes from a server call, and the
+  // harvester used to read the list a fixed 1.2s after clicking Next.
+  it("waits for a slow second page instead of stopping at the first", async () => {
+    const html = SEARCH_HTML
+      .replace("2 Results", "3 Results")
+      .replace('<button type="button" disabled aria-label="Go to next page">', '<button type="button" aria-label="Go to next page">');
+    const page = loadContentScript({ url: SEARCH_URL, html });
+    const { document } = page.window;
+    const next = document.querySelector('button[aria-label="Go to next page"]');
+    // jsdom has no layout, so give the Next button the size a rendered one has.
+    next.getBoundingClientRect = () => ({ width: 40, height: 40, top: 0, left: 0, right: 40, bottom: 40 });
+    next.addEventListener("click", () => {
+      setTimeout(() => {
+        document.querySelector("main > ul.sui-results-container").innerHTML =
+          resultRow("software-engineer-ii-networking", 8200001, "Software Engineer II (Networking)");
+        next.disabled = true;
+      }, 2000);
+    });
+
+    expect(await page.detectPage()).toMatchObject({ type: "elasticSearch", jobCount: 3 });
+    const { payload } = await page.build();
+
+    expect(payload.jobs.map((job) => job.url.split("/").pop())).toEqual(["8069178", "8082612", "8200001"]);
+  }, 15000);
 
   it("leaves a department page with no search on the generic whole-page capture", async () => {
     const page = loadContentScript({ url: DEPARTMENT_URL, html: DEPARTMENT_HTML });
