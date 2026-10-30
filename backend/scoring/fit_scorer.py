@@ -39,6 +39,7 @@ from typing import TypedDict
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.resume.resume_prompt import resume_prompt_text
 from backend.settings_service import get_setting
 from backend.utils.utils import get_candidate_profile, get_repos
 
@@ -190,9 +191,11 @@ class FitScorer:
             or "  (none configured)"
         )
 
+        # ai: claude-opus-5-5 | 2026-10-30
+        bounded_resume = resume_prompt_text(resume_text)
         resume_section = (
-            f"CANDIDATE RESUME:\n{resume_text[:8000]}"
-            if resume_text
+            f"CANDIDATE RESUME:\n{bounded_resume}"
+            if bounded_resume
             else "CANDIDATE RESUME: Not yet uploaded."
         )
 

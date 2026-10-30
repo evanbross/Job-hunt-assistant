@@ -48,6 +48,7 @@ from pydantic import (
 
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
+from backend.resume.resume_prompt import resume_prompt_text
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import (
     db_match_for_job,
@@ -505,9 +506,7 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
 
     messages = body.messages
 
-    resume_text = ""
-    if resume:
-        resume_text = str(resume.get("content") or "")
+    resume_text = resume_prompt_text(str(resume.get("content") or "") if resume else None)  # ai: claude-opus-5-5 | 2026-10-30
 
     system_prompt = (
         "You are helping a senior software engineer review an AI-generated job fit percentage. "
@@ -522,7 +521,7 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
         "Use status pending_review for jobs that should remain in the job queue, triage for uncertain "
         "jobs that need later review, and skipped for jobs that are clearly not a fit.\n\n"
         f"CANDIDATE PROFILE:\n{candidate_profile}\n\n"
-        f"CANDIDATE RESUME:\n{resume_text[:8000] if resume_text else 'Not yet uploaded.'}\n\n"
+        f"CANDIDATE RESUME:\n{resume_text or 'Not yet uploaded.'}\n\n"
         "CURRENT JOB FIT DATA:\n"
         f"Title: {job.get('job_title') or 'Unknown'}\n"
         f"Company: {job.get('company') or 'Unknown'}\n"

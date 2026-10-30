@@ -21,6 +21,7 @@ import pytest
 from flask import Flask
 
 import routes.cover_letter as cover_letter_module
+from backend.resume.resume_prompt import MAX_RESUME_PROMPT_CHARS, resume_prompt_text
 from routes.cover_letter import cover_letter_bp, job_and_resume_prompt_blocks
 
 JOB_DESCRIPTION = "Own the Kubernetes platform and mentor the SRE team."
@@ -194,6 +195,25 @@ def test_prompt_blocks_fall_back_to_snippet_and_omit_missing_sections() -> None:
     job_block, resume_block = job_and_resume_prompt_blocks({}, {"content": RESUME_TEXT})
     assert job_block == ""
     assert RESUME_TEXT in resume_block
+
+
+# ai: claude-opus-5-5 | 2026-10-30
+def test_prompt_blocks_keep_the_end_of_a_two_page_resume() -> None:
+    """Regression: the pitch routes used to cut the resume at 4,000 characters,
+    so the older roles at the end of a normal two-page resume never reached
+    the why-fit / why-company prompts."""
+    oldest_role = "Boston Technologies, Founding Engineer, FIX bridges to bank APIs"
+    two_page_resume = "x" * 7_000 + "\n" + oldest_role
+    _, resume_block = job_and_resume_prompt_blocks({}, {"content": two_page_resume})
+    assert oldest_role in resume_block
+
+
+# ai: claude-opus-5-5 | 2026-10-30
+def test_resume_prompt_text_is_bounded_by_the_shared_limit() -> None:
+    oversized = "  " + "y" * (MAX_RESUME_PROMPT_CHARS + 500) + "  "
+    assert resume_prompt_text(oversized) == "y" * MAX_RESUME_PROMPT_CHARS
+    assert resume_prompt_text(None) == ""
+    assert resume_prompt_text("   ") == ""
 
 
 # ai: claude-sonnet-5 | 2026-09-29

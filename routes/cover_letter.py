@@ -53,6 +53,7 @@ from backend.cover_letter.cover_letter_generator import CoverLetterGenerator
 from backend.cover_letter.cover_letter_learning import CoverLetterStyleLearner
 from backend.cover_letter.phrase_book import format_phrase_book_section
 from backend.cover_letter.resume_tailor import ResumeTailoringGenerator
+from backend.resume.resume_prompt import resume_prompt_text
 from backend.scoring.jd_enrichment import job_description_text
 from backend.utils.utils import (
     ChatMessage,
@@ -76,15 +77,18 @@ def job_and_resume_prompt_blocks(job: dict, resume_row: dict | None) -> tuple[st
     pitch/chat routes in this blueprint.
 
     Prefers the full stored job description over the email snippet used for
-    fit scoring. Both blocks are truncated to keep chat prompts bounded, and
-    each is an empty string when its source data is missing.
+    fit scoring. Both blocks are bounded to keep chat prompts finite (the
+    resume via the shared MAX_RESUME_PROMPT_CHARS), and each is an empty
+    string when its source data is missing.
     """
     job_description = job_description_text(job)
-    resume_text = ((resume_row["content"] if resume_row else "") or "").strip()
+    # ai: claude-opus-5-5 | 2026-10-30 — was a local [:4000] that cut a two-page
+    # resume off mid-career, so pitches never saw the older roles.
+    resume_text = resume_prompt_text(resume_row["content"] if resume_row else None)
     job_block = (
         f"\nJOB DESCRIPTION:\n{job_description[:4000]}\n" if job_description else ""
     )
-    resume_block = f"\nCANDIDATE RESUME:\n{resume_text[:4000]}\n" if resume_text else ""
+    resume_block = f"\nCANDIDATE RESUME:\n{resume_text}\n" if resume_text else ""
     return job_block, resume_block
 
 

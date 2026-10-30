@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.resume.resume_prompt import resume_prompt_text
 from backend.scoring.jd_enrichment import job_description_text
 
 
@@ -64,7 +65,7 @@ class ResumeTailoringGenerator:
             f"role and produce specific, actionable improvement suggestions.\n\n"
             f"ROLE: {job_title} at {company}\n\n"
             f"{jd_block}\n\n"
-            f"CANDIDATE RESUME:\n{resume_text.strip()}\n\n"
+            f"CANDIDATE RESUME:\n{resume_prompt_text(resume_text)}\n\n"  # ai: claude-opus-5-5 | 2026-10-30
             "Produce your analysis in markdown with exactly these three sections:\n\n"
             "## Keyword & Skill Gaps\n"
             "List specific skills, technologies, or keywords from the job description that are "

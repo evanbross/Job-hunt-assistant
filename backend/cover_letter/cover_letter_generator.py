@@ -36,6 +36,7 @@ from __future__ import annotations
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.cover_letter.phrase_book import format_phrase_book_section
+from backend.resume.resume_prompt import resume_prompt_text
 from backend.scoring.jd_enrichment import job_description_text
 from backend.utils.utils import get_candidate_profile, get_repos
 
@@ -73,11 +74,9 @@ class CoverLetterGenerator:
         # cannot visit, causing "can't access the URL" errors.
         job_description = job_description_text(job)
 
-        resume_section = (
-            f"\n\nCANDIDATE RESUME:\n{resume_text.strip()}"
-            if resume_text and resume_text.strip()
-            else ""
-        )
+        # ai: claude-opus-5-5 | 2026-10-30
+        bounded_resume = resume_prompt_text(resume_text)
+        resume_section = f"\n\nCANDIDATE RESUME:\n{bounded_resume}" if bounded_resume else ""
 
         fit_section = (
             f"\n\nFIT ANALYSIS (why this job was flagged as a good match):\n{fit_reasoning}"
