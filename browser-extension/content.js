@@ -402,6 +402,21 @@
       };
     }
 
+    // ai: claude-opus-5-5 | 2026-10-29
+    // A search on jobs.elastic.co renders its filtered "Search Results" list
+    // above the department's full, unfiltered job accordions, so the generic
+    // link scan counted every opening in the department (238) instead of the
+    // search's own total (23). See elasticSearchResultsList.
+    if (host === 'jobs.elastic.co' && elasticSearchResultsList()) {
+      const total = elasticSearchTotal();
+      return {
+        site: 'Elastic',
+        type: 'elasticSearch',
+        jobCount: total,
+        description: `${total} jobs — auto-fetches all pages`,
+      };
+    }
+
     // ai: claude-opus-5-5 | 2026-10-28
     // The widgets search API (see phenomRefineSearch) sees the filters ticked
     // on the page, so when it answers its total is the count to report. The
@@ -596,10 +611,11 @@
   // When some job links are visible and some aren't, the hidden ones are filtered
   // out — drop them. When none are visible (collapsed accordion, "pick a
   // department" landing view), keep them all rather than capturing nothing.
-  // Returns [{ link, u }] pairs so callers don't re-parse the URL.
-  function collectJobLinkAnchors() {
+  // Returns [{ link, u }] pairs so callers don't re-parse the URL. `root`
+  // narrows the scan to one part of the page (see buildElasticSearchPayload).
+  function collectJobLinkAnchors(root = document) {
     const matches = [];
-    document.querySelectorAll('a[href]').forEach(link => {
+    root.querySelectorAll('a[href]').forEach(link => {
       let u;
       try { u = new URL(link.href); } catch { return; }
       if (isJobLink(u)) matches.push({ link, u });
@@ -2340,6 +2356,37 @@
     return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
   }
 
+  // ai: claude-opus-5-5 | 2026-10-29
+  // jobs.elastic.co (Elastic Search UI on MUI) uses ul.sui-results-container
+  // both for a search's own results and for every department accordion under
+  // them; only the search's list sits outside an accordion region. Plain
+  // department pages (no search) have no such list and stay on the generic path.
+  function elasticSearchResultsList() {
+    return [...document.querySelectorAll('ul.sui-results-container')]
+      .find(list => !list.closest('.MuiAccordion-region')) || null;
+  }
+
+  // "23 Results" -- the search's total across every results page.
+  function elasticSearchTotal() {
+    const countEl = [...document.querySelectorAll('p, span, h2, h3')]
+      .find(el => /^\s*[\d,]+\s+results?\s*$/i.test(el.textContent || ''));
+    if (countEl) return parseInt(countEl.textContent.replace(/[^\d]/g, ''), 10);
+    return elasticSearchResultsList()?.querySelectorAll('li.sui-result').length || 0;
+  }
+
+  // The results are paginated client-side (Next swaps the list in place, no
+  // navigation), so the generic Next-clicking harvester covers every page once
+  // it's scoped to the results list. It only pages forward, so start from page
+  // 1 when the user has already paged ahead.
+  async function buildElasticSearchPayload() {
+    const firstPage = document.querySelector('nav[aria-label="Pagination"] button[aria-label="Go to page 1"]');
+    if (firstPage && !firstPage.disabled) {
+      firstPage.click();
+      await sleep(1200);
+    }
+    return buildSmartGenericPayload({ getLinkRoot: elasticSearchResultsList });
+  }
+
   // ai: claude-sonnet-5 | 2026-08-23
   // Shared by parseKforceRow's card-snippet capture and buildKforceJobPayload's/
   // the bulk-enrichment loop's full-detail capture, so there's exactly one place
@@ -3172,12 +3219,18 @@
 
   // Generic job-link harvester — works on Phenom People (Cisco), Workday, Lever,
   // and any other career-site structure the specialised builders don't cover.
-  async function buildSmartGenericPayload() {
+  // ai: claude-opus-5-5 | 2026-10-29
+  // getLinkRoot, when given, returns the element to harvest from. It's a getter
+  // rather than an element because a React results list can be replaced
+  // wholesale when the next page renders.
+  async function buildSmartGenericPayload({ getLinkRoot = () => document } = {}) {
     const seen = new Set();
     const jobs = [];
 
     function collectJobLinks() {
-      collectJobLinkAnchors().forEach(({ link, u }) => { // ai: claude-opus-5-5 | 2026-10-14
+      const root = getLinkRoot();
+      if (!root) return;
+      collectJobLinkAnchors(root).forEach(({ link, u }) => { // ai: claude-opus-5-5 | 2026-10-14
         const url = u.origin + u.pathname; // strip query/hash to deduplicate
         if (seen.has(url)) return;
         seen.add(url);
@@ -3846,6 +3899,10 @@
         } else {
           payload = buildIndeedJobPayload();
         }
+        break;
+      case 'elasticSearch':
+        payload = await buildElasticSearchPayload();
+        warning = listCaptureWarning(payload, page.jobCount);
         break;
       case 'smartGeneric':
         payload = await buildSmartGenericPayload();
