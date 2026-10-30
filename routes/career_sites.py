@@ -74,6 +74,7 @@ from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import db_match_for_job
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_enrichment import enrich_job_description, is_richer_description
+from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     import_warnings_to_json,
     normalize_and_validate,
@@ -966,7 +967,7 @@ def run_career_site_scan_task(
                         "job_title": str(job.get("job_title") or ""),
                         "url": str(job.get("job_url") or ""),
                         "source": source_name,
-                        "raw_jd_snippet": str(job.get("job_text") or "")[:6000],
+                        "raw_jd_snippet": str(job.get("job_text") or "")[:RAW_JD_SNIPPET_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
                         "fit_score": match_score,
                         "fit_reasoning": match_reasoning,
                         "status": queue_status,

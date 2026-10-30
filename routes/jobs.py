@@ -97,6 +97,7 @@ from backend.scoring.duplicate_matching import (
     is_near_certain_duplicate,
 )
 from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     SCORING_FAILED_WARNING,
     import_warnings_to_json,
@@ -1316,7 +1317,7 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
             user_id,
             job_id,
             {
-                "raw_jd_snippet": new_text[:6000],
+                "raw_jd_snippet": new_text[:RAW_JD_SNIPPET_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
                 "fit_score": fit_score,
                 "fit_reasoning": score_result["reasoning"],
                 "salary_min": score_result["salary_min"],
@@ -1696,7 +1697,7 @@ def _run_wttj_repair(user_id: int) -> None:
 
                 url_updates: dict = {"url": resolved}
                 if jd_text:
-                    url_updates["raw_jd_snippet"] = jd_text[:6000]
+                    url_updates["raw_jd_snippet"] = jd_text[:RAW_JD_SNIPPET_MAX_CHARS]  # ai: claude-opus-5-5 | 2026-10-30
                     url_updates["job_description"] = jd_text
 
                 with get_repos(user_id) as repos:
@@ -2133,7 +2134,7 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                         updates["salary_max"] = score_result["salary_max"]
                         updates["raw_jd_snippet"] = (
                             jd_text if jd_text else email_body
-                        )[:6000]
+                        )[:RAW_JD_SNIPPET_MAX_CHARS]  # ai: claude-opus-5-5 | 2026-10-30
                         # ai: claude-sonnet-5 | 2026-09-21
                         updates["import_warnings"] = remove_import_warning(
                             row.get("import_warnings"), SCORING_FAILED_WARNING

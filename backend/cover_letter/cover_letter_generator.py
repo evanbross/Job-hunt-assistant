@@ -38,6 +38,7 @@ from backend.ai_provider import AIMessage, AIProviderClient
 from backend.cover_letter.phrase_book import format_phrase_book_section
 from backend.resume.resume_prompt import resume_prompt_text
 from backend.scoring.jd_enrichment import job_description_text
+from backend.scoring.jd_limits import MAX_JD_PROMPT_CHARS
 from backend.utils.utils import get_candidate_profile, get_repos
 
 
@@ -72,7 +73,7 @@ class CoverLetterGenerator:
         # Prefer the full stored job description; fall back to the email snippet used
         # for fit scoring. Without this the prompt only contains the URL which Claude
         # cannot visit, causing "can't access the URL" errors.
-        job_description = job_description_text(job)
+        job_description = job_description_text(job)[:MAX_JD_PROMPT_CHARS]  # ai: claude-opus-5-5 | 2026-10-30
 
         # ai: claude-opus-5-5 | 2026-10-30
         bounded_resume = resume_prompt_text(resume_text)

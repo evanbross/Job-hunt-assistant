@@ -22,6 +22,7 @@ from flask import Flask
 
 import routes.cover_letter as cover_letter_module
 from backend.resume.resume_prompt import MAX_RESUME_PROMPT_CHARS, resume_prompt_text
+from backend.scoring.jd_limits import MAX_JD_PROMPT_CHARS
 from routes.cover_letter import cover_letter_bp, job_and_resume_prompt_blocks
 
 JOB_DESCRIPTION = "Own the Kubernetes platform and mentor the SRE team."
@@ -206,6 +207,22 @@ def test_prompt_blocks_keep_the_end_of_a_two_page_resume() -> None:
     two_page_resume = "x" * 7_000 + "\n" + oldest_role
     _, resume_block = job_and_resume_prompt_blocks({}, {"content": two_page_resume})
     assert oldest_role in resume_block
+
+
+# ai: claude-opus-5-5 | 2026-10-30
+def test_prompt_blocks_keep_job_description_past_the_old_4000_cut() -> None:
+    """Regression: pitches cut the JD at 4,000 chars while fit scoring used
+    6,000, so a requirement near the end of a long posting was scored but
+    never reached the pitch. Both now share MAX_JD_PROMPT_CHARS."""
+    late_requirement = "Must have shipped FIX connectivity to a prime broker."
+    long_jd = "x" * 5_000 + "\n" + late_requirement
+    job_block, _ = job_and_resume_prompt_blocks({"job_description": long_jd}, None)
+    assert late_requirement in job_block
+
+    oversized_jd = "z" * (MAX_JD_PROMPT_CHARS + 500)
+    job_block, _ = job_and_resume_prompt_blocks({"job_description": oversized_jd}, None)
+    assert "z" * MAX_JD_PROMPT_CHARS in job_block
+    assert "z" * (MAX_JD_PROMPT_CHARS + 1) not in job_block
 
 
 # ai: claude-opus-5-5 | 2026-10-30

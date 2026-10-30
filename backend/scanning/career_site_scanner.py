@@ -49,6 +49,7 @@ from urllib.error import URLError
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse, urlunparse
 from urllib.request import Request
 
+from backend.scoring.jd_limits import CAPTURED_JOB_TEXT_MAX_CHARS
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
@@ -1548,7 +1549,7 @@ class CareerSiteScanner:
             site_url=job_url,
             job_title=title[:300],
             job_url=job_url,
-            job_text=text[:8000],
+            job_text=text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
             posted_at=_normalize_date(
                 str(posting.get("publishedDate") or posting.get("updatedAt") or "")
             ),
@@ -1613,7 +1614,7 @@ class CareerSiteScanner:
             site_url=job_url,
             job_title=page_title[:300],
             job_url=job_url,
-            job_text=page_text[:8000],
+            job_text=page_text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
             posted_at=None,
             confidence_level=confidence_level,
             confidence_score=confidence_score,
@@ -1655,7 +1656,7 @@ class CareerSiteScanner:
             site_url=job_url,
             job_title=title[:300],
             job_url=job_url,
-            job_text=text[:8000],
+            job_text=text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
             posted_at=_normalize_date(str(info.get("startDate") or "")),
             confidence_level=confidence_level,
             confidence_score=confidence_score,
@@ -1693,7 +1694,7 @@ class CareerSiteScanner:
             site_url=job_url,
             job_title=title[:300],
             job_url=job_url,
-            job_text=text[:8000],
+            job_text=text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
             posted_at=_normalize_date(data.get("updated_at") or data.get("created_at")),
             confidence_level=confidence_level,
             confidence_score=confidence_score,
@@ -1734,7 +1735,7 @@ class CareerSiteScanner:
                     site_url=stored_url,
                     job_title=title[:300] or UNTITLED_JOB_TITLE,
                     job_url=job_url,
-                    job_text=text[:8000],
+                    job_text=text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
                     posted_at=_normalize_date(
                         row.get("updated_at") or row.get("created_at")
                     ),
@@ -1775,7 +1776,7 @@ class CareerSiteScanner:
                 site_url=job_url,
                 job_title=title[:300],
                 job_url=job_url,
-                job_text=text[:8000],
+                job_text=text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
                 posted_at=posted_at,
                 confidence_level=confidence_level,
                 confidence_score=confidence_score,
@@ -1803,7 +1804,7 @@ class CareerSiteScanner:
             site_url=job_url,
             job_title=page_title[:300],
             job_url=job_url,
-            job_text=page_text[:8000],
+            job_text=page_text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
             posted_at=posted_at,
             confidence_level=confidence_level,
             confidence_score=confidence_score,
@@ -1849,7 +1850,7 @@ class CareerSiteScanner:
                     site_url=site_url,
                     job_title=title[:300] or UNTITLED_JOB_TITLE,
                     job_url=job_url,
-                    job_text=text[:8000],
+                    job_text=text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
                     posted_at=posted_at,
                     confidence_level=confidence_level,
                     confidence_score=confidence_score,
@@ -1906,7 +1907,7 @@ class CareerSiteScanner:
                     site_url=site_url,
                     job_title=title[:300],
                     job_url=job_url,
-                    job_text=text[:8000],
+                    job_text=text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
                     posted_at=_normalize_date(
                         row.get("postedOn") or row.get("startDate")
                     ),
@@ -1997,7 +1998,7 @@ class CareerSiteScanner:
                     site_url=site_url,
                     job_title=job_title[:300],
                     job_url=job_url,
-                    job_text=page_text[:8000],
+                    job_text=page_text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
                     posted_at=posted_at,
                     confidence_level=confidence_level,
                     confidence_score=confidence_score,
@@ -2052,7 +2053,7 @@ class CareerSiteScanner:
                     site_url=site_url,
                     job_title=title[:300],
                     job_url=f"{base_url}?jobId={job_id}",
-                    job_text=text[:8000],
+                    job_text=text[:CAPTURED_JOB_TEXT_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
                     posted_at=_normalize_date(
                         str(row.get("publishedDate") or row.get("updatedAt") or "")
                     ),

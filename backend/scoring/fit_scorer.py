@@ -40,6 +40,7 @@ from typing import TypedDict
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.resume.resume_prompt import resume_prompt_text
+from backend.scoring.jd_limits import MAX_JD_PROMPT_CHARS
 from backend.settings_service import get_setting
 from backend.utils.utils import get_candidate_profile, get_repos
 
@@ -84,7 +85,7 @@ class FitScorer:
         user_content = (
             f"Job Title: {job_title}\n"
             f"Company: {company}\n\n"
-            f"Email / Job Description:\n{email_body[:6000]}"
+            f"Email / Job Description:\n{email_body[:MAX_JD_PROMPT_CHARS]}"  # ai: claude-opus-5-5 | 2026-10-30
         )
 
         raw = self._client.complete(

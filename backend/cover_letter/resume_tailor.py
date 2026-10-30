@@ -32,6 +32,7 @@ from __future__ import annotations
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.resume.resume_prompt import resume_prompt_text
 from backend.scoring.jd_enrichment import job_description_text
+from backend.scoring.jd_limits import MAX_JD_PROMPT_CHARS
 
 
 class ResumeTailoringGenerator:
@@ -54,7 +55,7 @@ class ResumeTailoringGenerator:
         fit_reasoning = (job.get("fit_reasoning") or "").strip()
 
         if job_description:
-            jd_block = f"JOB DESCRIPTION:\n{job_description[:4000]}"
+            jd_block = f"JOB DESCRIPTION:\n{job_description[:MAX_JD_PROMPT_CHARS]}"  # ai: claude-opus-5-5 | 2026-10-30
         elif fit_reasoning:
             jd_block = f"FIT ANALYSIS (AI-generated summary of requirements):\n{fit_reasoning[:2000]}"
         else:

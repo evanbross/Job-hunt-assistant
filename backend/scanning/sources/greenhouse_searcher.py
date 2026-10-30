@@ -55,6 +55,7 @@ from urllib.request import Request
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
 from backend.scanning.sources.greenhouse_session_store import GreenhouseSessionStore
+from backend.scoring.jd_limits import CAPTURED_JOB_TEXT_MAX_CHARS
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
@@ -272,7 +273,7 @@ class GreenhouseSearcher:
         company: str = ((data.get("company") or {}).get("name") or board_token).strip()
 
         raw_content: str = data.get("content") or ""
-        listing_text: str = _strip_html(raw_content)[:8000]
+        listing_text: str = _strip_html(raw_content)[:CAPTURED_JOB_TEXT_MAX_CHARS]  # ai: claude-opus-5-5 | 2026-10-30
 
         location_name: str = ((data.get("location") or {}).get("name") or "").strip()
         if location_name and listing_text:

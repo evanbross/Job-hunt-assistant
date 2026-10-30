@@ -68,6 +68,7 @@ from backend.scoring.duplicate_matching import (
     is_near_certain_duplicate,
 )
 from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     SCORING_FAILED_WARNING,
     import_warnings_to_json,
@@ -755,7 +756,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 # second chance via enrichment, so its snippet needs a much
                 # larger cap to actually reach the JD past any lead-in boilerplate
                 if jd_text:
-                    raw_snippet = jd_text[:6000]
+                    raw_snippet = jd_text[:RAW_JD_SNIPPET_MAX_CHARS]  # ai: claude-opus-5-5 | 2026-10-30
                 elif job_url_str:
                     raw_snippet = email_body[:URL_JOB_SNIPPET_CHARS]
                 else:

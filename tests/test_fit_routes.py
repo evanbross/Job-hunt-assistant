@@ -396,6 +396,43 @@ def test_fit_chat_rejects_missing_messages() -> None:
     assert response.get_json()["error"] == "No messages provided"
 
 
+# ai: claude-opus-5-5 | 2026-10-30
+def test_fit_chat_prompt_uses_the_full_description_the_scorer_saw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: fit chat used to send only the 6,000-char raw_jd_snippet, so
+    the chat reviewing a score couldn't see requirements the scorer was given
+    from the longer enriched job_description."""
+    late_requirement = "Requires five years of Rust in production."
+    jobs_repo = FakeJobsRepo()
+    jobs_repo.row["job_description"] = "x" * 7_000 + "\n" + late_requirement
+    repos = {"conn": FakeConnection(), "jobs": jobs_repo, "resume": FakeResumeRepo()}
+    captured: dict[str, Any] = {}
+
+    class FakeAIClient:
+        def __init__(self, *_args: Any) -> None:
+            pass
+
+        def complete(self, **kwargs: Any) -> str:
+            captured.update(kwargs)
+            return "reply"
+
+    monkeypatch.setattr("routes.fit.get_repos", make_fake_get_repos(repos))
+    monkeypatch.setattr("routes.fit.current_user_id", lambda: _FAKE_USER_ID)
+    monkeypatch.setattr("routes.fit.get_candidate_profile", lambda *_a: "PROFILE")
+    monkeypatch.setattr("routes.fit.AIProviderClient", FakeAIClient)
+
+    app = Flask(__name__)
+    app.register_blueprint(fit_bp, url_prefix="/api")
+    response = app.test_client().post(
+        "/api/jobs/7/fit-chat",
+        json={"messages": [{"role": "user", "content": "Why this score?"}]},
+    )
+
+    assert response.status_code == 200
+    assert late_requirement in captured["system"]
+
+
 def test_fit_chat_rejects_all_malformed_messages() -> None:
     app = Flask(__name__)
     app.register_blueprint(fit_bp, url_prefix="/api")

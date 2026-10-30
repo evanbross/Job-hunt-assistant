@@ -51,6 +51,7 @@ from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request
 
+from backend.scoring.jd_limits import CAPTURED_JOB_TEXT_MAX_CHARS
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
@@ -157,7 +158,7 @@ class JobBoardSearcher:
             title: str = (job.get("title") or "").strip()
             company: str = (job.get("company_name") or "").strip()
             url: str = (job.get("url") or "").strip()
-            description: str = strip_html(job.get("description") or "")[:8000]
+            description: str = strip_html(job.get("description") or "")[:CAPTURED_JOB_TEXT_MAX_CHARS]  # ai: claude-opus-5-5 | 2026-10-30
             raw_date: str = job.get("publication_date") or ""
             date_posted: str | None = raw_date[:10] if raw_date else None
 
@@ -204,7 +205,7 @@ class JobBoardSearcher:
                 title: str = (job.get("name") or "").strip()
                 company: str = ((job.get("company") or {}).get("name") or "").strip()
                 url: str = ((job.get("refs") or {}).get("landing_page") or "").strip()
-                description: str = strip_html(job.get("contents") or "")[:8000]
+                description: str = strip_html(job.get("contents") or "")[:CAPTURED_JOB_TEXT_MAX_CHARS]  # ai: claude-opus-5-5 | 2026-10-30
                 raw_date: str = job.get("publication_date") or ""
                 date_posted: str | None = raw_date[:10] if raw_date else None
 

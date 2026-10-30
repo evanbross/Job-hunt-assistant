@@ -19,6 +19,7 @@ from typing import Any
 from backend.db import IJobRepository, IPenaltyRuleRepository, IResumeRepository
 from backend.db.job_columns import JobColumns
 from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import SCORING_FAILED_WARNING, remove_import_warning
 from backend.utils.utils import ACTIVE_JOB_STATUSES, get_repos
 
@@ -124,7 +125,7 @@ def enrich_job_description(
     job_id = int(job["id"])
     update_fields: dict[str, Any] = {
         JobColumns.JOB_DESCRIPTION: description,
-        JobColumns.RAW_JD_SNIPPET: description[:6000],
+        JobColumns.RAW_JD_SNIPPET: description[:RAW_JD_SNIPPET_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
     }
     # ai: claude-sonnet-4-6 | 2026-07-20
     # A real description means the "jd_body_is_tracking_link" warning (raised

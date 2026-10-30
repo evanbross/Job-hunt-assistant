@@ -57,6 +57,7 @@ from backend.scoring.duplicate_matching import (
 )
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_enrichment import scoring_text_for_job
+from backend.scoring.jd_limits import MAX_JD_PROMPT_CHARS
 from backend.scoring.job_validator import SCORING_FAILED_WARNING, remove_import_warning
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
@@ -527,7 +528,9 @@ def fit_chat(job_id: int) -> ResponseReturnValue:
         f"Company: {job.get('company') or 'Unknown'}\n"
         f"Stored fit percentage: {job.get('fit_score') if job.get('fit_score') is not None else 'Not scored'}\n"
         f"Stored fit reasoning: {job.get('fit_reasoning') or 'No stored reasoning.'}\n\n"
-        f"JOB DESCRIPTION / EMAIL SNIPPET:\n{str(job.get('raw_jd_snippet') or '')[:6000]}"
+        # ai: claude-opus-5-5 | 2026-10-30 — was the 6,000-char raw_jd_snippet only, so
+        # the chat reviewing a score never saw the full description the scorer used.
+        f"JOB DESCRIPTION / EMAIL SNIPPET:\n{scoring_text_for_job(job)[:MAX_JD_PROMPT_CHARS]}"
     )
 
     try:

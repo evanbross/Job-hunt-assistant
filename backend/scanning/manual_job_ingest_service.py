@@ -42,6 +42,7 @@ from backend.scanning.career_site_scanner import (
 )
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     import_warnings_to_json,
     normalize_and_validate,
@@ -368,7 +369,7 @@ class ManualJobIngestService:
             "job_title": job_title,
             "url": url,
             "source": source,
-            JobColumns.RAW_JD_SNIPPET: score_body[:6000],
+            JobColumns.RAW_JD_SNIPPET: score_body[:RAW_JD_SNIPPET_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
             "fit_score": fit_score,
             "fit_reasoning": score_result["reasoning"],
             "salary_min": score_result["salary_min"],
