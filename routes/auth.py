@@ -33,6 +33,7 @@ import json
 import logging
 import secrets
 import time
+from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, redirect, request
 from flask.typing import ResponseReturnValue
@@ -55,13 +56,14 @@ auth_bp = Blueprint("auth", __name__)
 
 _GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 
-# Maps a random state token → {"verifier": str, "created_at": float, "user_id": int}.
-# The user who started the flow is recorded so the callback can only ever
-# store the resulting token for that same user.
-# Using a server-side dict avoids session-cookie issues when the Vite dev proxy
-# is in the path: the cookie set by Flask on :5004 isn't visible when the browser
-# calls :5173, so the callback (which hits :5004 directly from Google's redirect)
-# would find an empty session.
+# ai: claude-opus-5-5 | 2026-11-02
+# Maps a random state token → {"verifier": str, "created_at": float,
+# "user_id": int, "return_origin": str}. The PKCE verifier lives here, not in
+# the Flask session, so the session only has to carry the login itself. The
+# callback still needs that login cookie (app.py's login gate, plus the
+# owner check below), and cookies are scoped by hostname but not by port, so
+# the flow has to start on the same hostname as GOOGLE_OAUTH_REDIRECT_URI.
+# auth_google_start checks this up front: see _browser_origin.
 _pending_auths: dict[str, dict[str, object]] = {}
 _PENDING_AUTH_TTL_SECONDS = 600  # 10 minutes
 _PENDING_AUTH_MAX_SIZE = 50
@@ -85,6 +87,33 @@ def _google_client_config() -> str:
     """The app-wide Google OAuth client JSON (an admin-managed system setting)."""
     with get_repos() as repos:
         return get_setting("google_oauth_client_config", None, repos)
+
+
+# ai: claude-opus-5-5 | 2026-11-02
+def _origin_of(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+# ai: claude-opus-5-5 | 2026-11-02
+def _browser_origin() -> str:
+    """The origin the user's browser actually has the app open on.
+
+    The Host header can't answer this: the Vite dev proxy rewrites it to
+    localhost:5004 (changeOrigin), so a page on 127.0.0.1:5174 would look like
+    localhost. Origin/Referer carry what the browser itself used."""
+    source = request.headers.get("Origin") or request.headers.get("Referer")
+    return _origin_of(source) if source else _origin_of(request.host_url)
+
+
+# ai: claude-opus-5-5 | 2026-11-02
+def _app_url_on_redirect_host() -> str:
+    """Where to open the app so a login there is visible to the OAuth callback."""
+    redirect = urlparse(config.GOOGLE_OAUTH_REDIRECT_URI)
+    if config.FRONTEND_DIST.exists():
+        return f"{redirect.scheme}://{redirect.netloc}/"
+    # No built frontend: Flask's catch-all only returns JSON, so use the Vite dev server.
+    return f"{redirect.scheme}://{redirect.hostname}:{config.VITE_DEV_PORT}/"
 
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -137,12 +166,32 @@ def auth_google_start() -> ResponseReturnValue:
             400,
         )
 
+    # ai: claude-opus-5-5 | 2026-11-02
+    # Google can only send the browser back to the registered redirect URI. If the
+    # app is open on another hostname (e.g. jha.localhost via Caddy), the login
+    # cookie won't go with the callback and it fails with a bare 401 from the
+    # login gate after the user has already approved access on Google. Refuse
+    # here instead, and say where to go.
+    return_origin = _browser_origin()
+    redirect_host = urlparse(config.GOOGLE_OAUTH_REDIRECT_URI).hostname
+    if urlparse(return_origin).hostname != redirect_host:
+        connect_url = _app_url_on_redirect_host()
+        return (
+            jsonify(
+                {
+                    "error": f"Google can only return to {redirect_host}, so connecting "
+                    f"Google from {urlparse(return_origin).hostname} can't complete. "
+                    f"Open {connect_url}, sign in there, and connect Google again. "
+                    "You can switch back afterwards: the connection is saved to your account.",
+                    "connect_url": connect_url,
+                }
+            ),
+            409,
+        )
+
     flow = _build_flow(client_config)
 
-    # Generate a random state token and store the PKCE code verifier server-side.
-    # This avoids relying on Flask session cookies, which don't survive the Vite
-    # dev-proxy hop (browser stores the cookie for :5173, but the OAuth callback
-    # hits :5004 directly, so the cookie is absent).
+    # Random state token; the PKCE code verifier is kept server-side (see _pending_auths).
     # ai: claude-sonnet-4-6 | 2026-06-25
     _prune_pending_auths()
     state = secrets.token_urlsafe(32)
@@ -157,6 +206,7 @@ def auth_google_start() -> ResponseReturnValue:
         "verifier": flow.code_verifier,
         "created_at": time.monotonic(),
         "user_id": current_user_id(),
+        "return_origin": return_origin,  # ai: claude-opus-5-5 | 2026-11-02
     }
     return jsonify({"auth_url": auth_url})
 
@@ -202,12 +252,11 @@ def auth_google_callback() -> ResponseReturnValue:
         record_event(repos, flow_owner_id, GOOGLE_CONNECTED)
         repos["conn"].commit()
 
-    # In dev mode (no built frontend) Flask's catch-all returns JSON, so redirect
-    # to the Vite dev server instead.  In production both are on the same origin.
-    frontend_origin = (
-        "http://localhost:5174" if not config.FRONTEND_DIST.exists() else ""
-    )
-    return redirect(f"{frontend_origin}/?auth=success")
+    # ai: claude-opus-5-5 | 2026-11-02
+    # Back to the page the flow started from (Vite dev server or the built app).
+    # Its hostname was checked against the redirect URI's at start, so this can't
+    # send the browser off-site.
+    return redirect(f"{entry['return_origin']}/?auth=success")
 
 
 @auth_bp.route("/auth/disconnect", methods=["POST"])

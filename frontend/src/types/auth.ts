@@ -54,6 +54,8 @@ export interface AuthStatusResponse {
 export interface AuthGoogleStartResponse {
   auth_url?: string;
   error?: string;
+  /** Set on a 409: the app URL on the OAuth redirect host, where connecting can complete. */
+  connect_url?: string;
 }
 
 /** GET /api/session response (routes/session_auth.py's session_status). */

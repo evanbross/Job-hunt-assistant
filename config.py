@@ -239,6 +239,8 @@ GMAIL_SCOPES: list[str] = (
     ]
 )
 GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:5004/api/auth/google/callback"
+# ai: claude-opus-5-5 | 2026-11-02 — must match server.port in frontend/vite.config.ts
+VITE_DEV_PORT: int = 5174
 
 # ─── Outbound email (account verification) ───────────────────────────────────
 # ai: claude-sonnet-5 | 2026-09-29 — SMTP has no config.py constants at all

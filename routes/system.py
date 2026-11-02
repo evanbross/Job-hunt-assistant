@@ -122,7 +122,7 @@ def serve_frontend(path: str = "") -> ResponseReturnValue:
             {
                 "message": "Flask API is running. "
                 "Start the Vite dev server (cd frontend && npm run dev) "
-                "and open http://localhost:5174"
+                f"and open http://localhost:{config.VITE_DEV_PORT}"
             }
         ),
         200,

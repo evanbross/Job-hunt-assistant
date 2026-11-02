@@ -934,8 +934,9 @@ def _start_vite() -> None:
         )
         atexit.register(_stop_vite)
         logger.info(
-            "Vite dev server started (PID %s) → http://localhost:5174",
+            "Vite dev server started (PID %s) → http://localhost:%d",
             _vite_proc.pid,
+            config.VITE_DEV_PORT,
         )
     except Exception as exc:
         logger.warning("Could not start Vite dev server: %s", exc)

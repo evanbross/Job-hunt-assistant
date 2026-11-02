@@ -44,7 +44,8 @@ import MetricGrid, { MetricItem } from "./components/common/MetricGrid.tsx";
 import { ImportBreakdownDetails, ImportOriginDetails } from "./components/JobQueue/ImportSummaryPopup.tsx";
 import { jobCardTabForStatus } from "./utils/jobQueueUtils.ts";
 import { readStoredPref, writeStoredPref } from "./utils/storedPreference.ts";
-import type { SessionStatusResponse, AuthGoogleStartResponse } from "./types/auth.ts";
+import type { SessionStatusResponse } from "./types/auth.ts";
+import { requestGoogleAuthUrl } from "./utils/googleAuth.ts";
 import type { SetupStatusResponse } from "./types/setupWizard.ts";
 import type { ImportStatus } from "./types/importing.ts";
 import type { SystemHealthResponse } from "./types/common.ts";
@@ -455,13 +456,8 @@ export default function App() {
   };
 
   const startGoogleAuth = async () => {
-    const res = await fetch("/api/auth/google");
-    const data: AuthGoogleStartResponse = await res.json();
-    if (data.error) {
-      window.alert(data.error);
-      return;
-    }
-    window.location.href = data.auth_url || "";
+    const authUrl = await requestGoogleAuthUrl(); // ai: claude-opus-5-5 | 2026-11-02
+    if (authUrl) window.location.href = authUrl;
   };
 
   const handleAuthClick = async () => {

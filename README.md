@@ -166,13 +166,18 @@ Open [http://localhost:5004](http://localhost:5004).
 
 ## 5. First-Run OAuth Flow
 
-1. Start the app and open it in your browser
+1. Start the app and open it at **`http://localhost:5004`** (not `jha.localhost` or `127.0.0.1` — see below)
 2. You'll see a **"Connect Google Account"** banner at the top
 3. Click the button — it generates an OAuth URL and redirects you to Google
-4. Grant access to Gmail and Sheets
+4. Grant access to Gmail
 5. Google redirects back to `http://localhost:5004/api/auth/google/callback`
-6. Your token is saved to `credentials/token.json`
+6. Your token is saved, encrypted, to your account in the database (`google_oauth_tokens`)
 7. The banner disappears — you're ready to scan
+
+Google can only redirect back to the registered `localhost` callback, and your app login
+cookie belongs to whichever hostname you signed in on. Connecting from any other hostname
+is refused up front with a link to the `localhost` URL. Once connected, you can use the
+app from any hostname again.
 
 The token is long-lived (refreshed automatically). You only need to do this once.
 

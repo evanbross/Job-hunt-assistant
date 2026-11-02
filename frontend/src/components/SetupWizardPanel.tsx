@@ -37,6 +37,7 @@ import type {
   SetupUploadCredentialsResult,
 } from "../types/setupWizard.ts";
 import type { ApiErrorBody } from "../types/common.ts";
+import { requestGoogleAuthUrl } from "../utils/googleAuth.ts";
 
 const STEP_AI = 0;
 const STEP_CREDS = 1;
@@ -205,14 +206,10 @@ export default function SetupWizardPanel({ onSetupComplete }: SetupWizardPanelPr
 
   const handleConnectGoogle = async () => {
     try {
-      const res = await fetch("/api/auth/google");
-      const data = await res.json();
-      if (data.error) {
-        window.alert(data.error);
-        return;
-      }
+      const authUrl = await requestGoogleAuthUrl(); // ai: claude-opus-5-5 | 2026-11-02
+      if (!authUrl) return;
       startAuthPolling();
-      window.location.href = data.auth_url;
+      window.location.href = authUrl;
     } catch (e) {
       window.alert("Failed to start auth: " + (e instanceof Error ? e.message : String(e)));
     }

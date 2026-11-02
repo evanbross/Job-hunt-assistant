@@ -41,7 +41,8 @@ import type { SettingsConfigDraft } from "./SchemaFields.tsx";
 import { helpTextStyle, labelStyle } from "./settingsStyles.ts";
 import SetupWizardPanel from "./SetupWizardPanel.tsx";
 import type { ApiErrorBody } from "../types/common.ts";
-import type { AccountInfo, AuthGoogleStartResponse, AuthStatusResponse } from "../types/auth.ts";
+import type { AccountInfo, AuthStatusResponse } from "../types/auth.ts";
+import { requestGoogleAuthUrl } from "../utils/googleAuth.ts";
 import type { CareerSite } from "../types/careerSites.ts";
 import type { CandidateProfileResponse } from "../types/setupWizard.ts";
 import type {
@@ -1407,13 +1408,8 @@ function JdHealthCheckSection() {
   };
 
   const reconnectGmail = async () => {
-    const res = await fetch("/api/auth/google");
-    const data: AuthGoogleStartResponse = await res.json();
-    if (!res.ok || data.error) {
-      window.alert(data.error || "Failed to start Gmail auth");
-      return;
-    }
-    window.location.href = data.auth_url || "";
+    const authUrl = await requestGoogleAuthUrl(); // ai: claude-opus-5-5 | 2026-11-02
+    if (authUrl) window.location.href = authUrl;
   };
 
   const closeForm = () => { setShowForm(false); setEditId(null); setForm(EMPTY_JD_TARGET_FORM); };
