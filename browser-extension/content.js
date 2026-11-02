@@ -480,6 +480,23 @@
       return { site: 'Amazon', type: 'amazonJob', jobCount: 1, description: 'Single job listing' };
     }
 
+    // ai: claude-opus-5-5 | 2026-11-02
+    // Clera's job search (getclera.com/dashboard/jobs) is a split view: a column
+    // of <article data-job-id> cards whose titles are <button>s, not links -- so
+    // the link scan found nothing and offered the page as one job -- beside the
+    // selected job's details. See buildCleraListPayload for the list capture.
+    if (isHostOrSubdomain(host, 'getclera.com') && path.startsWith('/dashboard/jobs')
+        && document.querySelector('article[data-job-id]')) {
+      const total = cleraVisibleTotal() ?? document.querySelectorAll('article[data-job-id]').length;
+      return {
+        site: 'Clera',
+        type: 'cleraSplit',
+        jobCount: total,
+        description: `${total} jobs found — fetches full descriptions (~${Math.max(1, Math.round(total * CLERA_SECONDS_PER_JOB / 60))} min), or just the job shown on the right`,
+        captureModes: ['detail', 'list'],
+      };
+    }
+
     // ai: claude-fable-5 | 2026-07-13
     // Jibe/iCIMS career sites (careers.marriott.com, …): job URLs end in
     // /job/<32-hex-id> and each page embeds a schema.org JobPosting JSON-LD
@@ -2786,6 +2803,173 @@
     });
   }
 
+  // ─── Clera ─────────────────────────────────────────────────────────────────
+
+  // ai: claude-opus-5-5 | 2026-11-02
+  // Worked out live on getclera.com/dashboard/jobs (logged in), 2026-11-02:
+  // - The list comes from POST /api/talents/me/external-jobs: {filters, sort,
+  //   limit: 25, cursor} in, {data, has_more, next_cursor, found} out. Items
+  //   carry title/company/location/salary and the real ATS applyUrl, but no
+  //   description. The page's own request body is recorded by
+  //   cleraSearchRecorder.js (see there for why it can't be rebuilt from the URL).
+  // - GET /api/jobs/external/<nanoId> returns {job} with the same fields plus
+  //   descriptionHtml -- the full posting.
+  // - "Load more" pages the API; it doesn't just reveal hidden cards.
+  const CLERA_SEARCH_PATH = '/api/talents/me/external-jobs';
+  const CLERA_MAX_PAGES = 200; // 5,000 jobs -- a stop for a cursor that never ends
+  const CLERA_SECONDS_PER_JOB = 0.7; // ~0.3s per detail fetch plus the 400ms pause
+
+  function cleraVisibleTotal() {
+    const m = document.body.innerText.match(/(\d[\d,]*)\s+open roles?\b/i);
+    return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
+  }
+
+  // null until the page has sent a search, or if the recorder wasn't there
+  // yet (the extension was reloaded after the page was).
+  function recordedCleraSearch() {
+    try {
+      const search = JSON.parse(document.documentElement.getAttribute('data-jha-clera-search') || 'null');
+      return search && typeof search.filters === 'object' ? search : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // The job open on the right: ?job=<id> once a card has been clicked, else
+  // the card the page marks current (the first one on a fresh search).
+  function selectedCleraJobId() {
+    return new URLSearchParams(location.search).get('job')
+      || document.querySelector('[data-job-select][aria-current="true"]')?.closest('article[data-job-id]')?.dataset.jobId
+      || '';
+  }
+
+  async function fetchCleraJob(nanoId) {
+    try {
+      const res = await fetch(`${location.origin}/api/jobs/external/${encodeURIComponent(nanoId)}`, { credentials: 'include' });
+      if (!res.ok) return null;
+      return (await res.json())?.job || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function cleraSearchPage(search, cursor) {
+    let data;
+    try {
+      const res = await fetch(location.origin + CLERA_SEARCH_PATH, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cursor ? { ...search, cursor } : search),
+      });
+      if (!res.ok) return { problem: `search API answered HTTP ${res.status}` };
+      data = await res.json();
+    } catch (err) {
+      return { problem: `search API call failed (${err?.message || err})` };
+    }
+    if (!Array.isArray(data?.data)) return { problem: 'search API answered without a job list' };
+    return data;
+  }
+
+  // Every job in the search on screen, from the page's own recorded request.
+  // Returns {listed} or {problem}; a problem after some pages came back keeps
+  // what was listed, so the capture can still go ahead with a warning.
+  async function listCleraJobs() {
+    const search = recordedCleraSearch();
+    if (!search) return { listed: [], problem: "the page's search wasn't recorded" };
+    const visibleTotal = cleraVisibleTotal();
+    const listed = [];
+    const seen = new Set();
+    let cursor = null;
+    for (let page = 1; page <= CLERA_MAX_PAGES; page++) {
+      const result = await cleraSearchPage(search, cursor);
+      if (result.problem) return { listed, problem: result.problem };
+      if (page === 1 && visibleTotal != null && typeof result.found === 'number' && result.found !== visibleTotal) {
+        return { listed: [], problem: `search API found ${result.found}, the page shows ${visibleTotal}` };
+      }
+      result.data.forEach(job => {
+        if (!job?.nanoId || seen.has(job.nanoId)) return;
+        seen.add(job.nanoId);
+        listed.push(job);
+      });
+      sendProgress(`Listing jobs... ${listed.length} of ${result.found ?? '?'}`, undefined);
+      if (!result.has_more || !result.next_cursor) return { listed };
+      cursor = result.next_cursor;
+      await sleep(400);
+    }
+    return { listed, problem: `stopped after ${CLERA_MAX_PAGES} pages` };
+  }
+
+  function cleraSalary(job) {
+    if (!job.salaryLowerBound && !job.salaryUpperBound) return '';
+    const amount = n => (n ? Math.round(n).toLocaleString('en-US') : '?');
+    const unit = job.salaryUnitText ? ` per ${job.salaryUnitText.toLowerCase()}` : '';
+    return `${amount(job.salaryLowerBound)} - ${amount(job.salaryUpperBound)} ${job.currencyType || ''}${unit}`
+      .replace(/\s+/g, ' ').trim();
+  }
+
+  // job is a list item, a detail, or both merged. The URL is the posting's own
+  // ATS page (applyUrl) so it de-duplicates against a direct capture of the
+  // same job; the Clera listing is kept in the text for reference.
+  function cleraJobEntry(job) {
+    const cleraUrl = `${location.origin}/dashboard/jobs?job=${encodeURIComponent(job.nanoId)}`;
+    const url = job.applyUrl || cleraUrl;
+    const title = job.position || '';
+    const company = job.companyName || '';
+    const remote = (job.remoteLocations || []).filter(Boolean).join('; ');
+    const description = job.descriptionHtml
+      ? htmlToText(job.descriptionHtml)
+      : (job.keySkills || []).length ? `Key skills: ${job.keySkills.join(', ')}` : '';
+    const lines = [
+      title,
+      company && `Company: ${company}`,
+      `URL: ${url}`,
+      `Found on Clera: ${cleraUrl}`,
+      job.locationLabel && `Location: ${job.locationLabel}`,
+      job.workArrangement && `Work Environment: ${job.workArrangement}${remote ? ` (${remote})` : ''}`,
+      cleraSalary(job) && `Salary: ${cleraSalary(job)}`,
+      job.experienceLevel && `Experience: ${job.experienceLevel} years`,
+      typeof job.matchScore === 'number' && `Clera match score: ${job.matchScore}%`,
+      description && `\n${description}`,
+    ].filter(Boolean);
+    return { url, job_title: title, company, listing_text: lines.join('\n') };
+  }
+
+  async function buildCleraDetailPayload() {
+    const nanoId = selectedCleraJobId();
+    const job = nanoId ? await fetchCleraJob(nanoId) : null;
+    if (!job) throw new Error('Could not load the selected job from Clera. Click the job in the list and try again.');
+    return JSON.stringify({ jobs: [cleraJobEntry(job)], source: { url: location.href } });
+  }
+
+  // Lists the whole search via the API, then fetches each job's full posting.
+  // Without a recorded search (the page was open before the extension was
+  // reloaded) it falls back to the cards loaded on screen and says so.
+  async function buildCleraListPayload() {
+    const listing = await listCleraJobs();
+    let items = listing.listed;
+    if (items.length === 0) {
+      items = [...document.querySelectorAll('article[data-job-id]')].map(card => ({ nanoId: card.dataset.jobId }));
+    }
+
+    const jobs = [];
+    for (let i = 0; i < items.length; i++) {
+      sendProgress(`Fetching job details... (${i + 1}/${items.length})`, (i + 1) / items.length);
+      const detail = await fetchCleraJob(items[i].nanoId);
+      const job = { ...items[i], ...(detail || {}) };
+      if (job.position) jobs.push(cleraJobEntry(job)); // a bare card id whose detail failed has nothing to send
+      if (i < items.length - 1) await sleep(400);
+    }
+
+    const expected = cleraVisibleTotal();
+    let warning = null;
+    if (expected != null && jobs.length < expected) {
+      warning = `Captured ${jobs.length} of the ${expected} jobs this search shows`
+        + (listing.problem ? ` (${listing.problem}). Reload this page and try again.` : '.');
+    }
+    return { payload: JSON.stringify({ jobs, source: { url: location.href } }), warning };
+  }
+
   // ai: claude-fable-5 | 2026-07-13
   // Jibe listing page — harvest cards from the live DOM, then fetch each job's
   // page (same-origin) and pull the full description from its JSON-LD block.
@@ -3913,6 +4097,14 @@
       case 'wttjSaved':        payload = buildWttjSavedPayload(); break;
       case 'robertHalfJob':    payload = buildRobertHalfJobPayload(); break;
       case 'amazonJob':        payload = buildAmazonJobPayload(); break; // ai: claude-opus-5-5 | 2026-11-02
+      // ai: claude-opus-5-5 | 2026-11-02
+      case 'cleraSplit':
+        if (options.captureMode === 'list') {
+          ({ payload, warning } = await buildCleraListPayload());
+        } else {
+          payload = await buildCleraDetailPayload();
+        }
+        break;
       case 'jibeJob':          payload = buildJibeJobPayload(); break;
       case 'jibeSearch':       payload = await buildJibeSearchPayload(); break;
       case 'icimsJob':         payload = buildIcimsJobPayload(); break;
