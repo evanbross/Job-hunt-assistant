@@ -471,6 +471,15 @@
       return { site: 'Robert Half', type: 'robertHalfJob', jobCount: 1, description: 'Single job listing' };
     }
 
+    // ai: claude-opus-5-5 | 2026-11-02
+    // amazon.jobs job pages (/en/jobs/<id>/<slug>) have no JobPosting JSON-LD, so
+    // the generic single-job check below can't fire, and the client-rendered
+    // "RelatedJobs" widget's 5 recommendation links made the link scan report
+    // 6 jobs (confirmed live on job 10517525).
+    if (_AMAZON_JOB_PATH_RE.test(path) && (host === 'amazon.jobs' || host.endsWith('.amazon.jobs'))) {
+      return { site: 'Amazon', type: 'amazonJob', jobCount: 1, description: 'Single job listing' };
+    }
+
     // ai: claude-fable-5 | 2026-07-13
     // Jibe/iCIMS career sites (careers.marriott.com, …): job URLs end in
     // /job/<32-hex-id> and each page embeds a schema.org JobPosting JSON-LD
@@ -2745,6 +2754,38 @@
     });
   }
 
+  // ai: claude-opus-5-5 | 2026-11-02
+  // Single amazon.jobs job page (see detectPage's amazon.jobs branch). The
+  // posting lives in #job-detail: the title in h1.title, "Job ID: <id> | <legal
+  // entity>" in p.meta (the hiring entity varies -- e.g. "Amazon Web Services,
+  // Inc." -- so it's read rather than hardcoded), the description sections in
+  // #job-detail-body .content, and every location as one .association-content
+  // block in the sidebar. Reading only those keeps the RelatedJobs widget's
+  // titles out of the JD.
+  const _AMAZON_JOB_PATH_RE = /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?jobs\/(\d+)/i;
+
+  function buildAmazonJobPayload() {
+    const title = pick(['#job-detail h1.title', 'h1']);
+    const [, metaId, entity] = (pick(['#job-detail p.meta']).match(/Job ID:\s*(\w+)\s*\|\s*(.+)/i) || []);
+    const company = entity?.trim() || 'Amazon';
+    const reqId = metaId || (location.pathname.match(_AMAZON_JOB_PATH_RE) || [])[1] || '';
+    const locations = [...document.querySelectorAll('.association.location-icon .association-content')]
+      .map(el => el.innerText.trim())
+      .filter(Boolean);
+    const description = pick(['#job-detail-body .content']) || jobPageBodyText().slice(0, 12000);
+    const url = location.origin + location.pathname;
+
+    return JSON.stringify({
+      jobs: [{
+        url,
+        job_title: title,
+        company,
+        listing_text: jobPostingLines({ title, company, reqId, location: locations.join('; '), url, description }),
+      }],
+      source: { url: location.href },
+    });
+  }
+
   // ai: claude-fable-5 | 2026-07-13
   // Jibe listing page — harvest cards from the live DOM, then fetch each job's
   // page (same-origin) and pull the full description from its JSON-LD block.
@@ -3871,6 +3912,7 @@
       case 'wttjJob':          payload = await buildWttjJobPayload(); break;
       case 'wttjSaved':        payload = buildWttjSavedPayload(); break;
       case 'robertHalfJob':    payload = buildRobertHalfJobPayload(); break;
+      case 'amazonJob':        payload = buildAmazonJobPayload(); break; // ai: claude-opus-5-5 | 2026-11-02
       case 'jibeJob':          payload = buildJibeJobPayload(); break;
       case 'jibeSearch':       payload = await buildJibeSearchPayload(); break;
       case 'icimsJob':         payload = buildIcimsJobPayload(); break;
