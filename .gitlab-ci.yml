@@ -15,6 +15,11 @@
 # before pushing. Every job definition below is left intact -- to re-enable,
 # restore the three commented-out rules (merge_request_event, pushes to the
 # default branch, and scheduled pipelines) and delete the `when: never` line.
+# ai: claude-opus-5-5 | 2026-11-03
+# The local replacement is enforced, not remembered: scripts/check.py runs these
+# jobs' commands, selected by these jobs' own `rules: changes:` paths, from a
+# pre-push hook (.githooks/pre-push; enable with `git config core.hooksPath .githooks`).
+# tests/test_check_gate.py fails if a gate command stops matching its job's script.
 workflow:
   rules:
     # - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -48,6 +53,11 @@ workflow:
 .frontend_changes: &frontend_changes
   - "frontend/**/*"
   - "shared/**/*"
+  - ".gitlab-ci.yml"
+
+# ai: claude-opus-5-5 | 2026-11-03
+.extension_changes: &extension_changes
+  - "browser-extension/**/*"
   - ".gitlab-ci.yml"
 
 stages:
@@ -94,9 +104,27 @@ frontend:
     # Vite transpiles TS without a full type check, and ESLint isn't a substitute for
     # tsc's cross-module structural checks -- run it explicitly as its own gate.
     - npm run type-check
+    # ai: claude-opus-5-5 | 2026-11-03 — the Vitest suite (added 2026-10-18) was never wired in here.
+    - npm run test
     # A plain JS React project can lint clean and still fail to build (or reference an
     # undefined name only on a branch nothing renders), so the production build is a gate too.
     - npm run build
+
+# ai: claude-opus-5-5 | 2026-11-03
+# The browser extension's Vitest suite (jsdom + a vm-based chrome mock), which no job ran.
+extension:
+  stage: test
+  image: node:22-bookworm-slim
+  rules:
+    - changes: *extension_changes
+  cache:
+    key:
+      files: [browser-extension/package-lock.json]
+    paths: [.npm-cache/]
+  script:
+    - cd browser-extension
+    - npm ci
+    - npm test
 
 pytest:
   extends: .python

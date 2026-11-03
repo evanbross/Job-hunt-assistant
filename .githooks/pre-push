@@ -1,0 +1,7 @@
+#!/bin/sh
+# ai: claude-opus-5-5 | 2026-11-03
+# Local quality gate in place of the disabled CI workflow: runs the CI jobs'
+# checks for whatever this push changes (scripts/check.py). Enable once per clone:
+#     git config core.hooksPath .githooks
+# Override for a single push with `git push --no-verify`.
+exec uv run --frozen python scripts/check.py --pre-push "$@"

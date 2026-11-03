@@ -126,6 +126,29 @@ cd frontend
 npm install
 ```
 
+### Quality gate (pre-push hook)
+
+The GitLab CI workflow is disabled to save shared-runner minutes, so the same checks run
+locally on every push instead. Enable the hook once per clone (and run `npm install` in
+`browser-extension/` too, for its tests):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Each push then runs `scripts/check.py`, which picks the checks the push's changes need
+(ruff, frontend lint/type-check/Vitest/build, extension Vitest, pytest) using the CI
+jobs' own `rules: changes:` paths from `.gitlab-ci.yml`. A failure blocks the push;
+`git push --no-verify` overrides it for that one push. pytest needs the local test
+Postgres running, as it does for any test run.
+
+Run it by hand any time:
+
+```bash
+uv run python scripts/check.py         # what differs from upstream
+uv run python scripts/check.py --all   # everything
+```
+
 ---
 
 ## 4. Running the App
