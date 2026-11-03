@@ -9,7 +9,7 @@ the plan for fixing the ones that do.
 | 1 | Offset pagination skips rows after a reorder | Medium | **Medium** | Valid. The trigger is narrower than the review says (see below) |
 | 2 | Candidate-profile backups collide within one second | Medium | **Low** | Valid, but it can't realistically happen today. The fix is cheap, so do it |
 | 3 | SSE has no production serving model | Medium | **Low (docs)** | No defect in the current runtime. The deploy README's own server advice is wrong for SSE |
-| 4 | All CI pipelines disabled | Medium | **Medium** | Valid. The "run the same checks locally" replacement was never enforced |
+| 4 | All CI pipelines disabled | Medium | **Medium** | **Fixed** 2026-11-03 (`87d3672`): enforced local pre-push gate |
 | 5 | File-watcher debounce erases the final save | Low | **Not a bug** | False positive |
 | 6 | `node_modules` breaks the reserved-name check | Low | **Low (docs)** | Chrome is fine. The `AGENTS.md` rule is worded too broadly |
 
@@ -125,7 +125,34 @@ the `routes/events.py` docstring. Choosing a concrete server and adding it to
 
 ---
 
-## 4. CI disabled: valid, Medium
+## 4. CI disabled: valid, Medium (fixed)
+
+**Fixed 2026-11-03** in `87d3672` (plus `1a5f2bc`, which removed a duplicate
+pyyaml entry). The gate went in roughly as planned below, with these differences:
+
+- `scripts/check.py` doesn't keep its own copy of the path lists. It reads each
+  CI job's `rules: changes:` from `.gitlab-ci.yml`. `tests/test_check_gate.py`
+  fails if a gate command no longer appears in its CI job's script, or if a CI
+  job has no gate counterpart (the two audit jobs are exempt; they need network).
+- CI itself had two gaps, and both are now closed: the frontend job never ran
+  Vitest, and no job ran the browser-extension Vitest suite. A new `extension`
+  job runs it.
+- `.githooks/pre-push` is committed as executable and kept LF-only by
+  `.gitattributes`, since `core.autocrlf=true` would otherwise break it under `sh`.
+- Scheduled pipelines were not re-enabled. The self-hosted runner in `../infra`
+  was discarded instead of committed (stashed there as `stash@{0}`), because the
+  gate is the one CI path.
+
+**Verified end to end:** the hook was run through `sh` with a simulated push of
+`b5cca32..1a5f2bc`. It selected all four checks and every one passed: ruff,
+frontend (lint, type-check, 73 Vitest tests, build), extension (37 Vitest tests),
+and pytest (1592 passed, 1 skipped). That took 20.5 minutes, nearly all of it
+pytest. The fixture work below is aimed at that.
+
+**Still needed per clone:** `git config core.hooksPath .githooks`. Until that's
+set, pushes skip the gate.
+
+The original plan, for reference:
 
 `.gitlab-ci.yml:18-23` was disabled on purpose on 2026-10-15 to save
 shared-runner minutes. Its comment says the same checks run locally before
@@ -187,7 +214,7 @@ publishing ever needs a clean bundle, add the step then.
 
 ## Fix order
 
-1. **#4 local gate.** Do it first so every later fix goes through it.
+1. ~~**#4 local gate.** Do it first so every later fix goes through it.~~ Done 2026-11-03.
 2. **#1 keyset pagination.** The only finding with user-visible data loss
    (jobs missing from the list until a reload). Biggest change: repository,
    query model, route, hook, and tests.
@@ -196,6 +223,6 @@ publishing ever needs a clean bundle, add the step then.
 
 ## Not re-checked
 
-The review couldn't check the sibling `../infra` runner finding from
-2026-10-18, and this triage didn't either. A full `uv run pytest -q` also still
-hasn't run to completion. Run it as part of #4.
+The 2026-10-18 `../infra` runner finding is resolved: its uncommitted runner
+changes were discarded on 2026-11-03 (see #4). The full `uv run pytest -q` the
+review couldn't finish has since passed twice (1573 and then 1592 tests).
