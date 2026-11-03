@@ -47,7 +47,7 @@ const GENERIC_PAGE_TYPES = new Set(['html', 'smartGeneric', 'blocked']);
 // checkbox/cap inputs are a single shared control whose stored key prefix
 // switches per site (and, for Insight Global, per capture mode) — see
 // refreshFullDescUI/activeFullDescPrefix below.
-let fullDescSettings = null;
+let captureSettings = null;
 let activeFullDescPrefix = 'kforce';
 let lastScanResult = null;
 let currentCaptureMode = null;
@@ -89,6 +89,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('capture-mode-list').addEventListener('click', () => setCaptureMode('list'));
   document.getElementById('capture-mode-detail').addEventListener('click', () => setCaptureMode('detail'));
   await initFullDescOptions();
+  initMaxJobsOption(); // ai: claude-opus-5-5 | 2026-11-02 — reads captureSettings, so after the line above
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab.id;
@@ -162,20 +163,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 // which prefix's values to display and toggle the block's visibility once
 // the page type (and, for Insight Global, the chosen capture mode) is known.
 async function initFullDescOptions() {
-  fullDescSettings = await loadSettings();
+  captureSettings = await loadSettings();
   const checkbox = document.getElementById('full-desc-checkbox');
   const capInput = document.getElementById('full-desc-fetch-cap');
   const capRow = document.getElementById('full-desc-cap-row');
 
   checkbox.addEventListener('change', () => {
     capRow.style.display = checkbox.checked ? 'flex' : 'none';
-    fullDescSettings[`${activeFullDescPrefix}FullDescriptions`] = checkbox.checked;
+    captureSettings[`${activeFullDescPrefix}FullDescriptions`] = checkbox.checked;
     chrome.storage.sync.set({ [`${activeFullDescPrefix}FullDescriptions`]: checkbox.checked }).catch(() => {});
   });
   capInput.addEventListener('change', () => {
     const clamped = clampFetchCap(capInput.value);
     capInput.value = clamped;
-    fullDescSettings[`${activeFullDescPrefix}FetchCap`] = clamped;
+    captureSettings[`${activeFullDescPrefix}FetchCap`] = clamped;
     chrome.storage.sync.set({ [`${activeFullDescPrefix}FetchCap`]: clamped }).catch(() => {});
   });
 }
@@ -199,8 +200,8 @@ function refreshFullDescUI() {
   const capInput = document.getElementById('full-desc-fetch-cap');
   const capRow = document.getElementById('full-desc-cap-row');
 
-  checkbox.checked = !!fullDescSettings[`${prefix}FullDescriptions`];
-  capInput.value = clampFetchCap(fullDescSettings[`${prefix}FetchCap`]);
+  checkbox.checked = !!captureSettings[`${prefix}FullDescriptions`];
+  capInput.value = clampFetchCap(captureSettings[`${prefix}FetchCap`]);
   capRow.style.display = checkbox.checked ? 'flex' : 'none';
 }
 
@@ -211,7 +212,58 @@ function setCaptureMode(mode) {
   document.getElementById('capture-mode-detail').classList.toggle('active', mode === 'detail');
   currentJobCount = mode === 'detail' ? 1 : (lastScanResult?.jobCount ?? 0);
   refreshFullDescUI();
+  refreshMaxJobsUI(); // ai: claude-opus-5-5 | 2026-11-02
   resetButton();
+}
+
+// ai: claude-opus-5-5 | 2026-11-02
+// List captures that page through a site's own search API can stop after the
+// first N jobs instead of taking all of them -- each job is a real detail
+// fetch, so "all 566" on Clera takes minutes. The site returns its results
+// best-match first, so the first N are its top N. Returns the
+// chrome.storage.sync key holding N for this site+mode, or null when the
+// capture has no such limit.
+const DEFAULT_MAX_JOBS = 50;
+
+function maxJobsSettingFor(result, captureMode) {
+  if (result.type === 'cleraSplit' && captureMode === 'list') return 'cleraMaxJobs';
+  return null;
+}
+
+// How many jobs the next capture will take, or null when there's no limit.
+// The saved preference is kept as typed (e.g. 1000 = "all, whatever the
+// search"), and only capped at this search's total here.
+function selectedMaxJobs() {
+  const key = lastScanResult ? maxJobsSettingFor(lastScanResult, currentCaptureMode) : null;
+  if (!key) return null;
+  return Math.min(captureSettings[key] || DEFAULT_MAX_JOBS, Math.max(lastScanResult.jobCount ?? 0, 1));
+}
+
+function initMaxJobsOption() {
+  const input = document.getElementById('max-jobs-input');
+  input.addEventListener('change', () => {
+    const key = lastScanResult ? maxJobsSettingFor(lastScanResult, currentCaptureMode) : null;
+    if (!key) return;
+    const n = parseInt(input.value, 10);
+    captureSettings[key] = Number.isFinite(n) && n >= 1 ? n : DEFAULT_MAX_JOBS;
+    chrome.storage.sync.set({ [key]: captureSettings[key] }).catch(() => {});
+    pendingWarningAck = null; // a different count means a different (re-)build next send
+    refreshMaxJobsUI();
+    resetButton();
+  });
+}
+
+function refreshMaxJobsUI() {
+  const box = document.getElementById('max-jobs-options');
+  const n = selectedMaxJobs();
+  if (n == null) { box.style.display = 'none'; return; }
+
+  box.style.display = 'block';
+  document.getElementById('max-jobs-input').value = n;
+  const secondsPerJob = lastScanResult.secondsPerJob;
+  const estimate = secondsPerJob ? ` (~${Math.max(1, Math.round(n * secondsPerJob / 60))} min)` : '';
+  document.getElementById('max-jobs-of').textContent = `of ${lastScanResult.jobCount} jobs${estimate}`;
+  currentJobCount = n;
 }
 
 function applyScanResult(result) {
@@ -236,6 +288,7 @@ function applyScanResult(result) {
     modeRow.style.display = 'none';
     currentCaptureMode = null;
     refreshFullDescUI();
+    refreshMaxJobsUI(); // ai: claude-opus-5-5 | 2026-11-02
     resetButton();
   }
 }
@@ -265,6 +318,7 @@ async function handleSend() {
         captureMode: currentCaptureMode,
         fetchFullDescriptions: prefix ? !!settings[`${prefix}FullDescriptions`] : false,
         fetchCap: prefix ? clampFetchCap(settings[`${prefix}FetchCap`]) : 25,
+        maxJobs: selectedMaxJobs(), // ai: claude-opus-5-5 | 2026-11-02 — null = no limit
       };
       buildResult = await sendToTab({ action: 'build', options: buildOptions });
     }
@@ -470,6 +524,7 @@ async function loadSettings() {
     kforceFetchCap: 25,
     insightGlobalFullDescriptions: false,
     insightGlobalFetchCap: 25,
+    cleraMaxJobs: DEFAULT_MAX_JOBS, // ai: claude-opus-5-5 | 2026-11-02
   };
   try {
     return await chrome.storage.sync.get(defaults);

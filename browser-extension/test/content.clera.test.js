@@ -114,6 +114,17 @@ describe("Clera job search (getclera.com/dashboard/jobs)", () => {
     expect(searchBodies).toEqual([SEARCH, { ...SEARCH, cursor: "page-2" }]);
   });
 
+  it("list mode with maxJobs stops paging and fetching at the first N", async () => {
+    const fetchMock = cleraFetch();
+    const ctx = loadContentScript({ url: SEARCH_URL, html: searchPage(), fetchMock });
+    const { payload, warning } = await ctx.build({ captureMode: "list", maxJobs: 1 });
+
+    expect(payload.jobs.map((j) => j.job_title)).toEqual(["Staff Software Engineer"]);
+    expect(warning).toBeNull();
+    const calledPaths = fetchMock.mock.calls.map(([url]) => new URL(url).pathname);
+    expect(calledPaths).toEqual(["/api/talents/me/external-jobs", "/api/jobs/external/5ujvrex5ddlj"]);
+  });
+
   it("without a recorded search, captures the loaded cards and says what's missing", async () => {
     const ctx = loadContentScript({ url: SEARCH_URL, html: searchPage({ recorded: null }), fetchMock: cleraFetch() });
     const { payload, warning } = await ctx.build({ captureMode: "list" });

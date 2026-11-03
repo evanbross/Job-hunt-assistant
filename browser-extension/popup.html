@@ -124,7 +124,7 @@
       width: 0%;
     }
 
-    .full-desc-options {
+    .option-box {
       margin-top: 4px;
       margin-bottom: 10px;
       padding: 8px 10px;
@@ -134,20 +134,20 @@
       font-size: 12.5px;
       color: #475569;
     }
-    .full-desc-options .checkbox-row {
+    .option-box .checkbox-row {
       display: flex;
       align-items: center;
       gap: 6px;
       cursor: pointer;
     }
-    .full-desc-options .cap-row {
+    .option-box .cap-row {
       display: flex;
       align-items: center;
       gap: 6px;
       margin-top: 6px;
       padding-left: 20px;
     }
-    .full-desc-options .cap-row input[type="number"] {
+    .option-box .cap-row input[type="number"] {
       width: 60px;
       padding: 2px 5px;
       border: 1px solid #cbd5e1;
@@ -223,7 +223,7 @@
       <button type="button" id="capture-mode-detail" data-mode="detail">This job only</button>
     </div>
 
-    <div class="full-desc-options" id="full-desc-options" style="display:none;">
+    <div class="option-box" id="full-desc-options" style="display:none;">
       <label class="checkbox-row">
         <input type="checkbox" id="full-desc-checkbox">
         Fetch full descriptions (slower)
@@ -231,6 +231,15 @@
       <div class="cap-row" id="full-desc-cap-row" style="display:none;">
         <label for="full-desc-fetch-cap">Max jobs to fetch:</label>
         <input type="number" id="full-desc-fetch-cap" min="1" max="500">
+      </div>
+    </div>
+
+    <!-- ai: claude-opus-5-5 | 2026-11-02 — list captures that can stop early (see popup.js maxJobsSettingFor) -->
+    <div class="option-box" id="max-jobs-options" style="display:none;">
+      <div class="cap-row" style="margin-top:0;padding-left:0;">
+        <label for="max-jobs-input">Capture the first</label>
+        <input type="number" id="max-jobs-input" min="1">
+        <span id="max-jobs-of"></span>
       </div>
     </div>
 

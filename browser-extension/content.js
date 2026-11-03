@@ -492,8 +492,10 @@
         site: 'Clera',
         type: 'cleraSplit',
         jobCount: total,
-        description: `${total} jobs found — fetches full descriptions (~${Math.max(1, Math.round(total * CLERA_SECONDS_PER_JOB / 60))} min), or just the job shown on the right`,
+        // ai: claude-opus-5-5 | 2026-11-02 — the popup's "Capture the first N" box shows the time estimate
+        description: `${total} jobs found — fetches full descriptions, or just the job shown on the right`,
         captureModes: ['detail', 'list'],
+        secondsPerJob: CLERA_SECONDS_PER_JOB,
       };
     }
 
@@ -2871,10 +2873,11 @@
     return data;
   }
 
-  // Every job in the search on screen, from the page's own recorded request.
-  // Returns {listed} or {problem}; a problem after some pages came back keeps
-  // what was listed, so the capture can still go ahead with a warning.
-  async function listCleraJobs() {
+  // Every job in the search on screen (or its first `limit`), from the page's
+  // own recorded request. Returns {listed} or {problem}; a problem after some
+  // pages came back keeps what was listed, so the capture can still go ahead
+  // with a warning.
+  async function listCleraJobs(limit) {
     const search = recordedCleraSearch();
     if (!search) return { listed: [], problem: "the page's search wasn't recorded" };
     const visibleTotal = cleraVisibleTotal();
@@ -2892,7 +2895,9 @@
         seen.add(job.nanoId);
         listed.push(job);
       });
-      sendProgress(`Listing jobs... ${listed.length} of ${result.found ?? '?'}`, undefined);
+      // ai: claude-opus-5-5 | 2026-11-02 — stop paging once the popup's "first N" is reached
+      if (listed.length >= limit) return { listed: listed.slice(0, limit) };
+      sendProgress(`Listing jobs... ${listed.length} of ${Math.min(result.found ?? Infinity, limit)}`, undefined);
       if (!result.has_more || !result.next_cursor) return { listed };
       cursor = result.next_cursor;
       await sleep(400);
@@ -2942,14 +2947,19 @@
     return JSON.stringify({ jobs: [cleraJobEntry(job)], source: { url: location.href } });
   }
 
-  // Lists the whole search via the API, then fetches each job's full posting.
-  // Without a recorded search (the page was open before the extension was
-  // reloaded) it falls back to the cards loaded on screen and says so.
-  async function buildCleraListPayload() {
-    const listing = await listCleraJobs();
+  // Lists the search via the API (all of it, or the first options.maxJobs),
+  // then fetches each job's full posting. Without a recorded search (the page
+  // was open before the extension was reloaded) it falls back to the cards
+  // loaded on screen and says so.
+  // ai: claude-opus-5-5 | 2026-11-02 — options.maxJobs added
+  async function buildCleraListPayload(options = {}) {
+    const limit = Number.isInteger(options.maxJobs) && options.maxJobs > 0 ? options.maxJobs : Infinity;
+    const listing = await listCleraJobs(limit);
     let items = listing.listed;
     if (items.length === 0) {
-      items = [...document.querySelectorAll('article[data-job-id]')].map(card => ({ nanoId: card.dataset.jobId }));
+      items = [...document.querySelectorAll('article[data-job-id]')]
+        .slice(0, limit)
+        .map(card => ({ nanoId: card.dataset.jobId }));
     }
 
     const jobs = [];
@@ -2961,10 +2971,11 @@
       if (i < items.length - 1) await sleep(400);
     }
 
-    const expected = cleraVisibleTotal();
+    const visibleTotal = cleraVisibleTotal();
+    const expected = visibleTotal == null ? null : Math.min(visibleTotal, limit);
     let warning = null;
     if (expected != null && jobs.length < expected) {
-      warning = `Captured ${jobs.length} of the ${expected} jobs this search shows`
+      warning = `Captured ${jobs.length} of the ${expected} jobs requested`
         + (listing.problem ? ` (${listing.problem}). Reload this page and try again.` : '.');
     }
     return { payload: JSON.stringify({ jobs, source: { url: location.href } }), warning };
@@ -4100,7 +4111,7 @@
       // ai: claude-opus-5-5 | 2026-11-02
       case 'cleraSplit':
         if (options.captureMode === 'list') {
-          ({ payload, warning } = await buildCleraListPayload());
+          ({ payload, warning } = await buildCleraListPayload(options));
         } else {
           payload = await buildCleraDetailPayload();
         }
