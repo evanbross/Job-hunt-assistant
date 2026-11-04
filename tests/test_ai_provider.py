@@ -43,9 +43,14 @@ def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _new_user(email: str) -> int:
     conn = get_connection(config.DATABASE_URL)
-    account = PostgresUserAccountRepository(conn).create_pending(email, f"seed-{email}", "2099-01-01")
-    conn.commit()
-    conn.close()
+    # ai: claude-opus-5-5 | 2026-11-03 — close even on failure: a pooled connection left
+    # checked out mid-transaction holds its locks until the run ends.
+    try:
+        account = PostgresUserAccountRepository(conn).create_pending(email, f"seed-{email}", "2099-01-01")
+        conn.commit()
+    finally:
+        conn.close()
+    assert account is not None, f"{email} already exists"
     return account["id"]
 
 

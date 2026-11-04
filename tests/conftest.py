@@ -37,9 +37,11 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import psycopg2
+import psycopg2.errors
 import pytest
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
@@ -70,6 +72,12 @@ from backend.user_events import (  # noqa: E402
 from tests.db_guard import (  # noqa: E402
     UnsafeTestDatabaseError,
     assert_safe_test_database,
+)
+from tests.db_snapshot import (  # noqa: E402
+    SeededDatabaseSnapshot,
+    describe_other_sessions,
+    schema_fingerprint,
+    truncate_every_table,
 )
 
 load_dotenv()
@@ -105,41 +113,6 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL, _EXTRA_TEST_DB_HOSTS)
     except UnsafeTestDatabaseError as exc:
         pytest.exit(str(exc), returncode=2)
-
-_ALL_TABLES = (
-    "audit_log",
-    "job_status_history",
-    "application_stages",
-    "browser_capture_queue",
-    "import_repair_history",
-    "contact_outreach",
-    "outreach_templates",
-    "extension_tokens",
-    "google_oauth_tokens",
-    "greenhouse_sessions",
-    "candidate_profiles",
-    "contacts",
-    "cover_letter_phrases",
-    "career_scan_results",
-    "career_scan_failures",
-    "career_rejection_rules",
-    "career_site_sources",
-    "jd_health_check_results",
-    "jd_health_check_targets",
-    "scanned_emails",
-    "relevance_feedback",
-    "jobs",
-    "email_sources",
-    "penalty_rules",
-    "ack_patterns",
-    "application_stage_statuses",
-    "user_settings",
-    "system_settings",
-    "resume",
-    "application_profile",
-    "application_answers",
-    "user_accounts",
-)
 
 
 class FakeClock:
@@ -210,47 +183,119 @@ def isolated_user_events() -> Iterator[RecordingUserEvents]:
 
 
 # ai: claude-sonnet-5 | 2026-09-26
-@pytest.fixture(autouse=True)
-def isolated_legacy_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point every legacy shared-file location at a throwaway directory.
-
-    init_db() runs one-time migrations that move the old shared files
+# ai: claude-opus-5-5 | 2026-11-03 — body extracted so the session-scoped init_db() below gets the same isolation
+def _point_legacy_files_at(directory: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """init_db() runs one-time migrations that move the old shared files
     (uploads/resume.pdf, the Google credentials and token files, the
     candidate profile) into the database, renaming or reading them; without this, running the suite against a
     developer checkout would consume their real files."""
-    monkeypatch.setattr(config, "UPLOADS_DIR", tmp_path)
-    monkeypatch.setattr(config, "LEGACY_GOOGLE_CREDENTIALS_FILE", tmp_path / "google_credentials.json")
-    monkeypatch.setattr(config, "LEGACY_GOOGLE_TOKEN_FILE", tmp_path / "token.json")
-    monkeypatch.setattr(config, "LEGACY_GREENHOUSE_SESSION_FILE", tmp_path / "greenhouse_session.json")
-    monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_PATH", tmp_path / "candidate_profile.md")
+    monkeypatch.setattr(config, "UPLOADS_DIR", directory)
+    monkeypatch.setattr(config, "LEGACY_GOOGLE_CREDENTIALS_FILE", directory / "google_credentials.json")
+    monkeypatch.setattr(config, "LEGACY_GOOGLE_TOKEN_FILE", directory / "token.json")
+    monkeypatch.setattr(config, "LEGACY_GREENHOUSE_SESSION_FILE", directory / "greenhouse_session.json")
+    monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_PATH", directory / "candidate_profile.md")
     monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_ALT_FILENAMES", ())
 
 
-# ai: claude-sonnet-5 | 2026-07-25
-@pytest.fixture
-def pg_dsn(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Reset the local Postgres test database to a clean, freshly-seeded state
-    and return its DSN. Tests must not assume any state beyond what init_db()'s
-    seed data provides — every table is truncated before each test."""
-    assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL, _EXTRA_TEST_DB_HOSTS)
-    # ai: claude-sonnet-5 | 2026-09-27 -- backend/db/readonly_role.py's ensure_readonly_role()
-    # (called by init_db) and get_readonly_database_url() (routes/voice.py) read these
-    # directly, separately from DATABASE_URL. Without this they target the real app
-    # database (which doesn't exist locally), so the voice-query feature's read-only role
-    # silently never gets provisioned against the test database -- see
-    # tests/test_row_level_security.py's voice-query tests, which need it.
+# ai: claude-sonnet-5 | 2026-09-26
+@pytest.fixture(autouse=True)
+def isolated_legacy_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point every legacy shared-file location at a throwaway directory."""
+    _point_legacy_files_at(tmp_path, monkeypatch)
+
+
+# ai: claude-sonnet-5 | 2026-09-27
+# ai: claude-opus-5-5 | 2026-11-03 — extracted from pg_dsn; the session fixture needs it too
+def _point_postgres_settings_at_test_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """backend/db/readonly_role.py's ensure_readonly_role() (called by init_db) and
+    get_readonly_database_url() (routes/voice.py) read these directly, separately from
+    DATABASE_URL. Without this they target the real app database (which doesn't exist
+    locally), so the voice-query feature's read-only role silently never gets
+    provisioned against the test database -- see tests/test_row_level_security.py's
+    voice-query tests, which need it."""
     parsed = urlparse(TEST_DATABASE_URL)
     monkeypatch.setattr(config, "POSTGRES_HOST", parsed.hostname)
     monkeypatch.setattr(config, "POSTGRES_PORT", str(parsed.port))
     monkeypatch.setattr(config, "POSTGRES_DB", (parsed.path or "").lstrip("/"))
     monkeypatch.setattr(config, "POSTGRES_SSLMODE", "disable")
-    init_db(TEST_DATABASE_URL)
+
+
+# ai: claude-opus-5-5 | 2026-11-03
+@pytest.fixture(scope="session")
+def seeded_database_snapshot(tmp_path_factory: pytest.TempPathFactory) -> SeededDatabaseSnapshot:
+    """init_db() once for the whole run, then the snapshot every pg_dsn reset
+    restores (see tests/db_snapshot.py for why this replaced a per-test init_db())."""
+    assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL, _EXTRA_TEST_DB_HOSTS)
+    with pytest.MonkeyPatch.context() as session_patch:
+        _point_legacy_files_at(tmp_path_factory.mktemp("session-legacy-files"), session_patch)
+        _point_postgres_settings_at_test_db(session_patch)
+        # Schema first (the database may predate this run's migrations), then empty
+        # it -- it still holds whatever the previous run's last test left -- and seed
+        # again, so the snapshot is init_db()'s seed data and nothing else.
+        init_db(TEST_DATABASE_URL)
+        conn = psycopg2.connect(TEST_DATABASE_URL)
+        try:
+            truncate_every_table(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        init_db(TEST_DATABASE_URL)
     conn = psycopg2.connect(TEST_DATABASE_URL)
-    conn.autocommit = True
     try:
-        cur = conn.cursor()
-        cur.execute(f"TRUNCATE {', '.join(_ALL_TABLES)} RESTART IDENTITY CASCADE")
+        return SeededDatabaseSnapshot.capture(conn)
     finally:
         conn.close()
-    init_db(TEST_DATABASE_URL)  # re-seed reference rows emptied by the truncate
+
+
+# ai: claude-opus-5-5 | 2026-11-03
+_RESET_LOCK_TIMEOUT = "15s"
+
+
+# ai: claude-sonnet-5 | 2026-07-25
+# ai: claude-opus-5-5 | 2026-11-03 — restores the session snapshot instead of running init_db() twice per test
+@pytest.fixture
+def pg_dsn(seeded_database_snapshot: SeededDatabaseSnapshot, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Reset the local Postgres test database to a clean, freshly-seeded state
+    and return its DSN. Tests must not assume any state beyond what init_db()'s
+    seed data provides — every table is emptied and re-seeded before each test.
+
+    If an earlier test changed the schema (e.g. turned row-level security off to
+    exercise a migration), init_db() runs again first to put it back, as the
+    per-test init_db() this replaced always did."""
+    assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL, _EXTRA_TEST_DB_HOSTS)
+    _point_postgres_settings_at_test_db(monkeypatch)
+    conn = psycopg2.connect(TEST_DATABASE_URL)
+    try:
+        # The reset's TRUNCATE/ALTERs need exclusive locks. If an earlier test left
+        # a transaction open on a connection it never closed, fail fast and name
+        # it instead of waiting forever (a 2026-11-03 run hung for 8 hours this way).
+        conn.cursor().execute(f"SET lock_timeout = '{_RESET_LOCK_TIMEOUT}'")
+        conn.commit()
+        try:
+            _reset_test_database(conn, seeded_database_snapshot)
+        except psycopg2.errors.LockNotAvailable as exc:
+            conn.rollback()
+            raise RuntimeError(
+                f"pg_dsn could not reset the test database within {_RESET_LOCK_TIMEOUT}:"
+                " another session holds a lock it needs -- most likely an earlier test that"
+                " left a transaction open on a connection it never closed. Other sessions:\n"
+                + describe_other_sessions(conn)
+            ) from exc
+    finally:
+        conn.close()
     return TEST_DATABASE_URL
+
+
+
+def _reset_test_database(conn: Any, snapshot: SeededDatabaseSnapshot) -> None:
+    if schema_fingerprint(conn) != snapshot.fingerprint:
+        conn.rollback()
+        init_db(TEST_DATABASE_URL)
+        if schema_fingerprint(conn) != snapshot.fingerprint:
+            raise RuntimeError(
+                "The test database schema still differs from the session's freshly"
+                " initialized one after re-running init_db(): an earlier test left a"
+                " schema change init_db() doesn't undo."
+            )
+    conn.rollback()  # end the fingerprint read's transaction before the reset's
+    snapshot.restore(conn)
