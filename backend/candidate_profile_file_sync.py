@@ -68,6 +68,9 @@ _DEBOUNCE_SECONDS = 1.0
 # watchdog event types that mean the file's content may have changed.
 _CONTENT_EVENT_TYPES: frozenset[str] = frozenset({"created", "modified", "moved", "closed"})
 _DIFF_CONTEXT_LINES = 2
+# Collision suffixes _write_backup tries before giving up (the load then fails
+# with BackupFailedError rather than overwrite a backup).
+_MAX_BACKUP_NAME_ATTEMPTS = 100
 
 
 class FileSyncState(StrEnum):
@@ -305,11 +308,30 @@ def _parse_updated_at(value: str) -> datetime:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
+# ai: claude-opus-5-5 | 2026-11-03 — never overwrites another backup (code-review-2026-11-02 #2)
 def _write_backup(profile_path: Path, stored: str) -> Path:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = profile_path.with_name(f"{profile_path.stem}.db-backup-{stamp}{profile_path.suffix}")
-    backup_path.write_text(stored + "\n", encoding="utf-8")
-    return backup_path
+    """Save *stored* beside the profile file under a name no other backup has.
+
+    The name was once second-precision and written with write_text(), which
+    truncates an existing file, so two loads in the same second destroyed the
+    first backup. Now the stamp carries microseconds and the file is created
+    exclusively ("x"): if the name is somehow taken anyway (same microsecond,
+    or another app process), a -1, -2, ... suffix is tried instead."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    for attempt in range(_MAX_BACKUP_NAME_ATTEMPTS):
+        counter = f"-{attempt}" if attempt else ""
+        backup_path = profile_path.with_name(
+            f"{profile_path.stem}.db-backup-{stamp}{counter}{profile_path.suffix}"
+        )
+        try:
+            with backup_path.open("x", encoding="utf-8") as handle:
+                handle.write(stored + "\n")
+        except FileExistsError:
+            continue
+        return backup_path
+    raise FileExistsError(
+        f"every backup name for {stamp} is taken ({_MAX_BACKUP_NAME_ATTEMPTS} tried) beside {profile_path}"
+    )
 
 
 def _same_path(left: str, right: Path) -> bool:

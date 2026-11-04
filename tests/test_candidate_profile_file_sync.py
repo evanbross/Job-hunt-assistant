@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import threading
+from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from flask import Flask
 from flask.testing import FlaskClient
 from watchdog.events import FileModifiedEvent, FileMovedEvent
 
+import backend.candidate_profile_file_sync as file_sync_module
 import config
 import routes.settings as settings_routes
 from backend.candidate_profile_file_sync import (
@@ -296,6 +298,40 @@ def test_stored_text_never_loaded_from_the_file_is_backed_up_before_replacement(
     [backup] = _backups(profile)
     assert result.backup_path == str(backup)
     assert backup.read_text(encoding="utf-8") == "stored-only text\n"
+
+
+class _FrozenDatetime(datetime):
+    """Every now() is the same instant, down to the microsecond."""
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> _FrozenDatetime:
+        return cls(2026, 11, 3, 12, 0, 0, 123456, tzinfo=tz)
+
+
+# ai: claude-opus-5-5 | 2026-11-03 — code-review-2026-11-02 #2
+def test_two_backups_at_the_same_instant_both_survive(
+    owner_id: int, file_sync: CandidateProfileFileSync, profile: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The backup name used to be second-precision and written with a
+    truncating write, so the second load in the same second replaced the
+    first backup. Two loads, each over stored-only text, at one frozen instant."""
+    monkeypatch.setattr(file_sync_module, "datetime", _FrozenDatetime)
+    _configure(str(profile))
+
+    profile.write_text("file version one", encoding="utf-8")
+    _store(owner_id, "first stored-only text")
+    first = file_sync.load(owner_id, _offered(file_sync, owner_id))
+    profile.write_text("file version two", encoding="utf-8")
+    _store(owner_id, "second stored-only text")
+    second = file_sync.load(owner_id, _offered(file_sync, owner_id))
+
+    assert first.backup_path != second.backup_path
+    assert second.backup_path.endswith(f"-1{profile.suffix}")
+    assert {path.read_text(encoding="utf-8") for path in _backups(profile)} == {
+        "first stored-only text\n",
+        "second stored-only text\n",
+    }
+    assert _stored(owner_id) == "file version two"
 
 
 def test_reloading_after_a_plain_file_edit_makes_no_backup(
