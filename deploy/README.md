@@ -93,10 +93,32 @@ extended before the push channel works; HTTP polling works regardless.
 
 1. **The application image.** `app.py` is a desktop launcher: it rebuilds the frontend,
    starts a Vite dev server, spawns its own Celery worker, and registers itself with the
-   dev Caddy. A production image needs a real WSGI server (Gunicorn or Waitress), the
-   extension listener and queue WebSocket as managed processes, the built frontend
-   served from the image, and a container entrypoint that does none of the desktop
-   work. `JHA_IMAGE` in the compose file is a placeholder until that exists.
+   dev Caddy. A production image needs a real WSGI server, the extension listener and
+   queue WebSocket as managed processes, the built frontend served from the image, and
+   a container entrypoint that does none of the desktop work. `JHA_IMAGE` in the
+   compose file is a placeholder until that exists.
+
+   **The server must handle long-lived responses.** Each open tab keeps one
+   `/api/events` server-sent-events stream open for as long as the page is open
+   (`routes/events.py`), and each stream holds a server thread the whole time. A server
+   with a small fixed thread pool is the wrong choice: Waitress, for example, defaults
+   to 4 threads, so four open tabs would take every thread and every other API request
+   would wait. The dev server only gets away with it because `threaded=True` starts a
+   new thread per connection with no cap. Use one of:
+
+   * **Gunicorn `gthread` workers**, with `workers × threads` sized for the most
+     streams you expect at once (one per open tab, across all users) plus headroom for
+     ordinary requests. Streams beyond that number queue the same way.
+   * **Gunicorn `gevent` workers**, where a stream costs a greenlet, not an OS thread.
+     This needs monkey-patching, so first check that psycopg2 (it needs a green wait
+     callback such as `psycogreen`), the connection pool, and the Redis pub/sub
+     subscription all yield under gevent rather than blocking the worker.
+
+   Picking one and adding it to `pyproject.toml` is part of building the image.
+   The image is not done until this passes: with more `/api/events` streams open
+   than the server has worker threads (several browser tabs, or `curl -N` against
+   the endpoint), ordinary `/api/...` requests still answer promptly, and a change
+   in one tab still reaches the others.
 2. **Reading secrets from files.** Secrets are environment variables. Supporting the
    `*_FILE` convention (Docker/Kubernetes secrets) is a small follow-up.
 3. **Database provisioning, backups, monitoring, and log shipping.**

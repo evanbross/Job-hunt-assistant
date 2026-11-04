@@ -32,6 +32,7 @@ _HEARTBEAT_SECONDS = 25
 _RETRY_MILLISECONDS = 10_000
 
 
+# ai: claude-opus-5-5 | 2026-11-04 — docstring: server-thread note points at deploy/README.md
 @events_bp.route("/events")
 def user_event_stream() -> ResponseReturnValue:
     """An event named after the topic (UserEventTopic) each time one of the
@@ -43,8 +44,10 @@ def user_event_stream() -> ResponseReturnValue:
     ends the generator and its Redis subscription. If Redis is unreachable the
     stream just ends; the browser reconnects after _RETRY_MILLISECONDS and the
     page's fallback re-checks cover the gap. Each open stream holds one server
-    thread (the threaded dev server); a production WSGI server needs a worker
-    type that tolerates long-lived responses."""
+    thread for as long as the tab is open. The threaded dev server starts a
+    thread per connection, so that is harmless there; a fixed-pool server
+    (e.g. Waitress) would run out of threads after a few tabs. See
+    deploy/README.md "What is not included" #1 for the server requirements."""
     user_id = current_user_id()
 
     def stream() -> Iterator[str]:

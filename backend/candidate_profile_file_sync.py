@@ -380,6 +380,11 @@ class CandidateProfileFileWatcher:
                 logger.exception("Candidate profile file watcher failed; retrying on the next change")
             self._wake.wait()
             time.sleep(_DEBOUNCE_SECONDS)
+            # ai: claude-opus-5-5 | 2026-11-04
+            # Clearing after the sleep can't lose a save: the _refresh() that
+            # follows runs after every event cleared here, and it only signals
+            # "changed" (the page re-reads current state). An event during
+            # _refresh() sets the flag again, so the next wait() returns at once.
             self._wake.clear()
 
     def _refresh(self) -> None:

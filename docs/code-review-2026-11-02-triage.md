@@ -8,10 +8,10 @@ the plan for fixing the ones that do.
 |---|---------|--------|--------|---------|
 | 1 | Offset pagination skips rows after a reorder | Medium | **Medium** | **Fixed** 2026-11-03 (`2b1b6d3`): keyset cursors |
 | 2 | Candidate-profile backups collide within one second | Medium | **Low** | **Fixed** 2026-11-03 (`8ee1229`): microsecond stamp + exclusive create |
-| 3 | SSE has no production serving model | Medium | **Low (docs)** | No defect in the current runtime. The deploy README's own server advice is wrong for SSE |
+| 3 | SSE has no production serving model | Medium | **Low (docs)** | **Fixed** 2026-11-04: deploy README drops Waitress, states the server requirement and an acceptance check |
 | 4 | All CI pipelines disabled | Medium | **Medium** | **Fixed** 2026-11-03 (`87d3672`): enforced local pre-push gate |
-| 5 | File-watcher debounce erases the final save | Low | **Not a bug** | False positive |
-| 6 | `node_modules` breaks the reserved-name check | Low | **Low (docs)** | Chrome is fine. The `AGENTS.md` rule is worded too broadly |
+| 5 | File-watcher debounce erases the final save | Low | **Not a bug** | False positive. Explanatory comment added 2026-11-04 |
+| 6 | `node_modules` breaks the reserved-name check | Low | **Low (docs)** | **Fixed** 2026-11-04: `AGENTS.md` rule now checks the top level only |
 
 ---
 
@@ -155,7 +155,14 @@ A lock nothing contends for is speculative.
 
 ---
 
-## 3. SSE production serving: no current defect, docs fix
+## 3. SSE production serving: no current defect, docs fix (fixed)
+
+**Fixed 2026-11-04.** `deploy/README.md` "What is not included" #1 now drops
+Waitress (with the reason), requires Gunicorn `gthread` sized for open streams
+or `gevent` workers (with what to check first), and makes "more open
+`/api/events` streams than worker threads don't block `/api/...`" the image's
+acceptance check. The `routes/events.py` docstring points there. The original
+analysis follows for reference.
 
 `routes/events.py` holds one thread per open stream. Today the app runs as
 `app.run(..., threaded=True)` (`app.py:1182-1186`), which starts a thread per
@@ -233,7 +240,10 @@ hasn't finished in a recorded run; even this review's attempt didn't complete.
 
 ---
 
-## 5. File-watcher debounce: not a bug
+## 5. File-watcher debounce: not a bug (comment added)
+
+**2026-11-04:** the comment above `clear()` in `run_forever` now explains why
+it is safe.
 
 The loop (`backend/candidate_profile_file_sync.py:354-361`) runs
 `_refresh(); wait(); sleep(1s); clear();` and then `_refresh()` again. So the
@@ -249,7 +259,11 @@ why clearing after the sleep is safe, so the next reviewer doesn't flag it again
 
 ---
 
-## 6. Reserved names under `node_modules`: docs fix
+## 6. Reserved names under `node_modules`: docs fix (fixed)
+
+**Fixed 2026-11-04.** `AGENTS.md` § Browser Extension Verification now checks
+the extension root and the directories the manifest references, and says to skip
+`node_modules/` and `test/`, with the reason. The original analysis follows for reference.
 
 Chrome's reserved-name check (`_`-prefixed names other than `_locales` and
 `_metadata`) looks only at the **top level** of the extension directory. It
@@ -275,7 +289,7 @@ publishing ever needs a clean bundle, add the step then.
    (jobs missing from the list until a reload). Biggest change: repository,
    query model, route, hook, and tests.
 3. ~~**#2 backup naming.** Small, self-contained.~~ Done 2026-11-03.
-4. **#3 deploy README / #6 AGENTS.md / #5 comment.** Docs only; one commit.
+4. ~~**#3 deploy README / #6 AGENTS.md / #5 comment.** Docs only; one commit.~~ Done 2026-11-04.
 
 ## Not re-checked
 

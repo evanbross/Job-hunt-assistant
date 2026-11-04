@@ -44,10 +44,15 @@ Key files:
 
 ## Browser Extension Verification
 
-- Before handing off changes under `browser-extension/`, recursively verify that the
-  unpacked-extension directory contains no Chrome-reserved file or directory names
-  beginning with `_`, especially Python-generated `__pycache__` directories. Remove
-  disposable generated artifacts before telling the user to reload the extension.
+- Before handing off changes under `browser-extension/`, verify that the extension root
+  and every directory `manifest.json` references (e.g. `icons/`) contain no names
+  beginning with `_` other than `_locales` and `_metadata`, especially Python-generated
+  `__pycache__` directories. Chrome refuses to load an unpacked extension with such a
+  name at its top level. Remove disposable generated artifacts before telling the user
+  to reload the extension.
+- Don't check `node_modules/` or `test/`. Chrome applies the reserved-name rule to the
+  top level only, and those folders hold dev/test tooling, not extension files, so the
+  `_`-prefixed files npm packages ship there (e.g. `_utils.js`) don't block loading.
 - Run Python utilities that live under `browser-extension/` with bytecode generation
   disabled (`python -B` or `PYTHONDONTWRITEBYTECODE=1`) so verification does not make
   the unpacked extension unloadable.
