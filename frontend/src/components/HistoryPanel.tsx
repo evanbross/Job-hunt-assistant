@@ -144,6 +144,10 @@ export default function HistoryPanel() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  // ai: claude-opus-5-5 | 2026-11-03 — where the next page continues (the last response's
+  // next_cursor). Not jobs.length: an offset skips a row whenever one above it leaves the
+  // list between pages (e.g. returned to the queue). See backend/db/keyset_pagination.py.
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [descriptionOpen, setDescriptionOpen] = useState<Set<number>>(new Set());
   // ai: claude-sonnet-5 | 2026-10-16
@@ -192,11 +196,13 @@ export default function HistoryPanel() {
   // Search is applied server-side (the client only ever holds the pages loaded so far), so
   // a request id discards responses that were overtaken by a newer search or page.
   const loadPage = useCallback(
-    (offset: number) => {
+    (cursor: string | null) => {
       latestRequestRef.current += 1;
       const requestId = latestRequestRef.current;
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), q: effectiveSearch });
-      if (offset === 0) setLoading(true);
+      const firstPage = cursor == null;
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE), q: effectiveSearch });
+      if (!firstPage) params.set("cursor", cursor);
+      if (firstPage) setLoading(true);
       else setLoadingMore(true);
       fetch(`/api/jobs/history?${params}`)
         .then((r) => {
@@ -206,8 +212,16 @@ export default function HistoryPanel() {
         .then((data: JobHistoryResponse) => {
           if (requestId !== latestRequestRef.current) return;
           const page = Array.isArray(data.jobs) ? data.jobs : [];
-          setJobs((prev) => (offset === 0 ? page : [...prev, ...page]));
-          setHasMore(Boolean(data.has_more));
+          // A row that moved down since its page loaded can come back after the
+          // cursor; keep the copy already on screen.
+          setJobs((prev) => {
+            if (firstPage) return page;
+            const seen = new Set(prev.map((job) => job.id));
+            return [...prev, ...page.filter((job) => !seen.has(job.id))];
+          });
+          const next = typeof data.next_cursor === "string" ? data.next_cursor : null;
+          setNextCursor(next);
+          setHasMore(Boolean(data.has_more) && next != null);
         })
         .catch(() => {
           // Stop auto-loading on failure; otherwise the sentinel would retry in a tight loop.
@@ -224,23 +238,23 @@ export default function HistoryPanel() {
   );
 
   useEffect(() => {
-    loadPage(0);
+    loadPage(null);
   }, [loadPage]);
 
   // The observer is recreated after every page so a still-visible sentinel fires again,
   // chaining loads until the viewport is filled.
   useEffect(() => {
     const node = sentinelRef.current;
-    if (!node || !hasMore || loading || loadingMore) return undefined;
+    if (!node || !hasMore || nextCursor == null || loading || loadingMore) return undefined;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting) loadPage(jobs.length);
+        if (entries[0].isIntersecting) loadPage(nextCursor);
       },
       { rootMargin: "300px" }
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [hasMore, loading, loadingMore, jobs.length, loadPage]);
+  }, [hasMore, nextCursor, loading, loadingMore, jobs.length, loadPage]);
 
   useEffect(() => {
     writeStoredPref(HISTORY_SEARCH_STORAGE_KEY, search);

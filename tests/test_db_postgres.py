@@ -810,22 +810,21 @@ def test_history_page_query_paginates_searches_and_batches_stages(pg_dsn: str) -
         jobs.update(user_id, job_ids[1], {"raw_jd_snippet": "We are looking for..."})
         conn.commit()
 
-        first = jobs.get_page_by_statuses(user_id, ["applied"], limit=2, offset=0)
-        second = jobs.get_page_by_statuses(user_id, ["applied"], limit=2, offset=2)
-        third = jobs.get_page_by_statuses(user_id, ["applied"], limit=2, offset=4)
-        paged_ids = [job["id"] for job in first + second + third]
+        # ai: claude-opus-5-5 | 2026-11-03 — each page continues from the last one's keyset cursor
+        first = jobs.get_page_by_statuses(user_id, ["applied"], limit=2)
+        second = jobs.get_page_by_statuses(user_id, ["applied"], limit=2, after=first.next_after)
+        third = jobs.get_page_by_statuses(user_id, ["applied"], limit=2, after=second.next_after)
+        assert (first.has_more, second.has_more, third.has_more) == (True, True, False)
+        assert third.next_after is None
+        paged_ids = [job["id"] for job in first.rows + second.rows + third.rows]
         assert paged_ids == sorted(job_ids, reverse=True)
 
-        assert [j["company"] for j in jobs.get_page_by_statuses(user_id, ["applied"], 10, 0, "alp*")] == [
-            "Alpha_2",
-            "Alpha 100%",
-        ]
-        assert [j["company"] for j in jobs.get_page_by_statuses(user_id, ["applied"], 10, 0, "100%")] == [
-            "Alpha 100%"
-        ]
-        assert [j["company"] for j in jobs.get_page_by_statuses(user_id, ["applied"], 10, 0, "alpha_")] == [
-            "Alpha_2"
-        ]
+        def companies(search: str) -> list[str]:
+            return [j["company"] for j in jobs.get_page_by_statuses(user_id, ["applied"], 10, search=search).rows]
+
+        assert companies("alp*") == ["Alpha_2", "Alpha 100%"]
+        assert companies("100%") == ["Alpha 100%"]
+        assert companies("alpha_") == ["Alpha_2"]
 
         grouped = stages.get_by_job_ids(user_id, job_ids)
         assert set(grouped) == set(job_ids)
@@ -837,12 +836,13 @@ def test_history_page_query_paginates_searches_and_batches_stages(pg_dsn: str) -
         # projection (JobColumns.history_summary() + has_description), not a
         # SELECT *: job_description/raw_jd_snippet must never come back here,
         # regardless of whether the job actually has one.
-        by_id = {job["id"]: job for job in first + second + third}
+        by_id = {job["id"]: job for job in first.rows + second.rows + third.rows}
         assert by_id[job_ids[1]]["has_description"] is True
         assert by_id[job_ids[0]]["has_description"] is False
         for job in by_id.values():
             assert "job_description" not in job
             assert "raw_jd_snippet" not in job
+            assert not any(key.startswith("keyset_cursor_") for key in job)  # moved into next_after
     finally:
         conn.close()
 

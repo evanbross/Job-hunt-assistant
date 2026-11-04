@@ -45,16 +45,25 @@ function ok(body: unknown) {
 
 type FetchMock = ReturnType<typeof vi.fn>;
 
+interface FakePage {
+  jobs: Job[];
+  has_more: boolean;
+  next_cursor?: string | null;
+}
+
+// ai: claude-opus-5-5 | 2026-11-03 — keyed by cursor (keyset pagination) instead of offset
 /** Answers /counts with COUNTS and every page request from `pages`, keyed by
- * its offset, recording each page request's parsed query. */
-function routeFetch(pages: Record<number, { jobs: Job[]; has_more: boolean }>) {
+ * the `cursor` it sent ("" for a first page), recording each page request's
+ * parsed query. */
+function routeFetch(pages: Record<string, FakePage>) {
   const pageRequests: URLSearchParams[] = [];
   (fetch as unknown as FetchMock).mockImplementation((url: string) => {
     const [path, query] = url.split("?");
     const params = new URLSearchParams(query);
     if (path === "/api/jobs/queue/counts") return ok(COUNTS);
     pageRequests.push(params);
-    return ok(pages[Number(params.get("offset"))] ?? { jobs: [], has_more: false });
+    const page = pages[params.get("cursor") ?? ""] ?? { jobs: [], has_more: false };
+    return ok({ next_cursor: null, ...page });
   });
   return pageRequests;
 }
@@ -93,10 +102,10 @@ describe("useJobQueueListing", () => {
     vi.restoreAllMocks();
   });
 
-  it("loads the first page and the counts, then the next page from where the list ends", async () => {
+  it("loads the first page and the counts, then the next page from the server's cursor", async () => {
     const requests = routeFetch({
-      0: { jobs: [job(1), job(2)], has_more: true },
-      2: { jobs: [job(2), job(3)], has_more: false },
+      "": { jobs: [job(1), job(2)], has_more: true, next_cursor: "after-2" },
+      "after-2": { jobs: [job(2), job(3)], has_more: false },
     });
     const { result } = renderHook(
       () => useJobQueueListing(FILTERS, { viewStatuses: ["pending_review", "triage"], withCounts: true }),
@@ -114,7 +123,46 @@ describe("useJobQueueListing", () => {
     await waitFor(() => expect(result.current.hasMore).toBe(false));
     // Job 2 came back on the second page (it moved); the copy on screen stays, once.
     expect(result.current.jobs.map((j) => j.id)).toEqual([1, 2, 3]);
-    expect(requests.map((params) => params.get("offset"))).toEqual(["0", "2"]);
+    expect(requests.map((params) => params.get("cursor"))).toEqual([null, "after-2"]);
+    expect(requests.every((params) => !params.has("offset"))).toBe(true);
+  });
+
+  // ai: claude-opus-5-5 | 2026-11-03 — code-review-2026-11-02 #1
+  it("continues from the cursor even after jobs leave the list, instead of a count of what's on screen", async () => {
+    const requests = routeFetch({
+      "": { jobs: [job(1), job(2), job(3)], has_more: true, next_cursor: "after-3" },
+      "after-3": { jobs: [job(4)], has_more: false },
+    });
+    const { result } = renderHook(
+      () => useJobQueueListing({ ...FILTERS, view: "triage" }, { viewStatuses: ["triage"] }),
+      { wrapper: withBus(bus) },
+    );
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => bus.publish({ type: "remove", jobId: 1 }));
+    act(() => bus.publish({ type: "update", job: job(2, "pending_review") }));  // left the Triage view
+    await act(async () => {
+      result.current.loadMore();
+    });
+
+    await waitFor(() => expect(result.current.hasMore).toBe(false));
+    expect(requests.map((params) => params.get("cursor"))).toEqual([null, "after-3"]);
+    expect(result.current.jobs.map((j) => j.id)).toEqual([3, 4]);
+  });
+
+  it("does not ask for another page when the server gave no cursor", async () => {
+    const requests = routeFetch({ "": { jobs: [job(1)], has_more: true, next_cursor: null } });
+    const { result } = renderHook(
+      () => useJobQueueListing(FILTERS, { viewStatuses: null }),
+      { wrapper: withBus(bus) },
+    );
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.hasMore).toBe(false);
+
+    await act(async () => {
+      result.current.loadMore();
+    });
+    expect(requests).toHaveLength(1);
   });
 
   it("drops a response for filters that have since changed", async () => {
@@ -139,7 +187,7 @@ describe("useJobQueueListing", () => {
 
   it("applies published changes by the view's statuses, and reloads to the same depth", async () => {
     const requests = routeFetch({
-      0: { jobs: [job(1), job(2), job(3)], has_more: false },
+      "": { jobs: [job(1), job(2), job(3)], has_more: false },
     });
     const { result } = renderHook(
       () => useJobQueueListing({ ...FILTERS, view: "triage" }, { viewStatuses: ["triage", "possible_duplicate"] }),
@@ -161,14 +209,14 @@ describe("useJobQueueListing", () => {
 
     await act(async () => bus.publish({ type: "reload" }));
     await waitFor(() => expect(requests).toHaveLength(2));
-    expect(requests[1].get("offset")).toBe("0");
+    expect(requests[1].get("cursor")).toBeNull();  // a reload starts from the top
     expect(requests[1].get("limit")).toBe("50");
   });
 
   // ai: claude-opus-5-5 | 2026-10-24
   it("keeps a listed job's company summary across an update, and reloads when its company changes", async () => {
     const summary = { company_job_count: 3, company_application_statuses: { applied: 2 }, company_contacts: [] };
-    const requests = routeFetch({ 0: { jobs: [{ ...job(1), ...summary }], has_more: false } });
+    const requests = routeFetch({ "": { jobs: [{ ...job(1), ...summary }], has_more: false } });
     const { result } = renderHook(
       () => useJobQueueListing({ ...FILTERS, view: "triage" }, { viewStatuses: ["triage"] }),
       { wrapper: withBus(bus) },
@@ -190,7 +238,7 @@ describe("useJobQueueListing", () => {
   });
 
   it("keeps an updated job whatever its status in the Unreachable view", async () => {
-    routeFetch({ 0: { jobs: [job(1, "applied")], has_more: false } });
+    routeFetch({ "": { jobs: [job(1, "applied")], has_more: false } });
     const { result } = renderHook(
       () => useJobQueueListing({ ...FILTERS, view: "unreachable" }, { viewStatuses: null }),
       { wrapper: withBus(bus) },
@@ -218,7 +266,7 @@ describe("useJobQueueListing", () => {
   });
 
   it("fetches counts but no page while the list is disabled", async () => {
-    const requests = routeFetch({ 0: { jobs: [job(1)], has_more: false } });
+    const requests = routeFetch({ "": { jobs: [job(1)], has_more: false } });
     const { result } = renderHook(
       () => useJobQueueListing({ ...FILTERS, view: "company" }, { enabled: false, viewStatuses: undefined, withCounts: true }),
       { wrapper: withBus(bus) },
@@ -230,7 +278,7 @@ describe("useJobQueueListing", () => {
   });
 
   it("asks the first page to reach a focused job", async () => {
-    const requests = routeFetch({ 0: { jobs: [job(1)], has_more: false } });
+    const requests = routeFetch({ "": { jobs: [job(1)], has_more: false } });
     renderHook(
       () => useJobQueueListing(FILTERS, { focusJobId: 77, viewStatuses: undefined }),
       { wrapper: withBus(bus) },

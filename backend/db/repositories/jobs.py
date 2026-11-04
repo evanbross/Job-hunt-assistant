@@ -44,6 +44,7 @@ from ..job_queue_query import (
     AT_APPLIED_COMPANY_SQL,
     COMPANY_GROUP_KEY_SQL,
     COMPANY_GROUP_LABEL_SQL,
+    COMPANY_GROUP_SORT_KEYS,
     HAS_CONTACT_SQL,
     QUEUE_STATUSES,
     REFRESH_CANDIDATE_SQL,
@@ -54,6 +55,15 @@ from ..job_queue_query import (
     RefreshCandidateKind,
     view_where_sql,
 )
+from ..keyset_pagination import (
+    CursorValues,
+    KeysetPage,
+    SortKey,
+    after_cursor_sql,
+    cursor_columns_sql,
+    split_keyset_page,
+)
+from ..keyset_pagination import order_by_sql as keyset_order_by_sql
 from .company_aliases import CANONICAL_ALIAS_SUBQUERY, resolve_company_alias
 
 logger = logging.getLogger(__name__)
@@ -70,6 +80,16 @@ logger = logging.getLogger(__name__)
 # multi-tenancy, and the new name makes that unambiguous rather than reusing
 # a name whose old definition might still exist on an un-migrated database.
 JOBS_URL_UNIQUE_INDEX = "jobs_user_url_unique_idx"
+
+# ai: claude-opus-5-5 | 2026-11-03
+# get_page_by_statuses' (GET /jobs/history) order, newest first. Postgres's
+# default DESC NULLS FIRST, unchanged from the old ORDER BY, so the
+# (date_found DESC, id DESC) index schema.py builds for it still matches.
+JOB_HISTORY_SORT_KEYS: tuple[SortKey, ...] = (
+    SortKey("date_found", descending=True),
+    SortKey("id", descending=True),
+)
+JOB_HISTORY_CURSOR_LISTING = "job-history"
 
 
 class DuplicateJobUrlError(Exception):
@@ -181,20 +201,27 @@ class PostgresJobRepository(_BaseRepo):
             where += f" AND {filter_sql}"
         return where, [user_id, *filter_params]
 
+    # ai: claude-opus-5-5 | 2026-11-03 — keyset pagination (after=) replaced OFFSET
     def list_queue_page(
-        self, user_id: int, query: JobQueueQuery, limit: int, offset: int
-    ) -> list[dict[str, Any]]:
+        self, user_id: int, query: JobQueueQuery, limit: int, after: CursorValues | None = None
+    ) -> KeysetPage:
         """One page of the Job Queue listing, in the query's sort order, with
         the same lightweight display columns and flags the cards render
-        (_display_flag_columns_sql)."""
+        (_display_flag_columns_sql). *after* is the previous page's next_after;
+        None for the first page."""
         where, params = self._queue_where(user_id, query)
+        keys = query.sort_keys()
+        if after is not None:
+            after_sql, after_params = after_cursor_sql(keys, after)
+            where = f"{where} AND {after_sql}"
+            params = [*params, *after_params]
         columns = ", ".join(JobColumns.display_summary())
         cur = self._execute(
-            f"SELECT {columns}, {self._display_flag_columns_sql()} FROM jobs"
-            f" WHERE {where} ORDER BY {query.order_by_sql()} LIMIT %s OFFSET %s",
-            [*params, limit, offset],
+            f"SELECT {columns}, {self._display_flag_columns_sql()}, {cursor_columns_sql(keys)} FROM jobs"
+            f" WHERE {where} ORDER BY {query.order_by_sql()} LIMIT %s",
+            [*params, limit + 1],  # one extra row tells has_more without a COUNT
         )
-        return [_row_to_dict(r) for r in cur.fetchall()]
+        return split_keyset_page([_row_to_dict(r) for r in cur.fetchall()], limit, len(keys))
 
     def queue_position(self, user_id: int, query: JobQueueQuery, job_id: int) -> int | None:
         """0-based position of *job_id* in the listing, or None if the job
@@ -236,25 +263,32 @@ class PostgresJobRepository(_BaseRepo):
         )
         return {key: int(value) for key, value in cur.fetchone().items()}
 
+    # ai: claude-opus-5-5 | 2026-11-03 — keyset pagination (after=) replaced OFFSET
     def list_queue_companies(
-        self, user_id: int, query: JobQueueQuery, limit: int, offset: int
-    ) -> list[dict[str, Any]]:
+        self, user_id: int, query: JobQueueQuery, limit: int, after: CursorValues | None = None
+    ) -> KeysetPage:
         """One page of Company-view groups (A-Z by label): each group's key
         (pass it back as JobQueueQuery.company_key to list its jobs), its most
         common company spelling, and how many of its jobs are queue vs triage."""
         where, params = self._queue_where(user_id, query)
+        keys = COMPANY_GROUP_SORT_KEYS
+        groups_where, after_params = ("", [])
+        if after is not None:
+            after_sql, after_params = after_cursor_sql(keys, after)
+            groups_where = f" WHERE {after_sql}"
         queue_statuses = ", ".join(f"'{status}'" for status in QUEUE_STATUSES)
         cur = self._execute(
-            "SELECT company_key, label, total, queue_count, total - queue_count AS triage_count FROM ("
+            "SELECT company_key, label, total, queue_count, total - queue_count AS triage_count,"
+            f" {cursor_columns_sql(keys)} FROM ("
             f"SELECT {COMPANY_GROUP_KEY_SQL} AS company_key,"
             f" mode() WITHIN GROUP (ORDER BY {COMPANY_GROUP_LABEL_SQL}) AS label,"
             " COUNT(*) AS total,"
             f" COUNT(*) FILTER (WHERE status IN ({queue_statuses})) AS queue_count"
             f" FROM jobs WHERE {where} GROUP BY 1"
-            ") company_groups ORDER BY lower(label), label, company_key LIMIT %s OFFSET %s",
-            [*params, limit, offset],
+            f") company_groups{groups_where} ORDER BY {keyset_order_by_sql(keys)} LIMIT %s",
+            [*params, *after_params, limit + 1],
         )
-        return [_row_to_dict(r) for r in cur.fetchall()]
+        return split_keyset_page([_row_to_dict(r) for r in cur.fetchall()], limit, len(keys))
 
     def list_refresh_candidates(
         self, user_id: int, kind: RefreshCandidateKind
@@ -278,12 +312,19 @@ class PostgresJobRepository(_BaseRepo):
     # endpoint (measured ~150-380ms of a ~450ms request, almost entirely the
     # extra bytes moving over the wire to Neon). get_by_id() still returns
     # the full row for the lazy per-job fetch the UI makes on expand.
+    # ai: claude-opus-5-5 | 2026-11-03 — keyset pagination (after=) replaced OFFSET
     def get_page_by_statuses(
-        self, user_id: int, statuses: list[str], limit: int, offset: int, search: str = ""
-    ) -> list[dict[str, Any]]:
+        self,
+        user_id: int,
+        statuses: list[str],
+        limit: int,
+        after: CursorValues | None = None,
+        search: str = "",
+    ) -> KeysetPage:
         """One page of jobs in `statuses`, newest first, with a `has_description` flag in
         place of the full job_description/raw_jd_snippet text. `search` supports * and ?
-        wildcards and matches company, job_title, source, or date_found as a substring."""
+        wildcards and matches company, job_title, source, or date_found as a substring.
+        *after* is the previous page's next_after; None for the first page."""
         placeholders = ", ".join(["%s"] * len(statuses))
         params: list[Any] = [user_id, *statuses]
         search_clause = ""
@@ -295,17 +336,23 @@ class PostgresJobRepository(_BaseRepo):
                 " OR date_found::text ILIKE %s)"
             )
             params.extend([pattern] * 4)
+        keys = JOB_HISTORY_SORT_KEYS
+        after_clause = ""
+        if after is not None:
+            after_sql, after_params = after_cursor_sql(keys, after)
+            after_clause = f" AND {after_sql}"
+            params.extend(after_params)
         columns = ", ".join(JobColumns.history_summary())
-        # id DESC tie-break keeps page boundaries stable when many rows share a date_found.
         cur = self._execute(
             f"SELECT {columns},"
             f" (COALESCE({JobColumns.JOB_DESCRIPTION}, '') != ''"
-            f"  OR COALESCE({JobColumns.RAW_JD_SNIPPET}, '') != '') AS has_description"
-            f" FROM jobs WHERE user_id = %s AND status IN ({placeholders}){search_clause}"
-            " ORDER BY date_found DESC, id DESC LIMIT %s OFFSET %s",
-            [*params, limit, offset],
+            f"  OR COALESCE({JobColumns.RAW_JD_SNIPPET}, '') != '') AS has_description,"
+            f" {cursor_columns_sql(keys)}"
+            f" FROM jobs WHERE user_id = %s AND status IN ({placeholders}){search_clause}{after_clause}"
+            f" ORDER BY {keyset_order_by_sql(keys)} LIMIT %s",
+            [*params, limit + 1],  # one extra row tells has_more without a COUNT
         )
-        return [_row_to_dict(r) for r in cur.fetchall()]
+        return split_keyset_page([_row_to_dict(r) for r in cur.fetchall()], limit, len(keys))
 
     def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None:
         cur = self._execute(

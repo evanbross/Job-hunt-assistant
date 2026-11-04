@@ -39,6 +39,7 @@ from backend.db.job_queue_query import (
     JobQueueView,
     RefreshCandidateKind,
 )
+from backend.db.keyset_pagination import encode_cursor
 from backend.db.row_level_security import set_current_user
 from routes.jobs import jobs_bp
 
@@ -79,15 +80,16 @@ def _ids(rows: list[dict[str, Any]]) -> list[int]:
     return [row["id"] for row in rows]
 
 
+# ai: claude-opus-5-5 | 2026-11-03 — follows keyset cursors instead of offsets
 def _all_pages(repo: PostgresJobRepository, user_id: int, query: JobQueueQuery, page_size: int) -> list[int]:
     ids: list[int] = []
-    offset = 0
+    after = None
     while True:
-        page = repo.list_queue_page(user_id, query, page_size, offset)
-        ids.extend(_ids(page))
-        if len(page) < page_size:
+        page = repo.list_queue_page(user_id, query, page_size, after)
+        ids.extend(_ids(page.rows))
+        if not page.has_more:
             return ids
-        offset += page_size
+        after = page.next_after
 
 
 def test_views_select_their_statuses_hide_snoozed_and_use_display_columns(db) -> None:
@@ -109,7 +111,7 @@ def test_views_select_their_statuses_hide_snoozed_and_use_display_columns(db) ->
     conn.commit()
 
     def view_ids(view: JobQueueView) -> set[int]:
-        return set(_ids(repo.list_queue_page(user_id, JobQueueQuery(view=view), 100, 0)))
+        return set(_ids(repo.list_queue_page(user_id, JobQueueQuery(view=view), 100).rows))
 
     assert view_ids(JobQueueView.QUEUE) == {queue, snooze_over}
     assert view_ids(JobQueueView.TRIAGE) == {triage, duplicate}
@@ -117,10 +119,10 @@ def test_views_select_their_statuses_hide_snoozed_and_use_display_columns(db) ->
     assert view_ids(JobQueueView.COMPANY) == {queue, snooze_over, triage, duplicate}
     # The Unreachable view is every flagged job whatever its status, snoozed or not,
     # longest-unreachable first.
-    unreachable = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.UNREACHABLE), 100, 0)
+    unreachable = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.UNREACHABLE), 100).rows
     assert _ids(unreachable) == [unreachable_applied, unreachable_snoozed]
 
-    rows = {row["id"]: row for row in repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.BOTH), 100, 0)}
+    rows = {row["id"]: row for row in repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.BOTH), 100).rows}
     for row in rows.values():
         assert _HEAVY_COLUMNS.isdisjoint(row.keys())
     assert rows[queue]["has_description"] is True
@@ -180,9 +182,14 @@ def test_every_sort_matches_its_definition_and_pages_cover_each_row_exactly_once
         "date_desc", "date_asc", "fit_desc_date_desc", "fit_desc_date_asc",
         "fit_asc", "confidence_desc", "confidence_asc", "company_asc",
     }
+    # ai: claude-opus-5-5 | 2026-11-03 — every page size, so every row (NULL-valued ones
+    # included) is some page's cursor and each SortKey's after-NULL branch is exercised.
     for sort in JOB_QUEUE_SORTS:
         query = JobQueueQuery(view=JobQueueView.BOTH, sort=sort.key)
-        assert _all_pages(repo, user_id, query, page_size=4) == _expected_order(rows, sort.key), sort.key
+        for page_size in range(1, 5):
+            assert _all_pages(repo, user_id, query, page_size) == _expected_order(rows, sort.key), (
+                sort.key, page_size,
+            )
 
 
 def test_search_terms_wildcards_fields_and_minimum_length(db) -> None:
@@ -201,7 +208,7 @@ def test_search_terms_wildcards_fields_and_minimum_length(db) -> None:
 
     def search(text: str, field: str = "company") -> set[int]:
         query = JobQueueQuery(view=JobQueueView.BOTH, search=text, search_field=field)
-        return set(_ids(repo.list_queue_page(user_id, query, 100, 0)))
+        return set(_ids(repo.list_queue_page(user_id, query, 100).rows))
 
     everyone = {acme, beta, gamma, slash}
     assert search("acm") == {acme}
@@ -270,7 +277,7 @@ def test_filter_toggles_match_the_old_client_side_rules(filter_scenario) -> None
 
     def listing(**filters: Any) -> set[int]:
         query = JobQueueQuery(view=JobQueueView.BOTH, **filters)
-        return set(_ids(repo.list_queue_page(user_id, query, 100, 0)))
+        return set(_ids(repo.list_queue_page(user_id, query, 100).rows))
 
     assert listing() == set(ids.values())
     assert listing(only_unscored=True) == {ids["acme_inc"], ids["block"]}
@@ -327,18 +334,22 @@ def test_company_groups_merge_spellings_and_list_their_own_jobs(db) -> None:
     _insert(repo, user_id, company="Seeq", status="applied")
     conn.commit()
 
-    groups = repo.list_queue_companies(user_id, JobQueueQuery(view=JobQueueView.COMPANY), 100, 0)
+    company_view = JobQueueQuery(view=JobQueueView.COMPANY)
+    groups = repo.list_queue_companies(user_id, company_view, 100).rows
 
     assert groups == [
         {"company_key": "unknown-company", "label": "Inc.", "total": 1, "queue_count": 1, "triage_count": 0},
         {"company_key": "seeq", "label": "Seeq", "total": 3, "queue_count": 1, "triage_count": 2},
         {"company_key": "unknown", "label": "Unknown Company", "total": 1, "queue_count": 0, "triage_count": 1},
     ]
-    assert repo.list_queue_companies(user_id, JobQueueQuery(view=JobQueueView.COMPANY), 1, 1) == [groups[1]]
+    # ai: claude-opus-5-5 | 2026-11-03 — paged one group at a time by keyset cursor
+    first = repo.list_queue_companies(user_id, company_view, 1)
+    second = repo.list_queue_companies(user_id, company_view, 1, first.next_after)
+    assert (first.rows, second.rows, second.has_more) == ([groups[0]], [groups[1]], True)
 
     def group_ids(key: str) -> list[int]:
         query = JobQueueQuery(view=JobQueueView.COMPANY, company_key=key)
-        return _ids(repo.list_queue_page(user_id, query, 100, 0))
+        return _ids(repo.list_queue_page(user_id, query, 100).rows)
 
     assert group_ids("seeq") == [seeq_queue, seeq_triage, seeq_corp]
     assert group_ids("unknown") == [blank]
@@ -380,7 +391,12 @@ def client(db, monkeypatch: pytest.MonkeyPatch, pg_dsn: str):
         "view=queue&sort=random",
         "view=queue&search_field=notes",
         "view=queue&limit=201",
-        "view=queue&offset=-1",
+        "view=queue&offset=0",  # ai: claude-opus-5-5 | 2026-11-03 — replaced by cursor
+        "view=queue&cursor=not-a-cursor",
+        # A cursor issued under another sort, or for the Company view's groups.
+        f"view=queue&sort=date_desc&cursor={encode_cursor('job-queue:date_asc', ['2026-10-01', '1'])}",
+        f"view=queue&cursor={encode_cursor('job-queue-companies', ['a', 'a', 'a'])}",
+        f"view=queue&cursor={encode_cursor('job-queue:date_desc', ['2026-10-01'])}",  # too few values
         "view=queue&surprise=1",
     ],
 )
@@ -389,21 +405,122 @@ def test_page_route_rejects_invalid_parameters(client, query_string: str) -> Non
     assert response.status_code == 400
 
 
-def test_page_route_pages_with_has_more_and_extends_to_a_focused_job(client, db) -> None:
+# ai: claude-opus-5-5 | 2026-11-03
+def test_page_route_rejects_a_hand_edited_cursor_postgres_cannot_compare(client, db) -> None:
+    conn, repo, user_id = db
+    _insert(repo, user_id, company="A", status="triage")
+    conn.commit()
+    cursor = encode_cursor("job-queue:fit_asc", ["not-a-number", "2026-10-01", "1"])
+
+    response = client.get(f"/api/jobs/queue?view=triage&sort=fit_asc&cursor={cursor}")
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid cursor"}
+
+
+# ai: claude-opus-5-5 | 2026-11-03 — pages by next_cursor instead of offset
+def test_page_route_pages_by_cursor_and_extends_to_a_focused_job(client, db) -> None:
     conn, repo, user_id = db
     ids = [_insert(repo, user_id, company=f"C{n}", status="triage", date_found=f"2026-10-{n + 1:02d}")
            for n in range(5)]
     conn.commit()
 
-    first = client.get("/api/jobs/queue?view=triage&sort=date_asc&limit=2").get_json()
-    rest = client.get("/api/jobs/queue?view=triage&sort=date_asc&limit=2&offset=4").get_json()
+    pages = [client.get("/api/jobs/queue?view=triage&sort=date_asc&limit=2").get_json()]
+    while pages[-1]["has_more"]:
+        cursor = pages[-1]["next_cursor"]
+        pages.append(client.get(f"/api/jobs/queue?view=triage&sort=date_asc&limit=2&cursor={cursor}").get_json())
     focused = client.get(
         f"/api/jobs/queue?view=triage&sort=date_asc&limit=2&focus_job_id={ids[4]}&only_unscored=true"
     ).get_json()
 
-    assert (_ids(first["jobs"]), first["has_more"]) == (ids[:2], True)
-    assert (_ids(rest["jobs"]), rest["has_more"]) == (ids[4:], False)
-    assert (_ids(focused["jobs"]), focused["has_more"]) == (ids, False)
+    assert [_ids(page["jobs"]) for page in pages] == [ids[:2], ids[2:4], ids[4:]]
+    assert pages[-1]["next_cursor"] is None
+    assert (_ids(focused["jobs"]), focused["has_more"], focused["next_cursor"]) == (ids, False, None)
+
+
+# ── code-review-2026-11-02 #1: rows that move between page requests ─────────
+# ai: claude-opus-5-5 | 2026-11-03
+# Each case changes a page-1 row between fetching page 1 and page 2. With OFFSET
+# pagination every row after it shifted up one, so page 2 started one row too
+# late and that row never appeared; each of these assertions failed. With a
+# keyset cursor page 2 starts after page 1's last row, wherever the rows above it went.
+
+
+def _two_pages_around_a_change(
+    repo: PostgresJobRepository, conn: Any, user_id: int, query: JobQueueQuery, change: Callable[[], None]
+) -> list[int]:
+    first = repo.list_queue_page(user_id, query, 3)
+    change()
+    conn.commit()
+    second = repo.list_queue_page(user_id, query, 10, first.next_after)
+    assert not second.has_more
+    return _ids(first.rows) + _ids(second.rows)
+
+
+def test_a_row_rescored_below_the_page_boundary_skips_nothing(db) -> None:
+    conn, repo, user_id = db
+    ids = [_insert(repo, user_id, company=f"C{fit}", status="triage", fit_score=fit) for fit in (90, 80, 70, 60, 50, 40)]
+    conn.commit()
+    query = JobQueueQuery(view=JobQueueView.TRIAGE, sort="fit_desc_date_desc")
+
+    seen = _two_pages_around_a_change(repo, conn, user_id, query, lambda: repo.update(user_id, ids[1], {"fit_score": 10}))
+
+    # Nothing skipped; the re-scored job shows up again after the cursor (the
+    # list keeps the copy it already shows), and nothing else repeats.
+    assert set(seen) == set(ids)
+    assert seen == [ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[1]]
+
+
+def test_a_row_that_leaves_the_filter_or_the_view_skips_nothing(db) -> None:
+    conn, repo, user_id = db
+    ids = [_insert(repo, user_id, company=f"C{n}", status="triage", date_found=f"2026-10-{20 - n:02d}")
+           for n in range(6)]
+    conn.commit()
+
+    unscored = JobQueueQuery(view=JobQueueView.TRIAGE, only_unscored=True)
+    seen = _two_pages_around_a_change(repo, conn, user_id, unscored, lambda: repo.update(user_id, ids[0], {"fit_score": 75}))
+    assert seen == ids
+
+    triage = JobQueueQuery(view=JobQueueView.TRIAGE)
+    seen = _two_pages_around_a_change(repo, conn, user_id, triage, lambda: repo.update(user_id, ids[1], {"status": "applied"}))
+    assert seen == ids
+
+
+def test_company_groups_page_by_cursor_when_a_group_disappears(db) -> None:
+    conn, repo, user_id = db
+    ids = [_insert(repo, user_id, company=name, status="triage") for name in ("Acme", "Beta", "Cobalt", "Delta")]
+    conn.commit()
+    query = JobQueueQuery(view=JobQueueView.COMPANY)
+
+    first = repo.list_queue_companies(user_id, query, 2)
+    repo.update(user_id, ids[0], {"status": "applied"})  # Acme's only job leaves: its group goes
+    conn.commit()
+    second = repo.list_queue_companies(user_id, query, 10, first.next_after)
+
+    assert [g["label"] for g in first.rows + second.rows] == ["Acme", "Beta", "Cobalt", "Delta"]
+
+
+def test_companies_and_history_routes_page_by_cursor(client, db) -> None:
+    conn, repo, user_id = db
+    for name in ("Acme", "Beta", "Cobalt"):
+        _insert(repo, user_id, company=name, status="triage")
+    history_ids = [_insert(repo, user_id, company=f"H{n}", status="applied", date_found=f"2026-09-{n + 1:02d}")
+                   for n in range(3)]
+    conn.commit()
+
+    companies = client.get("/api/jobs/queue/companies?view=company&limit=2").get_json()
+    more = client.get(f"/api/jobs/queue/companies?view=company&limit=2&cursor={companies['next_cursor']}").get_json()
+    assert [g["label"] for g in companies["companies"] + more["companies"]] == ["Acme", "Beta", "Cobalt"]
+    assert (more["has_more"], more["next_cursor"]) == (False, None)
+
+    history = client.get("/api/jobs/history?limit=2").get_json()
+    rest = client.get(f"/api/jobs/history?limit=2&cursor={history['next_cursor']}").get_json()
+    assert _ids(history["jobs"]) + _ids(rest["jobs"]) == history_ids[::-1]
+    assert all("stages" in job for job in history["jobs"] + rest["jobs"])
+
+    # A cursor only works for the listing that issued it, and offset is gone.
+    assert client.get(f"/api/jobs/history?cursor={companies['next_cursor']}").status_code == 400
+    assert client.get("/api/jobs/history?offset=2").status_code == 400
 
 
 def test_options_counts_companies_and_candidates_routes(client, db) -> None:
@@ -424,6 +541,7 @@ def test_options_counts_companies_and_candidates_routes(client, db) -> None:
     assert companies == {
         "companies": [{"company_key": "acme", "label": "Acme", "total": 1, "queue_count": 0, "triage_count": 1}],
         "has_more": False,
+        "next_cursor": None,  # ai: claude-opus-5-5 | 2026-11-03 — keyset pagination
     }
     assert [job["company"] for job in candidates] == ["Acme"]
     assert client.get("/api/jobs/queue/refresh-candidates?kind=everything").status_code == 400

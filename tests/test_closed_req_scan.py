@@ -844,7 +844,7 @@ def test_run_req_closed_scan_sets_unreachable_since_on_direct_unreachable_result
     check_repos = _repos_as(user_id)
     try:
         unreachable_view = JobQueueQuery(view=JobQueueView.UNREACHABLE)  # ai: claude-opus-5-5 | 2026-10-23
-        unreachable_ids = {j["id"] for j in check_repos["jobs"].list_queue_page(user_id, unreachable_view, 1000, 0)}
+        unreachable_ids = {j["id"] for j in check_repos["jobs"].list_queue_page(user_id, unreachable_view, 1000).rows}
     finally:
         check_repos["conn"].close()
     assert job_id in unreachable_ids

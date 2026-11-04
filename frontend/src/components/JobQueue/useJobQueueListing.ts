@@ -130,15 +130,27 @@ interface PagedListState<T> {
   setItems: (update: (items: T[]) => T[]) => void;
 }
 
+interface PageResult<T> {
+  items: T[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+// ai: claude-opus-5-5 | 2026-11-03 — pages continue from the server's next_cursor, not an offset
 /** Fetches *path* a page at a time. A new query string starts over, but keeps
  * showing the old items until the new ones arrive unless the view changed
- * (a different list entirely); a response for an older query is dropped. */
+ * (a different list entirely); a response for an older query is dropped.
+ *
+ * Each next page continues from the previous response's next_cursor (keyset
+ * pagination, backend/db/keyset_pagination.py), never from how many items are
+ * on screen: an offset counts rows from the top, so a job that left the list or
+ * moved down between requests made the next page skip one. */
 function usePagedList<T>(
   path: string,
   queryString: string,
   view: JobQueueViewKey,
   enabled: boolean,
-  readPage: (data: unknown) => { items: T[]; hasMore: boolean },
+  readPage: (data: unknown) => PageResult<T>,
   idOf: (item: T) => string | number,
   firstPageExtra: Record<string, string | number> = {},
 ): PagedListState<T> {
@@ -149,6 +161,8 @@ function usePagedList<T>(
   const generationRef = useRef(0);
   const itemsRef = useRef<T[]>([]);
   const loadingMoreRef = useRef(false);
+  // Where the next loadMore continues: the last loaded page's next_cursor.
+  const nextCursorRef = useRef<string | null>(null);
   const viewRef = useRef(view);
   const readPageRef = useRef(readPage);
   const idOfRef = useRef(idOf);
@@ -170,8 +184,11 @@ function usePagedList<T>(
     applyItems(update(itemsRef.current));
   }, [applyItems]);
 
-  const fetchPage = useCallback(async (limit: number, offset: number, extra: string) => {
-    const res = await fetch(`${path}?${queryString}&limit=${limit}&offset=${offset}${extra ? `&${extra}` : ""}`);
+  const fetchPage = useCallback(async (limit: number, cursor: string | null, extra: string) => {
+    const params = new URLSearchParams(queryString);
+    params.set("limit", String(limit));
+    if (cursor != null) params.set("cursor", cursor);
+    const res = await fetch(`${path}?${params}${extra ? `&${extra}` : ""}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return readPageRef.current(await res.json());
   }, [path, queryString]);
@@ -183,11 +200,12 @@ function usePagedList<T>(
     try {
       const collected: T[] = [];
       const seen = new Set<string | number>();
+      let cursor: string | null = null;
       let more = true;
       while (more && collected.length < depth) {
         const limit = Math.min(MAX_PAGE_SIZE, depth - collected.length);
         // A focused job can extend the first page past `limit` (see routes/jobs.py).
-        const page = await fetchPage(limit, collected.length, collected.length === 0 ? extra : "");
+        const page: PageResult<T> = await fetchPage(limit, cursor, cursor == null ? extra : "");
         if (generation !== generationRef.current) return;
         for (const item of page.items) {
           const id = idOfRef.current(item);
@@ -196,13 +214,17 @@ function usePagedList<T>(
             collected.push(item);
           }
         }
-        more = page.hasMore;
+        cursor = page.nextCursor;
+        more = page.hasMore && cursor != null;
+        // A short page is the end of what to load now; loadMore continues from the cursor.
         if (page.items.length < limit) break;
       }
+      nextCursorRef.current = more ? cursor : null;
       applyItems(collected);
       setHasMore(more);
     } catch {
       if (generation !== generationRef.current) return;
+      nextCursorRef.current = null;
       applyItems([]);
       setHasMore(false);
     } finally {
@@ -221,18 +243,21 @@ function usePagedList<T>(
   }, [enabled, view, loadFrom, firstPageExtraKey, applyItems]);
 
   const loadMore = useCallback(async () => {
-    if (loadingMoreRef.current) return;
+    const cursor = nextCursorRef.current;
+    if (loadingMoreRef.current || cursor == null) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     const generation = generationRef.current;
     try {
-      const page = await fetchPage(JOB_QUEUE_PAGE_SIZE, itemsRef.current.length, "");
+      const page = await fetchPage(JOB_QUEUE_PAGE_SIZE, cursor, "");
       if (generation !== generationRef.current) return;
-      // An item that moved since the last page (re-scored, re-sorted) could
-      // come back again; keep the copy already on screen.
+      // An item that moved down since its page loaded (re-scored, re-sorted)
+      // comes back again after the cursor; keep the copy already on screen.
       const seen = new Set(itemsRef.current.map((item) => idOfRef.current(item)));
       applyItems([...itemsRef.current, ...page.items.filter((item) => !seen.has(idOfRef.current(item)))]);
-      setHasMore(page.hasMore);
+      const more = page.hasMore && page.nextCursor != null;
+      nextCursorRef.current = more ? page.nextCursor : null;
+      setHasMore(more);
     } catch {
       /* leave the list as it is; the sentinel or button can try again */
     } finally {
@@ -250,14 +275,26 @@ function usePagedList<T>(
   return { items, hasMore, loaded, loadingMore, loadMore, reload, setItems };
 }
 
-function readJobPage(data: unknown): { items: Job[]; hasMore: boolean } {
-  const page = data as JobQueuePage;
-  return { items: Array.isArray(page?.jobs) ? page.jobs : [], hasMore: Boolean(page?.has_more) };
+function readNextCursor(page: { next_cursor?: unknown } | null | undefined): string | null {
+  return typeof page?.next_cursor === "string" ? page.next_cursor : null;
 }
 
-function readCompaniesPage(data: unknown): { items: JobQueueCompanyGroup[]; hasMore: boolean } {
+function readJobPage(data: unknown): PageResult<Job> {
+  const page = data as JobQueuePage;
+  return {
+    items: Array.isArray(page?.jobs) ? page.jobs : [],
+    hasMore: Boolean(page?.has_more),
+    nextCursor: readNextCursor(page),
+  };
+}
+
+function readCompaniesPage(data: unknown): PageResult<JobQueueCompanyGroup> {
   const page = data as JobQueueCompaniesPage;
-  return { items: Array.isArray(page?.companies) ? page.companies : [], hasMore: Boolean(page?.has_more) };
+  return {
+    items: Array.isArray(page?.companies) ? page.companies : [],
+    hasMore: Boolean(page?.has_more),
+    nextCursor: readNextCursor(page),
+  };
 }
 
 const jobId = (job: Job) => job.id;

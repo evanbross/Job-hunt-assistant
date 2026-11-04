@@ -82,7 +82,7 @@ def test_queue_view_omits_heavy_columns_and_computes_flags(pg_dsn: str) -> None:
         )
         conn.commit()
 
-        rows = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.QUEUE), 100, 0)
+        rows = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.QUEUE), 100).rows
 
         by_company = {r["company"]: r for r in rows}
         assert by_company["Acme"]["has_description"] is True
@@ -116,7 +116,7 @@ def test_triage_view_omits_heavy_columns_and_computes_flags(pg_dsn: str) -> None
         )
         conn.commit()
 
-        rows = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.TRIAGE), 100, 0)
+        rows = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.TRIAGE), 100).rows
 
         by_company = {r["company"]: r for r in rows}
         assert by_company["Acme"]["has_description"] is True
@@ -194,7 +194,7 @@ def test_display_queries_compute_description_unavailable_in_sql(pg_dsn: str) -> 
         )
         conn.commit()
 
-        rows = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.TRIAGE), 100, 0)
+        rows = repo.list_queue_page(user_id, JobQueueQuery(view=JobQueueView.TRIAGE), 100).rows
         by_id = {r["id"]: r for r in rows}
 
         assert by_id[no_desc_id]["description_unavailable"] is True

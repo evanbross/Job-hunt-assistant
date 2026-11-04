@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from .job_queue_query import JobQueueQuery, RefreshCandidateKind
+from .keyset_pagination import CursorValues, KeysetPage
 from .repositories.browser_capture_queue import CaptureQueueOrigin
 
 
@@ -47,19 +48,24 @@ class IJobRepository(Protocol):
     # get_all_by_status / get_by_statuses_for_display / get_unreachable /
     # get_applied_companies, which shipped every row to the browser)
     def list_queue_page(
-        self, user_id: int, query: JobQueueQuery, limit: int, offset: int
-    ) -> list[dict[str, Any]]: ...
+        self, user_id: int, query: JobQueueQuery, limit: int, after: CursorValues | None = None
+    ) -> KeysetPage: ...
     def queue_position(self, user_id: int, query: JobQueueQuery, job_id: int) -> int | None: ...
     def count_queue(self, user_id: int, query: JobQueueQuery) -> dict[str, int]: ...
     def list_queue_companies(
-        self, user_id: int, query: JobQueueQuery, limit: int, offset: int
-    ) -> list[dict[str, Any]]: ...
+        self, user_id: int, query: JobQueueQuery, limit: int, after: CursorValues | None = None
+    ) -> KeysetPage: ...
     def list_refresh_candidates(
         self, user_id: int, kind: RefreshCandidateKind
     ) -> list[dict[str, Any]]: ...
     def get_page_by_statuses(
-        self, user_id: int, statuses: list[str], limit: int, offset: int, search: str = ""
-    ) -> list[dict[str, Any]]: ...
+        self,
+        user_id: int,
+        statuses: list[str],
+        limit: int,
+        after: CursorValues | None = None,
+        search: str = "",
+    ) -> KeysetPage: ...
     def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None: ...
     def get_by_dedup_key(self, user_id: int, dedup_key: str) -> dict[str, Any] | None: ...
     def count_by_base_dedup_key_and_statuses(

@@ -122,6 +122,8 @@ export interface JobQueueOptions {
 export interface JobQueuePage {
   jobs: Job[];
   has_more: boolean;
+  /** Pass back as `cursor` for the next page; null when there is none. */
+  next_cursor: string | null;
 }
 
 /** GET /api/jobs/queue/counts (PostgresJobRepository.count_queue). */
@@ -149,6 +151,8 @@ export interface JobQueueCompanyGroup {
 export interface JobQueueCompaniesPage {
   companies: JobQueueCompanyGroup[];
   has_more: boolean;
+  /** Pass back as `cursor` for the next page; null when there is none. */
+  next_cursor: string | null;
 }
 
 /** GET /api/jobs/queue/refresh-candidates: just what a batch re-fetch needs. */
@@ -265,6 +269,8 @@ export type JobHistoryEntry = JobHistorySummary & { stages: JobHistoryStage[] };
 export interface JobHistoryResponse {
   jobs: JobHistoryEntry[];
   has_more: boolean;
+  /** Pass back as `cursor` for the next page; null when there is none. */
+  next_cursor: string | null;
 }
 
 /** Result entry produced per-job by utils/batchRefreshFromUrls.runBatchRefreshFromUrls. */

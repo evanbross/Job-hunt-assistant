@@ -41,6 +41,7 @@ from urllib.error import URLError  # ai: claude-fable-5 | 2026-07-17
 from urllib.parse import urlparse
 from urllib.request import Request  # ai: claude-fable-5 | 2026-07-17
 
+import psycopg2
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 from googleapiclient.errors import HttpError
@@ -48,6 +49,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     ValidationError,
     field_validator,
     model_validator,
@@ -57,6 +59,8 @@ import config
 from backend.db import CaptureQueueOrigin, DuplicateJobUrlError
 from backend.db.job_columns import JobColumns
 from backend.db.job_queue_query import (
+    COMPANY_GROUP_CURSOR_LISTING,
+    COMPANY_GROUP_SORT_KEYS,
     DEFAULT_SEARCH_FIELD,
     DEFAULT_SORT,
     JOB_QUEUE_SORTS,
@@ -67,6 +71,16 @@ from backend.db.job_queue_query import (
     JobQueueQuery,
     JobQueueView,
     RefreshCandidateKind,
+)
+from backend.db.keyset_pagination import (
+    CursorValues,
+    KeysetPage,
+    decode_cursor,
+    encode_cursor,
+)
+from backend.db.repositories.jobs import (
+    JOB_HISTORY_CURSOR_LISTING,
+    JOB_HISTORY_SORT_KEYS,
 )
 from backend.email.classification import maybe_mark_source_email_read
 from backend.email.email_parser import (
@@ -366,12 +380,67 @@ class JobQueueListParams(BaseModel):
         )
 
 
-class JobQueuePageParams(JobQueueListParams):
+# ai: claude-opus-5-5 | 2026-11-03 — keyset cursors replaced offset (code-review-2026-11-02 #1)
+class _CursorPage(BaseModel):
+    """`limit` plus the opaque `cursor` a previous page returned as
+    next_cursor (backend/db/keyset_pagination.py). The cursor is decoded here,
+    at the boundary, so one issued for another listing or sort -- or anything
+    that isn't a cursor -- is a 400 like any other invalid parameter."""
+
     limit: int = Field(50, ge=1, le=_JOB_QUEUE_PAGE_SIZE_MAX)
-    offset: int = Field(0, ge=0)
+    cursor: str | None = Field(None, max_length=4000)
+    _after: CursorValues | None = PrivateAttr(None)
+
+    def _cursor_listing(self) -> tuple[str, int]:
+        """(listing name, number of sort keys) the cursor must have been issued for."""
+        raise NotImplementedError("not yet implemented")
+
+    @model_validator(mode="after")
+    def _decode_cursor(self) -> _CursorPage:
+        if self.cursor is not None:
+            listing, key_count = self._cursor_listing()
+            self._after = decode_cursor(self.cursor, listing, key_count)
+        return self
+
+    @property
+    def after(self) -> CursorValues | None:
+        return self._after
+
+    def page_body(self, items_key: str, page: KeysetPage) -> dict[str, object]:
+        listing, _ = self._cursor_listing()
+        next_cursor = encode_cursor(listing, page.next_after) if page.next_after is not None else None
+        return {items_key: page.rows, "has_more": page.has_more, "next_cursor": next_cursor}
+
+
+class JobQueuePageParams(_CursorPage, JobQueueListParams):
     # Extend the first page far enough to include this job, so navigating to
     # it from another tab can scroll to its card.
     focus_job_id: int | None = None
+
+    def _cursor_listing(self) -> tuple[str, int]:
+        query = self.to_query()
+        return query.cursor_listing(), len(query.sort_keys())
+
+
+class JobQueueCompaniesPageParams(_CursorPage, JobQueueListParams):
+    def _cursor_listing(self) -> tuple[str, int]:
+        return COMPANY_GROUP_CURSOR_LISTING, len(COMPANY_GROUP_SORT_KEYS)
+
+
+class JobHistoryPageParams(_CursorPage):
+    model_config = ConfigDict(extra="forbid")
+
+    q: str = Field("", max_length=200)
+
+    def _cursor_listing(self) -> tuple[str, int]:
+        return JOB_HISTORY_CURSOR_LISTING, len(JOB_HISTORY_SORT_KEYS)
+
+
+def _invalid_cursor_values_response(exc: psycopg2.DataError) -> ResponseReturnValue:
+    """A well-formed cursor whose values don't fit the sort's columns (only a
+    hand-edited one can) fails in Postgres; that's the caller's bad input."""
+    logger.info("Rejected a page cursor whose values don't fit its sort: %s", exc)
+    return jsonify({"error": "Invalid cursor"}), 400
 
 
 class JobQueueRefreshCandidatesParams(BaseModel):
@@ -407,16 +476,19 @@ def get_job_queue_page() -> ResponseReturnValue:
     query = params.to_query()
     user_id = current_user_id()
     limit = params.limit
-    with get_repos() as repos:
-        if params.focus_job_id is not None and params.offset == 0:
-            position = repos["jobs"].queue_position(user_id, query, params.focus_job_id)
-            if position is not None:
-                limit = min(max(limit, position + 1 + _JOB_QUEUE_FOCUS_LOOKAHEAD), _JOB_QUEUE_FOCUS_LIMIT_MAX)
-        # One extra row tells has_more without a separate COUNT query.
-        jobs = repos["jobs"].list_queue_page(user_id, query, limit + 1, params.offset)
-        page = jobs[:limit]
-        attach_company_summaries(repos, user_id, page)  # ai: claude-opus-5-5 | 2026-10-24
-    return jsonify({"jobs": page, "has_more": len(jobs) > limit})
+    try:
+        with get_repos() as repos:
+            if params.focus_job_id is not None and params.after is None:
+                position = repos["jobs"].queue_position(user_id, query, params.focus_job_id)
+                if position is not None:
+                    limit = min(max(limit, position + 1 + _JOB_QUEUE_FOCUS_LOOKAHEAD), _JOB_QUEUE_FOCUS_LIMIT_MAX)
+            page = repos["jobs"].list_queue_page(user_id, query, limit, params.after)
+            attach_company_summaries(repos, user_id, page.rows)  # ai: claude-opus-5-5 | 2026-10-24
+    except psycopg2.DataError as exc:
+        if params.after is None:
+            raise  # not about a cursor; let the app's error handling report it
+        return _invalid_cursor_values_response(exc)
+    return jsonify(params.page_body("jobs", page))
 
 
 @jobs_bp.route("/jobs/queue/counts")
@@ -435,14 +507,19 @@ def get_job_queue_counts() -> ResponseReturnValue:
 def get_job_queue_companies() -> ResponseReturnValue:
     """One page of the Company view's groups, A-Z."""
     try:
-        params = JobQueuePageParams.model_validate(request.args.to_dict())
+        params = JobQueueCompaniesPageParams.model_validate(request.args.to_dict())
     except ValidationError as exc:
         return invalid_request_response(exc)
-    with get_repos() as repos:
-        groups = repos["jobs"].list_queue_companies(
-            current_user_id(), params.to_query(), params.limit + 1, params.offset
-        )
-    return jsonify({"companies": groups[: params.limit], "has_more": len(groups) > params.limit})
+    try:
+        with get_repos() as repos:
+            page = repos["jobs"].list_queue_companies(
+                current_user_id(), params.to_query(), params.limit, params.after
+            )
+    except psycopg2.DataError as exc:
+        if params.after is None:
+            raise  # not about a cursor; let the app's error handling report it
+        return _invalid_cursor_values_response(exc)
+    return jsonify(params.page_body("companies", page))
 
 
 @jobs_bp.route("/jobs/queue/refresh-candidates")
@@ -862,22 +939,25 @@ def undo_status_change(history_id: int) -> ResponseReturnValue:
 
 @jobs_bp.route("/jobs/history")
 def get_history_jobs() -> ResponseReturnValue:
+    # ai: claude-opus-5-5 | 2026-11-03 — validated params + keyset cursor replaced clamped offset
+    try:
+        params = JobHistoryPageParams.model_validate(request.args.to_dict())
+    except ValidationError as exc:
+        return invalid_request_response(exc)
     user_id = current_user_id()
-    limit = max(1, min(request.args.get("limit", 50, type=int), 200))
-    offset = max(0, request.args.get("offset", 0, type=int))
-    search = request.args.get("q", "").strip()
-    with get_repos() as repos:
-        # ai: claude-sonnet-5 | 2026-09-20
-        # Fetch one extra row so has_more is known without a separate COUNT query.
-        jobs = repos["jobs"].get_page_by_statuses(
-            user_id, ["applied", "skipped"], limit + 1, offset, search
-        )
-        has_more = len(jobs) > limit
-        jobs = jobs[:limit]
-        stages_by_job = repos["stages"].get_by_job_ids(user_id, [job["id"] for job in jobs])
-        for job in jobs:
-            job["stages"] = stages_by_job[job["id"]]
-    return jsonify({"jobs": jobs, "has_more": has_more})
+    try:
+        with get_repos() as repos:
+            page = repos["jobs"].get_page_by_statuses(
+                user_id, ["applied", "skipped"], params.limit, params.after, params.q.strip()
+            )
+            stages_by_job = repos["stages"].get_by_job_ids(user_id, [job["id"] for job in page.rows])
+            for job in page.rows:
+                job["stages"] = stages_by_job[job["id"]]
+    except psycopg2.DataError as exc:
+        if params.after is None:
+            raise  # not about a cursor; let the app's error handling report it
+        return _invalid_cursor_values_response(exc)
+    return jsonify(params.page_body("jobs", page))
 
 
 # ai: claude-sonnet-4-6 | 2026-06-28

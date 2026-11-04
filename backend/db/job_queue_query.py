@@ -29,6 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from backend.db.keyset_pagination import SortKey
+from backend.db.keyset_pagination import order_by_sql as keyset_order_by_sql
 from backend.scoring.company_matching import normalize_company_name_sql
 
 QUEUE_STATUSES: tuple[str, ...] = ("pending_review",)
@@ -70,20 +72,24 @@ def view_where_sql(view: JobQueueView) -> str:
     return f"status IN ({quoted}) AND {NOT_SNOOZED_SQL}"
 
 
+# ai: claude-opus-5-5 | 2026-11-03 — sorts are SortKey tuples, so ORDER BY and the
+# keyset-pagination cursor predicate (backend/db/keyset_pagination.py) come from
+# one definition instead of an ORDER BY string the cursor would have to re-parse.
 @dataclass(frozen=True)
 class SortOption:
     key: str
     label: str
-    order_by: str
+    keys: tuple[SortKey, ...]
 
 
-_DATE_DESC = "date_found DESC NULLS LAST, id DESC"
-_DATE_ASC = "date_found ASC NULLS FIRST, id ASC"
+_DATE_DESC = (SortKey("date_found", descending=True, nulls_last=True), SortKey("id", descending=True))
+_DATE_ASC = (SortKey("date_found", nulls_last=False), SortKey("id"))
 # A job with no certainty score sorts as 50, except a possible duplicate
 # with none, which sorts below every scored job (-1).
 _CONFIDENCE = (
     "COALESCE(certainty_score, CASE WHEN status = 'possible_duplicate' THEN -1 ELSE 50 END)"
 )
+_FIT_DESC = SortKey("fit_score", descending=True, nulls_last=True)
 
 # Every order ends in id, so a page boundary never falls between two rows
 # the database could return in either order -- without that, rows sharing a
@@ -91,18 +97,25 @@ _CONFIDENCE = (
 JOB_QUEUE_SORTS: tuple[SortOption, ...] = (
     SortOption("date_desc", "Newest first", _DATE_DESC),
     SortOption("date_asc", "Oldest first", _DATE_ASC),
-    SortOption("fit_desc_date_desc", "Highest fit, newest first", f"fit_score DESC NULLS LAST, {_DATE_DESC}"),
-    SortOption("fit_desc_date_asc", "Highest fit, oldest first", f"fit_score DESC NULLS LAST, {_DATE_ASC}"),
-    SortOption("fit_asc", "Lowest fit", f"fit_score ASC NULLS LAST, {_DATE_DESC}"),
-    SortOption("confidence_desc", "Highest confidence", f"{_CONFIDENCE} DESC, {_DATE_DESC}"),
-    SortOption("confidence_asc", "Lowest confidence", f"{_CONFIDENCE} ASC, {_DATE_DESC}"),
-    SortOption("company_asc", "Company A–Z", f"lower(COALESCE(company, '')) ASC, {_DATE_DESC}"),
+    SortOption("fit_desc_date_desc", "Highest fit, newest first", (_FIT_DESC, *_DATE_DESC)),
+    SortOption("fit_desc_date_asc", "Highest fit, oldest first", (_FIT_DESC, *_DATE_ASC)),
+    SortOption("fit_asc", "Lowest fit", (SortKey("fit_score", nulls_last=True), *_DATE_DESC)),
+    SortOption("confidence_desc", "Highest confidence", (SortKey(_CONFIDENCE, descending=True), *_DATE_DESC)),
+    SortOption("confidence_asc", "Lowest confidence", (SortKey(_CONFIDENCE), *_DATE_DESC)),
+    SortOption("company_asc", "Company A–Z", (SortKey("lower(COALESCE(company, ''))"), *_DATE_DESC)),
 )
 SORTS_BY_KEY: dict[str, SortOption] = {sort.key: sort for sort in JOB_QUEUE_SORTS}
 DEFAULT_SORT = "date_desc"
 # The Unreachable view keeps its own fixed order (longest-unreachable first),
 # as it always has; the sort dropdown doesn't apply to it.
-UNREACHABLE_ORDER_BY = "unreachable_since ASC, id DESC"
+UNREACHABLE_SORT_KEYS: tuple[SortKey, ...] = (SortKey("unreachable_since"), SortKey("id", descending=True))
+# The Company view's groups, A-Z by label; columns of list_queue_companies' grouped subquery.
+COMPANY_GROUP_SORT_KEYS: tuple[SortKey, ...] = (
+    SortKey("lower(label)"),
+    SortKey("label"),
+    SortKey("company_key"),
+)
+COMPANY_GROUP_CURSOR_LISTING = "job-queue-companies"
 
 
 @dataclass(frozen=True)
@@ -205,10 +218,19 @@ class JobQueueQuery:
     # Restricts the listing to one Company-view group (COMPANY_GROUP_KEY_SQL).
     company_key: str | None = None
 
-    def order_by_sql(self) -> str:
+    # ai: claude-opus-5-5 | 2026-11-03
+    def sort_keys(self) -> tuple[SortKey, ...]:
         if self.view is JobQueueView.UNREACHABLE:
-            return UNREACHABLE_ORDER_BY
-        return SORTS_BY_KEY[self.sort].order_by
+            return UNREACHABLE_SORT_KEYS
+        return SORTS_BY_KEY[self.sort].keys
+
+    def order_by_sql(self) -> str:
+        return keyset_order_by_sql(self.sort_keys())
+
+    def cursor_listing(self) -> str:
+        """Names this listing's order inside its cursors, so a cursor issued
+        under one sort is refused under another."""
+        return "job-queue:unreachable" if self.view is JobQueueView.UNREACHABLE else f"job-queue:{self.sort}"
 
     def search_terms(self) -> list[str]:
         trimmed = self.search.strip()
