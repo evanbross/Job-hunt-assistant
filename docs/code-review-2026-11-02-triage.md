@@ -6,7 +6,7 @@ the plan for fixing the ones that do.
 
 | # | Finding | Review | Triage | Verdict |
 |---|---------|--------|--------|---------|
-| 1 | Offset pagination skips rows after a reorder | Medium | **Medium** | Valid. The trigger is narrower than the review says (see below) |
+| 1 | Offset pagination skips rows after a reorder | Medium | **Medium** | **Fixed** 2026-11-03 (`2b1b6d3`): keyset cursors |
 | 2 | Candidate-profile backups collide within one second | Medium | **Low** | Valid, but it can't realistically happen today. The fix is cheap, so do it |
 | 3 | SSE has no production serving model | Medium | **Low (docs)** | No defect in the current runtime. The deploy README's own server advice is wrong for SSE |
 | 4 | All CI pipelines disabled | Medium | **Medium** | **Fixed** 2026-11-03 (`87d3672`): enforced local pre-push gate |
@@ -15,7 +15,43 @@ the plan for fixing the ones that do.
 
 ---
 
-## 1. Offset pagination: valid, Medium
+## 1. Offset pagination: valid, Medium (fixed)
+
+**Fixed 2026-11-03** in `2b1b6d3`. It shipped as planned below, with these
+differences:
+
+- The cursor logic is in a shared leaf module,
+  `backend/db/keyset_pagination.py`. Each order is a tuple of `SortKey`s, and
+  both `ORDER BY` and the "after this cursor" condition are generated from it.
+  `JOB_QUEUE_SORTS`, the Unreachable order, the Company view's group order and
+  the history order are all defined this way.
+- **`/jobs/history` was fixed too.** It paged the applied/skipped list with
+  `LIMIT/OFFSET` and could skip a row whenever one above it was returned to the
+  queue. It now uses the same cursor, validated by a Pydantic params model
+  instead of hand-parsed `request.args`.
+- `offset` is gone from all three endpoints and is rejected as an unknown
+  parameter. The cursor is decoded during params validation. One issued for
+  another listing or sort, or anything that isn't a cursor, gets the usual
+  sanitized 400. A hand-edited cursor whose values Postgres can't cast also
+  gets a 400 ("Invalid cursor").
+- The frontend (`usePagedList` and `HistoryPanel`) still drops duplicates. A
+  row that moved *down* since its page loaded legitimately comes back after the
+  cursor, and the copy already on screen is kept.
+
+**Tests:**
+- Real-Postgres tests in `tests/test_job_queue_listing.py` change a page-1 row
+  between page requests: re-scored past the boundary, scored while "only
+  unscored" is on, moved out of the view, or its company group disappearing.
+  Each asserts that nothing is skipped. All of these fail on the old offset
+  code.
+- Every sort is checked at page sizes 1–4, so rows with NULL sort values end up
+  on page boundaries.
+- Route tests cover cursor round trips and rejected cursors.
+- `tests/test_keyset_pagination.py` unit-tests cursor encoding and decoding.
+- Vitest checks that `loadMore` sends the server's cursor even after rows
+  leave the list.
+
+The original plan, for reference:
 
 `backend/db/repositories/jobs.py:184-195` (`list_queue_page`) and `:239-255`
 (`list_queue_companies`) use `LIMIT/OFFSET`, and `loadMore` in
@@ -147,7 +183,8 @@ pyyaml entry). The gate went in roughly as planned below, with these differences
 `b5cca32..1a5f2bc`. It selected all four checks and every one passed: ruff,
 frontend (lint, type-check, 73 Vitest tests, build), extension (37 Vitest tests),
 and pytest (1592 passed, 1 skipped). That took 20.5 minutes, nearly all of it
-pytest. The fixture work below is aimed at that.
+pytest. `5849a0d` then cut the suite from 19 to 11.5 minutes: the `pg_dsn`
+fixture now runs `init_db()` once per session instead of twice per test.
 
 **Still needed per clone:** `git config core.hooksPath .githooks`. Until that's
 set, pushes skip the gate.
@@ -215,7 +252,7 @@ publishing ever needs a clean bundle, add the step then.
 ## Fix order
 
 1. ~~**#4 local gate.** Do it first so every later fix goes through it.~~ Done 2026-11-03.
-2. **#1 keyset pagination.** The only finding with user-visible data loss
+2. ~~**#1 keyset pagination.**~~ Done 2026-11-03. The only finding with user-visible data loss
    (jobs missing from the list until a reload). Biggest change: repository,
    query model, route, hook, and tests.
 3. **#2 backup naming.** Small, self-contained.
