@@ -7,7 +7,7 @@ the plan for fixing the ones that do.
 | # | Finding | Review | Triage | Verdict |
 |---|---------|--------|--------|---------|
 | 1 | Offset pagination skips rows after a reorder | Medium | **Medium** | **Fixed** 2026-11-03 (`2b1b6d3`): keyset cursors |
-| 2 | Candidate-profile backups collide within one second | Medium | **Low** | Valid, but it can't realistically happen today. The fix is cheap, so do it |
+| 2 | Candidate-profile backups collide within one second | Medium | **Low** | **Fixed** 2026-11-03 (`8ee1229`): microsecond stamp + exclusive create |
 | 3 | SSE has no production serving model | Medium | **Low (docs)** | No defect in the current runtime. The deploy README's own server advice is wrong for SSE |
 | 4 | All CI pipelines disabled | Medium | **Medium** | **Fixed** 2026-11-03 (`87d3672`): enforced local pre-push gate |
 | 5 | File-watcher debounce erases the final save | Low | **Not a bug** | False positive |
@@ -112,7 +112,26 @@ The de-duplication in `loadMore` covers rows moving *down* into later pages
 
 ---
 
-## 2. Backup filename collision: valid, downgrade to Low
+## 2. Backup filename collision: valid, downgrade to Low (fixed)
+
+**Fixed 2026-11-03** in `8ee1229`, as planned below. `_write_backup` now:
+- stamps names to the microsecond (`….db-backup-20261103T120000.123456Z.md`);
+- creates the file in exclusive mode (`"x"`), trying a `-1`, `-2`, … suffix if
+  the name is taken;
+- after 100 taken names, raises `FileExistsError`. The existing `OSError`
+  handling turns that into `BackupFailedError`, so the load stops instead of
+  overwriting anything.
+
+As planned, there's no cross-process lock: nothing contends for one today,
+and the exclusive create already prevents an overwrite between processes.
+
+**Test:** `test_two_backups_at_the_same_instant_both_survive` freezes the
+clock to the microsecond and runs two real `load()`s, each over stored-only
+text. It checks that both backups survive with their own contents and that
+the second one got the `-1` name. Run against the old code, it failed: both
+loads wrote to the same `…T120000Z.md`.
+
+The original plan, for reference:
 
 `_write_backup` (`backend/candidate_profile_file_sync.py:308-312`) uses a
 second-precision stamp and `Path.write_text`, which silently truncates an
@@ -255,7 +274,7 @@ publishing ever needs a clean bundle, add the step then.
 2. ~~**#1 keyset pagination.**~~ Done 2026-11-03. The only finding with user-visible data loss
    (jobs missing from the list until a reload). Biggest change: repository,
    query model, route, hook, and tests.
-3. **#2 backup naming.** Small, self-contained.
+3. ~~**#2 backup naming.** Small, self-contained.~~ Done 2026-11-03.
 4. **#3 deploy README / #6 AGENTS.md / #5 comment.** Docs only; one commit.
 
 ## Not re-checked
