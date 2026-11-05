@@ -253,3 +253,11 @@ Neon-backed install currently needs.
       speculative change to shared HTML-parsing code every email source
       depends on. Revisit only if it recurs with retained raw content to
       test a fix against.
+
+## Cloud deployment
+
+- [ ] **Make the app deployable as a hosted multi-user service.** Full plan in
+      `docs/cloud-deployment-readiness-plan.md` (2026-11-05): production runtime
+      (app factory, gunicorn, Celery beat, Redis-backed task state, migrate as a
+      release step), remaining single-machine assumptions, Google restricted-scope
+      verification, email/DNS/extension store, backups/monitoring, legal.
