@@ -19,7 +19,6 @@ import pytest
 from cryptography.fernet import Fernet
 from flask import Flask
 
-import app as app_module
 import backend.crypto as crypto
 import config
 from backend.db import (
@@ -37,6 +36,7 @@ from backend.resume.resume_file_service import (
     validate_pdf_upload,
 )
 from routes.settings import settings_bp
+from web.extension_listener import get_resume_file_bytes
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -379,8 +379,8 @@ def test_upload_route_stores_the_file_and_the_listener_can_serve_it(resume_clien
     assert response.status_code == 201
     assert response.get_json()["has_file"] is True
     assert client.get("/api/resume").get_json()["has_file"] is True
-    assert app_module._get_resume_file_bytes(user_id) == (pdf, "resume.pdf")
-    assert app_module._get_resume_file_bytes(user_id + 1) is None
+    assert get_resume_file_bytes(user_id) == (pdf, "resume.pdf")
+    assert get_resume_file_bytes(user_id + 1) is None
 
 
 @pytest.mark.parametrize(

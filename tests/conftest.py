@@ -45,6 +45,7 @@ import psycopg2.errors
 import pytest
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
+from flask import Flask
 
 # ai: claude-sonnet-5 | 2026-09-26
 # The app refuses to start without strong bootstrap secrets, and code paths that
@@ -79,6 +80,7 @@ from tests.db_snapshot import (  # noqa: E402
     schema_fingerprint,
     truncate_every_table,
 )
+from web import create_app  # noqa: E402
 
 load_dotenv()
 
@@ -180,6 +182,18 @@ def isolated_user_events() -> Iterator[RecordingUserEvents]:
     set_user_events(events)
     yield events
     set_user_events(None)
+
+
+# ai: claude-opus-5-5 | 2026-11-05
+@pytest.fixture(scope="session")
+def flask_app() -> Flask:
+    """One factory-built app for the whole session, the same sharing the suite had
+    when it imported app.py's module-level app. Building it does no I/O (see
+    web/factory.py), so it needs no database. A test that changes app.config must
+    restore it, as the cookie and secret-rotation tests already do."""
+    app = create_app()
+    app.config["TESTING"] = True
+    return app
 
 
 # ai: claude-sonnet-5 | 2026-09-26

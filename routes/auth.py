@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import time
 from urllib.parse import urlparse
@@ -51,6 +52,14 @@ from backend.settings_service import get_setting
 from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
+
+# ai: claude-opus-5-5 | 2026-11-05 -- moved here from app.py, next to the only code
+# that needs it, so it applies under any server (not just the desktop entry point).
+# Allow Google to return a superset of the requested OAuth scopes without
+# requests_oauthlib raising a scope-mismatch error. This happens when the
+# account previously granted broader scopes to this OAuth client. oauthlib reads
+# it at token-exchange time, so setting it at import is early enough.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 auth_bp = Blueprint("auth", __name__)
 

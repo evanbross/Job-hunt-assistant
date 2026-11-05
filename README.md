@@ -245,7 +245,9 @@ Score colors:
 
 ```
 job-hunt-assistant/
-├── app.py              # Flask app + all routes
+├── app.py              # Desktop launcher (dev server, Vite, Celery, schedulers)
+├── web/                # Flask app factory (create_app) + serving setup
+├── routes/             # One Flask blueprint per feature area
 ├── config.py           # Configuration constants
 ├── pyproject.toml      # uv project + dependencies
 ├── .env                # API keys (gitignored)

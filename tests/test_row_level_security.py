@@ -22,8 +22,8 @@ from __future__ import annotations
 import psycopg2
 import psycopg2.extras
 import pytest
+from flask import Flask
 
-import app as app_module
 import config
 from backend.db.row_level_security import set_current_user, tenant_tables
 from backend.utils.utils import DatabaseUnavailableError, get_repos
@@ -182,12 +182,12 @@ def test_get_repos_outside_a_request_with_no_user_id_sees_nothing(pg_dsn: str) -
     assert rows == []
 
 
-def test_get_repos_inside_a_request_uses_the_session_user(pg_dsn: str) -> None:
+def test_get_repos_inside_a_request_uses_the_session_user(pg_dsn: str, flask_app: Flask) -> None:
     user_a, user_b = _two_users(pg_dsn)
     _seed_job(pg_dsn, user_a, "a-job")
     _seed_job(pg_dsn, user_b, "b-job")
 
-    with app_module.app.test_request_context("/"):
+    with flask_app.test_request_context("/"):
         from flask import session
 
         session["user_id"] = user_a
@@ -458,7 +458,7 @@ def test_execute_readonly_scopes_an_unfiltered_generated_query(pg_dsn: str) -> N
 
 
 def test_voice_query_endpoint_never_returns_another_accounts_jobs(
-    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+    pg_dsn: str, flask_app: Flask, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """End to end through POST /api/voice/query, with intent classification stubbed
     (it calls an AI provider) to return SQL a real LLM would plausibly generate --
@@ -493,8 +493,7 @@ def test_voice_query_endpoint_never_returns_another_accounts_jobs(
         lambda text, user_id: {"type": "sql_query", "sql": "SELECT url FROM jobs"},
     )
 
-    app_module.app.config["TESTING"] = True
-    client = app_module.app.test_client()
+    client = flask_app.test_client()
     login = client.post(
         "/api/login", json={"email": "voice-a@example.com", "password": "correct horse battery staple"}
     )

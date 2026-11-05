@@ -26,10 +26,15 @@
 # =============================================================================
 
 """
-Job Hunt Assistant — Flask application entry point.
+Job Hunt Assistant — desktop launcher.
 
-Serves the React frontend (from frontend/dist in production) and exposes
-all backend API routes under /api/.
+Builds the app with `web.create_app()` and then does everything a single-machine
+install needs around it: initializes the database, starts the browser-extension
+servers, rebuilds/starts the frontend, spawns a Celery worker, starts the background
+schedulers, registers with the dev Caddy, and runs Flask's threaded dev server.
+
+None of that belongs in a hosted deployment, which is why it lives here and not in
+the factory: see docs/cloud-deployment-readiness-plan.md (Phase 1).
 
 Authentication note: Google OAuth flows live exclusively in /api/auth/* so
 that background scan calls never trigger browser redirects.
@@ -38,89 +43,44 @@ that background scan calls never trigger browser redirects.
 from __future__ import annotations
 
 import atexit
-import inspect
-import json
 import logging
 import os
-import re
 import socket
 import subprocess as _subprocess
 import sys
 import threading
 import time
 import urllib.parse
-from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import flask
-import flask.json as flask_json
 import psycopg2
-from markupsafe import Markup
-from pydantic import BaseModel
-
-if not hasattr(flask, "Markup"):
-    flask.Markup = Markup
-if not hasattr(flask_json, "JSONEncoder"):
-    flask_json.JSONEncoder = json.JSONEncoder
-
-from flasgger import Swagger
-from flask import Flask, jsonify, request, session
-from flask_cors import CORS
+from flask import Flask
 
 import config
 from backend.candidate_profile_file_sync import start_candidate_profile_file_watcher
 from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
-from backend.contacts.outreach_drafts import claim_draft_for_page
-from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, init_db_with_retry
-from backend.extension_auth.token_service import ExtensionTokenService
-from backend.extension_auth.ws_tickets import WebSocketTicketStore
-from backend.queue_websocket import QueueWebSocketServer, start_queue_websocket_server
-from backend.resume.resume_file_service import ResumeFileService
-from backend.scanning.import_listener import (
-    JobImportListener,
-    start_job_import_listener,
-)
+from backend.db import init_db_with_retry
 from backend.scanning.schedulers import (
     start_career_site_scheduler,
     start_jd_health_check_scheduler,
 )
-from backend.security.client_ip import (
-    Network,
-    TrustedProxyMiddleware,
-    parse_trusted_proxies,
-)
 from backend.security.data_lifecycle import start_data_lifecycle_scheduler
-from backend.security.secrets_policy import InsecureSecretError
-from backend.security.session_cookies import (
-    normalize_secure_mode,
-    session_cookie_config,
-)
-from backend.security.startup import enforce_startup_secrets, normalize_app_env
 from backend.settings_service import get_setting
-from backend.utils.utils import (
-    CandidateProfileMissingError,
-    DatabaseUnavailableError,
-    get_repos,
-    is_trusted_api_write_origin,
+from backend.utils.utils import get_repos
+from web import create_app
+from web.extension_listener import start_extension_servers
+from web.serving import (
+    apply_session_cookie_config,
+    install_startup_secrets,
+    install_trusted_proxies,
 )
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
 try:
-    import caddy_registry as _caddy_registry
+    import caddy_registry as _caddy_registry  # noqa: E402 -- needs the sys.path entry above
 except ImportError:
     _caddy_registry = None
 
-# Allow Google to return a superset of the requested OAuth scopes without
-# requests_oauthlib raising a scope-mismatch error. This happens when the
-# account previously granted broader scopes to this OAuth client.
-os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s",
-    stream=sys.stdout,
-)
 logger = logging.getLogger(__name__)
 
 # Suppress Werkzeug access-log noise from high-frequency polling endpoints.
@@ -141,592 +101,15 @@ class _PollFilter(logging.Filter):
         return not any(path in msg for path in _SILENT_PATHS)
 
 
-logging.getLogger("werkzeug").addFilter(_PollFilter())
-
-# ─── App setup ────────────────────────────────────────────────────────────────
-
-# ai: claude-sonnet-5 | 2026-08-21 — static_folder=None disables Flask's own
-# auto-registered /<path:filename> static route. That route used to shadow
-# routes/system.py's serve_frontend() catch-all for any path that isn't a
-# literal file in dist/ (both rules match the same pattern; Flask's built-in
-# one wins and 404s on real-file misses instead of falling through to
-# index.html) — invisible until the app grew actual browser-navigable
-# client-side routes (/verify-account, /confirm-email-change), which always
-# 404'd. serve_frontend() already reimplements the same file-or-index.html
-# logic via send_from_directory, so nothing is lost.
-app = Flask(__name__)
-app.secret_key = config.FLASK_SECRET_KEY
-
-# ai: claude-sonnet-5 | 2026-08-20
-# ai: claude-sonnet-5 | 2026-09-26
-# Session cookie for the app-login gate (routes/session_auth.py). HttpOnly and
-# SameSite=Lax always; Secure (and the __Host- name prefix) follow the app's base
-# URL -- see backend/security/session_cookies.py. These import-time values use
-# the .env base URL; _init_runtime_state() re-applies them from the database
-# setting once it is reachable. The signing key is validated and installed at
-# runtime start too (_enforce_startup_secrets); the value here only keeps
-# tooling and tests that import this module working.
-app.config.update(session_cookie_config(config.APP_BASE_URL, "auto"))
-app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
-    days=config.PERMANENT_SESSION_LIFETIME_DAYS
-)
-
-_cors_origins_env = os.environ.get("CORS_ORIGINS", "")
-_cors_origins = (
-    [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
-    if _cors_origins_env
-    else [
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-    ]
-)
-# supports_credentials=True: the session cookie must be sent/received when the
-# frontend is served from Vite's dev origin (:5173/:5174) directly rather than
-# through its /api proxy to :5004 — see frontend/src/utils/apiClient.js, which
-# always sends credentials: "include".
-CORS(app, resources={r"/api/*": {"origins": _cors_origins, "supports_credentials": True}})
-
-_API_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-# ai: claude-sonnet-5 | 2026-08-21
-# (method, path) pairs, not bare paths: /api/account now has both a public
-# method (POST — start registration) and session-gated ones (GET/PUT — read
-# or edit the logged-in account), so "is this path allowlisted" alone can no
-# longer answer the question.
-_APP_LOGIN_ALLOWLIST = frozenset(
-    {
-        ("POST", "/api/login"),
-        ("POST", "/api/account"),
-        ("POST", "/api/account/complete-registration"),
-        ("POST", "/api/account/confirm-email-change"),
-        ("POST", "/api/account/forgot-password"),
-        ("POST", "/api/account/reset-password"),
-        ("GET", "/api/session"),
-        ("GET", "/api/system/health"),
-    }
-)
-
-
-@app.before_request
-def _require_app_login() -> tuple[flask.Response, int] | None:
-    """Reject any /api/* request without an active app-login session.
-
-    Multi-tenant login gate — see routes/session_auth.py. Everything under
-    /api/* requires a prior POST /api/login except the narrow allowlist
-    above:
-    - POST /api/account starts registration (email only, no password yet)
-      and POST /api/account/complete-registration finishes it — neither can
-      require a session, since there isn't one until registration completes.
-    - POST /api/account/confirm-email-change is deliberately unauthenticated
-      too: possession of the token mailed to the new address is the proof,
-      not an existing session (the same shape as routes/auth.py's OAuth
-      state dance) — it can be followed from a different browser/device than
-      the one that requested the change.
-    - POST /api/account/forgot-password and .../reset-password are the
-      locked-out recovery path — by definition there's no session yet, and
-      forgot-password must respond identically whether or not the email is
-      registered (an enumeration oracle otherwise).
-    - GET /api/session and GET /api/system/health are read-only status
-      checks the login page itself needs before anyone is authenticated.
-    This deliberately excludes the existing Google OAuth routes
-    (/api/auth/*): granting Gmail access should only be reachable once
-    already logged into the app, not a second anonymous entry point.
-    """
-    if not request.path.startswith("/api/"):
-        return None
-    if (request.method, request.path) in _APP_LOGIN_ALLOWLIST:
-        return None
-    if session.get("authenticated"):
-        return None
-    return jsonify({"error": "Not authenticated"}), 401
-
-
-# ai: claude-sonnet-5 | 2026-08-21
-@app.before_request
-def _require_admin_for_system_settings() -> tuple[flask.Response, int] | None:
-    """Gate every /api/settings/system/* request on an admin account.
-
-    Runs after _require_app_login above, so by the time this executes the
-    caller already has a valid session (or the request was already 401'd) —
-    this only adds the admin check on top, for the one route group that's
-    instance-wide config (SMTP relay, app base URL), not a per-user setting.
-    Queries role fresh from the DB rather than trusting a cached session
-    value, so a promotion/demotion takes effect on the very next request
-    instead of waiting for the account to log back in.
-    """
-    if not request.path.startswith("/api/settings/system"):
-        return None
-    user_id = session.get("user_id")
-    if user_id is None:
-        return None  # _require_app_login already rejected this request
-    with get_repos() as repos:
-        account = repos["user_accounts"].get(user_id)
-    if not account or account.get("role") != "admin":
-        return jsonify({"error": "Admin access required"}), 403
-    return None
-
-
-# ai: claude-sonnet-5 | 2026-08-27
-# Paths a session with must_complete_setup=TRUE may still reach -- see
-# DEFAULT_ADMIN_EMAIL's docstring in backend/db/repositories/user_accounts.py
-# for what this gate is protecting against. Deliberately narrow: only what's
-# needed to (a) fix SMTP if it isn't configured yet, since request-email-change
-# below can't complete without it, and (b) actually complete the two forced
-# steps. Everything else in the app (jobs, applications, AI features) stays
-# blocked until both are done.
-_SETUP_GATE_ALLOWLIST = frozenset(
-    {
-        ("GET", "/api/session"),
-        ("POST", "/api/logout"),
-        ("GET", "/api/account"),
-        ("POST", "/api/account/request-email-change"),
-        # ai: claude-sonnet-5 | 2026-08-27 — must be allowlisted here too, not
-        # just in _APP_LOGIN_ALLOWLIST: the confirmation link is normally
-        # followed from the same logged-in session that requested the change
-        # (see frontend/src/components/CompleteSetupPage.jsx), and without
-        # this entry that request would 403 before it could ever clear the
-        # gate it exists to satisfy.
-        ("POST", "/api/account/confirm-email-change"),
-        ("POST", "/api/account/change-password"),
-        ("GET", "/api/settings/schema"),
-        ("GET", "/api/settings/system"),
-        ("PUT", "/api/settings/system"),
-    }
-)
-
-# ai: claude-opus-5-5 | 2026-10-23 — see _require_setup_completion.
-_SETUP_COMPLETE_SESSION_KEY = "setup_complete_verified"
-
-
-@app.before_request
-def _require_setup_completion() -> tuple[flask.Response, int] | None:
-    """Block the rest of the API until the seeded default-admin account has
-    set a real email and a real password (see DEFAULT_ADMIN_EMAIL's docstring
-    in backend/db/repositories/user_accounts.py). Runs after _require_app_login,
-    so a request that reaches here already has a valid session or was already
-    401'd; a request with no session yet (unauthenticated allowlisted paths
-    like /api/system/health) is a no-op here too.
-    """
-    if (
-        not request.path.startswith("/api/")
-        or (request.method, request.path) in _SETUP_GATE_ALLOWLIST
-    ):
-        return None
-    user_id = session.get("user_id")
-    if user_id is None:
-        return None  # _require_app_login already handled this request
-    # ai: claude-opus-5-5 | 2026-10-23 — this ran a get_repos() (~280ms of Neon
-    # round trips) on every authenticated /api/* request. must_complete_setup
-    # only ever goes TRUE -> FALSE (user_accounts.mark_setup_complete is its sole
-    # writer), so once the DB says FALSE for this session it can't become TRUE
-    # again: remember that and skip the query. TRUE is never cached -- the gate
-    # stays fail-closed, re-checking the DB until setup really completes -- and
-    # _start_session()'s session.clear() means every new login re-checks once.
-    if session.get(_SETUP_COMPLETE_SESSION_KEY):
-        return None
-    with get_repos() as repos:
-        account = repos["user_accounts"].get(user_id)
-    if account and account.get("must_complete_setup"):
-        return jsonify({"error": "Complete account setup first", "must_complete_setup": True}), 403
-    if account:
-        session[_SETUP_COMPLETE_SESSION_KEY] = True
-    return None
-
-
-@app.before_request
-def _reject_cross_origin_api_writes() -> tuple[flask.Response, int] | None:
-    """Reject state-changing /api/* requests whose Origin/Referer isn't trusted.
-
-    CORS only restricts which origins can *read* the response — it does not stop
-    a cross-origin page from *sending* a state-changing request. Browsers always
-    set Origin (or, failing that, Referer) on cross-origin fetch/form submissions,
-    so a present-but-untrusted value is rejected; a request with neither header
-    (non-browser clients: tests, curl, internal tooling) is let through since
-    there is nothing forgeable to check.
-    """
-    if (
-        not request.path.startswith("/api/")
-        or request.method not in _API_UNSAFE_METHODS
-    ):
-        return None
-
-    source = request.headers.get("Origin") or request.headers.get("Referer")
-    self_origin = f"{request.scheme}://{request.host}"
-    if not is_trusted_api_write_origin(source, self_origin, _cors_origins):
-        logger.warning(
-            "Rejected cross-origin API write from %s to %s", source, request.path
-        )
-        return jsonify({"error": "Cross-origin request rejected"}), 403
-    return None
-
-
-# ─── Swagger / OpenAPI docs ──────────────────────────────────────────────────
-
-_FLASK_PATH_PARAM_RE = re.compile(
-    r"<(?:(?P<converter>[a-zA-Z_][a-zA-Z0-9_]*):)?(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)>"
-)
-_SWAGGER_EXCLUDED_METHODS = frozenset({"HEAD", "OPTIONS"})
-_SWAGGER_BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
-
-
-def _swagger_parameter_type(converter: str | None) -> tuple[str, str | None]:
-    if converter == "int":
-        return "integer", "int32"
-    if converter == "float":
-        return "number", "float"
-    return "string", None
-
-
-def _swagger_path_for_rule(rule_path: str) -> tuple[str, list[dict[str, object]]]:
-    parameters: list[dict[str, object]] = []
-
-    def _replace_path_param(path_match: re.Match[str]) -> str:
-        param_name = path_match.group("name")
-        param_type, param_format = _swagger_parameter_type(
-            path_match.group("converter")
-        )
-        parameter: dict[str, object] = {
-            "name": param_name,
-            "in": "path",
-            "required": True,
-            "type": param_type,
-        }
-        if param_format:
-            parameter["format"] = param_format
-        parameters.append(parameter)
-        return f"{{{param_name}}}"
-
-    return _FLASK_PATH_PARAM_RE.sub(_replace_path_param, rule_path), parameters
-
-
-def _swagger_tag_for_rule(rule_path: str) -> str:
-    segments = [segment for segment in rule_path.split("/") if segment]
-    if len(segments) < 2:
-        return "API"
-    return segments[1].replace("-", " ").title()
-
-
-# ai: claude-sonnet-5 | 2026-10-18
-# Matches this codebase's consistent `<Model>.model_validate(request.get_json(...))`
-# pattern (see TODO.md's 2026-09-29 Pydantic validation entry) so the generated docs
-# can show the real request schema instead of a generic placeholder object.
-_MODEL_VALIDATE_RE = re.compile(r"\b([A-Z]\w*)\.model_validate\(")
-
-
-def _extract_request_model(view_func: Callable[..., object]) -> type[BaseModel] | None:
-    """Best-effort: the Pydantic model a route handler validates its request body
-    against, found by scanning the handler's own source for a `.model_validate(`
-    call and resolving that name through the handler's own module globals --
-    the same globals Python itself would use to resolve that name at call time,
-    so this never guesses at a mapping that isn't already true in the code.
-    Returns None for a route with no such call, or if source isn't available
-    (e.g. a dynamically built function) -- the caller falls back to the
-    previous generic placeholder schema."""
-    try:
-        source = inspect.getsource(view_func)
-    except (OSError, TypeError):
-        return None
-    match = _MODEL_VALIDATE_RE.search(source)
-    if not match:
-        return None
-    candidate = view_func.__globals__.get(match.group(1))
-    if isinstance(candidate, type) and issubclass(candidate, BaseModel):
-        return candidate
-    return None
-
-
-def _swagger_body_schema(
-    view_func: Callable[..., object] | None, definitions: dict[str, object]
-) -> dict[str, object]:
-    model = _extract_request_model(view_func) if view_func is not None else None
-    if model is None:
-        return {"type": "object"}
-    # model_json_schema() can return shared sub-schemas under "$defs" for a
-    # model with nested Pydantic fields -- fold those into the same top-level
-    # `definitions` dict (Swagger 2.0's name for it) that ref_template points at,
-    # rather than leaving them stranded under the top model's own schema.
-    schema = model.model_json_schema(ref_template="#/definitions/{model}")
-    nested_definitions = schema.pop("$defs", None)
-    if nested_definitions:
-        definitions.update(nested_definitions)
-    definitions[model.__name__] = schema
-    return {"$ref": f"#/definitions/{model.__name__}"}
-
-
-def _swagger_operation_for_rule(
-    endpoint: str,
-    method: str,
-    rule_path: str,
-    path_parameters: list[dict[str, object]],
-    view_func: Callable[..., object] | None,
-    definitions: dict[str, object],
-) -> dict[str, object]:
-    parameters = list(path_parameters)
-    if method in _SWAGGER_BODY_METHODS:
-        parameters.append(
-            {
-                "name": "body",
-                "in": "body",
-                "required": False,
-                "schema": _swagger_body_schema(view_func, definitions),
-            }
-        )
-
-    # ai: claude-sonnet-5 | 2026-10-18 — a real per-route description (when the
-    # handler has a docstring) instead of just the title-cased endpoint name;
-    # still falls back to that for the ~70% of routes with no docstring.
-    docstring = inspect.getdoc(view_func) if view_func is not None else None
-    summary = docstring.splitlines()[0].strip() if docstring else endpoint.replace("_", " ").title()
-    operation: dict[str, object] = {
-        "tags": [_swagger_tag_for_rule(rule_path)],
-        "summary": summary,
-        "operationId": f"{endpoint}_{method.lower()}",
-        "responses": {
-            "200": {"description": "Successful response"},
-            "400": {"description": "Invalid request"},
-            "500": {"description": "Server error"},
-        },
-    }
-    if docstring:
-        operation["description"] = docstring
-    if parameters:
-        operation["parameters"] = parameters
-    return operation
-
-
-def _build_swagger_template(flask_app: Flask) -> dict[str, object]:
-    paths: dict[str, dict[str, object]] = {}
-    definitions: dict[str, object] = {}
-    for url_rule in sorted(
-        flask_app.url_map.iter_rules(), key=lambda route_rule: route_rule.rule
-    ):
-        if not url_rule.rule.startswith("/api/"):
-            continue
-
-        view_func = flask_app.view_functions.get(url_rule.endpoint)
-        swagger_path, path_parameters = _swagger_path_for_rule(url_rule.rule)
-        path_item = paths.setdefault(swagger_path, {})
-        for method in sorted(url_rule.methods - _SWAGGER_EXCLUDED_METHODS):
-            path_item[method.lower()] = _swagger_operation_for_rule(
-                endpoint=url_rule.endpoint,
-                method=method,
-                rule_path=url_rule.rule,
-                path_parameters=path_parameters,
-                view_func=view_func,
-                definitions=definitions,
-            )
-
-    return {
-        "swagger": "2.0",
-        "info": {
-            "title": "Job Hunt Assistant API",
-            # ai: claude-sonnet-5 | 2026-10-18 — request bodies now show the real
-            # Pydantic schema where one could be resolved (see
-            # _extract_request_model); responses are still a generic 200/400/500,
-            # since no route defines a response model this doc generator could
-            # read the same way.
-            "description": (
-                "Auto-generated route inventory for the Job Hunt Assistant Flask "
-                "backend. Request-body schemas are read directly from the route's "
-                "own Pydantic model where one is used (most POST/PUT/PATCH routes); "
-                "a route with no such call falls back to a generic optional object. "
-                "Every response is still shown as a generic 200/400/500 — read the "
-                "route handler for actual response shapes and status codes."
-            ),
-            "version": "0.1.0",
-        },
-        "basePath": "/",
-        "schemes": ["http", "https"],
-        "consumes": ["application/json"],
-        "produces": ["application/json"],
-        "paths": paths,
-        "definitions": definitions,
-    }
-
-
-# ai: claude-sonnet-5 | 2026-09-26
-@app.errorhandler(CandidateProfileMissingError)
-def _candidate_profile_missing(exc: CandidateProfileMissingError) -> tuple[flask.Response, int]:
-    """AI features need the caller's profile; say so plainly instead of a 500."""
-    return jsonify({"error": str(exc), "code": "candidate_profile_missing"}), 409
-
-
-# ai: claude-sonnet-5 | 2026-10-18
-@app.errorhandler(DatabaseUnavailableError)
-def _database_unavailable(exc: DatabaseUnavailableError) -> tuple[flask.Response, int]:
-    """get_repos() raises this instead of yielding when a pooled connection's RLS
-    identity can't be established -- never leak the underlying exception detail,
-    just report the service as temporarily unavailable."""
-    logger.warning("Database session identity unavailable: %s", exc)
-    return jsonify({"error": "Database temporarily unavailable", "code": "database_unavailable"}), 503
-
-
-# ─── Blueprint registration ───────────────────────────────────────────────────
-
-from routes.application_profile import application_profile_bp
-from routes.applications import applications_bp, submit_closed_req_capture
-from routes.auth import auth_bp
-from routes.board_search import board_search_bp
-from routes.browser_capture import browser_capture_bp
-from routes.career_sites import career_sites_bp
-from routes.contacts import contacts_bp
-from routes.cover_letter import cover_letter_bp
-from routes.emails import emails_bp
-from routes.events import events_bp  # ai: claude-opus-5-5 | 2026-10-28
-from routes.extension_tokens import extension_tokens_bp
-from routes.fit import fit_bp
-from routes.greenhouse import greenhouse_bp
-from routes.import_ import import_bp, queue_import_capture
-from routes.jd_health_check import jd_health_check_bp
-from routes.jobanni import jobanni_bp
-from routes.jobs import jobs_bp
-from routes.scan import scan_bp
-from routes.session_auth import session_auth_bp
-from routes.settings import settings_bp
-from routes.setup import setup_bp
-from routes.system import system_bp
-from routes.toptal import toptal_bp
-from routes.voice import voice_bp
-
-app.register_blueprint(application_profile_bp, url_prefix="/api")
-app.register_blueprint(auth_bp, url_prefix="/api")
-app.register_blueprint(board_search_bp, url_prefix="/api")
-app.register_blueprint(browser_capture_bp, url_prefix="/api")
-app.register_blueprint(career_sites_bp, url_prefix="/api")
-app.register_blueprint(contacts_bp, url_prefix="/api")
-app.register_blueprint(cover_letter_bp, url_prefix="/api")
-app.register_blueprint(emails_bp, url_prefix="/api")
-app.register_blueprint(events_bp, url_prefix="/api")  # ai: claude-opus-5-5 | 2026-10-28
-app.register_blueprint(extension_tokens_bp, url_prefix="/api")
-app.register_blueprint(fit_bp, url_prefix="/api")
-app.register_blueprint(greenhouse_bp, url_prefix="/api")
-app.register_blueprint(import_bp, url_prefix="/api")
-app.register_blueprint(jd_health_check_bp, url_prefix="/api")
-app.register_blueprint(jobs_bp, url_prefix="/api")
-app.register_blueprint(scan_bp, url_prefix="/api")
-app.register_blueprint(session_auth_bp, url_prefix="/api")
-app.register_blueprint(settings_bp, url_prefix="/api")
-app.register_blueprint(setup_bp, url_prefix="/api")
-app.register_blueprint(applications_bp, url_prefix="/api")
-app.register_blueprint(jobanni_bp, url_prefix="/api")
-app.register_blueprint(toptal_bp, url_prefix="/api")
-app.register_blueprint(voice_bp, url_prefix="/api")
-app.register_blueprint(system_bp)  # no prefix — handles SPA catch-all and /api/system/*
-
-
-# One ticket store shared by the listener (which issues tickets) and the queue
-# WebSocket server (which redeems them) -- both live in this process.
-_ws_tickets = WebSocketTicketStore()
-
-
-# ai: claude-sonnet-5 | 2026-09-26
-def _authenticate_extension_token(token: str) -> int | None:
-    """Called from the import listener thread on every request: resolve a
-    presented extension token to the user who owns it, or None."""
-    with get_repos() as repos:
-        identity = ExtensionTokenService(repos["extension_tokens"]).authenticate(token)
-        repos["conn"].commit()
-    return identity.user_id if identity else None
-
-
-# ai: claude-sonnet-5 | 2026-09-26 -- every listener callback below receives the
-# authenticated user's id from the listener; none of them resolve a default
-# account. They run on the listener/WebSocket threads (no Flask session), so
-# each opens its own short-lived DB connection.
-def _claim_browser_capture_queue(user_id: int) -> list[dict]:
-    with get_repos(user_id) as repos:
-        items = repos["browser_capture_queue"].claim_pending(
-            user_id, limit=BROWSER_QUEUE_CLAIM_BATCH_SIZE
-        )
-        repos["conn"].commit()
-    return items
-
-
-# ai: claude-sonnet-5 | 2026-07-22
-def _browser_capture_queue_has_pending(user_id: int) -> bool:
-    """Called from the queue WebSocket server's watcher thread."""
-    with get_repos(user_id) as repos:
-        return repos["browser_capture_queue"].has_pending(user_id)
-
-
-# Career-site scans are scheduled at startup in the main block below. Keeping
-# listener callbacks independent avoids coupling extension traffic to scheduler state.
-# ai: claude-sonnet-4-6 | 2026-07-02
-def _handle_listener_capture(user_id: int, body: dict) -> tuple[dict, int]:
-    """Routes captures from the browser extension by purpose.
-
-    Closed-req checks (see routes.applications.run_req_closed_scan_task) post the
-    raw captured HTML for classification rather than going through the job-import
-    pipeline, which expects structured job listings.
-    """
-    if body.get("purpose") == "closed_req":
-        return submit_closed_req_capture(user_id, body)
-    return queue_import_capture(body, trigger="listener", user_id=user_id)
-
-
-# ai: claude-sonnet-5 | 2026-08-13
-def _get_application_profile_for_listener(user_id: int) -> dict | None:
-    with get_repos(user_id) as repos:
-        return repos["application_profile"].get(user_id)
-
-
-# ai: claude-sonnet-5 | 2026-08-13
-# ai: claude-sonnet-5 | 2026-09-26 -- the PDF now lives, encrypted, in the
-# authenticated user's own resume row (backend/resume/resume_file_service.py),
-# not in a shared file, so this can only ever return that user's resume.
-def _get_resume_file_bytes(user_id: int) -> tuple[bytes, str] | None:
-    with get_repos(user_id) as repos:
-        return ResumeFileService(repos["resume"]).load_file(user_id)
-
-
-# ai: claude-sonnet-5 | 2026-08-13
-def _get_application_answers_for_listener(user_id: int) -> list[dict]:
-    with get_repos(user_id) as repos:
-        return repos["application_answers"].get_all(user_id)
-
-
-# ai: claude-sonnet-5 | 2026-08-13
-def _learn_application_answer(
-    user_id: int, question_text: str, answer_text: str, platform: str | None
-) -> dict:
-    """Called when the extension's autofill content script learns a new
-    free-text answer from the user."""
-    with get_repos(user_id) as repos:
-        answer = repos["application_answers"].upsert(
-            user_id,
-            question_text=question_text,
-            answer_text=answer_text,
-            platform=platform,
-        )
-        repos["conn"].commit()
-    return answer
-
-
-# ai: claude-opus-5-5 | 2026-10-14
-def _claim_linkedin_outreach_draft(user_id: int, page_url: str) -> dict | None:
-    """Called when the extension finishes loading a LinkedIn profile page."""
-    with get_repos(user_id) as repos:
-        claimed = claim_draft_for_page(user_id, page_url, repos, datetime.now(UTC))
-        repos["conn"].commit()
-    if claimed is None:
-        return None
-    return {
-        "contact_id": claimed.contact_id,
-        "full_name": claimed.full_name,
-        "message": claimed.message,
-    }
-
-
-# Register generated Swagger docs after API routes are loaded and before the SPA
-# catch-all. The UI is available at /apidocs/ and the JSON spec at /apispec_1.json.
-# Building this only introspects app.url_map (already populated by the blueprint
-# registration above) — no I/O, so it stays import-safe alongside route registration.
-app.config["SWAGGER"] = {
-    "title": "Job Hunt Assistant API",
-    "uiversion": 3,
-}
-_swagger = Swagger(app, template=_build_swagger_template(app))
+# ai: claude-opus-5-5 | 2026-11-05 -- was module-level; importing this file no
+# longer reconfigures the root logger.
+def _configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s",
+        stream=sys.stdout,
+    )
+    logging.getLogger("werkzeug").addFilter(_PollFilter())
 
 
 # ─── Startup checks ───────────────────────────────────────────────────────────
@@ -746,110 +129,6 @@ def _check_redis() -> None:
             host,
             port,
         )
-
-
-_import_listener: JobImportListener | None = None
-_queue_ws_server: QueueWebSocketServer | None = None
-
-
-# ai: claude-sonnet-5 | 2026-09-26
-def _enforce_startup_secrets() -> str:
-    """Refuse to start on a missing or weak FLASK_SECRET_KEY / SETTINGS_ENCRYPTION_KEY,
-    then install the validated signing key (and any rotation fallbacks). Returns
-    the normalized APP_ENV."""
-    try:
-        app_env = normalize_app_env(config.APP_ENV)
-        secrets_config = enforce_startup_secrets(
-            os.environ, app_env=app_env, env_file=config.BASE_DIR / ".env"
-        )
-    except InsecureSecretError as exc:
-        logger.critical("%s", exc)
-        raise SystemExit(1) from exc
-    app.secret_key = secrets_config.flask_secret
-    # Flask signs with secret_key and still accepts anything signed with these.
-    app.config["SECRET_KEY_FALLBACKS"] = list(secrets_config.flask_fallbacks)
-    return app_env
-
-
-# ai: claude-sonnet-5 | 2026-09-26
-def _install_trusted_proxies() -> tuple[Network, ...]:
-    """Make request.remote_addr / request.scheme reflect the real client when (and only
-    when) the connection came from a proxy listed in TRUSTED_PROXIES. Returns the parsed
-    networks so the extension listener can apply the same rule."""
-    trusted = parse_trusted_proxies(config.TRUSTED_PROXIES)
-    if trusted:
-        app.wsgi_app = TrustedProxyMiddleware(app.wsgi_app, trusted)  # type: ignore[method-assign]
-        logger.info("Trusting forwarding headers from: %s", ", ".join(str(n) for n in trusted))
-    return trusted
-
-
-# ai: claude-sonnet-5 | 2026-09-26
-def _apply_session_cookie_config(app_env: str) -> None:
-    """Set the session cookie flags from the app's real base URL (the database
-    setting, falling back to .env if the database is unreachable)."""
-    base_url = config.APP_BASE_URL
-    try:
-        with get_repos() as repos:
-            base_url = get_setting("app_base_url", None, repos) or base_url
-    except psycopg2.Error as exc:
-        logger.warning("Could not read app_base_url for the session cookie config: %s", exc)
-    settings = session_cookie_config(base_url, normalize_secure_mode(config.SESSION_COOKIE_SECURE_MODE))
-    app.config.update(settings)
-    logger.info(
-        "Session cookie: Secure=%s HttpOnly=%s SameSite=%s name=%s",
-        settings["SESSION_COOKIE_SECURE"],
-        settings["SESSION_COOKIE_HTTPONLY"],
-        settings["SESSION_COOKIE_SAMESITE"],
-        settings["SESSION_COOKIE_NAME"],
-    )
-    if app_env == "production" and not settings["SESSION_COOKIE_SECURE"]:
-        logger.warning(
-            "Session cookies are not marked Secure because the app base URL (%s) is not https://. "
-            "Serve the app over HTTPS and set app_base_url accordingly before exposing it to a network.",
-            base_url,
-        )
-
-
-# ai: claude-sonnet-5 | 2026-08-20
-def _init_runtime_state() -> None:
-    """Perform every import-time side effect the app used to run at module load.
-
-    Creates data directories, initializes the DB, runs startup diagnostics, and
-    starts the import listener and queue WebSocket server. Must be called
-    explicitly by the runtime entry point below — never at module import — so
-    importing app.py (from tests, a future WSGI server, or tooling) stays free
-    of directory writes, DB connections, and listener ports. Route registration
-    above has no such side effects and stays import-safe as-is.
-    """
-    global _import_listener, _queue_ws_server
-
-    app_env = _enforce_startup_secrets()  # before anything else: fail fast
-    config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Retries with backoff; if the database is still unreachable the app starts
-    # in degraded mode (so /api/system/health can report the outage to the
-    # frontend) and keeps retrying in the background.
-    init_db_with_retry(config.DATABASE_URL)
-    _apply_session_cookie_config(app_env)
-    trusted_proxies = _install_trusted_proxies()
-
-    _import_listener = start_job_import_listener(
-        _authenticate_extension_token,
-        _handle_listener_capture,
-        claim_queue=_claim_browser_capture_queue,
-        get_profile=_get_application_profile_for_listener,
-        get_resume_file=_get_resume_file_bytes,
-        get_answers=_get_application_answers_for_listener,
-        learn_answer=_learn_application_answer,
-        claim_outreach_draft=_claim_linkedin_outreach_draft,
-        ws_tickets=_ws_tickets,
-        trusted_proxies=trusted_proxies,
-    )
-    _queue_ws_server = start_queue_websocket_server(
-        _ws_tickets.redeem, _browser_capture_queue_has_pending
-    )
-
-    _check_redis()
 
 
 # ─── Dev-server launcher ──────────────────────────────────────────────────────
@@ -1060,15 +339,111 @@ def _stop_celery_worker() -> None:
         logger.info("Celery worker stopped.")
 
 
+# ─── Dev Caddy registration ───────────────────────────────────────────────────
+
+# ai: claude-sonnet-5 | 2026-09-05
+_CADDY_RECONCILE_INTERVAL_SECONDS = 120
+
+
+# ai: claude-sonnet-5 | 2026-07-31
+def _register_with_caddy(name: str, port: int, scheme: str) -> bool:
+    assert _caddy_registry is not None
+    if _caddy_registry.register(name, port):
+        atexit.register(_caddy_registry.deregister, name)
+        return True
+    logger.warning(
+        "Caddy registration failed — %s://%s.localhost will not work; "
+        "use %s://127.0.0.1:%d directly, or start the infra stack "
+        "(cd ../infra && docker-compose up -d).",
+        scheme,
+        name,
+        scheme,
+        port,
+    )
+    return False
+
+
+# ai: claude-sonnet-5 | 2026-09-05
+def _reconcile_caddy_routes(routes: list[tuple[str, int]]) -> None:
+    """Background loop: re-register any Caddy route that has disappeared.
+
+    _register_with_caddy above (via caddy_registry.register()'s own
+    retries) only covers registration failing at startup. Caddy holds
+    routes in memory only, so if the Caddy container is restarted
+    independently of this app (a Docker/Desktop restart, not an app
+    restart) an already-registered route silently vanishes and
+    *.localhost stops resolving with no further signal — this process
+    keeps running, unaware. Caddy has no restart webhook to push that
+    event to us, so this polls at a slow, minutes-scale interval as a
+    fallback safety net rather than a primary mechanism.
+    """
+    assert _caddy_registry is not None
+    while True:
+        time.sleep(_CADDY_RECONCILE_INTERVAL_SECONDS)
+        for name, port in routes:
+            if not _caddy_registry.route_registered(f"app-{name}"):
+                logger.warning(
+                    "Caddy: route for %s.localhost has disappeared — re-registering",
+                    name,
+                )
+                _caddy_registry.register(name, port)
+
+
+# ai: claude-opus-5-5 | 2026-11-05 -- was inline in the __main__ block.
+def _register_caddy_routes(named_ports: list[tuple[str, int | None, str]]) -> None:
+    """Register each (name, port, scheme) whose port is known with the dev Caddy and
+    keep the registrations alive. A no-op when ../infra's caddy_registry is absent."""
+    if _caddy_registry is None:
+        return
+    # ai: claude-sonnet-5 | 2026-08-07
+    # The browser extension talks to the listener servers directly (see
+    # browser-extension/background.js) — registering them under stable Caddy
+    # names, rather than requiring a fixed port, lets both fall back to an
+    # OS-assigned port on conflict (see backend/import_listener.py and
+    # backend/queue_websocket.py) without the extension needing any changes.
+    registered = [
+        (name, port)
+        for name, port, scheme in named_ports
+        if port is not None and _register_with_caddy(name, port, scheme)
+    ]
+    if registered:
+        threading.Thread(
+            target=_reconcile_caddy_routes,
+            args=(registered,),
+            daemon=True,
+            name="caddy-route-reconciler",
+        ).start()
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    _init_runtime_state()
+
+# ai: claude-opus-5-5 | 2026-11-05 -- the old __main__ block and _init_runtime_state(),
+# in the same order, now around a factory-built app.
+def main() -> None:
+    _configure_logging()
+    app: Flask = create_app()
+
+    # ai: claude-sonnet-5 | 2026-08-20 -- every runtime side effect happens here,
+    # never at import, so importing this module (or the factory) stays free of
+    # directory writes, DB connections, and listener ports.
+    app_env = install_startup_secrets(app)  # before anything else: fail fast
+    config.CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Retries with backoff; if the database is still unreachable the app starts
+    # in degraded mode (so /api/system/health can report the outage to the
+    # frontend) and keeps retrying in the background.
+    init_db_with_retry(config.DATABASE_URL)
+    apply_session_cookie_config(app, app_env)
+    trusted_proxies = install_trusted_proxies(app)
+    import_listener, queue_ws_server = start_extension_servers(trusted_proxies)
+    _check_redis()
+
     _maybe_rebuild_frontend()
     _start_vite()
     _start_celery_worker()
-    _flask_host, _flask_port = _resolve_flask_bind()
-    if not _port_is_free(_flask_port):
+    flask_host, flask_port = _resolve_flask_bind()
+    if not _port_is_free(flask_port):
         # ai: claude-sonnet-5 | 2026-07-23
         # Fail fast instead of silently falling back to another port: the Google
         # OAuth redirect URI, frontend/vite.config.js proxy target, and README setup
@@ -1081,7 +456,7 @@ if __name__ == "__main__":
             "starting the server — change the Server Port in Settings > System to use "
             "a different port only if you also update the Google OAuth redirect URI, "
             "frontend/vite.config.js proxy target, and README setup docs to match.",
-            _flask_port,
+            flask_port,
         )
         sys.exit(1)
     # ai: claude-sonnet-5 | 2026-08-03
@@ -1090,10 +465,9 @@ if __name__ == "__main__":
     # earlier could fire a real outbound parser check (and possible Gmail
     # notification) moments before the process exits for an occupied port.
     # Needs the Celery worker started above — it submits runs via .delay().
-    # Unlike the career-site scheduler (see comment near _handle_listener_capture),
-    # this one is actually started: it's opt-in (jd_health_check_enabled defaults
-    # to False) and its poll-then-submit loop is what implements "catch up on
-    # next launch" for the JD parser health check.
+    # It's opt-in (jd_health_check_enabled defaults to False) and its
+    # poll-then-submit loop is what implements "catch up on next launch" for
+    # the JD parser health check.
     # ai: gpt-5 | 2026-10-04
     # The career-site scheduler is daily by default and its scheduled task sends
     # the account owner a detailed per-board result email on completion.
@@ -1108,83 +482,25 @@ if __name__ == "__main__":
     # profile file and copies it into the account's stored profile when it's
     # newer. Idle until Settings > System > Candidate Profile File Sync is filled in.
     start_candidate_profile_file_watcher()
-    # ai: claude-sonnet-5 | 2026-07-31
 
-    def _register_with_caddy(name: str, port: int, scheme: str) -> bool:
-        assert _caddy_registry is not None
-        if _caddy_registry.register(name, port):
-            atexit.register(_caddy_registry.deregister, name)
-            return True
-        logger.warning(
-            "Caddy registration failed — %s://%s.localhost will not work; "
-            "use %s://127.0.0.1:%d directly, or start the infra stack "
-            "(cd ../infra && docker-compose up -d).",
-            scheme,
-            name,
-            scheme,
-            port,
-        )
-        return False
-
-    # ai: claude-sonnet-5 | 2026-09-05
-    _CADDY_RECONCILE_INTERVAL_SECONDS = 120
-
-    def _reconcile_caddy_routes(routes: list[tuple[str, int]]) -> None:
-        """Background loop: re-register any Caddy route that has disappeared.
-
-        _register_with_caddy above (via caddy_registry.register()'s own
-        retries) only covers registration failing at startup. Caddy holds
-        routes in memory only, so if the Caddy container is restarted
-        independently of this app (a Docker/Desktop restart, not an app
-        restart) an already-registered route silently vanishes and
-        *.localhost stops resolving with no further signal — this process
-        keeps running, unaware. Caddy has no restart webhook to push that
-        event to us, so this polls at a slow, minutes-scale interval as a
-        fallback safety net rather than a primary mechanism.
-        """
-        assert _caddy_registry is not None
-        while True:
-            time.sleep(_CADDY_RECONCILE_INTERVAL_SECONDS)
-            for name, port in routes:
-                if not _caddy_registry.route_registered(f"app-{name}"):
-                    logger.warning(
-                        "Caddy: route for %s.localhost has disappeared — re-registering",
-                        name,
-                    )
-                    _caddy_registry.register(name, port)
-
-    if _caddy_registry is not None:
-        _caddy_routes: list[tuple[str, int]] = []
-        if _register_with_caddy("jha", _flask_port, "http"):
-            _caddy_routes.append(("jha", _flask_port))
-        # ai: claude-sonnet-5 | 2026-08-07
-        # The browser extension talks to these two servers directly (see
-        # browser-extension/background.js) — registering them under stable Caddy
-        # names, rather than requiring a fixed port, lets both fall back to an
-        # OS-assigned port on conflict (see backend/import_listener.py and
-        # backend/queue_websocket.py) without the extension needing any changes.
-        if _import_listener is not None and _register_with_caddy(
-            "jha-listener", _import_listener.port, "http"
-        ):
-            _caddy_routes.append(("jha-listener", _import_listener.port))
-        if _queue_ws_server is not None and _register_with_caddy(
-            "jha-listener-ws", _queue_ws_server.port, "ws"
-        ):
-            _caddy_routes.append(("jha-listener-ws", _queue_ws_server.port))
-        if _caddy_routes:
-            threading.Thread(
-                target=_reconcile_caddy_routes,
-                args=(_caddy_routes,),
-                daemon=True,
-                name="caddy-route-reconciler",
-            ).start()
+    _register_caddy_routes(
+        [
+            ("jha", flask_port, "http"),
+            ("jha-listener", import_listener.port if import_listener else None, "http"),
+            ("jha-listener-ws", queue_ws_server.port if queue_ws_server else None, "ws"),
+        ]
+    )
     try:
         app.run(
             debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true",
-            host=_flask_host,
-            port=_flask_port,
+            host=flask_host,
+            port=flask_port,
             threaded=True,
         )
     except OSError as exc:
-        logger.error("Could not start Flask server on port %s: %s", _flask_port, exc)
+        logger.error("Could not start Flask server on port %s: %s", flask_port, exc)
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

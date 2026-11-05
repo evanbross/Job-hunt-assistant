@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +19,6 @@ from cryptography.fernet import Fernet
 from dotenv import dotenv_values
 from flask import Flask, session
 
-import app as app_module
 import backend.crypto as crypto
 import config
 from backend.db import (
@@ -51,6 +49,8 @@ from backend.security.session_cookies import (
 )
 from backend.settings_registry import SETTINGS
 from backend.settings_service import get_setting, set_setting
+from web import create_app
+from web.serving import apply_session_cookie_config
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -138,17 +138,10 @@ def test_the_real_set_cookie_header_over_plain_http() -> None:
     assert "Secure" not in header
 
 
-def test_the_app_import_defaults_are_already_httponly_and_lax() -> None:
-    assert app_module.app.config["SESSION_COOKIE_HTTPONLY"] is True
-    assert app_module.app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
-
-
-@pytest.fixture
-def restore_cookie_config() -> Iterator[None]:
-    keys = ("SESSION_COOKIE_SECURE", "SESSION_COOKIE_NAME", "SESSION_COOKIE_HTTPONLY", "SESSION_COOKIE_SAMESITE", "SESSION_COOKIE_PATH")
-    original = {key: app_module.app.config.get(key) for key in keys}
-    yield
-    app_module.app.config.update(original)
+def test_the_app_factory_defaults_are_already_httponly_and_lax() -> None:
+    app = create_app()
+    assert app.config["SESSION_COOKIE_HTTPONLY"] is True
+    assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
 
 
 def _set_base_url(pg_dsn: str, url: str) -> None:
@@ -161,33 +154,35 @@ def _set_base_url(pg_dsn: str, url: str) -> None:
 
 
 def test_the_app_derives_cookie_flags_from_the_stored_base_url(
-    pg_dsn: str, monkeypatch: pytest.MonkeyPatch, restore_cookie_config: None
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE_MODE", "auto")
     _set_base_url(pg_dsn, "https://jobs.example.com")
+    app = create_app()
 
-    app_module._apply_session_cookie_config("production")
+    apply_session_cookie_config(app, "production")
 
-    assert app_module.app.config["SESSION_COOKIE_SECURE"] is True
-    assert app_module.app.config["SESSION_COOKIE_NAME"] == SECURE_COOKIE_NAME
+    assert app.config["SESSION_COOKIE_SECURE"] is True
+    assert app.config["SESSION_COOKIE_NAME"] == SECURE_COOKIE_NAME
 
 
 def test_production_over_http_warns_that_cookies_are_not_secure(
-    pg_dsn: str, monkeypatch: pytest.MonkeyPatch, restore_cookie_config: None, caplog: pytest.LogCaptureFixture
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE_MODE", "auto")
     _set_base_url(pg_dsn, "http://localhost:5004")
+    app = create_app()
 
     with caplog.at_level(logging.WARNING):
-        app_module._apply_session_cookie_config("production")
+        apply_session_cookie_config(app, "production")
         assert "not marked Secure" in caplog.text
         caplog.clear()
-        app_module._apply_session_cookie_config("development")
+        apply_session_cookie_config(app, "development")
         assert "not marked Secure" not in caplog.text
 
-    assert app_module.app.config["SESSION_COOKIE_SECURE"] is False
+    assert app.config["SESSION_COOKIE_SECURE"] is False
 
 
 def test_sessions_survive_a_signing_secret_rotation_only_with_the_fallback() -> None:

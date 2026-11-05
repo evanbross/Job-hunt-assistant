@@ -11,14 +11,12 @@ from __future__ import annotations
 
 import logging
 import secrets
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
 from dotenv import dotenv_values
 
-import app as app_module
 import backend.crypto as crypto
 import config
 from backend.celery_app import _require_valid_encryption_key
@@ -45,6 +43,8 @@ from backend.security.startup import (
     enforce_startup_secrets,
     normalize_app_env,
 )
+from web import create_app
+from web.serving import install_startup_secrets
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -208,16 +208,8 @@ def test_the_encryption_key_is_never_auto_generated(tmp_path: Path) -> None:
     assert ENCRYPTION_KEY_ENV not in env
 
 
-@pytest.fixture
-def restore_app_secrets() -> Iterator[None]:
-    original_key, original_fallbacks = app_module.app.secret_key, app_module.app.config.get("SECRET_KEY_FALLBACKS")
-    yield
-    app_module.app.secret_key = original_key
-    app_module.app.config["SECRET_KEY_FALLBACKS"] = original_fallbacks
-
-
 def test_the_app_installs_validated_secrets_and_fallbacks(
-    monkeypatch: pytest.MonkeyPatch, restore_app_secrets: None
+    monkeypatch: pytest.MonkeyPatch
 ) -> None:
     new_secret, old_secret = generate_flask_secret(), generate_flask_secret()
     monkeypatch.setattr(config, "APP_ENV", "production")
@@ -225,21 +217,23 @@ def test_the_app_installs_validated_secrets_and_fallbacks(
     monkeypatch.setenv(FLASK_SECRET_FALLBACKS_ENV, old_secret)
     monkeypatch.setenv(ENCRYPTION_KEY_ENV, generate_encryption_key())
 
-    assert app_module._enforce_startup_secrets() == "production"
+    app = create_app()
 
-    assert app_module.app.secret_key == new_secret
-    assert app_module.app.config["SECRET_KEY_FALLBACKS"] == [old_secret]
+    assert install_startup_secrets(app) == "production"
+
+    assert app.secret_key == new_secret
+    assert app.config["SECRET_KEY_FALLBACKS"] == [old_secret]
 
 
 def test_the_app_refuses_to_start_on_a_placeholder_secret(
-    monkeypatch: pytest.MonkeyPatch, restore_app_secrets: None, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr(config, "APP_ENV", "production")
     monkeypatch.setenv(FLASK_SECRET_ENV, "change-this-in-production")
     monkeypatch.setenv(ENCRYPTION_KEY_ENV, generate_encryption_key())
 
     with caplog.at_level(logging.CRITICAL), pytest.raises(SystemExit) as excinfo:
-        app_module._enforce_startup_secrets()
+        install_startup_secrets(create_app())
 
     assert excinfo.value.code == 1
     assert "Refusing to start" in caplog.text

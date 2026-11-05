@@ -13,7 +13,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-import app as app_module
 import config
 from backend.db import (
     PostgresExtensionTokenRepository,
@@ -26,6 +25,7 @@ from backend.extension_auth.token_service import (
     hash_token,
 )
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
+from web.extension_listener import authenticate_extension_token
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -236,9 +236,9 @@ def test_app_authenticator_resolves_a_real_token_and_rejects_others(
     finally:
         conn.close()
 
-    assert app_module._authenticate_extension_token(issued.plaintext) == user_id
-    assert app_module._authenticate_extension_token(issued.plaintext + "x") is None
-    assert app_module._authenticate_extension_token("") is None
+    assert authenticate_extension_token(issued.plaintext) == user_id
+    assert authenticate_extension_token(issued.plaintext + "x") is None
+    assert authenticate_extension_token("") is None
 
     conn = get_connection(pg_dsn)
     try:

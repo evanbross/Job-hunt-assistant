@@ -17,7 +17,6 @@ import base64
 import pytest
 from werkzeug.security import generate_password_hash
 
-import app as app_module
 import config
 from backend.security.data_export import export_user_data
 from backend.settings_service import set_setting
@@ -35,9 +34,8 @@ def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def client():
-    app_module.app.config["TESTING"] = True
-    return app_module.app.test_client()
+def client(flask_app):
+    return flask_app.test_client()
 
 
 def _seed_active_account(email: str = _EMAIL, password: str = _PASSWORD) -> int:

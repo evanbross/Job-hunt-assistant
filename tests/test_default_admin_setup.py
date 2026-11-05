@@ -43,9 +43,9 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-import app as app_module
 import config
 import routes.session_auth as session_auth_module
+import web.request_guards as request_guards
 from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
 )
@@ -75,9 +75,8 @@ def sent_emails(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
 
 @pytest.fixture
-def client(sent_emails):
-    app_module.app.config["TESTING"] = True
-    return app_module.app.test_client()
+def client(sent_emails, flask_app):
+    return flask_app.test_client()
 
 
 def _token_from_link(link: str) -> str:
@@ -241,15 +240,15 @@ def test_gate_queries_the_db_until_setup_completes_then_once_per_session(
     instead of re-querying user_accounts on every request -- but never remembers TRUE,
     so a session still mid-setup keeps being checked (and blocked) against the DB."""
     gate_lookups = 0
-    real_get_repos = app_module.get_repos
+    real_get_repos = request_guards.get_repos
 
     def _counting_get_repos(*args, **kwargs):
         nonlocal gate_lookups
         gate_lookups += 1
         return real_get_repos(*args, **kwargs)
 
-    # app.py's own binding: only its before_request hooks use it, not /api/jobs itself.
-    monkeypatch.setattr(app_module, "get_repos", _counting_get_repos)
+    # The guards module's own binding: only the before_request hooks use it, not /api/jobs itself.
+    monkeypatch.setattr(request_guards, "get_repos", _counting_get_repos)
 
     _login_default_admin(client)
     assert client.get("/api/jobs/queue?view=queue").status_code == 403

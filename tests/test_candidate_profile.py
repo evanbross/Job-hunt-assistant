@@ -16,7 +16,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from flask import Flask, session
 
-import app as app_module
 import config
 from backend.cover_letter.cover_letter_learning import (
     CoverLetterStyleLearner,
@@ -38,6 +37,7 @@ from backend.utils.utils import (
 )
 from routes.settings import settings_bp
 from routes.setup import setup_bp
+from web import create_app
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -99,10 +99,18 @@ def test_a_missing_or_blank_profile_raises_a_clear_error(
         get_candidate_profile(user_id, repos)
 
 
+# ai: claude-opus-5-5 | 2026-11-05 -- through a real request, so this also proves the
+# factory registers the handler (it used to call the handler function directly).
 def test_the_missing_profile_error_is_a_409_not_a_500() -> None:
-    with app_module.app.app_context():
-        response, status = app_module._candidate_profile_missing(CandidateProfileMissingError("add one"))
-    assert status == 409
+    app = create_app()
+
+    @app.route("/raises-missing-profile")
+    def _raises_missing_profile() -> str:
+        raise CandidateProfileMissingError("add one")
+
+    response = app.test_client().get("/raises-missing-profile")
+
+    assert response.status_code == 409
     assert response.get_json() == {"error": "add one", "code": "candidate_profile_missing"}
 
 

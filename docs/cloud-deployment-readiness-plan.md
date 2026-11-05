@@ -63,7 +63,14 @@ These change what the later phases look like, so settle them before writing code
 Celery worker, registers with the dev Caddy, and starts several background threads
 inside the web process. None of that belongs in a server.
 
-### 1.1 Split `app.py` into an app factory and a desktop launcher
+### 1.1 Split `app.py` into an app factory and a desktop launcher — done 2026-11-05
+`web/factory.py` `create_app()` (no I/O), `web/request_guards.py`, `web/swagger_docs.py`,
+`web/serving.py` (secrets, cookie flags, trusted proxies), `web/extension_listener.py`
+(listener + WebSocket wiring). `app.py` is now only the desktop launcher's `main()`.
+Tests build the app from the factory (`flask_app` fixture in `tests/conftest.py`).
+Not done here: a WSGI entry point (1.2) and moving migrations out of startup (1.6).
+
+Original scope:
 - Extract a `create_app()` (blueprint registration, `before_request` guards, CORS,
   proxy middleware, error handlers) into its own module with **no side effects at
   import time**.

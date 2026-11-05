@@ -98,6 +98,12 @@ extended before the push channel works; HTTP polling works regardless.
    a container entrypoint that does none of the desktop work. `JHA_IMAGE` in the
    compose file is a placeholder until that exists.
 
+   The Flask app itself is already separate from that desktop work: `web.create_app()`
+   builds it with no side effects, `web.serving` installs the secrets, cookie flags and
+   trusted proxies a serving process needs, and `web.extension_listener` starts the
+   extension's two servers. A WSGI entry point composes those; it should not import
+   `app.py`.
+
    **The server must handle long-lived responses.** Each open tab keeps one
    `/api/events` server-sent-events stream open for as long as the page is open
    (`routes/events.py`), and each stream holds a server thread the whole time. A server

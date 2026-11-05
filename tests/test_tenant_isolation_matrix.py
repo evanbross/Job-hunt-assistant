@@ -32,8 +32,8 @@ from typing import Any
 import psycopg2
 import psycopg2.extras
 import pytest
+from flask import Flask
 
-import app as app_module
 import config
 from backend.db.row_level_security import set_current_user
 from backend.utils.utils import get_repos
@@ -205,8 +205,8 @@ def _no_outbound_email(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("routes.session_auth.send_verification_email", lambda *args, **kwargs: None)
 
 
-def _register(email: str) -> int:
-    client = app_module.app.test_client()
+def _register(app: Flask, email: str) -> int:
+    client = app.test_client()
     assert client.post("/api/account", json={"email": email}).status_code == 202
     with get_repos() as repos:
         token = repos["user_accounts"].get_by_email(email)["verification_token"]
@@ -216,8 +216,8 @@ def _register(email: str) -> int:
         return int(repos["user_accounts"].get_by_email(email)["id"])
 
 
-def _login(email: str) -> Any:
-    client = app_module.app.test_client()
+def _login(app: Flask, email: str) -> Any:
+    client = app.test_client()
     resp = client.post("/api/login", json={"email": email, "password": _PASSWORD})
     assert resp.status_code == 200, resp.get_json()
     return client
@@ -227,12 +227,13 @@ class Tenants:
     """Two registered accounts, each with its own logged-in client. Account A owns one row of
     every kind of resource, all carrying `_MARKER` wherever a text field allows it."""
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, app: Flask) -> None:
         self.dsn = dsn
-        self.a_id = _register("alice@example.com")
-        self.b_id = _register("bob@example.com")
-        self.a = _login("alice@example.com")
-        self.b = _login("bob@example.com")
+        self.app = app
+        self.a_id = _register(app, "alice@example.com")
+        self.b_id = _register(app, "bob@example.com")
+        self.a = _login(app, "alice@example.com")
+        self.b = _login(app, "bob@example.com")
         self.ids: dict[str, Any] = {}
         for client, name in ((self.a, f"{_MARKER} profile"), (self.b, "Bob's profile")):
             saved = client.put("/api/candidate-profile", json={"content": f"{name}: a candidate profile."})
@@ -351,9 +352,8 @@ class Tenants:
 
 
 @pytest.fixture
-def tenants(pg_dsn: str) -> Tenants:
-    app_module.app.config["TESTING"] = True
-    return Tenants(pg_dsn)
+def tenants(pg_dsn: str, flask_app: Flask) -> Tenants:
+    return Tenants(pg_dsn, flask_app)
 
 
 def _call(client: Any, case: Case, url: str) -> Any:
@@ -392,11 +392,11 @@ def test_every_table_is_tenant_scoped(pg_dsn: str) -> None:
 # ─── route coverage ─────────────────────────────────────────────────────────────
 
 
-def test_every_id_route_is_in_the_isolation_matrix() -> None:
+def test_every_id_route_is_in_the_isolation_matrix(flask_app: Flask) -> None:
     covered = {(case.method, case.rule) for case in CASES}
     actual = {
         (method, rule.rule)
-        for rule in app_module.app.url_map.iter_rules()
+        for rule in flask_app.url_map.iter_rules()
         if rule.rule.startswith("/api/") and "<" in rule.rule
         for method in rule.methods - {"HEAD", "OPTIONS"}
     }
@@ -455,10 +455,10 @@ _LIST_ROUTES_NOT_EXERCISED = frozenset({
 })
 
 
-def _parameterless_get_routes() -> list[str]:
+def _parameterless_get_routes(app: Flask) -> list[str]:
     return sorted(
         rule.rule
-        for rule in app_module.app.url_map.iter_rules()
+        for rule in app.url_map.iter_rules()
         if rule.rule.startswith("/api/") and "<" not in rule.rule and "GET" in rule.methods
         and rule.rule not in _LIST_ROUTES_NOT_EXERCISED
     )
@@ -467,7 +467,7 @@ def _parameterless_get_routes() -> list[str]:
 def test_listings_never_show_one_account_the_others_data(tenants: Tenants) -> None:
     leaks: list[str] = []
     owner_sees_marker = 0
-    for route in _parameterless_get_routes():
+    for route in _parameterless_get_routes(tenants.app):
         as_a = tenants.a.get(route)
         as_b = tenants.b.get(route)
         if _MARKER in as_a.get_data(as_text=True):

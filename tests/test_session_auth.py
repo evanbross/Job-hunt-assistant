@@ -55,9 +55,9 @@ from __future__ import annotations
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from flask import Flask
 from werkzeug.security import generate_password_hash
 
-import app as app_module
 import config
 import routes.session_auth as session_auth_module
 from backend.security.client_ip import TrustedProxyMiddleware, parse_trusted_proxies
@@ -85,9 +85,8 @@ def sent_emails(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
 
 @pytest.fixture
-def client(sent_emails):
-    app_module.app.config["TESTING"] = True
-    return app_module.app.test_client()
+def client(sent_emails, flask_app):
+    return flask_app.test_client()
 
 
 def _token_from_link(link: str) -> str:
@@ -797,14 +796,16 @@ def test_email_change_requests_are_limited_per_target_address(client, sent_email
 # ─── throttling: addresses behind a trusted proxy ───────────────────────────
 
 
-def test_login_limits_follow_the_forwarded_client_not_the_proxy(client, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_login_limits_follow_the_forwarded_client_not_the_proxy(
+    client, flask_app: Flask, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """With the middleware installed for the proxy's address, two different real clients
     behind it are throttled separately (previously they would share the proxy's budget)."""
     _seed_active_account()
     monkeypatch.setattr(
-        app_module.app,
+        flask_app,
         "wsgi_app",
-        TrustedProxyMiddleware(app_module.app.wsgi_app, parse_trusted_proxies("172.30.0.0/24")),
+        TrustedProxyMiddleware(flask_app.wsgi_app, parse_trusted_proxies("172.30.0.0/24")),
     )
 
     def login_as(real_client: str, password: str) -> int:

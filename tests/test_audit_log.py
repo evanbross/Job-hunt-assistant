@@ -16,7 +16,6 @@ from __future__ import annotations
 import pytest
 from werkzeug.security import generate_password_hash
 
-import app as app_module
 import config
 import routes.session_auth as session_auth_module
 from backend.security.audit_log import (
@@ -58,9 +57,8 @@ def sent_emails(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
 
 @pytest.fixture
-def client():
-    app_module.app.config["TESTING"] = True
-    return app_module.app.test_client()
+def client(flask_app):
+    return flask_app.test_client()
 
 
 def _seed_active_account(email: str = _EMAIL, password: str = _PASSWORD) -> int:

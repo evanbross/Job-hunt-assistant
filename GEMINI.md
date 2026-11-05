@@ -31,7 +31,8 @@ Migrating from SQLite to Neon Postgres — all DB access goes through
 repository classes in `backend/db.py`. Do not add raw queries to route handlers.
 
 Key files:
-- `app.py` — Flask app factory; registers blueprints from `routes/`
+- `app.py` — desktop launcher: DB init, extension servers, Vite, Celery worker, schedulers, dev Caddy
+- `web/factory.py` — `create_app()`, the side-effect-free Flask app factory (blueprints, guards, error handlers, API docs); `web/serving.py` holds the secrets/cookie/proxy setup a serving process adds
 - `routes/` — one blueprint per feature area (jobs, scan, fit, emails, applications, career_sites, import_, cover_letter, settings, system, board_search, auth)
 - `backend/db.py` — repository implementations (SQLite today, Postgres next)
 - `backend/fit_scorer.py` — Anthropic API job-fit scoring
