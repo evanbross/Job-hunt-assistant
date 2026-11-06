@@ -41,6 +41,7 @@ from __future__ import annotations
 import os
 from urllib.parse import parse_qs, urlparse
 
+import psycopg2
 import pytest
 
 import config
@@ -290,6 +291,18 @@ def test_the_old_documented_password_no_longer_works(client) -> None:
     assert resp.status_code == 401
 
 
+# ai: claude-opus-5-5 | 2026-11-06 -- as the schema owner: TRUNCATE is maintenance, and
+# the runtime role the app serves as (get_repos) is deliberately not granted it.
+def _empty_user_accounts() -> None:
+    """Simulate a fresh install: no accounts at all."""
+    conn = psycopg2.connect(config.DATABASE_OWNER_URL)
+    try:
+        conn.cursor().execute("TRUNCATE user_accounts RESTART IDENTITY CASCADE")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_a_fresh_install_without_a_provisioned_password_gets_a_random_one_time_password(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -299,9 +312,7 @@ def test_a_fresh_install_without_a_provisioned_password_gets_a_random_one_time_p
     from backend.db.repositories.user_accounts import BOOTSTRAP_ADMIN_PASSWORD_ENV
 
     monkeypatch.delenv(BOOTSTRAP_ADMIN_PASSWORD_ENV)
-    with get_repos() as repos:
-        repos["conn"].cursor().execute("TRUNCATE user_accounts RESTART IDENTITY CASCADE")
-        repos["conn"].commit()
+    _empty_user_accounts()
 
     with caplog.at_level("WARNING"):
         migrate_database(config.DATABASE_OWNER_URL, config.DATABASE_URL)
@@ -326,9 +337,7 @@ def test_a_provisioned_password_is_used_and_not_logged(
 
     provisioned = "provisioned-by-the-deployment-7"
     monkeypatch.setenv(BOOTSTRAP_ADMIN_PASSWORD_ENV, provisioned)
-    with get_repos() as repos:
-        repos["conn"].cursor().execute("TRUNCATE user_accounts RESTART IDENTITY CASCADE")
-        repos["conn"].commit()
+    _empty_user_accounts()
 
     with caplog.at_level("WARNING"):
         migrate_database(config.DATABASE_OWNER_URL, config.DATABASE_URL)
@@ -347,9 +356,7 @@ def test_a_weak_provisioned_password_stops_the_install(
     from backend.db.repositories.user_accounts import BOOTSTRAP_ADMIN_PASSWORD_ENV
 
     monkeypatch.setenv(BOOTSTRAP_ADMIN_PASSWORD_ENV, weak)
-    with get_repos() as repos:
-        repos["conn"].cursor().execute("TRUNCATE user_accounts RESTART IDENTITY CASCADE")
-        repos["conn"].commit()
+    _empty_user_accounts()
 
     with pytest.raises(RuntimeError, match=BOOTSTRAP_ADMIN_PASSWORD_ENV):
         migrate_database(config.DATABASE_OWNER_URL, config.DATABASE_URL)
