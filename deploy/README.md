@@ -8,17 +8,17 @@ and how they are wired together. They are **not** a complete deployment: read
 ## Shape
 
 ```
-internet ──443──> caddy ──edge──> app ──backend──> redis <──backend── worker
-                    │               │                                   │
-                    └──egress───────┴────────────egress─────────────────┘
+internet ──443──> caddy ──edge──> app, listener ──backend──> redis <──backend── worker, maintenance, beat
+                    │               │                                            │
+                    └──egress───────┴──────────────────egress────────────────────┘
                 (Let's Encrypt)   (Postgres, AI providers, Gmail)
 ```
 
 | Network | Members | Purpose |
 |---|---|---|
-| `edge` | caddy, app | The only path from the internet to the app |
-| `backend` (`internal: true`) | app, worker, redis | Broker traffic. Containers here have **no route to the internet**, and nothing outside can reach them |
-| `egress` | caddy, app, worker | Outbound calls only; no ports are published on it |
+| `edge` | caddy, app, listener | The only path from the internet to the app |
+| `backend` (`internal: true`) | app, listener, worker, maintenance, beat, redis | Broker traffic. Containers here have **no route to the internet**, and nothing outside can reach them |
+| `egress` | caddy, app, listener, worker, maintenance (and the one-shot `migrate`) | Outbound calls only; no ports are published on it. `beat` is not on it: it only talks to Redis |
 
 Only Caddy publishes ports (80, 443). Redis and the workers are unreachable from
 outside by construction, not merely firewalled.
@@ -54,8 +54,8 @@ The app uses two Postgres roles (`config.py`, `backend/db/app_role.py`):
 
 | Role | Configured in | Used by | Row-level security |
 |---|---|---|---|
-| Owner (owns every table) | `DATABASE_OWNER_URL`, `.env.migrate` only | the `migrate` step | Exempt: migrations and backfills cross accounts |
-| Runtime | `DATABASE_URL` | `app`, `worker` | Always applies |
+| Owner (owns every table) | `DATABASE_OWNER_URL`, `.env.migrate` only | the `migrate` step, the `maintenance` worker | Exempt: migrations, backfills, account deletion and retention cross accounts |
+| Runtime | `DATABASE_URL` | `app`, `listener`, `worker` | Always applies |
 
 `migrate` (`python -m backend.db.migrate`) migrates as the owner, creates or updates the
 runtime role from `DATABASE_URL`'s user and password, grants it data access only, and
@@ -71,7 +71,26 @@ connection while they ran; now the owner is exempt by design and nothing else ev
 **Switching an existing database over (once):** the first `migrate` after this change
 relaxes `FORCE ROW LEVEL SECURITY` (which used to apply RLS to the owner too). Any app
 still connected as the owner would become RLS-exempt from that moment, so stop the
-old app, run `migrate`, then start the new one with its runtime-role `DATABASE_URL`. On Linux, run the
+old app, run `migrate`, then start the new one with its runtime-role `DATABASE_URL`.
+
+### Scheduled work
+
+`beat` (`celery -A backend.celery_app beat`) queues three ticks
+(`backend/celery_app.py`'s `beat_schedule`), and once more each as it starts so nothing
+that fell due while it was down waits a full interval:
+
+| Tick | Every | Runs on | Does |
+|---|---|---|---|
+| Career-site scan | `CAREER_SITE_SCAN_INTERVAL_MINUTES` (1440) | `worker` | Starts a scan for each account with a site due |
+| JD parser health check | 15 minutes | `worker` | Starts a run for each account whose configured time has passed |
+| Data lifecycle sweep | `DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS` (24) | `maintenance` | Deletes accounts past their grace period; prunes old log rows |
+
+Run exactly one `beat`. A tick only decides; whether a run is already going for an
+account is recorded in Redis (`backend/active_tasks.py`), shared by every process, so
+a scheduled run never starts on top of one a user started, whichever process took
+either. The sweep refuses to run as a role row-level security applies to (it would
+otherwise silently delete nothing), which is why it has its own worker holding the
+owner's URL instead of the ordinary `worker`. On Linux, run the
 `chown`/`chmod` command the certificate script prints so the Redis private key is
 readable only by the Redis user.
 
@@ -140,10 +159,9 @@ process queued.
 
    The processes exist: `wsgi.py` (`gunicorn -c gunicorn.conf.py wsgi:app`, the compose
    `app` command) serves the web app, `python -m web.extension_listener` the extension
-   endpoints (`listener`), `python -m backend.db.migrate` migrates (`migrate`), and
-   Celery runs `worker`. Nothing runs the schedulers yet (plan item 1.4): scheduled
-   career-site scans, the JD parser health check, account deletion after its grace
-   period, and log retention don't happen in a hosted deployment until it's done.
+   endpoints (`listener`), `python -m backend.db.migrate` migrates (`migrate`), Celery
+   runs background tasks (`worker`) and the account-deletion/retention sweep
+   (`maintenance`), and Celery beat (`beat`) is the one timer for scheduled work.
 
    **The server must handle long-lived responses.** Each open tab keeps one
    `/api/events` server-sent-events stream open for as long as the page is open

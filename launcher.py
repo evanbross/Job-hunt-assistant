@@ -86,7 +86,6 @@ class LauncherWindow:
     def __init__(self, root: tk.Tk) -> None:
         self._root = root
         self._process: subprocess.Popen | None = None
-        self._worker_process: subprocess.Popen | None = None
         self._port: int | None = None
 
         self._configure_styles()
@@ -221,8 +220,10 @@ class LauncherWindow:
                 )
 
             self._set_status(f"Waiting for server on port {port}...")
+            # ai: claude-opus-5-5 | 2026-11-06 -- no worker spawned here any more: app.py
+            # starts the Celery worker and beat itself, so this used to add a second
+            # worker on top of app.py's. Stopping app.py's process tree stops both.
             if _wait_for_server(port):
-                self._start_celery_worker(env, log_path)
                 url = f"http://localhost:{port}"
                 self._root.after(0, lambda: self._on_server_ready(url))
             else:
@@ -239,32 +240,6 @@ class LauncherWindow:
                     "Startup Failed", error_message, parent=self._root
                 ),
             )
-
-    def _start_celery_worker(self, env: dict, log_path: Path) -> None:
-        try:
-            with log_path.open("a", encoding="utf-8") as log_file:
-                self._worker_process = subprocess.Popen(
-                    [
-                        _python_executable(),
-                        "-m",
-                        "celery",
-                        "-A",
-                        "backend.celery_app",
-                        "worker",
-                        "--loglevel=info",
-                        "--concurrency=2",
-                        "--pool=threads",
-                    ],
-                    cwd=str(_HERE),
-                    env=env,
-                    stdout=log_file,
-                    stderr=log_file,
-                    creationflags=(
-                        subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-                    ),
-                )
-        except Exception as exc:
-            self._set_status(f"Celery worker failed to start: {exc}")
 
     def _on_server_ready(self, url: str) -> None:
         self._status_var.set(f"Running on {url}")
@@ -287,22 +262,21 @@ class LauncherWindow:
         self._root.destroy()
 
     def _stop_server(self) -> None:
-        for proc in (self._process, self._worker_process):
-            if proc and proc.poll() is None:
-                if sys.platform == "win32":
-                    subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                        capture_output=True,
-                        check=False,
-                    )
-                else:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
+        proc = self._process
+        if proc and proc.poll() is None:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True,
+                    check=False,
+                )
+            else:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
         self._process = None
-        self._worker_process = None
 
     def _set_status(self, message: str) -> None:
         self._root.after(0, lambda: self._status_var.set(message))

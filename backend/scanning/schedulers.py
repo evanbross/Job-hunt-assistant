@@ -7,17 +7,18 @@
 # Licensing inquiries: license@zombietech.biz
 # =============================================================================
 
-# ai: claude-sonnet-5 | 2026-08-13
-"""Background daemon-thread schedulers for the career-site scan and the JD
-parser health check. Both follow the same "configure, then start" DI pattern
-and the same Werkzeug-reloader guard."""
+# ai: claude-opus-5-5 | 2026-11-06 -- the daemon-thread loops became Celery beat ticks.
+"""Shared pieces of the scheduled work that Celery beat triggers (the schedule is
+backend/celery_app.py's beat_schedule; the tick tasks live next to the routes whose
+runs they start, in routes/career_sites.py and routes/jd_health_check.py).
+
+A tick is a fan-out: one beat message, then one decision per account. Beat is the
+single timer for every process, so it fires once however many web or Celery workers
+are running, which daemon threads in each web process could not do."""
 
 from __future__ import annotations
 
 import logging
-import os
-import threading
-import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from datetime import time as time_of_day
@@ -28,70 +29,19 @@ from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
 
-_career_scheduler_lock = threading.Lock()
-_career_scheduler_started = False
-_career_scheduler_submit_run: Callable[..., str | None] | None = None
 
-
-# ai: claude-sonnet-5 | 2026-08-20
-# Simplified from the old is_running/run_scan pair to a single submit_run,
-# mirroring configure_jd_health_check_scheduler below -- career-site scanning
-# is now a Celery task, and its own dispatch helper (routes/career_sites.py's
-# _submit_career_scan) already no-ops if one is active, so this loop doesn't
-# need a separate "is one running" check of its own.
-def configure_career_site_scheduler(
-    *,
-    submit_run: Callable[..., str | None],
-) -> None:
-    global _career_scheduler_submit_run
-    _career_scheduler_submit_run = submit_run
-
-
-# ai: claude-sonnet-5 | 2026-09-26
-def _active_user_ids() -> list[int]:
-    """Every account a scheduled tick should act for. A tick fans out per
-    tenant; a failure looking the list up skips this tick, not the thread."""
-    try:
-        with get_repos() as repos:
-            return repos["user_accounts"].list_active_user_ids()
-    except Exception:
-        logger.exception("Scheduler could not list active accounts; skipping this tick")
-        return []
-
-
-def start_career_site_scheduler() -> None:
-    global _career_scheduler_started
-
-    debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
-    if debug_mode and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
-        return
-
-    with _career_scheduler_lock:
-        if _career_scheduler_started:
-            return
-        if _career_scheduler_submit_run is None:
-            raise RuntimeError("Career-site scheduler has not been configured.")
-
-        # ai: gpt-5 | 2026-10-04
-        def career_scheduler_loop() -> None:
-            while True:
-                for user_id in _active_user_ids():
-                    try:
-                        _career_scheduler_submit_run(user_id, trigger="scheduled")
-                    except Exception:
-                        logger.exception(
-                            "Career-site scheduler tick failed for user %s", user_id
-                        )
-                interval_seconds = max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES) * 60
-                time.sleep(interval_seconds)
-
-        thread = threading.Thread(target=career_scheduler_loop, daemon=True)
-        thread.start()
-        _career_scheduler_started = True
-        logger.info(
-            "Career-site scheduler started (interval: %s minute(s)).",
-            max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES),
-        )
+def for_each_active_account(tick: str, act: Callable[[int], object]) -> None:
+    """Run *act* for every registered account. One account's failure is logged and
+    the tick carries on: a broken setting in one account must not stop the others'
+    scheduled runs. (Failing to list the accounts at all raises; the Celery worker
+    logs it, and the next tick tries again.)"""
+    with get_repos() as repos:
+        user_ids = repos["user_accounts"].list_active_user_ids()
+    for user_id in user_ids:
+        try:
+            act(user_id)
+        except Exception:
+            logger.exception("Scheduled %s failed for user %s", tick, user_id)
 
 
 # ai: claude-sonnet-5 | 2026-08-03
@@ -104,10 +54,10 @@ def is_jd_health_check_overdue(
 ) -> bool:
     """Pure "is a JD health check run due" check — no DB/Flask, unit-testable
     with plain datetime/time arguments. This is the entire "catch up on next
-    launch" mechanism: called both at app startup and on a periodic poll
-    while the app is running (see start_jd_health_check_scheduler below), so
-    a run that was scheduled for a moment the app was closed fires as soon
-    as the app is next open, instead of being silently skipped.
+    launch" mechanism: asked when Celery beat starts and on every tick after
+    (routes/jd_health_check.py's jd_health_check_tick), so a run that was
+    scheduled for a moment nothing was running fires as soon as beat is next
+    up, instead of being silently skipped.
 
     now/last_run_at must be UTC-aware (this project's datetimes always are —
     see PYTHON_STANDARDS.md's UTC-only rule).
@@ -163,68 +113,3 @@ def jd_health_check_should_run_now(user_id: int) -> bool:
         frequency_days=frequency_days,
         last_run_at=last_run_at,
     )
-
-
-_jd_health_scheduler_lock = threading.Lock()
-_jd_health_scheduler_started = False
-_jd_health_scheduler_should_run_now: Callable[[int], bool] | None = None
-_jd_health_scheduler_submit_run: Callable[[int, str], str | None] | None = None
-_JD_HEALTH_CHECK_POLL_SECONDS = 15 * 60
-
-
-def configure_jd_health_check_scheduler(
-    *,
-    should_run_now: Callable[[int], bool],
-    submit_run: Callable[[int, str], str | None],
-) -> None:
-    global _jd_health_scheduler_should_run_now, _jd_health_scheduler_submit_run
-    _jd_health_scheduler_should_run_now = should_run_now
-    _jd_health_scheduler_submit_run = submit_run
-
-
-def start_jd_health_check_scheduler() -> None:
-    """Start the daemon thread that fires an overdue JD health check run.
-
-    Mirrors start_career_site_scheduler's reloader guard (only the real
-    request-serving process in Werkzeug debug/reloader mode starts the
-    thread — the monitor process would otherwise run a duplicate). Unlike
-    that scheduler, this one is actually started (see app.py's __main__
-    block) — it's check-then-sleep rather than sleep-then-check, so the
-    first check happens immediately on thread start, which is what makes
-    this "catch up on next launch" rather than "wait one full interval
-    before the first check."
-    """
-    global _jd_health_scheduler_started
-
-    debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
-    if debug_mode and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
-        return
-
-    with _jd_health_scheduler_lock:
-        if _jd_health_scheduler_started:
-            return
-        if (
-            _jd_health_scheduler_should_run_now is None
-            or _jd_health_scheduler_submit_run is None
-        ):
-            raise RuntimeError("JD health check scheduler has not been configured.")
-
-        def jd_health_scheduler_loop() -> None:
-            while True:
-                for user_id in _active_user_ids():
-                    try:
-                        if _jd_health_scheduler_should_run_now(user_id):
-                            _jd_health_scheduler_submit_run(user_id, "scheduled")
-                    except Exception:
-                        logger.exception(
-                            "JD health check scheduler tick failed for user %s", user_id
-                        )
-                time.sleep(_JD_HEALTH_CHECK_POLL_SECONDS)
-
-        thread = threading.Thread(target=jd_health_scheduler_loop, daemon=True)
-        thread.start()
-        _jd_health_scheduler_started = True
-        logger.info(
-            "JD health check scheduler started (poll interval: %s minute(s)).",
-            _JD_HEALTH_CHECK_POLL_SECONDS // 60,
-        )

@@ -19,6 +19,8 @@ uploads/*.migrated
 # Database
 data/runtime_config.json
 data/.readonly_db_password
+# Celery beat's schedule state (app.py); shelve may add .dat/.dir/.bak files.
+/data/celerybeat-schedule*
 server.log
 .app_stdout.log
 .app_stderr.log

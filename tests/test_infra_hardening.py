@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 import yaml
 
+from backend.celery_app import DEFAULT_QUEUE, MAINTENANCE_QUEUE
 from backend.security.client_ip import parse_trusted_proxies
 from backend.security.redis_tls import redis_ssl_options
 
@@ -158,7 +159,7 @@ def test_redis_requires_tls_and_a_password(prod_compose: dict[str, Any]) -> None
 
 
 def test_the_app_and_workers_connect_to_redis_over_verified_tls(prod_compose: dict[str, Any]) -> None:
-    for name in ("app", "worker"):
+    for name in ("app", "listener", "worker", "maintenance", "beat"):  # ai: claude-opus-5-5 | 2026-11-06
         environment = prod_compose["services"][name]["environment"]
         assert environment["REDIS_URL"].startswith("rediss://")
         assert environment["REDIS_TLS_CA_FILE"]
@@ -205,18 +206,21 @@ def test_the_app_trusts_forwarding_headers_from_exactly_the_proxy(prod_compose: 
     assert [str(network) for network in trusted] == [f"{caddy_address}/32"]
 
 
-# ai: claude-opus-5-5 | 2026-11-06
-def test_only_the_migrate_step_gets_the_schema_owners_database_url(prod_compose: dict[str, Any]) -> None:
+# ai: claude-opus-5-5 | 2026-11-06 -- plus the maintenance worker (plan item 1.4).
+def test_only_migrate_and_maintenance_get_the_schema_owners_database_url(prod_compose: dict[str, Any]) -> None:
     """The owner is exempt from row-level security, so its URL must reach only the
-    one-shot migrate step, never a long-running container that serves requests."""
+    one-shot migrate step and the worker that runs nothing but the cross-account
+    sweep -- never a container that serves requests or runs ordinary tasks."""
     def env_files(svc: dict[str, Any]) -> list[str]:
         value = svc.get("env_file", [])
         return [value] if isinstance(value, str) else list(value)
 
     services = prod_compose["services"]
     holders = {name for name, svc in services.items() if ".env.migrate" in env_files(svc)}
-    assert holders == {"migrate"}
+    assert holders == {"migrate", "maintenance"}
     assert services["migrate"]["profiles"] == ["migrate"]  # never started by `up`
+    assert _celery_queues(services["maintenance"]) == ["maintenance"]
+    assert "edge" not in services["maintenance"]["networks"]
     for name, svc in services.items():
         assert "DATABASE_OWNER_URL" not in (svc.get("environment") or {}), name
     ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
@@ -244,3 +248,24 @@ def test_the_extension_endpoints_reach_the_standalone_listener(prod_compose: dic
     assert environment["REDIS_URL"].startswith("rediss://") and environment["REDIS_TLS_CA_FILE"]
     assert environment["APP_ENV"] == "production"
     assert "JOB_IMPORT_LISTENER_HOST_OVERRIDE" not in prod_compose["services"]["app"]["environment"]
+
+
+def _celery_queues(svc: dict[str, Any]) -> list[str]:
+    [option] = [arg for arg in svc["command"] if arg.startswith("--queues=")]
+    return option.removeprefix("--queues=").split(",")
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def test_scheduled_work_has_one_timer_and_the_sweep_stays_off_the_ordinary_worker(
+    prod_compose: dict[str, Any],
+) -> None:
+    """One beat (two would tick twice); the ordinary worker takes only the default
+    queue, so the sweep -- which needs the owner's URL -- can only land on
+    `maintenance`. Checked against the queue names celery_app.py actually uses."""
+    services = prod_compose["services"]
+    beats = [name for name, svc in services.items() if "beat" in svc.get("command", [])]
+    assert beats == ["beat"]
+    assert services["beat"]["command"][:4] == ["celery", "-A", "backend.celery_app", "beat"]
+    assert services["beat"]["networks"] == ["backend"]  # Redis only
+    assert _celery_queues(services["worker"]) == [DEFAULT_QUEUE]
+    assert _celery_queues(services["maintenance"]) == [MAINTENANCE_QUEUE]

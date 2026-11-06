@@ -116,7 +116,20 @@ Original scope:
 - Update `deploy/Caddyfile`'s `listener.` / `listener-ws.` upstreams to the new
   service name.
 
-### 1.4 Move the in-process schedulers to Celery beat
+### 1.4 Move the in-process schedulers to Celery beat — done 2026-11-06
+`backend/celery_app.py`'s `beat_schedule` ticks the career-site scan, the JD health
+check and the data lifecycle sweep; compose has one `beat` service, and the desktop
+`app.py` spawns beat next to its worker. Each tick fans out per account
+(`backend/scanning/schedulers.py` `for_each_active_account`); beat also sends every tick
+once on start, which keeps the old "catch up on next launch" behaviour. The sweep runs
+on its own `maintenance` queue, consumed only by a worker holding the owner's URL, and
+refuses a role RLS applies to (`assert_exempt_from_rls`). Moving the ticks out of the
+web process needed the career-scan and JD-health-check parts of 1.5's per-user task
+registry (`backend/active_tasks.py`, `jha:task:<kind>:<user_id>`), or a manual run in a
+web worker and a scheduled one in a Celery worker could both start. The candidate
+profile file watcher stays a desktop-only thread (2.3).
+
+Original scope:
 - `start_career_site_scheduler`, `start_jd_health_check_scheduler`,
   `start_data_lifecycle_scheduler` and `start_candidate_profile_file_watcher` are
   `while True: sleep()` threads started in the web process (`app.py:~1110`).
@@ -139,8 +152,9 @@ multi-worker server, a status poll can land on a worker that never saw the job s
   different worker and fail**)
 - `routes/applications.py:121` `_host_fetch_last_at` (per-host politeness throttle)
 - The `_*_last_task_id_by_user` / `_*_submitted_at_by_user` pairs in `scan.py`,
-  `board_search.py`, `career_sites.py`, `fit.py`, `greenhouse.py`,
-  `jd_health_check.py`, `applications.py`
+  `board_search.py`, `fit.py`, `greenhouse.py`, `applications.py`
+  (`career_sites.py` and `jd_health_check.py` done with 1.4: `backend/active_tasks.py`
+  is the registry described below; move the rest onto it)
 - The `*State()` singletons: `routes/jobanni.py:69`, `routes/greenhouse.py:75`,
   `routes/jobs.py:1602/1933/2353` — these are also **not per-user**, so one user's
   repair/rescan run blocks or is visible to every other user.

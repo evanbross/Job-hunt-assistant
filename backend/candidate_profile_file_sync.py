@@ -425,8 +425,8 @@ _watcher: CandidateProfileFileWatcher | None = None
 
 
 def start_candidate_profile_file_watcher() -> None:
-    """Start the watcher thread. Mirrors backend/scanning/schedulers.py's
-    reloader guard so only the serving process runs it."""
+    """Start the watcher thread (desktop only, from app.py). In Werkzeug's
+    debug reloader only the serving child runs it, not the monitor parent."""
     global _watcher
 
     debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"

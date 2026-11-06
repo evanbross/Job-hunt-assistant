@@ -27,14 +27,12 @@
 
 """JD parser health check routes: canary target CRUD, run history, and manual
 trigger. See backend/tasks.py's run_jd_health_check_task for the actual
-scan/validate/notify logic and backend/scanning/schedulers.py for the scheduler that fires
+scan/validate/notify logic; jd_health_check_tick below is what Celery beat calls to fire
 it automatically."""
 
 from __future__ import annotations
 
 import logging
-import threading
-import time
 
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
@@ -47,10 +45,11 @@ from pydantic import (
     model_validator,
 )
 
+from backend.active_tasks import get_active_tasks
 from backend.celery_app import celery_app
 from backend.scanning.jd_health_check_targets import PLATFORM_CHOICES
 from backend.scanning.schedulers import (
-    configure_jd_health_check_scheduler,
+    for_each_active_account,
     jd_health_check_should_run_now,
 )
 from backend.security.task_ownership import get_task_ownership
@@ -60,7 +59,6 @@ from backend.utils.utils import (
     current_user_id,
     get_repos,
     invalid_request_response,
-    is_celery_task_active,
     parse_bool,
 )
 
@@ -69,19 +67,13 @@ logger = logging.getLogger(__name__)
 jd_health_check_bp = Blueprint("jd_health_check", __name__)
 
 
-# ai: claude-sonnet-5 | 2026-08-03
-# ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
-# ─── JD health-check run state (in-memory, protected by a lock) ───────────────
-# Tracks the most recently dispatched Celery task id so manual triggers (from
-# any browser tab) and the scheduled "catch up on next launch" run never
-# overlap. The actual running/finished state lives in Celery's Redis result
-# backend, not here — this just remembers which task id to check.
-
-_jd_health_run_lock = threading.Lock()
-_jd_health_last_task_id_by_user: dict[int, str] = {}
-# ai: claude-sonnet-5 | 2026-08-25 — see is_celery_task_active for why a bare
-# task_id isn't enough to tell "genuinely running" apart from "stale PENDING".
-_jd_health_submitted_at_by_user: dict[int, float] = {}
+# ai: claude-opus-5-5 | 2026-11-06
+# ─── JD health-check run state ────────────────────────────────────────────────
+# backend/active_tasks.py remembers the task each account last started, shared by
+# every process, so a manual "Run now" (a web worker) and the scheduled tick (a
+# Celery worker) never overlap. The running/finished state itself lives in
+# Celery's Redis result backend.
+JD_HEALTH_CHECK_TASK_KIND = "jd_health_check"
 
 
 def _submit_jd_health_check_run(user_id: int, triggered_by: str) -> str | None:
@@ -91,18 +83,15 @@ def _submit_jd_health_check_run(user_id: int, triggered_by: str) -> str | None:
     Returns the new task id, or None if a run was already active (the
     caller should treat None as "rejected, one is already running").
     """
-    with _jd_health_run_lock:
-        existing = _jd_health_last_task_id_by_user.get(user_id)
-        submitted_at = _jd_health_submitted_at_by_user.get(user_id)
-        if existing is not None and is_celery_task_active(
-            AsyncResult(existing, app=celery_app).state, submitted_at
-        ):
-            return None
+
+    def dispatch() -> str:
         task = run_jd_health_check_task.delay(user_id, triggered_by=triggered_by)
         get_task_ownership().record(task.id, user_id)
-        _jd_health_last_task_id_by_user[user_id] = task.id
-        _jd_health_submitted_at_by_user[user_id] = time.monotonic()
         return task.id
+
+    return get_active_tasks().submit_unless_running(
+        JD_HEALTH_CHECK_TASK_KIND, user_id, dispatch
+    )
 
 
 @jd_health_check_bp.route("/jd-health-check/targets")
@@ -314,14 +303,16 @@ def jd_health_check_run_status(task_id: str) -> ResponseReturnValue:
     return jsonify(payload)
 
 
-# ai: claude-sonnet-5 | 2026-08-03
-# Wires the "catch up on next launch" scheduler thread (backend/scanning/schedulers.py) to
-# this task, matching the DI pattern already used for the (never-started)
-# career-site scheduler in routes/career_sites.py. Actually starting the
-# thread happens in app.py, after the Celery worker is up. Routed through
-# _submit_jd_health_check_run so a scheduled tick can never fire on top of
-# a manual "Run Now" (or another scheduled tick) that's still in progress.
-configure_jd_health_check_scheduler(
-    should_run_now=jd_health_check_should_run_now,
-    submit_run=_submit_jd_health_check_run,
-)
+# ai: claude-opus-5-5 | 2026-11-06 -- was a daemon thread in every web process.
+@celery_app.task
+def jd_health_check_tick() -> None:
+    """Celery beat's JD health check tick (backend/celery_app.py): start a run for
+    each account whose scheduled run is due, including one that fell due while
+    nothing was running ("catch up on next launch"). Goes through
+    _submit_jd_health_check_run, so it never starts on top of a manual run."""
+
+    def run_if_due(user_id: int) -> None:
+        if jd_health_check_should_run_now(user_id):
+            _submit_jd_health_check_run(user_id, "scheduled")
+
+    for_each_active_account("JD health check", run_if_due)

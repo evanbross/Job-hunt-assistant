@@ -140,8 +140,9 @@ services:
         condition: service_healthy
 
   # One-shot deploy step, not a long-running service: the `migrate` profile keeps it out
-  # of `up`. It is the only service given the schema owner's URL (.env.migrate); the app
-  # and worker serve as the runtime role in DATABASE_URL, which RLS always applies to.
+  # of `up`. It and `maintenance` are the only services given the schema owner's URL
+  # (.env.migrate); app, listener and worker serve as the runtime role in DATABASE_URL,
+  # which RLS always applies to.
   migrate:
     image: ${JHA_IMAGE:-jha-app:unset}
     profiles: ["migrate"]
@@ -156,10 +157,11 @@ services:
     cap_drop: [ALL]
     networks: [egress]                 # Postgres only
 
+  # Every background task except the maintenance sweep (default queue only).
   worker:
     image: ${JHA_IMAGE:-jha-app:unset}
     restart: unless-stopped
-    command: ["celery", "-A", "backend.celery_app", "worker", "--pool=threads", "--concurrency=4", "--loglevel=info"]
+    command: ["celery", "-A", "backend.celery_app", "worker", "--queues=celery", "--pool=threads", "--concurrency=4", "--loglevel=info"]
     env_file: .env.production
     environment:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
@@ -170,6 +172,52 @@ services:
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [backend, egress]        # not reachable from the internet at all
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # The account-deletion / log-retention sweep, which acts across every account and so
+  # needs the schema owner's URL. A worker of its own so that credential sits in one
+  # small process that runs nothing else, instead of in every task worker.
+  maintenance:
+    image: ${JHA_IMAGE:-jha-app:unset}
+    restart: unless-stopped
+    command: ["celery", "-A", "backend.celery_app", "worker", "--queues=maintenance", "--pool=threads", "--concurrency=1", "--loglevel=info"]
+    env_file:
+      - .env.production
+      - .env.migrate
+    environment:
+      REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
+      REDIS_TLS_CA_FILE: /tls/ca.crt
+      APP_ENV: production
+    volumes:
+      - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [backend, egress]        # Redis; Postgres
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # The timer for scheduled work (backend/celery_app.py's beat_schedule): it only
+  # queues the career-site, JD health check and maintenance ticks; workers run them.
+  # Exactly one: two would tick twice (harmless, since every tick re-checks what is
+  # due, but pointless). Its schedule state is scratch: on start it ticks everything
+  # once anyway, so nothing is lost when the container is replaced.
+  beat:
+    image: ${JHA_IMAGE:-jha-app:unset}
+    restart: unless-stopped
+    command: ["celery", "-A", "backend.celery_app", "beat", "--schedule=/tmp/celerybeat-schedule", "--loglevel=info"]
+    env_file: .env.production
+    environment:
+      REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
+      REDIS_TLS_CA_FILE: /tls/ca.crt
+      APP_ENV: production
+    volumes:
+      - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [backend]                # Redis only: it never touches the database
     depends_on:
       redis:
         condition: service_healthy

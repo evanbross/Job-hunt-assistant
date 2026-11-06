@@ -58,13 +58,12 @@ from flask import Flask
 
 import config
 from backend.candidate_profile_file_sync import start_candidate_profile_file_watcher
-from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
-from backend.db import AppRoleConfigError, migrate_database_with_retry
-from backend.scanning.schedulers import (
-    start_career_site_scheduler,
-    start_jd_health_check_scheduler,
+from backend.celery_app import (  # ai: claude-fable-5 | 2026-07-16
+    DEFAULT_QUEUE,
+    MAINTENANCE_QUEUE,
+    worker_is_running,
 )
-from backend.security.data_lifecycle import start_data_lifecycle_scheduler
+from backend.db import AppRoleConfigError, migrate_database_with_retry
 from backend.settings_service import get_setting
 from backend.utils.utils import get_repos
 from web import create_app
@@ -236,6 +235,7 @@ def _stop_vite() -> None:
 
 
 _celery_proc: _subprocess.Popen | None = None
+_celery_beat_proc: _subprocess.Popen | None = None  # ai: claude-opus-5-5 | 2026-11-06
 
 
 def _resolve_flask_bind() -> tuple[str, int]:
@@ -319,25 +319,62 @@ def _start_celery_worker() -> None:
                 "--loglevel=warning",
                 "--concurrency=2",
                 "--pool=threads",
+                # ai: claude-opus-5-5 | 2026-11-06 -- the desktop has the owner's URL
+                # (config.DATABASE_OWNER_URL), so one worker takes the maintenance
+                # queue too; a hosted deployment gives it to a separate worker.
+                f"--queues={DEFAULT_QUEUE},{MAINTENANCE_QUEUE}",
             ],
             cwd=str(config.BASE_DIR),
         )
-        atexit.register(_stop_celery_worker)
+        atexit.register(_stop_celery_process, _celery_proc, "worker")
         logger.info("Celery worker started (PID %s)", _celery_proc.pid)
     except Exception as exc:
         logger.warning("Could not start Celery worker: %s", exc)
 
 
-def _stop_celery_worker() -> None:
-    if _celery_proc and _celery_proc.poll() is None:
+# ai: claude-opus-5-5 | 2026-11-06 -- replaces the three scheduler daemon threads.
+def _start_celery_beat() -> None:
+    """Start Celery beat, the timer for scheduled work (backend/celery_app.py's
+    beat_schedule): career-site scans, the JD parser health check, and the
+    account-deletion/retention sweep. Beat only sends messages; the worker above runs
+    them. A beat left over from an earlier launch is harmless (every tick re-checks
+    what is due, and backend/active_tasks.py stops a second run starting), so unlike
+    the worker this does not look for one first -- beat has no ping to find it by."""
+    global _celery_beat_proc
+
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        return  # reloader fork — beat already running from the parent
+
+    try:
+        _celery_beat_proc = _subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "celery",
+                "-A",
+                "backend.celery_app",
+                "beat",
+                "--loglevel=warning",
+                f"--schedule={config.DATA_DIR / 'celerybeat-schedule'}",
+            ],
+            cwd=str(config.BASE_DIR),
+        )
+        atexit.register(_stop_celery_process, _celery_beat_proc, "beat")
+        logger.info("Celery beat started (PID %s)", _celery_beat_proc.pid)
+    except OSError as exc:
+        logger.warning("Could not start Celery beat; scheduled work will not run: %s", exc)
+
+
+def _stop_celery_process(proc: _subprocess.Popen, name: str) -> None:
+    if proc.poll() is None:
         if sys.platform == "win32":
             _subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(_celery_proc.pid)],
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 capture_output=True,
             )
         else:
-            _celery_proc.terminate()
-        logger.info("Celery worker stopped.")
+            proc.terminate()
+        logger.info("Celery %s stopped.", name)
 
 
 # ─── Dev Caddy registration ───────────────────────────────────────────────────
@@ -469,28 +506,16 @@ def main() -> None:
             flask_port,
         )
         sys.exit(1)
-    # ai: claude-sonnet-5 | 2026-08-03
-    # Started only after the port fail-fast check above: the scheduler's poll
-    # loop checks-then-submits immediately on thread start, so starting it
-    # earlier could fire a real outbound parser check (and possible Gmail
-    # notification) moments before the process exits for an occupied port.
-    # Needs the Celery worker started above — it submits runs via .delay().
-    # It's opt-in (jd_health_check_enabled defaults to False) and its
-    # poll-then-submit loop is what implements "catch up on next launch" for
-    # the JD parser health check.
-    # ai: gpt-5 | 2026-10-04
-    # The career-site scheduler is daily by default and its scheduled task sends
-    # the account owner a detailed per-board result email on completion.
-    start_career_site_scheduler()
-    start_jd_health_check_scheduler()
-    # ai: claude-sonnet-5 | 2026-09-28 -- account-deletion sweep + log-table retention
-    # pruning (backend/security/data_lifecycle.py). Cross-tenant, not per-user, so it
-    # doesn't need the Celery worker or a "which accounts" fan-out like the scheduler
-    # above; started here just to keep every background daemon's startup in one place.
-    start_data_lifecycle_scheduler()
+    # ai: claude-opus-5-5 | 2026-11-06
+    # Started only after the port fail-fast check above: beat sends every scheduled
+    # tick as it starts (catch-up for runs that fell due while the app was closed),
+    # which could fire a real outbound parser check or a career-site scan moments
+    # before the process exits for an occupied port.
+    _start_celery_beat()
     # ai: claude-opus-5-5 | 2026-10-28 -- watches the admin-configured candidate
     # profile file and copies it into the account's stored profile when it's
     # newer. Idle until Settings > System > Candidate Profile File Sync is filled in.
+    # Desktop only: a hosted deployment has no shared file to watch (plan item 2.3).
     start_candidate_profile_file_watcher()
 
     _register_caddy_routes(

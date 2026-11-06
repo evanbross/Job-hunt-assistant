@@ -58,6 +58,11 @@ os.environ.setdefault("SETTINGS_ENCRYPTION_KEY", Fernet.generate_key().decode())
 os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026")
 
 import config  # noqa: E402
+from backend.active_tasks import (  # noqa: E402
+    ActiveTasks,
+    MemoryActiveTaskStore,
+    set_active_tasks,
+)
 from backend.db import migrate_database  # noqa: E402
 from backend.scanning.import_progress import (  # noqa: E402
     ImportProgress,
@@ -212,6 +217,18 @@ def isolated_import_progress() -> Iterator[ImportProgress]:
     set_import_progress(progress)
     yield progress
     set_import_progress(None)
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+@pytest.fixture(autouse=True)
+def isolated_active_tasks() -> Iterator[ActiveTasks]:
+    """The "which run did each account last start" registry in memory, so a test's
+    dispatches never land in (or get blocked by) the developer's real Redis. Task
+    state still comes from Celery's result backend, as in the app."""
+    active_tasks = ActiveTasks(MemoryActiveTaskStore())
+    set_active_tasks(active_tasks)
+    yield active_tasks
+    set_active_tasks(None)
 
 
 # ai: claude-opus-5-5 | 2026-11-05

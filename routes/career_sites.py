@@ -31,8 +31,6 @@ from __future__ import annotations
 
 import logging
 import secrets
-import threading
-import time
 from collections import Counter
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -49,6 +47,7 @@ from pydantic import (
 )
 
 import config
+from backend.active_tasks import get_active_tasks
 from backend.celery_app import celery_app
 from backend.db import (
     DuplicateJobUrlError,
@@ -65,7 +64,7 @@ from backend.scanning.platform_detection import (
     linkedin_search_url_with_offset,
     platform_for_site_url,
 )
-from backend.scanning.schedulers import configure_career_site_scheduler
+from backend.scanning.schedulers import for_each_active_account
 from backend.scoring.auto_reject_rules import (
     jd_blocklist_match,
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
@@ -84,7 +83,6 @@ from backend.utils.utils import (
     current_user_id,
     get_repos,
     invalid_request_response,
-    is_celery_task_active,
     parse_bool,
     parse_positive_int,
     safe_error_message,
@@ -97,17 +95,12 @@ career_sites_bp = Blueprint("career_sites", __name__)
 _CAREER_SITE_COLLECTION_MODES = frozenset({"automatic", "automatic_browser", "manual"})
 
 
-# ai: claude-sonnet-5 | 2026-08-20
-# ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
-# ─── Career-site scan task tracking (in-memory pointer only) ──────────────────
-# Progress lives in Celery's Redis result backend; this just remembers which
-# task_id to poll, mirroring routes/jd_health_check.py's
-# _submit_jd_health_check_run.
-_career_scan_last_task_id_by_user: dict[int, str] = {}
-# ai: claude-sonnet-5 | 2026-08-25 — see is_celery_task_active for why a bare
-# task_id isn't enough to tell "genuinely running" apart from "stale PENDING".
-_career_scan_submitted_at_by_user: dict[int, float] = {}
-_career_scan_lock = threading.Lock()
+# ai: claude-opus-5-5 | 2026-11-06
+# ─── Career-site scan task tracking ───────────────────────────────────────────
+# Progress lives in Celery's Redis result backend; backend/active_tasks.py
+# remembers which task each account last started, shared by every process, so a
+# scheduled tick in a Celery worker sees a scan started from a web worker.
+CAREER_SCAN_TASK_KIND = "career_scan"
 
 
 def _submit_career_scan(
@@ -130,17 +123,13 @@ def _submit_career_scan(
         with get_repos(user_id) as repos:
             if not repos["career_sites"].get_due_automatic(user_id):
                 return None
-    with _career_scan_lock:
-        existing = _career_scan_last_task_id_by_user.get(user_id)
-        submitted_at = _career_scan_submitted_at_by_user.get(user_id)
-        if existing is not None and is_celery_task_active(
-            AsyncResult(existing, app=celery_app).state, submitted_at
-        ):
-            return None
-        task = run_career_site_scan_task.delay(user_id, trigger=trigger, source_id=source_id)
-        _career_scan_last_task_id_by_user[user_id] = task.id
-        _career_scan_submitted_at_by_user[user_id] = time.monotonic()
-        return task.id
+    return get_active_tasks().submit_unless_running(
+        CAREER_SCAN_TASK_KIND,
+        user_id,
+        lambda: run_career_site_scan_task.delay(
+            user_id, trigger=trigger, source_id=source_id
+        ).id,
+    )
 
 
 # ─── Career-site helpers ──────────────────────────────────────────────────────
@@ -317,8 +306,8 @@ def run_career_site_scan_task(
 ) -> dict:
     """Career-site scan pipeline, run as a Celery task so progress survives a
     restart. Progress is published via self.update_state; see the
-    module-level note on _career_scan_last_task_id_by_user for how the status
-    route and scheduler find/dispatch it."""
+    module-level note on CAREER_SCAN_TASK_KIND for how the status route and
+    the scheduled tick find/dispatch it."""
     state: dict[str, object] = {
         "progress": 0,
         "message": "Starting career-site scan...",
@@ -1170,7 +1159,15 @@ def run_career_site_scan_task(
         return dict(state)
 
 
-configure_career_site_scheduler(submit_run=_submit_career_scan)
+# ai: claude-opus-5-5 | 2026-11-06 -- was a daemon thread in every web process.
+@celery_app.task
+def career_site_scan_tick() -> None:
+    """Celery beat's career-site tick (backend/celery_app.py): start a scheduled scan
+    for each account with a site due. _submit_career_scan does the "is anything
+    due" and "is one already running" checks, so a tick is safe to repeat."""
+    for_each_active_account(
+        "career-site scan", lambda user_id: _submit_career_scan(user_id, "scheduled")
+    )
 
 
 # ─── Career-site scanner routes ───────────────────────────────────────────────
@@ -1425,10 +1422,8 @@ def run_career_scan_now() -> ResponseReturnValue:
 
 @career_sites_bp.route("/career-scan/status")
 def career_scan_status() -> ResponseReturnValue:
-    user_id = current_user_id()
-    with _career_scan_lock:
-        task_id = _career_scan_last_task_id_by_user.get(user_id)
-        submitted_at = _career_scan_submitted_at_by_user.get(user_id)
+    active_tasks = get_active_tasks()
+    record = active_tasks.latest(CAREER_SCAN_TASK_KIND, current_user_id())
 
     _idle = {
         "running": False,
@@ -1447,13 +1442,13 @@ def career_scan_status() -> ResponseReturnValue:
         "errors": [],
         "interval_minutes": max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES),
     }
-    if task_id is None:
+    if record is None:
         return jsonify(_idle)
 
-    result = AsyncResult(task_id, app=celery_app)
+    result = AsyncResult(record.task_id, app=celery_app)
     result_state = result.state
 
-    if is_celery_task_active(result_state, submitted_at):
+    if active_tasks.is_running(record, result_state):
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {

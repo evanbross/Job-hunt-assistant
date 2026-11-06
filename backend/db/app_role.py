@@ -128,13 +128,11 @@ def ensure_app_role(conn: Any, app_dsn: str) -> None:
     conn.commit()
 
 
-def assert_subject_to_rls(conn: Any) -> None:
-    """Refuse to serve with a role that row-level security would not apply to.
-
-    Checked against the live connection rather than configuration, so it catches a
-    DATABASE_URL that points at the owner, a superuser, or a BYPASSRLS role no matter
-    how that URL was assembled.
-    """
+# ai: claude-opus-5-5 | 2026-11-06 -- one query behind both directions of the check.
+def _rls_exemption(conn: Any) -> tuple[str, str | None]:
+    """The connected role's name, and why row-level security skips it (None if it
+    doesn't). Read from the live connection, not configuration, so it holds no matter
+    how the URL was assembled."""
     cur = conn.cursor()
     cur.execute(
         "SELECT r.rolname, r.rolsuper, r.rolbypassrls,"
@@ -144,16 +142,38 @@ def assert_subject_to_rls(conn: Any) -> None:
     )
     row = cur.fetchone()
     conn.rollback()
-    name, is_super = row["rolname"], row["rolsuper"]
-    bypasses, owns_tables = row["rolbypassrls"], row["owns_tables"]
-    if is_super or bypasses or owns_tables:
-        reason = (
-            "is a superuser" if is_super
-            else "has BYPASSRLS" if bypasses
-            else "owns the schema's tables"
-        )
+    reason = (
+        "is a superuser" if row["rolsuper"]
+        else "has BYPASSRLS" if row["rolbypassrls"]
+        else "owns the schema's tables" if row["owns_tables"]
+        else None
+    )
+    return str(row["rolname"]), reason
+
+
+def assert_subject_to_rls(conn: Any) -> None:
+    """Refuse to serve with a role that row-level security would not apply to: a
+    DATABASE_URL that points at the owner, a superuser, or a BYPASSRLS role."""
+    name, reason = _rls_exemption(conn)
+    if reason is not None:
         raise AppRoleConfigError(
             f"Refusing to serve: the app's database role {name!r} {reason}, so row-level"
             " security would not apply to it. Point DATABASE_URL at the runtime role that"
             " migrate_database creates, and keep the owner in DATABASE_OWNER_URL."
+        )
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def assert_exempt_from_rls(conn: Any) -> None:
+    """Refuse cross-account maintenance on a role row-level security applies to.
+
+    The inverse mistake of the one above, and a quieter one: run as the runtime role,
+    the account-deletion and retention sweep would see no account's rows and delete
+    nothing, every time, without an error."""
+    name, reason = _rls_exemption(conn)
+    if reason is None:
+        raise AppRoleConfigError(
+            f"Refusing cross-account maintenance as {name!r}: row-level security applies"
+            " to it, so it would only see rows no account owns. Give this process the"
+            " schema owner's URL (DATABASE_OWNER_URL)."
         )

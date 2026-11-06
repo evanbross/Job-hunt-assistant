@@ -18,19 +18,22 @@ runtime role scoped to one account) is the wrong tool for either of these.
 Pruning is deliberately narrow: only tables that are purely informational logs,
 where deleting an old row can only shorten history a user could scroll back
 through, never change what a feature does. See config.py's *_RETENTION_DAYS
-comment for which tables were deliberately left out and why."""
+comment for which tables were deliberately left out and why.
+
+Celery beat triggers the sweep (backend/celery_app.py). It is routed to the
+`maintenance` queue, whose worker is the only one given the owner's URL; the
+ordinary workers serve as the runtime role and never hold it."""
 
 from __future__ import annotations
 
 import logging
-import os
-import threading
-import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import config
+from backend.celery_app import celery_app
 from backend.db import get_connection
+from backend.db.app_role import assert_exempt_from_rls
 from backend.db.repositories.user_accounts import PostgresUserAccountRepository
 
 logger = logging.getLogger(__name__)
@@ -91,13 +94,15 @@ def prune_retention_tables(conn: Any) -> dict[str, int]:
     return removed
 
 
-# ai: claude-opus-5-5 | 2026-11-06 -- `owner_dsn` instead of switching RLS off globally.
+# ai: claude-opus-5-5 | 2026-11-06 -- `owner_dsn` instead of switching RLS off globally;
+# refuses a role RLS applies to, which would otherwise sweep nothing without an error.
 def run_data_lifecycle_sweep(owner_dsn: str) -> None:
     """One full sweep: deletions past their grace period, then retention pruning, in
     one transaction. `owner_dsn` must be the schema owner's: it needs every account's
     rows (see module docstring)."""
     conn = get_connection(owner_dsn)
     try:
+        assert_exempt_from_rls(conn)
         deleted = sweep_scheduled_deletions(conn)
         pruned = prune_retention_tables(conn)
         conn.commit()
@@ -107,39 +112,8 @@ def run_data_lifecycle_sweep(owner_dsn: str) -> None:
         logger.info("Data lifecycle sweep: %d account(s) deleted, pruned %s", deleted, pruned)
 
 
-_scheduler_lock = threading.Lock()
-_scheduler_started = False
-
-
-def start_data_lifecycle_scheduler() -> None:
-    """Start the daemon thread that runs run_data_lifecycle_sweep() on a fixed
-    interval. Mirrors backend/scanning/schedulers.py's reloader guard and
-    check-then-sleep shape (a sweep runs once at startup, not only after the
-    first full interval, so a deletion that fell due while the app was closed
-    doesn't wait a whole extra interval to be picked up)."""
-    global _scheduler_started
-
-    debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
-    if debug_mode and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
-        return
-
-    with _scheduler_lock:
-        if _scheduler_started:
-            return
-
-        def sweep_loop() -> None:
-            interval_seconds = max(1.0, config.DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS) * 3600
-            while True:
-                try:
-                    run_data_lifecycle_sweep(config.DATABASE_OWNER_URL)
-                except Exception:
-                    logger.exception("Data lifecycle sweep failed; retrying next interval")
-                time.sleep(interval_seconds)
-
-        thread = threading.Thread(target=sweep_loop, daemon=True)
-        thread.start()
-        _scheduler_started = True
-        logger.info(
-            "Data lifecycle scheduler started (interval: %s hour(s)).",
-            config.DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS,
-        )
+# ai: claude-opus-5-5 | 2026-11-06 -- replaces the daemon-thread loop in each web process.
+@celery_app.task
+def data_lifecycle_sweep_task() -> None:
+    """Beat's every-DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS sweep, on the maintenance queue."""
+    run_data_lifecycle_sweep(config.DATABASE_OWNER_URL)

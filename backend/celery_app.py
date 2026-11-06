@@ -31,16 +31,24 @@ Celery application instance.
 Broker and result backend: Redis (dev_redis container from ../infra).
 Run the worker with:
     celery -A backend.celery_app worker --pool=threads --concurrency=4 --loglevel=info
+
+ai: claude-opus-5-5 | 2026-11-06 -- scheduled work runs from Celery beat:
+    celery -A backend.celery_app beat
+exactly one beat per deployment (it is the timer; the workers do the work). The
+account-deletion/retention sweep goes to the `maintenance` queue, which only a worker
+holding the schema owner's URL consumes (-Q maintenance); every other task stays on
+the default queue. The desktop app (app.py) runs one worker for both queues plus beat.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from datetime import timedelta
 
 from celery import Celery
 from celery.exceptions import OperationalError
-from celery.signals import worker_init
+from celery.signals import beat_init, worker_init
 
 import config
 from backend.security.redis_tls import redis_ssl_options
@@ -71,8 +79,20 @@ celery_app = Celery(
         "routes.scan",
         "routes.applications",
         "routes.greenhouse",
+        "routes.jd_health_check",
+        "backend.security.data_lifecycle",
     ],
 )
+
+# ai: claude-opus-5-5 | 2026-11-06
+DEFAULT_QUEUE = "celery"  # Celery's own default name, kept so queued tasks survive the upgrade
+MAINTENANCE_QUEUE = "maintenance"
+CAREER_SITE_SCAN_TICK = "routes.career_sites.career_site_scan_tick"
+JD_HEALTH_CHECK_TICK = "routes.jd_health_check.jd_health_check_tick"
+DATA_LIFECYCLE_SWEEP = "backend.security.data_lifecycle.data_lifecycle_sweep_task"
+# How often beat asks "is a JD health check due" per account. The run itself happens at
+# each account's own configured time; this only bounds how late it can start.
+JD_HEALTH_CHECK_TICK_INTERVAL = timedelta(minutes=15)
 
 # ai: claude-sonnet-5 | 2026-09-26 -- a rediss:// URL means TLS; verify the server
 # certificate against REDIS_TLS_CA_FILE (see backend/security/redis_tls.py).
@@ -94,7 +114,37 @@ celery_app.conf.update(
     # gives true process-level isolation; pass --pool=prefork there instead.
     worker_pool="threads",
     worker_concurrency=4,
+    # ai: claude-opus-5-5 | 2026-11-06
+    task_default_queue=DEFAULT_QUEUE,
+    task_routes={DATA_LIFECYCLE_SWEEP: {"queue": MAINTENANCE_QUEUE}},
+    beat_schedule={
+        "career-site-scan": {
+            "task": CAREER_SITE_SCAN_TICK,
+            "schedule": timedelta(minutes=max(1, config.CAREER_SITE_SCAN_INTERVAL_MINUTES)),
+        },
+        "jd-health-check": {
+            "task": JD_HEALTH_CHECK_TICK,
+            "schedule": JD_HEALTH_CHECK_TICK_INTERVAL,
+        },
+        "data-lifecycle-sweep": {
+            "task": DATA_LIFECYCLE_SWEEP,
+            "schedule": timedelta(hours=max(1.0, config.DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS)),
+        },
+    },
+    # Each tick re-checks what is due, so one missed while beat was down is just late.
+    beat_max_loop_interval=300,
 )
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+@beat_init.connect
+def _tick_everything_on_startup(**_kwargs: object) -> None:
+    """Send every scheduled task once as beat starts. An interval schedule otherwise
+    waits one full interval before its first run, so a sweep or health check that fell
+    due while nothing was running would wait up to a day more. Each tick checks what
+    is actually due, so this never forces a run that isn't."""
+    for entry in celery_app.conf.beat_schedule.values():
+        celery_app.send_task(entry["task"])
 
 
 # ai: claude-sonnet-5 | 2026-09-26

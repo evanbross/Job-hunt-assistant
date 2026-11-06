@@ -203,8 +203,13 @@ _CELERY_TASK_ACTIVE_STATES: frozenset[str] = frozenset({"STARTED", "PROGRESS", "
 _CELERY_PENDING_GRACE_SECONDS = 30
 
 
+# ai: claude-opus-5-5 | 2026-11-06 -- `now` lets a cross-process caller use wall-clock times.
 def is_celery_task_active(
-    state: str, submitted_at: float | None, *, grace_seconds: float = _CELERY_PENDING_GRACE_SECONDS
+    state: str,
+    submitted_at: float | None,
+    *,
+    grace_seconds: float = _CELERY_PENDING_GRACE_SECONDS,
+    now: float | None = None,
 ) -> bool:
     """True if a Celery task's *state* means it's genuinely still running.
 
@@ -225,11 +230,17 @@ def is_celery_task_active(
     (Celery just hasn't picked it up yet); once that window passes, PENDING
     is treated as stale rather than active. STARTED/PROGRESS/RETRY are
     unambiguous and always active regardless of submitted_at.
+
+    submitted_at and now must come from the same clock. now defaults to
+    time.monotonic(), which only means anything inside one process; a record
+    shared between processes (backend/active_tasks.py) stores time.time() and
+    passes now=time.time().
     """
     if state in _CELERY_TASK_ACTIVE_STATES:
         return True
     if state == "PENDING":
-        return submitted_at is not None and (time.monotonic() - submitted_at) < grace_seconds
+        current = time.monotonic() if now is None else now
+        return submitted_at is not None and (current - submitted_at) < grace_seconds
     return False
 
 
