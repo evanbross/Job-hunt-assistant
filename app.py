@@ -59,7 +59,7 @@ from flask import Flask
 import config
 from backend.candidate_profile_file_sync import start_candidate_profile_file_watcher
 from backend.celery_app import worker_is_running  # ai: claude-fable-5 | 2026-07-16
-from backend.db import init_db_with_retry
+from backend.db import AppRoleConfigError, migrate_database_with_retry
 from backend.scanning.schedulers import (
     start_career_site_scheduler,
     start_jd_health_check_scheduler,
@@ -73,6 +73,7 @@ from web.serving import (
     apply_session_cookie_config,
     install_startup_secrets,
     install_trusted_proxies,
+    verify_database_ready,
 )
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
@@ -433,7 +434,16 @@ def main() -> None:
     # Retries with backoff; if the database is still unreachable the app starts
     # in degraded mode (so /api/system/health can report the outage to the
     # frontend) and keeps retrying in the background.
-    init_db_with_retry(config.DATABASE_URL)
+    # ai: claude-opus-5-5 | 2026-11-06 -- the desktop migrates at startup as the owner
+    # (a hosted deployment runs `python -m backend.db.migrate` as a deploy step instead),
+    # then, like any server, refuses to serve unless its runtime role is subject to RLS.
+    try:
+        migrated = migrate_database_with_retry(config.DATABASE_OWNER_URL, config.DATABASE_URL)
+    except AppRoleConfigError as exc:
+        logger.critical("%s", exc)
+        sys.exit(1)
+    if migrated:
+        verify_database_ready()
     apply_session_cookie_config(app, app_env)
     trusted_proxies = install_trusted_proxies(app)
     import_listener, queue_ws_server = start_extension_servers(trusted_proxies)

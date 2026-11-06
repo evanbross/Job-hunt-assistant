@@ -22,12 +22,12 @@ import backend.crypto as crypto
 import config
 from backend.db import PostgresUserAccountRepository, get_connection
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
-from backend.db.row_level_security import disable_for_migrations
 from backend.db.schema import _migrate_legacy_greenhouse_session
 from backend.scanning.sources.greenhouse_searcher import GreenhouseSearcher
 from backend.scanning.sources.greenhouse_session_store import GreenhouseSessionStore
 from backend.utils.utils import get_repos
 from routes.greenhouse import greenhouse_bp
+from tests.db_roles import runtime_database_url
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -52,7 +52,7 @@ def _new_user(conn: Any, email: str) -> int:
 
 @pytest.fixture
 def two_users(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         ids = _new_user(conn, "a@example.com"), _new_user(conn, "b@example.com")
@@ -192,7 +192,6 @@ def test_the_legacy_session_file_moves_to_the_first_account(pg_dsn: str, tmp_pat
         first_id = PostgresUserAccountRepository(conn).get_by_email(DEFAULT_ADMIN_EMAIL)["id"]
         later_id = _new_user(conn, "later@example.com")
 
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_greenhouse_session(conn)
 
         cur = conn.cursor()

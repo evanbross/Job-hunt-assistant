@@ -25,6 +25,7 @@ from backend.extension_auth.token_service import (
     hash_token,
 )
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
+from tests.db_roles import runtime_database_url
 from web.extension_listener import authenticate_extension_token
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -227,7 +228,7 @@ def test_tickets_are_bound_to_the_issuing_user() -> None:
 def test_app_authenticator_resolves_a_real_token_and_rejects_others(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)

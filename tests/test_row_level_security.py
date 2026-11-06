@@ -24,10 +24,14 @@ import psycopg2.extras
 import pytest
 from flask import Flask
 
+import backend.db as backend_db
 import config
+from backend.db import AppRoleConfigError, migrate_database
+from backend.db.app_role import assert_subject_to_rls
 from backend.db.row_level_security import set_current_user, tenant_tables
 from backend.utils.utils import DatabaseUnavailableError, get_repos
 from routes.voice import _execute_readonly
+from tests.db_roles import runtime_database_url
 
 # ai: claude-sonnet-5 | 2026-09-27
 
@@ -36,7 +40,7 @@ from routes.voice import _execute_readonly
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
     # pg_dsn itself already points config.POSTGRES_HOST/PORT/DB/SSLMODE at the test
     # database (needed for get_readonly_database_url() below); DATABASE_URL is separate.
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
 
 
 def _raw_connection(dsn: str) -> psycopg2.extensions.connection:
@@ -78,7 +82,8 @@ def _two_users(pg_dsn: str) -> tuple[int, int]:
         conn.close()
 
 
-# ─── the policy itself, with the app's own (table-owning) role ─────────────────
+# ─── the policy itself, as the runtime role the app serves with ─────────────────
+# (pg_dsn is the schema owner, which RLS exempts by design -- it only seeds here.)
 
 
 def test_an_unfiltered_select_only_returns_the_current_users_rows(pg_dsn: str) -> None:
@@ -86,7 +91,7 @@ def test_an_unfiltered_select_only_returns_the_current_users_rows(pg_dsn: str) -
     _seed_job(pg_dsn, user_a, "a-job")
     _seed_job(pg_dsn, user_b, "b-job")
 
-    conn = _raw_connection(pg_dsn)
+    conn = _raw_connection(runtime_database_url(pg_dsn))
     try:
         cur = conn.cursor()
         set_current_user(cur, user_a)
@@ -103,7 +108,7 @@ def test_no_session_identity_means_no_rows_not_all_rows(pg_dsn: str) -> None:
     user_a, _ = _two_users(pg_dsn)
     _seed_job(pg_dsn, user_a, "a-job")
 
-    conn = _raw_connection(pg_dsn)
+    conn = _raw_connection(runtime_database_url(pg_dsn))
     try:
         cur = conn.cursor()
         cur.execute("SELECT dedup_key FROM jobs")  # app.current_user_id never set
@@ -118,7 +123,7 @@ def test_an_insert_for_a_different_user_is_rejected(pg_dsn: str) -> None:
     """WITH CHECK, not just USING: a write, not only a read, is also policed."""
     user_a, user_b = _two_users(pg_dsn)
 
-    conn = _raw_connection(pg_dsn)
+    conn = _raw_connection(runtime_database_url(pg_dsn))
     try:
         cur = conn.cursor()
         set_current_user(cur, user_a)
@@ -139,7 +144,7 @@ def test_switching_identity_on_the_same_connection_switches_visibility(pg_dsn: s
     _seed_job(pg_dsn, user_a, "a-job")
     _seed_job(pg_dsn, user_b, "b-job")
 
-    conn = _raw_connection(pg_dsn)
+    conn = _raw_connection(runtime_database_url(pg_dsn))
     try:
         cur = conn.cursor()
         set_current_user(cur, user_a)
@@ -217,7 +222,7 @@ def test_a_failed_identity_setup_discards_the_connection_instead_of_reusing_it(
     user_a, _ = _two_users(pg_dsn)
     _seed_job(pg_dsn, user_a, "a-job")
 
-    connection_module._POOLS.pop(pg_dsn, None)  # start this DSN with a fresh pool
+    connection_module._POOLS.pop(config.DATABASE_URL, None)  # get_repos()'s DSN, fresh pool
     monkeypatch.setattr(connection_module, "_POOL_MAX_CONN", 1)
     try:
         with get_repos(user_a) as repos:
@@ -240,7 +245,7 @@ def test_a_failed_identity_setup_discards_the_connection_instead_of_reusing_it(
         # above, silently still carrying user_a's (or anyone else's) GUC.
         # get_connection() itself never touches set_current_user, so the patch
         # above doesn't need undoing first.
-        probe = connection_module.get_connection(pg_dsn)
+        probe = connection_module.get_connection(config.DATABASE_URL)
         try:
             cur = probe.cursor()
             cur.execute("SELECT current_setting('app.current_user_id', true) AS uid")
@@ -249,7 +254,7 @@ def test_a_failed_identity_setup_discards_the_connection_instead_of_reusing_it(
             probe.close()
         assert residue is None
     finally:
-        connection_module._POOLS.pop(pg_dsn, None)  # don't leak the size-1 pool to other tests
+        connection_module._POOLS.pop(config.DATABASE_URL, None)  # don't leak the size-1 pool to other tests
 
 
 def test_identity_survives_a_rollback_later_in_the_same_connection(pg_dsn: str) -> None:
@@ -297,13 +302,13 @@ def test_close_clears_the_identity_on_the_pooled_connection(
     import backend.db.connection as connection_module
 
     user_a, _ = _two_users(pg_dsn)
-    connection_module._POOLS.pop(pg_dsn, None)
+    connection_module._POOLS.pop(config.DATABASE_URL, None)
     monkeypatch.setattr(connection_module, "_POOL_MAX_CONN", 1)
     try:
         with get_repos(user_a) as repos:
             returned = repos["conn"].cursor().connection
 
-        probe = connection_module.get_connection(pg_dsn)
+        probe = connection_module.get_connection(config.DATABASE_URL)
         try:
             raw = probe.cursor().connection
             assert raw is returned
@@ -314,7 +319,7 @@ def test_close_clears_the_identity_on_the_pooled_connection(
         finally:
             probe.close()
     finally:
-        connection_module._POOLS.pop(pg_dsn, None)
+        connection_module._POOLS.pop(config.DATABASE_URL, None)
 
 
 def test_outside_transaction_restores_transactional_mode_after_a_failed_statement(
@@ -381,17 +386,109 @@ def test_a_token_lookup_works_with_no_identity_set(pg_dsn: str) -> None:
     assert row is not None and row["user_id"] == user_a
 
 
-# ─── migrations run RLS-free, and re-arm it every startup ───────────────────────
+# ─── two roles: the owner is exempt, the runtime role never is ──────────────────
+# ai: claude-opus-5-5 | 2026-11-06 -- replaced the FORCE + disable/re-enable bracket.
 
 
-def test_disable_and_enable_are_idempotent(pg_dsn: str) -> None:
-    from backend.db import init_db
-
-    init_db(pg_dsn)  # already armed once by the pg_dsn fixture; must not error re-running
-    init_db(pg_dsn)
+def test_migrating_twice_is_idempotent(pg_dsn: str) -> None:
+    migrate_database(pg_dsn, runtime_database_url(pg_dsn))  # already migrated once by the fixture
+    migrate_database(pg_dsn, runtime_database_url(pg_dsn))
 
 
-def test_every_tenant_table_is_armed_after_init_db(pg_dsn: str) -> None:
+def test_the_owner_sees_every_account_with_no_identity_set(pg_dsn: str) -> None:
+    """What migrations and maintenance rely on instead of switching RLS off."""
+    user_a, user_b = _two_users(pg_dsn)
+    _seed_job(pg_dsn, user_a, "a-job")
+    _seed_job(pg_dsn, user_b, "b-job")
+
+    conn = _raw_connection(pg_dsn)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT dedup_key FROM jobs")
+        rows = {r["dedup_key"] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+    assert rows == {"a-job", "b-job"}
+
+
+def test_migrating_never_switches_rls_off_for_the_runtime_role(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old bracket disabled RLS for every connection while migrations ran. Now a
+    runtime-role connection open across a whole migration never sees another account."""
+    user_a, user_b = _two_users(pg_dsn)
+    _seed_job(pg_dsn, user_a, "a-job")
+    _seed_job(pg_dsn, user_b, "b-job")
+    seen: list[set[str]] = []
+
+    runtime = _raw_connection(runtime_database_url(pg_dsn))
+    runtime.autocommit = True
+    try:
+        cur = runtime.cursor()
+        set_current_user(cur, user_a)
+
+        def look() -> None:
+            cur.execute("SELECT dedup_key FROM jobs")
+            seen.append({r["dedup_key"] for r in cur.fetchall()})
+
+        real_migrate = backend_db._migrate
+
+        def migrate_and_look(conn: object) -> None:
+            look()  # mid-migration: release_owner_from_rls() has already run
+            real_migrate(conn)
+            look()
+
+        monkeypatch.setattr(backend_db, "_migrate", migrate_and_look)
+        migrate_database(pg_dsn, runtime_database_url(pg_dsn))
+        look()
+    finally:
+        runtime.close()
+
+    assert seen == [{"a-job"}, {"a-job"}, {"a-job"}]
+
+
+def test_the_runtime_role_is_subject_to_rls_and_the_owner_is_not(pg_dsn: str) -> None:
+    runtime = _raw_connection(runtime_database_url(pg_dsn))
+    try:
+        assert_subject_to_rls(runtime)  # does not raise
+    finally:
+        runtime.close()
+
+    owner = _raw_connection(pg_dsn)
+    try:
+        with pytest.raises(AppRoleConfigError, match="owns the schema"):
+            assert_subject_to_rls(owner)
+    finally:
+        owner.close()
+
+
+def test_migrating_refuses_a_runtime_url_that_is_the_owner(pg_dsn: str) -> None:
+    with pytest.raises(AppRoleConfigError, match="owns the schema"):
+        migrate_database(pg_dsn, pg_dsn)
+
+
+def test_the_runtime_role_cannot_write_the_migration_record(pg_dsn: str) -> None:
+    conn = _raw_connection(runtime_database_url(pg_dsn))
+    try:
+        with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+            conn.cursor().execute("UPDATE schema_state SET migration_hash = 'forged'")
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def test_the_runtime_role_cannot_change_the_schema(pg_dsn: str) -> None:
+    conn = _raw_connection(runtime_database_url(pg_dsn))
+    try:
+        with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+            conn.cursor().execute("ALTER TABLE jobs DISABLE ROW LEVEL SECURITY")
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def test_every_tenant_table_is_armed_after_migrating(pg_dsn: str) -> None:
     conn = _raw_connection(pg_dsn)
     try:
         cur = conn.cursor()
@@ -400,7 +497,8 @@ def test_every_tenant_table_is_armed_after_init_db(pg_dsn: str) -> None:
         for table in tables:
             cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = %s", (table,))
             row = cur.fetchone()
-            assert row["relrowsecurity"] and row["relforcerowsecurity"], table
+            # Enabled for everyone but the owner (NO FORCE): see row_level_security.py.
+            assert row["relrowsecurity"] and not row["relforcerowsecurity"], table
     finally:
         conn.close()
 
@@ -426,7 +524,7 @@ def test_the_view_is_scoped_through_its_underlying_table(pg_dsn: str) -> None:
     finally:
         conn.close()
 
-    conn = _raw_connection(pg_dsn)
+    conn = _raw_connection(runtime_database_url(pg_dsn))
     try:
         cur = conn.cursor()
         set_current_user(cur, user_a)

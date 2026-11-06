@@ -27,7 +27,7 @@ from backend.db import (
     get_connection,
 )
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
-from backend.db.row_level_security import disable_for_migrations, set_current_user
+from backend.db.row_level_security import set_current_user
 from backend.db.schema import _migrate_legacy_candidate_profiles
 from backend.scoring.fit_scorer import FitScorer
 from backend.utils.utils import (
@@ -37,6 +37,7 @@ from backend.utils.utils import (
 )
 from routes.settings import settings_bp
 from routes.setup import setup_bp
+from tests.db_roles import runtime_database_url
 from web import create_app
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -65,7 +66,7 @@ def _save(pg_dsn: str, user_id: int, content: str) -> None:
 
 
 def test_each_user_reads_only_their_own_profile(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         first_id, second_id = _new_user(conn), _new_user(conn, "second@example.com")
@@ -85,7 +86,7 @@ def test_each_user_reads_only_their_own_profile(pg_dsn: str, monkeypatch: pytest
 def test_a_missing_or_blank_profile_raises_a_clear_error(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch, stored: str | None
 ) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)
@@ -133,7 +134,7 @@ def test_deleting_a_user_removes_their_profile(pg_dsn: str) -> None:
 def test_fit_scoring_prompt_contains_only_the_scored_users_profile(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         first_id, second_id = _new_user(conn), _new_user(conn, "second@example.com")
@@ -168,7 +169,7 @@ def test_insert_learned_rule_ignores_a_rule_already_present() -> None:
 def test_learned_rules_are_written_to_the_right_users_row(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         first_id, second_id = _new_user(conn), _new_user(conn, "second@example.com")
@@ -188,7 +189,7 @@ def test_learned_rules_are_written_to_the_right_users_row(
 
 
 def test_learning_without_a_profile_does_nothing(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)
@@ -204,7 +205,7 @@ def test_learning_without_a_profile_does_nothing(pg_dsn: str, monkeypatch: pytes
 
 @pytest.fixture
 def profile_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, dict[str, int], dict[str, Any], list[int]]:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         ids = {"a": _new_user(conn, "a@example.com"), "b": _new_user(conn, "b@example.com")}
@@ -319,7 +320,6 @@ def test_the_shared_default_file_goes_to_the_first_account_only(
     conn = get_connection(pg_dsn)
     try:
         admin, member = _admin_and_member(conn)
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
 
         _migrate_legacy_candidate_profiles(conn)
 
@@ -340,7 +340,6 @@ def test_an_account_with_its_own_configured_path_gets_that_file(
     conn = get_connection(pg_dsn)
     try:
         admin, member = _admin_and_member(conn)
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _set_path_setting(conn, member, mine)
 
         _migrate_legacy_candidate_profiles(conn)
@@ -363,7 +362,6 @@ def test_migration_never_overwrites_a_saved_profile_and_skips_unreadable_paths(
     conn = get_connection(pg_dsn)
     try:
         admin, member = _admin_and_member(conn)
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         PostgresCandidateProfileRepository(conn).upsert(admin, "already saved", "2026-01-01")
         _set_path_setting(conn, member, tmp_path / "does-not-exist.md")
 

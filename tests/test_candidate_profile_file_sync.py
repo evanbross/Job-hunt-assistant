@@ -47,6 +47,7 @@ from backend.user_events import UserEventTopic
 from backend.utils.utils import get_repos
 from routes.settings import settings_bp
 from tests.conftest import RecordingUserEvents
+from tests.db_roles import runtime_database_url
 
 OLD_TIMESTAMP = "2026-01-01T00:00:00+00:00"
 # Well before OLD_TIMESTAMP, for a file the stored profile is newer than.
@@ -66,7 +67,7 @@ def _create_account(pg_dsn: str, email: str) -> int:
 
 @pytest.fixture
 def owner_id(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> int:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     return _create_account(pg_dsn, "owner@example.com")
 
 

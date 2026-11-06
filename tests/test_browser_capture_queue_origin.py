@@ -26,13 +26,14 @@ from backend.db.repositories.user_accounts import PostgresUserAccountRepository
 from backend.db.row_level_security import set_current_user
 from backend.utils.utils import get_repos
 from routes.import_ import _describe_capture_origin
+from tests.db_roles import runtime_database_url
 
 _EMAIL_LINK = "https://app.welcometothejungle.com/jobs/abc?token=xyz"
 
 
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
 
 
 def _new_user(pg_dsn: str, email: str) -> int:

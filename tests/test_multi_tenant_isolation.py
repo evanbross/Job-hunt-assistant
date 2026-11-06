@@ -43,6 +43,7 @@ import pytest
 import config
 import routes.session_auth as session_auth_module
 from backend.utils.utils import get_repos
+from tests.db_roles import runtime_database_url
 
 _USER_A_EMAIL = "alice@example.com"
 _USER_B_EMAIL = "bob@example.com"
@@ -51,7 +52,7 @@ _PASSWORD = "correct horse battery staple"  # noqa: S105
 
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     yield
 
 

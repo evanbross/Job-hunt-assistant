@@ -36,6 +36,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -129,16 +130,36 @@ POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "")
 POSTGRES_PORT: str = os.getenv("POSTGRES_PORT", "5432")
 POSTGRES_DB: str = os.getenv("POSTGRES_DB", "")
 POSTGRES_SSLMODE: str = os.getenv("POSTGRES_SSLMODE", "require")
-_pg_user: str = os.getenv("POSTGRES_USER", "")
-_pg_password: str = os.getenv("POSTGRES_PASSWORD", "")
-
-DATABASE_URL: str = os.getenv("DATABASE_URL", "") or (
-    (
-        f"postgresql://{_pg_user}:{_pg_password}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-        f"?sslmode={POSTGRES_SSLMODE}"
+# ai: claude-opus-5-5 | 2026-11-06
+# Two database roles (docs/cloud-deployment-readiness-plan.md 1.6):
+#
+# * DATABASE_OWNER_URL -- the role that owns every table. Migrations
+#   (backend/db/__init__.py migrate_database) and cross-account maintenance (the
+#   account-deletion sweep, key rotation) connect with it. A table's owner is exempt
+#   from its row-level security, which is exactly what that work needs, so RLS never
+#   has to be switched off.
+# * DATABASE_URL -- the role the app serves requests with. It owns nothing, so every
+#   tenant table's RLS policy applies to it. migrate_database creates it (from this
+#   URL's user and password) and grants it table access; the app refuses to start if it
+#   turns out to be the owner, a superuser, or a BYPASSRLS role.
+#
+# Either can be given whole, or built from POSTGRES_HOST/PORT/DB/SSLMODE plus
+# POSTGRES_USER/POSTGRES_PASSWORD (owner) and POSTGRES_APP_USER/POSTGRES_APP_PASSWORD
+# (runtime). A hosted deployment gives the serving containers only DATABASE_URL.
+def _postgres_url(user: str, password: str) -> str:
+    if not (POSTGRES_HOST and POSTGRES_DB and user):
+        return ""
+    return (
+        f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}"
+        f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}?sslmode={POSTGRES_SSLMODE}"
     )
-    if POSTGRES_HOST and POSTGRES_DB and _pg_user
-    else ""
+
+
+DATABASE_OWNER_URL: str = os.getenv("DATABASE_OWNER_URL", "") or _postgres_url(
+    os.getenv("POSTGRES_USER", ""), os.getenv("POSTGRES_PASSWORD", "")
+)
+DATABASE_URL: str = os.getenv("DATABASE_URL", "") or _postgres_url(
+    os.getenv("POSTGRES_APP_USER", ""), os.getenv("POSTGRES_APP_PASSWORD", "")
 )
 
 # ai: claude-sonnet-5 | 2026-10-18

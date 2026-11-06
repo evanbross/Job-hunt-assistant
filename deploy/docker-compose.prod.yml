@@ -4,7 +4,10 @@
 # include (notably the application image).
 #
 #   cp deploy/.env.production.example deploy/.env.production      # then fill it in
+#   cp deploy/.env.migrate.example deploy/.env.migrate            # the owner's DB URL
 #   python scripts/generate_redis_tls.py                          # once
+#   # every deploy: migrate first, then (re)start the app
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production run --rm migrate
 #   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d
 #
 # Differences from ../infra (the shared DEV stack) on purpose:
@@ -86,6 +89,9 @@ services:
   app:
     image: ${JHA_IMAGE:-jha-app:unset}
     restart: unless-stopped
+    # wsgi.py refuses to start until `migrate` (below) has run for this image's version.
+    # Capacity is GUNICORN_WORKERS x GUNICORN_THREADS connections; see gunicorn.conf.py.
+    command: ["gunicorn", "-c", "gunicorn.conf.py", "wsgi:app"]
     env_file: .env.production
     environment:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
@@ -112,6 +118,23 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+  # One-shot deploy step, not a long-running service: the `migrate` profile keeps it out
+  # of `up`. It is the only service given the schema owner's URL (.env.migrate); the app
+  # and worker serve as the runtime role in DATABASE_URL, which RLS always applies to.
+  migrate:
+    image: ${JHA_IMAGE:-jha-app:unset}
+    profiles: ["migrate"]
+    restart: "no"
+    command: ["python", "-m", "backend.db.migrate"]
+    env_file:
+      - .env.production
+      - .env.migrate
+    environment:
+      APP_ENV: production
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [egress]                 # Postgres only
 
   worker:
     image: ${JHA_IMAGE:-jha-app:unset}

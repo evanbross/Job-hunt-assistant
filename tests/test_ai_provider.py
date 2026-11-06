@@ -32,13 +32,14 @@ from backend.db import get_connection
 from backend.db.repositories.user_accounts import PostgresUserAccountRepository
 from backend.settings_service import set_setting
 from backend.utils.utils import get_repos
+from tests.db_roles import runtime_database_url
 
 # ai: claude-sonnet-5 | 2026-09-28
 
 
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
 
 
 def _new_user(email: str) -> int:

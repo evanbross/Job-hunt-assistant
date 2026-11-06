@@ -13,7 +13,7 @@ can be imported or tested.
 `web.factory.create_app()` deliberately does none of this: it would make every test
 and tool that builds an app validate production secrets and read the database. Any
 entry point that actually serves requests calls these instead (today app.py's desktop
-launcher; later the WSGI entry point, see docs/cloud-deployment-readiness-plan.md 1.2).
+launcher, and wsgi.py for a hosted deployment: see prepare_for_serving()).
 Moved out of app.py on 2026-11-05.
 """
 
@@ -26,6 +26,7 @@ import psycopg2
 from flask import Flask
 
 import config
+from backend.db import AppRoleConfigError, SchemaOutOfDateError, assert_ready_to_serve
 from backend.security.client_ip import (
     Network,
     TrustedProxyMiddleware,
@@ -99,3 +100,33 @@ def apply_session_cookie_config(app: Flask, app_env: str) -> None:
             "Serve the app over HTTPS and set app_base_url accordingly before exposing it to a network.",
             base_url,
         )
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def verify_database_ready() -> None:
+    """Exit unless the app's database role is subject to row-level security and the
+    database was migrated by this version (backend.db.assert_ready_to_serve). Serving
+    with the owner role would look like a working app while RLS silently did nothing,
+    and serving an unmigrated schema fails request by request -- both are startup errors."""
+    try:
+        assert_ready_to_serve(config.DATABASE_URL)
+    except (AppRoleConfigError, SchemaOutOfDateError) as exc:
+        logger.critical("%s", exc)
+        raise SystemExit(1) from exc
+    except psycopg2.OperationalError as exc:
+        logger.critical("Cannot reach the database to verify it before serving: %s", exc)
+        raise SystemExit(1) from exc
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def prepare_for_serving(app: Flask) -> None:
+    """Everything a hosted server process does to a factory-built app before serving.
+
+    Unlike the desktop launcher it never migrates: migrations are a deploy step
+    (`python -m backend.db.migrate`), and this refuses to start until that step has run
+    for this version. It also starts no background threads or extension servers; those
+    become their own processes (docs/cloud-deployment-readiness-plan.md 1.3, 1.4)."""
+    app_env = install_startup_secrets(app)
+    verify_database_ready()
+    apply_session_cookie_config(app, app_env)
+    install_trusted_proxies(app)

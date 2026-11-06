@@ -203,3 +203,25 @@ def test_the_app_trusts_forwarding_headers_from_exactly_the_proxy(prod_compose: 
 
     assert ipaddress.ip_address(caddy_address) in subnet
     assert [str(network) for network in trusted] == [f"{caddy_address}/32"]
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def test_only_the_migrate_step_gets_the_schema_owners_database_url(prod_compose: dict[str, Any]) -> None:
+    """The owner is exempt from row-level security, so its URL must reach only the
+    one-shot migrate step, never a long-running container that serves requests."""
+    def env_files(svc: dict[str, Any]) -> list[str]:
+        value = svc.get("env_file", [])
+        return [value] if isinstance(value, str) else list(value)
+
+    services = prod_compose["services"]
+    holders = {name for name, svc in services.items() if ".env.migrate" in env_files(svc)}
+    assert holders == {"migrate"}
+    assert services["migrate"]["profiles"] == ["migrate"]  # never started by `up`
+    for name, svc in services.items():
+        assert "DATABASE_OWNER_URL" not in (svc.get("environment") or {}), name
+    ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "deploy/.env.migrate" in ignored
+
+
+def test_the_app_serves_through_gunicorn(prod_compose: dict[str, Any]) -> None:
+    assert prod_compose["services"]["app"]["command"] == ["gunicorn", "-c", "gunicorn.conf.py", "wsgi:app"]

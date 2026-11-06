@@ -29,7 +29,7 @@ from backend.db import (
     get_connection,
     open_repositories,
 )
-from backend.db.row_level_security import disable_for_migrations, set_current_user
+from backend.db.row_level_security import set_current_user
 from backend.security.key_rotation import RotationError, rotate_all
 from backend.security.secrets_policy import (
     ENCRYPTION_KEY_ENV,
@@ -49,6 +49,7 @@ from backend.security.session_cookies import (
 )
 from backend.settings_registry import SETTINGS
 from backend.settings_service import get_setting, set_setting
+from tests.db_roles import runtime_database_url
 from web import create_app
 from web.serving import apply_session_cookie_config
 
@@ -156,7 +157,7 @@ def _set_base_url(pg_dsn: str, url: str) -> None:
 def test_the_app_derives_cookie_flags_from_the_stored_base_url(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE_MODE", "auto")
     _set_base_url(pg_dsn, "https://jobs.example.com")
     app = create_app()
@@ -170,7 +171,7 @@ def test_the_app_derives_cookie_flags_from_the_stored_base_url(
 def test_production_over_http_warns_that_cookies_are_not_secure(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE_MODE", "auto")
     _set_base_url(pg_dsn, "http://localhost:5004")
     app = create_app()
@@ -224,7 +225,6 @@ def _clear_seeded_secrets(pg_dsn: str) -> None:
     secret_keys = [key for key, spec in SETTINGS.items() if spec.is_secret]
     conn = get_connection(pg_dsn)
     try:
-        disable_for_migrations(conn)  # deletes across every account, like a migration
         cur = conn.cursor()
         cur.execute("DELETE FROM system_settings WHERE key = ANY(%s)", (secret_keys,))
         cur.execute("DELETE FROM user_settings WHERE key = ANY(%s)", (secret_keys,))
@@ -264,7 +264,6 @@ def _populate(pg_dsn: str) -> dict[str, int]:
 def _rotate(pg_dsn: str, *, dry_run: bool) -> Any:
     conn = get_connection(pg_dsn)
     try:
-        disable_for_migrations(conn)  # rotate_all crosses every account, like a migration
         report = rotate_all(conn, dry_run=dry_run)
         conn.commit()
         return report
@@ -324,7 +323,6 @@ def test_an_unreadable_value_aborts_and_the_caller_can_roll_everything_back(
 
     conn = get_connection(pg_dsn)
     try:
-        disable_for_migrations(conn)  # rotate_all crosses every account, like a migration
         with pytest.raises(RotationError, match="Greenhouse sessions"):
             rotate_all(conn)
         conn.rollback()
@@ -354,7 +352,6 @@ def test_a_resume_row_without_a_stored_file_is_skipped(pg_dsn: str, monkeypatch:
         set_current_user(conn.cursor(), user_id)
         PostgresResumeRepository(conn).insert(user_id, {"filename": "a.pdf", "content": "t", "uploaded_at": "2026-01-01"})
         conn.commit()
-        disable_for_migrations(conn)  # rotate_all crosses every account, like a migration
         report = rotate_all(conn, dry_run=True)
     finally:
         conn.close()
@@ -410,7 +407,7 @@ def test_encryption_rotation_end_to_end(
 ) -> None:
     old = _make_key()
     _use_keys(monkeypatch, old)
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     ids = _populate(pg_dsn)
     env_file = tmp_path / ".env"
 
@@ -442,7 +439,7 @@ def test_check_encryption_reports_values_still_under_an_old_key(
 ) -> None:
     old, new = _make_key(), _make_key()
     _use_keys(monkeypatch, old)
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     _populate(pg_dsn)
     _use_keys(monkeypatch, new, old)
 

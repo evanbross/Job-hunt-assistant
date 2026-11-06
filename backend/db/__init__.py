@@ -34,7 +34,7 @@ connection so tests can swap in a test database connection.
 
 This package is the composition root: it re-exports every Protocol and
 repository class so `from backend.db import X` keeps working exactly as it did
-when this was a single db.py file, and it defines open_repositories()/init_db()
+when this was a single db.py file, and it defines open_repositories()/migrate_database()
 since those are the only two functions that need visibility into every
 repository/schema module at once.
 """
@@ -48,6 +48,7 @@ from typing import Any
 
 import psycopg2
 
+from .app_role import AppRoleConfigError, assert_subject_to_rls, ensure_app_role
 from .connection import get_connection
 from .interfaces import (
     IApplicationAnswerRepository,
@@ -140,8 +141,14 @@ from .repositories.system_settings import PostgresSystemSettingsRepository
 from .repositories.title_rules import PostgresTitleRuleRepository
 from .repositories.user_accounts import PostgresUserAccountRepository
 from .repositories.user_settings import PostgresUserSettingsRepository
-from .row_level_security import disable_for_migrations, enable_and_force
+from .row_level_security import arm_row_level_security, release_owner_from_rls
 from .schema import _create_tables, _migrate, _seed_data
+from .schema_version import (
+    SchemaOutOfDateError,
+    assert_schema_is_current,
+    create_schema_state_table,
+    record_schema_version,
+)
 
 __all__ = [
     "IApplicationAnswerRepository",
@@ -225,8 +232,11 @@ __all__ = [
     "DuplicateOutreachTemplateTitleError",
     "db_startup_error",
     "get_connection",
-    "init_db",
-    "init_db_with_retry",
+    "AppRoleConfigError",
+    "SchemaOutOfDateError",
+    "assert_ready_to_serve",
+    "migrate_database",
+    "migrate_database_with_retry",
     "open_repositories",
 ]
 
@@ -253,33 +263,61 @@ def _set_db_startup_error(message: str | None) -> None:
         _startup_error = message
 
 
-# ai: claude-sonnet-5 | 2026-07-25 — dropped the SQLite/Postgres branch, always uses the Postgres schema module now
-def init_db(dsn: str) -> None:
-    """Create all tables and seed reference data if the DB is new."""
-    conn = get_connection(dsn)
+# ai: claude-opus-5-5 | 2026-11-06 -- was init_db(dsn). Runs as the schema owner and
+# provisions the separate runtime role; RLS is never switched off (see
+# backend/db/row_level_security.py's module docstring for why).
+def migrate_database(owner_dsn: str, app_dsn: str) -> None:
+    """Bring the database up to this code's schema: the deploy step.
+
+    `owner_dsn` must log in as the role that owns (or will own) every table; the owner
+    is exempt from row-level security, which the backfills and seed data need. `app_dsn`
+    names the runtime role the app serves with: it is created or updated here and
+    granted data access only. Ends by recording which code migrated the database, which
+    is what assert_ready_to_serve() checks before an app starts serving.
+    """
+    if not owner_dsn:
+        raise AppRoleConfigError(
+            "No owner database URL: set DATABASE_OWNER_URL (or POSTGRES_USER/POSTGRES_PASSWORD)."
+        )
+    conn = get_connection(owner_dsn)
     try:
         _create_tables(conn)
-        # ai: claude-sonnet-5 | 2026-09-27 -- migrations/seeding legitimately read and
-        # write across every account (backfills, one-time seed rows) and have no single
-        # "current user" to scope to, so row-level security is off while they run. Every
-        # startup does this, not just a fresh install: a table already has RLS armed from
-        # the previous run by the time this runs again.
-        disable_for_migrations(conn)
+        create_schema_state_table(conn)
+        release_owner_from_rls(conn)  # databases migrated before 2026-11-06 FORCE'd it
         _migrate(conn)
         _seed_data(conn)
-        enable_and_force(conn)  # re-arm RLS for the runtime connections opened after this
+        arm_row_level_security(conn)
+        ensure_app_role(conn, app_dsn)
         ensure_readonly_role(conn)  # ai: claude-sonnet-5 | 2026-08-03
+        record_schema_version(conn)
+    finally:
+        conn.close()
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def assert_ready_to_serve(app_dsn: str) -> None:
+    """Refuse to serve unless the runtime role is subject to row-level security and the
+    database was migrated by this version of the code. Raises AppRoleConfigError or
+    SchemaOutOfDateError; a psycopg2.OperationalError means the database is unreachable."""
+    if not app_dsn:
+        raise AppRoleConfigError(
+            "No app database URL: set DATABASE_URL (or POSTGRES_APP_USER/POSTGRES_APP_PASSWORD)."
+        )
+    conn = get_connection(app_dsn)
+    try:
+        assert_subject_to_rls(conn)
+        assert_schema_is_current(conn)
     finally:
         conn.close()
 
 
 # ai: claude-fable-5 | 2026-07-14
-def _run_background_init_retry(dsn: str, interval_seconds: float) -> None:
-    """Keep retrying init_db until it succeeds, then clear the degraded flag."""
+def _run_background_init_retry(owner_dsn: str, app_dsn: str, interval_seconds: float) -> None:
+    """Keep retrying migrate_database until it succeeds, then clear the degraded flag."""
     while True:
         time.sleep(interval_seconds)
         try:
-            init_db(dsn)
+            migrate_database(owner_dsn, app_dsn)
         except _DB_UNAVAILABLE_ERRORS as exc:
             logger.warning("Background database init retry failed: %s", exc)
             continue
@@ -291,10 +329,10 @@ def _run_background_init_retry(dsn: str, interval_seconds: float) -> None:
 
 
 # ai: claude-fable-5 | 2026-07-14
-def _start_background_init_retry(dsn: str, interval_seconds: float) -> None:
+def _start_background_init_retry(owner_dsn: str, app_dsn: str, interval_seconds: float) -> None:
     thread = threading.Thread(
         target=_run_background_init_retry,
-        args=(dsn, interval_seconds),
+        args=(owner_dsn, app_dsn, interval_seconds),
         name="db-init-retry",
         daemon=True,
     )
@@ -302,14 +340,18 @@ def _start_background_init_retry(dsn: str, interval_seconds: float) -> None:
 
 
 # ai: claude-fable-5 | 2026-07-14
-def init_db_with_retry(
-    dsn: str,
+# ai: claude-opus-5-5 | 2026-11-06 -- was init_db_with_retry(dsn); the desktop launcher's
+# migrate-at-startup, now with both roles. A hosted deployment runs backend.db.migrate
+# as a deploy step instead and never calls this.
+def migrate_database_with_retry(
+    owner_dsn: str,
+    app_dsn: str,
     attempts: int = 3,
     initial_delay_seconds: float = 2.0,
     background_interval_seconds: float = 60.0,
 ) -> bool:
     """
-    init_db with retry/backoff; on exhaustion, enter degraded mode instead of crashing.
+    migrate_database with retry/backoff; on exhaustion, enter degraded mode instead of crashing.
 
     Degraded mode records the failure (surfaced by /api/system/health via
     db_startup_error()) and keeps retrying in a daemon thread so the app
@@ -320,7 +362,7 @@ def init_db_with_retry(
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            init_db(dsn)
+            migrate_database(owner_dsn, app_dsn)
             _set_db_startup_error(None)
             return True
         except _DB_UNAVAILABLE_ERRORS as exc:
@@ -341,7 +383,7 @@ def init_db_with_retry(
         background_interval_seconds,
         last_error,
     )
-    _start_background_init_retry(dsn, background_interval_seconds)
+    _start_background_init_retry(owner_dsn, app_dsn, background_interval_seconds)
     return False
 
 

@@ -37,6 +37,7 @@ from flask import Flask
 import config
 from backend.db.row_level_security import set_current_user
 from backend.utils.utils import get_repos
+from tests.db_roles import runtime_database_url
 
 _PASSWORD = "correct horse battery staple"  # noqa: S105
 _MARKER = "TENANT-A-MARKER"
@@ -44,7 +45,8 @@ _TS = "2026-09-26T00:00:00+00:00"
 _SEQUENCE = itertools.count(1)  # unique keys, since the owner-control phase re-seeds repeatedly
 
 # Tables that are legitimately shared or are the tenant table itself.
-_NOT_TENANT_SCOPED = frozenset({"application_stage_statuses", "system_settings", "user_accounts"})
+# schema_state: one row recording which code last migrated the database (backend/db/schema_version.py).
+_NOT_TENANT_SCOPED = frozenset({"application_stage_statuses", "schema_state", "system_settings", "user_accounts"})
 
 
 @dataclass(frozen=True)
@@ -197,7 +199,7 @@ _PAYLOAD: dict[str, Any] = {
 
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
 
 
 @pytest.fixture(autouse=True)

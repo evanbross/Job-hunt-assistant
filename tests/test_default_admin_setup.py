@@ -50,6 +50,7 @@ from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
 )
 from backend.utils.utils import get_repos
+from tests.db_roles import runtime_database_url
 
 # tests/conftest.py provisions the bootstrap account through this variable.
 BOOTSTRAP_PASSWORD = os.environ["BOOTSTRAP_ADMIN_PASSWORD"]
@@ -59,7 +60,7 @@ _NEW_EMAIL = "real-owner@example.com"
 
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     yield
 
 
@@ -294,7 +295,7 @@ def test_a_fresh_install_without_a_provisioned_password_gets_a_random_one_time_p
 ) -> None:
     from werkzeug.security import check_password_hash
 
-    from backend.db import init_db
+    from backend.db import migrate_database
     from backend.db.repositories.user_accounts import BOOTSTRAP_ADMIN_PASSWORD_ENV
 
     monkeypatch.delenv(BOOTSTRAP_ADMIN_PASSWORD_ENV)
@@ -303,7 +304,7 @@ def test_a_fresh_install_without_a_provisioned_password_gets_a_random_one_time_p
         repos["conn"].commit()
 
     with caplog.at_level("WARNING"):
-        init_db(config.DATABASE_URL)
+        migrate_database(config.DATABASE_OWNER_URL, config.DATABASE_URL)
 
     with get_repos() as repos:
         account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)
@@ -320,7 +321,7 @@ def test_a_provisioned_password_is_used_and_not_logged(
 ) -> None:
     from werkzeug.security import check_password_hash
 
-    from backend.db import init_db
+    from backend.db import migrate_database
     from backend.db.repositories.user_accounts import BOOTSTRAP_ADMIN_PASSWORD_ENV
 
     provisioned = "provisioned-by-the-deployment-7"
@@ -330,7 +331,7 @@ def test_a_provisioned_password_is_used_and_not_logged(
         repos["conn"].commit()
 
     with caplog.at_level("WARNING"):
-        init_db(config.DATABASE_URL)
+        migrate_database(config.DATABASE_OWNER_URL, config.DATABASE_URL)
 
     with get_repos() as repos:
         account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)
@@ -342,7 +343,7 @@ def test_a_provisioned_password_is_used_and_not_logged(
 def test_a_weak_provisioned_password_stops_the_install(
     monkeypatch: pytest.MonkeyPatch, weak: str
 ) -> None:
-    from backend.db import init_db
+    from backend.db import migrate_database
     from backend.db.repositories.user_accounts import BOOTSTRAP_ADMIN_PASSWORD_ENV
 
     monkeypatch.setenv(BOOTSTRAP_ADMIN_PASSWORD_ENV, weak)
@@ -351,7 +352,7 @@ def test_a_weak_provisioned_password_stops_the_install(
         repos["conn"].commit()
 
     with pytest.raises(RuntimeError, match=BOOTSTRAP_ADMIN_PASSWORD_ENV):
-        init_db(config.DATABASE_URL)
+        migrate_database(config.DATABASE_OWNER_URL, config.DATABASE_URL)
 
 
 def test_an_install_still_holding_the_old_default_password_gets_it_replaced(
@@ -359,7 +360,7 @@ def test_an_install_still_holding_the_old_default_password_gets_it_replaced(
 ) -> None:
     from werkzeug.security import check_password_hash, generate_password_hash
 
-    from backend.db import init_db
+    from backend.db import migrate_database
     from backend.db.repositories.user_accounts import LEGACY_DEFAULT_ADMIN_PASSWORD
 
     with get_repos() as repos:
@@ -371,7 +372,7 @@ def test_an_install_still_holding_the_old_default_password_gets_it_replaced(
         repos["conn"].commit()
 
     with caplog.at_level("WARNING"):
-        init_db(config.DATABASE_URL)
+        migrate_database(config.DATABASE_OWNER_URL, config.DATABASE_URL)
 
     with get_repos() as repos:
         account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)
@@ -383,12 +384,12 @@ def test_an_install_still_holding_the_old_default_password_gets_it_replaced(
 def test_an_account_that_already_changed_its_password_is_left_alone(client) -> None:
     from werkzeug.security import check_password_hash
 
-    from backend.db import init_db
+    from backend.db import migrate_database
 
     _login_default_admin(client)
     assert _change_password(client).status_code == 200
 
-    init_db(config.DATABASE_URL)
+    migrate_database(config.DATABASE_OWNER_URL, config.DATABASE_URL)
 
     with get_repos() as repos:
         account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)

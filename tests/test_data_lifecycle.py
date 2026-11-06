@@ -28,13 +28,14 @@ from backend.security.data_lifecycle import (
     run_data_lifecycle_sweep,
     sweep_scheduled_deletions,
 )
+from tests.db_roles import runtime_database_url
 
 # ai: claude-sonnet-5 | 2026-09-28
 
 
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
 
 
 def _raw_connection(dsn: str):

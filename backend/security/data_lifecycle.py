@@ -10,10 +10,10 @@
 """Account deletion (after its grace period) and log-table retention pruning.
 
 Both are cross-tenant by nature -- one sweep acts across every account, the same
-shape as a migration or a key rotation -- so both run inside the same RLS-free
-bracket `backend/db/row_level_security.py`'s disable_for_migrations()/
-enable_and_force() give init_db() and rotate_all(). A per-request connection
-(get_repos(), scoped to one account) is the wrong tool for either of these.
+shape as a migration or a key rotation -- so both connect as the schema owner
+(config.DATABASE_OWNER_URL), which row-level security exempts by design (see
+backend/db/row_level_security.py). A per-request connection (get_repos(), the
+runtime role scoped to one account) is the wrong tool for either of these.
 
 Pruning is deliberately narrow: only tables that are purely informational logs,
 where deleting an old row can only shorten history a user could scroll back
@@ -32,7 +32,6 @@ from typing import Any
 import config
 from backend.db import get_connection
 from backend.db.repositories.user_accounts import PostgresUserAccountRepository
-from backend.db.row_level_security import disable_for_migrations, enable_and_force
 
 logger = logging.getLogger(__name__)
 
@@ -92,20 +91,16 @@ def prune_retention_tables(conn: Any) -> dict[str, int]:
     return removed
 
 
-def run_data_lifecycle_sweep(dsn: str) -> None:
-    """One full sweep: deletions past their grace period, then retention pruning.
-    Both need the RLS-free bracket (see module docstring); always re-armed before
-    the connection closes, success or failure, so the database is never left
-    unprotected because a sweep raised partway through."""
-    conn = get_connection(dsn)
+# ai: claude-opus-5-5 | 2026-11-06 -- `owner_dsn` instead of switching RLS off globally.
+def run_data_lifecycle_sweep(owner_dsn: str) -> None:
+    """One full sweep: deletions past their grace period, then retention pruning, in
+    one transaction. `owner_dsn` must be the schema owner's: it needs every account's
+    rows (see module docstring)."""
+    conn = get_connection(owner_dsn)
     try:
-        disable_for_migrations(conn)
-        try:
-            deleted = sweep_scheduled_deletions(conn)
-            pruned = prune_retention_tables(conn)
-            conn.commit()
-        finally:
-            enable_and_force(conn)
+        deleted = sweep_scheduled_deletions(conn)
+        pruned = prune_retention_tables(conn)
+        conn.commit()
     finally:
         conn.close()
     if deleted or any(pruned.values()):
@@ -136,7 +131,7 @@ def start_data_lifecycle_scheduler() -> None:
             interval_seconds = max(1.0, config.DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS) * 3600
             while True:
                 try:
-                    run_data_lifecycle_sweep(config.DATABASE_URL)
+                    run_data_lifecycle_sweep(config.DATABASE_OWNER_URL)
                 except Exception:
                     logger.exception("Data lifecycle sweep failed; retrying next interval")
                 time.sleep(interval_seconds)

@@ -31,6 +31,7 @@ from backend.db import (
 )
 from backend.db.row_level_security import set_current_user
 from routes.import_ import ImportProgressState, _active_imports, import_bp
+from tests.db_roles import runtime_database_url
 
 
 def _make_app() -> Flask:
@@ -217,7 +218,7 @@ _JOBGETHER_JOBPOSTING_HTML = """
 
 @pytest.fixture
 def repair_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, int]:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)

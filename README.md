@@ -84,7 +84,16 @@ Edit `.env` and set at least:
 ```
 FLASK_SECRET_KEY=<from the generate command>
 SETTINGS_ENCRYPTION_KEY=<from the generate command>
+POSTGRES_HOST / POSTGRES_PORT / POSTGRES_DB / POSTGRES_SSLMODE
+POSTGRES_USER / POSTGRES_PASSWORD          # the role that owns the tables
+POSTGRES_APP_USER / POSTGRES_APP_PASSWORD  # a separate role the app serves as
 ```
+
+The app serves requests as `POSTGRES_APP_USER`, never as the table owner, so
+Postgres row-level security applies to every request. Pick any new user name and a
+long random password; the app creates that role itself when it migrates at startup.
+It refuses to start if the two are the same role (see `deploy/README.md`,
+"Database roles and migrations").
 
 The app **refuses to start** without strong values for those two (a missing,
 example, or short value is an error). Everything else is optional. AI provider

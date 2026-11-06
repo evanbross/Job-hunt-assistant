@@ -22,16 +22,17 @@ rows, not all rows.
 connection (from an explicit `user_id` argument, or from the Flask session in request
 context). Every policy checks that GUC against the table's own `user_id` column.
 
-**Why table ownership doesn't quietly defeat this:** by default a table's owner is exempt
-from its own RLS policies -- and the app's one DB role owns every table. `FORCE ROW LEVEL
-SECURITY` removes that exemption, so the app's *normal* runtime connections are bound by
-the same policies as anyone else. That would also block `backend/db/schema.py`'s own
-migrations, which legitimately need to see every account's rows (backfills, one-time
-seeding) and have no single "current user" to set. `disable_for_migrations()` /
-`enable_and_force()` bracket that unrestricted work: schema.py disables RLS before running
-migrations and seed data, then this module re-arms it as the last step of `init_db()` --
-every startup, not just the first, since a fresh connection has no session state carried
-over from a previous run."""
+**Why table ownership doesn't quietly defeat this (since 2026-11-06):** a table's owner
+is exempt from its own RLS policies, so the app does not serve as the owner. Two roles
+(config.py, backend/db/app_role.py): the owner runs migrations and cross-account
+maintenance -- work that legitimately needs every account's rows and has no single
+"current user" -- and is exempt by design; the runtime role the app serves with owns
+nothing, so every policy applies to it, and the app refuses to start if it doesn't.
+
+This replaced FORCE ROW LEVEL SECURITY plus a disable/re-enable bracket around migrations
+and maintenance. That bracket was global DDL: while it was open, *every* connection --
+including the app serving other requests -- saw every account's rows. RLS is now never
+switched off; it is only ever armed."""
 
 from __future__ import annotations
 
@@ -76,31 +77,37 @@ def tenant_tables(cur: Any) -> list[str]:
     return [row["table_name"] for row in cur.fetchall() if row["table_name"] not in _EXCLUDED_FROM_RLS]
 
 
-def disable_for_migrations(conn: Any) -> None:
-    """Turn RLS off on every tenant table before schema.py's migrations/seed data run.
+# ai: claude-opus-5-5 | 2026-11-06
+def release_owner_from_rls(conn: Any) -> None:
+    """Undo FORCE ROW LEVEL SECURITY on every tenant table, the first step of every migrate.
 
-    Idempotent and safe on a fresh install too: DISABLE on a table that never had RLS
-    enabled is a no-op. Must run after tables exist but before any migration that reads or
-    writes across more than one account."""
+    Databases migrated before 2026-11-06 have FORCE on, which would subject the owner --
+    and so migrate_database's own backfills -- to the policies. NO FORCE only changes how
+    the *owner* is treated; RLS stays enabled for every other role, the runtime role
+    included. Idempotent."""
     cur = conn.cursor()
     for table in tenant_tables(cur):
         cur.execute(
-            sql.SQL("ALTER TABLE {} DISABLE ROW LEVEL SECURITY").format(sql.Identifier(table))
+            sql.SQL("ALTER TABLE {} NO FORCE ROW LEVEL SECURITY").format(sql.Identifier(table))
         )
     conn.commit()
 
 
-def enable_and_force(conn: Any) -> None:
-    """(Re-)arm RLS on every tenant table: the last step of init_db(), after migrations
-    and seeding have run with it off. Only ever restricts DML (SELECT/INSERT/UPDATE/
-    DELETE) -- a later ALTER TABLE by this same owning role is unaffected by its own
-    policies, so future schema changes don't need special-casing here."""
+# ai: claude-opus-5-5 | 2026-11-06 -- was enable_and_force(); FORCE is now NO FORCE (see
+# the module docstring) and the name says what it does.
+def arm_row_level_security(conn: Any) -> None:
+    """Enable RLS with the tenant policy on every tenant table, after migrations ran.
+
+    Applies to every role except the owner (and superusers / BYPASSRLS roles, which the
+    runtime role is checked never to be). Only ever restricts DML, so later schema
+    changes by the owner don't need special-casing here."""
     cur = conn.cursor()
     condition = "user_id = NULLIF(current_setting('app.current_user_id', true), '')::integer"
-    for table in tenant_tables(cur):
+    tables = tenant_tables(cur)
+    for table in tables:
         identifier = sql.Identifier(table)
         cur.execute(sql.SQL("ALTER TABLE {} ENABLE ROW LEVEL SECURITY").format(identifier))
-        cur.execute(sql.SQL("ALTER TABLE {} FORCE ROW LEVEL SECURITY").format(identifier))
+        cur.execute(sql.SQL("ALTER TABLE {} NO FORCE ROW LEVEL SECURITY").format(identifier))
         cur.execute(
             "SELECT 1 FROM pg_policies WHERE schemaname = 'public'"
             " AND tablename = %s AND policyname = %s",
@@ -117,7 +124,7 @@ def enable_and_force(conn: Any) -> None:
             sql.SQL("ALTER VIEW {} SET (security_invoker = true)").format(sql.Identifier(view))
         )
     conn.commit()
-    logger.info("Row-level security armed on %d tenant tables.", len(tenant_tables(cur)))
+    logger.info("Row-level security armed on %d tenant tables.", len(tables))
 
 
 def set_current_user(cur: Any, user_id: int | None) -> None:

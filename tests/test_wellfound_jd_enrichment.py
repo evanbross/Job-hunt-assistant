@@ -51,6 +51,7 @@ from backend.scanning.sources.wellfound_scraper import (
 )
 from backend.settings_service import set_setting
 from routes import scan
+from tests.db_roles import runtime_database_url
 
 _TRACKING_URL = "https://links.wellfound.com/s/c/AbC123/deadbeef/22"
 _SLUG_QUERY_URL = "https://wellfound.com/jobs?job_listing_slug=4446105-senior-engineer-backend-platform"
@@ -257,7 +258,7 @@ def test_scan_enriches_wellfound_job_via_fetcher(
         repos["conn"].close()
 
     FakeWellfoundJobFetcher.fetched_urls = []
-    monkeypatch.setattr(config, "DATABASE_URL", dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(dsn))
     monkeypatch.setattr(scan, "GmailClient", FakeGmailClient)
     monkeypatch.setattr(scan, "EmailParser", FakeEmailParser)
     monkeypatch.setattr(scan, "WellfoundJobFetcher", FakeWellfoundJobFetcher)

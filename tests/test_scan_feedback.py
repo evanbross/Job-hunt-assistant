@@ -34,6 +34,7 @@ from backend.db import open_repositories
 from backend.db.row_level_security import set_current_user
 from backend.settings_service import set_setting
 from routes import scan
+from tests.db_roles import runtime_database_url
 
 
 class FakeGmailClient:
@@ -134,7 +135,7 @@ def test_noise_feedback_does_not_skip_entire_email(
     finally:
         repos["conn"].close()
 
-    monkeypatch.setattr(config, "DATABASE_URL", dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(dsn))
     monkeypatch.setattr(scan, "GmailClient", FakeGmailClient)
     monkeypatch.setattr(scan, "EmailParser", FakeEmailParser)
 

@@ -20,9 +20,10 @@ from backend.db import (
     PostgresUserAccountRepository,
     PostgresUserSettingsRepository,
     get_connection,
-    init_db,
+    migrate_database,
 )
 from backend.db.row_level_security import set_current_user
+from tests.db_roles import runtime_database_url
 
 _NOW = "2026-10-21T12:00:00+00:00"
 _LATER = "2026-10-21T13:00:00+00:00"
@@ -122,8 +123,8 @@ def test_migration_copies_the_legacy_single_template_setting(pg_dsn: str) -> Non
         PostgresUserSettingsRepository(conn).set(user_id, "linkedin_outreach_template", "Hi {first_name}!")
         conn.commit()
 
-        init_db(pg_dsn)
-        init_db(pg_dsn)  # idempotent: a second startup must not duplicate or fail
+        migrate_database(pg_dsn, runtime_database_url(pg_dsn))
+        migrate_database(pg_dsn, runtime_database_url(pg_dsn))  # idempotent: a second startup must not duplicate or fail
 
         set_current_user(conn.cursor(), user_id)
         templates = PostgresOutreachTemplateRepository(conn).list_for_user(user_id)

@@ -70,6 +70,7 @@ Thumbs.db
 
 # Production deployment secrets (deploy/.env.production.example is the template)
 deploy/.env.production
+deploy/.env.migrate
 deploy/secrets/
 
 # Local helper script holding a GitLab token -- never commit

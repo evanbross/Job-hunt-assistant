@@ -21,11 +21,12 @@ from backend.db import (
     PostgresJobRepository,
     PostgresUserAccountRepository,
     get_connection,
-    init_db,
+    migrate_database,
 )
 from backend.db.repositories.company_aliases import PostgresCompanyAliasRepository
 from backend.db.row_level_security import set_current_user
 from backend.scoring.company_matching import normalize_company_name
+from tests.db_roles import runtime_database_url
 
 
 def _make_user(conn) -> int:
@@ -221,7 +222,7 @@ def test_get_outreach_company_relevance_through_the_latest_stage_view_and_tenant
 # was replaced). This exercises the real migration path end-to-end: a row
 # written before company_normalized existed (simulated here by inserting
 # around the repository, which would otherwise derive it itself) must get
-# backfilled correctly the next time init_db() runs.
+# backfilled correctly the next time migrate_database() runs.
 def test_migration_backfills_company_normalized_for_legacy_rows(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
@@ -235,7 +236,7 @@ def test_migration_backfills_company_normalized_for_legacy_rows(pg_dsn: str) -> 
         job_id = cur.fetchone()["id"]
         conn.commit()
 
-        init_db(pg_dsn)
+        migrate_database(pg_dsn, runtime_database_url(pg_dsn))
 
         cur.execute("SELECT company_normalized FROM jobs WHERE id = %s", (job_id,))
         row = cur.fetchone()

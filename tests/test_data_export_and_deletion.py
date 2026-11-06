@@ -21,6 +21,7 @@ import config
 from backend.security.data_export import export_user_data
 from backend.settings_service import set_setting
 from backend.utils.utils import get_repos
+from tests.db_roles import runtime_database_url
 
 # ai: claude-sonnet-5 | 2026-09-28
 
@@ -30,7 +31,7 @@ _PASSWORD = "correct horse battery staple"  # noqa: S105
 
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
 
 
 @pytest.fixture

@@ -34,7 +34,7 @@ session).
 
 The credential lives in the DB (user_accounts table), so every test here runs
 against the real local test Postgres via the pg_dsn fixture. pg_dsn's
-init_db() always leaves exactly one seeded account behind before any test body
+migrate_database() always leaves exactly one seeded account behind before any test body
 runs: the default-admin bootstrap account (email "admin@localhost", see
 DEFAULT_ADMIN_EMAIL in backend/db/repositories/user_accounts.py) —
 must_complete_setup=TRUE, so it never collides with the plain accounts these
@@ -62,6 +62,7 @@ import config
 import routes.session_auth as session_auth_module
 from backend.security.client_ip import TrustedProxyMiddleware, parse_trusted_proxies
 from backend.utils.utils import get_repos
+from tests.db_roles import runtime_database_url
 
 _TEST_EMAIL = "owner@example.com"
 _TEST_PASSWORD = "correct horse battery staple"  # noqa: S105
@@ -69,7 +70,7 @@ _TEST_PASSWORD = "correct horse battery staple"  # noqa: S105
 
 @pytest.fixture(autouse=True)
 def _test_db(pg_dsn: str, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     yield
 
 

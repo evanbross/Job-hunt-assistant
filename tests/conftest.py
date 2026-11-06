@@ -58,7 +58,7 @@ os.environ.setdefault("SETTINGS_ENCRYPTION_KEY", Fernet.generate_key().decode())
 os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026")
 
 import config  # noqa: E402
-from backend.db import init_db  # noqa: E402
+from backend.db import migrate_database  # noqa: E402
 from backend.security.rate_limiter import RateLimiter, set_rate_limiter  # noqa: E402
 from backend.security.task_ownership import (  # noqa: E402
     MemoryOwnerStore,
@@ -74,6 +74,7 @@ from tests.db_guard import (  # noqa: E402
     UnsafeTestDatabaseError,
     assert_safe_test_database,
 )
+from tests.db_roles import runtime_database_url  # noqa: E402
 from tests.db_snapshot import (  # noqa: E402
     SeededDatabaseSnapshot,
     describe_other_sessions,
@@ -99,6 +100,8 @@ def _build_test_database_url() -> str:
 
 
 TEST_DATABASE_URL = _build_test_database_url()
+# ai: claude-opus-5-5 | 2026-11-06 -- the runtime role the app under test serves as (tests/db_roles.py).
+TEST_APP_DATABASE_URL = runtime_database_url(TEST_DATABASE_URL)
 # CI reaches its throwaway Postgres service by name (e.g. "postgres"), not localhost. The
 # job must name that host explicitly; the database-name and own-database checks still apply.
 _EXTRA_TEST_DB_HOSTS = frozenset(
@@ -108,11 +111,22 @@ _EXTRA_TEST_DB_HOSTS = frozenset(
 )
 
 
+# ai: claude-opus-5-5 | 2026-11-06 -- the app now has two database URLs (owner and
+# runtime); the test database must be neither. Captured at import, before any fixture
+# points them at the test database.
+_REAL_APP_DATABASE_URLS = (config.DATABASE_URL, config.DATABASE_OWNER_URL)
+
+
+def _assert_safe_test_database() -> None:
+    for app_url in _REAL_APP_DATABASE_URLS:
+        assert_safe_test_database(TEST_DATABASE_URL, app_url, _EXTRA_TEST_DB_HOSTS)
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Abort before any test runs, so even tests that never request pg_dsn cannot be
     the first to discover the suite is pointed at a real database."""
     try:
-        assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL, _EXTRA_TEST_DB_HOSTS)
+        _assert_safe_test_database()
     except UnsafeTestDatabaseError as exc:
         pytest.exit(str(exc), returncode=2)
 
@@ -197,9 +211,9 @@ def flask_app() -> Flask:
 
 
 # ai: claude-sonnet-5 | 2026-09-26
-# ai: claude-opus-5-5 | 2026-11-03 — body extracted so the session-scoped init_db() below gets the same isolation
+# ai: claude-opus-5-5 | 2026-11-03 — body extracted so the session-scoped migrate_database() below gets the same isolation
 def _point_legacy_files_at(directory: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """init_db() runs one-time migrations that move the old shared files
+    """migrate_database() runs one-time migrations that move the old shared files
     (uploads/resume.pdf, the Google credentials and token files, the
     candidate profile) into the database, renaming or reading them; without this, running the suite against a
     developer checkout would consume their real files."""
@@ -221,7 +235,7 @@ def isolated_legacy_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 # ai: claude-sonnet-5 | 2026-09-27
 # ai: claude-opus-5-5 | 2026-11-03 — extracted from pg_dsn; the session fixture needs it too
 def _point_postgres_settings_at_test_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    """backend/db/readonly_role.py's ensure_readonly_role() (called by init_db) and
+    """backend/db/readonly_role.py's ensure_readonly_role() (called by migrate_database) and
     get_readonly_database_url() (routes/voice.py) read these directly, separately from
     DATABASE_URL. Without this they target the real app database (which doesn't exist
     locally), so the voice-query feature's read-only role silently never gets
@@ -232,28 +246,32 @@ def _point_postgres_settings_at_test_db(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(config, "POSTGRES_PORT", str(parsed.port))
     monkeypatch.setattr(config, "POSTGRES_DB", (parsed.path or "").lstrip("/"))
     monkeypatch.setattr(config, "POSTGRES_SSLMODE", "disable")
+    # ai: claude-opus-5-5 | 2026-11-06 -- the app serves as the runtime role, as in
+    # production; maintenance code (sweeps, key rotation) uses the owner.
+    monkeypatch.setattr(config, "DATABASE_URL", TEST_APP_DATABASE_URL)
+    monkeypatch.setattr(config, "DATABASE_OWNER_URL", TEST_DATABASE_URL)
 
 
 # ai: claude-opus-5-5 | 2026-11-03
 @pytest.fixture(scope="session")
 def seeded_database_snapshot(tmp_path_factory: pytest.TempPathFactory) -> SeededDatabaseSnapshot:
-    """init_db() once for the whole run, then the snapshot every pg_dsn reset
-    restores (see tests/db_snapshot.py for why this replaced a per-test init_db())."""
-    assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL, _EXTRA_TEST_DB_HOSTS)
+    """migrate_database() once for the whole run, then the snapshot every pg_dsn reset
+    restores (see tests/db_snapshot.py for why this replaced a per-test migrate_database())."""
+    _assert_safe_test_database()
     with pytest.MonkeyPatch.context() as session_patch:
         _point_legacy_files_at(tmp_path_factory.mktemp("session-legacy-files"), session_patch)
         _point_postgres_settings_at_test_db(session_patch)
         # Schema first (the database may predate this run's migrations), then empty
         # it -- it still holds whatever the previous run's last test left -- and seed
-        # again, so the snapshot is init_db()'s seed data and nothing else.
-        init_db(TEST_DATABASE_URL)
+        # again, so the snapshot is migrate_database()'s seed data and nothing else.
+        migrate_database(TEST_DATABASE_URL, TEST_APP_DATABASE_URL)
         conn = psycopg2.connect(TEST_DATABASE_URL)
         try:
             truncate_every_table(conn)
             conn.commit()
         finally:
             conn.close()
-        init_db(TEST_DATABASE_URL)
+        migrate_database(TEST_DATABASE_URL, TEST_APP_DATABASE_URL)
     conn = psycopg2.connect(TEST_DATABASE_URL)
     try:
         return SeededDatabaseSnapshot.capture(conn)
@@ -266,17 +284,17 @@ _RESET_LOCK_TIMEOUT = "15s"
 
 
 # ai: claude-sonnet-5 | 2026-07-25
-# ai: claude-opus-5-5 | 2026-11-03 — restores the session snapshot instead of running init_db() twice per test
+# ai: claude-opus-5-5 | 2026-11-03 — restores the session snapshot instead of running migrate_database() twice per test
 @pytest.fixture
 def pg_dsn(seeded_database_snapshot: SeededDatabaseSnapshot, monkeypatch: pytest.MonkeyPatch) -> str:
     """Reset the local Postgres test database to a clean, freshly-seeded state
-    and return its DSN. Tests must not assume any state beyond what init_db()'s
+    and return its DSN. Tests must not assume any state beyond what migrate_database()'s
     seed data provides — every table is emptied and re-seeded before each test.
 
     If an earlier test changed the schema (e.g. turned row-level security off to
-    exercise a migration), init_db() runs again first to put it back, as the
-    per-test init_db() this replaced always did."""
-    assert_safe_test_database(TEST_DATABASE_URL, config.DATABASE_URL, _EXTRA_TEST_DB_HOSTS)
+    exercise a migration), migrate_database() runs again first to put it back, as the
+    per-test migrate_database() this replaced always did."""
+    _assert_safe_test_database()
     _point_postgres_settings_at_test_db(monkeypatch)
     conn = psycopg2.connect(TEST_DATABASE_URL)
     try:
@@ -304,12 +322,12 @@ def pg_dsn(seeded_database_snapshot: SeededDatabaseSnapshot, monkeypatch: pytest
 def _reset_test_database(conn: Any, snapshot: SeededDatabaseSnapshot) -> None:
     if schema_fingerprint(conn) != snapshot.fingerprint:
         conn.rollback()
-        init_db(TEST_DATABASE_URL)
+        migrate_database(TEST_DATABASE_URL, TEST_APP_DATABASE_URL)
         if schema_fingerprint(conn) != snapshot.fingerprint:
             raise RuntimeError(
                 "The test database schema still differs from the session's freshly"
-                " initialized one after re-running init_db(): an earlier test left a"
-                " schema change init_db() doesn't undo."
+                " initialized one after re-running migrate_database(): an earlier test left a"
+                " schema change migrate_database() doesn't undo."
             )
     conn.rollback()  # end the fingerprint read's transaction before the reset's
     snapshot.restore(conn)

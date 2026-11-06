@@ -70,6 +70,10 @@ python scripts/manage_secrets.py rotate-encryption-key           # preview, chan
 python scripts/manage_secrets.py rotate-encryption-key --write   # apply
 ```
 
+Re-encryption reads every account's secrets, so it connects as the schema owner
+(`DATABASE_OWNER_URL`), which row-level security exempts. Run it where that URL is
+available (the same place you run `python -m backend.db.migrate`).
+
 `--write` does this in a safe order:
 
 1. Writes the new key as `SETTINGS_ENCRYPTION_KEY` and keeps the old one in

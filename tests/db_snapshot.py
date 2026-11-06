@@ -8,21 +8,21 @@
 # =============================================================================
 
 # ai: claude-opus-5-5 | 2026-11-03
-"""A snapshot of the test database right after init_db(), so the pg_dsn
-fixture can put every test back in that state without re-running init_db().
+"""A snapshot of the test database right after migrate_database(), so the pg_dsn
+fixture can put every test back in that state without re-running migrate_database().
 
-init_db() runs ~1,900 lines of idempotent migrations plus seeding, and pg_dsn
+migrate_database() runs ~1,900 lines of idempotent migrations plus seeding, and pg_dsn
 used to run it twice per test (before and after a TRUNCATE) -- most of a
 19-minute suite. Now it runs once per session; each test instead truncates
 every table and reloads the seed rows and sequence positions captured here.
 
 That is only equivalent if the schema itself is untouched, and some tests do
 change it: migration tests turn row-level security off (disable_for_migrations)
-or revert a column so they can watch init_db() fix it, and the per-test
-init_db() used to repair whatever they left behind. So each reset first
+or revert a column so they can watch migrate_database() fix it, and the per-test
+migrate_database() used to repair whatever they left behind. So each reset first
 compares a fingerprint of the schema (columns, defaults, indexes, constraints,
 RLS flags, policies, grants, sequences) with the one captured here, and runs
-init_db() again only when it differs.
+migrate_database() again only when it differs.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ def _set_forced_rls(cur: Any, table: str, forced: bool) -> None:
 
 
 class SeededDatabaseSnapshot:
-    """What init_db() left in the database: its schema fingerprint, every
+    """What migrate_database() left in the database: its schema fingerprint, every
     table's seed rows (in foreign-key order), and every sequence's position."""
 
     def __init__(

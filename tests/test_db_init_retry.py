@@ -26,7 +26,8 @@
 # =============================================================================
 
 # ai: claude-fable-5 | 2026-07-14
-"""Tests for init_db_with_retry degraded-startup behavior in backend.db."""
+"""Tests for migrate_database_with_retry degraded-startup behavior in backend.db
+(the desktop launcher's migrate-at-startup; renamed from init_db_with_retry 2026-11-06)."""
 
 from __future__ import annotations
 
@@ -37,7 +38,10 @@ import psycopg2
 import pytest
 
 import backend.db as backend_db
-from backend.db import db_startup_error, init_db_with_retry
+from backend.db import db_startup_error, migrate_database_with_retry
+
+_OWNER = "postgresql://owner@example/db"
+_APP = "postgresql://app@example/db"
 
 
 @pytest.fixture(autouse=True)
@@ -47,63 +51,61 @@ def reset_startup_error() -> Iterator[None]:
     backend_db._set_db_startup_error(None)
 
 
-def test_init_db_with_retry_succeeds_after_transient_failure(
+def test_migrate_with_retry_succeeds_after_transient_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    init_calls: list[str] = []
+    init_calls: list[tuple[str, str]] = []
     sleep_calls: list[float] = []
 
-    def flaky_init_db(dsn: str) -> None:
-        init_calls.append(dsn)
+    def flaky_migrate(owner_dsn: str, app_dsn: str) -> None:
+        init_calls.append((owner_dsn, app_dsn))
         if len(init_calls) == 1:
             raise psycopg2.OperationalError("connection timed out")
 
-    monkeypatch.setattr("backend.db.init_db", flaky_init_db)
+    monkeypatch.setattr("backend.db.migrate_database", flaky_migrate)
     monkeypatch.setattr("backend.db.time", SimpleNamespace(sleep=sleep_calls.append))
 
-    succeeded = init_db_with_retry("postgresql://example/db", attempts=3)
+    succeeded = migrate_database_with_retry(_OWNER, _APP, attempts=3)
 
     assert succeeded is True
-    assert len(init_calls) == 2
+    assert init_calls == [(_OWNER, _APP), (_OWNER, _APP)]
     assert sleep_calls == [2.0]
     assert db_startup_error() is None
 
 
-def test_init_db_with_retry_enters_degraded_mode_after_exhausting_attempts(
+def test_migrate_with_retry_enters_degraded_mode_after_exhausting_attempts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    background_calls: list[tuple[str, float]] = []
+    background_calls: list[tuple[str, str, float]] = []
 
-    def broken_init_db(dsn: str) -> None:
+    def broken_migrate(owner_dsn: str, app_dsn: str) -> None:
         raise psycopg2.OperationalError("connection timed out")
 
-    def record_background_retry(dsn: str, interval_seconds: float) -> None:
-        background_calls.append((dsn, interval_seconds))
+    def record_background_retry(owner_dsn: str, app_dsn: str, interval_seconds: float) -> None:
+        background_calls.append((owner_dsn, app_dsn, interval_seconds))
 
-    monkeypatch.setattr("backend.db.init_db", broken_init_db)
+    monkeypatch.setattr("backend.db.migrate_database", broken_migrate)
     monkeypatch.setattr("backend.db.time", SimpleNamespace(sleep=lambda _s: None))
     monkeypatch.setattr(
         "backend.db._start_background_init_retry", record_background_retry
     )
 
-    succeeded = init_db_with_retry(
-        "postgresql://example/db", attempts=2, background_interval_seconds=5.0
+    succeeded = migrate_database_with_retry(
+        _OWNER, _APP, attempts=2, background_interval_seconds=5.0
     )
 
     assert succeeded is False
     assert db_startup_error() == "connection timed out"
-    assert background_calls == [("postgresql://example/db", 5.0)]
+    assert background_calls == [(_OWNER, _APP, 5.0)]
 
 
 def test_background_retry_clears_degraded_flag_on_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend_db._set_db_startup_error("connection timed out")
-    monkeypatch.setattr("backend.db.init_db", lambda _dsn: None)
+    monkeypatch.setattr("backend.db.migrate_database", lambda _owner, _app: None)
     monkeypatch.setattr("backend.db.time", SimpleNamespace(sleep=lambda _s: None))
 
-    backend_db._run_background_init_retry(
-        "postgresql://example/db", interval_seconds=0.01
-    )
+    backend_db._run_background_init_retry(_OWNER, _APP, interval_seconds=0.01)
 
     assert db_startup_error() is None

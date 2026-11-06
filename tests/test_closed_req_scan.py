@@ -65,6 +65,7 @@ from routes.applications import (
     run_req_closed_scan_task,  # ai: claude-sonnet-5 | 2026-08-20
     submit_closed_req_capture,
 )
+from tests.db_roles import runtime_database_url
 
 
 # ai: claude-sonnet-5 | 2026-08-20
@@ -407,12 +408,12 @@ def test_throttle_host_fetch_spaces_same_host_only(
 # ai: claude-sonnet-5 | 2026-08-20
 # multi-tenancy: every table these tests touch now has a user_id column.
 # submit_closed_req_capture takes the acting user explicitly (the import
-# listener resolves it from the caller's extension token). pg_dsn's init_db()
+# listener resolves it from the caller's extension token). pg_dsn's migrate_database()
 # always leaves exactly one bootstrap admin account behind (id 1, guaranteed
 # by TRUNCATE...RESTART IDENTITY), which _fresh_repos returns for tests that
 # need one user.
 def _fresh_repos(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, int]:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     repos = open_repositories(pg_dsn)
     try:
         account = repos["user_accounts"].get_by_email(DEFAULT_ADMIN_EMAIL)

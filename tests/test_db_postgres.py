@@ -40,12 +40,13 @@ from backend.db import (
     PostgresUserAccountRepository,
     PostgresUserSettingsRepository,
     get_connection,
-    init_db,
+    migrate_database,
     open_repositories,
 )
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
-from backend.db.row_level_security import disable_for_migrations, set_current_user
+from backend.db.row_level_security import set_current_user
 from backend.db.schema import _migrate
+from tests.db_roles import runtime_database_url
 
 # ai: claude-sonnet-5 | 2026-07-25
 
@@ -684,7 +685,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
     a later startup, once the duplicate is gone."""
     conn = get_connection(pg_dsn)
     try:
-        # pg_dsn's init_db() already created the index (there was no legacy dirty
+        # pg_dsn's migrate_database() already created the index (there was no legacy dirty
         # data at that point) -- drop it to simulate a DB that predates the fix.
         cur = conn.cursor()
         cur.execute(f"DROP INDEX IF EXISTS {JOBS_URL_UNIQUE_INDEX}")
@@ -722,7 +723,6 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         conn.commit()
 
         # Startup migration must not crash despite the pre-existing duplicate.
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate(conn)
         assert not _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
         # Both legacy rows are left alone -- _migrate() only skips the index,
@@ -734,7 +734,6 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         set_current_user(conn.cursor(), user_id)
         jobs.delete(user_id, second_id)
         conn.commit()
-        disable_for_migrations(conn)
         _migrate(conn)
         assert _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
     finally:
@@ -746,7 +745,7 @@ def test_first_account_becomes_admin_and_stays_admin_across_migrations(
     pg_dsn: str,
 ) -> None:
     """See schema.py's _migrate() role-bootstrap block: whichever account
-    existed first (the placeholder pg_dsn's init_db() always creates, or --
+    existed first (the placeholder pg_dsn's migrate_database() always creates, or --
     on a real install -- the account that later claims it by registering)
     becomes 'admin'; every later registration defaults to 'user'. Re-running
     the migration must not change who's admin."""
@@ -765,7 +764,6 @@ def test_first_account_becomes_admin_and_stays_admin_across_migrations(
         assert second is not None
         assert second["role"] == "user"
 
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate(conn)  # idempotent re-run, e.g. app restart
 
         cur.execute("SELECT role FROM user_accounts WHERE id = %s", (first["id"],))
@@ -891,8 +889,8 @@ def test_migrate_renames_eval_stages_to_interview_and_code_eval(pg_dsn: str) -> 
         )
         conn.commit()
 
-        init_db(pg_dsn)
-        init_db(pg_dsn)  # idempotent re-run, e.g. app restart
+        migrate_database(pg_dsn, runtime_database_url(pg_dsn))
+        migrate_database(pg_dsn, runtime_database_url(pg_dsn))  # idempotent re-run, e.g. app restart
 
         cur.execute("SELECT key, label, sort_order, color_bg FROM application_stage_statuses")
         catalog = {row["key"]: row for row in cur.fetchall()}

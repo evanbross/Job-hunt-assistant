@@ -79,7 +79,15 @@ Original scope:
 - **Why:** gunicorn imports the app in every worker. Anything at import time — DB
   migrations, starting threads, spawning subprocesses — runs N times, concurrently.
 
-### 1.2 Pick and wire a WSGI server
+### 1.2 Pick and wire a WSGI server — done 2026-11-06
+`wsgi.py` + `gunicorn.conf.py` (gthread, `GUNICORN_WORKERS` × `GUNICORN_THREADS`,
+preload off); compose `app` runs it. `wsgi.py` never migrates and starts no threads;
+`web.serving.prepare_for_serving()` refuses to start on an unmigrated database or a
+role RLS wouldn't apply to. gunicorn is a non-Windows dependency (it can't run there).
+The old acceptance wording ("more streams than threads still answers") only holds for
+gevent; with gthread, capacity is a hard ceiling, now stated in `deploy/README.md`.
+
+Original scope:
 - `deploy/README.md` already lays out the constraint: each open tab holds a
   long-lived `/api/events` SSE stream, so a small fixed thread pool (Waitress) starves.
 - Recommendation: **gunicorn `gthread`**, sized `workers × threads` ≥ expected open
@@ -127,7 +135,19 @@ Fix once, generally: a small Redis-backed "per-user task registry" (keyed
 `jha:task:<kind>:<user_id>`, with TTL), and replace each dict with it. OAuth state
 can go in the signed session or Redis with a short TTL.
 
-### 1.6 Migrations as a release step, not a startup step
+### 1.6 Migrations as a release step, not a startup step — done 2026-11-06
+`python -m backend.db.migrate` (compose `migrate` service, its own profile) is the deploy
+step; it records a hash of the migration source in `schema_state`, and serving
+processes refuse to start on a mismatch (`backend/db/schema_version.py`). The RLS
+problem was fixed at the root rather than by sequencing: two DB roles. The owner
+(`DATABASE_OWNER_URL`) runs migrations and cross-account maintenance and is exempt
+from RLS by design; the app serves as a separate runtime role (`DATABASE_URL`) that
+RLS always applies to and that migrate creates and grants. RLS is never switched off
+any more — that also fixed the account-deletion sweep and key rotation, which used the
+same global disable/enable bracket. Moving the hand-rolled migrations to Alembic was
+not done (not needed for the release step).
+
+Original scope:
 - `init_db()` runs migrations on every app start, and the RLS bracket
   (`disable_for_migrations()` → `enable_and_force()`) turns RLS **off globally**
   while it runs. With more than one instance (or a rolling restart), instance B

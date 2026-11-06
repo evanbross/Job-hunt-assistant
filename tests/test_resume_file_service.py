@@ -26,7 +26,7 @@ from backend.db import (
     PostgresUserAccountRepository,
     get_connection,
 )
-from backend.db.row_level_security import disable_for_migrations, set_current_user
+from backend.db.row_level_security import set_current_user
 from backend.db.schema import _migrate_legacy_resume_file
 from backend.resume.resume_file_service import (
     MAX_RESUME_BYTES,
@@ -36,6 +36,7 @@ from backend.resume.resume_file_service import (
     validate_pdf_upload,
 )
 from routes.settings import settings_bp
+from tests.db_roles import runtime_database_url
 from web.extension_listener import get_resume_file_bytes
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -263,7 +264,6 @@ def test_legacy_file_is_attached_to_the_newest_resume_and_renamed(
         legacy_pdf = make_pdf("the shared file")
         (tmp_path / "resume.pdf").write_bytes(legacy_pdf)
 
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_resume_file(conn)
 
         service = ResumeFileService(PostgresResumeRepository(conn))
@@ -289,7 +289,6 @@ def test_legacy_migration_does_not_overwrite_an_existing_stored_file(
         conn.commit()
         (tmp_path / "resume.pdf").write_bytes(make_pdf("stale legacy"))
 
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_resume_file(conn)
 
         assert service.load_file(user_id) == (current, "current.pdf")
@@ -303,7 +302,6 @@ def test_legacy_file_that_is_not_a_pdf_is_left_alone(pg_dsn: str, tmp_path: Path
         _seed_two_resumes(conn)
         (tmp_path / "resume.pdf").write_bytes(b"definitely not a pdf")
 
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_resume_file(conn)
 
         assert (tmp_path / "resume.pdf").exists()
@@ -322,7 +320,6 @@ def test_legacy_migration_is_deferred_when_no_encryption_key_is_configured(
         monkeypatch.delenv("SETTINGS_ENCRYPTION_KEY")
         monkeypatch.setattr(crypto, "_fernet", None)
 
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_resume_file(conn)
 
         assert (tmp_path / "resume.pdf").exists()
@@ -345,7 +342,7 @@ def test_legacy_file_with_no_resume_rows_is_left_for_later(pg_dsn: str, tmp_path
 
 @pytest.fixture
 def resume_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, int]:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)

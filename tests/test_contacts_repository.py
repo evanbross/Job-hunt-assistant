@@ -20,9 +20,10 @@ from backend.db import (
     PostgresContactRepository,
     PostgresUserAccountRepository,
     get_connection,
-    init_db,
+    migrate_database,
 )
 from backend.db.row_level_security import set_current_user
+from tests.db_roles import runtime_database_url
 
 # ai: claude-sonnet-5 | 2026-07-25
 
@@ -545,9 +546,9 @@ def test_notes_survive_reimport_and_protect_contact_from_pruning(pg_dsn: str) ->
 # ai: claude-sonnet-5 | 2026-10-13
 # Exercises the real one-time migration path in backend/db/schema.py's
 # _migrate(): a row written back when interested was NOT NULL DEFAULT FALSE
-# (simulated here by reverting the column, since pg_dsn's own init_db() has
+# (simulated here by reverting the column, since pg_dsn's own migrate_database() has
 # already migrated it) must get backfilled to NULL (undecided) the next time
-# init_db() runs -- and a second init_db() run afterward must leave an
+# migrate_database() runs -- and a second migrate_database() run afterward must leave an
 # explicit FALSE set post-migration alone (the gate must not re-trigger).
 def test_migration_backfills_legacy_interested_false_to_undecided(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
@@ -563,7 +564,7 @@ def test_migration_backfills_legacy_interested_false_to_undecided(pg_dsn: str) -
         cur.execute("ALTER TABLE contacts ALTER COLUMN interested SET NOT NULL")
         conn.commit()
 
-        init_db(pg_dsn)
+        migrate_database(pg_dsn, runtime_database_url(pg_dsn))
 
         cur.execute("SELECT interested FROM contacts WHERE id = %s", (legacy_id,))
         assert cur.fetchone()["interested"] is None
@@ -571,7 +572,7 @@ def test_migration_backfills_legacy_interested_false_to_undecided(pg_dsn: str) -
         assert repo.update(user_id, legacy_id, {"interested": False})
         conn.commit()
 
-        init_db(pg_dsn)
+        migrate_database(pg_dsn, runtime_database_url(pg_dsn))
 
         cur.execute("SELECT interested FROM contacts WHERE id = %s", (legacy_id,))
         assert cur.fetchone()["interested"] is False
@@ -581,7 +582,7 @@ def test_migration_backfills_legacy_interested_false_to_undecided(pg_dsn: str) -
 
 # ai: claude-opus-5-5 | 2026-10-14
 # An install from before the LinkedIn outreach queue still has contact_emails
-# (no channel column, old constraint/sequence/index names). init_db() must
+# (no channel column, old constraint/sequence/index names). migrate_database() must
 # rename it in place -- keeping the logged rows, backfilled as 'email' -- not
 # create an empty contact_outreach next to it.
 def test_migration_renames_legacy_contact_emails_and_backfills_channel(pg_dsn: str) -> None:
@@ -614,7 +615,7 @@ def test_migration_renames_legacy_contact_emails_and_backfills_channel(pg_dsn: s
         cur.execute("ALTER INDEX idx_contact_outreach_user_id RENAME TO idx_contact_emails_user_id")
         conn.commit()
 
-        init_db(pg_dsn)
+        migrate_database(pg_dsn, runtime_database_url(pg_dsn))
 
         cur.execute(
             "SELECT table_name FROM information_schema.tables"

@@ -30,7 +30,7 @@ from backend.db import (
     get_connection,
 )
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
-from backend.db.row_level_security import disable_for_migrations, set_current_user
+from backend.db.row_level_security import set_current_user
 from backend.db.schema import _migrate_legacy_google_files
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.email.google_token_store import GoogleTokenStore
@@ -39,6 +39,7 @@ from backend.settings_service import get_setting, is_setting_configured
 from backend.utils.utils import get_repos
 from routes.auth import auth_bp
 from routes.setup import setup_bp
+from tests.db_roles import runtime_database_url
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -170,7 +171,7 @@ def test_deleting_a_user_removes_their_google_token(pg_dsn: str) -> None:
 
 @pytest.fixture
 def two_connected_users(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         first_id, second_id = _new_user(conn), _new_user(conn, "second@example.com")
@@ -198,7 +199,7 @@ def _stored_refresh_token(pg_dsn: str, user_id: int) -> str | None:
 def test_gmail_client_requires_a_connected_account(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)
@@ -258,7 +259,7 @@ def test_a_revoked_token_is_deleted_for_that_user_only(
 @pytest.fixture
 def auth_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, dict[str, int], dict[str, Any]]:
     """A Flask client for the auth blueprint, with a switchable 'logged-in' user."""
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         ids = {"a": _new_user(conn, "a@example.com"), "b": _new_user(conn, "b@example.com")}
@@ -427,7 +428,7 @@ def test_callback_rejects_missing_code_and_unknown_state(auth_client: Any) -> No
 
 @pytest.fixture
 def setup_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, dict[str, int], dict[str, Any]]:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     conn = get_connection(pg_dsn)
     try:
         admin = PostgresUserAccountRepository(conn).get_by_email(DEFAULT_ADMIN_EMAIL)["id"]
@@ -495,14 +496,13 @@ def _legacy_files(tmp_path: Path) -> tuple[Path, Path]:
 def test_legacy_files_move_into_the_database_and_are_renamed(
     pg_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     creds_file, token_file = _legacy_files(tmp_path)
     conn = get_connection(pg_dsn)
     try:
         first_id = PostgresUserAccountRepository(conn).get_by_email(DEFAULT_ADMIN_EMAIL)["id"]
         _new_user(conn, "later@example.com")
 
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_google_files(conn)
 
         assert not creds_file.exists() and not token_file.exists()
@@ -535,7 +535,6 @@ def test_legacy_migration_never_overwrites_an_existing_token_or_config(
             ("google_oauth_client_config", crypto.encrypt_secret('{"kept": true}')),
         )
 
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_google_files(conn)
 
         assert store.load(first_id).refresh_token == "already-here"
@@ -553,7 +552,6 @@ def test_legacy_migration_leaves_unusable_or_undecryptable_files_in_place(
     creds_file.write_text("{not json", encoding="utf-8")
     conn = get_connection(pg_dsn)
     try:
-        disable_for_migrations(conn)  # mirrors init_db(): migrations run RLS-free
         _migrate_legacy_google_files(conn)
         assert creds_file.exists() and not token_file.exists()
 

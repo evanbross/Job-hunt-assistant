@@ -42,6 +42,7 @@ from backend.db.job_queue_query import (
 from backend.db.keyset_pagination import encode_cursor
 from backend.db.row_level_security import set_current_user
 from routes.jobs import jobs_bp
+from tests.db_roles import runtime_database_url
 
 _HEAVY_COLUMNS = {"job_description", "raw_jd_snippet", "fit_reasoning", "certainty_reason"}
 _FUTURE = "2099-01-01"
@@ -373,7 +374,7 @@ def test_queue_position_is_the_jobs_index_in_the_listing(db) -> None:
 
 @pytest.fixture
 def client(db, monkeypatch: pytest.MonkeyPatch, pg_dsn: str):
-    monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
     app = Flask(__name__)
     app.secret_key = "test"
     app.register_blueprint(jobs_bp, url_prefix="/api")

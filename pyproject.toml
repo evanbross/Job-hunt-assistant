@@ -29,6 +29,7 @@ dependencies = [
     "sqlglot>=25.0.0",
     "cryptography>=42.0.0",
     "watchdog>=6.0.0",
+    "gunicorn>=23.0.0 ; sys_platform != 'win32'",
 ]
 
 [build-system]
