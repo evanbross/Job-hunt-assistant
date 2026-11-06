@@ -33,7 +33,6 @@ import json
 import logging
 import os
 import secrets
-import time
 from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, redirect, request
@@ -42,6 +41,7 @@ from google_auth_oauthlib.flow import Flow
 
 import config
 from backend.crypto import SettingsEncryptionKeyMissingError
+from backend.email.google_oauth_pending import PendingGoogleAuth, get_pending_auths
 from backend.email.google_token_store import GoogleTokenStore
 from backend.security.audit_log import (
     GOOGLE_CONNECTED,
@@ -65,30 +65,14 @@ auth_bp = Blueprint("auth", __name__)
 
 _GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 
-# ai: claude-opus-5-5 | 2026-11-02
-# Maps a random state token → {"verifier": str, "created_at": float,
-# "user_id": int, "return_origin": str}. The PKCE verifier lives here, not in
-# the Flask session, so the session only has to carry the login itself. The
-# callback still needs that login cookie (app.py's login gate, plus the
-# owner check below), and cookies are scoped by hostname but not by port, so
-# the flow has to start on the same hostname as GOOGLE_OAUTH_REDIRECT_URI.
+# ai: claude-opus-5-5 | 2026-11-06
+# A started flow (random state token -> PKCE verifier, the account that started
+# it, where to return) is kept server-side in backend/email/google_oauth_pending.py,
+# shared by every web worker, not in the Flask session, so the session only has to
+# carry the login itself. The callback still needs that login cookie (the login
+# gate, plus the owner check below), and cookies are scoped by hostname but not by
+# port, so the flow has to start on the same hostname as GOOGLE_OAUTH_REDIRECT_URI.
 # auth_google_start checks this up front: see _browser_origin.
-_pending_auths: dict[str, dict[str, object]] = {}
-_PENDING_AUTH_TTL_SECONDS = 600  # 10 minutes
-_PENDING_AUTH_MAX_SIZE = 50
-
-
-# ai: claude-sonnet-4-6 | 2026-06-25
-def _prune_pending_auths() -> None:
-    cutoff = time.monotonic() - _PENDING_AUTH_TTL_SECONDS
-    expired = [s for s, e in _pending_auths.items() if float(e["created_at"]) < cutoff]
-    for s in expired:
-        _pending_auths.pop(s, None)
-    while len(_pending_auths) > _PENDING_AUTH_MAX_SIZE:
-        oldest = min(
-            _pending_auths, key=lambda s: float(_pending_auths[s]["created_at"])
-        )
-        _pending_auths.pop(oldest, None)
 
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -200,9 +184,7 @@ def auth_google_start() -> ResponseReturnValue:
 
     flow = _build_flow(client_config)
 
-    # Random state token; the PKCE code verifier is kept server-side (see _pending_auths).
-    # ai: claude-sonnet-4-6 | 2026-06-25
-    _prune_pending_auths()
+    # Random state token; the PKCE code verifier is kept server-side (see above).
     state = secrets.token_urlsafe(32)
     auth_url, _ = flow.authorization_url(
         access_type="offline",
@@ -211,12 +193,15 @@ def auth_google_start() -> ResponseReturnValue:
         code_challenge_method="S256",
         state=state,
     )
-    _pending_auths[state] = {
-        "verifier": flow.code_verifier,
-        "created_at": time.monotonic(),
-        "user_id": current_user_id(),
-        "return_origin": return_origin,  # ai: claude-opus-5-5 | 2026-11-02
-    }
+    # ai: claude-opus-5-5 | 2026-11-06
+    get_pending_auths().put(
+        state,
+        PendingGoogleAuth(
+            verifier=flow.code_verifier,
+            user_id=current_user_id(),
+            return_origin=return_origin,
+        ),
+    )
     return jsonify({"auth_url": auth_url})
 
 
@@ -228,21 +213,19 @@ def auth_google_callback() -> ResponseReturnValue:
         return jsonify({"error": "Missing code parameter"}), 400
 
     state = request.args.get("state", "")
-    # ai: claude-sonnet-4-6 | 2026-06-25
-    _prune_pending_auths()
-    entry = _pending_auths.pop(state, None)
-    if not entry:
+    # ai: claude-opus-5-5 | 2026-11-06 -- single use: taking it removes it.
+    pending = get_pending_auths().take(state)
+    if pending is None:
         return (
             jsonify({"error": "OAuth state mismatch — please try connecting again."}),
             400,
         )
-    code_verifier = str(entry["verifier"])
 
     # ai: claude-sonnet-5 | 2026-09-26
     # The token must land in the account that started the flow. If a different
     # account is logged in on this browser now, someone is completing another
     # user's authorization inside their own session; refuse rather than attach it.
-    flow_owner_id = int(entry["user_id"])  # type: ignore[call-overload]
+    flow_owner_id = pending.user_id
     if current_user_id() != flow_owner_id:
         return (
             jsonify({"error": "This authorization was started by a different account."}),
@@ -254,7 +237,7 @@ def auth_google_callback() -> ResponseReturnValue:
         return jsonify({"error": "Google sign-in is no longer configured."}), 400
 
     flow = _build_flow(client_config)
-    flow.code_verifier = code_verifier
+    flow.code_verifier = pending.verifier
     flow.fetch_token(code=code)  # network call: no DB connection is open here
     with get_repos() as repos:
         GoogleTokenStore(repos["google_tokens"]).save(flow_owner_id, flow.credentials)
@@ -265,7 +248,7 @@ def auth_google_callback() -> ResponseReturnValue:
     # Back to the page the flow started from (Vite dev server or the built app).
     # Its hostname was checked against the redirect URI's at start, so this can't
     # send the browser off-site.
-    return redirect(f"{entry['return_origin']}/?auth=success")
+    return redirect(f"{pending.return_origin}/?auth=success")
 
 
 @auth_bp.route("/auth/disconnect", methods=["POST"])

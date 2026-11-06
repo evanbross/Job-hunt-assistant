@@ -32,9 +32,8 @@ from __future__ import annotations
 import json
 import logging
 import socket  # ai: claude-fable-5 | 2026-07-17
-import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from urllib.error import HTTPError as UrllibHTTPError  # ai: claude-fable-5 | 2026-07-17
 from urllib.error import URLError  # ai: claude-fable-5 | 2026-07-17
@@ -56,6 +55,8 @@ from pydantic import (
 )
 
 import config
+from backend.active_tasks import get_active_tasks
+from backend.celery_app import celery_app
 from backend.db import CaptureQueueOrigin, DuplicateJobUrlError
 from backend.db.job_columns import JobColumns
 from backend.db.job_queue_query import (
@@ -122,6 +123,7 @@ from backend.scoring.skip_reasons import (
     VALID_SKIP_REASONS,  # ai: claude-fable-5 | 2026-07-16
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
+from backend.task_progress import TaskProgress, run_status
 from backend.utils.stage_status_normalization import (
     effective_application_status,
     normalize_stage_status,
@@ -1599,8 +1601,10 @@ class WttjRepairState:
     error: str | None = None
 
 
-_wttj_repair_state = WttjRepairState()
-_wttj_repair_lock = threading.Lock()
+# ai: claude-opus-5-5 | 2026-11-06 -- one state per run, published as the Celery
+# task's progress (backend/task_progress.py), found per account through
+# backend/active_tasks.py: one account's run never shows in another's status.
+WTTJ_REPAIR_TASK_KIND = "wttj_repair"
 
 
 def _non_terminal_jobs(user_id: int, repos: dict) -> list[dict]:
@@ -1691,32 +1695,32 @@ def _fetch_wttj_page_html(url: str) -> str:
 
 # ai: claude-sonnet-4-6 | 2026-06-25
 # ai: claude-sonnet-5 | 2026-08-20 — user_id captured by start_wttj_repair()
-# (a real session exists there) and passed as a thread arg, since this thread
-# itself has no session.
-def _run_wttj_repair(user_id: int) -> None:
-    """Background thread: follow sendgrid redirects → real WTTJ URL → fetch JD → patch in-place."""
-    with _wttj_repair_lock:
-        _wttj_repair_state.running = True
-        _wttj_repair_state.progress = 0
-        _wttj_repair_state.total = 0
-        _wttj_repair_state.message = "Finding WTTJ jobs with broken URLs…"
-        _wttj_repair_state.current_company = ""
-        _wttj_repair_state.current_title = ""
-        _wttj_repair_state.repaired = []
-        _wttj_repair_state.url_only = []
-        _wttj_repair_state.title_fixed = []  # ai: claude-fable-5 | 2026-07-17
-        _wttj_repair_state.failed = []
-        _wttj_repair_state.skipped = []
-        _wttj_repair_state.error = None
+# (a real session exists there) and passed as a task arg, since the Celery
+# task itself has no session.
+def _run_wttj_repair(user_id: int, progress: TaskProgress[WttjRepairState]) -> None:
+    """Celery task body (run_wttj_repair_task): follow sendgrid redirects → real WTTJ URL → fetch JD → patch in-place."""
+    with progress.update():
+        progress.state.running = True
+        progress.state.progress = 0
+        progress.state.total = 0
+        progress.state.message = "Finding WTTJ jobs with broken URLs…"
+        progress.state.current_company = ""
+        progress.state.current_title = ""
+        progress.state.repaired = []
+        progress.state.url_only = []
+        progress.state.title_fixed = []  # ai: claude-fable-5 | 2026-07-17
+        progress.state.failed = []
+        progress.state.skipped = []
+        progress.state.error = None
 
     try:
         with get_repos(user_id) as repos:
             candidates = _wttj_repair_candidates(user_id, repos)
 
         total = len(candidates)
-        with _wttj_repair_lock:
-            _wttj_repair_state.total = total
-            _wttj_repair_state.message = (
+        with progress.update():
+            progress.state.total = total
+            progress.state.message = (
                 f"Repairing {total} job{'s' if total != 1 else ''}…"
             )
 
@@ -1734,19 +1738,19 @@ def _run_wttj_repair(user_id: int) -> None:
             url = (job.get("url") or "").strip()
             summary = {"id": job["id"], "company": company, "job_title": title}
 
-            with _wttj_repair_lock:
-                _wttj_repair_state.progress = i
-                _wttj_repair_state.current_company = company
-                _wttj_repair_state.current_title = title
-                _wttj_repair_state.message = (
+            with progress.update():
+                progress.state.progress = i
+                progress.state.current_company = company
+                progress.state.current_title = title
+                progress.state.message = (
                     f"Repairing {i + 1}/{total}: {company} — {title}…"
                 )
 
             # Jobs with no URL at all can't be auto-resolved.
             if not url:
                 skipped.append({**summary, "reason": "no url"})
-                with _wttj_repair_lock:
-                    _wttj_repair_state.skipped = list(skipped)
+                with progress.update():
+                    progress.state.skipped = list(skipped)
                 continue
 
             # ai: claude-fable-5 | 2026-07-17
@@ -1758,8 +1762,8 @@ def _run_wttj_repair(user_id: int) -> None:
                     failed.append(
                         {**summary, "reason": "redirect did not reach WTTJ"}
                     )
-                    with _wttj_repair_lock:
-                        _wttj_repair_state.failed = list(failed)
+                    with progress.update():
+                        progress.state.failed = list(failed)
                     continue
 
                 jd_text = ""
@@ -1786,12 +1790,12 @@ def _run_wttj_repair(user_id: int) -> None:
 
                 if jd_text:
                     repaired.append({**summary, "url": resolved})
-                    with _wttj_repair_lock:
-                        _wttj_repair_state.repaired = list(repaired)
+                    with progress.update():
+                        progress.state.repaired = list(repaired)
                 else:
                     url_only.append({**summary, "url": resolved})
-                    with _wttj_repair_lock:
-                        _wttj_repair_state.url_only = list(url_only)
+                    with progress.update():
+                        progress.state.url_only = list(url_only)
 
                 # Fall through so the resolved URL also gets the title check.
                 url = resolved
@@ -1817,15 +1821,15 @@ def _run_wttj_repair(user_id: int) -> None:
                 socket.error,
             ) as exc:
                 failed.append({**summary, "url": url, "reason": f"page fetch failed: {exc}"})
-                with _wttj_repair_lock:
-                    _wttj_repair_state.failed = list(failed)
+                with progress.update():
+                    progress.state.failed = list(failed)
                 continue
 
             fix_updates, problem = wttj_title_repair_updates(job, page_html)
             if problem:
                 failed.append({**summary, "url": url, "reason": problem})
-                with _wttj_repair_lock:
-                    _wttj_repair_state.failed = list(failed)
+                with progress.update():
+                    progress.state.failed = list(failed)
                 continue
             if not fix_updates:
                 continue  # title and company already match the page
@@ -1844,15 +1848,15 @@ def _run_wttj_repair(user_id: int) -> None:
                         repos["conn"].commit()
 
             title_fixed.append({**summary, **fix_updates, "url": url})
-            with _wttj_repair_lock:
-                _wttj_repair_state.title_fixed = list(title_fixed)
+            with progress.update():
+                progress.state.title_fixed = list(title_fixed)
 
-        with _wttj_repair_lock:
-            _wttj_repair_state.running = False
-            _wttj_repair_state.progress = total
-            _wttj_repair_state.current_company = ""
-            _wttj_repair_state.current_title = ""
-            _wttj_repair_state.message = (
+        with progress.update():
+            progress.state.running = False
+            progress.state.progress = total
+            progress.state.current_company = ""
+            progress.state.current_title = ""
+            progress.state.message = (
                 f"Done — {len(repaired)} fully repaired, {len(url_only)} URL only, "
                 f"{len(title_fixed)} titles/companies fixed, "
                 f"{len(failed)} failed, {len(skipped)} skipped (no URL)."
@@ -1860,47 +1864,38 @@ def _run_wttj_repair(user_id: int) -> None:
 
     except Exception as exc:
         logger.warning("WTTJ URL repair failed: %s", exc, exc_info=True)
-        with _wttj_repair_lock:
-            _wttj_repair_state.running = False
-            _wttj_repair_state.error = str(exc)
-            _wttj_repair_state.message = "Repair failed — see server logs"
+        with progress.update():
+            progress.state.running = False
+            progress.state.error = str(exc)
+            progress.state.message = "Repair failed — see server logs"
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+@celery_app.task(bind=True)
+def run_wttj_repair_task(self, user_id: int) -> dict:
+    progress = TaskProgress.for_task(self, WttjRepairState())
+    _run_wttj_repair(user_id, progress)
+    return asdict(progress.state)
 
 
 @jobs_bp.route("/jobs/repair-wttj-urls", methods=["POST"])
 def start_wttj_repair() -> ResponseReturnValue:
     """Kick off a background repair of WTTJ jobs with sendgrid/broken URLs."""
-    with _wttj_repair_lock:
-        if _wttj_repair_state.running:
-            return jsonify({"error": "Repair already running"}), 409
-    threading.Thread(
-        target=_run_wttj_repair,
-        args=(current_user_id(),),
-        daemon=True,
-        name="wttj-url-repair",
-    ).start()
+    user_id = current_user_id()  # ai: claude-opus-5-5 | 2026-11-06
+    task_id = get_active_tasks().submit_unless_running(
+        WTTJ_REPAIR_TASK_KIND, user_id, lambda: run_wttj_repair_task.delay(user_id).id
+    )
+    if task_id is None:
+        return jsonify({"error": "Repair already running"}), 409
     return jsonify({"status": "started"})
 
 
 @jobs_bp.route("/jobs/repair-wttj-urls/status", methods=["GET"])
 def wttj_repair_status() -> ResponseReturnValue:
     """Return the current WTTJ URL repair state."""
-    with _wttj_repair_lock:
-        return jsonify(
-            {
-                "running": _wttj_repair_state.running,
-                "progress": _wttj_repair_state.progress,
-                "total": _wttj_repair_state.total,
-                "message": _wttj_repair_state.message,
-                "current_company": _wttj_repair_state.current_company,
-                "current_title": _wttj_repair_state.current_title,
-                "repaired": _wttj_repair_state.repaired,
-                "url_only": _wttj_repair_state.url_only,
-                "title_fixed": _wttj_repair_state.title_fixed,  # ai: claude-fable-5 | 2026-07-17
-                "failed": _wttj_repair_state.failed,
-                "skipped": _wttj_repair_state.skipped,
-                "error": _wttj_repair_state.error,
-            }
-        )
+    return jsonify(  # ai: claude-opus-5-5 | 2026-11-06
+        run_status(WTTJ_REPAIR_TASK_KIND, current_user_id(), asdict(WttjRepairState()))
+    )
 
 
 # ── Broken-import rescan: jobs whose url is not a real http(s) URL ───────────
@@ -1930,8 +1925,10 @@ class RescanImportState:
     error: str | None = None
 
 
-_rescan_import_state = RescanImportState()
-_rescan_import_lock = threading.Lock()
+# ai: claude-opus-5-5 | 2026-11-06 -- one state per run, published as the Celery
+# task's progress (backend/task_progress.py), found per account through
+# backend/active_tasks.py: one account's run never shows in another's status.
+RESCAN_IMPORTS_TASK_KIND = "rescan_broken_imports"
 
 
 # ai: claude-sonnet-5 | 2026-07-10
@@ -1993,25 +1990,25 @@ def _group_candidates_by_email(candidates: list[dict]) -> dict[str, list[dict]]:
 
 # ai: claude-sonnet-5 | 2026-07-10
 # ai: claude-sonnet-5 | 2026-08-20 — user_id captured by start_rescan_broken_imports()
-# (a real session exists there) and passed as a thread arg, since this thread
-# itself has no session.
-def _run_rescan_broken_imports(user_id: int) -> None:
-    """Background thread: re-fetch each broken job's source email, re-parse it
+# (a real session exists there) and passed as a task arg, since the Celery
+# task itself has no session.
+def _run_rescan_broken_imports(user_id: int, progress: TaskProgress[RescanImportState]) -> None:
+    """Celery task body (run_rescan_broken_imports_task): re-fetch each broken job's source email, re-parse it
     with the current EmailParser, and recover the real URL + duplicate status."""
-    with _rescan_import_lock:
-        _rescan_import_state.running = True
-        _rescan_import_state.progress = 0
-        _rescan_import_state.total = 0
-        _rescan_import_state.message = "Finding jobs with unresolved URLs…"
-        _rescan_import_state.current_company = ""
-        _rescan_import_state.current_title = ""
-        _rescan_import_state.unskipped = []
-        _rescan_import_state.still_duplicate = []
-        _rescan_import_state.rescored = []
-        _rescan_import_state.applied_fixed = []
-        _rescan_import_state.url_only = []
-        _rescan_import_state.unresolved = []
-        _rescan_import_state.error = None
+    with progress.update():
+        progress.state.running = True
+        progress.state.progress = 0
+        progress.state.total = 0
+        progress.state.message = "Finding jobs with unresolved URLs…"
+        progress.state.current_company = ""
+        progress.state.current_title = ""
+        progress.state.unskipped = []
+        progress.state.still_duplicate = []
+        progress.state.rescored = []
+        progress.state.applied_fixed = []
+        progress.state.url_only = []
+        progress.state.unresolved = []
+        progress.state.error = None
 
     try:
         with get_repos(user_id) as repos:
@@ -2024,9 +2021,9 @@ def _run_rescan_broken_imports(user_id: int) -> None:
 
         groups = _group_candidates_by_email(candidates)
         total = len(candidates)
-        with _rescan_import_lock:
-            _rescan_import_state.total = total
-            _rescan_import_state.message = f"Rescanning {total} job{'s' if total != 1 else ''} across {len(groups)} email(s)…"
+        with progress.update():
+            progress.state.total = total
+            progress.state.message = f"Rescanning {total} job{'s' if total != 1 else ''} across {len(groups)} email(s)…"
 
         gmail = GmailClient(user_id)
         parser = EmailParser(user_id)
@@ -2064,11 +2061,11 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                 unresolved.extend(
                     {**s, "reason": f"fetch/parse failed: {exc}"} for s in summaries
                 )
-                with _rescan_import_lock:
-                    _rescan_import_state.unresolved = list(unresolved)
+                with progress.update():
+                    progress.state.unresolved = list(unresolved)
                 processed += len(group_rows)
-                with _rescan_import_lock:
-                    _rescan_import_state.progress = processed
+                with progress.update():
+                    progress.state.progress = processed
                 continue
 
             if len(parsed_jobs) != len(group_rows):
@@ -2081,21 +2078,21 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                 unresolved.extend(
                     {**s, "reason": "job count changed on re-parse"} for s in summaries
                 )
-                with _rescan_import_lock:
-                    _rescan_import_state.unresolved = list(unresolved)
+                with progress.update():
+                    progress.state.unresolved = list(unresolved)
                 processed += len(group_rows)
-                with _rescan_import_lock:
-                    _rescan_import_state.progress = processed
+                with progress.update():
+                    progress.state.progress = processed
                 continue
 
             for row, parsed in zip(group_rows, parsed_jobs):
                 job_id = int(row["id"])
                 company = row.get("company") or ""
                 title = row.get("job_title") or "Untitled"
-                with _rescan_import_lock:
-                    _rescan_import_state.current_company = company
-                    _rescan_import_state.current_title = title
-                    _rescan_import_state.message = (
+                with progress.update():
+                    progress.state.current_company = company
+                    progress.state.current_title = title
+                    progress.state.message = (
                         f"Rescanning {processed + 1}/{total}: {company} — {title}…"
                     )
 
@@ -2109,11 +2106,11 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                             "reason": "re-parse returned no URL",
                         }
                     )
-                    with _rescan_import_lock:
-                        _rescan_import_state.unresolved = list(unresolved)
+                    with progress.update():
+                        progress.state.unresolved = list(unresolved)
                     processed += 1
-                    with _rescan_import_lock:
-                        _rescan_import_state.progress = processed
+                    with progress.update():
+                        progress.state.progress = processed
                     continue
 
                 updates: dict = {"url": corrected_url}
@@ -2133,11 +2130,11 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                             "url": corrected_url,
                         }
                     )
-                    with _rescan_import_lock:
-                        _rescan_import_state.applied_fixed = list(applied_fixed)
+                    with progress.update():
+                        progress.state.applied_fixed = list(applied_fixed)
                     processed += 1
-                    with _rescan_import_lock:
-                        _rescan_import_state.progress = processed
+                    with progress.update():
+                        progress.state.progress = processed
                     continue
 
                 confidence = str(row.get(JobColumns.CERTAINTY_LEVEL) or "low")
@@ -2223,8 +2220,8 @@ def _run_rescan_broken_imports(user_id: int) -> None:
                             updates["status"] = "triage"
                             new_status = "triage"
                         rescored.append({**summary, "fit_score": score_result["score"]})
-                        with _rescan_import_lock:
-                            _rescan_import_state.rescored = list(rescored)
+                        with progress.update():
+                            progress.state.rescored = list(rescored)
                     except (
                         Exception
                     ) as exc:  # noqa: BLE001 - a scoring failure must not abort the rescan
@@ -2243,30 +2240,30 @@ def _run_rescan_broken_imports(user_id: int) -> None:
 
                 if new_status in ("skipped", "possible_duplicate"):
                     still_duplicate.append({**summary, "status": new_status})
-                    with _rescan_import_lock:
-                        _rescan_import_state.still_duplicate = list(still_duplicate)
+                    with progress.update():
+                        progress.state.still_duplicate = list(still_duplicate)
                 elif was_hidden:
                     unskipped.append({**summary, "status": new_status})
-                    with _rescan_import_lock:
-                        _rescan_import_state.unskipped = list(unskipped)
+                    with progress.update():
+                        progress.state.unskipped = list(unskipped)
                 else:
                     # Job was already visible (triage/pending_review) and stayed that
                     # way — url was still recovered, just not a status change worth
                     # its own headline bucket.
                     url_only.append({**summary, "status": new_status})
-                    with _rescan_import_lock:
-                        _rescan_import_state.url_only = list(url_only)
+                    with progress.update():
+                        progress.state.url_only = list(url_only)
 
                 processed += 1
-                with _rescan_import_lock:
-                    _rescan_import_state.progress = processed
+                with progress.update():
+                    progress.state.progress = processed
 
-        with _rescan_import_lock:
-            _rescan_import_state.running = False
-            _rescan_import_state.progress = total
-            _rescan_import_state.current_company = ""
-            _rescan_import_state.current_title = ""
-            _rescan_import_state.message = (
+        with progress.update():
+            progress.state.running = False
+            progress.state.progress = total
+            progress.state.current_company = ""
+            progress.state.current_title = ""
+            progress.state.message = (
                 f"Done — {len(unskipped)} unskipped, {len(still_duplicate)} still duplicate, "
                 f"{len(rescored)} re-scored, {len(applied_fixed)} applied-job URLs fixed, "
                 f"{len(url_only)} url only, {len(unresolved)} need manual review."
@@ -2274,10 +2271,10 @@ def _run_rescan_broken_imports(user_id: int) -> None:
 
     except NotAuthenticatedError as exc:
         logger.warning("Broken-import rescan failed — Gmail not authenticated: %s", exc)
-        with _rescan_import_lock:
-            _rescan_import_state.running = False
-            _rescan_import_state.error = str(exc)
-            _rescan_import_state.message = (
+        with progress.update():
+            progress.state.running = False
+            progress.state.error = str(exc)
+            progress.state.message = (
                 "Not authenticated with Gmail — see server logs"
             )
     except Exception as exc:
@@ -2286,48 +2283,38 @@ def _run_rescan_broken_imports(user_id: int) -> None:
         # `error` is serialized verbatim by GET /jobs/rescan-broken-imports/status —
         # don't put raw exception text where it reaches the client. Full detail is
         # already in the log line above.
-        with _rescan_import_lock:
-            _rescan_import_state.running = False
-            _rescan_import_state.error = "Rescan failed — see server logs"
-            _rescan_import_state.message = "Rescan failed — see server logs"
+        with progress.update():
+            progress.state.running = False
+            progress.state.error = "Rescan failed — see server logs"
+            progress.state.message = "Rescan failed — see server logs"
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+@celery_app.task(bind=True)
+def run_rescan_broken_imports_task(self, user_id: int) -> dict:
+    progress = TaskProgress.for_task(self, RescanImportState())
+    _run_rescan_broken_imports(user_id, progress)
+    return asdict(progress.state)
 
 
 @jobs_bp.route("/jobs/rescan-broken-imports", methods=["POST"])
 def start_rescan_broken_imports() -> ResponseReturnValue:
     """Kick off a background rescan of jobs whose url isn't a real http(s) link."""
-    with _rescan_import_lock:
-        if _rescan_import_state.running:
-            return jsonify({"error": "Rescan already running"}), 409
-    threading.Thread(
-        target=_run_rescan_broken_imports,
-        args=(current_user_id(),),
-        daemon=True,
-        name="broken-import-rescan",
-    ).start()
+    user_id = current_user_id()  # ai: claude-opus-5-5 | 2026-11-06
+    task_id = get_active_tasks().submit_unless_running(
+        RESCAN_IMPORTS_TASK_KIND, user_id, lambda: run_rescan_broken_imports_task.delay(user_id).id
+    )
+    if task_id is None:
+        return jsonify({"error": "Rescan already running"}), 409
     return jsonify({"status": "started"})
 
 
 @jobs_bp.route("/jobs/rescan-broken-imports/status", methods=["GET"])
 def rescan_broken_imports_status() -> ResponseReturnValue:
     """Return the current broken-import rescan state."""
-    with _rescan_import_lock:
-        return jsonify(
-            {
-                "running": _rescan_import_state.running,
-                "progress": _rescan_import_state.progress,
-                "total": _rescan_import_state.total,
-                "message": _rescan_import_state.message,
-                "current_company": _rescan_import_state.current_company,
-                "current_title": _rescan_import_state.current_title,
-                "unskipped": _rescan_import_state.unskipped,
-                "still_duplicate": _rescan_import_state.still_duplicate,
-                "rescored": _rescan_import_state.rescored,
-                "applied_fixed": _rescan_import_state.applied_fixed,
-                "url_only": _rescan_import_state.url_only,
-                "unresolved": _rescan_import_state.unresolved,
-                "error": _rescan_import_state.error,
-            }
-        )
+    return jsonify(  # ai: claude-opus-5-5 | 2026-11-06
+        run_status(RESCAN_IMPORTS_TASK_KIND, current_user_id(), asdict(RescanImportState()))
+    )
 
 
 # ── General import-issue repair sweep ─────────────────────────────────────────
@@ -2350,8 +2337,10 @@ class ImportRepairState:
     error: str | None = None
 
 
-_import_repair_state = ImportRepairState()
-_import_repair_lock = threading.Lock()
+# ai: claude-opus-5-5 | 2026-11-06 -- one state per run, published as the Celery
+# task's progress (backend/task_progress.py), found per account through
+# backend/active_tasks.py: one account's run never shows in another's status.
+IMPORT_REPAIR_TASK_KIND = "import_repair"
 
 # Mirrors the labels shown in frontend/src/utils/jobQueueUtils.js — kept as a
 # separate copy since this crosses the Python/JS boundary and is only used to
@@ -2543,35 +2532,35 @@ def _write_repair_findings_doc(
 
 
 # ai: claude-sonnet-5 | 2026-08-20 — user_id captured by start_import_repair()
-# (a real session exists there) and passed as a thread arg, since this thread
-# itself has no session.
-def _run_import_repair(user_id: int) -> None:
-    """Background thread: sweep non-terminal jobs for fixable import defects
+# (a real session exists there) and passed as a task arg, since the Celery
+# task itself has no session.
+def _run_import_repair(user_id: int, progress: TaskProgress[ImportRepairState]) -> None:
+    """Celery task body (run_import_repair_task): sweep non-terminal jobs for fixable import defects
     (missing title/company, homepage-only URL, JD body that's just a tracking
     link) and repair what can be fixed automatically. Also tallies recurring
     per-source defects into docs/import_repair_findings.md."""
-    with _import_repair_lock:
-        _import_repair_state.running = True
-        _import_repair_state.progress = 0
-        _import_repair_state.total = 0
-        _import_repair_state.message = "Finding jobs with import issues…"
-        _import_repair_state.current_company = ""
-        _import_repair_state.current_title = ""
-        _import_repair_state.title_or_company_fixed = []
-        _import_repair_state.url_fixed = []
-        _import_repair_state.jd_queued = []
-        _import_repair_state.unresolved = []
-        _import_repair_state.patterns = []
-        _import_repair_state.error = None
+    with progress.update():
+        progress.state.running = True
+        progress.state.progress = 0
+        progress.state.total = 0
+        progress.state.message = "Finding jobs with import issues…"
+        progress.state.current_company = ""
+        progress.state.current_title = ""
+        progress.state.title_or_company_fixed = []
+        progress.state.url_fixed = []
+        progress.state.jd_queued = []
+        progress.state.unresolved = []
+        progress.state.patterns = []
+        progress.state.error = None
 
     try:
         with get_repos(user_id) as repos:
             candidates = _non_terminal_jobs(user_id, repos)
 
         total = len(candidates)
-        with _import_repair_lock:
-            _import_repair_state.total = total
-            _import_repair_state.message = (
+        with progress.update():
+            progress.state.total = total
+            progress.state.message = (
                 f"Scanning {total} job{'s' if total != 1 else ''} for import issues…"
             )
 
@@ -2589,11 +2578,11 @@ def _run_import_repair(user_id: int) -> None:
             source = (job.get("source") or "Unknown").strip() or "Unknown"
             totals_by_source[source] = totals_by_source.get(source, 0) + 1
 
-            with _import_repair_lock:
-                _import_repair_state.progress = i
-                _import_repair_state.current_company = company
-                _import_repair_state.current_title = title
-                _import_repair_state.message = (
+            with progress.update():
+                progress.state.progress = i
+                progress.state.current_company = company
+                progress.state.current_title = title
+                progress.state.message = (
                     f"Checking {i + 1}/{total}: {company} — {title}…"
                 )
 
@@ -2618,28 +2607,28 @@ def _run_import_repair(user_id: int) -> None:
                         },
                     }
                 )
-                with _import_repair_lock:
-                    _import_repair_state.title_or_company_fixed = list(
+                with progress.update():
+                    progress.state.title_or_company_fixed = list(
                         title_or_company_fixed
                     )
 
             if "url" in updates:
                 url_fixed.append({**summary, "url": updates["url"]})
-                with _import_repair_lock:
-                    _import_repair_state.url_fixed = list(url_fixed)
+                with progress.update():
+                    progress.state.url_fixed = list(url_fixed)
 
             if "jd_body_is_tracking_link" in warnings:
                 jd_queued.append(summary)
-                with _import_repair_lock:
-                    _import_repair_state.jd_queued = list(jd_queued)
+                with progress.update():
+                    progress.state.jd_queued = list(jd_queued)
 
             # jd_body_is_tracking_link is "handled" (queued for async capture) even
             # though it's still technically unresolved — don't show it as stuck.
             stuck = [w for w in remaining if w != "jd_body_is_tracking_link"]
             if stuck:
                 unresolved.append({**summary, "warnings": stuck})
-                with _import_repair_lock:
-                    _import_repair_state.unresolved = list(unresolved)
+                with progress.update():
+                    progress.state.unresolved = list(unresolved)
 
             for code in remaining:
                 key = (source, code)
@@ -2655,13 +2644,13 @@ def _run_import_repair(user_id: int) -> None:
         findings = _compute_repair_patterns(totals_by_source, warning_counts)
         _write_repair_findings_doc(findings, previous)
 
-        with _import_repair_lock:
-            _import_repair_state.running = False
-            _import_repair_state.progress = total
-            _import_repair_state.current_company = ""
-            _import_repair_state.current_title = ""
-            _import_repair_state.patterns = findings
-            _import_repair_state.message = (
+        with progress.update():
+            progress.state.running = False
+            progress.state.progress = total
+            progress.state.current_company = ""
+            progress.state.current_title = ""
+            progress.state.patterns = findings
+            progress.state.message = (
                 f"Done — {len(title_or_company_fixed)} title/company fixed, "
                 f"{len(url_fixed)} URL fixed, {len(jd_queued)} queued for browser capture, "
                 f"{len(unresolved)} still unresolved."
@@ -2669,45 +2658,36 @@ def _run_import_repair(user_id: int) -> None:
 
     except Exception as exc:
         logger.warning("Import repair sweep failed: %s", exc, exc_info=True)
-        with _import_repair_lock:
-            _import_repair_state.running = False
-            _import_repair_state.error = str(exc)
-            _import_repair_state.message = "Repair failed — see server logs"
+        with progress.update():
+            progress.state.running = False
+            progress.state.error = str(exc)
+            progress.state.message = "Repair failed — see server logs"
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+@celery_app.task(bind=True)
+def run_import_repair_task(self, user_id: int) -> dict:
+    progress = TaskProgress.for_task(self, ImportRepairState())
+    _run_import_repair(user_id, progress)
+    return asdict(progress.state)
 
 
 @jobs_bp.route("/jobs/repair-import-issues", methods=["POST"])
 def start_import_repair() -> ResponseReturnValue:
     """Kick off a background sweep to auto-fix jobs with missing title/company,
     homepage-only URLs, or a JD body that's only a tracking link."""
-    with _import_repair_lock:
-        if _import_repair_state.running:
-            return jsonify({"error": "Repair already running"}), 409
-    threading.Thread(
-        target=_run_import_repair,
-        args=(current_user_id(),),
-        daemon=True,
-        name="import-issue-repair",
-    ).start()
+    user_id = current_user_id()  # ai: claude-opus-5-5 | 2026-11-06
+    task_id = get_active_tasks().submit_unless_running(
+        IMPORT_REPAIR_TASK_KIND, user_id, lambda: run_import_repair_task.delay(user_id).id
+    )
+    if task_id is None:
+        return jsonify({"error": "Repair already running"}), 409
     return jsonify({"status": "started"})
 
 
 @jobs_bp.route("/jobs/repair-import-issues/status", methods=["GET"])
 def import_repair_status() -> ResponseReturnValue:
     """Return the current import-issue repair sweep state."""
-    with _import_repair_lock:
-        return jsonify(
-            {
-                "running": _import_repair_state.running,
-                "progress": _import_repair_state.progress,
-                "total": _import_repair_state.total,
-                "message": _import_repair_state.message,
-                "current_company": _import_repair_state.current_company,
-                "current_title": _import_repair_state.current_title,
-                "title_or_company_fixed": _import_repair_state.title_or_company_fixed,
-                "url_fixed": _import_repair_state.url_fixed,
-                "jd_queued": _import_repair_state.jd_queued,
-                "unresolved": _import_repair_state.unresolved,
-                "patterns": _import_repair_state.patterns,
-                "error": _import_repair_state.error,
-            }
-        )
+    return jsonify(  # ai: claude-opus-5-5 | 2026-11-06
+        run_status(IMPORT_REPAIR_TASK_KIND, current_user_id(), asdict(ImportRepairState()))
+    )

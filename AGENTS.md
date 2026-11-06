@@ -34,6 +34,7 @@ Key files:
 - `app.py` — desktop launcher: DB init, extension servers, Vite, Celery worker + beat, dev Caddy
 - `backend/celery_app.py` — Celery app, queues (`celery`, owner-only `maintenance`) and the beat schedule; scheduled ticks live next to their routes (`routes/career_sites.py`, `routes/jd_health_check.py`) and in `backend/security/data_lifecycle.py`
 - `backend/active_tasks.py` — which background run each account last started, in Redis, so web and Celery processes never start a second one
+- `backend/task_progress.py` — a per-account run's progress as Celery task meta, and the status payload every run's status route returns
 - `wsgi.py` + `gunicorn.conf.py` — hosted web server entry point (never migrates); `python -m backend.db.migrate` is the deploy-time migration step
 - `web/extension_listener.py` — the browser extension's HTTP listener + WebSocket; `python -m web.extension_listener` runs them as their own process in a hosted deployment (the desktop runs them inside `app.py`). Import progress is shared through Redis (`backend/scanning/import_progress.py`)
 - `backend/db/app_role.py` — two DB roles: the owner (`DATABASE_OWNER_URL`, migrations/maintenance, RLS-exempt) and the runtime role the app serves as (`DATABASE_URL`, RLS always applies)

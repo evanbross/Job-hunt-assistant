@@ -7,7 +7,7 @@
 # Licensing inquiries: license@zombietech.biz
 # =============================================================================
 
-"""TLS options for the Celery broker / result backend.
+"""TLS options for the Celery broker / result backend, and the app's Redis clients.
 
 A `rediss://` URL turns on TLS, but Celery's default for it does not verify the
 server certificate, which defeats most of the point. This returns options that
@@ -19,6 +19,10 @@ from __future__ import annotations
 import ssl
 from typing import Any
 from urllib.parse import urlparse
+
+import redis
+
+import config
 
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -32,3 +36,14 @@ def redis_ssl_options(redis_url: str, ca_file: str) -> dict[str, Any] | None:
             "without verifying the Redis server certificate."
         )
     return {"ssl_cert_reqs": ssl.CERT_REQUIRED, "ssl_ca_certs": ca_file.strip()}
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def app_redis_client(**options: Any) -> redis.Redis:
+    """A client for config.REDIS_URL, verifying the server certificate on rediss://.
+
+    *options* are redis-py's (timeouts, health checks): each caller picks its own.
+    Building the client doesn't connect, so an unreachable Redis surfaces per call,
+    not at import."""
+    tls = redis_ssl_options(config.REDIS_URL, config.REDIS_TLS_CA_FILE) or {}
+    return redis.Redis.from_url(config.REDIS_URL, **tls, **options)

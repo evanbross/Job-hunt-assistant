@@ -33,7 +33,6 @@ import json
 import logging
 import re
 import socket
-import threading
 import time  # ai: claude-fable-5 | 2026-07-17
 from collections.abc import Collection
 from datetime import UTC, date, datetime, timedelta
@@ -46,6 +45,7 @@ from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from backend.active_tasks import get_active_tasks
 from backend.celery_app import celery_app
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE, DuplicateJobUrlError
 from backend.email.classification import maybe_mark_source_email_read
@@ -53,6 +53,7 @@ from backend.scanning.closed_req_scan_helpers import (
     canonicalize_wttj_url,  # ai: claude-fable-5 | 2026-07-17 — shared with WTTJ repair
     rate_limit_backoff_seconds,  # ai: claude-fable-5 | 2026-07-17 — shared with WTTJ repair
 )
+from backend.scanning.host_fetch_spacing import get_host_fetch_spacing
 from backend.scoring.skip_reasons import (
     REQ_CLOSED_SKIP_REASON,
     is_req_closed_job_row,
@@ -66,7 +67,6 @@ from backend.utils.utils import (
     current_user_id,
     get_repos,
     invalid_request_response,
-    is_celery_task_active,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,35 +111,14 @@ _CLOSED_REQ_FETCH_MAX_BYTES = 2_000_000
 # app.welcometothejungle.com starts returning HTTP 429 after roughly 60 rapid
 # requests, so an unpaced scan over a large candidate list mislabels the whole
 # tail of the list. Successive fetches to the same host are therefore spaced at
-# least _HOST_FETCH_MIN_INTERVAL_SECONDS apart, and a 429 that still slips
+# least _HOST_FETCH_MIN_INTERVAL_SECONDS apart (across every worker process:
+# backend/scanning/host_fetch_spacing.py), and a 429 that still slips
 # through is retried after the server's Retry-After (or a default backoff, see
 # backend.scanning.closed_req_scan_helpers.rate_limit_backoff_seconds) before being reported as transient
 # ('unreachable' — never 'bad_url').
 _HOST_FETCH_MIN_INTERVAL_SECONDS = 1.0
 _RATE_LIMIT_MAX_RETRIES = 2
 
-_host_fetch_last_at: dict[str, float] = {}
-_host_fetch_lock = threading.Lock()
-
-
-# ai: claude-fable-5 | 2026-07-17
-def _throttle_host_fetch(host: str) -> None:
-    """Sleep as needed so successive fetches to the same host stay at least
-    _HOST_FETCH_MIN_INTERVAL_SECONDS apart. Fetches to different hosts are
-    never delayed by each other."""
-    while True:
-        with _host_fetch_lock:
-            now = time.monotonic()
-            last = _host_fetch_last_at.get(host)
-            wait = (
-                0.0
-                if last is None
-                else last + _HOST_FETCH_MIN_INTERVAL_SECONDS - now
-            )
-            if wait <= 0:
-                _host_fetch_last_at[host] = now
-                return
-        time.sleep(wait)
 
 
 
@@ -639,7 +618,9 @@ def _check_closed_req(url: str, platform: str) -> str:
     # ai: claude-fable-5 | 2026-07-17
     retries_left = _RATE_LIMIT_MAX_RETRIES
     while True:
-        _throttle_host_fetch(urlparse(url).netloc)
+        get_host_fetch_spacing().wait_turn(  # ai: claude-opus-5-5 | 2026-11-06
+            urlparse(url).netloc, _HOST_FETCH_MIN_INTERVAL_SECONDS
+        )
         try:
             with safe_urlopen(req, timeout=_CLOSED_REQ_FETCH_TIMEOUT_SECONDS) as resp:
                 raw = resp.read(_CLOSED_REQ_FETCH_MAX_BYTES)
@@ -680,18 +661,11 @@ def _check_closed_req(url: str, platform: str) -> str:
         return _classify_closed_req_page(page_text, final_url, platform)
 
 
-# ai: claude-sonnet-5 | 2026-08-20
-# ── Req-closed scan task tracking (in-memory pointer only) ────────────────────
-# Progress lives in Celery's Redis result backend; this just remembers which
-# task_id to poll, mirroring routes/jd_health_check.py's
-# _submit_jd_health_check_run. Keyed by user_id (multi-tenancy) so two users'
-# scans never collide or show each other's progress — mirrors
-# routes/scan.py's _scan_last_task_id_by_user.
-_closed_req_last_task_id_by_user: dict[int, str] = {}
-# ai: claude-sonnet-5 | 2026-08-25 — see is_celery_task_active for why a bare
-# task_id isn't enough to tell "genuinely running" apart from "stale PENDING".
-_closed_req_submitted_at_by_user: dict[int, float] = {}
-_closed_req_lock = threading.Lock()
+# ai: claude-opus-5-5 | 2026-11-06
+# ── Req-closed scan task tracking ───────────────────────────────────────────────
+# Progress lives in Celery's Redis result backend; backend/active_tasks.py
+# remembers which scan each account last started, shared by every process.
+CLOSED_REQ_SCAN_TASK_KIND = "closed_req_scan"
 
 
 def _submit_closed_req_scan(
@@ -699,21 +673,14 @@ def _submit_closed_req_scan(
 ) -> str | None:
     """Dispatch a closed-req scan unless one is already active. Returns the
     new task id, or None if a scan was already running."""
-    with _closed_req_lock:
-        existing = _closed_req_last_task_id_by_user.get(user_id)
-        submitted_at = _closed_req_submitted_at_by_user.get(user_id)
-        if existing is not None and is_celery_task_active(
-            AsyncResult(existing, app=celery_app).state, submitted_at
-        ):
-            return None
-        # ai: claude-sonnet-5 | 2026-09-20 — Celery's JSON serializer can't
-        # encode a frozenset; send a sorted list over the wire instead.
-        task = run_req_closed_scan_task.delay(
-            user_id, platforms=sorted(platforms) if platforms is not None else None
-        )
-        _closed_req_last_task_id_by_user[user_id] = task.id
-        _closed_req_submitted_at_by_user[user_id] = time.monotonic()
-        return task.id
+    # ai: claude-sonnet-5 | 2026-09-20 — Celery's JSON serializer can't
+    # encode a frozenset; send a sorted list over the wire instead.
+    platform_list = sorted(platforms) if platforms is not None else None
+    return get_active_tasks().submit_unless_running(
+        CLOSED_REQ_SCAN_TASK_KIND,
+        user_id,
+        lambda: run_req_closed_scan_task.delay(user_id, platforms=platform_list).id,
+    )
 
 
 def _closed_req_candidates(repos: dict, user_id: int) -> list[tuple[dict, str, str]]:
@@ -1344,9 +1311,8 @@ def closed_req_scan_status() -> ResponseReturnValue:
     with get_repos() as repos:
         browser_queue = _closed_req_browser_queue_snapshot(repos, user_id)
 
-    with _closed_req_lock:
-        task_id = _closed_req_last_task_id_by_user.get(user_id)
-        submitted_at = _closed_req_submitted_at_by_user.get(user_id)
+    active_tasks = get_active_tasks()
+    record = active_tasks.latest(CLOSED_REQ_SCAN_TASK_KIND, user_id)
 
     _idle = {
         "running": False,
@@ -1370,13 +1336,13 @@ def closed_req_scan_status() -> ResponseReturnValue:
         "last_run_at": None,
         "error": None,
     }
-    if task_id is None:
+    if record is None:
         return jsonify(_idle)
 
-    result = AsyncResult(task_id, app=celery_app)
+    result = AsyncResult(record.task_id, app=celery_app)
     result_state = result.state
 
-    if is_celery_task_active(result_state, submitted_at):
+    if active_tasks.is_running(record, result_state):
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
@@ -1404,7 +1370,7 @@ def closed_req_scan_status() -> ResponseReturnValue:
         )
 
     # ai: claude-sonnet-5 | 2026-08-25
-    # A PENDING state that reached here (i.e. failed is_celery_task_active
+    # A PENDING state that reached here (i.e. failed active_tasks.is_running
     # above) means the result backend has no record of this task_id at all —
     # its result already expired, or it was never picked up. Report idle
     # rather than the FAILURE/REVOKED branch below, which would otherwise

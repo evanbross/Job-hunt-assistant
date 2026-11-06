@@ -1471,7 +1471,7 @@ def career_scan_status() -> ResponseReturnValue:
         )
 
     # ai: claude-sonnet-5 | 2026-08-25
-    # A PENDING state that reached here (i.e. failed is_celery_task_active
+    # A PENDING state that reached here (i.e. failed active_tasks.is_running
     # above) means the result backend has no record of this task_id at all —
     # its result already expired, or it was never picked up. Report idle
     # rather than the FAILURE/REVOKED branch below, which would otherwise

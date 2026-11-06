@@ -33,8 +33,7 @@ from typing import Protocol
 
 import redis
 
-import config
-from backend.security.redis_tls import redis_ssl_options
+from backend.security.redis_tls import app_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -185,20 +184,15 @@ def get_user_events() -> UserEvents:
     global _events
     with _lock:
         if _events is None:
-            ssl_options = redis_ssl_options(config.REDIS_URL, config.REDIS_TLS_CA_FILE) or {}
-            publisher = redis.Redis.from_url(
-                config.REDIS_URL,
+            publisher = app_redis_client(
                 socket_timeout=_PUBLISH_TIMEOUT_SECONDS,
                 socket_connect_timeout=_PUBLISH_TIMEOUT_SECONDS,
-                **ssl_options,
             )
             # No socket_timeout: a subscription is idle by design, and
             # get_message(timeout=...) bounds each wait instead.
-            subscriber = redis.Redis.from_url(
-                config.REDIS_URL,
+            subscriber = app_redis_client(
                 socket_connect_timeout=_PUBLISH_TIMEOUT_SECONDS,
                 health_check_interval=_SUBSCRIBER_HEALTH_CHECK_SECONDS,
-                **ssl_options,
             )
             _events = RedisUserEvents(publisher, subscriber)
         return _events

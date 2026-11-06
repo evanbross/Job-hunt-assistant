@@ -203,18 +203,17 @@ _CELERY_TASK_ACTIVE_STATES: frozenset[str] = frozenset({"STARTED", "PROGRESS", "
 _CELERY_PENDING_GRACE_SECONDS = 30
 
 
-# ai: claude-opus-5-5 | 2026-11-06 -- `now` lets a cross-process caller use wall-clock times.
+# ai: claude-opus-5-5 | 2026-11-06 -- wall clock: submitted_at is shared between processes.
 def is_celery_task_active(
     state: str,
     submitted_at: float | None,
     *,
     grace_seconds: float = _CELERY_PENDING_GRACE_SECONDS,
-    now: float | None = None,
 ) -> bool:
     """True if a Celery task's *state* means it's genuinely still running.
 
     Every "is a scan/search/re-eval already running?" guard in this codebase
-    tracks a task_id in an in-memory per-user dict and checks
+    records the task_id it dispatched (backend/active_tasks.py) and checks
     AsyncResult(task_id).state. That state string is ambiguous for PENDING:
     Celery reports PENDING both for a task that's genuinely queued and
     hasn't started yet, and for a task_id the result backend has no record
@@ -224,23 +223,21 @@ def is_celery_task_active(
     task_id's result ages out past that TTL, even though nothing has
     actually been running for the last 59 minutes.
 
-    submitted_at (time.monotonic() at dispatch time, stored alongside the
+    submitted_at (time.time() at dispatch time, stored alongside the
     task_id) resolves the ambiguity: a task_id that's still within
     grace_seconds of being dispatched is treated as active even at PENDING
     (Celery just hasn't picked it up yet); once that window passes, PENDING
     is treated as stale rather than active. STARTED/PROGRESS/RETRY are
     unambiguous and always active regardless of submitted_at.
 
-    submitted_at and now must come from the same clock. now defaults to
-    time.monotonic(), which only means anything inside one process; a record
-    shared between processes (backend/active_tasks.py) stores time.time() and
-    passes now=time.time().
+    Wall clock, not time.monotonic(): the record is written by one process
+    (a web worker) and read by another (a Celery worker), and monotonic
+    readings mean nothing outside the process that took them.
     """
     if state in _CELERY_TASK_ACTIVE_STATES:
         return True
     if state == "PENDING":
-        current = time.monotonic() if now is None else now
-        return submitted_at is not None and (current - submitted_at) < grace_seconds
+        return submitted_at is not None and (time.time() - submitted_at) < grace_seconds
     return False
 
 

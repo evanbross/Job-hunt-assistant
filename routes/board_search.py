@@ -30,8 +30,6 @@
 from __future__ import annotations
 
 import logging
-import threading
-import time
 from datetime import UTC, datetime
 
 from celery.result import AsyncResult
@@ -39,6 +37,7 @@ from flask import Blueprint, jsonify
 from flask.typing import ResponseReturnValue
 
 import config
+from backend.active_tasks import get_active_tasks
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
 from backend.db.job_columns import JobColumns
@@ -54,7 +53,6 @@ from backend.utils.utils import (
     current_user_id,
     get_candidate_profile,
     get_repos,
-    is_celery_task_active,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,34 +60,20 @@ logger = logging.getLogger(__name__)
 board_search_bp = Blueprint("board_search", __name__)
 
 
-# ai: claude-sonnet-5 | 2026-08-20
-# ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
-# ─── Board-search task tracking (in-memory pointer only) ───────────────────────
-# Progress itself lives in Celery's Redis result backend (durable, readable from
-# any process); this just remembers which task_id to poll, mirroring
-# routes/jd_health_check.py's _submit_jd_health_check_run.
-_board_search_last_task_id_by_user: dict[int, str] = {}
-# ai: claude-sonnet-5 | 2026-08-25 — see is_celery_task_active for why a bare
-# task_id isn't enough to tell "genuinely running" apart from "stale PENDING".
-_board_search_submitted_at_by_user: dict[int, float] = {}
-_board_search_lock = threading.Lock()
+# ai: claude-opus-5-5 | 2026-11-06
+# ─── Board-search task tracking ─────────────────────────────────────────────────
+# Progress itself lives in Celery's Redis result backend; backend/active_tasks.py
+# remembers which search each account last started, shared by every process.
+BOARD_SEARCH_TASK_KIND = "board_search"
 
 
 def _submit_board_search(user_id: int) -> str | None:
     """Dispatch a board search for user_id unless one is already active for
     that user. Returns the new task id, or None if a search was already
     running for this user."""
-    with _board_search_lock:
-        existing = _board_search_last_task_id_by_user.get(user_id)
-        submitted_at = _board_search_submitted_at_by_user.get(user_id)
-        if existing is not None and is_celery_task_active(
-            AsyncResult(existing, app=celery_app).state, submitted_at
-        ):
-            return None
-        task = run_board_search_task.delay(user_id)
-        _board_search_last_task_id_by_user[user_id] = task.id
-        _board_search_submitted_at_by_user[user_id] = time.monotonic()
-        return task.id
+    return get_active_tasks().submit_unless_running(
+        BOARD_SEARCH_TASK_KIND, user_id, lambda: run_board_search_task.delay(user_id).id
+    )
 
 
 _FALLBACK_QUERIES: list[str] = [
@@ -132,7 +116,7 @@ def run_board_search_task(self, user_id: int) -> dict:
     """Proactive job-board search pipeline, run as a Celery task so progress
     survives a restart and POST /api/board-search returns immediately.
     Progress is published via self.update_state; see the module-level note
-    on _board_search_last_task_id_by_user for how the status route finds it."""
+    on BOARD_SEARCH_TASK_KIND for how the status route finds it."""
     state: dict[str, object] = {
         "progress": 0,
         "message": "Generating search queries…",
@@ -424,10 +408,8 @@ def start_board_search() -> ResponseReturnValue:
 
 @board_search_bp.route("/board-search/status")
 def board_search_status() -> ResponseReturnValue:
-    user_id = current_user_id()
-    with _board_search_lock:
-        task_id = _board_search_last_task_id_by_user.get(user_id)
-        submitted_at = _board_search_submitted_at_by_user.get(user_id)
+    active_tasks = get_active_tasks()
+    record = active_tasks.latest(BOARD_SEARCH_TASK_KIND, current_user_id())
 
     _idle = {
         "running": False,
@@ -443,13 +425,13 @@ def board_search_status() -> ResponseReturnValue:
         "below_min_score": 0,
         "errors": [],
     }
-    if task_id is None:
+    if record is None:
         return jsonify(_idle)
 
-    result = AsyncResult(task_id, app=celery_app)
+    result = AsyncResult(record.task_id, app=celery_app)
     state = result.state
 
-    if is_celery_task_active(state, submitted_at):
+    if active_tasks.is_running(record, state):
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
@@ -469,7 +451,7 @@ def board_search_status() -> ResponseReturnValue:
         )
 
     # ai: claude-sonnet-5 | 2026-08-25
-    # A PENDING state that reached here (i.e. failed is_celery_task_active
+    # A PENDING state that reached here (i.e. failed active_tasks.is_running
     # above) means the result backend has no record of this task_id at all —
     # its result already expired, or it was never picked up. Report idle
     # rather than the FAILURE/REVOKED branch below, which would otherwise

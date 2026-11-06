@@ -27,8 +27,7 @@ from typing import Protocol
 
 import redis
 
-import config
-from backend.security.redis_tls import redis_ssl_options
+from backend.security.redis_tls import app_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -93,12 +92,7 @@ def get_task_ownership() -> TaskOwnership:
     global _ownership
     with _lock:
         if _ownership is None:
-            client = redis.Redis.from_url(
-                config.REDIS_URL,
-                socket_timeout=1,
-                socket_connect_timeout=1,
-                **(redis_ssl_options(config.REDIS_URL, config.REDIS_TLS_CA_FILE) or {}),
-            )
+            client = app_redis_client(socket_timeout=1, socket_connect_timeout=1)
             _ownership = TaskOwnership(RedisOwnerStore(client))
         return _ownership
 

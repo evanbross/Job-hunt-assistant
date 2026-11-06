@@ -137,11 +137,10 @@ def test_run_wttj_repair_only_sees_the_calling_users_jobs(
         lambda url: (_ for _ in ()).throw(URLError("blocked in test")),
     )
 
-    jobs_route._run_wttj_repair(two_users.owner_id)
+    state = jobs_route.run_wttj_repair_task(two_users.owner_id)  # ai: claude-opus-5-5 | 2026-11-06
 
-    state = jobs_route._wttj_repair_state
-    assert state.total == 1, "should only count the owner's one WTTJ job, not both accounts'"
-    assert [f["id"] for f in state.failed] == [owner_job]
+    assert state["total"] == 1, "should only count the owner's one WTTJ job, not both accounts'"
+    assert [f["id"] for f in state["failed"]] == [owner_job]
     assert (
         two_users.job_row(other_job, as_user_id=two_users.other_id) == other_before
     ), "other account's job must be untouched"
@@ -163,11 +162,10 @@ def test_run_import_repair_only_sees_the_calling_users_jobs(
 
     monkeypatch.setattr(jobs_route, "_write_repair_findings_doc", lambda *a, **k: None)
 
-    jobs_route._run_import_repair(two_users.owner_id)
+    state = jobs_route.run_import_repair_task(two_users.owner_id)  # ai: claude-opus-5-5 | 2026-11-06
 
-    state = jobs_route._import_repair_state
-    assert state.total == 1, "should only count the owner's one candidate job, not both accounts'"
-    assert state.error is None
+    assert state["total"] == 1, "should only count the owner's one candidate job, not both accounts'"
+    assert state["error"] is None
     assert (
         two_users.job_row(other_job, as_user_id=two_users.other_id) == other_before
     ), "other account's job must be untouched"
@@ -451,12 +449,11 @@ def test_run_rescan_broken_imports_only_sees_the_calling_users_jobs(
 
     monkeypatch.setattr(jobs_route, "GmailClient", _FakeGmailClientNoNetwork)
 
-    jobs_route._run_rescan_broken_imports(two_users.owner_id)
+    state = jobs_route.run_rescan_broken_imports_task(two_users.owner_id)  # ai: claude-opus-5-5 | 2026-11-06
 
-    state = jobs_route._rescan_import_state
-    assert state.total == 1, "should only count the owner's one broken job, not both accounts'"
-    assert [u["id"] for u in state.unresolved] == [owner_job]
-    assert state.error is None
+    assert state["total"] == 1, "should only count the owner's one broken job, not both accounts'"
+    assert [u["id"] for u in state["unresolved"]] == [owner_job]
+    assert state["error"] is None
     assert (
         two_users.job_row(other_job, as_user_id=two_users.other_id) == other_before
     ), "other account's job must be untouched"

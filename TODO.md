@@ -262,5 +262,5 @@ Neon-backed install currently needs.
       release step), remaining single-machine assumptions, Google restricted-scope
       verification, email/DNS/extension store, backups/monitoring, legal.
       Done so far (2026-11-06): 1.1 app factory, 1.2 gunicorn, 1.3 standalone
-      listener, 1.4 Celery beat, 1.6 migrate step + two DB roles. Next: rest of 1.5
-      (OAuth `_pending_auths` first), 1.7 Dockerfile.
+      listener, 1.4 Celery beat, 1.5 per-process state into Redis, 1.6 migrate
+      step + two DB roles. Next: 1.7 Dockerfile.

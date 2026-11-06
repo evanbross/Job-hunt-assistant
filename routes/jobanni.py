@@ -31,16 +31,18 @@
 from __future__ import annotations
 
 import logging
-import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 
+from backend.active_tasks import get_active_tasks
+from backend.celery_app import celery_app
 from backend.scanning.sources.jobanni_scanner import scan as jobanni_scan
 from backend.settings_service import get_setting, get_setting_int
+from backend.task_progress import TaskProgress, run_status
 from backend.tasks import run_import_task
 from backend.utils.url_safety import UnsafeUrlError, validate_outbound_url
 from backend.utils.utils import current_user_id, get_repos
@@ -50,7 +52,12 @@ logger = logging.getLogger(__name__)
 jobanni_bp = Blueprint("jobanni", __name__)
 
 
-# ── Scan state (in-memory, protected by a lock) ───────────────────────────────
+# ai: claude-opus-5-5 | 2026-11-06
+# ── Scan state ──────────────────────────────────────────────────────────────────
+# One per run, published as the Celery task's progress (backend/task_progress.py);
+# backend/active_tasks.py remembers each account's last run, so a status poll on
+# any web worker finds it and one account's scan never shows in another's status.
+JOBANNI_SCAN_TASK_KIND = "jobanni_scan"
 
 
 @dataclass
@@ -66,21 +73,30 @@ class JobanniScanState:
     error: str | None = None
 
 
-_state = JobanniScanState()
-_lock = threading.Lock()
+
+# ── Background scan task ──────────────────────────────────────────────────────
 
 
-def _update(**kwargs: object) -> None:
-    with _lock:
+# ai: claude-opus-5-5 | 2026-11-06
+@celery_app.task(bind=True)
+def run_jobanni_scan_task(self, user_id: int, search_url: str, max_jobs: int) -> dict:
+    reporter = TaskProgress.for_task(self, JobanniScanState())
+    _run_scan(user_id, search_url, max_jobs, reporter)
+    return asdict(reporter.state)
+
+
+def _update(reporter: TaskProgress[JobanniScanState], **kwargs: object) -> None:
+    with reporter.update() as state:
         for key, value in kwargs.items():
-            setattr(_state, key, value)
+            setattr(state, key, value)
 
 
-# ── Background scan thread ────────────────────────────────────────────────────
 
-
-def _run_scan(user_id: int, search_url: str, max_jobs: int) -> None:
+def _run_scan(
+    user_id: int, search_url: str, max_jobs: int, reporter: TaskProgress[JobanniScanState]
+) -> None:
     _update(
+        reporter,
         running=True,
         progress=0,
         total=max_jobs,
@@ -92,7 +108,7 @@ def _run_scan(user_id: int, search_url: str, max_jobs: int) -> None:
     try:
 
         def on_progress(current: int, total: int, message: str) -> None:
-            _update(progress=current, total=total, message=message)
+            _update(reporter, progress=current, total=total, message=message)
 
         jobs = jobanni_scan(
             search_url=search_url,
@@ -102,13 +118,14 @@ def _run_scan(user_id: int, search_url: str, max_jobs: int) -> None:
 
         if not jobs:
             _update(
+                reporter,
                 running=False,
                 message="Scan complete — no new jobs found",
                 last_run_at=datetime.now(UTC).isoformat(timespec="seconds"),
             )
             return
 
-        _update(found=len(jobs), message=f"Queueing {len(jobs)} jobs for import…")
+        _update(reporter, found=len(jobs), message=f"Queueing {len(jobs)} jobs for import…")
 
         task = run_import_task.delay(
             user_id,
@@ -118,6 +135,7 @@ def _run_scan(user_id: int, search_url: str, max_jobs: int) -> None:
         )
 
         _update(
+            reporter,
             running=False,
             task_id=task.id,
             last_found=len(jobs),
@@ -127,10 +145,10 @@ def _run_scan(user_id: int, search_url: str, max_jobs: int) -> None:
 
     except RuntimeError as exc:
         logger.error("Jobanni scan error: %s", exc)
-        _update(running=False, error=str(exc), message="Scan failed — see server logs")
+        _update(reporter, running=False, error=str(exc), message="Scan failed — see server logs")
     except Exception as exc:
         logger.error("Jobanni scan unexpected error: %s", exc, exc_info=True)
-        _update(running=False, error=str(exc), message="Scan failed — see server logs")
+        _update(reporter, running=False, error=str(exc), message="Scan failed — see server logs")
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -164,10 +182,6 @@ class JobanniScanRequest(BaseModel):
 @jobanni_bp.route("/jobanni/scan", methods=["POST"])
 def start_scan() -> ResponseReturnValue:
     """Trigger a Jobanni scrape and enqueue results for import."""
-    with _lock:
-        if _state.running:
-            return jsonify({"error": "Scan already running"}), 409
-
     # ai: claude-fable-5 | 2026-07-15 — validate the boundary data and reject
     # unsafe scan targets before the background thread ever starts.
     try:
@@ -208,33 +222,22 @@ def start_scan() -> ResponseReturnValue:
             max_jobs = get_setting_int("jobanni_max_jobs", user_id, repos, 50)
     max_jobs = min(max(max_jobs, 1), 500)
 
-    threading.Thread(
-        target=_run_scan,
-        args=(user_id, search_url, max_jobs),
-        daemon=True,
-        name="jobanni-scan",
-    ).start()
-
+    # ai: claude-opus-5-5 | 2026-11-06
+    task_id = get_active_tasks().submit_unless_running(
+        JOBANNI_SCAN_TASK_KIND,
+        user_id,
+        lambda: run_jobanni_scan_task.delay(user_id, search_url, max_jobs).id,
+    )
+    if task_id is None:
+        return jsonify({"error": "Scan already running"}), 409
     return jsonify({"status": "started"})
 
 
 @jobanni_bp.route("/jobanni/status", methods=["GET"])
 def scan_status() -> ResponseReturnValue:
     """Return the current Jobanni scan state."""
+    user_id = current_user_id()
     with get_repos() as repos:
-        default_search_url = get_setting("jobanni_search_url", current_user_id(), repos)
-    with _lock:
-        return jsonify(
-            {
-                "running": _state.running,
-                "progress": _state.progress,
-                "total": _state.total,
-                "message": _state.message,
-                "found": _state.found,
-                "task_id": _state.task_id,
-                "last_run_at": _state.last_run_at,
-                "last_found": _state.last_found,
-                "error": _state.error,
-                "default_search_url": default_search_url,
-            }
-        )
+        default_search_url = get_setting("jobanni_search_url", user_id, repos)
+    status = run_status(JOBANNI_SCAN_TASK_KIND, user_id, asdict(JobanniScanState()))
+    return jsonify({**status, "default_search_url": default_search_url})

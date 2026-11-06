@@ -33,8 +33,7 @@ from typing import Protocol, TypeVar
 
 import redis
 
-import config
-from backend.security.redis_tls import redis_ssl_options
+from backend.security.redis_tls import app_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -160,15 +159,12 @@ class RateLimiter:
         self._primary_down_until = 0.0
 
     @classmethod
-    def from_redis_url(cls, url: str, ca_file: str) -> RateLimiter:
-        """Limiter backed by Redis. Building the client does not connect, so an unreachable
-        Redis shows up as degraded operation, not a failure to start."""
-        options = redis_ssl_options(url, ca_file) or {}
-        client = redis.Redis.from_url(
-            url,
+    def from_app_redis(cls) -> RateLimiter:
+        """Limiter backed by the app's Redis. Building the client does not connect, so an
+        unreachable Redis shows up as degraded operation, not a failure to start."""
+        client = app_redis_client(
             socket_timeout=_REDIS_TIMEOUT_SECONDS,
             socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
-            **options,
         )
         return cls(RedisBackend(client))
 
@@ -241,7 +237,7 @@ def get_rate_limiter() -> RateLimiter:
     global _limiter
     with _limiter_lock:
         if _limiter is None:
-            _limiter = RateLimiter.from_redis_url(config.REDIS_URL, config.REDIS_TLS_CA_FILE)
+            _limiter = RateLimiter.from_app_redis()
         return _limiter
 
 

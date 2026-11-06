@@ -139,29 +139,38 @@ Original scope:
   slow fallback tick, tasks are the work.
 - The file watcher is a separate problem — see 2.3.
 
-### 1.5 Move per-process state into Redis or the DB — partly done 2026-11-06
-Done: `routes/import_.py`'s `_active_imports` (import progress) moved to Redis as part of
-1.3, capped per account instead of process-wide. Still per-process: the rest of the list
-below.
+### 1.5 Move per-process state into Redis or the DB — done 2026-11-06
+Nothing a second web or worker process needs to see is kept in one process's memory any
+more. Each item, and where it went:
 
-These module-level dicts only work when there is exactly one web process. Behind a
-multi-worker server, a status poll can land on a worker that never saw the job start:
-
-- ~~`routes/import_.py` `_active_imports` (import progress)~~ — done, `backend/scanning/import_progress.py`
-- `routes/auth.py:67` `_pending_auths` (**OAuth state — the callback can hit a
-  different worker and fail**)
-- `routes/applications.py:121` `_host_fetch_last_at` (per-host politeness throttle)
+- `routes/import_.py` `_active_imports` (import progress) — Redis,
+  `backend/scanning/import_progress.py` (with 1.3), capped per account.
 - The `_*_last_task_id_by_user` / `_*_submitted_at_by_user` pairs in `scan.py`,
-  `board_search.py`, `fit.py`, `greenhouse.py`, `applications.py`
-  (`career_sites.py` and `jd_health_check.py` done with 1.4: `backend/active_tasks.py`
-  is the registry described below; move the rest onto it)
-- The `*State()` singletons: `routes/jobanni.py:69`, `routes/greenhouse.py:75`,
-  `routes/jobs.py:1602/1933/2353` — these are also **not per-user**, so one user's
-  repair/rescan run blocks or is visible to every other user.
+  `board_search.py`, `fit.py`, `greenhouse.py`, `applications.py`, `career_sites.py`,
+  `jd_health_check.py` — `backend/active_tasks.py`, a Redis registry keyed
+  `jha:task:<kind>:<user_id>` (24h TTL) whose check-then-dispatch runs under a Redis
+  lock, so two processes can't both start a run. Submit times are wall-clock now
+  (`is_celery_task_active`), since they cross processes. Rescan-all clears the old
+  results inside that check, so it can't delete under a scan another worker started.
+- `routes/auth.py` `_pending_auths` (OAuth state) — Redis,
+  `backend/email/google_oauth_pending.py`, 10-minute TTL, taken with GET+DELETE in one
+  MULTI so a state token is good for exactly one callback, on whichever worker.
+- `routes/applications.py` `_host_fetch_last_at` (per-host politeness spacing) — Redis,
+  `backend/scanning/host_fetch_spacing.py`: `SET NX PX` per host, so the closed-req
+  scan's 1-second spacing holds across every Celery worker process.
+- The `*State()` singletons in `routes/jobanni.py` and `routes/jobs.py` (WTTJ repair,
+  broken-import rescan, import repair) — these were threads in the web process with
+  one state shared by **every account** (one user's results, company names included,
+  showed in another's status, and one user's run blocked everyone's). Now Celery tasks
+  with a state per run, published as task progress (`backend/task_progress.py`) and
+  found per account through the registry.
+- Every module that talks to Redis builds its client through
+  `backend/security/redis_tls.py:app_redis_client()`, so TLS verification is set in
+  one place.
 
-Fix once, generally: a small Redis-backed "per-user task registry" (keyed
-`jha:task:<kind>:<user_id>`, with TTL), and replace each dict with it. OAuth state
-can go in the signed session or Redis with a short TTL.
+Still per-process, deliberately: `routes/greenhouse.py`'s `_login_state`. That flow
+opens a visible browser on the machine running the app, so it only means anything on
+the desktop; hosted mode should switch it off (2.7's `APP_MODE`).
 
 ### 1.6 Migrations as a release step, not a startup step — done 2026-11-06
 `python -m backend.db.migrate` (compose `migrate` service, its own profile) is the deploy
@@ -268,7 +277,9 @@ against real Postgres that tries it.
   `FRONTEND_DIST` is missing — in production a missing dist should be a startup
   error, not a fallback.
 - Add an `APP_MODE=hosted|desktop` (or reuse `APP_ENV`) flag that the items above
-  (2.3, 2.4, 2.5) key off, so the desktop build keeps working unchanged.
+  (2.3, 2.4, 2.5) key off, so the desktop build keeps working unchanged. The
+  Greenhouse browser login (`routes/greenhouse.py`, opens a visible browser on the
+  server) should be off in hosted mode too.
 
 ---
 

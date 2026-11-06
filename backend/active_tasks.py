@@ -36,9 +36,8 @@ from typing import Protocol
 import redis
 from celery.result import AsyncResult
 
-import config
 from backend.celery_app import celery_app
-from backend.security.redis_tls import redis_ssl_options
+from backend.security.redis_tls import app_redis_client
 from backend.utils.utils import is_celery_task_active
 
 logger = logging.getLogger(__name__)
@@ -46,8 +45,11 @@ logger = logging.getLogger(__name__)
 # Long enough to outlive any run (Celery keeps results for a day, celery_app.py); a
 # record older than that has no result left to say whether it is running anyway.
 _RECORD_TTL_SECONDS = 24 * 3600
-# The lock only covers reading the record and queueing a task: milliseconds.
-_LOCK_TIMEOUT_SECONDS = 30
+# The lock covers reading the record and the dispatch: usually milliseconds, but a
+# dispatch may clear old results first (routes/scan.py's rescan-all). The expiry
+# only matters when a process dies holding the lock, so err long: a lock that
+# expired mid-dispatch would let a second run in.
+_LOCK_TIMEOUT_SECONDS = 120
 _LOCK_WAIT_SECONDS = 10
 
 
@@ -131,7 +133,7 @@ class ActiveTasks:
         """Whether *record*'s task is still going. Pass *state* when the caller has
         already read it (a status route reading the task's progress anyway)."""
         current_state = self._task_state(record.task_id) if state is None else state
-        return is_celery_task_active(current_state, record.submitted_at, now=time.time())
+        return is_celery_task_active(current_state, record.submitted_at)
 
     def submit_unless_running(
         self, kind: str, user_id: int, dispatch: Callable[[], str]
@@ -164,12 +166,7 @@ def get_active_tasks() -> ActiveTasks:
     global _active_tasks
     with _lock:
         if _active_tasks is None:
-            client = redis.Redis.from_url(
-                config.REDIS_URL,
-                socket_timeout=2,
-                socket_connect_timeout=2,
-                **(redis_ssl_options(config.REDIS_URL, config.REDIS_TLS_CA_FILE) or {}),
-            )
+            client = app_redis_client(socket_timeout=2, socket_connect_timeout=2)
             _active_tasks = ActiveTasks(RedisActiveTaskStore(client))
         return _active_tasks
 

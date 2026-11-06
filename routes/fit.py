@@ -32,8 +32,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import threading
-import time
 
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
@@ -46,6 +44,7 @@ from pydantic import (
     model_validator,
 )
 
+from backend.active_tasks import get_active_tasks
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.celery_app import celery_app
 from backend.resume.resume_prompt import resume_prompt_text
@@ -69,7 +68,6 @@ from backend.utils.utils import (
     get_candidate_profile,
     get_repos,
     invalid_request_response,
-    is_celery_task_active,
     parse_chat_messages,
     safe_error_message,
 )
@@ -79,34 +77,20 @@ logger = logging.getLogger(__name__)
 fit_bp = Blueprint("fit", __name__)
 
 
-# ai: claude-sonnet-5 | 2026-08-20
-# ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
-# ─── Re-evaluate task tracking (in-memory pointer only) ───────────────────────
-# Progress lives in Celery's Redis result backend; this just remembers which
-# task_id to poll, mirroring routes/jd_health_check.py's
-# _submit_jd_health_check_run.
-_re_eval_last_task_id_by_user: dict[int, str] = {}
-# ai: claude-sonnet-5 | 2026-08-25 — see is_celery_task_active for why a bare
-# task_id isn't enough to tell "genuinely running" apart from "stale PENDING".
-_re_eval_submitted_at_by_user: dict[int, float] = {}
-_re_eval_lock = threading.Lock()
+# ai: claude-opus-5-5 | 2026-11-06
+# ─── Re-evaluate task tracking ──────────────────────────────────────────────────
+# Progress lives in Celery's Redis result backend; backend/active_tasks.py
+# remembers which run each account last started, shared by every process.
+RE_EVALUATE_TASK_KIND = "re_evaluate"
 
 
 def _submit_re_evaluate(user_id: int) -> str | None:
     """Dispatch a re-evaluate run for user_id unless one is already active
     for that user. Returns the new task id, or None if a run was already
     active for this user."""
-    with _re_eval_lock:
-        existing = _re_eval_last_task_id_by_user.get(user_id)
-        submitted_at = _re_eval_submitted_at_by_user.get(user_id)
-        if existing is not None and is_celery_task_active(
-            AsyncResult(existing, app=celery_app).state, submitted_at
-        ):
-            return None
-        task = run_re_evaluate_task.delay(user_id)
-        _re_eval_last_task_id_by_user[user_id] = task.id
-        _re_eval_submitted_at_by_user[user_id] = time.monotonic()
-        return task.id
+    return get_active_tasks().submit_unless_running(
+        RE_EVALUATE_TASK_KIND, user_id, lambda: run_re_evaluate_task.delay(user_id).id
+    )
 
 
 # ai: claude-sonnet-5 | 2026-08-20
@@ -335,19 +319,17 @@ def re_evaluate_queue_jobs() -> ResponseReturnValue:
 
 @fit_bp.route("/jobs/re-evaluate/status")
 def re_evaluate_status() -> ResponseReturnValue:
-    user_id = current_user_id()
-    with _re_eval_lock:
-        task_id = _re_eval_last_task_id_by_user.get(user_id)
-        submitted_at = _re_eval_submitted_at_by_user.get(user_id)
+    active_tasks = get_active_tasks()
+    record = active_tasks.latest(RE_EVALUATE_TASK_KIND, current_user_id())
 
     _idle = {"running": False, "progress": 0, "message": "Idle", "result": None}
-    if task_id is None:
+    if record is None:
         return jsonify(_idle)
 
-    result = AsyncResult(task_id, app=celery_app)
+    result = AsyncResult(record.task_id, app=celery_app)
     state = result.state
 
-    if is_celery_task_active(state, submitted_at):
+    if active_tasks.is_running(record, state):
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
@@ -359,7 +341,7 @@ def re_evaluate_status() -> ResponseReturnValue:
         )
 
     # ai: claude-sonnet-5 | 2026-08-25
-    # A PENDING state that reached here (i.e. failed is_celery_task_active
+    # A PENDING state that reached here (i.e. failed active_tasks.is_running
     # above) means the result backend has no record of this task_id at all —
     # its result already expired, or it was never picked up. Report idle
     # rather than the FAILURE/REVOKED branch below, which would otherwise

@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -39,6 +38,7 @@ from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 
+from backend.active_tasks import get_active_tasks
 from backend.celery_app import celery_app
 from backend.scanning.sources.greenhouse_searcher import (
     GreenhouseLoginError,
@@ -47,7 +47,7 @@ from backend.scanning.sources.greenhouse_searcher import (
 from backend.scanning.sources.greenhouse_session_store import GreenhouseSessionStore
 from backend.settings_service import get_setting
 from backend.tasks import run_import_task
-from backend.utils.utils import current_user_id, get_repos, is_celery_task_active
+from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ greenhouse_bp = Blueprint("greenhouse", __name__)
 # ai: claude-sonnet-5 | 2026-08-20
 # ── Manual-login state (in-memory, protected by a lock) ───────────────────────
 # The scrape itself (run_greenhouse_scan_task, below) is now a Celery task and
-# tracked via _greenhouse_scan_last_task_id, same pattern as the other scans
+# tracked via GREENHOUSE_SCAN_TASK_KIND, same pattern as the other scans
 # in this app. The manual browser-login flow stays a plain thread -- it's a
 # synchronous "open a visible window, wait for the user" UX with no durable
 # progress worth tracking across a restart -- so it keeps its own small,
@@ -82,42 +82,29 @@ def _update_login(**kwargs: object) -> None:
             setattr(_login_state, key, value)
 
 
-# ai: claude-sonnet-5 | 2026-08-20
-# ai: claude-sonnet-5 | 2026-08-21 — keyed by user_id (multi-tenancy migration)
-# ── Scan task tracking (in-memory pointer only) ────────────────────────────────
-_greenhouse_scan_last_task_id_by_user: dict[int, str] = {}
-# ai: claude-sonnet-5 | 2026-08-25 — see is_celery_task_active for why a bare
-# task_id isn't enough to tell "genuinely running" apart from "stale PENDING".
-_greenhouse_scan_submitted_at_by_user: dict[int, float] = {}
-_greenhouse_scan_lock = threading.Lock()
+# ai: claude-opus-5-5 | 2026-11-06
+# ── Scan task tracking ──────────────────────────────────────────────────────────
+# backend/active_tasks.py remembers which scan each account last started, shared
+# by every process. (The login state above is still per-process: the login opens a
+# browser on the machine running the app, so it is desktop-only.)
+GREENHOUSE_SCAN_TASK_KIND = "greenhouse_scan"
 
 
 def _greenhouse_scan_is_active(user_id: int) -> bool:
-    with _greenhouse_scan_lock:
-        task_id = _greenhouse_scan_last_task_id_by_user.get(user_id)
-        submitted_at = _greenhouse_scan_submitted_at_by_user.get(user_id)
-    if task_id is None:
-        return False
-    return is_celery_task_active(
-        AsyncResult(task_id, app=celery_app).state, submitted_at
-    )
+    active_tasks = get_active_tasks()
+    record = active_tasks.latest(GREENHOUSE_SCAN_TASK_KIND, user_id)
+    return record is not None and active_tasks.is_running(record)
 
 
 def _submit_greenhouse_scan(user_id: int, search_url: str, max_jobs: int) -> str | None:
     """Dispatch a Greenhouse scrape for user_id unless one is already active
     for that user. Returns the new task id, or None if a scan was already
     running for this user."""
-    with _greenhouse_scan_lock:
-        existing = _greenhouse_scan_last_task_id_by_user.get(user_id)
-        submitted_at = _greenhouse_scan_submitted_at_by_user.get(user_id)
-        if existing is not None and is_celery_task_active(
-            AsyncResult(existing, app=celery_app).state, submitted_at
-        ):
-            return None
-        task = run_greenhouse_scan_task.delay(user_id, search_url, max_jobs)
-        _greenhouse_scan_last_task_id_by_user[user_id] = task.id
-        _greenhouse_scan_submitted_at_by_user[user_id] = time.monotonic()
-        return task.id
+    return get_active_tasks().submit_unless_running(
+        GREENHOUSE_SCAN_TASK_KIND,
+        user_id,
+        lambda: run_greenhouse_scan_task.delay(user_id, search_url, max_jobs).id,
+    )
 
 
 # ai: claude-sonnet-5 | 2026-08-20
@@ -287,10 +274,8 @@ def scan_status() -> ResponseReturnValue:
             }
         )
 
-    user_id = current_user_id()
-    with _greenhouse_scan_lock:
-        task_id = _greenhouse_scan_last_task_id_by_user.get(user_id)
-        submitted_at = _greenhouse_scan_submitted_at_by_user.get(user_id)
+    active_tasks = get_active_tasks()
+    record = active_tasks.latest(GREENHOUSE_SCAN_TASK_KIND, current_user_id())
 
     # ai: claude-sonnet-5 | 2026-08-20
     # No scan has ever run yet: fall back to reporting the login flow's last
@@ -309,13 +294,13 @@ def scan_status() -> ResponseReturnValue:
         "last_found": 0,
         "error": login_error,
     }
-    if task_id is None:
+    if record is None:
         return jsonify(_idle)
 
-    result = AsyncResult(task_id, app=celery_app)
+    result = AsyncResult(record.task_id, app=celery_app)
     result_state = result.state
 
-    if is_celery_task_active(result_state, submitted_at):
+    if active_tasks.is_running(record, result_state):
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
@@ -332,7 +317,7 @@ def scan_status() -> ResponseReturnValue:
         )
 
     # ai: claude-sonnet-5 | 2026-08-25
-    # A PENDING state that reached here (i.e. failed is_celery_task_active
+    # A PENDING state that reached here (i.e. failed active_tasks.is_running
     # above) means the result backend has no record of this task_id at all —
     # its result already expired, or it was never picked up. Report idle
     # rather than the FAILURE/REVOKED branch below, which would otherwise

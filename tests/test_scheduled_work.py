@@ -23,7 +23,6 @@ from celery.signals import beat_init
 import config
 import routes.career_sites as career_sites
 import routes.jd_health_check as jd_health_check
-from backend.active_tasks import ActiveTasks, MemoryActiveTaskStore, set_active_tasks
 from backend.celery_app import (
     CAREER_SITE_SCAN_TICK,
     DATA_LIFECYCLE_SWEEP,
@@ -37,6 +36,7 @@ from backend.db.repositories.user_accounts import PostgresUserAccountRepository
 from backend.scanning.schedulers import for_each_active_account
 from backend.security.data_lifecycle import run_data_lifecycle_sweep
 from tests.db_roles import runtime_database_url
+from tests.task_doubles import RecordedDelays, install_everything_running_registry
 
 # ─── the schedule itself ────────────────────────────────────────────────────────
 
@@ -127,30 +127,14 @@ def _accounts(monkeypatch: pytest.MonkeyPatch, *user_ids: int) -> None:
     monkeypatch.setattr(jd_health_check, "for_each_active_account", for_each)
 
 
-def _everything_running() -> ActiveTasks:
-    """A registry (shared, as Redis is) whose every recorded task is still running."""
-    active_tasks = ActiveTasks(MemoryActiveTaskStore(), task_state=lambda task_id: "STARTED")
-    set_active_tasks(active_tasks)  # conftest's isolated_active_tasks clears it afterwards
-    return active_tasks
-
-
-class _Delays:
-    def __init__(self) -> None:
-        self.calls: list[tuple[tuple, dict]] = []
-
-    def __call__(self, *args: object, **kwargs: object) -> SimpleNamespace:
-        self.calls.append((args, kwargs))
-        return SimpleNamespace(id=f"task-{len(self.calls)}")
-
-
 def test_the_career_tick_skips_an_account_whose_manual_scan_is_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The manual scan was started by a web worker, the tick runs in a Celery worker;
     they only agree through the shared registry."""
-    _everything_running()
+    install_everything_running_registry()
     _accounts(monkeypatch, 1, 2)
-    delays = _Delays()
+    delays = RecordedDelays()
     monkeypatch.setattr(career_sites.run_career_site_scan_task, "delay", delays)
     sites_due = SimpleNamespace(get_due_automatic=lambda user_id: [{"id": 1}])
     monkeypatch.setattr(
@@ -167,9 +151,9 @@ def test_the_career_tick_skips_an_account_whose_manual_scan_is_running(
 def test_the_health_check_tick_runs_only_where_due_and_not_already_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _everything_running()
+    install_everything_running_registry()
     _accounts(monkeypatch, 1, 2, 3)
-    delays = _Delays()
+    delays = RecordedDelays()
     monkeypatch.setattr(jd_health_check.run_jd_health_check_task, "delay", delays)
     monkeypatch.setattr(jd_health_check, "jd_health_check_should_run_now", lambda user_id: user_id != 3)
     jd_health_check.jd_health_check_tick()

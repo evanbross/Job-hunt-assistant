@@ -33,6 +33,7 @@ from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
 from backend.db.row_level_security import set_current_user
 from backend.db.schema import _migrate_legacy_google_files
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
+from backend.email.google_oauth_pending import MemoryPendingAuthStore, PendingGoogleAuth
 from backend.email.google_token_store import GoogleTokenStore
 from backend.settings_registry import SYSTEM_SETTING_KEYS, schema_for_scope
 from backend.settings_service import get_setting, is_setting_configured
@@ -268,7 +269,6 @@ def auth_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, dict
         conn.close()
     session_user = {"id": ids["a"]}
     monkeypatch.setattr("routes.auth.current_user_id", lambda: session_user["id"])
-    monkeypatch.setattr(auth_routes, "_pending_auths", {})
     flask_app = Flask(__name__)
     flask_app.secret_key = "test"
     flask_app.register_blueprint(auth_bp, url_prefix="/api")
@@ -326,7 +326,9 @@ def test_starting_auth_without_an_admin_configured_client_is_a_clear_400(auth_cl
     assert "administrator" in response.get_json()["error"]
 
 
-def test_starting_auth_records_which_user_began_the_flow(pg_dsn: str, auth_client: Any) -> None:
+def test_starting_auth_records_which_user_began_the_flow(
+    pg_dsn: str, auth_client: Any, pending_google_auths: MemoryPendingAuthStore
+) -> None:
     client, ids, _ = auth_client
     _configure_google_client(pg_dsn)
 
@@ -334,7 +336,7 @@ def test_starting_auth_records_which_user_began_the_flow(pg_dsn: str, auth_clien
 
     assert response.status_code == 200
     assert response.get_json()["auth_url"].startswith("https://accounts.google.com/")
-    assert [entry["user_id"] for entry in auth_routes._pending_auths.values()] == [ids["a"]]
+    assert [flow.user_id for flow in pending_google_auths.flows.values()] == [ids["a"]]
 
 
 # ai: claude-opus-5-5 | 2026-11-02
@@ -343,7 +345,10 @@ def test_starting_auth_records_which_user_began_the_flow(pg_dsn: str, auth_clien
     [{"Origin": "http://jha.localhost"}, {"Referer": "https://jha.localhost/settings"}, {"Origin": "null"}],
 )
 def test_starting_auth_off_the_redirect_host_is_refused_with_where_to_go(
-    pg_dsn: str, auth_client: Any, headers: dict[str, str]
+    pg_dsn: str,
+    auth_client: Any,
+    headers: dict[str, str],
+    pending_google_auths: MemoryPendingAuthStore,
 ) -> None:
     """The login cookie is host-scoped, so a flow started on jha.localhost would only
     fail at the callback on localhost -- after the user already approved on Google."""
@@ -354,19 +359,19 @@ def test_starting_auth_off_the_redirect_host_is_refused_with_where_to_go(
 
     assert response.status_code == 409
     assert response.get_json()["connect_url"].startswith("http://localhost:")
-    assert auth_routes._pending_auths == {}
+    assert pending_google_auths.flows == {}
 
 
 # ai: claude-opus-5-5 | 2026-11-02
 def test_the_callback_returns_to_the_origin_the_flow_started_from(
-    pg_dsn: str, auth_client: Any
+    pg_dsn: str, auth_client: Any, pending_google_auths: MemoryPendingAuthStore
 ) -> None:
     client, _, _ = auth_client
     _configure_google_client(pg_dsn)
     assert client.get(
         "/api/auth/google", headers={"Referer": "http://localhost:5174/settings"}
     ).status_code == 200
-    (state,) = auth_routes._pending_auths
+    (state,) = pending_google_auths.flows
     fake_flow = MagicMock()
     fake_flow.credentials = make_credentials("fresh-from-google")
 
@@ -377,16 +382,15 @@ def test_the_callback_returns_to_the_origin_the_flow_started_from(
 
 
 def test_callback_saves_the_token_for_the_user_who_started_the_flow(
-    pg_dsn: str, auth_client: Any
+    pg_dsn: str, auth_client: Any, pending_google_auths: MemoryPendingAuthStore
 ) -> None:
     client, ids, _ = auth_client
     _configure_google_client(pg_dsn)
     fake_flow = MagicMock()
     fake_flow.credentials = make_credentials("fresh-from-google")
-    auth_routes._pending_auths["good-state"] = {
-        "verifier": "v", "created_at": 10**12, "user_id": ids["a"],
-        "return_origin": "http://localhost:5174",
-    }
+    pending_google_auths.put(
+        "good-state", PendingGoogleAuth("v", ids["a"], "http://localhost:5174")
+    )
 
     with patch.object(auth_routes, "_build_flow", return_value=fake_flow):
         response = client.get("/api/auth/google/callback?code=abc&state=good-state")
@@ -395,17 +399,18 @@ def test_callback_saves_the_token_for_the_user_who_started_the_flow(
     assert response.headers["Location"] == "http://localhost:5174/?auth=success"
     assert _stored_refresh_token(pg_dsn, ids["a"]) == "fresh-from-google"
     assert _stored_refresh_token(pg_dsn, ids["b"]) is None
+    assert fake_flow.code_verifier == "v"  # the verifier recorded at start, not a new one
+    assert pending_google_auths.flows == {}  # single use
 
 
 def test_callback_refuses_a_flow_started_by_a_different_account(
-    pg_dsn: str, auth_client: Any
+    pg_dsn: str, auth_client: Any, pending_google_auths: MemoryPendingAuthStore
 ) -> None:
     client, ids, session_user = auth_client
     _configure_google_client(pg_dsn)
-    auth_routes._pending_auths["their-state"] = {
-        "verifier": "v", "created_at": 10**12, "user_id": ids["a"],
-        "return_origin": "http://localhost:5174",
-    }
+    pending_google_auths.put(
+        "their-state", PendingGoogleAuth("v", ids["a"], "http://localhost:5174")
+    )
     session_user["id"] = ids["b"]
 
     with patch.object(auth_routes, "_build_flow") as build_flow:

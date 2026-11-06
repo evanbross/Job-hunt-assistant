@@ -80,6 +80,8 @@ celery_app = Celery(
         "routes.applications",
         "routes.greenhouse",
         "routes.jd_health_check",
+        "routes.jobanni",  # ai: claude-opus-5-5 | 2026-11-06
+        "routes.jobs",  # ai: claude-opus-5-5 | 2026-11-06
         "backend.security.data_lifecycle",
     ],
 )

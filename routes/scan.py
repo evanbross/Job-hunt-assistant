@@ -30,8 +30,7 @@
 from __future__ import annotations
 
 import logging
-import threading
-import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from celery.result import AsyncResult
@@ -40,6 +39,7 @@ from flask.typing import ResponseReturnValue
 from googleapiclient.errors import HttpError
 
 import config
+from backend.active_tasks import get_active_tasks
 from backend.ai_provider import AIProviderClient
 from backend.celery_app import celery_app
 from backend.db import CaptureQueueOrigin
@@ -80,7 +80,6 @@ from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     current_user_id,
     get_repos,
-    is_celery_task_active,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,35 +88,30 @@ logger = logging.getLogger(__name__)
 
 scan_bp = Blueprint("scan", __name__)
 
-# ai: claude-sonnet-5 | 2026-08-20
-# ─── Scan task tracking (in-memory pointer only) ───────────────────────────────
-# Progress lives in Celery's Redis result backend; this just remembers which
-# task_id to poll, mirroring routes/jd_health_check.py's
-# _submit_jd_health_check_run. Keyed by user_id (multi-tenancy migration) so
-# two different users' scans never collide or show each other's progress.
-# ai: claude-sonnet-5 | 2026-08-25 — _scan_submitted_at_by_user added
-# alongside: see is_celery_task_active for why a bare task_id isn't enough
-# to tell "genuinely running" apart from "stale PENDING".
-_scan_last_task_id_by_user: dict[int, str] = {}
-_scan_submitted_at_by_user: dict[int, float] = {}
-_scan_lock = threading.Lock()
+# ai: claude-opus-5-5 | 2026-11-06
+# ─── Scan task tracking ─────────────────────────────────────────────────────────
+# Progress lives in Celery's Redis result backend; backend/active_tasks.py
+# remembers which scan each account last started, shared by every web worker, so
+# a status poll finds it whichever worker the poll lands on.
+SCAN_TASK_KIND = "email_scan"
 
 
-def _submit_scan(user_id: int, rescan_all: bool = False) -> str | None:
+def _submit_scan(
+    user_id: int, rescan_all: bool = False, prepare: Callable[[], None] | None = None
+) -> str | None:
     """Dispatch an email scan for user_id unless one is already active for
     that user. Returns the new task id, or None if a scan was already
-    running for this user."""
-    with _scan_lock:
-        existing = _scan_last_task_id_by_user.get(user_id)
-        submitted_at = _scan_submitted_at_by_user.get(user_id)
-        if existing is not None and is_celery_task_active(
-            AsyncResult(existing, app=celery_app).state, submitted_at
-        ):
-            return None
-        task = run_scan_task.delay(user_id, rescan_all=rescan_all)
-        _scan_last_task_id_by_user[user_id] = task.id
-        _scan_submitted_at_by_user[user_id] = time.monotonic()
-        return task.id
+    running for this user.
+
+    *prepare* runs just before the dispatch, inside the same check, so nothing it
+    changes can be under a scan that started a moment earlier."""
+
+    def dispatch() -> str:
+        if prepare is not None:
+            prepare()
+        return run_scan_task.delay(user_id, rescan_all=rescan_all).id
+
+    return get_active_tasks().submit_unless_running(SCAN_TASK_KIND, user_id, dispatch)
 
 
 def _email_report_row(
@@ -1075,10 +1069,8 @@ def scan_emails() -> ResponseReturnValue:
 
 @scan_bp.route("/scan/status")
 def scan_status() -> ResponseReturnValue:
-    user_id = current_user_id()
-    with _scan_lock:
-        task_id = _scan_last_task_id_by_user.get(user_id)
-        submitted_at = _scan_submitted_at_by_user.get(user_id)
+    active_tasks = get_active_tasks()
+    record = active_tasks.latest(SCAN_TASK_KIND, current_user_id())
 
     _idle = {
         "running": False,
@@ -1095,13 +1087,13 @@ def scan_status() -> ResponseReturnValue:
         "current_email_id": "",
         "current_job_title": "",
     }
-    if task_id is None:
+    if record is None:
         return jsonify(_idle)
 
-    result = AsyncResult(task_id, app=celery_app)
+    result = AsyncResult(record.task_id, app=celery_app)
     result_state = result.state
 
-    if is_celery_task_active(result_state, submitted_at):
+    if active_tasks.is_running(record, result_state):
         meta = result.info if isinstance(result.info, dict) else {}
         return jsonify(
             {
@@ -1122,7 +1114,7 @@ def scan_status() -> ResponseReturnValue:
         )
 
     # ai: claude-sonnet-5 | 2026-08-25
-    # A PENDING state that reached here (i.e. failed is_celery_task_active
+    # A PENDING state that reached here (i.e. failed active_tasks.is_running
     # above) means the result backend has no record of this task_id at all —
     # its result already expired (result_expires=3600 in celery_app.py), or
     # it was never picked up. Either way there's nothing left describing
@@ -1177,29 +1169,24 @@ def rescan_all_emails() -> ResponseReturnValue:
     are left intact.
     """
     user_id = current_user_id()
-    with _scan_lock:
-        existing = _scan_last_task_id_by_user.get(user_id)
-        submitted_at = _scan_submitted_at_by_user.get(user_id)
-        if existing is not None and is_celery_task_active(
-            AsyncResult(existing, app=celery_app).state, submitted_at
-        ):
-            return jsonify({"error": "A scan is already running"}), 409
 
-    with get_repos() as repos:
-        scanned_repo = repos["scanned_emails"]
-        job_repo = repos["jobs"]
-
-        # Remove only active email-sourced jobs so applied/skipped history remains
-        # available for duplicate detection after the retry.
-        for job in job_repo.get_by_statuses(user_id, list(ACTIVE_JOB_STATUSES)):
-            if job.get("sender_email"):
-                job_repo.delete(user_id, job["id"])
-        repos["conn"].commit()
-        scanned_repo.delete_all(user_id)
-        repos["conn"].commit()
+    # ai: claude-opus-5-5 | 2026-11-06
+    # Cleared inside the "is a scan running?" check (see _submit_scan) rather than
+    # after it: a scan started from another tab or worker in between would be
+    # writing into the rows being deleted.
+    def clear_email_results() -> None:
+        with get_repos() as repos:
+            job_repo = repos["jobs"]
+            # Remove only active email-sourced jobs so applied/skipped history remains
+            # available for duplicate detection after the retry.
+            for job in job_repo.get_by_statuses(user_id, list(ACTIVE_JOB_STATUSES)):
+                if job.get("sender_email"):
+                    job_repo.delete(user_id, job["id"])
+            repos["scanned_emails"].delete_all(user_id)
+            repos["conn"].commit()
 
     # Kick off a fresh scan with unread_only=False so already-read emails are re-fetched
-    task_id = _submit_scan(user_id, rescan_all=True)
+    task_id = _submit_scan(user_id, rescan_all=True, prepare=clear_email_results)
     if task_id is None:
         return jsonify({"error": "A scan is already running"}), 409
     return jsonify({"status": "started", "task_id": task_id}), 202

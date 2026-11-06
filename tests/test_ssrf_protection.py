@@ -23,8 +23,9 @@ from flask.testing import FlaskClient
 
 from backend.ai_provider import AIProviderClient, AIProviderError
 from backend.scanning.sources.jobanni_scanner import scan as jobanni_scan
-from routes.jobanni import JobanniScanRequest, jobanni_bp
+from routes.jobanni import JobanniScanRequest, jobanni_bp, run_jobanni_scan_task
 from routes.settings import settings_bp
+from tests.task_doubles import RecordedDelays
 
 
 def make_client() -> FlaskClient:
@@ -66,18 +67,11 @@ def test_scan_route_returns_400_not_500_for_non_numeric_max_jobs() -> None:
     assert "max_jobs" in response.get_json()["error"]
 
 
-def test_scan_route_starts_thread_for_safe_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    started: list[tuple] = []
-
-    class FakeThread:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            started.append((kwargs.get("target"), kwargs.get("args")))
-
-        def start(self) -> None:
-            pass
-
+# ai: claude-opus-5-5 | 2026-11-06 -- the scan is a Celery task now, not a thread.
+def test_scan_route_starts_a_scan_for_a_safe_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    delays = RecordedDelays()
     monkeypatch.setattr("routes.jobanni.validate_outbound_url", lambda url: None)
-    monkeypatch.setattr("routes.jobanni.threading.Thread", FakeThread)
+    monkeypatch.setattr("routes.jobanni.run_jobanni_scan_task.delay", delays)
     monkeypatch.setattr("routes.jobanni.current_user_id", lambda: 1)
 
     client = make_client()
@@ -88,8 +82,7 @@ def test_scan_route_starts_thread_for_safe_url(monkeypatch: pytest.MonkeyPatch) 
 
     assert response.status_code == 200
     assert response.get_json() == {"status": "started"}
-    assert len(started) == 1
-    assert started[0][1] == (1, "https://jobanni.example/jobs", 25)
+    assert [args for args, _kwargs in delays.calls] == [(1, "https://jobanni.example/jobs", 25)]
 
 
 # ai: claude-sonnet-5 | 2026-09-29
@@ -98,21 +91,14 @@ def test_scan_route_falls_back_to_the_accounts_configured_default(
 ) -> None:
     from contextlib import contextmanager
 
-    started: list[tuple] = []
-
-    class FakeThread:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            started.append((kwargs.get("target"), kwargs.get("args")))
-
-        def start(self) -> None:
-            pass
+    delays = RecordedDelays()
 
     @contextmanager
     def fake_get_repos():
         yield {}
 
     monkeypatch.setattr("routes.jobanni.validate_outbound_url", lambda url: None)
-    monkeypatch.setattr("routes.jobanni.threading.Thread", FakeThread)
+    monkeypatch.setattr("routes.jobanni.run_jobanni_scan_task.delay", delays)
     monkeypatch.setattr("routes.jobanni.current_user_id", lambda: 1)
     monkeypatch.setattr("routes.jobanni.get_repos", fake_get_repos)
     monkeypatch.setattr(
@@ -127,7 +113,7 @@ def test_scan_route_falls_back_to_the_accounts_configured_default(
     response = client.post("/api/jobanni/scan", json={})
 
     assert response.status_code == 200
-    assert started[0][1] == (1, "https://jobanni.example/default", 77)
+    assert delays.calls[0][0] == (1, "https://jobanni.example/default", 77)
 
 
 def test_scan_route_returns_400_when_no_search_url_is_configured(
@@ -168,9 +154,7 @@ def test_run_scan_hands_off_to_import_task_with_the_right_arguments(
 ) -> None:
     """_run_scan previously called run_import_task.delay(jobs, None, body) --
     missing user_id and the required body arg entirely (2026-09-28 code
-    review). Runs the real background-thread body (no FakeThread), so it
-    would have caught that regression."""
-    from routes.jobanni import _run_scan
+    review). Runs the real task body, so it would have caught that regression."""
 
     calls: list[tuple] = []
     monkeypatch.setattr("routes.jobanni.jobanni_scan", lambda **kwargs: [{"id": "job-1"}])
@@ -179,7 +163,7 @@ def test_run_scan_hands_off_to_import_task_with_the_right_arguments(
         lambda *args: calls.append(args) or type("T", (), {"id": "task-123"})(),
     )
 
-    _run_scan(user_id=7, search_url="https://jobanni.example/jobs", max_jobs=10)
+    run_jobanni_scan_task(7, "https://jobanni.example/jobs", 10)  # ai: claude-opus-5-5 | 2026-11-06
 
     assert calls == [(7, [{"id": "job-1"}], None, {"import_trigger": "jobanni_scan"})]
 

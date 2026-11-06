@@ -64,6 +64,15 @@ from backend.active_tasks import (  # noqa: E402
     set_active_tasks,
 )
 from backend.db import migrate_database  # noqa: E402
+from backend.email.google_oauth_pending import (  # noqa: E402
+    MemoryPendingAuthStore,
+    set_pending_auths,
+)
+from backend.scanning.host_fetch_spacing import (  # noqa: E402
+    HostFetchSpacing,
+    MemoryHostClaimStore,
+    set_host_fetch_spacing,
+)
 from backend.scanning.import_progress import (  # noqa: E402
     ImportProgress,
     MemoryImportProgressStore,
@@ -229,6 +238,26 @@ def isolated_active_tasks() -> Iterator[ActiveTasks]:
     set_active_tasks(active_tasks)
     yield active_tasks
     set_active_tasks(None)
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+@pytest.fixture(autouse=True)
+def pending_google_auths() -> Iterator[MemoryPendingAuthStore]:
+    """Started Google OAuth flows in memory, never in the developer's real Redis."""
+    store = MemoryPendingAuthStore()
+    set_pending_auths(store)
+    yield store
+    set_pending_auths(None)
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+@pytest.fixture(autouse=True)
+def isolated_host_fetch_spacing() -> Iterator[HostFetchSpacing]:
+    """Per-host fetch spacing in memory, never claiming hosts in the developer's Redis."""
+    spacing = HostFetchSpacing(MemoryHostClaimStore())
+    set_host_fetch_spacing(spacing)
+    yield spacing
+    set_host_fetch_spacing(None)
 
 
 # ai: claude-opus-5-5 | 2026-11-05
