@@ -208,10 +208,22 @@ interface FocusedJobCard {
 
 type BackendHealth = "ok" | "db_down" | "unreachable";
 
+// ai: claude-opus-5-5 | 2026-11-06
+// `/?settings=<section id>` opens Settings at that section -- used by emails the
+// app sends (e.g. the JD parser health check's failure email). Read once, on load;
+// SettingsPanel ignores an id it doesn't recognize.
+const SETTINGS_DEEP_LINK_PARAM = "settings";
+
+function readSettingsDeepLink(): string | undefined {
+  return new URLSearchParams(window.location.search).get(SETTINGS_DEEP_LINK_PARAM) || undefined;
+}
+
 export default function App() {
+  const [settingsDeepLink] = useState(readSettingsDeepLink);
   // ai: claude-fable-5 | 2026-07-14 — validate legacy-resolved keys too, so a
   // stored tab that no longer exists (e.g. "career") falls back to the queue
   const [activeTab, setActiveTab] = useState(() => {
+    if (settingsDeepLink) return "settings";
     const saved = localStorage.getItem("activeTab");
     const legacyIndex = parseInt(String(saved), 10);
     const resolved =
@@ -238,7 +250,7 @@ export default function App() {
     () => readStoredPref(LISTENER_IMPORT_DISMISSED_AT_KEY),
   );
   const [setupComplete, setSetupComplete] = useState(true); // optimistic; corrected on mount
-  const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined);
+  const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(settingsDeepLink);
   const [showRecentChanges, setShowRecentChanges] = useState(false);
   const [showToptalPitch, setShowToptalPitch] = useState(false);
   const [backendHealth, setBackendHealth] = useState<BackendHealth>("ok");
@@ -289,6 +301,15 @@ export default function App() {
       requestedAt: Date.now(),
     });
   };
+
+  // ai: claude-opus-5-5 | 2026-11-06 -- drop the deep-link parameter once it has been
+  // read, so a reload or a bookmark of the current page doesn't keep forcing Settings.
+  useEffect(() => {
+    if (!settingsDeepLink) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete(SETTINGS_DEEP_LINK_PARAM);
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [settingsDeepLink]);
 
   useEffect(() => {
     fetchAuthStatus();

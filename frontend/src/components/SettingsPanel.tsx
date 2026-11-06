@@ -149,6 +149,14 @@ const SETTINGS_TREE: SettingsTreeNode[] = [
   },
 ];
 
+// ai: claude-opus-5-5 | 2026-11-06 -- an initialSection can come from a URL
+// (App's ?settings= deep link), so only a section that exists in the tree is used.
+function isSettingsSection(sectionId: string): boolean {
+  return SETTINGS_TREE.some(
+    (node) => (!node.children && node.id === sectionId) || node.children?.some((child) => child.id === sectionId),
+  );
+}
+
 function groupIdContaining(sectionId: string): string | null {
   const group = SETTINGS_TREE.find((node) => node.children?.some((child) => child.id === sectionId));
   return group ? group.id : null;
@@ -160,13 +168,14 @@ interface SettingsPanelProps {
 }
 
 export default function SettingsPanel({ initialSection, onSetupComplete }: SettingsPanelProps) {
-  const [activeSection, setActiveSection] = useState(() => initialSection || "resume");
+  const startSection = initialSection && isSettingsSection(initialSection) ? initialSection : "resume";
+  const [activeSection, setActiveSection] = useState(startSection);
   // ai: claude-sonnet-5 | 2026-08-21
   const [isAdmin, setIsAdmin] = useState(false);
   // ai: claude-sonnet-5 | 2026-08-30 — only the group containing the initial
   // section starts open; others expand on click, same as a PyCharm settings tree.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
-    const groupId = groupIdContaining(initialSection || "resume");
+    const groupId = groupIdContaining(startSection);
     return new Set(groupId ? [groupId] : []);
   });
 

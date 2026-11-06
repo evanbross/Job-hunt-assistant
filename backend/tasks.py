@@ -909,6 +909,43 @@ def _record_capture_source(
         logger.warning("Failed to record capture source: %s", exc)
 
 
+# ai: claude-opus-5-5 | 2026-11-06
+# What the email tells the reader about each kind of target.
+_JD_HEALTH_TARGET_ADVICE = {
+    "posting": (
+        "a single job posting. If the posting has closed, the parser is probably fine:"
+        " replace it with a currently open posting on the same site."
+    ),
+    "board": "a job board listing. A failure here usually means the site's format changed.",
+}
+
+
+# ai: claude-opus-5-5 | 2026-11-06 -- the email used to list only label, URL and reason,
+# which read like a job in the queue (it isn't one, so searching the queue finds nothing)
+# and gave no way to get to the place where the target is edited.
+def jd_health_check_failure_email_body(
+    failure_details: list[dict[str, str]], app_base_url: str
+) -> str:
+    """Plain-text body: what failed, what kind of check each one is, and where to fix it."""
+    lines = [
+        f"JD parser health check found {len(failure_details)} failing target(s).",
+        "",
+        "These are the health check's own test URLs, not jobs in your queue: they are",
+        "kept under Settings > Career Sites > JD Parser Health Check, where each one",
+        "can be edited, disabled, or re-run.",
+        "",
+    ]
+    for detail in failure_details:
+        lines.append(f"- {detail['label']}")
+        lines.append(f"  URL: {detail['url']}")
+        lines.append(f"  Problem: {detail['reason']}")
+        lines.append(f"  This target is {_JD_HEALTH_TARGET_ADVICE[detail['kind']]}")
+        lines.append("")
+    if app_base_url:
+        lines.append(f"Manage the targets: {app_base_url.rstrip('/')}/?settings=jd_health_check")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 # ai: claude-sonnet-5 | 2026-08-03
 def _send_jd_health_check_failure_email(
     user_id: int, failure_details: list[dict[str, str]]
@@ -925,6 +962,7 @@ def _send_jd_health_check_failure_email(
         notify_email = get_setting(
             "jd_health_check_notify_email", user_id, repos
         ).strip()
+        app_base_url = (get_setting("app_base_url", None, repos) or "").strip()
     if not notify_email:
         # ai: claude-sonnet-5 | 2026-09-04 — name the failing targets so the
         # log line is useful when no notify email is configured to see the
@@ -938,15 +976,7 @@ def _send_jd_health_check_failure_email(
         )
         return
 
-    lines = [
-        f"JD parser health check found {len(failure_details)} failing target(s):",
-        "",
-    ]
-    for detail in failure_details:
-        lines.append(
-            f"- {detail['label']} ({detail['url']}): {detail['reason']}"
-        )
-    body_text = "\n".join(lines)
+    body_text = jd_health_check_failure_email_body(failure_details, app_base_url)
 
     try:
         GmailClient(user_id).send_email(
@@ -1005,8 +1035,9 @@ def run_jd_health_check_task(
 
         scanner = CareerSiteScanner()  # fresh per target so pop_failures() is unambiguous
         job: dict[str, Any] | None = None
+        is_board = is_job_board_url(url)  # ai: claude-opus-5-5 | 2026-11-06 -- also tells the email which kind
         try:
-            if is_job_board_url(url):
+            if is_board:
                 outcome = scanner.scan_site(label, url)
                 check = validate_board_scan(outcome)
                 job = outcome["jobs"][0] if outcome["jobs"] else None
@@ -1054,6 +1085,7 @@ def run_jd_health_check_task(
                     "label": label,
                     "url": url,
                     "reason": reason or "",
+                    "kind": "board" if is_board else "posting",
                 }
             )
 
