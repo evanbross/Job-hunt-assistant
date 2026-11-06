@@ -225,3 +225,22 @@ def test_only_the_migrate_step_gets_the_schema_owners_database_url(prod_compose:
 
 def test_the_app_serves_through_gunicorn(prod_compose: dict[str, Any]) -> None:
     assert prod_compose["services"]["app"]["command"] == ["gunicorn", "-c", "gunicorn.conf.py", "wsgi:app"]
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def test_the_extension_endpoints_reach_the_standalone_listener(prod_compose: dict[str, Any]) -> None:
+    """The listener runs as its own service (web/extension_listener.py main()); Caddy's
+    listener hosts must forward there, not to the web app, which no longer runs it."""
+    caddyfile = (DEPLOY / "Caddyfile").read_text(encoding="utf-8")
+    assert "reverse_proxy listener:8765" in caddyfile
+    assert "reverse_proxy listener:8766" in caddyfile
+    assert "app:8765" not in caddyfile and "app:8766" not in caddyfile
+
+    listener = prod_compose["services"]["listener"]
+    assert listener["command"] == ["python", "-m", "web.extension_listener"]
+    assert "edge" in listener["networks"]
+    environment = listener["environment"]
+    assert environment["TRUSTED_PROXIES"] == prod_compose["services"]["app"]["environment"]["TRUSTED_PROXIES"]
+    assert environment["REDIS_URL"].startswith("rediss://") and environment["REDIS_TLS_CA_FILE"]
+    assert environment["APP_ENV"] == "production"
+    assert "JOB_IMPORT_LISTENER_HOST_OVERRIDE" not in prod_compose["services"]["app"]["environment"]

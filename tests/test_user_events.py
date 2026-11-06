@@ -28,10 +28,11 @@ import backend.tasks as tasks_module
 import config
 import routes.events as events_routes
 import routes.import_ as import_routes
+from backend.scanning.import_progress import ImportProgressState
 from backend.tasks import run_import_task, run_jd_health_check_task
 from backend.user_events import RedisUserEvents, UserEventTopic
 from routes.events import events_bp
-from routes.import_ import ImportProgressState, import_bp
+from routes.import_ import import_bp
 from tests.conftest import RecordingUserEvents
 
 _USER_ID = 1
@@ -175,20 +176,15 @@ def test_stream_names_each_event_after_its_topic_for_the_caller_only(
 def test_every_tracked_import_change_is_announced_to_its_owner(
     isolated_user_events: RecordingUserEvents,
 ) -> None:
-    with import_routes._imports_lock:
-        import_routes._active_imports.clear()
-    try:
-        import_routes._set_import_progress("import-a", _state(_OTHER_USER_ID))
-        assert isolated_user_events.published == [(_OTHER_USER_ID, _IMPORT)]
+    # tests/conftest.py gives this test its own empty import-progress store.
+    import_routes._set_import_progress("import-a", _state(_OTHER_USER_ID))
+    assert isolated_user_events.published == [(_OTHER_USER_ID, _IMPORT)]
 
-        client = _app().test_client()
-        with client.session_transaction() as flask_session:
-            flask_session["user_id"] = _OTHER_USER_ID
-        assert client.post("/api/import/reset", json={}).status_code == 200
-        assert isolated_user_events.published == [(_OTHER_USER_ID, _IMPORT)] * 2
-    finally:
-        with import_routes._imports_lock:
-            import_routes._active_imports.clear()
+    client = _app().test_client()
+    with client.session_transaction() as flask_session:
+        flask_session["user_id"] = _OTHER_USER_ID
+    assert client.post("/api/import/reset", json={}).status_code == 200
+    assert isolated_user_events.published == [(_OTHER_USER_ID, _IMPORT)] * 2
 
 
 class _ProgressTask:

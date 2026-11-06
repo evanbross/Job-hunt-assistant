@@ -59,6 +59,11 @@ os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026"
 
 import config  # noqa: E402
 from backend.db import migrate_database  # noqa: E402
+from backend.scanning.import_progress import (  # noqa: E402
+    ImportProgress,
+    MemoryImportProgressStore,
+    set_import_progress,
+)
 from backend.security.rate_limiter import RateLimiter, set_rate_limiter  # noqa: E402
 from backend.security.task_ownership import (  # noqa: E402
     MemoryOwnerStore,
@@ -196,6 +201,17 @@ def isolated_user_events() -> Iterator[RecordingUserEvents]:
     set_user_events(events)
     yield events
     set_user_events(None)
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+@pytest.fixture(autouse=True)
+def isolated_import_progress() -> Iterator[ImportProgress]:
+    """Import progress in memory, for the same reason as the stores above: otherwise
+    every import a test queues would be written to the developer's real Redis."""
+    progress = ImportProgress(MemoryImportProgressStore())
+    set_import_progress(progress)
+    yield progress
+    set_import_progress(None)
 
 
 # ai: claude-opus-5-5 | 2026-11-05

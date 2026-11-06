@@ -14,14 +14,24 @@ These are separate servers on their own ports, not Flask routes, so they are not
 of `create_app()`. Every callback below receives the user id the listener already
 authenticated from the extension's bearer token; none resolves a default account. They
 run on listener/WebSocket threads with no Flask session, so each opens its own
-short-lived DB connection. Moved out of app.py on 2026-11-05 so the listener can later
-run as its own process (docs/cloud-deployment-readiness-plan.md 1.3).
+short-lived DB connection. Moved out of app.py on 2026-11-05.
+
+Two ways to run them:
+- the desktop launcher (app.py) calls start_extension_servers() inside its own process;
+- a hosted deployment runs them as their own process, `python -m web.extension_listener`
+  (main() below), behind the reverse proxy (docs/cloud-deployment-readiness-plan.md 1.3).
 """
 
 from __future__ import annotations
 
+import logging
+import signal
+import sys
+import threading
 from datetime import UTC, datetime
+from typing import Any
 
+import config
 from backend.contacts.outreach_drafts import claim_draft_for_page
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
 from backend.extension_auth.token_service import ExtensionTokenService
@@ -30,12 +40,16 @@ from backend.queue_websocket import QueueWebSocketServer, start_queue_websocket_
 from backend.resume.resume_file_service import ResumeFileService
 from backend.scanning.import_listener import (
     JobImportListener,
+    get_job_import_listener_config,
     start_job_import_listener,
 )
-from backend.security.client_ip import Network
+from backend.security.client_ip import Network, parse_trusted_proxies
 from backend.utils.utils import get_repos
 from routes.applications import submit_closed_req_capture
 from routes.import_ import queue_import_capture
+from web.serving import check_startup_secrets, verify_database_ready
+
+logger = logging.getLogger(__name__)
 
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -155,3 +169,73 @@ def start_extension_servers(
         ws_tickets.redeem, _browser_capture_queue_has_pending
     )
     return import_listener, queue_ws_server
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def bound_port_problem(
+    import_listener: JobImportListener | None,
+    queue_ws_server: QueueWebSocketServer | None,
+    listener_config: dict[str, Any],
+) -> str | None:
+    """Why a standalone listener process must not keep running, or None if it's fine.
+
+    On the desktop each server falls back to an OS-assigned port when its configured one
+    is taken, and app.py registers whatever it got with the dev Caddy. A hosted reverse
+    proxy has fixed upstreams (deploy/Caddyfile), so a fallback there would look like a
+    healthy process while every extension request failed: refuse it instead
+    (COMMON_CODING_STANDARDS.md, auto-selected runtime values)."""
+    if import_listener is None or queue_ws_server is None:
+        return (
+            "The extension listener or its WebSocket server did not start: it is disabled"
+            " (Settings > System > Import Listener) or its host could not be used."
+        )
+    expected = (int(listener_config["port"]), int(listener_config["ws_port"]))
+    actual = (import_listener.port, queue_ws_server.port)
+    if actual != expected:
+        return (
+            f"The extension servers bound ports {actual} instead of the configured {expected},"
+            " which the reverse proxy forwards to. Free the configured ports (or change the"
+            " proxy and the setting together) and restart."
+        )
+    return None
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def main() -> int:
+    """Run the extension servers as their own process until SIGTERM/SIGINT."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s",
+        stream=sys.stdout,
+    )
+    check_startup_secrets()  # resume files and tokens are decrypted here
+    verify_database_ready()
+    import_listener, queue_ws_server = start_extension_servers(
+        parse_trusted_proxies(config.TRUSTED_PROXIES)
+    )
+    try:
+        problem = bound_port_problem(
+            import_listener, queue_ws_server, get_job_import_listener_config()
+        )
+        if problem:
+            logger.critical("%s", problem)
+            return 1
+        stop = threading.Event()
+        signal.signal(signal.SIGTERM, lambda *_: stop.set())
+        signal.signal(signal.SIGINT, lambda *_: stop.set())
+        logger.info(
+            "Extension listener serving on :%s, WebSocket on :%s.",
+            import_listener.port if import_listener else None,
+            queue_ws_server.port if queue_ws_server else None,
+        )
+        while not stop.wait(1.0):  # a timed wait, so signals are handled promptly on Windows too
+            pass
+        return 0
+    finally:
+        for server in (import_listener, queue_ws_server):
+            if server is not None:
+                server.stop()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

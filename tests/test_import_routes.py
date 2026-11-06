@@ -30,7 +30,8 @@ from backend.db import (
     get_connection,
 )
 from backend.db.row_level_security import set_current_user
-from routes.import_ import ImportProgressState, _active_imports, import_bp
+from backend.scanning.import_progress import ImportProgress, ImportProgressState
+from routes.import_ import import_bp
 from tests.db_roles import runtime_database_url
 
 
@@ -65,73 +66,76 @@ def _logged_in_client(user_id: int = _RESET_USER_ID):
     return client
 
 
-def test_reset_import_clears_one_tracked_import() -> None:
-    _active_imports.clear()
-    _active_imports["abc"] = _tracked()
-    _active_imports["xyz"] = _tracked()
+# ai: claude-opus-5-5 | 2026-11-06 -- through the shared store (backend/scanning/import_progress.py)
+# that replaced routes/import_.py's in-process dict; conftest gives each test an empty one.
+def _tracked_ids(progress: ImportProgress, *ids: str, user_id: int = _RESET_USER_ID) -> set[str]:
+    return {import_id for import_id in ids if progress.find(import_id, user_id) is not None}
+
+
+def test_reset_import_clears_one_tracked_import(isolated_import_progress: ImportProgress) -> None:
+    isolated_import_progress.put("abc", _tracked())
+    isolated_import_progress.put("xyz", _tracked())
 
     client = _logged_in_client()
     response = client.post("/api/import/reset", json={"import_id": "abc"})
 
     assert response.status_code == 200
-    assert "abc" not in _active_imports
-    assert "xyz" in _active_imports
-    _active_imports.clear()
+    assert _tracked_ids(isolated_import_progress, "abc", "xyz") == {"xyz"}
 
 
-def test_reset_import_without_id_clears_everything_the_caller_owns() -> None:
-    _active_imports.clear()
-    _active_imports["abc"] = _tracked()
-    _active_imports["def"] = _tracked()
+def test_reset_import_without_id_clears_everything_the_caller_owns(
+    isolated_import_progress: ImportProgress,
+) -> None:
+    isolated_import_progress.put("abc", _tracked())
+    isolated_import_progress.put("def", _tracked())
 
     client = _logged_in_client()
     response = client.post("/api/import/reset", json={})
 
     assert response.status_code == 200
-    assert _active_imports == {}
+    assert _tracked_ids(isolated_import_progress, "abc", "def") == set()
 
 
 # ai: claude-opus-5-5 | 2026-10-14
-def test_reset_import_never_clears_another_users_imports() -> None:
-    _active_imports.clear()
-    _active_imports["mine"] = _tracked()
-    _active_imports["theirs"] = _tracked(user_id=_RESET_USER_ID + 1)
+def test_reset_import_never_clears_another_users_imports(
+    isolated_import_progress: ImportProgress,
+) -> None:
+    other = _RESET_USER_ID + 1
+    isolated_import_progress.put("mine", _tracked())
+    isolated_import_progress.put("theirs", _tracked(user_id=other))
 
     client = _logged_in_client()
     client.post("/api/import/reset", json={"import_id": "theirs"})
-    assert "theirs" in _active_imports
+    assert _tracked_ids(isolated_import_progress, "theirs", user_id=other) == {"theirs"}
 
     client.post("/api/import/reset", json={})
-    assert list(_active_imports) == ["theirs"]
-    _active_imports.clear()
+    assert _tracked_ids(isolated_import_progress, "mine") == set()
+    assert _tracked_ids(isolated_import_progress, "theirs", user_id=other) == {"theirs"}
 
 
-def test_reset_import_falls_back_to_query_arg() -> None:
-    _active_imports.clear()
-    _active_imports["abc"] = _tracked()
-    _active_imports["xyz"] = _tracked()
+def test_reset_import_falls_back_to_query_arg(isolated_import_progress: ImportProgress) -> None:
+    isolated_import_progress.put("abc", _tracked())
+    isolated_import_progress.put("xyz", _tracked())
 
     client = _logged_in_client()
     response = client.post("/api/import/reset?import_id=abc", json={})
 
     assert response.status_code == 200
-    assert "abc" not in _active_imports
-    assert "xyz" in _active_imports
-    _active_imports.clear()
+    assert _tracked_ids(isolated_import_progress, "abc", "xyz") == {"xyz"}
 
 
-def test_reset_import_coerces_non_string_import_id_to_string() -> None:
+def test_reset_import_coerces_non_string_import_id_to_string(
+    isolated_import_progress: ImportProgress,
+) -> None:
     """Matches the pre-Pydantic route's str(...) coercion exactly -- a
     numeric import_id is stringified, not rejected."""
-    _active_imports.clear()
-    _active_imports["123"] = _tracked()
+    isolated_import_progress.put("123", _tracked())
 
     client = _logged_in_client()
     response = client.post("/api/import/reset", json={"import_id": 123})
 
     assert response.status_code == 200
-    assert "123" not in _active_imports
-    _active_imports.clear()
+    assert _tracked_ids(isolated_import_progress, "123") == set()
 
 
 def test_extract_job_urls_returns_analysis(monkeypatch: pytest.MonkeyPatch) -> None:

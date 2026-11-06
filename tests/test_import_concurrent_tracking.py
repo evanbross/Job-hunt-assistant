@@ -29,8 +29,9 @@
 
 Multiple imports (browser-extension captures and UI-triggered pastes) must be
 able to run at once, each tracked independently by its own import_id, without
-one import's progress clobbering another's — see routes/import_.py's
-_active_imports dict and the removal of the old single-flight 409 guard.
+one import's progress clobbering another's — see
+backend/scanning/import_progress.py (shared across processes since 2026-11-06)
+and the removal of the old single-flight 409 guard.
 """
 
 from __future__ import annotations
@@ -43,8 +44,16 @@ from flask import Flask
 from flask.testing import FlaskClient
 
 import routes.import_ as import_routes
+from backend.scanning.import_progress import (
+    MAX_TRACKED_IMPORTS_PER_USER,
+    ImportProgress,
+    ImportProgressState,
+    MemoryImportProgressStore,
+    get_import_progress,
+    set_import_progress,
+)
 from backend.user_events import UserEventTopic
-from routes.import_ import ImportProgressState, import_bp
+from routes.import_ import import_bp
 from tests.conftest import RecordingUserEvents
 
 _USER_ID = 1
@@ -67,8 +76,8 @@ def _state(
 
 
 def _clear_tracked_imports() -> None:
-    with import_routes._imports_lock:
-        import_routes._active_imports.clear()
+    """A fresh, empty store (tests/conftest.py also gives every test its own)."""
+    set_import_progress(ImportProgress(MemoryImportProgressStore()))
 
 
 def test_two_concurrent_imports_are_tracked_independently() -> None:
@@ -81,9 +90,8 @@ def test_two_concurrent_imports_are_tracked_independently() -> None:
             "import-b", _state(running=True, started_at="2026-08-12T10:00:05+00:00")
         )
 
-        with import_routes._imports_lock:
-            found_a = import_routes._lookup_import_locked("import-a", _USER_ID)
-            found_b = import_routes._lookup_import_locked("import-b", _USER_ID)
+        found_a = get_import_progress().find("import-a", _USER_ID)
+        found_b = get_import_progress().find("import-b", _USER_ID)
 
         assert found_a is not None and found_a[0] == "import-a"
         assert found_b is not None and found_b[0] == "import-b"
@@ -102,8 +110,7 @@ def test_lookup_without_import_id_falls_back_to_most_recent() -> None:
             "newer", _state(running=True, started_at="2026-08-12T10:05:00+00:00")
         )
 
-        with import_routes._imports_lock:
-            found = import_routes._lookup_import_locked("", _USER_ID)
+        found = get_import_progress().find("", _USER_ID)
 
         assert found is not None
         assert found[0] == "newer"
@@ -117,8 +124,7 @@ def test_lookup_unknown_import_id_returns_none() -> None:
         import_routes._set_import_progress(
             "known", _state(running=True, started_at="2026-08-12T10:00:00+00:00")
         )
-        with import_routes._imports_lock:
-            found = import_routes._lookup_import_locked("does-not-exist", _USER_ID)
+        found = get_import_progress().find("does-not-exist", _USER_ID)
         assert found is None
     finally:
         _clear_tracked_imports()
@@ -139,10 +145,9 @@ def test_lookup_never_returns_another_users_import() -> None:
                 user_id=_OTHER_USER_ID,
             ),
         )
-        with import_routes._imports_lock:
-            fallback = import_routes._lookup_import_locked("", _USER_ID)
-            explicit = import_routes._lookup_import_locked("theirs", _USER_ID)
-            none_of_mine = import_routes._lookup_import_locked("", 99)
+        fallback = get_import_progress().find("", _USER_ID)
+        explicit = get_import_progress().find("theirs", _USER_ID)
+        none_of_mine = get_import_progress().find("", 99)
 
         # The newer import belongs to someone else, so the fallback must skip it.
         assert fallback is not None and fallback[0] == "mine"
@@ -152,25 +157,25 @@ def test_lookup_never_returns_another_users_import() -> None:
         _clear_tracked_imports()
 
 
-def test_prune_keeps_tracked_imports_bounded() -> None:
-    _clear_tracked_imports()
-    try:
-        total = import_routes._MAX_TRACKED_IMPORTS + 10
-        for i in range(total):
-            import_routes._set_import_progress(
-                f"import-{i}",
-                _state(running=False, started_at=f"2026-08-12T10:{i:02d}:00+00:00"),
-            )
+# ai: claude-opus-5-5 | 2026-11-06 -- bounded per account now, not process-wide
+def test_prune_keeps_each_accounts_tracked_imports_bounded() -> None:
+    store = MemoryImportProgressStore()
+    set_import_progress(ImportProgress(store))
+    total = MAX_TRACKED_IMPORTS_PER_USER + 10
+    for i in range(total):
+        import_routes._set_import_progress(
+            f"import-{i}",
+            _state(running=False, started_at=f"2026-08-12T10:{i:02d}:00+00:00"),
+        )
+    import_routes._set_import_progress(
+        "other-account", _state(running=False, started_at="2026-08-12T09:00:00+00:00", user_id=_OTHER_USER_ID)
+    )
 
-        with import_routes._imports_lock:
-            remaining = len(import_routes._active_imports)
-            # The most recently started entries must survive the prune.
-            assert f"import-{total - 1}" in import_routes._active_imports
-            assert "import-0" not in import_routes._active_imports
-
-        assert remaining <= import_routes._MAX_TRACKED_IMPORTS
-    finally:
-        _clear_tracked_imports()
+    remaining = store.ids_for_user(_USER_ID)
+    assert len(remaining) == MAX_TRACKED_IMPORTS_PER_USER
+    assert remaining[0] == f"import-{total - 1}"  # the most recently started survive
+    assert "import-0" not in remaining
+    assert store.ids_for_user(_OTHER_USER_ID) == ["other-account"]  # another account's cap is its own
 
 
 # ai: gpt-5 | 2026-10-04
@@ -570,14 +575,12 @@ def _tracked_state_at_each_publish(
     monkeypatch: pytest.MonkeyPatch, events: RecordingUserEvents
 ) -> list[tuple[str, list[str]] | None]:
     """(phase, task_ids) of the user's latest tracked import at each import
-    status publish. Takes _imports_lock, so a publish made while holding it
-    would deadlock the test instead of passing."""
+    status publish, read back through the shared store the way the status route reads it."""
     seen: list[tuple[str, list[str]] | None] = []
     publish = events.publish
 
     def _publish(user_id: int, topic: UserEventTopic) -> None:
-        with import_routes._imports_lock:
-            found = import_routes._lookup_import_locked("", user_id)
+        found = get_import_progress().find("", user_id)
         seen.append((found[1].phase, list(found[1].task_ids)) if found else None)
         publish(user_id, topic)
 
@@ -612,8 +615,7 @@ def test_partial_dispatch_failure_revokes_prior_batches_and_returns_tracked_erro
         assert fake_task.dispatched[0].revoked is True
 
         import_id = payload["import_id"]
-        with import_routes._imports_lock:
-            tracked = import_routes._active_imports[import_id]
+        tracked = get_import_progress().find(import_id, 1)[1]
         assert tracked.running is False
         assert tracked.phase == "error"
         assert tracked.task_ids == ["task-1"]

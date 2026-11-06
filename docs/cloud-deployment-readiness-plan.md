@@ -98,7 +98,17 @@ Original scope:
   than worker threads, ordinary `/api/...` requests still answer promptly and a
   change in one tab still reaches the others.
 
-### 1.3 Run the extension listener and WebSocket server as their own processes
+### 1.3 Run the extension listener and WebSocket server as their own processes — done 2026-11-06
+`python -m web.extension_listener` (`main()`), the compose `listener` service; Caddy's
+`listener.`/`listener-ws.` hosts forward to it. It validates secrets, refuses an
+unmigrated database or an RLS-exempt role (same check as `wsgi.py`), and exits instead of
+falling back to another port, since the proxy upstream is fixed. The desktop still runs
+both servers inside `app.py`. Separating the process required the import-progress part
+of 1.5: listener-queued imports are now tracked in Redis
+(`backend/scanning/import_progress.py`), so `/api/import/status` on any web worker sees
+them.
+
+Original scope:
 - The listener (`backend/scanning/import_listener.py`, ports 8765/8766) currently
   starts from the app process. In production it should be its own compose service
   (same image, different command), so a gunicorn worker restart doesn't kill it and
@@ -116,11 +126,15 @@ Original scope:
   slow fallback tick, tasks are the work.
 - The file watcher is a separate problem — see 2.3.
 
-### 1.5 Move per-process state into Redis or the DB
+### 1.5 Move per-process state into Redis or the DB — partly done 2026-11-06
+Done: `routes/import_.py`'s `_active_imports` (import progress) moved to Redis as part of
+1.3, capped per account instead of process-wide. Still per-process: the rest of the list
+below.
+
 These module-level dicts only work when there is exactly one web process. Behind a
 multi-worker server, a status poll can land on a worker that never saw the job start:
 
-- `routes/import_.py:96` `_active_imports` (import progress)
+- ~~`routes/import_.py` `_active_imports` (import progress)~~ — done, `backend/scanning/import_progress.py`
 - `routes/auth.py:67` `_pending_auths` (**OAuth state — the callback can hit a
   different worker and fail**)
 - `routes/applications.py:121` `_host_fetch_last_at` (per-host politeness throttle)

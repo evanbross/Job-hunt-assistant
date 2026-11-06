@@ -33,6 +33,7 @@ repository classes in `backend/db.py`. Do not add raw queries to route handlers.
 Key files:
 - `app.py` — desktop launcher: DB init, extension servers, Vite, Celery worker, schedulers, dev Caddy
 - `wsgi.py` + `gunicorn.conf.py` — hosted web server entry point (never migrates); `python -m backend.db.migrate` is the deploy-time migration step
+- `web/extension_listener.py` — the browser extension's HTTP listener + WebSocket; `python -m web.extension_listener` runs them as their own process in a hosted deployment (the desktop runs them inside `app.py`). Import progress is shared through Redis (`backend/scanning/import_progress.py`)
 - `backend/db/app_role.py` — two DB roles: the owner (`DATABASE_OWNER_URL`, migrations/maintenance, RLS-exempt) and the runtime role the app serves as (`DATABASE_URL`, RLS always applies)
 - `web/factory.py` — `create_app()`, the side-effect-free Flask app factory (blueprints, guards, error handlers, API docs); `web/serving.py` holds the secrets/cookie/proxy setup a serving process adds
 - `routes/` — one blueprint per feature area (jobs, scan, fit, emails, applications, career_sites, import_, cover_letter, settings, system, board_search, auth)

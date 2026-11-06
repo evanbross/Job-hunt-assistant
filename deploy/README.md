@@ -114,9 +114,20 @@ supplies AI access itself.
 
 The extension talks to two endpoints, exposed as `listener.<APP_DOMAIN>` (HTTP) and
 `listener-ws.<APP_DOMAIN>` (WebSocket). Set the extension's listener URL to
-`https://listener.<APP_DOMAIN>`. Note the extension currently derives the WebSocket
-host by rewriting `*.localhost` names only, so hosted use needs that derivation
-extended before the push channel works; HTTP polling works regardless.
+`https://listener.<APP_DOMAIN>`; it derives the WebSocket host by inserting `-ws` after
+the first label, which matches the Caddyfile.
+
+Both are served by the `listener` service (`python -m web.extension_listener`), its own
+process rather than part of the web app, so a gunicorn worker restart never drops the
+extension and only one process binds the ports. It refuses to start if it would bind
+anything other than the configured ports (8765/8766), because Caddy's upstreams are
+fixed: on the desktop the listener falls back to a free port and re-registers with the
+dev Caddy, but in a hosted deployment that would look healthy while every extension
+request failed.
+
+Imports the extension sends are tracked in Redis (`backend/scanning/import_progress.py`,
+`jha:import:*` keys), so the web app's `/api/import/status` sees an import the listener
+process queued.
 
 ## What is not included
 
@@ -127,12 +138,12 @@ extended before the push channel works; HTTP polling works regardless.
    a container entrypoint that does none of the desktop work. `JHA_IMAGE` in the
    compose file is a placeholder until that exists.
 
-   The web server part exists: `wsgi.py` (`gunicorn -c gunicorn.conf.py wsgi:app`, the
-   compose `app` command) builds the app with `web.create_app()` and runs
-   `web.serving.prepare_for_serving()`. It does not start the extension listener and
-   WebSocket server, so `listener.` / `listener-ws.` in the Caddyfile have no upstream
-   until those run as their own process (plan item 1.3), and it starts no schedulers
-   (item 1.4).
+   The processes exist: `wsgi.py` (`gunicorn -c gunicorn.conf.py wsgi:app`, the compose
+   `app` command) serves the web app, `python -m web.extension_listener` the extension
+   endpoints (`listener`), `python -m backend.db.migrate` migrates (`migrate`), and
+   Celery runs `worker`. Nothing runs the schedulers yet (plan item 1.4): scheduled
+   career-site scans, the JD parser health check, account deletion after its grace
+   period, and log retention don't happen in a hosted deployment until it's done.
 
    **The server must handle long-lived responses.** Each open tab keeps one
    `/api/events` server-sent-events stream open for as long as the page is open

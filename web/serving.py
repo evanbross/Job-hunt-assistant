@@ -32,7 +32,7 @@ from backend.security.client_ip import (
     TrustedProxyMiddleware,
     parse_trusted_proxies,
 )
-from backend.security.secrets_policy import InsecureSecretError
+from backend.security.secrets_policy import InsecureSecretError, SecretsConfig
 from backend.security.session_cookies import (
     normalize_secure_mode,
     session_cookie_config,
@@ -44,11 +44,11 @@ from backend.utils.utils import get_repos
 logger = logging.getLogger(__name__)
 
 
-# ai: claude-sonnet-5 | 2026-09-26
-def install_startup_secrets(app: Flask) -> str:
-    """Refuse to start on a missing or weak FLASK_SECRET_KEY / SETTINGS_ENCRYPTION_KEY,
-    then install the validated signing key (and any rotation fallbacks). Returns
-    the normalized APP_ENV."""
+# ai: claude-opus-5-5 | 2026-11-06 -- split out of install_startup_secrets so a process
+# with no Flask app (the extension listener) applies the same startup rule.
+def check_startup_secrets() -> tuple[str, SecretsConfig]:
+    """Exit on a missing or weak FLASK_SECRET_KEY / SETTINGS_ENCRYPTION_KEY. Returns the
+    normalized APP_ENV and the validated secrets."""
     try:
         app_env = normalize_app_env(config.APP_ENV)
         secrets_config = enforce_startup_secrets(
@@ -57,6 +57,15 @@ def install_startup_secrets(app: Flask) -> str:
     except InsecureSecretError as exc:
         logger.critical("%s", exc)
         raise SystemExit(1) from exc
+    return app_env, secrets_config
+
+
+# ai: claude-sonnet-5 | 2026-09-26
+def install_startup_secrets(app: Flask) -> str:
+    """Refuse to start on a missing or weak FLASK_SECRET_KEY / SETTINGS_ENCRYPTION_KEY,
+    then install the validated signing key (and any rotation fallbacks). Returns
+    the normalized APP_ENV."""
+    app_env, secrets_config = check_startup_secrets()
     app.secret_key = secrets_config.flask_secret
     # Flask signs with secret_key and still accepts anything signed with these.
     app.config["SECRET_KEY_FALLBACKS"] = list(secrets_config.flask_fallbacks)
