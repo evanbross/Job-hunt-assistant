@@ -55,8 +55,8 @@ from backend.candidate_profile_service import (
     save_candidate_profile,
 )
 from backend.email.google_token_store import GoogleTokenStore
+from backend.ollama_endpoint import check_ollama_connection
 from backend.settings_service import get_setting, is_setting_configured, set_setting
-from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 from backend.utils.utils import current_user_id, get_repos, invalid_request_response
 
 logger = logging.getLogger(__name__)
@@ -188,7 +188,8 @@ def setup_test_ai() -> Any:
     if body.provider == "ollama":
         base_url = (body.base_url or config.OLLAMA_BASE_URL).rstrip("/")
         model = body.model or config.OLLAMA_MODEL
-        return _test_ollama(base_url, model)
+        ok, message = check_ollama_connection(base_url, model)  # ai: claude-opus-5-5 | 2026-11-06
+        return jsonify({"ok": ok, "message": message})
 
     return jsonify({"ok": False, "message": f"Unknown provider: {body.provider}"}), 400
 
@@ -232,44 +233,6 @@ def _test_openai(api_key: str, model: str) -> Any:
         )
     except Exception as exc:  # noqa: BLE001 — surface any openai error to the user
         return jsonify({"ok": False, "message": f"OpenAI test failed: {exc}"})
-
-
-def _test_ollama(base_url: str, model: str) -> Any:
-    tags_url = f"{base_url}/api/tags"
-    req = urllib.request.Request(tags_url, method="GET")
-    try:
-        with safe_urlopen(req, timeout=5, allow_loopback=True) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except UnsafeUrlError as exc:
-        return jsonify({"ok": False, "message": f"Refusing to connect: {exc}"})
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return jsonify({"ok": False, "message": f"Could not connect to Ollama: {exc}"})
-    except json.JSONDecodeError:
-        return jsonify(
-            {
-                "ok": False,
-                "message": "Connected but received an unexpected response from Ollama.",
-            }
-        )
-
-    available = [m.get("name", "") for m in body.get("models", [])]
-    if model in available:
-        return jsonify(
-            {"ok": True, "message": f"Connected. Model '{model}' is available."}
-        )
-    if available:
-        return jsonify(
-            {
-                "ok": False,
-                "message": f"Connected, but model '{model}' not found. Available: {', '.join(available)}",
-            }
-        )
-    return jsonify(
-        {
-            "ok": False,
-            "message": f"Connected, but model '{model}' not found (no models installed).",
-        }
-    )
 
 
 # ─── Upload Google credentials ────────────────────────────────────────────────

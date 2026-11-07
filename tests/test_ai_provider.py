@@ -27,7 +27,7 @@ from __future__ import annotations
 import pytest
 
 import config
-from backend.ai_provider import AIProviderClient
+from backend.ai_provider import AIMessage, AIProviderClient, AIProviderError
 from backend.db import get_connection
 from backend.db.repositories.user_accounts import PostgresUserAccountRepository
 from backend.settings_service import set_setting
@@ -88,3 +88,22 @@ def test_falls_back_to_config_defaults_when_nothing_is_configured() -> None:
 
     assert client._provider == config.AI_PROVIDER.strip().lower()
     assert client._anthropic_client is None, "no API key configured -- must not fabricate a client"
+
+
+# ai: claude-opus-5-5 | 2026-11-06 -- docs/cloud-deployment-readiness-plan.md 2.4
+def test_a_hosted_server_refuses_a_stored_loopback_ollama_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A URL saved before the hosted rule (or on the desktop) must still be refused
+    when used: on a server, loopback is the app's own container."""
+    user_id = _new_user("ollama@example.com")
+    with get_repos(user_id) as repos:
+        set_setting("ai_provider", "ollama", user_id, repos)
+        set_setting("ollama_base_url", "http://127.0.0.1:8765", user_id, repos)
+        repos["conn"].commit()
+    monkeypatch.setattr(config, "APP_MODE", "hosted")
+    connected: list[object] = []
+    monkeypatch.setattr("backend.ai_provider.safe_urlopen", lambda *a, **k: connected.append(a))
+
+    with pytest.raises(AIProviderError, match="Ollama URL refused"):
+        AIProviderClient(user_id).complete(messages=[AIMessage(role="user", content="hi")])
+
+    assert connected == []

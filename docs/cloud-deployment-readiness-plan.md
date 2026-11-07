@@ -308,7 +308,18 @@ Original problem:
 the watcher, and make in-app editing (or upload of a `.md`) the only path. Keep the
 watcher for the desktop build.
 
-### 2.4 Ollama SSRF (`backend/ai_provider.py:310-318`)
+### 2.4 Ollama SSRF (`backend/ai_provider.py:310-318`) — done 2026-11-06
+`backend/ollama_endpoint.py` decides where Ollama requests may go, for every call site:
+completions, the settings save, and the two connection tests (which were duplicate
+copies in `routes/settings.py` and `routes/setup.py`; now one `check_ollama_connection`).
+Desktop: unchanged, loopback allowed. Hosted: `https://` at a public address on a
+standard port, the rule every other outbound fetch follows. The completion path checks
+the stored URL on every call, so one saved before the rule (or on the desktop) is
+refused too. The connection test was also a port scanner for the server's own ports
+(its message differed for an open and a closed port); hosted, it refuses before
+connecting. Ollama stays available hosted for anyone with a public https endpoint.
+
+Original problem:
 `ollama_base_url` is a **per-user** setting and the call passes `allow_loopback=True`.
 On a server, loopback is the app container itself — a user can point it at
 `http://127.0.0.1:8765` or `:5004` and make the server call its own internal

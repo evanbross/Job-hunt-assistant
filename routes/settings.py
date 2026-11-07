@@ -29,11 +29,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-import urllib.error
-import urllib.request
 from typing import Annotated, Any
 
 from flask import Blueprint, jsonify, request, session
@@ -63,6 +60,7 @@ from backend.candidate_profile_service import (
     announce_candidate_profile_changed,
     save_candidate_profile,
 )
+from backend.ollama_endpoint import check_ollama_connection, validate_ollama_base_url
 from backend.resume.resume_file_service import (
     MAX_RESUME_BYTES,
     InvalidResumeFileError,
@@ -83,7 +81,7 @@ from backend.settings_service import (
     load_settings,
     set_setting,
 )
-from backend.utils.url_safety import UnsafeUrlError, safe_urlopen, validate_outbound_url
+from backend.utils.url_safety import UnsafeUrlError
 from backend.utils.utils import current_user_id, get_repos, invalid_request_response
 
 logger = logging.getLogger(__name__)
@@ -372,7 +370,7 @@ def update_config() -> ResponseReturnValue:
                 ).rstrip("/")
         if value != current_value:
             try:
-                validate_outbound_url(value, allow_loopback=True)
+                validate_ollama_base_url(value)  # ai: claude-opus-5-5 | 2026-11-06 -- hosted rules too
             except UnsafeUrlError as exc:
                 return jsonify({"error": f"ollama_base_url rejected: {exc}"}), 400
         updates["ollama_base_url"] = value
@@ -465,44 +463,10 @@ def test_ollama_connection() -> ResponseReturnValue:
         )
     except ValidationError as exc:
         return invalid_request_response(exc)
-    base_url = body.ollama_base_url
-    model = body.ollama_model
-
-    tags_url = f"{base_url}/api/tags"
-    req = urllib.request.Request(tags_url, method="GET")
-    try:
-        with safe_urlopen(req, timeout=5, allow_loopback=True) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except UnsafeUrlError as exc:
-        return jsonify({"ok": False, "message": f"Refusing to connect: {exc}"})
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return jsonify({"ok": False, "message": f"Could not connect: {exc}"})
-    except json.JSONDecodeError:
-        return jsonify(
-            {
-                "ok": False,
-                "message": "Connected but received an unexpected response from Ollama.",
-            }
-        )
-
-    available = [m.get("name", "") for m in body.get("models", [])]
-    if model in available:
-        return jsonify(
-            {"ok": True, "message": f"Connected. Model '{model}' is available."}
-        )
-    if available:
-        return jsonify(
-            {
-                "ok": False,
-                "message": f"Connected, but model '{model}' was not found. Available: {', '.join(available)}",
-            }
-        )
-    return jsonify(
-        {
-            "ok": False,
-            "message": f"Connected, but model '{model}' was not found (no models installed).",
-        }
-    )
+    # ai: claude-opus-5-5 | 2026-11-06 -- one shared check, which applies the hosted
+    # URL rules (backend/ollama_endpoint.py)
+    ok, message = check_ollama_connection(body.ollama_base_url, body.ollama_model)
+    return jsonify({"ok": ok, "message": message})
 
 
 # ─── System settings routes (admin-only) ──────────────────────────────────────

@@ -43,6 +43,7 @@ from anthropic import Anthropic, APIConnectionError, APIStatusError
 import config
 from backend.db import open_repositories
 from backend.db.row_level_security import set_current_user
+from backend.ollama_endpoint import ollama_allows_loopback, validate_ollama_base_url
 from backend.settings_service import get_setting
 from backend.utils.url_safety import (  # ai: claude-fable-5 | 2026-07-15
     UnsafeUrlError,
@@ -307,15 +308,20 @@ class AIProviderClient:
         }
         if json_response:
             payload["format"] = "json"
-        # ai: claude-fable-5 | 2026-07-15 — allow_loopback: Ollama legitimately
-        # runs on localhost (typically :11434); other private/internal ranges
-        # are still rejected by the URL safety layer.
+        # ai: claude-opus-5-5 | 2026-11-06 -- loopback only on the desktop, where
+        # Ollama legitimately runs on localhost (typically :11434); hosted, loopback
+        # is the server itself, so the URL must be public https (plan 2.4). Checked
+        # here too, not just when saved: the stored value may predate the rule.
+        try:
+            validate_ollama_base_url(self._ollama_base_url)
+        except UnsafeUrlError as exc:
+            raise AIProviderError(f"Ollama URL refused: {exc}") from exc
         response = self._post_json(
             f"{self._ollama_base_url}/api/chat",
             payload,
             headers={},
             on_retry=on_retry,
-            allow_loopback=True,
+            allow_loopback=ollama_allows_loopback(),
         )
         content = response.get("message", {}).get("content")
         if isinstance(content, str) and content.strip():
