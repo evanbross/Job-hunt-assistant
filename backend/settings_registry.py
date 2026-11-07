@@ -36,6 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import config
+from backend.app_mode import is_hosted
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,10 @@ class SettingSpec:
     # PUT /api/settings/system route; it is managed only by a dedicated,
     # validating route (e.g. the Google OAuth client config upload).
     hidden: bool = False
+    # ai: claude-opus-5-5 | 2026-11-06 -- only meaningful on the user's own machine
+    # (it names a path on this computer, say). Not offered, read or written when the
+    # app is hosted (backend/app_mode.py); see available_system_setting_keys().
+    desktop_only: bool = False
 
 
 # ai: claude-sonnet-5 | 2026-08-21
@@ -163,6 +168,7 @@ SETTINGS: dict[str, SettingSpec] = {
     "candidate_profile_sync_path": SettingSpec(
         scope="system", is_secret=False, default="",
         label="Profile File Path", group="Candidate Profile File Sync",
+        desktop_only=True,  # ai: claude-opus-5-5 | 2026-11-06 -- plan 2.3
         placeholder="F:/Documents/Resume/candidate_profile.md",
         help_text="Absolute path to a candidate profile file on this server. When the file is "
         "saved and is newer than the account's stored profile, that account sees a banner "
@@ -171,13 +177,14 @@ SETTINGS: dict[str, SettingSpec] = {
     "candidate_profile_sync_account_email": SettingSpec(
         scope="system", is_secret=False, default="",
         label="Account Email", group="Candidate Profile File Sync",
+        desktop_only=True,
         placeholder="you@example.com",
         help_text="The account whose profile the file above can replace.",
     ),
     "candidate_profile_sync_last_synced_sha256": SettingSpec(
         scope="system", is_secret=False, default="",
         label="Last loaded profile hash", group="Candidate Profile File Sync",
-        hidden=True,
+        hidden=True, desktop_only=True,
         help_text="Written only when the file is loaded; detects a stored profile changed since "
         "then, which is backed up to a file before being replaced.",
     ),
@@ -185,7 +192,7 @@ SETTINGS: dict[str, SettingSpec] = {
     "candidate_profile_sync_dismissed_sha256": SettingSpec(
         scope="system", is_secret=False, default="",
         label="Dismissed profile file hash", group="Candidate Profile File Sync",
-        hidden=True,
+        hidden=True, desktop_only=True,
         help_text="The version of the file the account chose not to load; it isn't offered "
         "again until the file changes.",
     ),
@@ -331,6 +338,18 @@ USER_SETTING_KEYS: frozenset[str] = frozenset(
 )
 
 
+# ai: claude-opus-5-5 | 2026-11-06
+def _offered_here(spec: SettingSpec) -> bool:
+    return not spec.hidden and not (spec.desktop_only and is_hosted())
+
+
+def available_system_setting_keys() -> frozenset[str]:
+    """SYSTEM_SETTING_KEYS this installation offers: on a hosted server, not the
+    desktop-only ones (a path on the server's disk means nothing to anyone, and an
+    admin pointing one at a server file could load it into an account's profile)."""
+    return frozenset(key for key in SYSTEM_SETTING_KEYS if _offered_here(SETTINGS[key]))
+
+
 def schema_for_scope(scope: str) -> list[dict[str, object]]:
     """UI-safe field metadata for every registry key in *scope*, in
     declaration order. Never includes `default` -- for a secret, the default
@@ -348,5 +367,5 @@ def schema_for_scope(scope: str) -> list[dict[str, object]]:
             "is_secret": spec.is_secret,
         }
         for key, spec in SETTINGS.items()
-        if spec.scope == scope and not spec.hidden
+        if spec.scope == scope and _offered_here(spec)  # ai: claude-opus-5-5 | 2026-11-06
     ]

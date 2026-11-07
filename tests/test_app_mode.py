@@ -23,10 +23,19 @@ from flask import Flask
 import backend.scanning.import_dump as import_dump
 import config
 from backend.app_mode import AppModeConfigError, app_mode, is_hosted
+from backend.candidate_profile_file_sync import PATH_SETTING as SYNC_PATH_SETTING
+from backend.candidate_profile_file_sync import SETTING_KEYS as SYNC_SETTING_KEYS
+from backend.candidate_profile_file_sync import (
+    CandidateProfileFileSync,
+    FileSyncState,
+    SyncSettings,
+)
 from backend.db.readonly_role import (
     ReadonlyRolePasswordMissingError,
     get_or_create_readonly_password,
 )
+from backend.settings_registry import available_system_setting_keys, schema_for_scope
+from routes.settings import settings_bp
 from routes.system import system_bp
 from web.serving import check_startup_secrets
 
@@ -118,3 +127,51 @@ def test_hosted_uses_the_readonly_password_secret(hosted: None, monkeypatch: pyt
     monkeypatch.setattr(config, "READONLY_DB_PASSWORD", "from-the-secret")
 
     assert get_or_create_readonly_password() == "from-the-secret"
+
+
+# ─── candidate profile file sync is off when hosted (plan 2.3) ─────────────────
+# ai: claude-opus-5-5 | 2026-11-06
+
+
+def test_the_file_sync_settings_are_not_offered_when_hosted(hosted: None) -> None:
+    offered = {field["key"] for field in schema_for_scope("system")}
+
+    assert not offered & SYNC_SETTING_KEYS
+    assert not available_system_setting_keys() & SYNC_SETTING_KEYS
+
+
+def test_the_file_sync_settings_are_offered_on_the_desktop() -> None:
+    offered = {field["key"] for field in schema_for_scope("system")}
+
+    assert SYNC_SETTING_KEYS <= offered
+    assert SYNC_SETTING_KEYS <= available_system_setting_keys()
+
+
+def test_an_admin_cannot_set_a_server_file_path_when_hosted(hosted: None) -> None:
+    app = Flask(__name__)
+    app.register_blueprint(settings_bp, url_prefix="/api")
+
+    response = app.test_client().put(
+        "/api/settings/system", json={SYNC_PATH_SETTING: "/etc/passwd"}
+    )
+
+    assert response.status_code == 400
+    assert SYNC_PATH_SETTING in response.get_json()["error"]
+
+
+def test_the_file_sync_never_reads_a_server_file_when_hosted(
+    hosted: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even with settings left over from desktop use, pointing at a readable file."""
+    secret = tmp_path / "server-file.md"
+    secret.write_text("# not anyone's profile", encoding="utf-8")
+    sync = CandidateProfileFileSync()
+    monkeypatch.setattr(
+        sync, "load_settings", lambda: SyncSettings(str(secret), "a@example.com", "", "")
+    )
+    monkeypatch.setattr(sync, "account_user_id", lambda settings: 1)
+
+    status, diff = sync.review(1)
+
+    assert status.state == FileSyncState.NOT_CONFIGURED
+    assert status.path == "" and diff == []

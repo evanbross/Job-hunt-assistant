@@ -292,7 +292,16 @@ Original list. Each of these assumes a persistent local disk owned by one user:
   `grep -rn "DATA_DIR\|UPLOADS_DIR\|CREDENTIALS_DIR\|BASE_DIR /"` and confirm the only
   remaining uses are the one-time legacy migration bridges in `schema.py`.
 
-### 2.3 Candidate-profile file sync
+### 2.3 Candidate-profile file sync — done 2026-11-06
+Hosted, the sync is off from every entry point: its status is `not_configured` (so the
+banner never shows and load/dismiss refuse) before any setting or file is read, the
+watcher doesn't start, and its settings carry `desktop_only` in the settings registry,
+so the schema doesn't offer them and `PUT /api/settings/system` rejects them
+(`available_system_setting_keys()`). In-app editing on the Settings page, which was
+already the database's own path, is the only way to change a profile there. The
+desktop app is unchanged.
+
+Original problem:
 `backend/candidate_profile_file_sync.py` watches a path on the server's disk
 (`candidate_profile_sync_path` setting) with `watchdog`. On a server, a user's
 `F:/Documents/Resume/...` doesn't exist. In hosted mode: hide the setting, don't start

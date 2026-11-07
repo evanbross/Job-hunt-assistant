@@ -45,6 +45,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver, ObservedWatch
 
+from backend.app_mode import is_hosted
 from backend.candidate_profile_service import (
     CandidateProfileUpdate,
     announce_candidate_profile_changed,
@@ -249,6 +250,11 @@ class CandidateProfileFileSync:
         return LoadResult(backup_path=backup_path)
 
     def _compare(self, settings: SyncSettings, user_id: int) -> _Comparison:
+        # ai: claude-opus-5-5 | 2026-11-06 -- off when hosted (plan 2.3): the file
+        # would be on the server, where nobody's profile lives. Every route and the
+        # watcher come through here, so nothing on the server is ever read.
+        if is_hosted():
+            return _Comparison(FileSyncStatus(FileSyncState.NOT_CONFIGURED))
         if not settings.path_text or not settings.account_email:
             return _Comparison(FileSyncStatus(FileSyncState.NOT_CONFIGURED))
         if self.account_user_id(settings) != user_id:
@@ -428,6 +434,10 @@ def start_candidate_profile_file_watcher() -> None:
     """Start the watcher thread (desktop only, from app.py). In Werkzeug's
     debug reloader only the serving child runs it, not the monitor parent."""
     global _watcher
+
+    if is_hosted():  # ai: claude-opus-5-5 | 2026-11-06
+        logger.info("Candidate profile file sync is off: the app is hosted.")
+        return
 
     debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
     if debug_mode and os.environ.get("WERKZEUG_RUN_MAIN") != "true":

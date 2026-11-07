@@ -73,8 +73,8 @@ from backend.resume.resume_file_service import (
 from backend.scoring.jd_enrichment import rescore_active_queue_jobs
 from backend.settings_registry import (
     SETTINGS,
-    SYSTEM_SETTING_KEYS,
     USER_SETTING_KEYS,
+    available_system_setting_keys,
     schema_for_scope,
 )
 from backend.settings_service import (
@@ -514,9 +514,10 @@ def test_ollama_connection() -> ResponseReturnValue:
 
 
 def _read_system_settings(repos: dict) -> dict[str, object]:
-    settings = load_settings(SYSTEM_SETTING_KEYS, None, repos)  # ai: claude-opus-5-5 | 2026-10-23 — one query, not one per key
+    keys = available_system_setting_keys()  # ai: claude-opus-5-5 | 2026-11-06 -- not desktop-only ones when hosted
+    settings = load_settings(keys, None, repos)  # ai: claude-opus-5-5 | 2026-10-23 — one query, not one per key
     result: dict[str, object] = {}
-    for key in SYSTEM_SETTING_KEYS:
+    for key in keys:
         if SETTINGS[key].is_secret:
             result[f"{key}_set"] = settings.is_configured(key)
         else:
@@ -537,7 +538,7 @@ def update_system_settings() -> ResponseReturnValue:
     if not data:
         return jsonify({"error": "No data provided"}), 400
 
-    unknown = set(data.keys()) - SYSTEM_SETTING_KEYS
+    unknown = set(data.keys()) - available_system_setting_keys()  # ai: claude-opus-5-5 | 2026-11-06
     if unknown:
         return jsonify({"error": f"Unknown settings: {sorted(unknown)}"}), 400
 
