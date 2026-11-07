@@ -53,16 +53,13 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
     HOME=/tmp
 COPY --from=python-deps /opt/venv /opt/venv
 
-# Chromium's headless shell and the system libraries it needs, for the scrapers that
-# run headless (Greenhouse search). Headful launches -- Wellfound, which DataDome only
-# lets through with a visible window, and the Greenhouse manual login -- cannot work
-# without a display at all; plan 2.5 routes those to the browser extension instead.
-RUN playwright install --with-deps --only-shell chromium \
- && rm -rf /var/lib/apt/lists/*
+# No browser in the image (plan 2.5): the only Playwright user left is the desktop's
+# Wellfound fetcher, which needs a visible window; hosted, the email scan queues
+# Wellfound jobs for the browser extension instead. The playwright package is still
+# installed (routes/scan.py imports the fetcher's module) but never launches.
 
 RUN groupadd --system --gid 10001 jha \
  && useradd --system --uid 10001 --gid jha --no-create-home --home-dir /nonexistent \

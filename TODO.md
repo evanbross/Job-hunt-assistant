@@ -265,4 +265,6 @@ Neon-backed install currently needs.
       listener, 1.4 Celery beat, 1.5 per-process state into Redis, 1.6 migrate
       step + two DB roles, 1.7 Dockerfile + read-only containers + health probes,
       2.1 read-only role password, 2.2 disk writes + APP_MODE, 2.3 profile file sync
-      off when hosted, 2.4 Ollama SSRF. Next: 2.5 headful scrapers, then 2.6.
+      off when hosted, 2.4 Ollama SSRF, 2.5 (2026-11-07) no browser on the server:
+      hosted Wellfound to the extension, server Greenhouse/Jobanni scans retired,
+      Chromium out of the image. Next: 2.6 voice query tenant isolation.

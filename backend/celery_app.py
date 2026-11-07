@@ -65,8 +65,8 @@ logger = logging.getLogger(__name__)
 # unreachable Wellfound Playwright scan panel (see routes/wellfound.py removal)
 # Each routes.* module here defines its own @celery_app.task(bind=True)
 # function (run_board_search_task, run_re_evaluate_task,
-# run_career_site_scan_task, run_scan_task, run_req_closed_scan_task,
-# run_greenhouse_scan_task) -- listed here so the worker process imports and
+# run_career_site_scan_task, run_scan_task, run_req_closed_scan_task)
+# -- listed here so the worker process imports and
 # registers them at startup, same as backend.tasks's existing two tasks.
 celery_app = Celery(
     "job_hunt_assistant",
@@ -79,9 +79,7 @@ celery_app = Celery(
         "routes.career_sites",
         "routes.scan",
         "routes.applications",
-        "routes.greenhouse",
         "routes.jd_health_check",
-        "routes.jobanni",  # ai: claude-opus-5-5 | 2026-11-06
         "routes.jobs",  # ai: claude-opus-5-5 | 2026-11-06
         "backend.security.data_lifecycle",
     ],

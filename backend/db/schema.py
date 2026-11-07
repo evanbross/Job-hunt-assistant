@@ -242,43 +242,15 @@ _PER_USER_TABLES: tuple[str, ...] = (
     "career_scan_digest_log",
 )
 
-
-# ai: claude-sonnet-5 | 2026-09-26
-def _migrate_legacy_greenhouse_session(conn: Any) -> None:
-    """Move the old shared credentials/greenhouse_session.json into the first
-    account's row (the same convention as the other pre-multi-tenant data),
-    renaming the file once moved. Left in place, with a warning, if the
-    encryption key is missing or the content is unusable."""
-    session_file = config.LEGACY_GREENHOUSE_SESSION_FILE
-    if not session_file.is_file():
-        return
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM user_accounts ORDER BY id LIMIT 1")
-    owner = cur.fetchone()
-    text = session_file.read_text(encoding="utf-8")
-    try:
-        json.loads(text)
-    except ValueError:
-        logger.warning("%s is not valid JSON; leaving it unmigrated.", session_file.name)
-        return
-    if owner is None:
-        return
-    try:
-        cur.execute(
-            "INSERT INTO greenhouse_sessions (user_id, state_encrypted, updated_at)"
-            " VALUES (%s, %s, %s) ON CONFLICT (user_id) DO NOTHING",
-            (owner["id"], encrypt_secret(text), datetime.now(UTC).isoformat(timespec="seconds")),
-        )
-    except SettingsEncryptionKeyMissingError:
-        logger.warning(
-            "Cannot migrate %s: SETTINGS_ENCRYPTION_KEY is not set. "
-            "It will be retried at next startup.",
-            session_file.name,
-        )
-        return
-    session_file.rename(session_file.with_name(session_file.name + ".migrated"))
-    conn.commit()
-    logger.info("Migrated the Greenhouse session into the first account's row.")
+# ai: claude-opus-5-5 | 2026-11-07
+# Per-account settings whose feature was removed: migrate_schema deletes their rows,
+# so a retired setting (some held an account's email address) doesn't linger.
+RETIRED_USER_SETTING_KEYS: tuple[str, ...] = (
+    "greenhouse_email",
+    "greenhouse_search_url",
+    "jobanni_search_url",
+    "jobanni_max_jobs",
+)
 
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -1336,18 +1308,17 @@ def migrate_schema(conn: Any) -> None:
     )
     conn.commit()
     _migrate_legacy_candidate_profiles(conn)
-    # ai: claude-sonnet-5 | 2026-09-26 -- per-user saved Greenhouse login, encrypted.
+    # ai: claude-opus-5-5 | 2026-11-07 -- the server-side Greenhouse scrape (with its
+    # visible-browser login) and the server-side Jobanni scan are retired: neither had
+    # a UI since July, and the browser extension captures both sites from the user's
+    # own browser (docs/cloud-deployment-readiness-plan.md 2.5). Their saved login
+    # sessions (encrypted cookies) and per-account settings go with them.
+    cur.execute("DROP TABLE IF EXISTS greenhouse_sessions")
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS greenhouse_sessions (
-            user_id          INTEGER PRIMARY KEY REFERENCES user_accounts(id) ON DELETE CASCADE,
-            state_encrypted  TEXT NOT NULL,
-            updated_at       TEXT NOT NULL
-        )
-        """
+        "DELETE FROM user_settings WHERE key = ANY(%s)",
+        (list(RETIRED_USER_SETTING_KEYS),),
     )
     conn.commit()
-    _migrate_legacy_greenhouse_session(conn)
     cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS notes TEXT")
     # contact_type (recruiter/personal/NULL) briefly existed before it became
     # the is_recruiter checkbox; carry any flagged recruiters over, then drop it.

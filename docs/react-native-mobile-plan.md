@@ -178,7 +178,7 @@ Treat this as a Phase 2 item — nice-to-have, not required for the app to be us
 
 - `SettingsPanel.jsx` (1,891 lines), `SetupWizardPanel.jsx` (1,127 lines) — one-time/rare
   configuration, not worth a mobile redesign.
-- `GreenhouseScanPanel.jsx`, `JobanniScanPanel.jsx`,
+- ~~`GreenhouseScanPanel.jsx`, `JobanniScanPanel.jsx`~~ (removed 2026-11-07),
   `CareerSiteResultsPanel.jsx`, `CareerSiteScanBanner.jsx` — scan configuration and
   results triage tied to the browser-extension capture flow (Section 2), which has no
   mobile equivalent.

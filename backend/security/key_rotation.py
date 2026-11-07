@@ -71,7 +71,6 @@ def encrypted_columns() -> list[EncryptedColumn]:
         ),
         EncryptedColumn("resume files", "resume", "file_encrypted", ("id",)),
         EncryptedColumn("Google tokens", "google_oauth_tokens", "token_encrypted", ("user_id",)),
-        EncryptedColumn("Greenhouse sessions", "greenhouse_sessions", "state_encrypted", ("user_id",)),
     ]
 
 

@@ -25,7 +25,6 @@ from flask import Blueprint, Flask
 import routes.applications as applications
 import routes.board_search as board_search
 import routes.fit as fit
-import routes.greenhouse as greenhouse
 import routes.scan as scan
 from backend.celery_app import celery_app
 from tests.task_doubles import RecordedDelays, install_everything_running_registry
@@ -49,12 +48,6 @@ _SUBMITTERS: dict[str, tuple[Any, str, str, Callable[[], str | None]]] = {
         "fit",
         lambda: fit._submit_re_evaluate(_USER),
     ),
-    "greenhouse scan": (
-        greenhouse.run_greenhouse_scan_task,
-        "GREENHOUSE_SCAN_TASK_KIND",
-        "greenhouse",
-        lambda: greenhouse._submit_greenhouse_scan(_USER, "https://example.com", 10),
-    ),
     "closed-req scan": (
         applications.run_req_closed_scan_task,
         "CLOSED_REQ_SCAN_TASK_KIND",
@@ -66,7 +59,6 @@ _MODULES = {
     "scan": scan,
     "board_search": board_search,
     "fit": fit,
-    "greenhouse": greenhouse,
     "applications": applications,
 }
 
@@ -139,12 +131,6 @@ _THREAD_RUNS_NOW_TASKS = {
         {},
     ),
     "import repair": ("routes.jobs", "run_import_repair_task", "/api/jobs/repair-import-issues", {}),
-    "Jobanni scan": (
-        "routes.jobanni",
-        "run_jobanni_scan_task",
-        "/api/jobanni/scan",
-        {"search_url": "https://jobanni.example/jobs", "max_jobs": 5},
-    ),
 }
 
 
@@ -167,7 +153,6 @@ def test_a_second_start_is_refused_but_another_account_can_start_its_own(
     install_everything_running_registry()
     delays = RecordedDelays()
     monkeypatch.setattr(getattr(importlib.import_module(module_name), task_name), "delay", delays)
-    monkeypatch.setattr("routes.jobanni.validate_outbound_url", lambda url: None)
     user = {"id": 1}
     client = _client_for(module_name, monkeypatch, user)
 

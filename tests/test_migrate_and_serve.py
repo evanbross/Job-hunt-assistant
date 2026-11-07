@@ -108,6 +108,45 @@ def test_migrating_with_no_app_login_names_the_settings_and_changes_nothing(
     assert _recorded_hash(pg_dsn) == "stale"
 
 
+# ai: claude-opus-5-5 | 2026-11-07
+def test_migrating_removes_the_retired_scrapers_session_table_and_settings(pg_dsn: str) -> None:
+    """The server-side Greenhouse and Jobanni scans were retired (plan 2.5): their
+    encrypted login sessions and per-account settings are deleted, other settings kept."""
+    conn = psycopg2.connect(pg_dsn)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO user_accounts (email, password_hash, role)"
+            " VALUES ('retired@example.com', 'x', 'user') RETURNING id"
+        )
+        user_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO user_settings (user_id, key, value) VALUES"
+            " (%s, 'greenhouse_email', 'me@example.com'), (%s, 'jobanni_max_jobs', '50'),"
+            " (%s, 'email_lookback_days', '9')",
+            (user_id, user_id, user_id),
+        )
+        cur.execute(
+            "CREATE TABLE greenhouse_sessions (user_id INTEGER PRIMARY KEY,"
+            " state_encrypted TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    migrate_database(pg_dsn, runtime_database_url(pg_dsn))
+
+    conn = psycopg2.connect(pg_dsn)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('greenhouse_sessions')")
+        assert cur.fetchone()[0] is None
+        cur.execute("SELECT key FROM user_settings WHERE user_id = %s ORDER BY key", (user_id,))
+        assert [row[0] for row in cur.fetchall()] == ["email_lookback_days"]
+    finally:
+        conn.close()
+
+
 # ─── the migrate command ────────────────────────────────────────────────────────
 
 

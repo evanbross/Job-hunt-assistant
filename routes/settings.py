@@ -101,8 +101,8 @@ _VALID_PENALTY_SCOPES: frozenset[str] = frozenset({"title", "company", "body", "
 # same real JSON types its existing frontend consumers (ConfigSection,
 # ProfileSettingsSection, EmailSourcesSection, JdHealthCheckSection) already
 # expect. Excluded from the generic passthrough helpers below (which always
-# read/write plain strings -- fine for the remaining user keys: API key
-# secrets and greenhouse_email).
+# read/write plain strings -- fine for the remaining user keys, the API key
+# secrets).
 _RUNTIME_CONFIG_USER_KEYS: frozenset[str] = frozenset(
     {
         "email_lookback_days",
@@ -390,7 +390,7 @@ def update_config() -> ResponseReturnValue:
 
         # ai: claude-sonnet-5 | 2026-08-21
         # Per-user secrets/creds not covered by explicit validation above
-        # (API keys, greenhouse_email) go through settings_service directly
+        # (the API keys) go through settings_service directly
         # -- keeps them encrypted and scoped to the account that set them.
         # An empty string for a secret means "leave it unchanged" (the UI
         # never round-trips the real value, so an empty submit can't mean

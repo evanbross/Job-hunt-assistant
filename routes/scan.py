@@ -41,6 +41,7 @@ from googleapiclient.errors import HttpError
 import config
 from backend.active_tasks import get_active_tasks
 from backend.ai_provider import AIProviderClient
+from backend.app_mode import is_hosted
 from backend.celery_app import celery_app
 from backend.db import CaptureQueueOrigin
 from backend.db.job_columns import JobColumns
@@ -250,9 +251,13 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
             state["current_job_title"] = current_job_title
         self.update_state(state="PROGRESS", meta=dict(state))
 
-    # ai: claude-fable-5 | 2026-07-14
-    # Lazy: no browser is launched unless a Wellfound job URL is encountered.
-    wellfound_fetcher = WellfoundJobFetcher(session_file=config.WELLFOUND_SESSION_FILE)
+    # ai: claude-opus-5-5 | 2026-11-07 -- Wellfound needs a visible browser (headless
+    # always gets a CAPTCHA). Desktop: the shared fetcher, launched lazily on the first
+    # Wellfound URL. Hosted there is no display, so Wellfound jobs are queued for the
+    # browser extension instead (docs/cloud-deployment-readiness-plan.md 2.5).
+    wellfound_fetcher = (
+        None if is_hosted() else WellfoundJobFetcher(session_file=config.WELLFOUND_SESSION_FILE)
+    )
 
     try:
         _update_scan(progress=5, message="Connecting to Gmail...")
@@ -708,12 +713,20 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 # ATS posting (Ashby, Greenhouse, etc.) for the same reason.
                 job_url_str = str(parsed.get("url") or "").strip()
                 jd_text = ""
-                if job_url_str and job_url_str.startswith("https://"):
+                # ai: claude-opus-5-5 | 2026-11-07
+                capture_with_extension = (
+                    wellfound_fetcher is None and is_wellfound_job_url(job_url_str)
+                )
+                if (
+                    job_url_str
+                    and job_url_str.startswith("https://")
+                    and not capture_with_extension
+                ):
                     try:
                         # ai: claude-fable-5 | 2026-07-14
                         # Wellfound is Cloudflare-protected — plain HTTP gets a 403 —
                         # so those URLs go through the shared Playwright fetcher.
-                        if is_wellfound_job_url(job_url_str):
+                        if wellfound_fetcher is not None and is_wellfound_job_url(job_url_str):
                             fetched_text = wellfound_fetcher.fetch_description(
                                 job_url_str
                             )
@@ -873,7 +886,11 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 # this job by URL and patch job_description in place.
                 capture_url = None
                 capture_source = None
-                if "jd_body_is_tracking_link" in import_warnings:
+                # ai: claude-opus-5-5 | 2026-11-07 -- hosted Wellfound: see wellfound_fetcher
+                if capture_with_extension:
+                    capture_url = job_url_str
+                    capture_source = job_data.get("source") or "Wellfound"
+                elif "jd_body_is_tracking_link" in import_warnings:
                     _capture_url = str(job_data.get("url") or "").strip()
                     if _capture_url:
                         capture_url = _capture_url
@@ -1053,7 +1070,8 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
         )
         return dict(state)
     finally:
-        wellfound_fetcher.close()  # ai: claude-fable-5 | 2026-07-14
+        if wellfound_fetcher is not None:  # ai: claude-opus-5-5 | 2026-11-07
+            wellfound_fetcher.close()
 
 
 # ─── Scan routes ──────────────────────────────────────────────────────────────

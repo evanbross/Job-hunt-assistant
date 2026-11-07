@@ -37,8 +37,7 @@ import type { SettingSchemaField } from "../types/settings.ts";
  *   - GET/PUT /api/settings/system (routes/settings.py): plain strings for
  *     ordinary keys, booleans for the `{key}_set` companion of secret keys.
  *   - GET/PUT /api/config (routes/settings.py's get_config/update_config):
- *     the "Job Board Credentials" group's fields are all plain strings here
- *     too, but the object also carries real number/boolean fields for keys
+ *     registry fields are plain strings here too, but the object also carries real number/boolean fields for keys
  *     this component never touches (see types/settings.ts's
  *     AppConfigResponse) -- callers whose own state has a more specific
  *     type (e.g. AppConfigResponse) pass it through directly (it already

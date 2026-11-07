@@ -209,36 +209,6 @@ SETTINGS: dict[str, SettingSpec] = {
         placeholder="sk-...",
         help_text="Your own key — billed to your OpenAI account, not shared with other accounts on this install.",
     ),
-    "greenhouse_email": SettingSpec(
-        scope="user", is_secret=False, default=config.GREENHOUSE_EMAIL,
-        label="Greenhouse Email", group="Job Board Credentials",
-        placeholder="you@example.com",
-        help_text="Used by the Greenhouse board scanner — your own login, not shared with other accounts.",
-    ),
-    # ai: claude-sonnet-5 | 2026-09-29 -- literal defaults, not sourced from
-    # config.py/.env (see the comment above it): each account can search a
-    # different role/board, so this is per-user like greenhouse_email above,
-    # not a shared instance-wide value.
-    "greenhouse_search_url": SettingSpec(
-        scope="user", is_secret=False,
-        default=(
-            "https://my.greenhouse.io/jobs?query=software%20engineer"
-            "&salary=more_than_200k&work_type[]=remote"
-            "&employment_type[]=full_time&employment_type[]=contract"
-        ),
-        label="Greenhouse Default Search URL", group="Job Board Credentials",
-        help_text="Used when a Greenhouse scan is started without an explicit search_url.",
-    ),
-    "jobanni_search_url": SettingSpec(
-        scope="user", is_secret=False,
-        default="https://jobanni.com/search?q=software+engineer&location=United+States&type=remote",
-        label="Jobanni Default Search URL", group="Job Board Credentials",
-        help_text="Used when a Jobanni scan is started without an explicit search_url.",
-    ),
-    "jobanni_max_jobs": SettingSpec(
-        scope="user", is_secret=False, default="50",
-        label="Jobanni Default Max Jobs", group="Job Board Credentials",
-    ),
     # ai: claude-sonnet-5 | 2026-08-30
     # Formerly stored in the single shared data/runtime_config.json (a
     # multi-tenancy gap: any account's change overwrote every other

@@ -52,8 +52,8 @@ export interface SettingsSchema {
  * SettingSpec defaults, all `str(...)`), but
  * _read_runtime_config_user_settings() special-cases this fixed set of
  * keys to their real JSON type (bool/int) instead of a string -- these are
- * listed explicitly below. Every other registry key (e.g. greenhouse_email,
- * jobanni_search_url, career_scan_digest_enabled) comes through
+ * listed explicitly below. Every other registry key (e.g.
+ * career_scan_digest_enabled) comes through
  * _read_user_settings_into() as a plain string, or as `{key}_set: boolean`
  * for a secret (the plaintext is never sent) -- covered by the index
  * signature rather than enumerated one by one.

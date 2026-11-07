@@ -37,7 +37,7 @@ _EXTRA_TABLES: tuple[str, ...] = ("extension_tokens",)
 
 # column name -> replacement. Applied to any table that has this column.
 _REDACT_COLUMNS: frozenset[str] = frozenset(
-    {"file_encrypted", "token_encrypted", "state_encrypted", "token_hash"}
+    {"file_encrypted", "token_encrypted", "token_hash"}
 )
 
 

@@ -2426,11 +2426,6 @@ function ConfigSection() {
           )}
         </div>
 
-        {/* ai: claude-sonnet-5 | 2026-08-26 */}
-        <div style={{ marginTop: "20px" }}>
-          <SchemaFieldGroup fields={schema.user} group="Job Board Credentials" cfg={cfg} setCfg={setSchemaCfg} />
-        </div>
-
         <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <button className="btn-primary" onClick={save} disabled={saving}>
             {saving ? "Saving…" : "Save"}
@@ -2447,7 +2442,7 @@ function ConfigSection() {
 // ai: claude-sonnet-5 | 2026-08-30 — split out of ConfigSection: the
 // candidate profile and timezone are personal to the account, not instance
 // config, so they get their own tab under Career Profile instead of sitting
-// next to AI-provider/job-board settings under General.
+// next to AI-provider settings under General.
 // ai: claude-sonnet-5 | 2026-09-26 — the profile is text stored in the
 // account (GET/PUT /api/candidate-profile), edited here directly, instead of a
 // path to a file on the server's disk.

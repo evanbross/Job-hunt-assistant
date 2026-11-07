@@ -73,11 +73,10 @@ command: `web` (gunicorn), `listener`, `worker`, `maintenance`, `beat`, `migrate
 * **Build context is an allowlist** (`.dockerignore`): this directory also holds personal
   data (`credentials/`, `data/`, `uploads/`, exports), so everything is excluded and only
   what runs is let back in. A new top-level file stays out until it's listed there.
-* **Headless Chromium** (Playwright's headless shell) is in the image for the scrapers
-  that run headless (Greenhouse search, in the `worker`, which gets `shm_size: 512m`).
-  Headful launches (Wellfound, which DataDome only passes with a visible window; the
-  Greenhouse manual login) cannot work in a container; plan 2.5 routes them to the
-  browser extension instead.
+* **No browser on the server** (plan 2.5). Sites that need a real browser (Wellfound,
+  which DataDome only passes with a visible window; logged-in boards such as
+  my.greenhouse.io) are captured by the browser extension from the user's own browser;
+  a hosted email scan queues Wellfound jobs for it.
 * **Logs** go to stdout/stderr from every process (`docker compose logs`).
 * **Health:** `GET /api/system/live` (the process answers; checks nothing else, so a
   database outage doesn't restart every container) and `GET /api/system/ready` (the

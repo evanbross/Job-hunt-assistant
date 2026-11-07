@@ -78,7 +78,6 @@ from .interfaces import (
     IEmailSubjectRuleRepository,
     IExtensionTokenRepository,
     IGoogleTokenRepository,
-    IGreenhouseSessionRepository,
     IImportRepairHistoryRepository,
     IJdHealthCheckResultRepository,
     IJdHealthCheckTargetRepository,
@@ -126,7 +125,6 @@ from .repositories.email_sources import PostgresEmailSourceRepository
 from .repositories.email_subject_rules import PostgresEmailSubjectRuleRepository
 from .repositories.extension_tokens import PostgresExtensionTokenRepository
 from .repositories.google_tokens import PostgresGoogleTokenRepository
-from .repositories.greenhouse_sessions import PostgresGreenhouseSessionRepository
 from .repositories.import_repair_history import PostgresImportRepairHistoryRepository
 from .repositories.jd_health_check_results import PostgresJdHealthCheckResultRepository
 from .repositories.jd_health_check_targets import PostgresJdHealthCheckTargetRepository
@@ -175,7 +173,6 @@ __all__ = [
     "IContactRepository",
     "IExtensionTokenRepository",
     "IGoogleTokenRepository",
-    "IGreenhouseSessionRepository",
     "ICoverLetterPhraseRepository",
     "IEmailSourceRepository",
     "IEmailSubjectRuleRepository",
@@ -215,7 +212,6 @@ __all__ = [
     "PostgresContactRepository",
     "PostgresExtensionTokenRepository",
     "PostgresGoogleTokenRepository",
-    "PostgresGreenhouseSessionRepository",
     "PostgresCoverLetterPhraseRepository",
     "PostgresEmailSourceRepository",
     "PostgresEmailSubjectRuleRepository",
@@ -436,7 +432,6 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "outreach_templates": PostgresOutreachTemplateRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),
         "google_tokens": PostgresGoogleTokenRepository(conn),
-        "greenhouse_sessions": PostgresGreenhouseSessionRepository(conn),
         "candidate_profiles": PostgresCandidateProfileRepository(conn),
         "cover_letter_phrases": PostgresCoverLetterPhraseRepository(conn),
         "jd_health_targets": PostgresJdHealthCheckTargetRepository(conn),

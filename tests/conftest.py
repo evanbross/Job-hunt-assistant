@@ -282,7 +282,6 @@ def _point_legacy_files_at(directory: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(config, "UPLOADS_DIR", directory)
     monkeypatch.setattr(config, "LEGACY_GOOGLE_CREDENTIALS_FILE", directory / "google_credentials.json")
     monkeypatch.setattr(config, "LEGACY_GOOGLE_TOKEN_FILE", directory / "token.json")
-    monkeypatch.setattr(config, "LEGACY_GREENHOUSE_SESSION_FILE", directory / "greenhouse_session.json")
     monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_PATH", directory / "candidate_profile.md")
     monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_ALT_FILENAMES", ())
 

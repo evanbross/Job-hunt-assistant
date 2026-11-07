@@ -114,7 +114,7 @@ services:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
     tmpfs: [/tmp]
-    init: true                         # reaps child processes (Chromium's, in the worker)
+    init: true                         # PID 1 that forwards signals and reaps child processes
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [edge, backend, egress]  # egress: Postgres, the AI providers, Gmail
@@ -152,7 +152,7 @@ services:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
     tmpfs: [/tmp]
-    init: true                         # reaps child processes (Chromium's, in the worker)
+    init: true                         # PID 1 that forwards signals and reaps child processes
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [edge, backend, egress]  # edge: Caddy; backend: Redis/Celery; egress: Postgres
@@ -185,7 +185,7 @@ services:
       READONLY_DB_PASSWORD: ${READONLY_DB_PASSWORD:?set READONLY_DB_PASSWORD}
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
     tmpfs: [/tmp]
-    init: true                         # reaps child processes (Chromium's, in the worker)
+    init: true                         # PID 1 that forwards signals and reaps child processes
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [egress]                 # Postgres only
@@ -205,8 +205,7 @@ services:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
     tmpfs: [/tmp]
-    init: true                         # reaps child processes (Chromium's, in the worker)
-    shm_size: 512m                     # headless Chromium's shared memory (Greenhouse search)
+    init: true                         # PID 1 that forwards signals and reaps child processes
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [backend, egress]        # not reachable from the internet at all
@@ -239,7 +238,7 @@ services:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
     tmpfs: [/tmp]
-    init: true                         # reaps child processes (Chromium's, in the worker)
+    init: true                         # PID 1 that forwards signals and reaps child processes
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [backend, egress]        # Redis; Postgres
@@ -272,7 +271,7 @@ services:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
     tmpfs: [/tmp]
-    init: true                         # reaps child processes (Chromium's, in the worker)
+    init: true                         # PID 1 that forwards signals and reaps child processes
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [backend]                # Redis only: it never touches the database

@@ -23,7 +23,6 @@ import backend.crypto as crypto
 import config
 from backend.db import (
     PostgresGoogleTokenRepository,
-    PostgresGreenhouseSessionRepository,
     PostgresResumeRepository,
     PostgresUserAccountRepository,
     get_connection,
@@ -251,7 +250,6 @@ def _populate(pg_dsn: str) -> dict[str, int]:
             },
         )
         repos["google_tokens"].upsert(user_id, crypto.encrypt_secret('{"refresh_token": "r"}'), "2026-01-01")
-        repos["greenhouse_sessions"].upsert(user_id, crypto.encrypt_secret('{"cookies": []}'), "2026-01-01")
         set_setting("anthropic_api_key", "sk-user-secret", user_id, repos)
         set_setting("email_lookback_days", "10", user_id, repos)
         set_setting("google_oauth_client_config", '{"installed": {}}', None, repos)
@@ -282,12 +280,12 @@ def test_rotate_all_reencrypts_every_kind_of_ciphertext_and_only_those(
     preview = _rotate(pg_dsn, dry_run=True)
     assert preview.rotated == {
         "system settings": 1, "user settings": 1, "resume files": 1,
-        "Google tokens": 1, "Greenhouse sessions": 1,
+        "Google tokens": 1,
     }
-    assert _rotate(pg_dsn, dry_run=True).total_rotated == 5  # the preview changed nothing
+    assert _rotate(pg_dsn, dry_run=True).total_rotated == 4  # the preview changed nothing
 
     applied = _rotate(pg_dsn, dry_run=False)
-    assert applied.total_rotated == 5
+    assert applied.total_rotated == 4
     assert _rotate(pg_dsn, dry_run=True).total_rotated == 0
 
     _use_keys(monkeypatch, new)  # retire the old key: everything must still read
@@ -300,7 +298,6 @@ def test_rotate_all_reencrypts_every_kind_of_ciphertext_and_only_those(
         assert repos["resume"].get_latest_file(ids["user_id"])["file_encrypted"] is not None
         assert crypto.decrypt_bytes(repos["resume"].get_latest_file(ids["user_id"])["file_encrypted"]) == b"%PDF-resume"
         assert crypto.decrypt_secret(repos["google_tokens"].get(ids["user_id"])["token_encrypted"])
-        assert crypto.decrypt_secret(repos["greenhouse_sessions"].get(ids["user_id"])["state_encrypted"])
     finally:
         repos["conn"].close()
 
@@ -311,11 +308,12 @@ def test_an_unreadable_value_aborts_and_the_caller_can_roll_everything_back(
     old, new = _make_key(), _make_key()
     _use_keys(monkeypatch, old)
     ids = _populate(pg_dsn)
-    stranger = Fernet(_make_key().encode()).encrypt(b'{"cookies": []}').decode()
+    # ai: claude-opus-5-5 | 2026-11-07 -- was a Greenhouse session (table retired)
+    stranger = Fernet(_make_key().encode()).encrypt(b'{"refresh_token": "r"}').decode()
     conn = get_connection(pg_dsn)
     try:
         set_current_user(conn.cursor(), ids["user_id"])
-        PostgresGreenhouseSessionRepository(conn).upsert(ids["user_id"], stranger, "2026-01-01")
+        PostgresGoogleTokenRepository(conn).upsert(ids["user_id"], stranger, "2026-01-01")
         conn.commit()
     finally:
         conn.close()
@@ -323,22 +321,25 @@ def test_an_unreadable_value_aborts_and_the_caller_can_roll_everything_back(
 
     conn = get_connection(pg_dsn)
     try:
-        with pytest.raises(RotationError, match="Greenhouse sessions"):
+        with pytest.raises(RotationError, match="Google tokens"):
             rotate_all(conn)
         conn.rollback()
     finally:
         conn.close()
 
-    # Earlier tables were updated inside that transaction; the rollback undid them,
-    # so this token is still under the OLD key rather than half-rotated.
-    assert crypto.needs_rotation(_google_token(pg_dsn, ids["user_id"])) is True
+    # ai: claude-opus-5-5 | 2026-11-07
+    # Google tokens rotate last, so the unreadable one aborts after the resume file was
+    # already re-encrypted inside that transaction; the rollback undid it, so the file is
+    # still under the OLD key rather than half-rotated.
+    assert crypto.needs_rotation(_resume_file(pg_dsn, ids["user_id"])) is True
 
 
-def _google_token(pg_dsn: str, user_id: int) -> str:
+# ai: claude-opus-5-5 | 2026-11-07
+def _resume_file(pg_dsn: str, user_id: int) -> str:
     conn = get_connection(pg_dsn)
     try:
         set_current_user(conn.cursor(), user_id)
-        return PostgresGoogleTokenRepository(conn).get(user_id)["token_encrypted"]
+        return PostgresResumeRepository(conn).get_latest_file(user_id)["file_encrypted"]
     finally:
         conn.close()
 

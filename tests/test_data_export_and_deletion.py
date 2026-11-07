@@ -99,13 +99,14 @@ def test_export_redacts_secret_settings_but_keeps_plain_ones(client) -> None:
 def test_export_never_includes_raw_encrypted_columns(client) -> None:
     user_id = _seed_active_account()
     with get_repos(user_id) as repos:
-        repos["greenhouse_sessions"].upsert(user_id, "gAAAAA-ciphertext", "2026-01-01")
+        repos["google_tokens"].upsert(user_id, "gAAAAA-ciphertext", "2026-01-01")  # ai: claude-opus-5-5 | 2026-11-07
         repos["conn"].commit()
     _login(client)
 
     data = client.get("/api/account/export").get_json()
 
-    assert data["greenhouse_sessions"] and "state_encrypted" not in data["greenhouse_sessions"][0]
+    exported = data["google_oauth_tokens"]
+    assert exported and "token_encrypted" not in exported[0]
 
 
 def test_export_never_includes_extension_token_hashes(client) -> None:

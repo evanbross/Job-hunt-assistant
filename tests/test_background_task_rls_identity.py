@@ -317,64 +317,6 @@ def test_generate_board_search_queries_reads_only_the_calling_users_profile(
     assert "Other profile: designer." not in captured_profiles[0]
 
 
-# ─── _run_manual_login (routes/greenhouse.py) ────────────────────────────────
-
-
-class _FakeGreenhouseSearcher:
-    """Records the email it was constructed with instead of launching a real
-    Playwright browser, so the test can prove which account's setting was read."""
-
-    captured_emails: list[object] = []
-
-    def __init__(self, *, email: object, session_store: object) -> None:
-        type(self).captured_emails.append(email)
-
-    def manual_login(self, *, timeout_seconds: int) -> None:
-        pass
-
-
-def test_run_manual_login_reads_only_the_calling_users_email_setting(
-    two_users: TwoUsers, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from routes import greenhouse as greenhouse_route
-
-    two_users.set_setting(two_users.owner_id, "greenhouse_email", "owner@gh.example.com")
-    two_users.set_setting(two_users.other_id, "greenhouse_email", "other@gh.example.com")
-    _FakeGreenhouseSearcher.captured_emails = []
-    monkeypatch.setattr(greenhouse_route, "GreenhouseSearcher", _FakeGreenhouseSearcher)
-
-    greenhouse_route._run_manual_login(two_users.owner_id)
-
-    assert _FakeGreenhouseSearcher.captured_emails == ["owner@gh.example.com"]
-    assert greenhouse_route._login_state.error is None
-
-
-# ─── run_greenhouse_scan_task (routes/greenhouse.py, Celery task) ────────────
-
-
-class _FakeGreenhouseSearcherNoJobs(_FakeGreenhouseSearcher):
-    def scrape(self, **kwargs: object) -> list:
-        return []
-
-
-def test_run_greenhouse_scan_task_reads_only_the_calling_users_email_setting(
-    two_users: TwoUsers, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from routes import greenhouse as greenhouse_route
-
-    two_users.set_setting(two_users.owner_id, "greenhouse_email", "owner@gh.example.com")
-    two_users.set_setting(two_users.other_id, "greenhouse_email", "other@gh.example.com")
-    _FakeGreenhouseSearcherNoJobs.captured_emails = []
-    monkeypatch.setattr(greenhouse_route, "GreenhouseSearcher", _FakeGreenhouseSearcherNoJobs)
-
-    result = greenhouse_route.run_greenhouse_scan_task.apply(
-        args=(two_users.owner_id, "https://boards.greenhouse.io/x", 10)
-    ).result
-
-    assert _FakeGreenhouseSearcherNoJobs.captured_emails == ["owner@gh.example.com"]
-    assert result["error"] is None
-
-
 # ─── run_re_evaluate_task (routes/fit.py, Celery task) ───────────────────────
 
 

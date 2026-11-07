@@ -229,10 +229,9 @@ class ExplodingCareerSiteScanner:
         raise AssertionError("CareerSiteScanner must not be used for Wellfound URLs")
 
 
-def test_scan_enriches_wellfound_job_via_fetcher(
-    monkeypatch: pytest.MonkeyPatch, pg_dsn: str
-) -> None:
-    dsn = pg_dsn
+# ai: claude-opus-5-5 | 2026-11-07 -- shared by the desktop and hosted scan tests
+def _seed_wellfound_account(dsn: str) -> int:
+    """An account with a Wellfound email source and the settings a scan reads."""
     repos = open_repositories(dsn)
     try:
         account = repos["user_accounts"].create_pending("owner@example.com", "seed-owner@example.com", "2099-01-01")
@@ -256,6 +255,14 @@ def test_scan_enriches_wellfound_job_via_fetcher(
         repos["conn"].commit()
     finally:
         repos["conn"].close()
+    return user_id
+
+
+def test_scan_enriches_wellfound_job_via_fetcher(
+    monkeypatch: pytest.MonkeyPatch, pg_dsn: str
+) -> None:
+    dsn = pg_dsn
+    user_id = _seed_wellfound_account(dsn)
 
     FakeWellfoundJobFetcher.fetched_urls = []
     monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(dsn))
@@ -286,3 +293,41 @@ def test_scan_enriches_wellfound_job_via_fetcher(
     assert job["raw_jd_snippet"] == _FAKE_JD[:6000]
     # The stored URL is canonicalized for stable duplicate detection.
     assert job["url"] == _CANONICAL_URL
+
+
+# ai: claude-opus-5-5 | 2026-11-07
+class ExplodingWellfoundJobFetcher:
+    """A hosted server has no display for the (headful) Wellfound browser."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("a hosted scan must not start the Wellfound browser")
+
+
+# ai: claude-opus-5-5 | 2026-11-07
+def test_hosted_scan_queues_wellfound_jobs_for_the_extension(
+    monkeypatch: pytest.MonkeyPatch, pg_dsn: str
+) -> None:
+    """docs/cloud-deployment-readiness-plan.md 2.5: hosted, no browser starts on the
+    server; the job is saved and its listing queued for the extension to capture."""
+    dsn = pg_dsn
+    user_id = _seed_wellfound_account(dsn)
+    monkeypatch.setattr(config, "APP_MODE", "hosted")
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(dsn))
+    monkeypatch.setattr(scan, "GmailClient", FakeGmailClient)
+    monkeypatch.setattr(scan, "EmailParser", FakeEmailParser)
+    monkeypatch.setattr(scan, "WellfoundJobFetcher", ExplodingWellfoundJobFetcher)
+    monkeypatch.setattr(scan, "CareerSiteScanner", ExplodingCareerSiteScanner)
+
+    result = scan.run_scan_task.apply(args=(user_id,)).result
+
+    assert not result.get("failed"), result
+    repos = open_repositories(dsn)
+    try:
+        set_current_user(repos["conn"].cursor(), user_id)
+        jobs = repos["jobs"].get_all_ordered(user_id)
+        queued = repos["browser_capture_queue"].get_all(user_id)
+    finally:
+        repos["conn"].close()
+
+    assert [job["url"] for job in jobs] == [_CANONICAL_URL]
+    assert [(row["url"], row["site_name"]) for row in queued] == [(_CANONICAL_URL, "Wellfound")]

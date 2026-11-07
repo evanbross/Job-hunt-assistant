@@ -47,10 +47,8 @@ from routes.emails import emails_bp
 from routes.events import events_bp
 from routes.extension_tokens import extension_tokens_bp
 from routes.fit import fit_bp
-from routes.greenhouse import greenhouse_bp
 from routes.import_ import import_bp
 from routes.jd_health_check import jd_health_check_bp
-from routes.jobanni import jobanni_bp
 from routes.jobs import jobs_bp
 from routes.scan import scan_bp
 from routes.session_auth import session_auth_bp
@@ -86,7 +84,6 @@ _API_BLUEPRINTS: tuple[flask.Blueprint, ...] = (
     events_bp,
     extension_tokens_bp,
     fit_bp,
-    greenhouse_bp,
     import_bp,
     jd_health_check_bp,
     jobs_bp,
@@ -95,7 +92,6 @@ _API_BLUEPRINTS: tuple[flask.Blueprint, ...] = (
     settings_bp,
     setup_bp,
     applications_bp,
-    jobanni_bp,
     toptal_bp,
     voice_bp,
 )

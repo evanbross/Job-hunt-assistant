@@ -168,9 +168,8 @@ more. Each item, and where it went:
   `backend/security/redis_tls.py:app_redis_client()`, so TLS verification is set in
   one place.
 
-Still per-process, deliberately: `routes/greenhouse.py`'s `_login_state`. That flow
-opens a visible browser on the machine running the app, so it only means anything on
-the desktop; hosted mode should switch it off (2.7's `APP_MODE`).
+The one flow left per-process at the time, `routes/greenhouse.py`'s visible-browser
+login, was retired with the rest of the server-side Greenhouse scrape in 2.5.
 
 ### 1.6 Migrations as a release step, not a startup step — done 2026-11-06
 `python -m backend.db.migrate` (compose `migrate` service, its own profile) is the deploy
@@ -327,7 +326,27 @@ endpoints. Also, a user's local Ollama is unreachable from the cloud anyway. In
 hosted mode: disable the Ollama provider (or allow only public HTTPS URLs with
 loopback denied).
 
-### 2.5 Server-side browser automation
+### 2.5 Server-side browser automation — done 2026-11-07
+No browser runs on the server. Decided per source: anything that needs a real browser
+goes to the browser extension, which captures from the user's own browser and login.
+- **Wellfound** (headful; DataDome blocks headless): a hosted email scan never starts
+  the fetcher. It saves the job and queues the listing URL in the extension's capture
+  queue, the same route WTTJ tracking links already took. The desktop is unchanged.
+  Career-site scans already sent Wellfound to the extension.
+- **Greenhouse** (headless scrape behind a headful OTP login): retired, along with the
+  server-side **Jobanni** scan. Neither had a UI after 2026-07-15 (both panels were
+  unmounted), and the extension captures my.greenhouse.io and Jobanni pages itself.
+  Removed: the routes, scrapers, the encrypted `greenhouse_sessions` table (migration
+  drops it) and the four per-account settings (migration deletes the rows;
+  `RETIRED_USER_SETTING_KEYS`), which also empties Settings > Job Board Credentials.
+- **Image**: with no server-side browser left, the Dockerfile no longer installs
+  Chromium or its system libraries, and the worker loses `shm_size`. The playwright
+  package stays (the desktop Wellfound fetcher), but it never launches in a container.
+- The one-IP rate-limit concern below no longer applies to browser scraping. It still
+  applies to the plain-HTTP fetches the server makes (JD enrichment, career-site
+  scans).
+
+Original notes:
 - `greenhouse_searcher.py:301` and `wellfound_scraper.py` launch Chromium with
   `headless=False` (Wellfound documents that headless always gets a CAPTCHA). There's
   no display on a server.
@@ -356,9 +375,8 @@ against real Postgres that tries it.
   `FRONTEND_DIST` is missing — in production a missing dist should be a startup
   error, not a fallback.
 - ~~Add an `APP_MODE=hosted|desktop` flag~~ — done with 2.2 (`backend/app_mode.py`,
-  `is_hosted()`); 2.3, 2.4 and 2.5 key off it. The
-  Greenhouse browser login (`routes/greenhouse.py`, opens a visible browser on the
-  server) should be off in hosted mode too.
+  `is_hosted()`); 2.3, 2.4 and 2.5 key off it. (The Greenhouse browser login it was
+  also meant to switch off was retired outright in 2.5.)
 
 ---
 

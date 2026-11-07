@@ -229,20 +229,6 @@ TRUSTED_PROXIES: str = os.getenv("TRUSTED_PROXIES", "")
 # path survives, for the JD-enrichment fetcher used by routes/scan.py.
 WELLFOUND_SESSION_FILE: Path = CREDENTIALS_DIR / "wellfound_session.json"
 
-# ─── Jobanni scanner ─────────────────────────────────────────────────────────
-# ai: claude-sonnet-4-6 | 2026-06-20
-# ai: claude-sonnet-5 | 2026-09-29 -- moved to backend/settings_registry.py's
-# jobanni_search_url/jobanni_max_jobs (per-user, since different accounts
-# search different roles), no config.py/.env origin left.
-
-# ─── Greenhouse scraper ───────────────────────────────────────────────────────
-GREENHOUSE_EMAIL: str = os.getenv("GREENHOUSE_EMAIL", "")
-# greenhouse_search_url moved to backend/settings_registry.py (per-user, same
-# reasoning as jobanni above) -- no config.py/.env origin left.
-# Legacy: the Greenhouse login session is now stored, encrypted, per user in the
-# database; this path remains only for the one-time migration in backend/db/schema.py.
-LEGACY_GREENHOUSE_SESSION_FILE: Path = CREDENTIALS_DIR / "greenhouse_session.json"
-
 # ─── Google OAuth ─────────────────────────────────────────────────────────────
 # Google credentials used to live in these shared files. They are now in the
 # database (the OAuth client config as an admin-managed system setting, each
