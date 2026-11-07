@@ -147,11 +147,16 @@ def test_every_returned_connection_stays_open_for_reuse(fresh_pool: str) -> None
 def test_new_connections_open_concurrently_not_one_at_a_time(
     fresh_pool: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    handshake_seconds = 0.3
+    # ai: claude-opus-5-5 | 2026-11-06 -- proves overlap with a barrier, not a wall-clock
+    # budget: the old 0.6s budget included real connect time, so a loaded machine failed
+    # it with handshakes that did overlap. Serialized handshakes can never fill the
+    # barrier, so they time out instead.
+    waiters = 4
+    handshakes_overlap = threading.Barrier(waiters, timeout=5)
     real_connect = connection_module._ConnectionPool._connect
 
     def _slow_connect(self: connection_module._ConnectionPool) -> object:
-        time.sleep(handshake_seconds)
+        handshakes_overlap.wait()
         return real_connect(self)
 
     connection_module._get_pool(
@@ -167,19 +172,15 @@ def test_new_connections_open_concurrently_not_one_at_a_time(
         threading.Thread(
             target=lambda: opened.append(connection_module.get_connection(fresh_pool))
         )
-        for _ in range(4)
+        for _ in range(waiters)
     ]
-    started = time.monotonic()
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=10)
-    elapsed = time.monotonic() - started
     try:
-        assert len(opened) == 4
-        assert elapsed < handshake_seconds * 2, (
-            f"4 handshakes took {elapsed:.2f}s -- serialized"
-        )
+        assert not handshakes_overlap.broken, "handshakes ran one at a time"
+        assert len(opened) == waiters
     finally:
         for conn in held + opened:
             conn.close()

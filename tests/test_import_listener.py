@@ -51,6 +51,10 @@ from backend.scanning.import_listener import (
 from backend.security.client_ip import parse_trusted_proxies
 from backend.security.rate_limiter import Policy
 
+# ai: claude-opus-5-5 | 2026-11-06 -- only guards against a hung server, so it can be
+# generous: a 3s read timeout failed a passing test under a loaded pre-push run.
+HTTP_TIMEOUT_SECONDS = 10
+
 USER_A_TOKEN = "jha_token-for-user-a"
 USER_B_TOKEN = "jha_token-for-user-b"
 USER_A, USER_B = 1, 2
@@ -284,7 +288,7 @@ def _request(
         f"http://127.0.0.1:{listener.port}{path}", data=body, headers=request_headers, method=method
     )
     try:
-        with urllib.request.urlopen(request, timeout=3) as response:
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             return response.status, response.read(), dict(response.headers)
     except urllib.error.HTTPError as error:
         return error.code, error.read(), dict(error.headers)
@@ -402,7 +406,7 @@ def test_unauthenticated_request_is_rejected_before_its_body_is_read(
 ) -> None:
     """An anonymous caller must not be able to make the server buffer a body."""
     listener, _, _ = running_listener
-    connection = http.client.HTTPConnection("127.0.0.1", listener.port, timeout=3)
+    connection = http.client.HTTPConnection("127.0.0.1", listener.port, timeout=HTTP_TIMEOUT_SECONDS)
     try:
         connection.putrequest("POST", "/import")
         connection.putheader("Content-Length", "999999999")
