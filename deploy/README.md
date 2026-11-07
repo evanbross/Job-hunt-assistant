@@ -52,6 +52,11 @@ Compose refuses to start if `APP_DOMAIN`, `ACME_EMAIL`, `REDIS_PASSWORD`,
 
 ### The application image
 
+`APP_MODE: hosted` (set on every application service) is what makes the app behave as
+a multi-user server rather than the desktop app (`backend/app_mode.py`): documents are
+downloads, not files in a server folder; no debug dumps or logs go to disk; the
+read-only DB role's password must be the `READONLY_DB_PASSWORD` secret.
+
 One image (the repository's `Dockerfile`) runs every application process; the compose
 `command` names which, and `deploy/docker-entrypoint.sh` turns that into the real
 command: `web` (gunicorn), `listener`, `worker`, `maintenance`, `beat`, `migrate`.

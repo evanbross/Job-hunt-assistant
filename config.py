@@ -51,6 +51,10 @@ OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY", "")
 # "production" (default) or "development"; anything else is rejected at startup.
 APP_ENV: str = os.getenv("APP_ENV", "")
+# ai: claude-opus-5-5 | 2026-11-06
+# "desktop" (default) or "hosted" -- see backend/app_mode.py. Separate from APP_ENV,
+# which is "production" on the desktop too.
+APP_MODE: str = os.getenv("APP_MODE", "")
 # auto | true | false -- see backend/security/session_cookies.py.
 SESSION_COOKIE_SECURE_MODE: str = os.getenv("SESSION_COOKIE_SECURE", "auto")
 

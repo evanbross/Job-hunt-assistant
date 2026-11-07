@@ -244,8 +244,29 @@ so **every new container mints a new password and breaks every other running
 instance's voice queries**. Move it to a required secret (`READONLY_DB_PASSWORD`) or
 use Neon's role management; the app should never `ALTER ROLE` at runtime.
 
-### 2.2 Local filesystem writes
-Each of these assumes a persistent local disk owned by one user:
+### 2.2 Local filesystem writes — done 2026-11-06 (except Wellfound, see 2.5)
+`APP_MODE=desktop|hosted` (`backend/app_mode.py`; 2.7's flag, added here because every
+item below needs it) tells a hosted deployment from the desktop app; compose sets
+`hosted`, an unknown value stops the web, listener and worker processes at startup.
+What hosted mode does with each item:
+
+- Cover letters, pitches and tailored resumes (one route) are sent to the browser as a
+  download; any `folder` in the request is ignored and never stored, and the
+  server-side folder picker answers 404. The three modals share one
+  `saveDocument()` helper (`frontend/src/utils/saveFolderUtils.ts`) that handles both.
+- Import capture dumps, the LLM prompt log and the import-repair findings doc are not
+  written (the findings stay in `import_repair_history` and the run's result).
+- The read-only role password must come from `READONLY_DB_PASSWORD` (2.1); there is no
+  file fallback.
+- The setup wizard doesn't report on prompt files: nobody edits files on the server.
+  (The defaults were already in code; the "written on first run" below no longer
+  happens.)
+- Audit result: the remaining `DATA_DIR`/`UPLOADS_DIR`/`CREDENTIALS_DIR`/`BASE_DIR`
+  uses are the legacy migration bridges in `schema.py`, the desktop-only read-only
+  password file, and `WELLFOUND_SESSION_FILE` -- which goes with 2.5, since Wellfound
+  needs a visible browser and can't run on a server at all.
+
+Original list. Each of these assumes a persistent local disk owned by one user:
 - `backend/scanning/import_dump.py` — raw capture dumps to a local directory. Either
   disable in production or send to object storage with a retention policy (these
   contain other sites' page content, so a retention policy matters).
@@ -314,8 +335,8 @@ against real Postgres that tries it.
 - `routes/auth.py:_app_url_on_redirect_host()` falls back to the Vite dev port when
   `FRONTEND_DIST` is missing — in production a missing dist should be a startup
   error, not a fallback.
-- Add an `APP_MODE=hosted|desktop` (or reuse `APP_ENV`) flag that the items above
-  (2.3, 2.4, 2.5) key off, so the desktop build keeps working unchanged. The
+- ~~Add an `APP_MODE=hosted|desktop` flag~~ — done with 2.2 (`backend/app_mode.py`,
+  `is_hosted()`); 2.3, 2.4 and 2.5 key off it. The
   Greenhouse browser login (`routes/greenhouse.py`, opens a visible browser on the
   server) should be off in hosted mode too.
 

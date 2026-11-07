@@ -42,11 +42,30 @@ export interface SaveDocumentResponse {
   folder_error?: boolean;
 }
 
+/** POST /api/cover-letter/save request body. */
+export interface SaveDocumentRequest {
+  text: string;
+  label: string;
+  format: string;
+  job_title: string;
+  company: string;
+  folder?: string;
+}
+
+// ai: claude-opus-5-5 | 2026-11-06 -- a hosted server sends the file instead of saving it
+/** What a save did: wrote it into a folder (desktop) or handed it to the browser (hosted). */
+export type SaveDocumentResult =
+  | { downloaded: false; path: string; folder: string }
+  | { downloaded: true; filename: string };
+
 /** Local "where did the last save land" state, distinct from the in-flight "saving" marker. */
 export interface SaveStatusDetail {
+  /** The saved file's full path, or the downloaded file's name. */
   path: string;
+  /** Empty when the file was downloaded rather than saved into a folder. */
   folder: string;
   format: string;
+  downloaded: boolean;
 }
 
 export type SaveStatus = "saving" | SaveStatusDetail | null;

@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 from datetime import UTC, datetime
@@ -37,7 +38,7 @@ from typing import Any
 
 import docx
 import fitz
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 from flask.typing import ResponseReturnValue
 from pydantic import (
     BaseModel,
@@ -49,6 +50,7 @@ from pydantic import (
 )
 
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.app_mode import is_hosted
 from backend.cover_letter.cover_letter_generator import CoverLetterGenerator
 from backend.cover_letter.cover_letter_learning import CoverLetterStyleLearner
 from backend.cover_letter.phrase_book import format_phrase_book_section
@@ -207,18 +209,84 @@ class SaveCoverLetterRequest(BaseModel):
         return value or None
 
 
+# ai: claude-opus-5-5 | 2026-11-06
+_DOCUMENT_MIMETYPES = {
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "pdf": "application/pdf",
+    "txt": "text/plain; charset=utf-8",
+    "md": "text/markdown; charset=utf-8",
+}
+
+
+# ai: claude-opus-5-5 | 2026-11-06 -- extracted from save_cover_letter, so the same
+# bytes go to a folder (desktop) or the browser (hosted).
+def _render_document(text: str, extension: str) -> bytes:
+    """*text* as a .docx, .pdf, or UTF-8 .txt/.md file's bytes."""
+    if extension == "docx":
+        document = docx.Document()
+        for para in document.paragraphs:
+            p = para._element
+            p.getparent().remove(p)
+        for block in text.split("\n"):
+            document.add_paragraph(block)
+        buffer = io.BytesIO()
+        document.save(buffer)
+        return buffer.getvalue()
+    if extension == "pdf":
+        with fitz.open() as pdf:
+            page = pdf.new_page()
+            margin = 72
+            rect = fitz.Rect(margin, margin, page.rect.width - margin, page.rect.height - margin)
+            page.insert_textbox(rect, text, fontsize=11, fontname="helv", align=0)
+            return pdf.tobytes()
+    return text.encode("utf-8")
+
+
 @cover_letter_bp.route("/cover-letter/save", methods=["POST"])
 def save_cover_letter() -> ResponseReturnValue:
     try:
         body = SaveCoverLetterRequest.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
         return invalid_request_response(exc)
-    text = body.text
-    job_title = body.job_title
-    company = body.company
-    label = body.label
-    file_format = body.format
     folder_override = body.folder
+
+    # Sanitize filename components to remove characters illegal on Windows/macOS
+    _illegal = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+    safe_title = _illegal.sub("", body.job_title)[:60].strip()
+    safe_company = _illegal.sub("", body.company)[:30].strip()
+    safe_label = _illegal.sub("", body.label)[:30].strip()
+
+    filename_parts = [part for part in (safe_company, safe_title) if part]
+    filename_stem = " - ".join(filename_parts)
+    filename_stem = filename_stem or safe_label
+
+    extension = "docx"
+    if body.format == "pdf":
+        extension = "pdf"
+    elif body.format in ("text", "txt"):
+        extension = "txt"
+    elif body.format in ("markdown", "md"):
+        extension = "md"
+
+    filename = f"{filename_stem} {safe_label}.{extension}"
+
+    try:
+        content = _render_document(body.text, extension)
+    except Exception as exc:
+        logger.error("Failed to render %s: %s", extension, exc, exc_info=True)
+        return jsonify({"error": "Failed to create the document"}), 500
+
+    # ai: claude-opus-5-5 | 2026-11-06
+    # Hosted, the server's disk is neither the user's nor writable (and a folder from
+    # the request would let a user write anywhere the server can): the browser gets
+    # the file instead. Any folder in the request is ignored, never stored.
+    if is_hosted():
+        return send_file(
+            io.BytesIO(content),
+            mimetype=_DOCUMENT_MIMETYPES[extension],
+            as_attachment=True,
+            download_name=filename,
+        )
 
     # ai: claude-fable-5 | 2026-07-13
     if folder_override:
@@ -245,52 +313,9 @@ def save_cover_letter() -> ResponseReturnValue:
             500,
         )
 
-    # Sanitize filename components to remove characters illegal on Windows/macOS
-    _illegal = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-    safe_title = _illegal.sub("", job_title)[:60].strip()
-    safe_company = _illegal.sub("", company)[:30].strip()
-    safe_label = _illegal.sub("", label)[:30].strip()
-
-    filename_parts = [part for part in (safe_company, safe_title) if part]
-    filename_stem = " - ".join(filename_parts)
-    filename_stem = filename_stem or safe_label
-
-    extension = "docx"
-    if file_format == "pdf":
-        extension = "pdf"
-    elif file_format in ("text", "txt"):
-        extension = "txt"
-    elif file_format in ("markdown", "md"):
-        extension = "md"
-
-    filename = f"{filename_stem} {safe_label}.{extension}"
     path = folder / filename
-
     try:
-        if extension == "docx":
-            doc = docx.Document()
-            for para in doc.paragraphs:
-                p = para._element
-                p.getparent().remove(p)
-            for block in text.split("\n"):
-                doc.add_paragraph(block)
-            doc.save(str(path))
-
-        elif extension == "pdf":
-            doc = fitz.open()
-            page = doc.new_page()
-            margin = 72
-            rect = fitz.Rect(
-                margin, margin, page.rect.width - margin, page.rect.height - margin
-            )
-            page.insert_textbox(rect, text, fontsize=11, fontname="helv", align=0)
-            doc.save(str(path))
-            doc.close()
-
-        else:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(text)
-
+        path.write_bytes(content)
     # ai: claude-fable-5 | 2026-07-13
     except OSError as exc:
         logger.error(
@@ -306,9 +331,6 @@ def save_cover_letter() -> ResponseReturnValue:
             ),
             500,
         )
-    except Exception as exc:
-        logger.error("Failed to save %s: %s", extension, exc, exc_info=True)
-        return jsonify({"error": f"Failed to write file: {exc}"}), 500
 
     # ai: claude-fable-5 | 2026-07-13
     # Persist a folder override only after the write succeeded, so a bad

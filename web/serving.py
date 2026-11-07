@@ -26,6 +26,7 @@ import psycopg2
 from flask import Flask
 
 import config
+from backend.app_mode import AppModeConfigError, app_mode
 from backend.db import AppRoleConfigError, SchemaOutOfDateError, assert_ready_to_serve
 from backend.security.client_ip import (
     Network,
@@ -47,8 +48,13 @@ logger = logging.getLogger(__name__)
 # ai: claude-opus-5-5 | 2026-11-06 -- split out of install_startup_secrets so a process
 # with no Flask app (the extension listener) applies the same startup rule.
 def check_startup_secrets() -> tuple[str, SecretsConfig]:
-    """Exit on a missing or weak FLASK_SECRET_KEY / SETTINGS_ENCRYPTION_KEY. Returns the
-    normalized APP_ENV and the validated secrets."""
+    """Exit on a missing or weak FLASK_SECRET_KEY / SETTINGS_ENCRYPTION_KEY, or an
+    unknown APP_MODE. Returns the normalized APP_ENV and the validated secrets."""
+    try:
+        logger.info("App mode: %s", app_mode())  # ai: claude-opus-5-5 | 2026-11-06
+    except AppModeConfigError as exc:
+        logger.critical("%s", exc)
+        raise SystemExit(1) from exc
     try:
         app_env = normalize_app_env(config.APP_ENV)
         secrets_config = enforce_startup_secrets(

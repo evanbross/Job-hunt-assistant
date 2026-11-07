@@ -46,6 +46,7 @@ except ImportError:
     _TKINTER_AVAILABLE = False
 
 import config
+from backend.app_mode import is_hosted
 from backend.db import db_startup_error
 from backend.security.redis_tls import app_redis_client
 from backend.utils.utils import get_repos
@@ -130,6 +131,10 @@ def readiness_check() -> ResponseReturnValue:
 
 @system_bp.route("/api/system/select-folder", methods=["POST"])
 def select_folder() -> ResponseReturnValue:
+    # ai: claude-opus-5-5 | 2026-11-06 -- the dialog would open on the server, and a
+    # hosted deployment saves documents as downloads, not into server folders.
+    if is_hosted():
+        return jsonify({"error": "Choosing a folder isn't available on a hosted server"}), 404
     if not _TKINTER_AVAILABLE:
         return jsonify({"error": "tkinter is not available on this platform"}), 500
 

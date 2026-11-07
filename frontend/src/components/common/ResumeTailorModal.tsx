@@ -11,9 +11,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import Modal from "./Modal.tsx";
-import { pickSaveFolder, promptForSaveFolder } from "../../utils/saveFolderUtils.ts";
+import { pickSaveFolder, saveDocument, saveStatusFor } from "../../utils/saveFolderUtils.ts";
 import { describeFetchError } from "../../utils/fetchErrorUtils.ts";
-import type { ChatMessage, ResumeTailorChatResponse, SaveDocumentResponse } from "../../types/coverLetter.ts";
+import type { ChatMessage, ResumeTailorChatResponse, SaveStatus } from "../../types/coverLetter.ts";
 import type { Job } from "../../types/jobs.ts";
 
 const saveStatusBoxStyle: CSSProperties = {
@@ -23,13 +23,6 @@ const saveStatusBoxStyle: CSSProperties = {
   border: "1px solid rgba(76,175,129,0.28)",
   borderRadius: "var(--radius)",
 };
-
-interface ResumeTailorSaveStatusDetail {
-  path: string;
-  folder: string;
-}
-
-type ResumeTailorSaveStatus = "saving" | ResumeTailorSaveStatusDetail | null;
 
 interface ResumeTailorModalProps {
   job: Pick<Job, "id" | "job_title" | "company">;
@@ -45,7 +38,7 @@ interface ResumeTailorModalProps {
 export default function ResumeTailorModal({ job, analysis, onClose }: ResumeTailorModalProps) {
   const [currentAnalysis, setCurrentAnalysis] = useState(analysis);
   const [copied, setCopied] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<ResumeTailorSaveStatus>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>(null);
   const [folderEditOpen, setFolderEditOpen] = useState(false);
   const [folderInput, setFolderInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -70,33 +63,22 @@ export default function ResumeTailorModal({ job, analysis, onClose }: ResumeTail
     setSaveStatus("saving");
     setFolderEditOpen(false);
     try {
-      const body: Record<string, string> = {
-        text: currentAnalysis,
-        label: "Resume Tailoring",
-        format: "md",
-        job_title: job.job_title || "",
-        company: job.company || "",
-      };
-      if (folderOverride) body.folder = folderOverride;
-      const res = await fetch("/api/cover-letter/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data: SaveDocumentResponse = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (data.folder_error) {
-          const replacement = await promptForSaveFolder(data.folder);
-          if (replacement) {
-            await handleSave(replacement);
-          } else {
-            setSaveStatus(null);
-          }
-          return;
-        }
-        throw new Error(data.error || `Save failed (${res.status})`);
+      // ai: claude-opus-5-5 | 2026-11-06 -- shared with the other save modals
+      const result = await saveDocument(
+        {
+          text: currentAnalysis,
+          label: "Resume Tailoring",
+          format: "md",
+          job_title: job.job_title || "",
+          company: job.company || "",
+        },
+        folderOverride,
+      );
+      if (!result) {
+        setSaveStatus(null);
+        return;
       }
-      setSaveStatus({ path: data.path, folder: data.folder });
+      setSaveStatus(saveStatusFor(result, "md"));
     } catch (e) {
       setSaveStatus(null);
       window.alert("Save failed: " + describeFetchError(e));
@@ -188,17 +170,19 @@ export default function ResumeTailorModal({ job, analysis, onClose }: ResumeTail
         {saveStatus && saveStatus !== "saving" && (
           <div style={saveStatusBoxStyle}>
             <div style={{ fontSize: "12px", color: "var(--green)", fontWeight: "600", marginBottom: "4px" }}>
-              Saved as Markdown
+              {saveStatus.downloaded ? "Downloaded as" : "Saved as"} Markdown
             </div>
             <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px", wordBreak: "break-all" }}>
               {saveStatus.path}
             </div>
+            {!saveStatus.downloaded && (
             <button
               onClick={() => { setFolderEditOpen((o) => !o); setFolderInput(saveStatus.folder); }}
               style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: "12px", padding: 0, textDecoration: "underline", fontWeight: "500" }}
             >
               {folderEditOpen ? "Cancel folder edit" : "Change save folder"}
             </button>
+            )}
           </div>
         )}
 

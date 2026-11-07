@@ -56,6 +56,7 @@ from pydantic import (
 
 import config
 from backend.active_tasks import get_active_tasks
+from backend.app_mode import is_hosted
 from backend.celery_app import celery_app
 from backend.db import CaptureQueueOrigin, DuplicateJobUrlError
 from backend.db.job_columns import JobColumns
@@ -2526,9 +2527,12 @@ def _write_repair_findings_doc(
             lines.append(
                 f"| {f['source']} | {label} | {f['count']} of {f['total']} | {f['percent']}% | {trend} |"
             )
-    # ai: claude-opus-5-5 | 2026-11-06 -- best effort: a container's filesystem is
-    # read-only (plan 1.7), and the findings are already in import_repair_history and
-    # the run's result, so failing to write this copy must not fail the run (plan 2.2).
+    # ai: claude-opus-5-5 | 2026-11-06 -- a desktop-only copy for a coding agent
+    # working in this checkout. Hosted, every account would overwrite one shared file;
+    # the findings are in import_repair_history and the run's result regardless (plan
+    # 2.2). Best effort even on the desktop: failing to write must not fail the run.
+    if is_hosted():
+        return
     path = config.BASE_DIR / "docs" / "import_repair_findings.md"
     try:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 from flask import Flask
 
+import config
 import routes.cover_letter as cover_letter_module
 from routes.cover_letter import cover_letter_bp
 
@@ -143,3 +144,58 @@ def test_successful_save_writes_file_and_persists_override(
     assert saved.parent == new_folder
     assert saved.read_text(encoding="utf-8") == "Dear hiring manager"
     assert settings_repo.values["cover_letter_folder"] == str(new_folder)
+
+
+# ─── hosted mode (docs/cloud-deployment-readiness-plan.md 2.2) ─────────────────
+# ai: claude-opus-5-5 | 2026-11-06 -- a hosted server sends the document to the
+# browser; it never writes into a folder, least of all one named in the request.
+
+
+@pytest.fixture
+def hosted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "APP_MODE", "hosted")
+
+
+_SAVE = {"text": "Dear team,\nHello.", "job_title": "Engineer", "company": "Acme", "label": "Cover Letter"}
+
+
+@pytest.mark.parametrize(
+    ("file_format", "signature", "extension"),
+    [("docx", b"PK", "docx"), ("pdf", b"%PDF", "pdf"), ("text", b"Dear team,", "txt"), ("md", b"Dear team,", "md")],
+)
+def test_hosted_save_is_a_download_of_the_document(
+    client: Any, hosted: None, file_format: str, signature: bytes, extension: str
+) -> None:
+    response = client.post("/api/cover-letter/save", json={**_SAVE, "format": file_format})
+
+    assert response.status_code == 200
+    disposition = response.headers["Content-Disposition"]
+    assert disposition.startswith("attachment")
+    assert f"Acme - Engineer Cover Letter.{extension}" in disposition
+    assert response.data.startswith(signature)
+
+
+def test_hosted_save_ignores_a_folder_in_the_request(
+    client: Any, hosted: None, settings_repo: FakeSettingsRepo, tmp_path: Path
+) -> None:
+    """On a server a client-chosen folder would be a write anywhere the process can."""
+    target = tmp_path / "anywhere"
+
+    response = client.post(
+        "/api/cover-letter/save", json={**_SAVE, "format": "text", "folder": str(target)}
+    )
+
+    assert response.status_code == 200
+    assert not target.exists()
+    assert "cover_letter_folder" not in settings_repo.values
+
+
+def test_the_desktop_saves_the_same_document_into_the_folder(client: Any, tmp_path: Path) -> None:
+    folder = tmp_path / "Letters"
+
+    response = client.post(
+        "/api/cover-letter/save", json={**_SAVE, "format": "pdf", "folder": str(folder)}
+    )
+
+    assert response.status_code == 200
+    assert (folder / "Acme - Engineer Cover Letter.pdf").read_bytes().startswith(b"%PDF")

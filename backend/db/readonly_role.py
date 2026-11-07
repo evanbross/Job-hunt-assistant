@@ -24,6 +24,7 @@ from psycopg2 import sql
 from psycopg2.extensions import make_dsn
 
 import config
+from backend.app_mode import is_hosted
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,10 @@ READONLY_TABLES: tuple[str, ...] = (
 _READONLY_PASSWORD_FILE = config.DATA_DIR / ".readonly_db_password"
 
 
+class ReadonlyRolePasswordMissingError(RuntimeError):
+    """Hosted mode without READONLY_DB_PASSWORD."""
+
+
 # ai: claude-opus-5-5 | 2026-11-06 -- READONLY_DB_PASSWORD first (plan 2.1)
 def get_or_create_readonly_password() -> str:
     """The jobhunt_readonly role's password.
@@ -54,6 +59,12 @@ def get_or_create_readonly_password() -> str:
     """
     if config.READONLY_DB_PASSWORD:
         return config.READONLY_DB_PASSWORD
+    # ai: claude-opus-5-5 | 2026-11-06 -- a generated file would differ per container
+    if is_hosted():
+        raise ReadonlyRolePasswordMissingError(
+            "APP_MODE=hosted needs READONLY_DB_PASSWORD: every container must use the "
+            "password the migrate step gave the voice-query role."
+        )
     if _READONLY_PASSWORD_FILE.exists():
         password = _READONLY_PASSWORD_FILE.read_text(encoding="utf-8").strip()
         if password:

@@ -48,6 +48,7 @@ from pydantic import (
 )
 
 import config
+from backend.app_mode import is_hosted
 from backend.candidate_profile_service import (
     CandidateProfileUpdate,
     announce_candidate_profile_changed,
@@ -108,7 +109,11 @@ def setup_status() -> Any:
             },
             # Editable-on-disk prompt templates the wizard reports on (the candidate
             # profile is per-user data in the database, not a file).
-            "local_files": {
+            # ai: claude-opus-5-5 | 2026-11-06 -- none when hosted: nobody edits files
+            # on the server, so "not found" would only look like a setup problem.
+            "local_files": None
+            if is_hosted()
+            else {
                 "cover_letter_prompt": {
                     "filename": config.DEFAULT_COVER_LETTER_PROMPT_PATH.name,
                     "found": config.DEFAULT_COVER_LETTER_PROMPT_PATH.exists(),

@@ -264,4 +264,5 @@ Neon-backed install currently needs.
       Done so far (2026-11-06): 1.1 app factory, 1.2 gunicorn, 1.3 standalone
       listener, 1.4 Celery beat, 1.5 per-process state into Redis, 1.6 migrate
       step + two DB roles, 1.7 Dockerfile + read-only containers + health probes,
-      2.1 read-only role password. Next: rest of Phase 2 (2.2 disk writes first).
+      2.1 read-only role password, 2.2 disk writes + APP_MODE. Next: 2.3 candidate
+      profile file sync in hosted mode, then 2.4-2.6.

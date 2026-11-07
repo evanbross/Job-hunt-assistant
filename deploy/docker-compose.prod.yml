@@ -106,6 +106,7 @@ services:
       # gunicorn.conf.py binds 0.0.0.0:5004 inside the container network; Caddy is the
       # only thing that reaches it.
       APP_ENV: production
+      APP_MODE: hosted                 # backend/app_mode.py: no writes to the container, downloads not server folders
       # The one proxy allowed to say which client address/scheme a request had
       # (X-Forwarded-For / -Proto). Must equal Caddy's pinned address on `edge`.
       TRUSTED_PROXIES: 172.28.0.2
@@ -145,6 +146,7 @@ services:
       # _OVERRIDE forces the bind regardless; see its comment in config.py.
       JOB_IMPORT_LISTENER_HOST_OVERRIDE: 0.0.0.0
       APP_ENV: production
+      APP_MODE: hosted                 # backend/app_mode.py: no writes to the container, downloads not server folders
       TRUSTED_PROXIES: 172.28.0.2      # same rule as the app: only Caddy may forward
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
@@ -178,6 +180,7 @@ services:
       - .env.migrate
     environment:
       APP_ENV: production
+      APP_MODE: hosted                 # backend/app_mode.py: no writes to the container, downloads not server folders
       # Sets the voice-query role's password to this; the app connects with the same value.
       READONLY_DB_PASSWORD: ${READONLY_DB_PASSWORD:?set READONLY_DB_PASSWORD}
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
@@ -197,6 +200,7 @@ services:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
       REDIS_TLS_CA_FILE: /tls/ca.crt
       APP_ENV: production
+      APP_MODE: hosted                 # backend/app_mode.py: no writes to the container, downloads not server folders
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
@@ -230,6 +234,7 @@ services:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
       REDIS_TLS_CA_FILE: /tls/ca.crt
       APP_ENV: production
+      APP_MODE: hosted                 # backend/app_mode.py: no writes to the container, downloads not server folders
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
@@ -262,6 +267,7 @@ services:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
       REDIS_TLS_CA_FILE: /tls/ca.crt
       APP_ENV: production
+      APP_MODE: hosted                 # backend/app_mode.py: no writes to the container, downloads not server folders
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)

@@ -51,6 +51,7 @@ from celery.exceptions import OperationalError
 from celery.signals import beat_init, worker_init
 
 import config
+from backend.app_mode import AppModeConfigError, app_mode
 from backend.security.redis_tls import redis_ssl_options
 from backend.security.secrets_policy import (
     InsecureSecretError,
@@ -157,7 +158,8 @@ def _require_valid_encryption_key(**_kwargs: object) -> None:
     SystemExit (not an Exception) is what lets this stop the worker's startup."""
     try:
         validate_encryption_config(os.environ)
-    except InsecureSecretError as exc:
+        app_mode()  # ai: claude-opus-5-5 | 2026-11-06 -- tasks branch on it too
+    except (InsecureSecretError, AppModeConfigError) as exc:
         logger.critical("%s", exc)
         raise SystemExit(1) from exc
 

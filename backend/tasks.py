@@ -57,6 +57,7 @@ from celery.signals import task_postrun
 from googleapiclient.errors import HttpError
 
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.app_mode import is_hosted
 from backend.celery_app import celery_app
 from backend.db import DuplicateJobUrlError
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
@@ -233,14 +234,17 @@ def _llm_enrich_batch(user_id: int, url_rows: list[dict[str, Any]]) -> list[dict
             / "tmp"
             / "jha_llm_prompts.log"
         )
-        try:
-            log_path.parent.mkdir(exist_ok=True)
-            with log_path.open("a", encoding="utf-8") as f:
-                f.write(
-                    f"\n{'='*60}\n{datetime.now(UTC).isoformat(timespec='seconds')} _llm_enrich_batch ({len(batch)} jobs)\n{'='*60}\n{prompt}\n"
-                )
-        except OSError as log_exc:
-            logger.debug("Could not write LLM prompt log: %s", log_exc)
+        # ai: claude-opus-5-5 | 2026-11-06 -- a desktop debugging aid; hosted, the
+        # filesystem is read-only and the prompts hold every account's job data.
+        if not is_hosted():
+            try:
+                log_path.parent.mkdir(exist_ok=True)
+                with log_path.open("a", encoding="utf-8") as f:
+                    f.write(
+                        f"\n{'='*60}\n{datetime.now(UTC).isoformat(timespec='seconds')} _llm_enrich_batch ({len(batch)} jobs)\n{'='*60}\n{prompt}\n"
+                    )
+            except OSError as log_exc:
+                logger.debug("Could not write LLM prompt log: %s", log_exc)
 
         raw = AIProviderClient(user_id).complete(
             messages=[AIMessage(role="user", content=prompt)],

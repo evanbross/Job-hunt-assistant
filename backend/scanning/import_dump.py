@@ -35,6 +35,8 @@ import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 
+from backend.app_mode import is_hosted
+
 logger = logging.getLogger(__name__)
 
 _DUMP_DIR: Path = Path(__file__).parent.parent.parent / "tmp" / "import_captures"
@@ -45,7 +47,13 @@ def dump_import_capture(body: dict) -> None:
 
     Failures are logged as warnings and never propagate — a dump error must not
     interrupt the import pipeline.
+
+    Desktop only: a hosted deployment's filesystem is read-only, and these files hold
+    other sites' page content from every account, which would need object storage and
+    a retention policy rather than a local folder (cloud plan 2.2).
     """
+    if is_hosted():  # ai: claude-opus-5-5 | 2026-11-06
+        return
     try:
         _DUMP_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")

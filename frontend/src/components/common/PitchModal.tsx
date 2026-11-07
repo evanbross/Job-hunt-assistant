@@ -12,9 +12,9 @@ import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import Modal from "./Modal.tsx";
 import PhraseBookModal from "./PhraseBookModal.tsx"; // ai: claude-sonnet-5 | 2026-08-11
-import { pickSaveFolder, promptForSaveFolder } from "../../utils/saveFolderUtils.ts";
+import { pickSaveFolder, saveDocument, saveStatusFor } from "../../utils/saveFolderUtils.ts";
 import { describeFetchError } from "../../utils/fetchErrorUtils.ts";
-import type { ChatMessage, PitchChatResponse, PitchType, SaveDocumentResponse, SaveStatus } from "../../types/coverLetter.ts";
+import type { ChatMessage, PitchChatResponse, PitchType, SaveStatus } from "../../types/coverLetter.ts";
 import type { Job } from "../../types/jobs.ts";
 
 const saveMenuStyle: CSSProperties = {
@@ -99,33 +99,22 @@ export default function PitchModal({ job, pitchType, text, onClose }: PitchModal
     setFolderEditOpen(false);
     try {
       const label = pitchType === "why_company" ? "Why Company" : "Why Fit";
-      const body: Record<string, string> = {
-        text: currentText,
-        label,
-        format,
-        job_title: job.job_title || "",
-        company: job.company || "",
-      };
-      if (folderOverride) body.folder = folderOverride;
-      const res = await fetch("/api/cover-letter/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data: SaveDocumentResponse = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (data.folder_error) {
-          const replacement = await promptForSaveFolder(data.folder);
-          if (replacement) {
-            await handleSave(format, replacement);
-          } else {
-            setSaveStatus(null);
-          }
-          return;
-        }
-        throw new Error(data.error || `Save failed (${res.status})`);
+      // ai: claude-opus-5-5 | 2026-11-06 -- shared with the other save modals
+      const result = await saveDocument(
+        {
+          text: currentText,
+          label,
+          format,
+          job_title: job.job_title || "",
+          company: job.company || "",
+        },
+        folderOverride,
+      );
+      if (!result) {
+        setSaveStatus(null);
+        return;
       }
-      setSaveStatus({ path: data.path, folder: data.folder, format });
+      setSaveStatus(saveStatusFor(result, format));
     } catch (e) {
       setSaveStatus(null);
       window.alert("Save failed: " + describeFetchError(e));
@@ -239,17 +228,19 @@ export default function PitchModal({ job, pitchType, text, onClose }: PitchModal
         {saveStatus && saveStatus !== "saving" && (
           <div style={saveStatusBoxStyle}>
             <div style={{ fontSize: "12px", color: "var(--green)", fontWeight: "600", marginBottom: "4px" }}>
-              Saved as {saveStatus.format === "pdf" ? "PDF" : saveStatus.format === "text" ? "Text" : "Word"}
+              {saveStatus.downloaded ? "Downloaded as" : "Saved as"} {saveStatus.format === "pdf" ? "PDF" : saveStatus.format === "text" ? "Text" : "Word"}
             </div>
             <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px", wordBreak: "break-all" }}>
               {saveStatus.path}
             </div>
+            {!saveStatus.downloaded && (
             <button
               onClick={() => { setFolderEditOpen((o) => !o); setFolderInput(saveStatus.folder); }}
               style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: "12px", padding: 0, textDecoration: "underline", fontWeight: "500" }}
             >
               {folderEditOpen ? "Cancel folder edit" : "Change save folder"}
             </button>
+            )}
           </div>
         )}
 

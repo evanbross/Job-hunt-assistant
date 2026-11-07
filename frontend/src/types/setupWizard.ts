@@ -43,10 +43,11 @@ export interface SetupStatusResponse {
     google_auth: { done: boolean; required: boolean };
     candidate_profile: { done: boolean; char_count: number; required: boolean };
   };
+  /** null on a hosted server, where there are no prompt files to edit. */
   local_files: {
     cover_letter_prompt: SetupLocalFileInfo;
     fit_scorer_prompt: SetupLocalFileInfo;
-  };
+  } | null;
   redis_reachable: boolean;
 }
 

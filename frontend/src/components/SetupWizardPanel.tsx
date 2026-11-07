@@ -952,7 +952,7 @@ function StepFinish({ stepDone, serverStatus, localFiles }: StepFinishProps) {
 
   // ai: claude-sonnet-5 | 2026-09-01 — localFiles prop + fileItems for the
   // new "Local Files" summary below
-  const fileItems: { key: keyof SetupStatusResponse["local_files"]; label: string }[] = [
+  const fileItems: { key: keyof NonNullable<SetupStatusResponse["local_files"]>; label: string }[] = [
     { key: "cover_letter_prompt", label: "Cover letter prompt" },
     { key: "fit_scorer_prompt", label: "Fit scorer prompt" },
   ];
