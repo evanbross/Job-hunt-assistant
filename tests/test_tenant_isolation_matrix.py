@@ -48,7 +48,10 @@ _SEQUENCE = itertools.count(1)  # unique keys, since the owner-control phase re-
 # schema_state: one row recording which code last migrated the database (backend/db/schema_version.py).
 # registration_invites: emails invited to register, read before any account exists (plan 4.6).
 _NOT_TENANT_SCOPED = frozenset(
-    {"application_stage_statuses", "registration_invites", "schema_state", "system_settings", "user_accounts"}
+    {
+        "application_stage_statuses", "backup_runs", "registration_invites", "schema_state",
+        "system_settings", "user_accounts",
+    }
 )
 
 

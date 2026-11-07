@@ -83,6 +83,7 @@ celery_app = Celery(
         "routes.jd_health_check",
         "routes.jobs",  # ai: claude-opus-5-5 | 2026-11-06
         "backend.security.data_lifecycle",
+        "backend.db.scheduled_backup",  # ai: claude-opus-5-5 | 2026-11-07
     ],
 )
 
@@ -92,6 +93,10 @@ MAINTENANCE_QUEUE = "maintenance"
 CAREER_SITE_SCAN_TICK = "routes.career_sites.career_site_scan_tick"
 JD_HEALTH_CHECK_TICK = "routes.jd_health_check.jd_health_check_tick"
 DATA_LIFECYCLE_SWEEP = "backend.security.data_lifecycle.data_lifecycle_sweep_task"
+# ai: claude-opus-5-5 | 2026-11-07 -- hourly: it only checks whether a backup is due
+# (BACKUP_INTERVAL_HOURS), so a failed backup is retried within the hour.
+DATABASE_BACKUP_TICK = "backend.db.scheduled_backup.database_backup_tick"
+DATABASE_BACKUP_TICK_INTERVAL = timedelta(hours=1)
 # How often beat asks "is a JD health check due" per account. The run itself happens at
 # each account's own configured time; this only bounds how late it can start.
 JD_HEALTH_CHECK_TICK_INTERVAL = timedelta(minutes=15)
@@ -118,7 +123,10 @@ celery_app.conf.update(
     worker_concurrency=4,
     # ai: claude-opus-5-5 | 2026-11-06
     task_default_queue=DEFAULT_QUEUE,
-    task_routes={DATA_LIFECYCLE_SWEEP: {"queue": MAINTENANCE_QUEUE}},
+    task_routes={
+        DATA_LIFECYCLE_SWEEP: {"queue": MAINTENANCE_QUEUE},
+        DATABASE_BACKUP_TICK: {"queue": MAINTENANCE_QUEUE},  # ai: claude-opus-5-5 | 2026-11-07
+    },
     beat_schedule={
         "career-site-scan": {
             "task": CAREER_SITE_SCAN_TICK,
@@ -131,6 +139,10 @@ celery_app.conf.update(
         "data-lifecycle-sweep": {
             "task": DATA_LIFECYCLE_SWEEP,
             "schedule": timedelta(hours=max(1.0, config.DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS)),
+        },
+        "database-backup": {  # ai: claude-opus-5-5 | 2026-11-07
+            "task": DATABASE_BACKUP_TICK,
+            "schedule": DATABASE_BACKUP_TICK_INTERVAL,
         },
     },
     # Each tick re-checks what is due, so one missed while beat was down is just late.

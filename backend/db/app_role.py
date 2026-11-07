@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 # Tables the runtime role may read but never write.
 _READ_ONLY_FOR_APP: tuple[str, ...] = ("schema_state",)
+# ai: claude-opus-5-5 | 2026-11-07
+# Tables the runtime role may not touch at all: written by owner-only maintenance, and
+# nothing the app serves reads them, so a compromised app can't forge or hide a record.
+_NO_ACCESS_FOR_APP: tuple[str, ...] = ("backup_runs",)
 
 
 class AppRoleConfigError(RuntimeError):
@@ -145,6 +149,14 @@ def ensure_app_role(conn: Any, app_dsn: str) -> None:
                 sql.Identifier(table), role
             )
         )
+    # ai: claude-opus-5-5 | 2026-11-07
+    for table in _NO_ACCESS_FOR_APP:
+        cur.execute(sql.SQL("REVOKE ALL ON {} FROM {}").format(sql.Identifier(table), role))
+        # and its id sequence, which the blanket sequence grant above covered
+        cur.execute("SELECT pg_get_serial_sequence(%s, 'id') AS seq", (table,))
+        sequence = cur.fetchone()["seq"]
+        if sequence:
+            cur.execute(sql.SQL("REVOKE ALL ON SEQUENCE {} FROM {}").format(sql.SQL(sequence), role))
     conn.commit()
 
 

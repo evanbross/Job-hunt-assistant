@@ -15,10 +15,13 @@
 #
 #   web          gunicorn serving the app and the built frontend (gunicorn.conf.py)
 #   listener     the browser extension's HTTP listener and capture-queue WebSocket
-#   worker       Celery: every background task except the maintenance sweep
-#   maintenance  Celery: only the cross-account sweep (needs DATABASE_OWNER_URL)
+#   worker       Celery: every background task except the sweep and the backups
+#   maintenance  Celery: only the cross-account sweep and the backups (needs
+#                DATABASE_OWNER_URL and the BACKUP_* settings)
 #   beat         Celery beat: the timer that queues scheduled work (exactly one)
 #   migrate      one-shot schema migration; run once per deploy, before the rest
+#   backup       the backup command line: run | status | list | restore | verify | check-config
+#                (backend/db/backup.py; scheduled backups run on `maintenance`)
 #
 # Queue names must match backend/celery_app.py (DEFAULT_QUEUE, MAINTENANCE_QUEUE);
 # tests/test_infra_hardening.py checks that they do.
@@ -39,6 +42,8 @@ case "$role" in
       --concurrency="${CELERY_CONCURRENCY:-4}" --loglevel=info "$@"
     ;;
   maintenance)
+    # It also takes the scheduled backups: refuse to start without them configured.
+    python -m backend.db.backup check-config
     exec celery -A backend.celery_app worker --queues=maintenance --pool=threads \
       --concurrency=1 --loglevel=info "$@"
     ;;
@@ -49,6 +54,9 @@ case "$role" in
     ;;
   migrate)
     exec python -m backend.db.migrate "$@"
+    ;;
+  backup)
+    exec python -m backend.db.backup "$@"
     ;;
   *)
     exec "$role" "$@"

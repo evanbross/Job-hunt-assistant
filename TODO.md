@@ -273,5 +273,8 @@ Neon-backed install currently needs.
       startup fails on localhost or a missing frontend build. Phase 2 complete.
       Phase 3 (Google OAuth verification, transactional email, DNS, extension
       store) is mostly external accounts and approvals. 4.6 (2026-11-07) invite-only
-      registration done (on by default; Settings > System > Invites). Next code
-      work: Phase 4 backups/monitoring.
+      registration done (on by default; Settings > System > Invites). 4.1/4.2
+      (2026-11-07) off-site backups: nightly pg_dump encrypted with age to an S3
+      bucket from the maintenance worker, restore + verify commands, key custody
+      documented; the restore drill itself is still to do on the real Neon project.
+      Next code work: 4.2 `*_FILE` secrets, 4.3 logging/error tracking/monitoring.

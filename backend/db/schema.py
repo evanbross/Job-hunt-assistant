@@ -1333,6 +1333,24 @@ def migrate_schema(conn: Any) -> None:
         """
     )
     conn.commit()
+    # ai: claude-opus-5-5 | 2026-11-07 -- off-site backup runs (backend/db/backup.py, plan
+    # 4.1). Instance-wide like schema_state; the runtime role is denied it (app_role.py).
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS backup_runs (
+            id            SERIAL PRIMARY KEY,
+            object_key    TEXT NOT NULL,
+            schema_hash   TEXT NOT NULL,
+            status        TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+            started_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            finished_at   TIMESTAMPTZ,
+            size_bytes    BIGINT,
+            sha256        TEXT,
+            error         TEXT
+        )
+        """
+    )
+    conn.commit()
     cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS notes TEXT")
     # contact_type (recruiter/personal/NULL) briefly existed before it became
     # the is_recruiter checkbox; carry any flagged recruiters over, then drop it.

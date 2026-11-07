@@ -194,7 +194,7 @@ services:
     cap_drop: [ALL]
     networks: [egress]                 # Postgres only
 
-  # Every background task except the maintenance sweep (default queue only).
+  # Every background task except the maintenance sweep and backups (default queue only).
   worker:
     image: ${JHA_IMAGE:?set JHA_IMAGE}
     restart: unless-stopped
@@ -224,9 +224,11 @@ services:
       redis:
         condition: service_healthy
 
-  # The account-deletion / log-retention sweep, which acts across every account and so
-  # needs the schema owner's URL. A worker of its own so that credential sits in one
-  # small process that runs nothing else, instead of in every task worker.
+  # The account-deletion / log-retention sweep and the off-site database backups, which
+  # act across every account and so need the schema owner's URL. A worker of its own so
+  # that credential (and the backup bucket's) sits in one small process that runs
+  # nothing else, instead of in every task worker. It refuses to start without the
+  # backup settings (.env.backup; deploy/README.md "Backups and restore").
   maintenance:
     image: ${JHA_IMAGE:?set JHA_IMAGE}
     restart: unless-stopped
@@ -234,6 +236,7 @@ services:
     env_file:
       - .env.production
       - .env.migrate
+      - .env.backup                    # the backup bucket and age public keys: only this service
     environment:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
       REDIS_TLS_CA_FILE: /tls/ca.crt

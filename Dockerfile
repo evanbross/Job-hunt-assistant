@@ -11,7 +11,7 @@
 # ai: claude-opus-5-5 | 2026-11-06
 # The application image (docs/cloud-deployment-readiness-plan.md 1.7). One image for
 # every process; the first argument picks which (deploy/docker-entrypoint.sh):
-# web | listener | worker | maintenance | beat | migrate.
+# web | listener | worker | maintenance | beat | migrate | backup.
 #
 #   docker build -t registry.example.com/job-hunt-assistant:1.0.0 .
 #
@@ -60,6 +60,19 @@ COPY --from=python-deps /opt/venv /opt/venv
 # Wellfound fetcher, which needs a visible window; hosted, the email scan queues
 # Wellfound jobs for the browser extension instead. The playwright package is still
 # installed (routes/scan.py imports the fetcher's module) but never launches.
+
+# ai: claude-opus-5-5 | 2026-11-07
+# pg_dump/pg_restore and age, for the off-site backups (backend/db/backup.py). pg_dump
+# must be at least the server's major version, so the client comes from the PostgreSQL
+# project's own repository (PGDG), added with the setup script and signing key that
+# Debian's postgresql-common package ships -- so the key comes through Debian's signed
+# archive, not a separate download. Set PG_CLIENT_MAJOR to the production server's version.
+ARG PG_CLIENT_MAJOR=17
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates postgresql-common \
+ && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
+ && apt-get install -y --no-install-recommends "postgresql-client-${PG_CLIENT_MAJOR}" age \
+ && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system --gid 10001 jha \
  && useradd --system --uid 10001 --gid jha --no-create-home --home-dir /nonexistent \

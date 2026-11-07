@@ -26,6 +26,7 @@ import routes.jd_health_check as jd_health_check
 from backend.celery_app import (
     CAREER_SITE_SCAN_TICK,
     DATA_LIFECYCLE_SWEEP,
+    DATABASE_BACKUP_TICK,
     DEFAULT_QUEUE,
     JD_HEALTH_CHECK_TICK,
     MAINTENANCE_QUEUE,
@@ -46,7 +47,7 @@ def test_every_scheduled_task_is_one_the_worker_registers() -> None:
     celery_app.loader.import_default_modules()
     scheduled = {entry["task"] for entry in celery_app.conf.beat_schedule.values()}
 
-    assert scheduled == {CAREER_SITE_SCAN_TICK, JD_HEALTH_CHECK_TICK, DATA_LIFECYCLE_SWEEP}
+    assert scheduled == {CAREER_SITE_SCAN_TICK, JD_HEALTH_CHECK_TICK, DATA_LIFECYCLE_SWEEP, DATABASE_BACKUP_TICK}
     assert scheduled <= set(celery_app.tasks)
 
 
@@ -54,8 +55,10 @@ def _queue_for(task_name: str) -> str:
     return celery_app.amqp.router.route({}, task_name)["queue"].name
 
 
-def test_only_the_sweep_goes_to_the_maintenance_queue() -> None:
+# ai: claude-opus-5-5 | 2026-11-07 -- and the backup tick: both need the owner's URL
+def test_only_the_sweep_and_the_backup_go_to_the_maintenance_queue() -> None:
     assert _queue_for(DATA_LIFECYCLE_SWEEP) == MAINTENANCE_QUEUE
+    assert _queue_for(DATABASE_BACKUP_TICK) == MAINTENANCE_QUEUE
     assert _queue_for(CAREER_SITE_SCAN_TICK) == DEFAULT_QUEUE
     assert _queue_for(JD_HEALTH_CHECK_TICK) == DEFAULT_QUEUE
 
@@ -68,7 +71,9 @@ def test_beat_ticks_everything_once_as_it_starts(monkeypatch: pytest.MonkeyPatch
 
     beat_init.send(sender=None)
 
-    assert sorted(sent) == sorted([CAREER_SITE_SCAN_TICK, JD_HEALTH_CHECK_TICK, DATA_LIFECYCLE_SWEEP])
+    assert sorted(sent) == sorted(
+        [CAREER_SITE_SCAN_TICK, JD_HEALTH_CHECK_TICK, DATA_LIFECYCLE_SWEEP, DATABASE_BACKUP_TICK]
+    )
 
 
 # ─── fan-out: the real accounts query, as the runtime role ─────────────────────

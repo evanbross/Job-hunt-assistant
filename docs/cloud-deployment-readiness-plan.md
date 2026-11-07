@@ -473,12 +473,29 @@ Caddy handles certificates. Add CAA records for Let's Encrypt.
   day to day. Never point the desktop app at production data.
 - Confirm Neon's point-in-time restore window on the chosen plan and **do one test
   restore** before launch.
+- **Off-site backups -- built 2026-11-07** (`backend/db/backup.py`, deploy/README.md
+  "Backups and restore"). PITR can't help if the Neon project or account is lost, or
+  damage is found after the window, so the `maintenance` worker also takes a
+  `pg_dump --format=custom --schema=public` as the schema owner every
+  `BACKUP_INTERVAL_HOURS` (beat ticks hourly; a failure retries next tick), and every
+  deploy takes one before `migrate`. It is encrypted with `age` to public keys only
+  (the server can't read its own backups) and streamed to an S3-compatible bucket;
+  a step failing partway aborts the upload, so no truncated object ever looks like a
+  backup. Runs are recorded in `backup_runs`, which the runtime role can't read or
+  write. `backup restore` (empty target only) + `migrate` + `backup verify`
+  (schema current, RLS armed, every secret decrypts with the key in custody, row
+  counts) is the drill. The bucket credentials and age keys reach only `maintenance`
+  (`deploy/.env.backup`), which refuses to start without them.
+  Still to do by hand: pick the bucket provider, generate the age keys, and run the
+  drill once against the real production project.
 - Size the connection pool for gunicorn workers × threads + Celery concurrency +
   listener, against Neon's connection limit (use Neon's pooled endpoint).
 
 ### 4.2 Key and secret custody
 - Back up `SETTINGS_ENCRYPTION_KEY` separately from the DB (a lost key makes every
-  stored token/API key/resume unreadable).
+  stored token/API key/resume unreadable). *Documented 2026-11-07* (deploy/README.md
+  "What must be kept, and where": the key and the age identities, apart from the
+  server and the bucket); `backup verify` proves the held key opens a restored backup.
 - Use a real secrets store (the VM provider's, 1Password, Doppler, or cloud secrets
   manager) to populate `deploy/.env.production`. `deploy/README.md` notes `*_FILE`
   secret support as a small follow-up — do it here.

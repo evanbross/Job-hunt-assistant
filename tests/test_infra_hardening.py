@@ -305,7 +305,25 @@ def test_every_application_process_is_one_the_image_knows(prod_compose: dict[str
     assert set(services) == {"app", "listener", "migrate", "worker", "maintenance", "beat"}
     for name, svc in services.items():
         [role] = svc["command"]
-        assert _entrypoint_command(role).startswith("exec "), name
+        # ai: claude-opus-5-5 | 2026-11-07 -- a start-up check may run first; the process
+        # itself must still replace the shell (exec), so signals reach it.
+        assert re.search(r"(^|\s)exec \S", _entrypoint_command(role)), name
+
+
+# ai: claude-opus-5-5 | 2026-11-07
+def test_the_maintenance_worker_refuses_to_start_without_working_backups(prod_compose: dict[str, Any]) -> None:
+    """The backup bucket's credentials reach only the maintenance worker, which checks
+    the backup settings before it starts -- and the check runs before the worker, not
+    beside it, so `set -e` stops the container if it fails."""
+    services = prod_compose["services"]
+    command = _entrypoint_command("maintenance")
+    assert command.startswith("python -m backend.db.backup check-config exec celery ")
+    assert "set -eu" in ENTRYPOINT.read_text(encoding="utf-8")
+    holders = {name for name, svc in services.items() if ".env.backup" in (svc.get("env_file") or [])}
+    assert holders == {"maintenance"}
+    assert _entrypoint_command("backup") == 'exec python -m backend.db.backup "$@"'
+    ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "deploy/.env.backup" in ignored
 
 
 def test_application_containers_have_a_read_only_filesystem(prod_compose: dict[str, Any]) -> None:

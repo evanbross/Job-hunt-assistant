@@ -39,16 +39,19 @@ outside by construction, not merely firewalled.
 docker build -t registry.example.com/job-hunt-assistant:1.0.0 .   # the repo's Dockerfile; push it
 cp deploy/.env.production.example deploy/.env.production   # fill in every value (JHA_IMAGE = that tag)
 cp deploy/.env.migrate.example deploy/.env.migrate         # the schema owner's DB URL
+cp deploy/.env.backup.example deploy/.env.backup           # the backup bucket and age public keys
 python scripts/generate_redis_tls.py                       # once: writes deploy/secrets/redis-tls/
 
-# Every deploy, in this order:
+# Every deploy, in this order (a backup first, so a bad migration can be undone):
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production run --rm maintenance backup run
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production run --rm migrate
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d
 ```
 
 Compose refuses to start if `APP_DOMAIN`, `ACME_EMAIL`, `REDIS_PASSWORD`,
 `READONLY_DB_PASSWORD` or `JHA_IMAGE` is unset.
-`deploy/.env.production`, `deploy/.env.migrate` and `deploy/secrets/` are git-ignored.
+`deploy/.env.production`, `deploy/.env.migrate`, `deploy/.env.backup` and `deploy/secrets/`
+are git-ignored.
 
 ### First login and who can sign up
 
@@ -136,7 +139,7 @@ old app, run `migrate`, then start the new one with its runtime-role `DATABASE_U
 
 ### Scheduled work
 
-`beat` (`celery -A backend.celery_app beat`) queues three ticks
+`beat` (`celery -A backend.celery_app beat`) queues four ticks
 (`backend/celery_app.py`'s `beat_schedule`), and once more each as it starts so nothing
 that fell due while it was down waits a full interval:
 
@@ -145,6 +148,7 @@ that fell due while it was down waits a full interval:
 | Career-site scan | `CAREER_SITE_SCAN_INTERVAL_MINUTES` (1440) | `worker` | Starts a scan for each account with a site due |
 | JD parser health check | 15 minutes | `worker` | Starts a run for each account whose configured time has passed |
 | Data lifecycle sweep | `DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS` (24) | `maintenance` | Deletes accounts past their grace period; prunes old log rows |
+| Database backup | 1 hour (backs up once the last success is `BACKUP_INTERVAL_HOURS` old) | `maintenance` | An encrypted off-site dump ("Backups and restore" below) |
 
 Run exactly one `beat`. A tick only decides; whether a run is already going for an
 account is recorded in Redis (`backend/active_tasks.py`), shared by every process, so
@@ -158,6 +162,93 @@ readable only by the Redis user.
 Generate the application secrets with `python scripts/manage_secrets.py generate`
 (see `docs/secrets-and-key-rotation.md`); `REDIS_PASSWORD` can be any long random
 URL-safe string.
+
+### Backups and restore
+
+There are two layers, because they fail differently:
+
+1. **Neon's point-in-time restore** (the provider's). It restores the database to any
+   moment inside the plan's history window, and is the first thing to reach for after a
+   bad deploy or a mistaken delete. Check the window on your plan.
+2. **Off-site dumps** (`backend/db/backup.py`), for what PITR can't cover: the Neon
+   project or account lost, or damage noticed after the window. The `maintenance` worker
+   takes one every `BACKUP_INTERVAL_HOURS` (24), and every deploy takes one before it
+   migrates. Each is a `pg_dump --format=custom --schema=public` taken as the schema owner,
+   encrypted with `age` to the public keys in `BACKUP_AGE_RECIPIENTS`, and streamed to an
+   S3-compatible bucket as `<prefix>YYYY/MM/jha-<UTC time>-<schema>.dump.age`. Nothing is
+   written to disk, and a dump that fails partway is aborted rather than stored as a short
+   file. Every run is recorded in the `backup_runs` table (`backup status` lists them); a
+   failure is logged as an error and retried at the next hourly tick.
+
+Postgres is the only state a hosted install keeps: documents live in it, Redis holds only
+in-flight work and rate-limit counters, and Caddy's certificates get reissued. So one dump
+is a whole backup.
+
+**Setting it up** (`deploy/.env.backup`, copied from `.env.backup.example`):
+
+* Use a bucket at a different provider or account from the database. Give its key the
+  narrowest access the provider allows: ideally write-only, with no delete (AWS:
+  `s3:PutObject` + `s3:AbortMultipartUpload`; B2: `writeFiles`). Set retention as the
+  bucket's lifecycle rule (e.g. 35 days), and turn on object lock where it's offered, so a
+  leaked key can't delete recent backups. The app never deletes or lists backups.
+* Run `age-keygen -o backup-identity.txt` on **your own machine** (or `docker run --rm
+  --entrypoint age-keygen <image>`). Put the public key it prints (`age1...`) in
+  `BACKUP_AGE_RECIPIENTS`. Add a second recipient whose identity is sealed somewhere else,
+  so losing one key doesn't lose every backup. The server holds only public keys: it can
+  write backups but never read one.
+* `maintenance` refuses to start unless `backup check-config` passes: the settings are
+  complete, and `pg_dump`, `pg_restore` and `age` are present.
+* The image's `pg_dump` must be at least the server's major version, so build with
+  `--build-arg PG_CLIENT_MAJOR=<Neon's version>` (default 17). `DATABASE_OWNER_URL` must
+  be Neon's **direct** endpoint, not the pooled one, because pg_dump needs a session.
+
+**What must be kept, and where.** A backup is useless without two secrets, and both must
+be kept **apart from the server and the bucket**: for example, in a password manager plus
+a sealed offline copy.
+
+| Secret | Without it |
+|---|---|
+| The age identity file(s) | The backups can't be decrypted |
+| `SETTINGS_ENCRYPTION_KEY` (and any `_FALLBACKS`) | A restored database's API keys, Google tokens and resumes can't be decrypted |
+
+`verify` (below) proves that the key you hold actually opens a backup. Keep the other
+production secrets (`FLASK_SECRET_KEY`, the database passwords) in the same place. They
+can be replaced, but replacing them signs everyone out and needs a new runtime login.
+
+**Restoring.** Do this once as a drill before launch, then periodically. Restore into a
+**new, empty** database (a fresh Neon database or branch), never one in use; the command
+refuses a database that has tables. From any machine with Docker, with the identity file
+in the current directory:
+
+```bash
+IMAGE=registry.example.com/job-hunt-assistant:1.0.0
+# 1. Restore. Reading the bucket needs a separate read key, not the server's write key.
+docker run --rm --env-file deploy/.env.backup -e BACKUP_S3_ACCESS_KEY_ID=<read key> \
+  -e BACKUP_S3_SECRET_ACCESS_KEY=<read secret> -v "$PWD/backup-identity.txt:/id.txt:ro" \
+  $IMAGE backup restore --latest --identity /id.txt --target-url "$RESTORE_OWNER_URL"
+# 2. Migrate it. This creates the runtime role's grants (the dump carries no roles or grants).
+docker run --rm -e DATABASE_OWNER_URL="$RESTORE_OWNER_URL" -e DATABASE_URL="$RESTORE_APP_URL" \
+  -e READONLY_DB_PASSWORD=... $IMAGE migrate
+# 3. Verify: migrated by this image, row-level security armed, every secret decrypts.
+docker run --rm -e SETTINGS_ENCRYPTION_KEY=... $IMAGE backup verify --database-url "$RESTORE_OWNER_URL"
+```
+
+`verify` prints each table's row count, to compare with production. Then point
+`DATABASE_OWNER_URL` and `DATABASE_URL` at the restored database and deploy as usual. For
+an older backup use `--key <object key>` (from `backup list`); for a downloaded copy use
+`--file`.
+
+Restoring doesn't depend on this code: the object is a plain age-encrypted pg_dump
+archive.
+
+```bash
+aws s3 cp "s3://<bucket>/<key>" - --endpoint-url "<endpoint>" \
+  | age --decrypt --identity backup-identity.txt \
+  | pg_restore --no-owner --no-privileges --exit-on-error --single-transaction --dbname "$RESTORE_OWNER_URL"
+```
+
+The archive contains the `public` schema itself, so first drop the new database's empty
+`public` schema with `DROP SCHEMA public;`. `backup restore` does this for you.
 
 ### Redis TLS in the app
 
@@ -241,4 +332,5 @@ process queued.
    tab still reaches the others.
 2. **Reading secrets from files.** Secrets are environment variables. Supporting the
    `*_FILE` convention (Docker/Kubernetes secrets) is a small follow-up.
-3. **Database provisioning, backups, monitoring, and log shipping.**
+3. **Database provisioning, monitoring, and log shipping.** (Backups: "Backups and
+   restore" above.)
