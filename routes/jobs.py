@@ -2526,9 +2526,14 @@ def _write_repair_findings_doc(
             lines.append(
                 f"| {f['source']} | {label} | {f['count']} of {f['total']} | {f['percent']}% | {trend} |"
             )
-    (config.BASE_DIR / "docs" / "import_repair_findings.md").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8"
-    )
+    # ai: claude-opus-5-5 | 2026-11-06 -- best effort: a container's filesystem is
+    # read-only (plan 1.7), and the findings are already in import_repair_history and
+    # the run's result, so failing to write this copy must not fail the run (plan 2.2).
+    path = config.BASE_DIR / "docs" / "import_repair_findings.md"
+    try:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not write %s (findings kept in import_repair_history): %s", path, exc)
 
 
 # ai: claude-sonnet-5 | 2026-08-20 — user_id captured by start_import_repair()

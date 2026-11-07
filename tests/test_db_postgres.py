@@ -45,7 +45,7 @@ from backend.db import (
 )
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
 from backend.db.row_level_security import set_current_user
-from backend.db.schema import _migrate
+from backend.db.schema import migrate_schema
 from tests.db_roles import runtime_database_url
 
 # ai: claude-sonnet-5 | 2026-07-25
@@ -681,7 +681,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
 ) -> None:
     """Onboarding a second user onto a database that predates this constraint
     (or that already has a duplicate row from before this fix) must not crash
-    the app on startup. _migrate() should skip creating the index and retry on
+    the app on startup. migrate_schema() should skip creating the index and retry on
     a later startup, once the duplicate is gone."""
     conn = get_connection(pg_dsn)
     try:
@@ -723,9 +723,9 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         conn.commit()
 
         # Startup migration must not crash despite the pre-existing duplicate.
-        _migrate(conn)
+        migrate_schema(conn)
         assert not _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
-        # Both legacy rows are left alone -- _migrate() only skips the index,
+        # Both legacy rows are left alone -- migrate_schema() only skips the index,
         # it never deletes data on the user's behalf.
         assert jobs.get_by_id(user_id, first_id) is not None
         assert jobs.get_by_id(user_id, second_id) is not None
@@ -734,7 +734,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         set_current_user(conn.cursor(), user_id)
         jobs.delete(user_id, second_id)
         conn.commit()
-        _migrate(conn)
+        migrate_schema(conn)
         assert _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
     finally:
         conn.close()
@@ -744,7 +744,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
 def test_first_account_becomes_admin_and_stays_admin_across_migrations(
     pg_dsn: str,
 ) -> None:
-    """See schema.py's _migrate() role-bootstrap block: whichever account
+    """See schema.py's migrate_schema() role-bootstrap block: whichever account
     existed first (the placeholder pg_dsn's migrate_database() always creates, or --
     on a real install -- the account that later claims it by registering)
     becomes 'admin'; every later registration defaults to 'user'. Re-running
@@ -764,7 +764,7 @@ def test_first_account_becomes_admin_and_stays_admin_across_migrations(
         assert second is not None
         assert second["role"] == "user"
 
-        _migrate(conn)  # idempotent re-run, e.g. app restart
+        migrate_schema(conn)  # idempotent re-run, e.g. app restart
 
         cur.execute("SELECT role FROM user_accounts WHERE id = %s", (first["id"],))
         assert cur.fetchone()["role"] == "admin"

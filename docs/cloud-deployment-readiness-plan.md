@@ -197,7 +197,25 @@ Original scope:
   deploy can say exactly which migrations it ran. Not a blocker if the one-shot
   command exists.
 
-### 1.7 Dockerfile and image
+### 1.7 Dockerfile and image — done 2026-11-06
+`Dockerfile` (multi-stage: frontend build, `uv sync --frozen --no-dev`, runtime as uid
+10001 with Chromium's headless shell) and `deploy/docker-entrypoint.sh` (`web`,
+`listener`, `worker`, `maintenance`, `beat`, `migrate`). `.dockerignore` is an allowlist,
+since the repo directory holds personal data. Every application container in
+`deploy/docker-compose.prod.yml` runs read-only with a tmpfs `/tmp`; logs were already
+on stdout. `GET /api/system/live` (no I/O) and `GET /api/system/ready` (DB + Redis) are
+new and unauthenticated; compose healthchecks use readiness for `app`, `/health` for the
+listener and `celery inspect ping` for the workers, and Caddy waits for `app` and
+`listener` to be healthy. Building it surfaced 2.1, done here too.
+
+Smoke-tested end to end with the built image against a throwaway Postgres: `migrate` on
+an empty database, then `web` (ready/live/SPA, login gate), `listener`, `worker`,
+`maintenance` and `beat` (startup ticks ran on the right queues), all read-only as uid
+10001. That first fresh migrate failed: an index on `jobs.user_id` had been added to
+`create_tables()`, which runs before the column exists, the same mistake fixed once on
+2026-10-08. Fixed, and `tests/test_fresh_database_migrate.py` now catches the class.
+
+Original scope:
 - Multi-stage: Node stage runs `npm ci && npm run build` for `frontend/`; Python
   stage installs from `uv.lock`, copies the built `dist/`, runs as non-root.
 - Entrypoint commands: `web` (gunicorn), `worker` (celery), `beat`, `listener`,
@@ -212,8 +230,15 @@ Original scope:
 
 ## Phase 2 — Remove remaining single-machine assumptions (blocker)
 
-### 2.1 Read-only DB role password (`backend/db/readonly_role.py:41-91`)
-The voice-query role's password is generated and stored in `data/.readonly_db_password`,
+### 2.1 Read-only DB role password (`backend/db/readonly_role.py:41-91`) — done 2026-11-06
+`READONLY_DB_PASSWORD` (required by compose for `migrate` and `app`) is used when set;
+the desktop app keeps its generated `data/` file. Two more bugs fixed with it: the
+role's DSN was built from `POSTGRES_HOST`/`POSTGRES_DB`, which are empty when a
+deployment gives `DATABASE_URL` whole (it is now derived from `DATABASE_URL`), and
+`GRANT CONNECT` named the same empty database (it now uses `current_database()`).
+Covered by `tests/test_readonly_role_deployment.py` against real Postgres.
+
+Original problem: the voice-query role's password is generated and stored in `data/.readonly_db_password`,
 then applied with `ALTER ROLE ... PASSWORD`. In containers that file doesn't persist,
 so **every new container mints a new password and breaks every other running
 instance's voice queries**. Move it to a required secret (`READONLY_DB_PASSWORD`) or
@@ -229,6 +254,19 @@ Each of these assumes a persistent local disk owned by one user:
   keep any per-user overrides in the DB.
 - `config.WELLFOUND_SESSION_FILE` (`credentials/wellfound_session.json`) — a shared
   session file. Per-user DB row, or drop the feature in hosted mode (see 2.5).
+- `routes/cover_letter.py` — saves the generated letter to `cover_letter_folder` (a
+  per-user setting) or a `folder_override` from the request, i.e. **a path on the
+  server that the user chooses**: an arbitrary file write in hosted mode. Hosted mode
+  must offer the letter as a download only. (The read-only container filesystem from
+  1.7 already blocks the write, but the feature should not try.)
+- `routes/jobs.py` `_write_repair_findings_doc` — the import-issue repair writes its
+  findings into the repository's `docs/import_repair_findings.md`, so in hosted mode
+  one account's findings would overwrite another's in a shared file. The same data is
+  already in `import_repair_history`; show it from there (or return it with the run's
+  result) and stop writing the file. Under the read-only filesystem the write fails
+  and is logged; the run itself still succeeds.
+- `backend/tasks.py` LLM prompt log (`tmp/jha_llm_prompts.log`) — already tolerates the
+  write failing (logs at debug); remove or move to a debug flag.
 - `uploads/`, `data/`, `credentials/` in general — after the above, audit with
   `grep -rn "DATA_DIR\|UPLOADS_DIR\|CREDENTIALS_DIR\|BASE_DIR /"` and confirm the only
   remaining uses are the one-time legacy migration bridges in `schema.py`.

@@ -161,6 +161,12 @@ DATABASE_OWNER_URL: str = os.getenv("DATABASE_OWNER_URL", "") or _postgres_url(
 DATABASE_URL: str = os.getenv("DATABASE_URL", "") or _postgres_url(
     os.getenv("POSTGRES_APP_USER", ""), os.getenv("POSTGRES_APP_PASSWORD", "")
 )
+# ai: claude-opus-5-5 | 2026-11-06
+# The voice-query feature's SELECT-only role (backend/db/readonly_role.py). Required in
+# a container deployment (compose refuses to start without it): migrate sets the role's
+# password from it and the app connects with it, so both must see the same value. Left
+# empty, the desktop app generates one into data/.readonly_db_password instead.
+READONLY_DB_PASSWORD: str = os.getenv("READONLY_DB_PASSWORD", "")
 
 # ai: claude-sonnet-5 | 2026-10-18
 # Pool sizing is explicit runtime configuration (backend/db/connection.py)

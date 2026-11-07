@@ -35,7 +35,7 @@ from ..connection import _row_to_dict
 
 # ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
 # user_id parameter (multi-tenancy migration). scanned_emails' PK is now
-# composite (user_id, email_id) — see backend/db/schema.py's _migrate().
+# composite (user_id, email_id) — see backend/db/schema.py's migrate_schema().
 class PostgresScannedEmailRepository(_BaseRepo):
     def has_been_scanned(self, user_id: int, email_id: str) -> bool:
         cur = self._execute(

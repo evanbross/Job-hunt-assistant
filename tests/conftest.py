@@ -297,12 +297,9 @@ def isolated_legacy_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 # ai: claude-sonnet-5 | 2026-09-27
 # ai: claude-opus-5-5 | 2026-11-03 — extracted from pg_dsn; the session fixture needs it too
 def _point_postgres_settings_at_test_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    """backend/db/readonly_role.py's ensure_readonly_role() (called by migrate_database) and
-    get_readonly_database_url() (routes/voice.py) read these directly, separately from
-    DATABASE_URL. Without this they target the real app database (which doesn't exist
-    locally), so the voice-query feature's read-only role silently never gets
-    provisioned against the test database -- see tests/test_row_level_security.py's
-    voice-query tests, which need it."""
+    """Every database setting at the test database: the owner and runtime URLs, and the
+    POSTGRES_* parts config builds URLs from, so nothing reaches the real app database
+    (which doesn't exist locally)."""
     parsed = urlparse(TEST_DATABASE_URL)
     monkeypatch.setattr(config, "POSTGRES_HOST", parsed.hostname)
     monkeypatch.setattr(config, "POSTGRES_PORT", str(parsed.port))

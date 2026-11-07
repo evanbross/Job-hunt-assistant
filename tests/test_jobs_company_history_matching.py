@@ -216,7 +216,7 @@ def test_get_outreach_company_relevance_through_the_latest_stage_view_and_tenant
 
 
 # ai: claude-sonnet-5 | 2026-10-01
-# The one-time backfill in backend/db/schema.py's _migrate() calls
+# The one-time backfill in backend/db/schema.py's migrate_schema() calls
 # normalize_company_name() directly (no second, SQL-regex reimplementation of
 # the same logic -- an earlier version of this migration did exactly that and
 # was replaced). This exercises the real migration path end-to-end: a row

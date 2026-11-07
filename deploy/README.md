@@ -36,7 +36,8 @@ outside by construction, not merely firewalled.
 ## Setting it up
 
 ```bash
-cp deploy/.env.production.example deploy/.env.production   # fill in every value
+docker build -t registry.example.com/job-hunt-assistant:1.0.0 .   # the repo's Dockerfile; push it
+cp deploy/.env.production.example deploy/.env.production   # fill in every value (JHA_IMAGE = that tag)
 cp deploy/.env.migrate.example deploy/.env.migrate         # the schema owner's DB URL
 python scripts/generate_redis_tls.py                       # once: writes deploy/secrets/redis-tls/
 
@@ -45,8 +46,40 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.producti
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d
 ```
 
-Compose refuses to start if `APP_DOMAIN`, `ACME_EMAIL`, or `REDIS_PASSWORD` is unset.
+Compose refuses to start if `APP_DOMAIN`, `ACME_EMAIL`, `REDIS_PASSWORD`,
+`READONLY_DB_PASSWORD` or `JHA_IMAGE` is unset.
 `deploy/.env.production`, `deploy/.env.migrate` and `deploy/secrets/` are git-ignored.
+
+### The application image
+
+One image (the repository's `Dockerfile`) runs every application process; the compose
+`command` names which, and `deploy/docker-entrypoint.sh` turns that into the real
+command: `web` (gunicorn), `listener`, `worker`, `maintenance`, `beat`, `migrate`.
+
+* **Build stages:** the frontend is built with `npm ci && npm run build`; the Python
+  dependencies are installed from `uv.lock` (no dev group); the runtime stage gets those
+  plus the source, and runs as an unprivileged user (uid 10001).
+* **Read-only:** every application container runs with a read-only root filesystem and
+  a tmpfs at `/tmp` (compose `read_only`/`tmpfs`). The image is compiled at build time
+  and writes nothing else. A feature that still tries to write to the app directory
+  (plan 2.2: import capture dumps and the import-repair findings doc, which log the
+  failure and carry on; cover letters saved to a server folder, which report it) fails
+  rather than leaving files in a container.
+* **Build context is an allowlist** (`.dockerignore`): this directory also holds personal
+  data (`credentials/`, `data/`, `uploads/`, exports), so everything is excluded and only
+  what runs is let back in. A new top-level file stays out until it's listed there.
+* **Headless Chromium** (Playwright's headless shell) is in the image for the scrapers
+  that run headless (Greenhouse search, in the `worker`, which gets `shm_size: 512m`).
+  Headful launches (Wellfound, which DataDome only passes with a visible window; the
+  Greenhouse manual login) cannot work in a container; plan 2.5 routes them to the
+  browser extension instead.
+* **Logs** go to stdout/stderr from every process (`docker compose logs`).
+* **Health:** `GET /api/system/live` (the process answers; checks nothing else, so a
+  database outage doesn't restart every container) and `GET /api/system/ready` (the
+  database and Redis answer). Compose uses readiness for `app`, the listener's
+  `/health` for `listener`, and `celery inspect ping` for the workers; Caddy only starts
+  once `app` and `listener` are healthy. On a platform with separate probes, point
+  liveness at `/live` and readiness at `/ready`. Both are reachable without a session.
 
 ### Database roles and migrations
 
@@ -150,18 +183,9 @@ process queued.
 
 ## What is not included
 
-1. **The application image.** `app.py` is a desktop launcher: it rebuilds the frontend,
-   starts a Vite dev server, spawns its own Celery worker, and registers itself with the
-   dev Caddy. A production image needs a real WSGI server, the extension listener and
-   queue WebSocket as managed processes, the built frontend served from the image, and
-   a container entrypoint that does none of the desktop work. `JHA_IMAGE` in the
-   compose file is a placeholder until that exists.
-
-   The processes exist: `wsgi.py` (`gunicorn -c gunicorn.conf.py wsgi:app`, the compose
-   `app` command) serves the web app, `python -m web.extension_listener` the extension
-   endpoints (`listener`), `python -m backend.db.migrate` migrates (`migrate`), Celery
-   runs background tasks (`worker`) and the account-deletion/retention sweep
-   (`maintenance`), and Celery beat (`beat`) is the one timer for scheduled work.
+1. **A registry and CI build.** The `Dockerfile` builds the image (see "The application
+   image" above), but building, scanning and pushing it is manual. A pipeline that does
+   it per tag is a follow-up.
 
    **The server must handle long-lived responses.** Each open tab keeps one
    `/api/events` server-sent-events stream open for as long as the page is open

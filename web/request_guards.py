@@ -44,6 +44,8 @@ APP_LOGIN_ALLOWLIST = frozenset(
         ("POST", "/api/account/reset-password"),
         ("GET", "/api/session"),
         ("GET", "/api/system/health"),
+        ("GET", "/api/system/live"),  # ai: claude-opus-5-5 | 2026-11-06 -- platform probes
+        ("GET", "/api/system/ready"),
     }
 )
 
@@ -99,6 +101,9 @@ def _require_app_login() -> tuple[flask.Response, int] | None:
       registered (an enumeration oracle otherwise).
     - GET /api/session and GET /api/system/health are read-only status
       checks the login page itself needs before anyone is authenticated.
+    - GET /api/system/live and /api/system/ready are the container platform's
+      probes, which carry no session; they report up/down only, nothing about
+      any account.
     This deliberately excludes the existing Google OAuth routes
     (/api/auth/*): granting Gmail access should only be reachable once
     already logged into the app, not a second anonymous entry point.

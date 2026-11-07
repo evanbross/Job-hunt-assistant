@@ -45,7 +45,7 @@ def test_insert_get_update_delete_round_trip(pg_dsn: str) -> None:
     try:
         user_id = _make_user_id(conn)
         repo = PostgresJdHealthCheckTargetRepository(conn)
-        seeded_count = len(repo.get_all(user_id))  # 4 canary rows from _seed_data
+        seeded_count = len(repo.get_all(user_id))  # 4 canary rows from seed_data
 
         target_id = repo.insert(user_id, _target_row())
         conn.commit()

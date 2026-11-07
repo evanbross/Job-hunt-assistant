@@ -142,7 +142,7 @@ from .repositories.title_rules import PostgresTitleRuleRepository
 from .repositories.user_accounts import PostgresUserAccountRepository
 from .repositories.user_settings import PostgresUserSettingsRepository
 from .row_level_security import arm_row_level_security, release_owner_from_rls
-from .schema import _create_tables, _migrate, _seed_data
+from .schema import create_tables, migrate_schema, seed_data
 from .schema_version import (
     SchemaOutOfDateError,
     assert_schema_is_current,
@@ -281,11 +281,11 @@ def migrate_database(owner_dsn: str, app_dsn: str) -> None:
         )
     conn = get_connection(owner_dsn)
     try:
-        _create_tables(conn)
+        create_tables(conn)
         create_schema_state_table(conn)
         release_owner_from_rls(conn)  # databases migrated before 2026-11-06 FORCE'd it
-        _migrate(conn)
-        _seed_data(conn)
+        migrate_schema(conn)
+        seed_data(conn)
         arm_row_level_security(conn)
         ensure_app_role(conn, app_dsn)
         ensure_readonly_role(conn)  # ai: claude-sonnet-5 | 2026-08-03

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import ipaddress
+import re
 import socket
 import ssl
 import threading
@@ -175,8 +176,8 @@ def test_containers_run_without_extra_privileges(prod_compose: dict[str, Any]) -
 
 def test_every_secret_in_the_compose_file_is_a_required_variable() -> None:
     text = (DEPLOY / "docker-compose.prod.yml").read_text(encoding="utf-8")
-    for variable in ("APP_DOMAIN", "ACME_EMAIL", "REDIS_PASSWORD"):
-        assert f"${{{variable}:?" in text
+    for variable in ("APP_DOMAIN", "ACME_EMAIL", "REDIS_PASSWORD", "READONLY_DB_PASSWORD", "JHA_IMAGE"):
+        assert f"${{{variable}:?" in text, variable
 
 
 def test_the_production_caddyfile_disables_the_admin_api_and_sets_security_headers() -> None:
@@ -228,7 +229,8 @@ def test_only_migrate_and_maintenance_get_the_schema_owners_database_url(prod_co
 
 
 def test_the_app_serves_through_gunicorn(prod_compose: dict[str, Any]) -> None:
-    assert prod_compose["services"]["app"]["command"] == ["gunicorn", "-c", "gunicorn.conf.py", "wsgi:app"]
+    assert prod_compose["services"]["app"]["command"] == ["web"]  # ai: claude-opus-5-5 | 2026-11-06
+    assert _entrypoint_command("web") == "exec gunicorn -c gunicorn.conf.py \"$@\" wsgi:app"
 
 
 # ai: claude-opus-5-5 | 2026-11-06
@@ -241,7 +243,8 @@ def test_the_extension_endpoints_reach_the_standalone_listener(prod_compose: dic
     assert "app:8765" not in caddyfile and "app:8766" not in caddyfile
 
     listener = prod_compose["services"]["listener"]
-    assert listener["command"] == ["python", "-m", "web.extension_listener"]
+    assert listener["command"] == ["listener"]  # ai: claude-opus-5-5 | 2026-11-06
+    assert _entrypoint_command("listener") == "exec python -m web.extension_listener \"$@\""
     assert "edge" in listener["networks"]
     environment = listener["environment"]
     assert environment["TRUSTED_PROXIES"] == prod_compose["services"]["app"]["environment"]["TRUSTED_PROXIES"]
@@ -250,8 +253,22 @@ def test_the_extension_endpoints_reach_the_standalone_listener(prod_compose: dic
     assert "JOB_IMPORT_LISTENER_HOST_OVERRIDE" not in prod_compose["services"]["app"]["environment"]
 
 
+# ai: claude-opus-5-5 | 2026-11-06 -- the commands live in the image's entrypoint now
+ENTRYPOINT = DEPLOY / "docker-entrypoint.sh"
+
+
+def _entrypoint_command(role: str) -> str:
+    """What deploy/docker-entrypoint.sh runs for *role*, continuation lines joined."""
+    script = ENTRYPOINT.read_text(encoding="utf-8")
+    match = re.search(rf"^  {re.escape(role)}\)\n(.*?)\n    ;;", script, re.S | re.M)
+    assert match, f"no '{role}' process in {ENTRYPOINT.name}"
+    lines = [line for line in match.group(1).splitlines() if not line.strip().startswith("#")]
+    return " ".join(line.strip().rstrip("\\").strip() for line in lines)
+
+
 def _celery_queues(svc: dict[str, Any]) -> list[str]:
-    [option] = [arg for arg in svc["command"] if arg.startswith("--queues=")]
+    [role] = svc["command"]
+    [option] = [arg for arg in _entrypoint_command(role).split() if arg.startswith("--queues=")]
     return option.removeprefix("--queues=").split(",")
 
 
@@ -263,9 +280,77 @@ def test_scheduled_work_has_one_timer_and_the_sweep_stays_off_the_ordinary_worke
     queue, so the sweep -- which needs the owner's URL -- can only land on
     `maintenance`. Checked against the queue names celery_app.py actually uses."""
     services = prod_compose["services"]
-    beats = [name for name, svc in services.items() if "beat" in svc.get("command", [])]
+    beats = [name for name, svc in services.items() if svc.get("command") == ["beat"]]
     assert beats == ["beat"]
-    assert services["beat"]["command"][:4] == ["celery", "-A", "backend.celery_app", "beat"]
+    assert _entrypoint_command("beat").startswith("exec celery -A backend.celery_app beat ")
     assert services["beat"]["networks"] == ["backend"]  # Redis only
     assert _celery_queues(services["worker"]) == [DEFAULT_QUEUE]
     assert _celery_queues(services["maintenance"]) == [MAINTENANCE_QUEUE]
+
+
+# ─── the application image (docs/cloud-deployment-readiness-plan.md 1.7) ────────
+# ai: claude-opus-5-5 | 2026-11-06
+
+
+def _image_services(prod_compose: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        name: svc
+        for name, svc in prod_compose["services"].items()
+        if str(svc.get("image", "")).startswith("${JHA_IMAGE")
+    }
+
+
+def test_every_application_process_is_one_the_image_knows(prod_compose: dict[str, Any]) -> None:
+    services = _image_services(prod_compose)
+    assert set(services) == {"app", "listener", "migrate", "worker", "maintenance", "beat"}
+    for name, svc in services.items():
+        [role] = svc["command"]
+        assert _entrypoint_command(role).startswith("exec "), name
+
+
+def test_application_containers_have_a_read_only_filesystem(prod_compose: dict[str, Any]) -> None:
+    """Nothing in the image may be rewritten at runtime; scratch space is a tmpfs."""
+    for name, svc in _image_services(prod_compose).items():
+        assert svc["read_only"] is True, name
+        assert svc["tmpfs"] == ["/tmp"], name
+
+
+def test_long_running_application_processes_have_health_checks(prod_compose: dict[str, Any]) -> None:
+    services = _image_services(prod_compose)
+    assert "/api/system/ready" in " ".join(services["app"]["healthcheck"]["test"])
+    assert "8765/health" in " ".join(services["listener"]["healthcheck"]["test"])
+    for name in ("worker", "maintenance"):
+        assert "inspect ping" in " ".join(services[name]["healthcheck"]["test"]), name
+    caddy_waits_for = prod_compose["services"]["caddy"]["depends_on"]
+    assert caddy_waits_for == {
+        "app": {"condition": "service_healthy"},
+        "listener": {"condition": "service_healthy"},
+    }
+
+
+def test_the_image_runs_as_an_unprivileged_user() -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    [user] = re.findall(r"^USER (\S+)$", dockerfile, re.M)
+    assert not user.startswith(("0", "root"))
+    assert 'ENTRYPOINT ["/bin/sh", "/app/deploy/docker-entrypoint.sh"]' in dockerfile
+
+
+def test_the_build_context_is_an_allowlist() -> None:
+    """The repository directory holds personal data (credentials/, data/, uploads/,
+    exports): the build context excludes everything and lets back in only what runs."""
+    rules = [
+        line.strip()
+        for line in (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    assert rules[0] == "*"
+    allowed = {rule.removeprefix("!").rstrip("/") for rule in rules if rule.startswith("!")}
+    for private in ("credentials", "data", "uploads", ".env", "tmp", "dump.json"):
+        assert not any(entry == private or entry.startswith(f"{private}/") for entry in allowed), private
+
+
+def test_scripts_the_container_runs_keep_lf_line_endings() -> None:
+    """core.autocrlf would check them out with CRLF on Windows, which sh can't run."""
+    attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "deploy/docker-entrypoint.sh text eol=lf" in attributes
+    assert b"\r\n" not in ENTRYPOINT.read_bytes()

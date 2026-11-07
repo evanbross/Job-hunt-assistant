@@ -1,9 +1,10 @@
 # Production reference: reverse proxy + broker + app/worker, with the network split so
 # that only Caddy is reachable from outside and Redis is reachable from nothing but
 # the app and workers. See deploy/README.md before using; it lists what this does NOT
-# include (notably the application image).
+# include.
 #
-#   cp deploy/.env.production.example deploy/.env.production      # then fill it in
+#   docker build -t <registry>/job-hunt-assistant:<version> .     # the repo's Dockerfile
+#   cp deploy/.env.production.example deploy/.env.production      # then fill it in (JHA_IMAGE = that tag)
 #   cp deploy/.env.migrate.example deploy/.env.migrate            # the owner's DB URL
 #   python scripts/generate_redis_tls.py                          # once
 #   # every deploy: migrate first, then (re)start the app
@@ -42,9 +43,11 @@ services:
       edge:
         ipv4_address: 172.28.0.2   # fixed: the app trusts forwarding headers from this address only
       egress: {}
-    depends_on:
-      - app
-      - listener
+    depends_on:                  # ai: claude-opus-5-5 | 2026-11-06 -- only once they can serve
+      app:
+        condition: service_healthy
+      listener:
+        condition: service_healthy
 
   redis:
     image: redis:7-alpine
@@ -85,18 +88,21 @@ services:
     security_opt: ["no-new-privileges:true"]
     networks: [backend]                # internal-only: no published port, no internet route
 
-  # The application image is not part of this repository yet -- see deploy/README.md.
-  # Everything below is what it must be given.
+  # ai: claude-opus-5-5 | 2026-11-06
+  # Every service below runs the image built from the repository's Dockerfile; the
+  # command names which process (deploy/docker-entrypoint.sh).
   app:
-    image: ${JHA_IMAGE:-jha-app:unset}
+    image: ${JHA_IMAGE:?set JHA_IMAGE, the tag the Dockerfile was built as}
     restart: unless-stopped
     # wsgi.py refuses to start until `migrate` (below) has run for this image's version.
     # Capacity is GUNICORN_WORKERS x GUNICORN_THREADS connections; see gunicorn.conf.py.
-    command: ["gunicorn", "-c", "gunicorn.conf.py", "wsgi:app"]
+    command: ["web"]
     env_file: .env.production
     environment:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
       REDIS_TLS_CA_FILE: /tls/ca.crt
+      # The voice-query role's password: the value migrate set (backend/db/readonly_role.py).
+      READONLY_DB_PASSWORD: ${READONLY_DB_PASSWORD:?set READONLY_DB_PASSWORD}
       # gunicorn.conf.py binds 0.0.0.0:5004 inside the container network; Caddy is the
       # only thing that reaches it.
       APP_ENV: production
@@ -105,9 +111,19 @@ services:
       TRUSTED_PROXIES: 172.28.0.2
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
+    read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
+    tmpfs: [/tmp]
+    init: true                         # reaps child processes (Chromium's, in the worker)
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [edge, backend, egress]  # egress: Postgres, the AI providers, Gmail
+    # Readiness: the database and Redis both answer (routes/system.py). Caddy waits for it.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5004/api/system/ready', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     depends_on:
       redis:
         condition: service_healthy
@@ -117,9 +133,9 @@ services:
   # never drops them and only one process binds the ports. It refuses to start on a
   # port other than the configured ones, since Caddy's upstreams below are fixed.
   listener:
-    image: ${JHA_IMAGE:-jha-app:unset}
+    image: ${JHA_IMAGE:?set JHA_IMAGE}
     restart: unless-stopped
-    command: ["python", "-m", "web.extension_listener"]
+    command: ["listener"]
     env_file: .env.production
     environment:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
@@ -132,9 +148,18 @@ services:
       TRUSTED_PROXIES: 172.28.0.2      # same rule as the app: only Caddy may forward
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
+    read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
+    tmpfs: [/tmp]
+    init: true                         # reaps child processes (Chromium's, in the worker)
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [edge, backend, egress]  # edge: Caddy; backend: Redis/Celery; egress: Postgres
+    healthcheck:                       # its unauthenticated /health (import_listener.py)
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     depends_on:
       redis:
         condition: service_healthy
@@ -144,24 +169,29 @@ services:
   # (.env.migrate); app, listener and worker serve as the runtime role in DATABASE_URL,
   # which RLS always applies to.
   migrate:
-    image: ${JHA_IMAGE:-jha-app:unset}
+    image: ${JHA_IMAGE:?set JHA_IMAGE}
     profiles: ["migrate"]
     restart: "no"
-    command: ["python", "-m", "backend.db.migrate"]
+    command: ["migrate"]
     env_file:
       - .env.production
       - .env.migrate
     environment:
       APP_ENV: production
+      # Sets the voice-query role's password to this; the app connects with the same value.
+      READONLY_DB_PASSWORD: ${READONLY_DB_PASSWORD:?set READONLY_DB_PASSWORD}
+    read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
+    tmpfs: [/tmp]
+    init: true                         # reaps child processes (Chromium's, in the worker)
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [egress]                 # Postgres only
 
   # Every background task except the maintenance sweep (default queue only).
   worker:
-    image: ${JHA_IMAGE:-jha-app:unset}
+    image: ${JHA_IMAGE:?set JHA_IMAGE}
     restart: unless-stopped
-    command: ["celery", "-A", "backend.celery_app", "worker", "--queues=celery", "--pool=threads", "--concurrency=4", "--loglevel=info"]
+    command: ["worker"]                # CELERY_CONCURRENCY threads, default 4
     env_file: .env.production
     environment:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
@@ -169,9 +199,19 @@ services:
       APP_ENV: production
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
+    read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
+    tmpfs: [/tmp]
+    init: true                         # reaps child processes (Chromium's, in the worker)
+    shm_size: 512m                     # headless Chromium's shared memory (Greenhouse search)
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [backend, egress]        # not reachable from the internet at all
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.celery_app inspect ping --destination celery@$$HOSTNAME --timeout 10 > /dev/null"]
+      interval: 60s
+      timeout: 20s
+      start_period: 30s
+      retries: 3
     depends_on:
       redis:
         condition: service_healthy
@@ -180,9 +220,9 @@ services:
   # needs the schema owner's URL. A worker of its own so that credential sits in one
   # small process that runs nothing else, instead of in every task worker.
   maintenance:
-    image: ${JHA_IMAGE:-jha-app:unset}
+    image: ${JHA_IMAGE:?set JHA_IMAGE}
     restart: unless-stopped
-    command: ["celery", "-A", "backend.celery_app", "worker", "--queues=maintenance", "--pool=threads", "--concurrency=1", "--loglevel=info"]
+    command: ["maintenance"]
     env_file:
       - .env.production
       - .env.migrate
@@ -192,9 +232,18 @@ services:
       APP_ENV: production
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
+    read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
+    tmpfs: [/tmp]
+    init: true                         # reaps child processes (Chromium's, in the worker)
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [backend, egress]        # Redis; Postgres
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.celery_app inspect ping --destination celery@$$HOSTNAME --timeout 10 > /dev/null"]
+      interval: 60s
+      timeout: 20s
+      start_period: 30s
+      retries: 3
     depends_on:
       redis:
         condition: service_healthy
@@ -205,9 +254,9 @@ services:
   # due, but pointless). Its schedule state is scratch: on start it ticks everything
   # once anyway, so nothing is lost when the container is replaced.
   beat:
-    image: ${JHA_IMAGE:-jha-app:unset}
+    image: ${JHA_IMAGE:?set JHA_IMAGE}
     restart: unless-stopped
-    command: ["celery", "-A", "backend.celery_app", "beat", "--schedule=/tmp/celerybeat-schedule", "--loglevel=info"]
+    command: ["beat"]                  # schedule state on the tmpfs (docker-entrypoint.sh)
     env_file: .env.production
     environment:
       REDIS_URL: rediss://:${REDIS_PASSWORD}@redis:6379/0
@@ -215,6 +264,9 @@ services:
       APP_ENV: production
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
+    read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
+    tmpfs: [/tmp]
+    init: true                         # reaps child processes (Chromium's, in the worker)
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [backend]                # Redis only: it never touches the database

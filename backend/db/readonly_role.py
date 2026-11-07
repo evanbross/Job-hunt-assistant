@@ -21,6 +21,7 @@ from typing import Any
 
 import psycopg2
 from psycopg2 import sql
+from psycopg2.extensions import make_dsn
 
 import config
 
@@ -41,12 +42,18 @@ READONLY_TABLES: tuple[str, ...] = (
 _READONLY_PASSWORD_FILE = config.DATA_DIR / ".readonly_db_password"
 
 
+# ai: claude-opus-5-5 | 2026-11-06 -- READONLY_DB_PASSWORD first (plan 2.1)
 def get_or_create_readonly_password() -> str:
-    """Local secret for the jobhunt_readonly role, generated once and reused.
+    """The jobhunt_readonly role's password.
 
-    Mirrors how data/runtime_config.json already stores locally-generated
-    app state -- no manual setup step, nothing to put in .env.
+    A deployment gives it as READONLY_DB_PASSWORD, so the migrate step that sets it
+    and every app container that connects with it agree. (A container's own disk is
+    read-only and thrown away, so a generated file would differ per container.) The
+    desktop app, with neither, generates one into data/ once and reuses it -- no
+    manual setup step.
     """
+    if config.READONLY_DB_PASSWORD:
+        return config.READONLY_DB_PASSWORD
     if _READONLY_PASSWORD_FILE.exists():
         password = _READONLY_PASSWORD_FILE.read_text(encoding="utf-8").strip()
         if password:
@@ -57,21 +64,22 @@ def get_or_create_readonly_password() -> str:
     return password
 
 
+# ai: claude-opus-5-5 | 2026-11-06 -- derived from DATABASE_URL, not POSTGRES_* parts
 def get_readonly_database_url() -> str:
-    """DSN for the voice-query feature: same host/port/db/sslmode as
-    config.DATABASE_URL, but the SELECT-only jobhunt_readonly role."""
-    password = get_or_create_readonly_password()
-    return (
-        f"postgresql://{READONLY_ROLE_NAME}:{password}@"
-        f"{config.POSTGRES_HOST}:{config.POSTGRES_PORT}/{config.POSTGRES_DB}"
-        f"?sslmode={config.POSTGRES_SSLMODE}"
+    """DSN for the voice-query feature: the database config.DATABASE_URL serves from
+    (host, port, name, sslmode), as the SELECT-only jobhunt_readonly role.
+
+    Derived from DATABASE_URL rather than the POSTGRES_HOST/... parts because a
+    deployment gives DATABASE_URL whole and leaves the parts empty."""
+    return make_dsn(
+        config.DATABASE_URL, user=READONLY_ROLE_NAME, password=get_or_create_readonly_password()
     )
 
 
 def ensure_readonly_role(conn: Any) -> None:
     """Idempotently create/update the jobhunt_readonly role and grant it
     SELECT on exactly READONLY_TABLES. Runs once at startup with the app's
-    normal privileged connection, alongside _create_tables/_migrate/_seed_data.
+    normal privileged connection, alongside create_tables/migrate_schema/seed_data.
 
     Role/table names are fixed constants, never user input -- built via
     sql.Identifier, matching this project's SQL-identifier-allowlisting
@@ -93,9 +101,12 @@ def ensure_readonly_role(conn: Any) -> None:
             ),
             (password,),
         )
+        # ai: claude-opus-5-5 | 2026-11-06 -- the database migrate is connected to;
+        # POSTGRES_DB is empty when the deployment gives whole URLs.
+        cur.execute("SELECT current_database() AS name")
         cur.execute(
             sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
-                sql.Identifier(config.POSTGRES_DB), role
+                sql.Identifier(cur.fetchone()["name"]), role
             )
         )
         cur.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(role))

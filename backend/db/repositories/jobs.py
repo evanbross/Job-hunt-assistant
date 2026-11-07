@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 # ai: claude-sonnet-5 | 2026-08-12
 # Name of the partial unique index enforcing jobs.url uniqueness (per user,
-# for non-empty URLs) — created in backend/db/schema.py's _migrate(). Shared
+# for non-empty URLs) — created in backend/db/schema.py's migrate_schema(). Shared
 # here (rather than duplicated as a string literal in both files) so insert()
 # can tell a violation of *this* index apart from the jobs table's other
 # UNIQUE constraint (jobs_user_dedup_key_key, on (user_id, dedup_key)) — a
@@ -111,7 +111,7 @@ class DuplicateJobUrlError(Exception):
 
 # ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
 # user_id parameter (multi-tenancy migration; see backend/db/schema.py's
-# _migrate() for the user_id columns/constraints this scopes against).
+# migrate_schema() for the user_id columns/constraints this scopes against).
 class PostgresJobRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = JobColumns.all()
 

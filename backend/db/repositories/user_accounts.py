@@ -42,7 +42,7 @@ from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
 # ai: claude-sonnet-5 | 2026-08-20
-# Sentinel email for the placeholder account backend/db/schema.py's _migrate()
+# Sentinel email for the placeholder account backend/db/schema.py's migrate_schema()
 # creates when pre-existing data (seed rows, or jobs tracked before the login
 # gate existed) needs somewhere to attach before any real account exists.
 # create_account() claims (updates in place) this row on the first real
@@ -51,7 +51,7 @@ from ..connection import _row_to_dict
 PLACEHOLDER_ACCOUNT_EMAIL = "unclaimed@localhost"
 
 # ai: claude-sonnet-5 | 2026-08-27
-# Seeded on a genuinely fresh install (see backend/db/schema.py's _migrate) as
+# Seeded on a genuinely fresh install (see backend/db/schema.py's migrate_schema) as
 # the very first user_accounts row, with must_complete_setup=TRUE and role
 # 'admin' -- a known, documented bootstrap credential so the first login
 # never depends on SMTP being configured yet (unlike open registration via

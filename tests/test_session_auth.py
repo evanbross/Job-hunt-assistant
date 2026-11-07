@@ -411,7 +411,7 @@ def test_get_account_returns_name_and_email(client) -> None:
     assert resp.status_code == 200
     # ai: claude-sonnet-5 | 2026-08-21 -- role added: this account is seeded
     # via create_pending (a normal registration insert), not the placeholder
-    # row _migrate() promotes to admin, so it's a plain 'user'.
+    # row migrate_schema() promotes to admin, so it's a plain 'user'.
     assert resp.get_json() == {
         "name": None,
         "email": _TEST_EMAIL,

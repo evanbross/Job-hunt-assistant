@@ -432,14 +432,14 @@ def test_migrating_never_switches_rls_off_for_the_runtime_role(
             cur.execute("SELECT dedup_key FROM jobs")
             seen.append({r["dedup_key"] for r in cur.fetchall()})
 
-        real_migrate = backend_db._migrate
+        real_migrate = backend_db.migrate_schema
 
         def migrate_and_look(conn: object) -> None:
             look()  # mid-migration: release_owner_from_rls() has already run
             real_migrate(conn)
             look()
 
-        monkeypatch.setattr(backend_db, "_migrate", migrate_and_look)
+        monkeypatch.setattr(backend_db, "migrate_schema", migrate_and_look)
         migrate_database(pg_dsn, runtime_database_url(pg_dsn))
         look()
     finally:

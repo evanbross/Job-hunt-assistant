@@ -35,7 +35,7 @@ from ..connection import _row_to_dict
 
 # ai: claude-sonnet-5 | 2026-08-20 — every method below gained a leading
 # user_id parameter (multi-tenancy migration; see backend/db/schema.py's
-# _migrate() for the user_id column this scopes against). PostgresApplicationStageStatusRepository
+# migrate_schema() for the user_id column this scopes against). PostgresApplicationStageStatusRepository
 # below is untouched — application_stage_statuses is global reference data, not per-user.
 class PostgresApplicationStageRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(

@@ -36,7 +36,7 @@ from ..connection import _row_to_dict
 
 # ai: claude-sonnet-5 | 2026-08-21 — every method below gained a leading
 # user_id parameter (multi-tenancy migration; see backend/db/schema.py's
-# _migrate() for the user_id column this scopes against).
+# migrate_schema() for the user_id column this scopes against).
 class PostgresCareerSiteSourceRepository(_BaseRepo):
     _ALLOWED_COLUMNS: frozenset[str] = frozenset(
         {

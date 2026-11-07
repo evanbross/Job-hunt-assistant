@@ -36,6 +36,7 @@ Key files:
 - `backend/active_tasks.py` — which background run each account last started, in Redis, so web and Celery processes never start a second one
 - `backend/task_progress.py` — a per-account run's progress as Celery task meta, and the status payload every run's status route returns
 - `wsgi.py` + `gunicorn.conf.py` — hosted web server entry point (never migrates); `python -m backend.db.migrate` is the deploy-time migration step
+- `Dockerfile` + `deploy/docker-entrypoint.sh` — the one application image; the entrypoint's first argument picks the process (web/listener/worker/maintenance/beat/migrate). `.dockerignore` is an allowlist: list any new runtime file there
 - `web/extension_listener.py` — the browser extension's HTTP listener + WebSocket; `python -m web.extension_listener` runs them as their own process in a hosted deployment (the desktop runs them inside `app.py`). Import progress is shared through Redis (`backend/scanning/import_progress.py`)
 - `backend/db/app_role.py` — two DB roles: the owner (`DATABASE_OWNER_URL`, migrations/maintenance, RLS-exempt) and the runtime role the app serves as (`DATABASE_URL`, RLS always applies)
 - `web/factory.py` — `create_app()`, the side-effect-free Flask app factory (blueprints, guards, error handlers, API docs); `web/serving.py` holds the secrets/cookie/proxy setup a serving process adds

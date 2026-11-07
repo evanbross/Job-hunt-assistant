@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 
 # (key, label, sort_order, ghost_eligible, is_terminal)
 # ai: claude-opus-5-5 | 2026-10-27 -- eval_1..3 replaced by interview_1..4 and
-# code_eval (see _RENAMED_STAGE_STATUSES); sort orders spaced by 10. _seed_data()
+# code_eval (see _RENAMED_STAGE_STATUSES); sort orders spaced by 10. seed_data()
 # now upserts these, so this list is authoritative for every key it names.
 _SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
     ("applied", "Applied", 10, True, False),
@@ -211,7 +211,7 @@ def _check_constraint_allows(cur: Any, table: str, constraint_name: str, value: 
 
 
 # ai: claude-sonnet-5 | 2026-08-20
-# Tables that get a plain `user_id` FK + backfill + index in _migrate() below.
+# Tables that get a plain `user_id` FK + backfill + index in migrate_schema() below.
 # Excludes tables needing bespoke handling because a *bare* ADD COLUMN isn't
 # enough to make them correctly per-user: user_settings, application_profile,
 # and scanned_emails each have a natural-key PRIMARY KEY (not a surrogate id)
@@ -516,7 +516,7 @@ def _seed_settings_from_env(cur: Any, admin_user_id: int) -> None:
             )
 
 
-def _migrate(conn: Any) -> None:
+def migrate_schema(conn: Any) -> None:
     """Apply incremental schema changes (ADD COLUMN IF NOT EXISTS is idempotent)."""
     cur = conn.cursor()
 
@@ -987,7 +987,7 @@ def _migrate(conn: Any) -> None:
 
     # A completely empty user_accounts is possible here even when other tables
     # already have rows: seed data (default email_sources/penalty_rules/etc.,
-    # see _seed_data() below) and any pre-existing single-tenant data (jobs
+    # see seed_data() below) and any pre-existing single-tenant data (jobs
     # tracked before this login gate existed) both predate any account ever
     # being created. Give them a row to attach to via the backfill below.
     #
@@ -1105,7 +1105,7 @@ def _migrate(conn: Any) -> None:
         cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_user_id ON {table} (user_id)")
     conn.commit()
 
-    # ai: claude-sonnet-5 | 2026-10-08 -- moved out of _create_tables(), which runs
+    # ai: claude-sonnet-5 | 2026-10-08 -- moved out of create_tables(), which runs
     # before this retrofit loop: on a brand-new database jobs.user_id doesn't exist
     # yet at that point, so this index creation raised psycopg2.errors.UndefinedColumn
     # on every from-scratch bootstrap (e.g. CI's throwaway Postgres). A long-lived
@@ -1116,6 +1116,20 @@ def _migrate(conn: Any) -> None:
     # user_id alone -- non-selective on a single-user instance, so queue/triage
     # fetches fell back to a full sequential scan.
     cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_status ON jobs (user_id, status)")
+    # ai: claude-sonnet-5 | 2026-10-16 -- get_page_by_statuses() (the
+    # application-history list) filters on (user_id, status) and sorts by
+    # (date_found DESC, id DESC); idx_jobs_user_status covers the filter
+    # but not the sort, so Postgres still reads every matching row into a
+    # heapsort on every page. This index lets it walk straight to each
+    # page in already-sorted order instead -- a bigger win as the jobs
+    # table grows past the few thousand rows it's at today.
+    # ai: claude-opus-5-5 | 2026-11-06 -- moved here from create_tables(), for the
+    # reason the comment above gives: there it broke every from-scratch migrate
+    # (found by the first container deploy; tests/test_fresh_database_migrate.py).
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_user_status_date_id"
+        " ON jobs (user_id, status, date_found DESC, id DESC)"
+    )
     conn.commit()
 
     # ai: claude-sonnet-5 | 2026-10-05
@@ -1693,7 +1707,7 @@ def _rename_application_stage_statuses(conn: Any) -> None:
     The catalog row is renamed in place when the new key doesn't exist yet, so
     it keeps its colors and (via the foreign key's ON UPDATE CASCADE) carries
     application_stages along; otherwise the stages are moved explicitly and the
-    old row deleted. Labels and sort orders are then set by _seed_data().
+    old row deleted. Labels and sort orders are then set by seed_data().
     jobs.status and job_status_history aren't tied to the catalog by a foreign
     key, so they're updated directly.
     """
@@ -1730,7 +1744,7 @@ def _rename_application_stage_statuses(conn: Any) -> None:
 # ai: claude-sonnet-5 | 2026-08-26
 def _normalize_and_backfill_application_stage_statuses(conn: Any) -> None:
     """Bring every application_stages.status value in line with the
-    application_stage_statuses catalog before _migrate() can safely add the
+    application_stage_statuses catalog before migrate_schema() can safely add the
     foreign key constraint tying them together.
 
     Existing installs may carry legacy free-text labels imported from the old
@@ -1777,12 +1791,12 @@ def _normalize_and_backfill_application_stage_statuses(conn: Any) -> None:
         conn.commit()
 
 
-def _create_tables(conn: Any) -> None:
+def create_tables(conn: Any) -> None:
     cur = conn.cursor()
 
     # ai: claude-sonnet-5 | 2026-08-26
     # app_settings renamed to user_settings: it's per-user (composite
-    # (user_id, key) PK, set up in _migrate() below), and the old name read
+    # (user_id, key) PK, set up in migrate_schema() below), and the old name read
     # as instance-wide, easily confused with system_settings. Must run before
     # the CREATE TABLE IF NOT EXISTS loop below, which would otherwise create
     # an empty user_settings table alongside the old, still-populated
@@ -1801,7 +1815,7 @@ def _create_tables(conn: Any) -> None:
     # tables elsewhere in this schema (application_profile, application_answers,
     # application_stages). Table renames don't carry dependent constraint/
     # sequence names along in Postgres, so those are renamed explicitly here
-    # too, to the names _migrate() below and a fresh install both now expect.
+    # too, to the names migrate_schema() below and a fresh install both now expect.
     if _has_table(cur, "app_account") and not _has_table(cur, "user_accounts"):
         cur.execute("ALTER TABLE app_account RENAME TO user_accounts")
         for old_name, new_name in [
@@ -2266,7 +2280,7 @@ def _create_tables(conn: Any) -> None:
         # response_received_at are UTC ISO 8601 timestamps
         # ('2026-09-25T18:30:00+00:00'); the frontend converts to/from local time.
         # ai: claude-opus-5-5 | 2026-10-14 -- was contact_emails; channel column
-        # added in _migrate() (see the contact_outreach.channel block there).
+        # added in migrate_schema() (see the contact_outreach.channel block there).
         """
         CREATE TABLE IF NOT EXISTS contact_outreach (
             id                    SERIAL PRIMARY KEY,
@@ -2311,7 +2325,7 @@ def _create_tables(conn: Any) -> None:
         # Named LinkedIn outreach templates, one per kind of contact (close
         # coworkers, recruiters, ...). Replaces the single
         # linkedin_outreach_template user setting -- see the copy-over in
-        # _migrate(). The UNIQUE constraint name is referenced by
+        # migrate_schema(). The UNIQUE constraint name is referenced by
         # backend/db/repositories/outreach_templates.py.
         """
         CREATE TABLE IF NOT EXISTS outreach_templates (
@@ -2414,28 +2428,17 @@ def _create_tables(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_audit_log_user_created
             ON audit_log (user_id, created_at DESC)
         """,
-        # ai: claude-sonnet-5 | 2026-10-16 -- get_page_by_statuses() (the
-        # application-history list) filters on (user_id, status) and sorts by
-        # (date_found DESC, id DESC); idx_jobs_user_status covers the filter
-        # but not the sort, so Postgres still reads every matching row into a
-        # heapsort on every page. This index lets it walk straight to each
-        # page in already-sorted order instead -- a bigger win as the jobs
-        # table grows past the few thousand rows it's at today.
-        """
-        CREATE INDEX IF NOT EXISTS idx_jobs_user_status_date_id
-            ON jobs (user_id, status, date_found DESC, id DESC)
-        """,
     ]:
         cur.execute(stmt)
     conn.commit()
 
 
-def _seed_data(conn: Any) -> None:
+def seed_data(conn: Any) -> None:
     cur = conn.cursor()
 
     # ai: claude-sonnet-5 | 2026-08-20
     # email_sources/penalty_rules/ack_patterns/jd_health_check_targets are now
-    # per-user tables, so their seed rows need a user_id. _migrate() (which
+    # per-user tables, so their seed rows need a user_id. migrate_schema() (which
     # always runs before this) guarantees at least one user_accounts row exists
     # by this point — reuse whichever account it backfilled onto.
     # KNOWN GAP: this only seeds defaults once per table (guarded by "table is

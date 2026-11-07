@@ -545,7 +545,7 @@ def test_notes_survive_reimport_and_protect_contact_from_pruning(pg_dsn: str) ->
 
 # ai: claude-sonnet-5 | 2026-10-13
 # Exercises the real one-time migration path in backend/db/schema.py's
-# _migrate(): a row written back when interested was NOT NULL DEFAULT FALSE
+# migrate_schema(): a row written back when interested was NOT NULL DEFAULT FALSE
 # (simulated here by reverting the column, since pg_dsn's own migrate_database() has
 # already migrated it) must get backfilled to NULL (undecided) the next time
 # migrate_database() runs -- and a second migrate_database() run afterward must leave an

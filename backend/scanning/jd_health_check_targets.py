@@ -31,7 +31,7 @@ Canary URLs for the JD parser health check.
 Pure data, no project imports (so it fits cleanly at the bottom of the import
 graph — see PYTHON_STANDARDS.md's "New Shared Helpers Must Fit the Existing
 Import Graph"). This is the single source of truth for "what we check",
-shared by backend/db/schema.py's _seed_data() (initial DB seed for the
+shared by backend/db/schema.py's seed_data() (initial DB seed for the
 jd_health_check_targets table, editable afterward via Settings) and the
 opt-in live suite in tests/live/test_live_job_board_parsers.py.
 
