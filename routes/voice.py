@@ -137,7 +137,7 @@ def _handle_sql_query(sql: str) -> ResponseReturnValue:
         return jsonify({"intent": "sql_query", "sql": sql, "error": str(exc)}), 422
 
     try:
-        columns, rows, truncated = _execute_readonly(validated_sql, current_user_id())
+        columns, rows, truncated = execute_readonly(validated_sql, current_user_id())
     except psycopg2.Error as exc:
         logger.warning("Voice query SQL execution failed: %s", exc, exc_info=True)
         return jsonify(
@@ -161,7 +161,8 @@ def _handle_sql_query(sql: str) -> ResponseReturnValue:
     )
 
 
-def _execute_readonly(sql: str, user_id: int) -> tuple[list[str], list[dict], bool]:
+# ai: claude-opus-5-5 | 2026-11-07 -- public (was _execute_readonly): the RLS tests drive it directly
+def execute_readonly(sql: str, user_id: int) -> tuple[list[str], list[dict], bool]:
     """Runs `sql` (already validated by backend.sql_guard) against the
     SELECT-only jobhunt_readonly role, in its own short-lived connection --
     not the pooled/shared connection get_repos() uses. SET TRANSACTION READ

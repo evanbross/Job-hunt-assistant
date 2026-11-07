@@ -359,12 +359,29 @@ Original notes:
 - Server-side scraping also means **all users' traffic comes from one IP** — expect
   rate limiting/blocks from job boards much sooner than on a desktop.
 
-### 2.6 Voice query tenant isolation — verify
-`routes/voice.py` runs LLM-generated SQL as the read-only role with
-`app.current_user_id` set via `set_config`. Confirm `backend/sql_guard.py` rejects
-function calls like `set_config(...)` / `current_setting(...)` and `SET` statements,
-so generated SQL can't switch the GUC to another user's id. Add a contract test
-against real Postgres that tries it.
+### 2.6 Voice query tenant isolation — done 2026-11-07 (verified, no code fix needed)
+`backend/sql_guard.py` already rejects every way generated SQL could switch
+`app.current_user_id` to another account:
+- `set_config` / `current_setting` are not functions sqlglot recognizes, so they parse
+  as `exp.Anonymous` and `_validate_functions` rejects them in any clause and any
+  spelling (schema-qualified, quoted, upper case).
+- `SET` / `RESET` / `SET ROLE` / `DISCARD` / `DO` fail the root-must-be-SELECT check;
+  stacked statements fail the single-statement check.
+
+The guard is the **only** layer that stops this. The read-only role and the
+`READ ONLY` transaction both still allow `set_config()`, and on Neon `EXECUTE` on a
+`pg_catalog` function can't be revoked from one role. The tests pin both halves:
+- `tests/identity_switch_sql.py`: the attack shapes, shared by the two test files below.
+- `tests/test_sql_guard.py`: each one is rejected, so a sqlglot upgrade that starts
+  recognizing `set_config` fails loudly.
+- `tests/test_row_level_security.py`: against real Postgres, (a) the payload *does*
+  read another account's rows if it reaches `execute_readonly()` unvalidated, and (b)
+  every shape sent through `POST /api/voice/query` gets a 422 with none of the other
+  account's data. Checked that (b) fails with the guard disabled.
+
+Original item: confirm `backend/sql_guard.py` rejects `set_config(...)` /
+`current_setting(...)` and `SET` statements, and add a contract test against real
+Postgres that tries it.
 
 ### 2.7 Desktop-only config defaults
 - `GOOGLE_OAUTH_REDIRECT_URI`, `APP_BASE_URL`, listener URLs must all be derived from

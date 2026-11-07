@@ -23,6 +23,8 @@ import psycopg2
 import psycopg2.extras
 import pytest
 from flask import Flask
+from flask.testing import FlaskClient
+from werkzeug.security import generate_password_hash
 
 import backend.db as backend_db
 import config
@@ -30,8 +32,9 @@ from backend.db import AppRoleConfigError, migrate_database
 from backend.db.app_role import assert_subject_to_rls
 from backend.db.row_level_security import set_current_user, tenant_tables
 from backend.utils.utils import DatabaseUnavailableError, get_repos
-from routes.voice import _execute_readonly
+from routes.voice import execute_readonly
 from tests.db_roles import runtime_database_url
+from tests.identity_switch_sql import IDENTITY_SWITCH_SQL
 
 # ai: claude-sonnet-5 | 2026-09-27
 
@@ -547,7 +550,7 @@ def test_execute_readonly_scopes_an_unfiltered_generated_query(pg_dsn: str) -> N
     _seed_job(pg_dsn, user_a, "a-job")
     _seed_job(pg_dsn, user_b, "b-job")
 
-    columns, rows, _truncated = _execute_readonly(
+    columns, rows, _truncated = execute_readonly(
         "SELECT dedup_key FROM jobs ORDER BY dedup_key", user_a
     )
 
@@ -555,14 +558,13 @@ def test_execute_readonly_scopes_an_unfiltered_generated_query(pg_dsn: str) -> N
     assert [r["dedup_key"] for r in rows] == ["a-job"]
 
 
-def test_voice_query_endpoint_never_returns_another_accounts_jobs(
-    pg_dsn: str, flask_app: Flask, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """End to end through POST /api/voice/query, with intent classification stubbed
-    (it calls an AI provider) to return SQL a real LLM would plausibly generate --
-    unfiltered, because it was never told a user_id column exists."""
-    from werkzeug.security import generate_password_hash
+_VOICE_PASSWORD = "correct horse battery staple"
 
+
+# ai: claude-opus-5-5 | 2026-11-07
+def _voice_accounts(pg_dsn: str, flask_app: Flask) -> tuple[FlaskClient, int]:
+    """Account A (logged in on the returned test client) and account B, one job each.
+    Returns (client, B's user id)."""
     conn = _raw_connection(pg_dsn)
     conn.autocommit = True
     try:
@@ -570,7 +572,7 @@ def test_voice_query_endpoint_never_returns_another_accounts_jobs(
         cur.execute(
             "INSERT INTO user_accounts (email, password_hash, role)"
             " VALUES ('voice-a@example.com', %s, 'user') RETURNING id",
-            (generate_password_hash("correct horse battery staple"),),
+            (generate_password_hash(_VOICE_PASSWORD),),
         )
         user_a = int(cur.fetchone()["id"])
         cur.execute(
@@ -583,22 +585,76 @@ def test_voice_query_endpoint_never_returns_another_accounts_jobs(
     _seed_job(pg_dsn, user_a, "a-job")
     _seed_job(pg_dsn, user_b, "b-job")
 
+    client = flask_app.test_client()
+    login = client.post("/api/login", json={"email": "voice-a@example.com", "password": _VOICE_PASSWORD})
+    assert login.status_code == 200, login.get_json()
+    return client, user_b
+
+
+def test_voice_query_endpoint_never_returns_another_accounts_jobs(
+    pg_dsn: str, flask_app: Flask, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end through POST /api/voice/query, with intent classification stubbed
+    (it calls an AI provider) to return SQL a real LLM would plausibly generate --
+    unfiltered, because it was never told a user_id column exists."""
+    client, _user_b = _voice_accounts(pg_dsn, flask_app)
     # "url" (not "dedup_key" -- backend/sql_guard.py's ALLOWED_COLUMNS is narrower than
     # the real schema, and this goes through that validator, unlike the direct
-    # _execute_readonly() call in the test above).
+    # execute_readonly() call in the test above).
     monkeypatch.setattr(
         "routes.voice.classify",
         lambda text, user_id: {"type": "sql_query", "sql": "SELECT url FROM jobs"},
     )
-
-    client = flask_app.test_client()
-    login = client.post(
-        "/api/login", json={"email": "voice-a@example.com", "password": "correct horse battery staple"}
-    )
-    assert login.status_code == 200, login.get_json()
 
     resp = client.post("/api/voice/query", json={"text": "list my jobs"})
 
     assert resp.status_code == 200, resp.get_json()
     rows = resp.get_json()["rows"]
     assert [r["url"] for r in rows] == ["https://example.com/a-job"]
+
+
+# ─── generated SQL that switches the RLS identity itself (cloud plan 2.6) ───────
+
+
+# ai: claude-opus-5-5 | 2026-11-07
+def test_switching_the_identity_works_if_the_sql_reaches_the_database(pg_dsn: str) -> None:
+    """Why the guard matters: neither the read-only role nor the READ ONLY transaction
+    stops set_config(), so SQL that reached execute_readonly() unvalidated WOULD read
+    another account's rows. This pins that down, so the endpoint test below is a real
+    test of the guard rather than of an attack that couldn't work anyway. If this
+    starts failing because a database-level layer now blocks it, that's good news:
+    update it to assert the block, and the guard becomes defense in depth."""
+    user_a, user_b = _two_users(pg_dsn)
+    _seed_job(pg_dsn, user_a, "a-job")
+    _seed_job(pg_dsn, user_b, "b-job")
+
+    _columns, rows, _truncated = execute_readonly(
+        f"SELECT set_config('app.current_user_id', '{user_b}', false);"
+        " SELECT dedup_key FROM jobs",
+        user_a,
+    )
+
+    assert [r["dedup_key"] for r in rows] == ["b-job"]
+
+
+# ai: claude-opus-5-5 | 2026-11-07
+@pytest.mark.parametrize("sql_template", IDENTITY_SWITCH_SQL)
+def test_voice_query_endpoint_rejects_sql_that_switches_identity(
+    pg_dsn: str, flask_app: Flask, monkeypatch: pytest.MonkeyPatch, sql_template: str
+) -> None:
+    """A model told (by a prompt-injected job description, say) to read another
+    account's jobs: the SQL never reaches the database, and nothing of B's comes back."""
+    client, user_b = _voice_accounts(pg_dsn, flask_app)
+    attack = sql_template.format(target=user_b)
+    monkeypatch.setattr(
+        "routes.voice.classify",
+        lambda text, user_id: {"type": "sql_query", "sql": attack},
+    )
+
+    resp = client.post("/api/voice/query", json={"text": "list my jobs"})
+
+    assert resp.status_code == 422, resp.get_json()
+    body = resp.get_json()
+    assert body["error"]
+    assert "rows" not in body
+    assert "b-job" not in resp.get_data(as_text=True)

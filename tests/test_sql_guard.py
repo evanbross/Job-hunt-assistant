@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from backend.sql_guard import MAX_ROW_LIMIT, SqlGuardError, validate_select
+from tests.identity_switch_sql import identity_switch_sql
 
 
 def test_simple_count_query_passes() -> None:
@@ -128,3 +129,13 @@ def test_empty_sql_is_rejected(sql: str) -> None:
 def test_unparseable_sql_is_rejected() -> None:
     with pytest.raises(SqlGuardError):
         validate_select("not sql at all ???")
+
+
+# ai: claude-opus-5-5 | 2026-11-07
+@pytest.mark.parametrize("sql", identity_switch_sql(target_user_id=2))
+def test_switching_the_row_level_security_identity_is_rejected(sql: str) -> None:
+    """The guard is the only layer that stops these (see tests/identity_switch_sql.py),
+    so a sqlglot upgrade that starts recognizing set_config() as a known function must
+    fail here, not quietly let it through _validate_functions()."""
+    with pytest.raises(SqlGuardError):
+        validate_select(sql)

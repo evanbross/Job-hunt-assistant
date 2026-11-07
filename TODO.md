@@ -267,4 +267,6 @@ Neon-backed install currently needs.
       2.1 read-only role password, 2.2 disk writes + APP_MODE, 2.3 profile file sync
       off when hosted, 2.4 Ollama SSRF, 2.5 (2026-11-07) no browser on the server:
       hosted Wellfound to the extension, server Greenhouse/Jobanni scans retired,
-      Chromium out of the image. Next: 2.6 voice query tenant isolation.
+      Chromium out of the image, 2.6 (2026-11-07) voice query can't switch the RLS
+      identity (guard verified + real-Postgres contract tests). Next: 2.7
+      desktop-only config defaults.
