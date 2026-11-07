@@ -48,7 +48,12 @@ from typing import Any
 
 import psycopg2
 
-from .app_role import AppRoleConfigError, assert_subject_to_rls, ensure_app_role
+from .app_role import (
+    AppRoleConfigError,
+    assert_subject_to_rls,
+    ensure_app_role,
+    require_app_dsn,
+)
 from .connection import get_connection
 from .interfaces import (
     IApplicationAnswerRepository,
@@ -279,6 +284,8 @@ def migrate_database(owner_dsn: str, app_dsn: str) -> None:
         raise AppRoleConfigError(
             "No owner database URL: set DATABASE_OWNER_URL (or POSTGRES_USER/POSTGRES_PASSWORD)."
         )
+    # ai: claude-opus-5-5 | 2026-11-06 -- before migrating, not after the work is done
+    require_app_dsn(app_dsn)
     conn = get_connection(owner_dsn)
     try:
         create_tables(conn)
@@ -299,10 +306,7 @@ def assert_ready_to_serve(app_dsn: str) -> None:
     """Refuse to serve unless the runtime role is subject to row-level security and the
     database was migrated by this version of the code. Raises AppRoleConfigError or
     SchemaOutOfDateError; a psycopg2.OperationalError means the database is unreachable."""
-    if not app_dsn:
-        raise AppRoleConfigError(
-            "No app database URL: set DATABASE_URL (or POSTGRES_APP_USER/POSTGRES_APP_PASSWORD)."
-        )
+    require_app_dsn(app_dsn)  # ai: claude-opus-5-5 | 2026-11-06
     conn = get_connection(app_dsn)
     try:
         assert_subject_to_rls(conn)

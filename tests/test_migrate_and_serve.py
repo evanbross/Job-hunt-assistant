@@ -25,6 +25,7 @@ from backend.db import (
     AppRoleConfigError,
     SchemaOutOfDateError,
     assert_ready_to_serve,
+    migrate_database,
 )
 from backend.db import migrate as migrate_command
 from backend.db.schema_version import migration_source_hash
@@ -42,6 +43,17 @@ def _set_recorded_hash(owner_dsn: str, value: str) -> None:
         conn.close()
 
 
+# ai: claude-opus-5-5 | 2026-11-06
+def _recorded_hash(owner_dsn: str) -> str:
+    conn = psycopg2.connect(owner_dsn)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT migration_hash FROM schema_state")
+        return str(cur.fetchone()[0])
+    finally:
+        conn.close()
+
+
 # ─── the readiness check ────────────────────────────────────────────────────────
 
 
@@ -50,13 +62,7 @@ def test_a_freshly_migrated_database_is_ready_for_the_runtime_role(pg_dsn: str) 
 
 
 def test_the_migration_record_matches_this_code(pg_dsn: str) -> None:
-    conn = psycopg2.connect(pg_dsn)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT migration_hash FROM schema_state")
-        assert cur.fetchone()[0] == migration_source_hash()
-    finally:
-        conn.close()
+    assert _recorded_hash(pg_dsn) == migration_source_hash()
 
 
 def test_a_database_migrated_by_other_code_is_not_ready(pg_dsn: str) -> None:
@@ -84,8 +90,22 @@ def test_serving_as_the_owner_is_refused(pg_dsn: str) -> None:
 
 
 def test_no_app_database_url_is_refused() -> None:
-    with pytest.raises(AppRoleConfigError, match="DATABASE_URL"):
+    with pytest.raises(AppRoleConfigError, match="POSTGRES_APP_USER and POSTGRES_APP_PASSWORD"):
         assert_ready_to_serve("")
+
+
+# ai: claude-opus-5-5 | 2026-11-06 -- the desktop's real failure: with no POSTGRES_APP_*
+# settings, migration ran to completion as the owner and only then failed, naming
+# DATABASE_URL (a setting the desktop .env doesn't use).
+def test_migrating_with_no_app_login_names_the_settings_and_changes_nothing(
+    pg_dsn: str,
+) -> None:
+    _set_recorded_hash(pg_dsn, "stale")
+
+    with pytest.raises(AppRoleConfigError, match="POSTGRES_APP_USER and POSTGRES_APP_PASSWORD"):
+        migrate_database(pg_dsn, "")
+
+    assert _recorded_hash(pg_dsn) == "stale"
 
 
 # ─── the migrate command ────────────────────────────────────────────────────────

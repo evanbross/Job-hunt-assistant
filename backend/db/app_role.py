@@ -42,10 +42,27 @@ class AppRoleConfigError(RuntimeError):
     """The runtime role is missing, misconfigured, or would bypass row-level security."""
 
 
+# ai: claude-opus-5-5 | 2026-11-06 -- every message about the runtime role names the
+# settings that configure it: the desktop sets the POSTGRES_APP_* pair (config.py builds
+# DATABASE_URL from it), a hosted deployment sets DATABASE_URL directly.
+APP_DATABASE_SETTINGS = "POSTGRES_APP_USER and POSTGRES_APP_PASSWORD (or DATABASE_URL)"
+
+
 @dataclass(frozen=True)
 class RoleCredentials:
     user: str
     password: str
+
+
+# ai: claude-opus-5-5 | 2026-11-06
+def require_app_dsn(app_dsn: str) -> None:
+    """Raise unless an app database URL is configured. Checked before any work, so a
+    missing setting fails with the settings to add, not after migrations already ran."""
+    if not app_dsn:
+        raise AppRoleConfigError(
+            f"No app database login configured: set {APP_DATABASE_SETTINGS} to a"
+            " login separate from the schema owner. Migration creates it."
+        )
 
 
 def credentials_from_url(dsn: str) -> RoleCredentials:
@@ -53,7 +70,8 @@ def credentials_from_url(dsn: str) -> RoleCredentials:
     parsed = urlparse(dsn)
     user = unquote(parsed.username or "")
     if not user:
-        raise AppRoleConfigError("The app database URL (DATABASE_URL) names no user.")
+        # ai: claude-opus-5-5 | 2026-11-06
+        raise AppRoleConfigError(f"The app database URL names no user: set {APP_DATABASE_SETTINGS}.")
     return RoleCredentials(user=user, password=unquote(parsed.password or ""))
 
 
@@ -68,17 +86,19 @@ def ensure_app_role(conn: Any, app_dsn: str) -> None:
     """
     creds = credentials_from_url(app_dsn)
     if not creds.password:
-        raise AppRoleConfigError("The app database URL (DATABASE_URL) has no password.")
+        # ai: claude-opus-5-5 | 2026-11-06
+        raise AppRoleConfigError(
+            f"The app database login has no password: set {APP_DATABASE_SETTINGS}."
+        )
     cur = conn.cursor()
     cur.execute("SELECT current_user AS owner, current_database() AS database")
     session = cur.fetchone()
     owner, database = str(session["owner"]), str(session["database"])
     if creds.user == owner:
         raise AppRoleConfigError(
-            f"DATABASE_URL logs in as {owner!r}, the role that owns the schema. The owner is"
+            f"The app database login is {owner!r}, the role that owns the schema. The owner is"
             " exempt from row-level security, so the app must serve with a different role:"
-            " set DATABASE_URL (or POSTGRES_APP_USER/POSTGRES_APP_PASSWORD) to a separate"
-            " user. migrate_database creates it."
+            f" set {APP_DATABASE_SETTINGS} to a separate user. Migration creates it."
         )
 
     role = sql.Identifier(creds.user)
