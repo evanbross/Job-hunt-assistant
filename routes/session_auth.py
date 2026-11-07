@@ -63,6 +63,7 @@ from backend.db.repositories.user_accounts import (
 )
 from backend.email.smtp_sender import send_verification_email
 from backend.public_urls import public_base_url
+from backend.security.account_email import is_plausible_email, normalize_email
 from backend.security.audit_log import (
     ACCOUNT_DELETION_CANCELLED,
     ACCOUNT_DELETION_REQUESTED,
@@ -84,6 +85,7 @@ from backend.security.rate_limiter import (
     get_rate_limiter,
     hash_identifier,
 )
+from backend.security.registration_invites import consume_invite, may_start_registration
 from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
@@ -113,6 +115,10 @@ EMAIL_CHANGE_TARGET = Policy("email-change-target", 3, _WINDOW_1_HOUR)
 ACCOUNT_DELETION_USER = Policy("account-deletion-user", 5, _WINDOW_15_MIN)
 
 _REGISTRATION_TOKEN_LIFETIME = timedelta(hours=24)
+# ai: claude-opus-5-5 | 2026-11-07
+_NOT_INVITED_MESSAGE = (
+    "Registration is by invitation only. Ask the administrator to invite this email address."
+)
 _EMAIL_CHANGE_TOKEN_LIFETIME = timedelta(hours=1)
 _PASSWORD_RESET_TOKEN_LIFETIME = timedelta(hours=1)
 
@@ -191,14 +197,6 @@ class RequestDeletionRequest(_NotBlankModel):
 _MIN_PASSWORD_LENGTH = 8
 
 
-def _is_plausible_email(email: str) -> bool:
-    # Not meant to catch every malformed address — SMTP delivery is the real
-    # validator. Just enough to reject obviously-not-an-email input before
-    # spending a database write and an SMTP round trip on it.
-    local, _, domain = email.partition("@")
-    return bool(local) and "." in domain and not domain.startswith(".")
-
-
 def _start_session(user_id: int) -> None:
     session.clear()
     session["authenticated"] = True
@@ -243,8 +241,8 @@ def create_account() -> ResponseReturnValue:
     except ValidationError:
         return jsonify({"error": "Email is required"}), 400
 
-    email = body.email.strip().casefold()
-    if not _is_plausible_email(email):
+    email = normalize_email(body.email)
+    if not is_plausible_email(email):
         return jsonify({"error": "Enter a valid email address"}), 400
 
     # Every attempt counts, not just failures: each one either sends an email to the
@@ -256,6 +254,10 @@ def create_account() -> ResponseReturnValue:
 
     token, expires_at = _new_token(_REGISTRATION_TOKEN_LIFETIME)
     with get_repos() as repos:
+        # ai: claude-opus-5-5 | 2026-11-07 -- after the rate limit, so the invite list
+        # can't be probed any faster than registration itself (plan 4.6)
+        if not may_start_registration(email, repos):
+            return jsonify({"error": _NOT_INVITED_MESSAGE}), 403
         account = repos["user_accounts"].claim_placeholder_pending(email, token, expires_at)
         if account is None:
             account = repos["user_accounts"].create_pending(email, token, expires_at)
@@ -295,6 +297,11 @@ def complete_registration() -> ResponseReturnValue:
         account = repos["user_accounts"].complete_registration(
             body.token, generate_password_hash(body.password)
         )
+        # ai: claude-opus-5-5 | 2026-11-07 -- same transaction: an invite revoked since
+        # registration started also stops this link (backend/security/registration_invites.py)
+        if account is not None and not consume_invite(account["email"], repos):
+            repos["conn"].rollback()
+            return jsonify({"error": _NOT_INVITED_MESSAGE}), 403
         if account is not None:
             repos["conn"].commit()
 
@@ -326,7 +333,7 @@ def forgot_password() -> ResponseReturnValue:
     except ValidationError:
         return jsonify({"error": "Email is required"}), 400
 
-    email = body.email.strip().casefold()
+    email = normalize_email(body.email)
     email_check: Check = (RESET_REQUEST_EMAIL, hash_identifier(email))
     limiter = get_rate_limiter()
     email_decision = limiter.check_all([email_check])
@@ -410,7 +417,7 @@ def login() -> ResponseReturnValue:
     except ValidationError:
         return jsonify({"error": "Email and password are required"}), 400
 
-    email = body.email.strip().casefold()
+    email = normalize_email(body.email)
     # Keyed on the submitted email whether or not an account exists, so the limits behave
     # identically for real and made-up accounts.
     email_key = hash_identifier(email)
@@ -545,8 +552,8 @@ def request_email_change() -> ResponseReturnValue:
     except ValidationError:
         return jsonify({"error": "A new email is required"}), 400
 
-    new_email = body.new_email.strip().casefold()
-    if not _is_plausible_email(new_email):
+    new_email = normalize_email(body.new_email)
+    if not is_plausible_email(new_email):
         return jsonify({"error": "Enter a valid email address"}), 400
 
     email_change_checks: list[Check] = [

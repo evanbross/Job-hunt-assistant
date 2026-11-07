@@ -271,5 +271,7 @@ Neon-backed install currently needs.
       identity (guard verified + real-Postgres contract tests), 2.7 (2026-11-07)
       one public URL (APP_BASE_URL from APP_DOMAIN) for links/OAuth/listener, hosted
       startup fails on localhost or a missing frontend build. Phase 2 complete.
-      Next: Phase 3 (Google OAuth verification, transactional email, DNS, extension
-      store) -- mostly external accounts and approvals.
+      Phase 3 (Google OAuth verification, transactional email, DNS, extension
+      store) is mostly external accounts and approvals. 4.6 (2026-11-07) invite-only
+      registration done (on by default; Settings > System > Invites). Next code
+      work: Phase 4 backups/monitoring.

@@ -253,7 +253,11 @@ def _stale_app_base_url(value: str) -> None:
 
 
 def test_hosted_email_links_use_the_public_url_not_a_stale_setting(
-    db: None, hosted: Path, flask_app: Flask, sent_emails: list[dict[str, str]]
+    db: None,
+    hosted: Path,
+    flask_app: Flask,
+    sent_emails: list[dict[str, str]],
+    open_registration: None,
 ) -> None:
     _stale_app_base_url("http://localhost:5004")
 
@@ -264,7 +268,11 @@ def test_hosted_email_links_use_the_public_url_not_a_stale_setting(
 
 
 def test_desktop_email_links_still_use_the_admin_setting(
-    db: None, monkeypatch: pytest.MonkeyPatch, flask_app: Flask, sent_emails: list[dict[str, str]]
+    db: None,
+    monkeypatch: pytest.MonkeyPatch,
+    flask_app: Flask,
+    sent_emails: list[dict[str, str]],
+    open_registration: None,
 ) -> None:
     monkeypatch.setattr(config, "APP_MODE", "desktop")
     _stale_app_base_url("http://jha.localhost/")

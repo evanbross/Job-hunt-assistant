@@ -68,7 +68,7 @@ def _sent_emails(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
 
 @pytest.fixture
-def client(_sent_emails, flask_app):
+def client(_sent_emails, flask_app, open_registration):
     return flask_app.test_client()
 
 

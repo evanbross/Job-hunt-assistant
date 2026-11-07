@@ -47,6 +47,9 @@ GOOGLE_DISCONNECTED: Final = "google_disconnected"
 ACCOUNT_DELETION_REQUESTED: Final = "account_deletion_requested"
 ACCOUNT_DELETION_CANCELLED: Final = "account_deletion_cancelled"
 DATA_EXPORTED: Final = "data_exported"
+# ai: claude-opus-5-5 | 2026-11-07 -- recorded on the admin who did it (plan 4.6)
+REGISTRATION_INVITE_CREATED: Final = "registration_invite_created"
+REGISTRATION_INVITE_REVOKED: Final = "registration_invite_revoked"
 
 EVENTS: Final[frozenset[str]] = frozenset(
     {
@@ -65,6 +68,8 @@ EVENTS: Final[frozenset[str]] = frozenset(
         ACCOUNT_DELETION_REQUESTED,
         ACCOUNT_DELETION_CANCELLED,
         DATA_EXPORTED,
+        REGISTRATION_INVITE_CREATED,
+        REGISTRATION_INVITE_REVOKED,
     }
 )
 

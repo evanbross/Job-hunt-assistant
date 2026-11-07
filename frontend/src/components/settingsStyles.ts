@@ -48,3 +48,37 @@ export const helpTextStyle: CSSProperties = {
   marginTop: "4px",
   textTransform: "none",
 };
+
+// ai: claude-opus-5-5 | 2026-11-07 -- the add-a-row form and list table shared by the
+// settings sections that manage a list (Browser Extension tokens, registration Invites)
+export const listFormRowStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "flex-end",
+  gap: "12px",
+  marginBottom: "18px",
+};
+
+export const listFieldLabelStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "4px",
+  fontSize: "12px",
+  fontWeight: 600,
+  color: "var(--text-muted)",
+};
+
+export const listTableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: "13px" };
+
+export const listThStyle: CSSProperties = {
+  textAlign: "left",
+  padding: "6px 8px",
+  fontSize: "11px",
+  fontWeight: 700,
+  color: "var(--text-muted)",
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+  borderBottom: "1px solid var(--border)",
+};
+
+export const listTdStyle: CSSProperties = { padding: "8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };

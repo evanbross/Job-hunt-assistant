@@ -139,7 +139,7 @@ def test_a_login_attempt_against_an_unknown_email_records_nothing(client) -> Non
 # ─── registration, password reset, email change ─────────────────────────────────
 
 
-def test_completing_registration_records_account_registered(client, sent_emails) -> None:
+def test_completing_registration_records_account_registered(client, sent_emails, open_registration) -> None:
     client.post("/api/account", json={"email": _EMAIL})
     from urllib.parse import parse_qs, urlparse
 

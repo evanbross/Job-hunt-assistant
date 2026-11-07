@@ -505,8 +505,27 @@ verification email, see an account's Celery failures. Today that's ad-hoc script
 into production — and per the "no direct DB writes to live data" rule, you shouldn't
 be fixing users' data by hand.
 
-### 4.6 Registration controls
-Registration is fully open. For the beta, add an invite code or email allowlist
+### 4.6 Registration controls — done 2026-11-07
+- **Invite-only by default.** System setting `registration_invite_only` (on unless an
+  admin turns it off in System > General). Invites are rows in `registration_invites`
+  (email, inviting admin, time), managed in Settings > System > Invites
+  (`routes/registration_invites.py`, under the admin-gated `/api/settings/system/`;
+  add/revoke are audit-logged on the admin). Inviting sends nothing: the admin tells
+  the person, who registers normally.
+- **Checked twice** (`backend/security/registration_invites.py`): before registration
+  writes anything or sends an email (after the rate limit, so the list can't be probed
+  faster than registration itself), and again by consuming the invite in the
+  transaction that sets the password -- so revoking an invite also kills a link already
+  emailed. A consumed invite is gone, so a deleted account needs a new one.
+- Emails in the invite routes travel in the request body, never the URL, so they stay
+  out of access logs. Every account-email path now normalizes through one helper
+  (`backend/security/account_email.py`), so an invite always matches its sign-up.
+- **Placeholder account:** already not seeded. A fresh database's only account is the
+  bootstrap admin (`admin@localhost`, one-time random password, forced setup), which
+  registration can't claim; `claim_placeholder_pending` only matters to old installs
+  that still have `unclaimed@localhost`. Pinned by a test.
+
+Original item: Registration is fully open. For the beta, add an invite code or email allowlist
 (system setting) so random signups can't consume your Google test-user slots or
 scraping budget. Also: the placeholder `unclaimed@localhost` account that the first
 registration claims must **not** exist in the production DB — make sure a fresh prod

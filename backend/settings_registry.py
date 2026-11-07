@@ -91,6 +91,15 @@ SETTINGS: dict[str, SettingSpec] = {
         # from it (backend/public_urls.py), so an admin can't point them at two hosts.
         desktop_only=True,
     ),
+    # ai: claude-opus-5-5 | 2026-11-07 -- plan 4.6. On by default: a fresh (hosted)
+    # install must not take sign-ups from strangers before its admin has looked at it.
+    # Invites live in the registration_invites table (Settings > System > Invites).
+    "registration_invite_only": SettingSpec(
+        scope="system", is_secret=False, default="true",
+        label="Invite-only registration", group="Registration", input_type="checkbox",
+        help_text="Only invited emails can create an account (Settings > System > Invites). "
+        "Turn off to let anyone register.",
+    ),
     # ai: claude-sonnet-5 | 2026-09-29 -- literal defaults, not sourced from
     # config.py/.env: SMTP has no environment-variable origin left at all.
     # Mailhog (../infra's local SMTP catcher, UI at mailhog.localhost) needs

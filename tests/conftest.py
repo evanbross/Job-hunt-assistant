@@ -63,7 +63,11 @@ from backend.active_tasks import (  # noqa: E402
     MemoryActiveTaskStore,
     set_active_tasks,
 )
-from backend.db import migrate_database  # noqa: E402
+from backend.db import (  # noqa: E402
+    PostgresSystemSettingsRepository,
+    get_connection,
+    migrate_database,
+)
 from backend.email.google_oauth_pending import (  # noqa: E402
     MemoryPendingAuthStore,
     set_pending_auths,
@@ -79,6 +83,7 @@ from backend.scanning.import_progress import (  # noqa: E402
     set_import_progress,
 )
 from backend.security.rate_limiter import RateLimiter, set_rate_limiter  # noqa: E402
+from backend.security.registration_invites import INVITE_ONLY_SETTING  # noqa: E402
 from backend.security.task_ownership import (  # noqa: E402
     MemoryOwnerStore,
     TaskOwnership,
@@ -375,6 +380,19 @@ def pg_dsn(seeded_database_snapshot: SeededDatabaseSnapshot, monkeypatch: pytest
         conn.close()
     return TEST_DATABASE_URL
 
+
+# ai: claude-opus-5-5 | 2026-11-07
+@pytest.fixture
+def open_registration(pg_dsn: str) -> None:
+    """Turn invite-only registration off (it is on by default; plan 4.6), for tests of
+    the registration flow itself or that create accounts through it. Written as the
+    owner, so it works whichever DATABASE_URL the test points the app at."""
+    conn = get_connection(pg_dsn)
+    try:
+        PostgresSystemSettingsRepository(conn).set(INVITE_ONLY_SETTING, "false")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _reset_test_database(conn: Any, snapshot: SeededDatabaseSnapshot) -> None:

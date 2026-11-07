@@ -50,6 +50,7 @@ from routes.fit import fit_bp
 from routes.import_ import import_bp
 from routes.jd_health_check import jd_health_check_bp
 from routes.jobs import jobs_bp
+from routes.registration_invites import registration_invites_bp
 from routes.scan import scan_bp
 from routes.session_auth import session_auth_bp
 from routes.settings import settings_bp
@@ -87,6 +88,7 @@ _API_BLUEPRINTS: tuple[flask.Blueprint, ...] = (
     import_bp,
     jd_health_check_bp,
     jobs_bp,
+    registration_invites_bp,  # ai: claude-opus-5-5 | 2026-11-07
     scan_bp,
     session_auth_bp,
     settings_bp,

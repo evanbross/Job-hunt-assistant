@@ -85,6 +85,7 @@ from .interfaces import (
     IJobStatusHistoryRepository,
     IOutreachTemplateRepository,
     IPenaltyRuleRepository,
+    IRegistrationInviteRepository,
     IRelevanceFeedbackRepository,
     IResumeRepository,
     IScannedEmailRepository,
@@ -137,6 +138,7 @@ from .repositories.outreach_templates import (
     PostgresOutreachTemplateRepository,
 )
 from .repositories.penalty_rules import PostgresPenaltyRuleRepository
+from .repositories.registration_invites import PostgresRegistrationInviteRepository
 from .repositories.relevance_feedback import PostgresRelevanceFeedbackRepository
 from .repositories.resumes import PostgresResumeRepository
 from .repositories.scanned_emails import PostgresScannedEmailRepository
@@ -172,6 +174,7 @@ __all__ = [
     "IContactOutreachRepository",
     "IContactRepository",
     "IExtensionTokenRepository",
+    "IRegistrationInviteRepository",
     "IGoogleTokenRepository",
     "ICoverLetterPhraseRepository",
     "IEmailSourceRepository",
@@ -211,6 +214,7 @@ __all__ = [
     "PostgresContactOutreachRepository",
     "PostgresContactRepository",
     "PostgresExtensionTokenRepository",
+    "PostgresRegistrationInviteRepository",
     "PostgresGoogleTokenRepository",
     "PostgresCoverLetterPhraseRepository",
     "PostgresEmailSourceRepository",
@@ -431,6 +435,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "contact_employment_history": PostgresContactEmploymentHistoryRepository(conn),
         "outreach_templates": PostgresOutreachTemplateRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),
+        "registration_invites": PostgresRegistrationInviteRepository(conn),  # ai: claude-opus-5-5 | 2026-11-07
         "google_tokens": PostgresGoogleTokenRepository(conn),
         "candidate_profiles": PostgresCandidateProfileRepository(conn),
         "cover_letter_phrases": PostgresCoverLetterPhraseRepository(conn),

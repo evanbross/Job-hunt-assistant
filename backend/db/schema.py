@@ -1319,6 +1319,20 @@ def migrate_schema(conn: Any) -> None:
         (list(RETIRED_USER_SETTING_KEYS),),
     )
     conn.commit()
+    # ai: claude-opus-5-5 | 2026-11-07 -- emails an admin invited to register, for an
+    # invite-only install (registration_invite_only; plan 4.6). Instance-wide: registration
+    # reads it before any account exists, so no user_id / RLS. An invite outlives the
+    # admin who made it (SET NULL), and is deleted when its registration completes.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS registration_invites (
+            email       TEXT PRIMARY KEY,
+            invited_by  INTEGER REFERENCES user_accounts(id) ON DELETE SET NULL,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+    conn.commit()
     cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS notes TEXT")
     # contact_type (recruiter/personal/NULL) briefly existed before it became
     # the is_recruiter checkbox; carry any flagged recruiters over, then drop it.

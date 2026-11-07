@@ -13,6 +13,7 @@ import type { CSSProperties } from "react";
 import { apiFetch } from "../utils/apiClient.ts";
 import { formatLocalDateTime } from "../utils/dateTimeUtils.ts";
 import type { ApiErrorBody } from "../types/common.ts";
+import { listFieldLabelStyle, listFormRowStyle, listTableStyle, listTdStyle, listThStyle } from "./settingsStyles.ts";
 import type { CreateExtensionTokenResponse, ExtensionToken, ExtensionTokensListResponse } from "../types/extensionAuth.ts";
 
 const EXPIRY_OPTIONS = [
@@ -134,7 +135,7 @@ export default function BrowserExtensionPanel() {
       <div style={{ maxWidth: "760px" }}>
         {/* ai: claude-opus-5-5 | 2026-11-07 -- hosted only: the server knows its public address */}
         {listenerUrl && (
-          <div style={{ ...fieldLabel, marginBottom: "16px" }}>
+          <div style={{ ...listFieldLabelStyle, marginBottom: "16px" }}>
             Listener URL (enter this in the extension's options too)
             <code style={tokenCode}>{listenerUrl}</code>
           </div>
@@ -154,8 +155,8 @@ export default function BrowserExtensionPanel() {
           </div>
         )}
 
-        <div style={createRow}>
-          <label style={fieldLabel}>
+        <div style={listFormRowStyle}>
+          <label style={listFieldLabelStyle}>
             Name
             <input
               value={label}
@@ -164,7 +165,7 @@ export default function BrowserExtensionPanel() {
               onChange={(e) => setLabel(e.target.value)}
             />
           </label>
-          <label style={fieldLabel}>
+          <label style={listFieldLabelStyle}>
             Expires
             <select value={expiresInDays} onChange={(e) => setExpiresInDays(e.target.value)}>
               {EXPIRY_OPTIONS.map((option) => (
@@ -181,15 +182,15 @@ export default function BrowserExtensionPanel() {
 
         {loadError && <div style={{ color: "var(--red)", marginBottom: "10px" }}>{loadError}</div>}
 
-        <table style={tableStyle}>
+        <table style={listTableStyle}>
           <thead>
             <tr>
-              <th style={thStyle}>Name</th>
-              <th style={thStyle}>Token</th>
-              <th style={thStyle}>Created</th>
-              <th style={thStyle}>Last used</th>
-              <th style={thStyle}>Status</th>
-              <th style={thStyle} />
+              <th style={listThStyle}>Name</th>
+              <th style={listThStyle}>Token</th>
+              <th style={listThStyle}>Created</th>
+              <th style={listThStyle}>Last used</th>
+              <th style={listThStyle}>Status</th>
+              <th style={listThStyle} />
             </tr>
           </thead>
           <tbody>
@@ -197,15 +198,15 @@ export default function BrowserExtensionPanel() {
               const status = tokenStatus(token);
               return (
                 <tr key={token.id}>
-                  <td style={tdStyle}>{token.label}</td>
-                  <td style={tdStyle}>
+                  <td style={listTdStyle}>{token.label}</td>
+                  <td style={listTdStyle}>
                     <code>{token.token_prefix}…</code>
                   </td>
-                  <td style={tdStyle}>{formatLocalDateTime(token.created_at)}</td>
-                  <td style={tdStyle}>
+                  <td style={listTdStyle}>{formatLocalDateTime(token.created_at)}</td>
+                  <td style={listTdStyle}>
                     {token.last_used_at ? formatLocalDateTime(token.last_used_at) : "Never"}
                   </td>
-                  <td style={tdStyle}>
+                  <td style={listTdStyle}>
                     <span className={`badge ${status.className}`}>{status.label}</span>
                     {token.expires_at && !token.revoked_at && (
                       <div style={{ color: "var(--text-muted)", fontSize: "11px" }}>
@@ -213,7 +214,7 @@ export default function BrowserExtensionPanel() {
                       </div>
                     )}
                   </td>
-                  <td style={tdStyle}>
+                  <td style={listTdStyle}>
                     {!token.revoked_at && (
                       <button className="btn-danger btn-xs" onClick={() => revokeToken(token)}>
                         Revoke
@@ -225,7 +226,7 @@ export default function BrowserExtensionPanel() {
             })}
             {!loading && tokens.length === 0 && (
               <tr>
-                <td style={tdStyle} colSpan={6}>
+                <td style={listTdStyle} colSpan={6}>
                   No tokens yet. Create one to connect the browser extension.
                 </td>
               </tr>
@@ -264,34 +265,3 @@ const tokenCode: CSSProperties = {
   userSelect: "all",
 };
 
-const createRow: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  alignItems: "flex-end",
-  gap: "12px",
-  marginBottom: "18px",
-};
-
-const fieldLabel: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "4px",
-  fontSize: "12px",
-  fontWeight: 600,
-  color: "var(--text-muted)",
-};
-
-const tableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: "13px" };
-
-const thStyle: CSSProperties = {
-  textAlign: "left",
-  padding: "6px 8px",
-  fontSize: "11px",
-  fontWeight: 700,
-  color: "var(--text-muted)",
-  textTransform: "uppercase",
-  letterSpacing: "0.05em",
-  borderBottom: "1px solid var(--border)",
-};
-
-const tdStyle: CSSProperties = { padding: "8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };

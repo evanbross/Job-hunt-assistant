@@ -67,3 +67,19 @@ export interface SessionStatusResponse {
   must_complete_setup?: boolean;
   deletion_requested_at?: string | null;
 }
+
+// ai: claude-opus-5-5 | 2026-11-07
+/** One row of GET /api/settings/system/registration-invites (routes/registration_invites.py). */
+export interface RegistrationInvite {
+  email: string;
+  /** The admin who added it; null if that account was since deleted. */
+  invited_by: number | null;
+  created_at: string;
+}
+
+/** GET /api/settings/system/registration-invites response. */
+export interface RegistrationInvitesResponse {
+  invites: RegistrationInvite[];
+  /** The registration_invite_only system setting: false means anyone can register. */
+  invite_only: boolean;
+}

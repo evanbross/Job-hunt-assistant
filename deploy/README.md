@@ -50,6 +50,20 @@ Compose refuses to start if `APP_DOMAIN`, `ACME_EMAIL`, `REDIS_PASSWORD`,
 `READONLY_DB_PASSWORD` or `JHA_IMAGE` is unset.
 `deploy/.env.production`, `deploy/.env.migrate` and `deploy/secrets/` are git-ignored.
 
+### First login and who can sign up
+
+The first `migrate` against an empty database creates the bootstrap admin account,
+`admin@localhost`, and prints its one-time password in that command's output (it is not
+stored anywhere). To choose it instead, set `BOOTSTRAP_ADMIN_PASSWORD` (12+ characters)
+in `deploy/.env.migrate` before that first run. Logging in as it forces you to set a real
+email and password before anything else works.
+
+Registration is **invite-only** from the start (`registration_invite_only`, on by
+default), so strangers can't sign up before you have looked at the install. Invite people
+under Settings > System > Invites, then tell them to register with that address; each
+invite is used up when its account is created. Turn invite-only off in System > General
+to open sign-ups to anyone.
+
 ### The application image
 
 `APP_MODE: hosted` (set on every application service) is what makes the app behave as
