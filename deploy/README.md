@@ -184,7 +184,11 @@ Postgres is the only state a hosted install keeps: documents live in it, Redis h
 in-flight work and rate-limit counters, and Caddy's certificates get reissued. So one dump
 is a whole backup.
 
-**Setting it up** (`deploy/.env.backup`, copied from `.env.backup.example`):
+**Setting it up** (`deploy/.env.backup`, copied from `.env.backup.example`).
+`uv run python scripts/setup_backup_bucket.py r2` (or `b2`, `s3`) does most of this
+interactively: it creates the bucket and retention rule with a one-time admin key,
+generates the age key pair, checks that the server key can write, and writes
+`deploy/.env.backup`.
 
 * Use a bucket at a different provider or account from the database. Give its key the
   narrowest access the provider allows: ideally write-only, with no delete (AWS:
