@@ -86,6 +86,10 @@ SETTINGS: dict[str, SettingSpec] = {
         group="General",
         placeholder="http://localhost:5004",
         help_text="Used to build links in verification/password-reset emails.",
+        # ai: claude-opus-5-5 | 2026-11-07 -- hosted, APP_BASE_URL (from APP_DOMAIN) is the
+        # one public address: links, the OAuth redirect and the listener URL all derive
+        # from it (backend/public_urls.py), so an admin can't point them at two hosts.
+        desktop_only=True,
     ),
     # ai: claude-sonnet-5 | 2026-09-29 -- literal defaults, not sourced from
     # config.py/.env: SMTP has no environment-variable origin left at all.
@@ -121,17 +125,25 @@ SETTINGS: dict[str, SettingSpec] = {
         label="Use TLS", group="SMTP", input_type="checkbox",
     ),
     # ai: claude-sonnet-5 | 2026-08-26
+    # ai: claude-opus-5-5 | 2026-11-07 -- flask_* and job_import_listener_* are
+    # desktop_only: hosted, the deployment fixes every bind address and port (gunicorn
+    # binds 0.0.0.0:5004, the listener 8765/8766, and Caddy's upstreams name those), so
+    # editing them here would do nothing -- or, for the listener port, stop it starting.
     "flask_host": SettingSpec(
         scope="system", is_secret=False, default=config.FLASK_HOST,
         label="Server Bind Host", group="Server",
         placeholder="127.0.0.1",
         help_text="0.0.0.0 exposes the server beyond localhost (e.g. over Tailscale). Requires an app restart to take effect.",
+        desktop_only=True,
     ),
     "flask_port": SettingSpec(
         scope="system", is_secret=False, default=str(config.FLASK_PORT),
         label="Server Port", group="Server",
         placeholder="5004",
-        help_text="Requires an app restart. Also update the Google OAuth redirect URI if you change this.",
+        help_text="Requires an app restart. Google sign-in returns to APP_BASE_URL's port "
+        "(5004 unless set in .env): if you change this, set APP_BASE_URL to match and "
+        "register the new redirect URI on the Google OAuth client.",
+        desktop_only=True,
     ),
     # ai: claude-sonnet-5 | 2026-08-30
     # A single HTTP listener process serves the whole app instance -- one
@@ -141,15 +153,18 @@ SETTINGS: dict[str, SettingSpec] = {
         scope="system", is_secret=False,
         default=str(config.DEFAULT_JOB_IMPORT_LISTENER_ENABLED).lower(),
         label="Enabled", group="Import Listener", input_type="checkbox",
+        desktop_only=True,
     ),
     "job_import_listener_host": SettingSpec(
         scope="system", is_secret=False, default=config.DEFAULT_JOB_IMPORT_LISTENER_HOST,
         label="Host", group="Import Listener", placeholder="127.0.0.1",
         help_text="Keep this as 127.0.0.1 unless you intentionally want network access.",
+        desktop_only=True,
     ),
     "job_import_listener_port": SettingSpec(
         scope="system", is_secret=False, default=str(config.DEFAULT_JOB_IMPORT_LISTENER_PORT),
         label="Port", group="Import Listener", placeholder="8765",
+        desktop_only=True,
     ),
     "google_oauth_client_config": SettingSpec(
         scope="system", is_secret=True, default="", label="Google OAuth client", group="Google",
@@ -160,6 +175,7 @@ SETTINGS: dict[str, SettingSpec] = {
         scope="system", is_secret=False,
         default=str(config.DEFAULT_JOB_IMPORT_LISTENER_MAX_BYTES),
         label="Max Request Bytes", group="Import Listener",
+        desktop_only=True,  # ai: claude-opus-5-5 | 2026-11-07 -- hosted, Caddy caps bodies at 16 MB
     ),
     # ai: claude-opus-5-5 | 2026-10-28
     # System-scoped (admin-only) on purpose: this names a file on the server's

@@ -57,6 +57,16 @@ a multi-user server rather than the desktop app (`backend/app_mode.py`): documen
 downloads, not files in a server folder; no debug dumps or logs go to disk; the
 read-only DB role's password must be the `READONLY_DB_PASSWORD` secret.
 
+The public address is `https://<APP_DOMAIN>`: compose sets `APP_BASE_URL` from
+`APP_DOMAIN` for the app and the worker, and everything users are sent to derives from
+it -- links in account emails, the Google OAuth redirect URI
+(`https://<APP_DOMAIN>/api/auth/google/callback`, which must be registered on the Google
+OAuth client) and the extension's listener URL. The app and worker refuse to start if it
+is not https on a real domain (localhost, `*.localhost` and IP addresses are rejected),
+and the app refuses to start without the built frontend (`backend/public_urls.py`).
+Settings that only configure a desktop install -- the app base URL, the server and
+listener bind addresses and ports -- are hidden, since the deployment fixes them.
+
 One image (the repository's `Dockerfile`) runs every application process; the compose
 `command` names which, and `deploy/docker-entrypoint.sh` turns that into the real
 command: `web` (gunicorn), `listener`, `worker`, `maintenance`, `beat`, `migrate`.
@@ -170,8 +180,9 @@ supplies AI access itself.
 
 The extension talks to two endpoints, exposed as `listener.<APP_DOMAIN>` (HTTP) and
 `listener-ws.<APP_DOMAIN>` (WebSocket). Set the extension's listener URL to
-`https://listener.<APP_DOMAIN>`; it derives the WebSocket host by inserting `-ws` after
-the first label, which matches the Caddyfile.
+`https://listener.<APP_DOMAIN>` (Settings > Browser Extension shows users this URL); it
+derives the WebSocket host by inserting `-ws` after the first label, which matches the
+Caddyfile.
 
 Both are served by the `listener` service (`python -m web.extension_listener`), its own
 process rather than part of the web app, so a gunicorn worker restart never drops the

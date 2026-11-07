@@ -107,6 +107,10 @@ services:
       # only thing that reaches it.
       APP_ENV: production
       APP_MODE: hosted                 # backend/app_mode.py: no writes to the container, downloads not server folders
+      # The public address, from the host Caddy serves: email links, the Google OAuth
+      # redirect URI and the extension's listener URL all derive from it, and the app
+      # refuses to start if it is local (backend/public_urls.py).
+      APP_BASE_URL: https://${APP_DOMAIN:?set APP_DOMAIN}
       # The one proxy allowed to say which client address/scheme a request had
       # (X-Forwarded-For / -Proto). Must equal Caddy's pinned address on `edge`.
       TRUSTED_PROXIES: 172.28.0.2
@@ -201,6 +205,7 @@ services:
       REDIS_TLS_CA_FILE: /tls/ca.crt
       APP_ENV: production
       APP_MODE: hosted                 # backend/app_mode.py: no writes to the container, downloads not server folders
+      APP_BASE_URL: https://${APP_DOMAIN:?set APP_DOMAIN}   # links in task emails; same as the app's
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)

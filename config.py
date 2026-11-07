@@ -255,7 +255,6 @@ GMAIL_SCOPES: list[str] = (
         "https://www.googleapis.com/auth/gmail.send",
     ]
 )
-GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:5004/api/auth/google/callback"
 # ai: claude-opus-5-5 | 2026-11-02 — must match server.port in frontend/vite.config.ts
 VITE_DEV_PORT: int = 5174
 
@@ -267,9 +266,17 @@ VITE_DEV_PORT: int = 5174
 # live values via get_setting(). Production overrides them in Settings >
 # System (a real relay, transactional provider, or dedicated sending
 # account), not via .env.
-# Same hardcoded-local-URL pattern as GOOGLE_OAUTH_REDIRECT_URI above — used
-# to build the links sent in verification emails.
+# ai: claude-opus-5-5 | 2026-11-07
+# Where users reach the app. Desktop: the localhost default (email links come from the
+# admin's app_base_url setting, which defaults to this). Hosted: the public https URL,
+# set by deploy/docker-compose.prod.yml from APP_DOMAIN and checked at startup
+# (backend/public_urls.py) -- links, the OAuth redirect and the listener URL all
+# derive from it.
 APP_BASE_URL: str = os.getenv("APP_BASE_URL", "http://localhost:5004")
+# Google only returns users to a redirect URI registered on the OAuth client, so
+# whatever this resolves to must be listed there. With the default above it is
+# http://localhost:5004/api/auth/google/callback, the desktop's registered URI.
+GOOGLE_OAUTH_REDIRECT_URI: str = f"{APP_BASE_URL.strip().rstrip('/')}/api/auth/google/callback"
 
 # ─── AI Models ────────────────────────────────────────────────────────────────
 # ai: claude-sonnet-5 | 2026-08-19

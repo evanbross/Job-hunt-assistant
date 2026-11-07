@@ -72,6 +72,8 @@ import type {
 interface SettingsTreeChild {
   id: string;
   label: string;
+  // ai: claude-opus-5-5 | 2026-11-07 -- configures the user's own machine; hidden when hosted
+  desktopOnly?: boolean;
 }
 
 interface SettingsTreeNode {
@@ -144,7 +146,9 @@ const SETTINGS_TREE: SettingsTreeNode[] = [
     adminOnly: true,
     children: [
       { id: "system_general", label: "General" },
-      { id: "import_listener", label: "Import Listener" },
+      // Hosted, the deployment fixes the listener's address (the Browser Extension
+      // section shows users the URL to enter) and the server rejects these settings.
+      { id: "import_listener", label: "Import Listener", desktopOnly: true },
     ],
   },
 ];
@@ -172,6 +176,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }: Setti
   const [activeSection, setActiveSection] = useState(startSection);
   // ai: claude-sonnet-5 | 2026-08-21
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isHosted, setIsHosted] = useState(false); // ai: claude-opus-5-5 | 2026-11-07
   // ai: claude-sonnet-5 | 2026-08-30 — only the group containing the initial
   // section starts open; others expand on click, same as a PyCharm settings tree.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
@@ -185,6 +190,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }: Setti
       if (!res.ok) return;
       const data: AccountInfo = await res.json();
       setIsAdmin(data.role === "admin");
+      setIsHosted(data.app_mode === "hosted"); // ai: claude-opus-5-5 | 2026-11-07
     })();
   }, []);
 
@@ -216,7 +222,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }: Setti
         </button>
         {expandedGroups.has(node.id) && (
           <div style={navChildren}>
-            {node.children.map((child) => (
+            {node.children.filter((child) => !(child.desktopOnly && isHosted)).map((child) => (
               <button
                 key={child.id}
                 onClick={() => setActiveSection(child.id)}
@@ -272,7 +278,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }: Setti
         {activeSection === "config" && <ConfigSection />}
         {activeSection === "setup" && <SetupWizardPanel onSetupComplete={onSetupComplete} />}
         {activeSection === "system_general" && isAdmin && <SystemSettingsSection />}
-        {activeSection === "import_listener" && isAdmin && <ImportListenerSection />}
+        {activeSection === "import_listener" && isAdmin && !isHosted && <ImportListenerSection />}
       </div>
     </div>
   );

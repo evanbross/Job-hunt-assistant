@@ -42,6 +42,9 @@ export interface ExtensionToken {
 /** GET /api/extension-tokens response. */
 export interface ExtensionTokensListResponse {
   tokens: ExtensionToken[];
+  // ai: claude-opus-5-5 | 2026-11-07
+  /** The Listener URL to enter in the extension's options on a hosted server; null on the desktop. */
+  listener_url: string | null;
 }
 
 /** POST /api/extension-tokens response. */

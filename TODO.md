@@ -268,5 +268,8 @@ Neon-backed install currently needs.
       off when hosted, 2.4 Ollama SSRF, 2.5 (2026-11-07) no browser on the server:
       hosted Wellfound to the extension, server Greenhouse/Jobanni scans retired,
       Chromium out of the image, 2.6 (2026-11-07) voice query can't switch the RLS
-      identity (guard verified + real-Postgres contract tests). Next: 2.7
-      desktop-only config defaults.
+      identity (guard verified + real-Postgres contract tests), 2.7 (2026-11-07)
+      one public URL (APP_BASE_URL from APP_DOMAIN) for links/OAuth/listener, hosted
+      startup fails on localhost or a missing frontend build. Phase 2 complete.
+      Next: Phase 3 (Google OAuth verification, transactional email, DNS, extension
+      store) -- mostly external accounts and approvals.

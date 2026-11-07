@@ -52,6 +52,7 @@ from celery.signals import beat_init, worker_init
 
 import config
 from backend.app_mode import AppModeConfigError, app_mode
+from backend.public_urls import PublicUrlConfigError, check_hosted_public_config
 from backend.security.redis_tls import redis_ssl_options
 from backend.security.secrets_policy import (
     InsecureSecretError,
@@ -157,7 +158,9 @@ def _require_valid_encryption_key(**_kwargs: object) -> None:
     try:
         validate_encryption_config(os.environ)
         app_mode()  # ai: claude-opus-5-5 | 2026-11-06 -- tasks branch on it too
-    except (InsecureSecretError, AppModeConfigError) as exc:
+        # ai: claude-opus-5-5 | 2026-11-07 -- tasks email links to the app (JD health check)
+        check_hosted_public_config(serves_frontend=False)
+    except (InsecureSecretError, AppModeConfigError, PublicUrlConfigError) as exc:
         logger.critical("%s", exc)
         raise SystemExit(1) from exc
 

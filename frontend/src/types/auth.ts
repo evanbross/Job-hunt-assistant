@@ -42,6 +42,9 @@ export interface AccountInfo {
   must_complete_setup: boolean;
   password_pending_default: boolean;
   deletion_requested_at: string | null;
+  // ai: claude-opus-5-5 | 2026-11-07
+  /** backend/app_mode.py: "hosted" hides settings that only configure the user's own machine. */
+  app_mode: "desktop" | "hosted";
 }
 
 /** GET /api/auth/status response (routes/auth.py's auth_status). */

@@ -419,6 +419,7 @@ def test_get_account_returns_name_and_email(client) -> None:
         "must_complete_setup": False,
         "password_pending_default": False,
         "deletion_requested_at": None,
+        "app_mode": "desktop",  # ai: claude-opus-5-5 | 2026-11-07
     }
 
 

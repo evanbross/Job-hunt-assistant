@@ -22,6 +22,7 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from backend.extension_auth.token_service import MAX_LABEL_LENGTH, ExtensionTokenService
+from backend.public_urls import extension_listener_url
 from backend.security.audit_log import (
     EXTENSION_TOKEN_CREATED,
     EXTENSION_TOKEN_REVOKED,
@@ -58,7 +59,9 @@ def _is_active(token: dict) -> bool:
 def list_extension_tokens() -> ResponseReturnValue:
     with get_repos() as repos:
         tokens = ExtensionTokenService(repos["extension_tokens"]).list_for_user(current_user_id())
-    return jsonify({"tokens": tokens})
+    # ai: claude-opus-5-5 | 2026-11-07 -- what to enter as the extension's Listener URL
+    # on a hosted server (None on the desktop: see backend/public_urls.py)
+    return jsonify({"tokens": tokens, "listener_url": extension_listener_url()})
 
 
 # ai: claude-sonnet-5 | 2026-09-26

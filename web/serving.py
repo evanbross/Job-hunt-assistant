@@ -28,6 +28,11 @@ from flask import Flask
 import config
 from backend.app_mode import AppModeConfigError, app_mode
 from backend.db import AppRoleConfigError, SchemaOutOfDateError, assert_ready_to_serve
+from backend.public_urls import (
+    PublicUrlConfigError,
+    check_hosted_public_config,
+    public_base_url,
+)
 from backend.security.client_ip import (
     Network,
     TrustedProxyMiddleware,
@@ -39,7 +44,6 @@ from backend.security.session_cookies import (
     session_cookie_config,
 )
 from backend.security.startup import enforce_startup_secrets, normalize_app_env
-from backend.settings_service import get_setting
 from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
@@ -97,7 +101,7 @@ def apply_session_cookie_config(app: Flask, app_env: str) -> None:
     base_url = config.APP_BASE_URL
     try:
         with get_repos() as repos:
-            base_url = get_setting("app_base_url", None, repos) or base_url
+            base_url = public_base_url(repos)  # ai: claude-opus-5-5 | 2026-11-07
     except psycopg2.Error as exc:
         logger.warning("Could not read app_base_url for the session cookie config: %s", exc)
     settings = session_cookie_config(base_url, normalize_secure_mode(config.SESSION_COOKIE_SECURE_MODE))
@@ -142,6 +146,19 @@ def prepare_for_serving(app: Flask) -> None:
     for this version. It also starts no background threads or extension servers; those
     become their own processes (docs/cloud-deployment-readiness-plan.md 1.3, 1.4)."""
     app_env = install_startup_secrets(app)
+    check_public_config(serves_frontend=True)  # ai: claude-opus-5-5 | 2026-11-07
     verify_database_ready()
     apply_session_cookie_config(app, app_env)
     install_trusted_proxies(app)
+
+
+# ai: claude-opus-5-5 | 2026-11-07
+def check_public_config(*, serves_frontend: bool) -> None:
+    """Exit if a hosted deployment's public URL still points at localhost (or is
+    otherwise unusable), or -- for the web process -- its image has no built frontend
+    (backend/public_urls.py). Desktop: nothing to check."""
+    try:
+        check_hosted_public_config(serves_frontend=serves_frontend)
+    except PublicUrlConfigError as exc:
+        logger.critical("%s", exc)
+        raise SystemExit(1) from exc

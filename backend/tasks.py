@@ -61,6 +61,7 @@ from backend.app_mode import is_hosted
 from backend.celery_app import celery_app
 from backend.db import DuplicateJobUrlError
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
+from backend.public_urls import public_base_url
 from backend.scanning.career_site_scanner import (
     CareerSiteScanner,
     is_job_board_url,
@@ -966,7 +967,7 @@ def _send_jd_health_check_failure_email(
         notify_email = get_setting(
             "jd_health_check_notify_email", user_id, repos
         ).strip()
-        app_base_url = (get_setting("app_base_url", None, repos) or "").strip()
+        app_base_url = public_base_url(repos)  # ai: claude-opus-5-5 | 2026-11-07
     if not notify_email:
         # ai: claude-sonnet-5 | 2026-09-04 — name the failing targets so the
         # log line is useful when no notify email is configured to see the

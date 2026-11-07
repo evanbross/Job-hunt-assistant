@@ -57,10 +57,12 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from backend.app_mode import app_mode
 from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
 )
 from backend.email.smtp_sender import send_verification_email
+from backend.public_urls import public_base_url
 from backend.security.audit_log import (
     ACCOUNT_DELETION_CANCELLED,
     ACCOUNT_DELETION_REQUESTED,
@@ -82,7 +84,6 @@ from backend.security.rate_limiter import (
     get_rate_limiter,
     hash_identifier,
 )
-from backend.settings_service import get_setting
 from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
@@ -260,7 +261,7 @@ def create_account() -> ResponseReturnValue:
             account = repos["user_accounts"].create_pending(email, token, expires_at)
         if account is not None:
             repos["conn"].commit()
-        app_base_url = get_setting("app_base_url", None, repos)
+        app_base_url = public_base_url(repos)  # ai: claude-opus-5-5 | 2026-11-07
 
     if account is None:
         return jsonify({"error": "That email is already registered"}), 409
@@ -341,7 +342,7 @@ def forgot_password() -> ResponseReturnValue:
         account = repos["user_accounts"].request_password_reset(email, token, expires_at)
         if account is not None:
             repos["conn"].commit()
-        app_base_url = get_setting("app_base_url", None, repos)
+        app_base_url = public_base_url(repos)  # ai: claude-opus-5-5 | 2026-11-07
 
     if account is not None:
         link = f"{app_base_url}/reset-password?token={token}"
@@ -497,6 +498,9 @@ def get_account() -> ResponseReturnValue:
             # Already an ISO string, not a datetime -- repos["user_accounts"].get()
             # returns rows through _row_to_dict(), which converts timestamps itself.
             "deletion_requested_at": account["deletion_requested_at"],
+            # ai: claude-opus-5-5 | 2026-11-07 -- "desktop" | "hosted": lets Settings hide
+            # sections that only configure the user's own machine (e.g. Import Listener).
+            "app_mode": app_mode(),
         }
     )
 
@@ -558,7 +562,7 @@ def request_email_change() -> ResponseReturnValue:
         repos["user_accounts"].request_email_change(user_id, new_email, token, expires_at)
         record_event(repos, user_id, EMAIL_CHANGE_REQUESTED, {"new_email": new_email})
         repos["conn"].commit()
-        app_base_url = get_setting("app_base_url", None, repos)
+        app_base_url = public_base_url(repos)  # ai: claude-opus-5-5 | 2026-11-07
 
     link = f"{app_base_url}/confirm-email-change?token={token}"
     try:

@@ -46,6 +46,7 @@ export default function BrowserExtensionPanel() {
   const [creating, setCreating] = useState(false);
   const [newToken, setNewToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [listenerUrl, setListenerUrl] = useState<string | null>(null); // ai: claude-opus-5-5 | 2026-11-07
 
   const loadTokens = async () => {
     try {
@@ -53,6 +54,7 @@ export default function BrowserExtensionPanel() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: ExtensionTokensListResponse = await res.json();
       setTokens(data.tokens);
+      setListenerUrl(data.listener_url); // ai: claude-opus-5-5 | 2026-11-07
       setLoadError("");
     } catch (e) {
       setLoadError(`Could not load tokens: ${e instanceof Error ? e.message : String(e)}`);
@@ -130,6 +132,13 @@ export default function BrowserExtensionPanel() {
       </p>
 
       <div style={{ maxWidth: "760px" }}>
+        {/* ai: claude-opus-5-5 | 2026-11-07 -- hosted only: the server knows its public address */}
+        {listenerUrl && (
+          <div style={{ ...fieldLabel, marginBottom: "16px" }}>
+            Listener URL (enter this in the extension's options too)
+            <code style={tokenCode}>{listenerUrl}</code>
+          </div>
+        )}
         {newToken && (
           <div style={newTokenBox} role="status">
             <strong>Copy your new token now. It will not be shown again.</strong>

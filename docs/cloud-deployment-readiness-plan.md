@@ -383,7 +383,35 @@ Original item: confirm `backend/sql_guard.py` rejects `set_config(...)` /
 `current_setting(...)` and `SET` statements, and add a contract test against real
 Postgres that tries it.
 
-### 2.7 Desktop-only config defaults
+### 2.7 Desktop-only config defaults — done 2026-11-07
+One public address, `APP_BASE_URL`, which compose sets to `https://${APP_DOMAIN}` (the
+host Caddy serves) for the app and worker, so there's no second value to keep equal.
+`backend/public_urls.py` derives everything users are sent to from it:
+- **OAuth redirect URI** (`config.py`): `<APP_BASE_URL>/api/auth/google/callback`. It
+  was hardcoded to localhost; the desktop default gives the same URI as before.
+- **Email links**: `public_base_url()`, used by every link builder (registration,
+  password reset, email change, JD health-check emails) and the session-cookie config.
+  Hosted, the admin's `app_base_url` setting is `desktop_only` (hidden and rejected,
+  and a stale row is ignored) so links can't point at a different host than the OAuth
+  redirect.
+- **Listener URL**: `https://listener.<host>` (the Caddyfile site; a test checks the
+  Caddyfile still says so), returned by `GET /api/extension-tokens` and shown in
+  Settings > Browser Extension. `null` on the desktop.
+
+Keyed off `APP_MODE=hosted`, not `APP_ENV=production` as first written: the desktop app
+runs as production too. Hosted startup fails, instead of falling back, when:
+- `APP_BASE_URL` is not https on a real domain (localhost, `*.localhost`, IP literals,
+  a path, a query or credentials). Both the web app (`prepare_for_serving`) and the
+  worker (`worker_init`) check, since both build links.
+- the web image has no `frontend/dist/index.html`. That makes `_app_url_on_redirect_host`'s
+  Vite fallback and the catch-all's JSON message desktop-only paths.
+
+Settings the deployment fixes are now `desktop_only`: `flask_host`/`flask_port` and the
+`job_import_listener_*` settings. Hosted, editing them did nothing, or (the listener
+port) stopped the listener starting, since Caddy's upstreams are fixed. The admin
+Import Listener panel is hidden when hosted (`GET /api/account` now returns `app_mode`).
+
+Original notes:
 - `GOOGLE_OAUTH_REDIRECT_URI`, `APP_BASE_URL`, listener URLs must all be derived from
   the public domain (`https://<APP_DOMAIN>/...`). Per the "auto-selected runtime
   values" rule, the app should fail fast at startup if `APP_ENV=production` and any
