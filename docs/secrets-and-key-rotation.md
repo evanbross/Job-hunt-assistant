@@ -101,7 +101,9 @@ that are not secrets are never touched.
 ## In production
 
 Supply these from your secrets manager as environment variables rather than a
-`.env` file, and do not bake them into images. Every process that decrypts
+`.env` file, and do not bake them into images. Each can also be given as a file:
+`FLASK_SECRET_KEY_FILE=/run/secrets/...` and so on (deploy/README.md "Secrets:
+environment or files"). Every process that decrypts
 (web app, Celery workers) needs the same `SETTINGS_ENCRYPTION_KEY` and its
 fallbacks; every web instance needs the same `FLASK_SECRET_KEY` and fallbacks,
 or a session signed by one instance will be rejected by another.

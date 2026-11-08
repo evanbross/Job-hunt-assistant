@@ -491,14 +491,19 @@ Caddy handles certificates. Add CAA records for Let's Encrypt.
 - Size the connection pool for gunicorn workers × threads + Celery concurrency +
   listener, against Neon's connection limit (use Neon's pooled endpoint).
 
-### 4.2 Key and secret custody
+### 4.2 Key and secret custody — done 2026-11-08
 - Back up `SETTINGS_ENCRYPTION_KEY` separately from the DB (a lost key makes every
   stored token/API key/resume unreadable). *Documented 2026-11-07* (deploy/README.md
   "What must be kept, and where": the key and the age identities, apart from the
   server and the bucket); `backup verify` proves the held key opens a restored backup.
 - Use a real secrets store (the VM provider's, 1Password, Doppler, or cloud secrets
-  manager) to populate `deploy/.env.production`. `deploy/README.md` notes `*_FILE`
-  secret support as a small follow-up — do it here.
+  manager) to populate `deploy/.env.production`. *`*_FILE` support built 2026-11-08*
+  (`backend/secret_files.py`, called by config.py before any setting is read): every
+  secret can be `NAME_FILE=/run/secrets/...` instead of `NAME`. The process refuses to
+  start if both are set or the file is missing or empty. deploy/README.md "Secrets:
+  environment or files" shows the compose `secrets:` wiring, and lists the few values
+  compose itself interpolates, which stay in `.env.production`. Still to do by hand:
+  choose the secrets store when the host is chosen.
 
 ### 4.3 Logging, errors, monitoring
 - Logs to stdout in the standard format (filename:lineno), collected by the host or a

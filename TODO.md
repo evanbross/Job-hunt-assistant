@@ -277,4 +277,6 @@ Neon-backed install currently needs.
       (2026-11-07) off-site backups: nightly pg_dump encrypted with age to an S3
       bucket from the maintenance worker, restore + verify commands, key custody
       documented; the restore drill itself is still to do on the real Neon project.
-      Next code work: 4.2 `*_FILE` secrets, 4.3 logging/error tracking/monitoring.
+      4.2 (2026-11-08) every secret can come from a file (`NAME_FILE`, Docker/K8s
+      secrets; backend/secret_files.py). R2 bucket `jha-backups` set up 2026-11-07.
+      Next code work: 4.3 logging/error tracking/monitoring.

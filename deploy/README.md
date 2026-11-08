@@ -254,6 +254,56 @@ aws s3 cp "s3://<bucket>/<key>" - --endpoint-url "<endpoint>" \
 The archive contains the `public` schema itself, so first drop the new database's empty
 `public` schema with `DROP SCHEMA public;`. `backup restore` does this for you.
 
+### Secrets: environment or files
+
+Every secret can be given either as its variable or as `<NAME>_FILE`, the path of a
+file holding it. Docker and Kubernetes secrets, and most secrets-manager agents
+(1Password Connect, Doppler, Vault Agent, a cloud provider's secrets CSI driver), deliver
+secrets as files. A secret that arrives as a file stays out of the process environment,
+which `docker inspect`, `/proc/<pid>/environ` and crash reports all show.
+
+`backend/secret_files.py` reads the files once, at process start (config.py), and lists
+the secrets this applies to:
+- `FLASK_SECRET_KEY` and `SETTINGS_ENCRYPTION_KEY`, plus their `_FALLBACKS`
+- `DATABASE_URL`, `DATABASE_OWNER_URL`, and `POSTGRES_PASSWORD` / `POSTGRES_APP_PASSWORD`
+- `READONLY_DB_PASSWORD` and `REDIS_URL`
+- `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
+- `BOOTSTRAP_ADMIN_PASSWORD`
+- `BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY`
+
+Rules:
+- Surrounding whitespace in the file (a trailing newline) is ignored.
+- The process refuses to start if both `NAME` and `NAME_FILE` are set, or the file is
+  missing, unreadable or empty. It doesn't quietly fall back.
+- Other `_FILE` settings are paths the code opens itself, such as `REDIS_TLS_CA_FILE`.
+
+With compose, define each secret once, then grant it only to the services that need it.
+For example, to move the encryption key out of `.env.production`:
+
+```yaml
+secrets:
+  settings_encryption_key:
+    file: ./secrets/settings_encryption_key   # deploy/secrets/ is git-ignored; chmod 600
+
+services:
+  app:
+    secrets: [settings_encryption_key]        # mounted at /run/secrets/settings_encryption_key
+    environment:
+      SETTINGS_ENCRYPTION_KEY_FILE: /run/secrets/settings_encryption_key
+  # ...the same two lines for worker, maintenance and migrate; then delete
+  # SETTINGS_ENCRYPTION_KEY from .env.production.
+```
+
+Some values are used by compose itself and so must stay in `.env.production`: compose
+fills them into the file (`${...}`) before any container starts. These are:
+- `REDIS_PASSWORD`, which the Redis container and each `REDIS_URL` use
+- `READONLY_DB_PASSWORD`, set per service above
+- `APP_DOMAIN` and `JHA_IMAGE`
+
+For those, have the secrets manager write `.env.production` at deploy time (for example
+`op inject -i .env.production.tpl -o .env.production`) rather than keeping a long-lived
+copy on the host.
+
 ### Redis TLS in the app
 
 The app and workers connect with `REDIS_URL=rediss://:<password>@redis:6379/0` and
@@ -334,7 +384,5 @@ process queued.
    `workers × threads` capacity (several browser tabs, or `curl -N` against the
    endpoint), ordinary `/api/...` requests still answer promptly, and a change in one
    tab still reaches the others.
-2. **Reading secrets from files.** Secrets are environment variables. Supporting the
-   `*_FILE` convention (Docker/Kubernetes secrets) is a small follow-up.
-3. **Database provisioning, monitoring, and log shipping.** (Backups: "Backups and
+2. **Database provisioning, monitoring, and log shipping.** (Backups: "Backups and
    restore" above.)

@@ -40,7 +40,12 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
+from backend.secret_files import load_secret_files
+
 load_dotenv()
+# ai: claude-opus-5-5 | 2026-11-08
+# NAME_FILE=/path -> NAME (Docker/Kubernetes secrets), before any setting is read.
+load_secret_files(os.environ)
 
 # ─── API Keys ─────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
