@@ -51,6 +51,7 @@ SECRET_ENV_VARS: tuple[str, ...] = (
     "BOOTSTRAP_ADMIN_PASSWORD",
     "BACKUP_S3_ACCESS_KEY_ID",
     "BACKUP_S3_SECRET_ACCESS_KEY",
+    "SENTRY_DSN",  # ai: claude-opus-5-5 | 2026-11-08 -- anyone holding it can send events
 )
 
 

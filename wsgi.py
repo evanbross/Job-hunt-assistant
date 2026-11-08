@@ -27,17 +27,13 @@ Added 2026-11-06 (plan item 1.2).
 
 from __future__ import annotations
 
-import logging
-import sys
-
+from backend.error_tracking import init_error_tracking
+from backend.logging_setup import configure_logging
 from web import create_app
 from web.serving import prepare_for_serving
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s",
-    stream=sys.stdout,
-)
+configure_logging()
+init_error_tracking("web")  # ai: claude-opus-5-5 | 2026-11-08 -- before the app, so its errors report
 
 app = create_app()
 prepare_for_serving(app)

@@ -34,8 +34,10 @@ from typing import Any
 import config
 from backend.contacts.outreach_drafts import claim_draft_for_page
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
+from backend.error_tracking import init_error_tracking
 from backend.extension_auth.token_service import ExtensionTokenService
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
+from backend.logging_setup import configure_logging
 from backend.queue_websocket import QueueWebSocketServer, start_queue_websocket_server
 from backend.resume.resume_file_service import ResumeFileService
 from backend.scanning.import_listener import (
@@ -203,11 +205,8 @@ def bound_port_problem(
 # ai: claude-opus-5-5 | 2026-11-06
 def main() -> int:
     """Run the extension servers as their own process until SIGTERM/SIGINT."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s",
-        stream=sys.stdout,
-    )
+    configure_logging()
+    init_error_tracking("listener")  # ai: claude-opus-5-5 | 2026-11-08
     check_startup_secrets()  # resume files and tokens are decrypted here
     verify_database_ready()
     import_listener, queue_ws_server = start_extension_servers(

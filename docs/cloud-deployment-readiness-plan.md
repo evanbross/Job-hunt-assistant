@@ -505,12 +505,27 @@ Caddy handles certificates. Add CAA records for Let's Encrypt.
   compose itself interpolates, which stay in `.env.production`. Still to do by hand:
   choose the secrets store when the host is chosen.
 
-### 4.3 Logging, errors, monitoring
+### 4.3 Logging, errors, monitoring — done 2026-11-08
 - Logs to stdout in the standard format (filename:lineno), collected by the host or a
-  log service. Retire `server.log` in production.
+  log service. Retire `server.log` in production. *Done:* one format in
+  `backend/logging_setup.py`, used by every entry point and by Celery
+  (`worker_log_format`), and a test keeps it the only copy. The image writes no log
+  files; `server.log` is the desktop launcher's alone.
 - Error tracking (Sentry or similar) for Flask + Celery, with PII scrubbing — job
-  descriptions, emails and resumes must not end up in error payloads.
+  descriptions, emails and resumes must not end up in error payloads. *Done:*
+  `backend/error_tracking.py`, on when `SENTRY_DSN` is set (Sentry or self-hosted
+  GlitchTip), for web, listener, workers and beat. The SDK's `data_collection` sends no
+  bodies, cookies, query strings, frame locals or user info, and a `before_send`
+  scrubber redacts emails and tokens and caps every message at 300 characters. A test
+  pushes a real Flask error through the real SDK and checks that no email, token, body
+  or long text gets out.
 - Uptime check on the public URL; alert on Celery queue depth and worker liveness.
+  *Done:* beat tasks report as error-tracker cron monitors, so a stopped worker or beat
+  alerts on missed check-ins. `backend/queue_depth.py` runs on `maintenance` every 5
+  minutes and logs an error when a queue holds more than `QUEUE_DEPTH_ALERT_THRESHOLD`
+  tasks. Uptime checks are external: deploy/README.md "Logs, errors and monitoring"
+  names the two URLs. Still to do by hand: create the error-tracker project, set
+  `SENTRY_DSN` and the cron-monitor alert rules, and add the uptime monitors.
 
 ### 4.4 Deploy pipeline
 CI is currently disabled for cost and replaced by the local pre-push gate

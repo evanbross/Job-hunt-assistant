@@ -77,6 +77,7 @@ from backend.db.schema_version import (
     assert_schema_is_current,
     migration_source_hash,
 )
+from backend.logging_setup import configure_logging
 from backend.security.key_rotation import RotationError, rotate_all
 
 logger = logging.getLogger(__name__)
@@ -639,11 +640,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s",
-        stream=sys.stdout,
-    )
+    configure_logging()
     args = build_parser().parse_args(argv)
     handlers = {
         "run": _cmd_run, "status": _cmd_status, "list": _cmd_list,

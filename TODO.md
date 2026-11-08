@@ -279,4 +279,6 @@ Neon-backed install currently needs.
       documented; the restore drill itself is still to do on the real Neon project.
       4.2 (2026-11-08) every secret can come from a file (`NAME_FILE`, Docker/K8s
       secrets; backend/secret_files.py). R2 bucket `jha-backups` set up 2026-11-07.
-      Next code work: 4.3 logging/error tracking/monitoring.
+      4.3 (2026-11-08) one stdout log format, Sentry-protocol error tracking with PII
+      scrubbing (off without SENTRY_DSN), cron monitors on beat tasks, queue-depth alert.
+      Next code work: 4.4 deploy pipeline, 4.5 admin tooling.

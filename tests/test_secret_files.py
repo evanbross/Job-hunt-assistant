@@ -21,6 +21,7 @@ import pytest
 
 from backend.db.backup import BackupSettings
 from backend.db.repositories.user_accounts import BOOTSTRAP_ADMIN_PASSWORD_ENV
+from backend.error_tracking import DSN_ENV
 from backend.secret_files import SECRET_ENV_VARS, SecretFileError, load_secret_files
 from backend.security import secrets_policy
 
@@ -70,6 +71,7 @@ def test_every_secret_other_modules_name_can_come_from_a_file() -> None:
         secrets_policy.ENCRYPTION_KEY_ENV,
         secrets_policy.ENCRYPTION_KEY_FALLBACKS_ENV,
         BOOTSTRAP_ADMIN_PASSWORD_ENV,
+        DSN_ENV,
         *(f"BACKUP_{field.upper()}" for field in BackupSettings.model_fields if "access_key" in field),
     }
 

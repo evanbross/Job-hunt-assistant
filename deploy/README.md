@@ -139,7 +139,7 @@ old app, run `migrate`, then start the new one with its runtime-role `DATABASE_U
 
 ### Scheduled work
 
-`beat` (`celery -A backend.celery_app beat`) queues four ticks
+`beat` (`celery -A backend.celery_app beat`) queues five ticks
 (`backend/celery_app.py`'s `beat_schedule`), and once more each as it starts so nothing
 that fell due while it was down waits a full interval:
 
@@ -149,6 +149,7 @@ that fell due while it was down waits a full interval:
 | JD parser health check | 15 minutes | `worker` | Starts a run for each account whose configured time has passed |
 | Data lifecycle sweep | `DATA_LIFECYCLE_SWEEP_INTERVAL_HOURS` (24) | `maintenance` | Deletes accounts past their grace period; prunes old log rows |
 | Database backup | 1 hour (backs up once the last success is `BACKUP_INTERVAL_HOURS` old) | `maintenance` | An encrypted off-site dump ("Backups and restore" below) |
+| Queue depth check | 5 minutes | `maintenance` | Logs an error (an alert) when a queue holds more than `QUEUE_DEPTH_ALERT_THRESHOLD` waiting tasks ("Logs, errors and monitoring" below) |
 
 Run exactly one `beat`. A tick only decides; whether a run is already going for an
 account is recorded in Redis (`backend/active_tasks.py`), shared by every process, so
@@ -304,6 +305,62 @@ For those, have the secrets manager write `.env.production` at deploy time (for 
 `op inject -i .env.production.tpl -o .env.production`) rather than keeping a long-lived
 copy on the host.
 
+### Logs, errors and monitoring
+
+**Logs.** Every process writes to stdout in one format (`backend/logging_setup.py`):
+`time [LEVEL] logger (file.py:line): message`. Celery adds the task name and id. Docker
+keeps them (`docker compose logs <service>`). To keep them for longer or search them,
+point Docker's logging driver, or a shipper such as Vector or Fluent Bit, at your log
+service. Nothing in the image writes log files: `server.log` is written only by the
+desktop launcher.
+
+**Errors.** Set `SENTRY_DSN` and every hosted process reports to an error tracker
+(`backend/error_tracking.py`): web, listener, worker, maintenance and beat. A DSN from
+Sentry's hosted service or a self-hosted GlitchTip works the same way. Unset, errors
+are only in the logs, and each process warns about that at startup. Reported are
+unhandled exceptions and every `ERROR`/`CRITICAL` log line.
+
+This app's data is resumes, cover letters, job descriptions, email and users'
+credentials, so what gets sent is kept thin. Two layers enforce it (SDK collection
+settings, then a `before_send` scrubber), and a test runs a real Flask error through the
+real SDK to check:
+- **Not sent:**
+  - request bodies, cookies and query strings
+  - headers other than user-agent, content-type/length, accept and host
+  - local variables in stack frames
+  - user details other than an id
+  - the extra data attached to log lines
+- **Redacted:** in every message (exception text, log lines, breadcrumbs), email
+  addresses become `[email]` and token-like strings become `[redacted]`. Each message is
+  then cut to 300 characters, so at most a short fragment of any text pasted into an
+  error can leave the server.
+- **Sent:** the exception type, the stack trace with its surrounding source lines, and
+  the `component` tag (which process).
+
+Error trackers keep events on their own servers, so pick one whose data region and
+retention fit your privacy policy (Phase 5).
+
+**Alerts that something stopped.**
+- **Workers and beat:** every beat tick is reported as a cron monitor (Sentry
+  "Crons"). If beat stops, or the worker a tick runs on stops, the tracker alerts on
+  the missed check-in. The career-site and JD ticks cover `worker`; the sweep, backup
+  and queue checks cover `maintenance`. Set each monitor's alert rule once it appears.
+- **Backlog:** every 5 minutes `maintenance` counts waiting tasks per queue
+  (`backend/queue_depth.py`) and logs an error, so an alert, above
+  `QUEUE_DEPTH_ALERT_THRESHOLD` (200). It runs on `maintenance` so a stuck default worker
+  can't also stop the check that would notice it.
+- **Container health:** each container's healthcheck shows in `docker compose ps`.
+  Plain Docker does not restart an *unhealthy* container (only an exited one), which is
+  one more reason the alerts above matter.
+
+**Uptime.** These need a check from outside the host, which the host can't do for
+itself. Point an uptime monitor (UptimeRobot, Better Stack, Sentry Uptime, ...) at:
+- `https://<APP_DOMAIN>/api/system/ready`: 200 only when the database and Redis both
+  answer.
+- `https://listener.<APP_DOMAIN>/health`: the extension listener.
+
+Alert after two failed checks a minute apart.
+
 ### Redis TLS in the app
 
 The app and workers connect with `REDIS_URL=rediss://:<password>@redis:6379/0` and
@@ -384,5 +441,5 @@ process queued.
    `workers × threads` capacity (several browser tabs, or `curl -N` against the
    endpoint), ordinary `/api/...` requests still answer promptly, and a change in one
    tab still reaches the others.
-2. **Database provisioning, monitoring, and log shipping.** (Backups: "Backups and
-   restore" above.)
+2. **Database provisioning and log shipping.** (Backups: "Backups and restore";
+   errors and alerts: "Logs, errors and monitoring", both above.)

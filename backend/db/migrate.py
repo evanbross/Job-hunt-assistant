@@ -33,16 +33,13 @@ import psycopg2
 
 import config
 from backend.db import AppRoleConfigError, migrate_database
+from backend.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s",
-        stream=sys.stdout,
-    )
+    configure_logging()
     try:
         migrate_database(config.DATABASE_OWNER_URL, config.DATABASE_URL)
     except AppRoleConfigError as exc:

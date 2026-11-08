@@ -50,12 +50,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from backend.logging_setup import configure_logging  # noqa: E402
 from backend.utils.utils import get_repos  # noqa: E402
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s",
-)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 

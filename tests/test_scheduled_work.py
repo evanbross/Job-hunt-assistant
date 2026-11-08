@@ -30,6 +30,7 @@ from backend.celery_app import (
     DEFAULT_QUEUE,
     JD_HEALTH_CHECK_TICK,
     MAINTENANCE_QUEUE,
+    QUEUE_DEPTH_CHECK,
     celery_app,
 )
 from backend.db import AppRoleConfigError, get_connection
@@ -47,7 +48,10 @@ def test_every_scheduled_task_is_one_the_worker_registers() -> None:
     celery_app.loader.import_default_modules()
     scheduled = {entry["task"] for entry in celery_app.conf.beat_schedule.values()}
 
-    assert scheduled == {CAREER_SITE_SCAN_TICK, JD_HEALTH_CHECK_TICK, DATA_LIFECYCLE_SWEEP, DATABASE_BACKUP_TICK}
+    assert scheduled == {
+        CAREER_SITE_SCAN_TICK, JD_HEALTH_CHECK_TICK, DATA_LIFECYCLE_SWEEP, DATABASE_BACKUP_TICK,
+        QUEUE_DEPTH_CHECK,  # ai: claude-opus-5-5 | 2026-11-08
+    }
     assert scheduled <= set(celery_app.tasks)
 
 
@@ -55,10 +59,12 @@ def _queue_for(task_name: str) -> str:
     return celery_app.amqp.router.route({}, task_name)["queue"].name
 
 
-# ai: claude-opus-5-5 | 2026-11-07 -- and the backup tick: both need the owner's URL
-def test_only_the_sweep_and_the_backup_go_to_the_maintenance_queue() -> None:
+# ai: claude-opus-5-5 | 2026-11-08 -- the sweep and backup need the owner's URL; the queue
+# check must not wait behind the default queue it measures
+def test_only_the_sweep_the_backup_and_the_queue_check_go_to_the_maintenance_queue() -> None:
     assert _queue_for(DATA_LIFECYCLE_SWEEP) == MAINTENANCE_QUEUE
     assert _queue_for(DATABASE_BACKUP_TICK) == MAINTENANCE_QUEUE
+    assert _queue_for(QUEUE_DEPTH_CHECK) == MAINTENANCE_QUEUE
     assert _queue_for(CAREER_SITE_SCAN_TICK) == DEFAULT_QUEUE
     assert _queue_for(JD_HEALTH_CHECK_TICK) == DEFAULT_QUEUE
 
@@ -72,7 +78,8 @@ def test_beat_ticks_everything_once_as_it_starts(monkeypatch: pytest.MonkeyPatch
     beat_init.send(sender=None)
 
     assert sorted(sent) == sorted(
-        [CAREER_SITE_SCAN_TICK, JD_HEALTH_CHECK_TICK, DATA_LIFECYCLE_SWEEP, DATABASE_BACKUP_TICK]
+        [CAREER_SITE_SCAN_TICK, JD_HEALTH_CHECK_TICK, DATA_LIFECYCLE_SWEEP, DATABASE_BACKUP_TICK,
+         QUEUE_DEPTH_CHECK]  # ai: claude-opus-5-5 | 2026-11-08
     )
 
 

@@ -122,6 +122,10 @@ JD_HEALTH_CHECK_RESULTS_RETENTION_DAYS: int = int(
 CAREER_SCAN_FAILURES_RETENTION_DAYS: int = int(
     os.getenv("CAREER_SCAN_FAILURES_RETENTION_DAYS", "90")
 )
+# ai: claude-opus-5-5 | 2026-11-08
+# backend/queue_depth.py logs an ERROR (an error-tracker alert) when more tasks than
+# this are waiting in a Celery queue.
+QUEUE_DEPTH_ALERT_THRESHOLD: int = int(os.getenv("QUEUE_DEPTH_ALERT_THRESHOLD", "200"))
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR: Path = Path(__file__).parent

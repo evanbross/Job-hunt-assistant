@@ -64,6 +64,7 @@ from backend.celery_app import (  # ai: claude-fable-5 | 2026-07-16
     worker_is_running,
 )
 from backend.db import AppRoleConfigError, migrate_database_with_retry
+from backend.logging_setup import configure_logging
 from backend.settings_service import get_setting
 from backend.utils.utils import get_repos
 from web import create_app
@@ -104,11 +105,7 @@ class _PollFilter(logging.Filter):
 # ai: claude-opus-5-5 | 2026-11-05 -- was module-level; importing this file no
 # longer reconfigures the root logger.
 def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s",
-        stream=sys.stdout,
-    )
+    configure_logging()
     logging.getLogger("werkzeug").addFilter(_PollFilter())
 
 

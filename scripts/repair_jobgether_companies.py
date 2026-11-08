@@ -56,6 +56,7 @@ from urllib.error import URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from backend.logging_setup import configure_logging  # noqa: E402
 from backend.scanning.import_repair import (  # noqa: E402
     fetch_jobgether_page_html,
     is_jobgether_placeholder_company,
@@ -66,10 +67,7 @@ from backend.scanning.import_repair import (  # noqa: E402
 from backend.utils.url_safety import UnsafeUrlError  # noqa: E402
 from backend.utils.utils import get_repos  # noqa: E402
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s",
-)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 _USER_ID = 1  # sole account in this single-tenant deployment (evan@eross.com)

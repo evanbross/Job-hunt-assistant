@@ -52,6 +52,8 @@ from celery.signals import beat_init, worker_init
 
 import config
 from backend.app_mode import AppModeConfigError, app_mode
+from backend.error_tracking import init_error_tracking
+from backend.logging_setup import CELERY_TASK_LOG_FORMAT, LOG_FORMAT
 from backend.public_urls import PublicUrlConfigError, check_hosted_public_config
 from backend.security.redis_tls import redis_ssl_options
 from backend.security.secrets_policy import (
@@ -84,6 +86,7 @@ celery_app = Celery(
         "routes.jobs",  # ai: claude-opus-5-5 | 2026-11-06
         "backend.security.data_lifecycle",
         "backend.db.scheduled_backup",  # ai: claude-opus-5-5 | 2026-11-07
+        "backend.queue_depth",  # ai: claude-opus-5-5 | 2026-11-08
     ],
 )
 
@@ -97,6 +100,10 @@ DATA_LIFECYCLE_SWEEP = "backend.security.data_lifecycle.data_lifecycle_sweep_tas
 # (BACKUP_INTERVAL_HOURS), so a failed backup is retried within the hour.
 DATABASE_BACKUP_TICK = "backend.db.scheduled_backup.database_backup_tick"
 DATABASE_BACKUP_TICK_INTERVAL = timedelta(hours=1)
+# ai: claude-opus-5-5 | 2026-11-08 -- alerts on a backed-up queue (backend/queue_depth.py);
+# on the maintenance queue so a stuck default worker cannot also stop the check.
+QUEUE_DEPTH_CHECK = "backend.queue_depth.queue_depth_check"
+QUEUE_DEPTH_CHECK_INTERVAL = timedelta(minutes=5)
 # How often beat asks "is a JD health check due" per account. The run itself happens at
 # each account's own configured time; this only bounds how late it can start.
 JD_HEALTH_CHECK_TICK_INTERVAL = timedelta(minutes=15)
@@ -126,6 +133,7 @@ celery_app.conf.update(
     task_routes={
         DATA_LIFECYCLE_SWEEP: {"queue": MAINTENANCE_QUEUE},
         DATABASE_BACKUP_TICK: {"queue": MAINTENANCE_QUEUE},  # ai: claude-opus-5-5 | 2026-11-07
+        QUEUE_DEPTH_CHECK: {"queue": MAINTENANCE_QUEUE},  # ai: claude-opus-5-5 | 2026-11-08
     },
     beat_schedule={
         "career-site-scan": {
@@ -144,9 +152,16 @@ celery_app.conf.update(
             "task": DATABASE_BACKUP_TICK,
             "schedule": DATABASE_BACKUP_TICK_INTERVAL,
         },
+        "queue-depth-check": {  # ai: claude-opus-5-5 | 2026-11-08
+            "task": QUEUE_DEPTH_CHECK,
+            "schedule": QUEUE_DEPTH_CHECK_INTERVAL,
+        },
     },
     # Each tick re-checks what is due, so one missed while beat was down is just late.
     beat_max_loop_interval=300,
+    # ai: claude-opus-5-5 | 2026-11-08 -- the one log format (backend/logging_setup.py)
+    worker_log_format=LOG_FORMAT,
+    worker_task_log_format=CELERY_TASK_LOG_FORMAT,
 )
 
 
@@ -175,6 +190,14 @@ def _require_valid_encryption_key(**_kwargs: object) -> None:
     except (InsecureSecretError, AppModeConfigError, PublicUrlConfigError) as exc:
         logger.critical("%s", exc)
         raise SystemExit(1) from exc
+    init_error_tracking("worker")  # ai: claude-opus-5-5 | 2026-11-08
+
+
+# ai: claude-opus-5-5 | 2026-11-08
+@beat_init.connect
+def _report_beat_errors(**_kwargs: object) -> None:
+    """Beat reports too: its schedule is what the error tracker's cron monitors watch."""
+    init_error_tracking("beat")
 
 
 # ai: claude-fable-5 | 2026-07-16
