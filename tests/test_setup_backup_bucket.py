@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from backend.db.backup import BackupSettings, list_object_keys
@@ -93,3 +94,17 @@ def test_an_existing_identity_is_never_overwritten(setup_script: Any, tmp_path: 
     with pytest.raises(FileExistsError):
         setup_script.generate_identity(identity)
     assert identity.read_text(encoding="utf-8") == "AGE-SECRET-KEY-1EXISTING"
+
+
+# ai: claude-opus-5-5 | 2026-11-07
+def test_a_refused_key_explains_the_usual_causes(
+    setup_script: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def refuse(_args: Any) -> int:
+        raise ClientError({"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadBucket")
+
+    monkeypatch.setattr(setup_script, "run", refuse)
+
+    assert setup_script.main(["r2"]) == 1
+    err = capsys.readouterr().err
+    assert "Forbidden" in err and "64 hex characters" in err and "doesn't exist yet" in err

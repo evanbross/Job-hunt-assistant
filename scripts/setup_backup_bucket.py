@@ -51,6 +51,17 @@ ENV_FILE = REPO_ROOT / "deploy" / ".env.backup"
 DEFAULT_RETENTION_DAYS = 35
 DEFAULT_IDENTITY_FILE = Path.home() / "jha-backup-identity.txt"
 _UNSUPPORTED = {"NotImplemented", "NotImplementedError", "InvalidRequest", "MethodNotAllowed"}
+# ai: claude-opus-5-5 | 2026-11-07
+# A HEAD request's 403 carries no reason, so say what it usually means.
+_FORBIDDEN = {"403", "AccessDenied", "Forbidden", "SignatureDoesNotMatch", "InvalidAccessKeyId"}
+_FORBIDDEN_HINT = (
+    "The key was refused. Usually one of:\n"
+    "  - the secret pasted is not the key's Secret Access Key (on R2 that's 64 hex characters,"
+    " not the ~40-character 'Token value'),\n"
+    "  - the admin key is limited to specific buckets and the bucket doesn't exist yet"
+    " (create it in the dashboard, or give the admin key all buckets),\n"
+    "  - the server key is scoped to a different bucket than the one you named."
+)
 
 
 @dataclass(frozen=True)
@@ -60,6 +71,7 @@ class Provider:
     asks_for: str
     default_region: str | None
     lock_hint: str
+    server_key_hint: str  # ai: claude-opus-5-5 | 2026-11-07
 
 
 PROVIDERS: dict[str, Provider] = {
@@ -68,17 +80,20 @@ PROVIDERS: dict[str, Provider] = {
         "Cloudflare account ID (R2 overview page, right-hand side)", "auto",
         "Cloudflare dashboard > R2 > the bucket > Settings > Bucket lock rules: add a rule"
         " retaining objects for at least 7 days.",
+        "an Account API token with Object Read & Write, applied to this bucket only",
     ),
     "b2": Provider(
         "Backblaze B2", lambda region: f"https://s3.{region}.backblazeb2.com",
         "bucket region, e.g. us-west-004 (shown as the S3 endpoint's middle part)", None,
         "Backblaze: Object Lock can only be turned on when a bucket is created. If you want it,"
         " create the bucket in the web UI with Object Lock enabled before running this script.",
+        "an application key limited to this bucket, with writeFiles only",
     ),
     "s3": Provider(
         "Amazon S3", lambda _region: None, "AWS region, e.g. us-east-1", None,
         "AWS: Object Lock must be enabled at bucket creation (S3 console > Create bucket >"
         " Advanced settings) -- create it there first if you want it.",
+        "an IAM user allowed only s3:PutObject on this bucket's key prefix",
     ),
 }
 
@@ -224,8 +239,9 @@ def run(args: argparse.Namespace) -> int:
               "  -> Copy it into your password manager (and a sealed offline copy), then delete"
               " the file.\n  -> Without it the backups can never be decrypted.")
 
-    print("\nThe SERVER key is what the maintenance worker uses: as narrow as the provider allows"
-          " (R2: Object Read & Write scoped to this bucket; B2: writeFiles only).")
+    # ai: claude-opus-5-5 | 2026-11-07
+    print(f"\nThe SERVER key is what the maintenance worker uses. Make it {provider.server_key_hint}"
+          " -- a separate key from the admin one.")
     try:
         server = BackupSettings(
             s3_bucket=bucket, s3_endpoint_url=endpoint, s3_region=region, s3_prefix=prefix,
@@ -268,6 +284,9 @@ def main(argv: list[str] | None = None) -> int:
         return run(args)
     except (BackupConfigError, FileExistsError, FileNotFoundError, ClientError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        # ai: claude-opus-5-5 | 2026-11-07
+        if isinstance(exc, ClientError) and exc.response.get("Error", {}).get("Code") in _FORBIDDEN:
+            print(_FORBIDDEN_HINT, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
