@@ -15,8 +15,9 @@ import logging
 from collections import Counter
 from typing import Any
 
+from backend.email.notification_recipient import notification_recipient
 from backend.email.smtp_sender import send_email
-from backend.settings_service import get_setting, get_setting_bool
+from backend.settings_service import get_setting_bool
 from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
@@ -103,16 +104,15 @@ def send_career_scan_digest(user_id: int, state: dict[str, Any]) -> None:
             "career_scan_digest_enabled", user_id, repos, default=True
         ):
             return
-        configured_recipient = get_setting(
-            "career_scan_digest_notify_email", user_id, repos
-        ).strip()
-        account = repos["user_accounts"].get(user_id)
+        # ai: claude-opus-5-5 | 2026-11-09 -- hosted: the account's own email only
+        recipient = notification_recipient(
+            user_id, "career_scan_digest_notify_email", repos, fall_back_to_account=True
+        )
         claimed = repos["career_scan_digest_log"].claim(user_id, report_date)
         repos["conn"].commit()
     if not claimed:
         return
 
-    recipient = configured_recipient or str((account or {}).get("email") or "").strip()
     if not recipient or recipient.endswith("@localhost"):
         logger.warning(
             "Career scan digest not sent for user %s: no deliverable email address",

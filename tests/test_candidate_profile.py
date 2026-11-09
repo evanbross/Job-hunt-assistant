@@ -291,6 +291,23 @@ def test_the_config_route_no_longer_exposes_a_profile_path(profile_client: Any) 
     assert "candidate_profile_path" not in body
 
 
+# ai: claude-opus-5-5 | 2026-11-09
+def test_the_config_route_leaves_out_notify_addresses_when_hosted(
+    profile_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Settings page saves back what GET returned, so a hosted GET must not hand
+    it a desktop-only key the PUT would then refuse."""
+    client, _, _, _ = profile_client
+    notify_keys = {"career_scan_digest_notify_email", "jd_health_check_notify_email"}
+    assert notify_keys <= client.get("/api/config").get_json().keys()
+
+    monkeypatch.setattr(config, "APP_MODE", "hosted")
+    body = client.get("/api/config").get_json()
+
+    assert not notify_keys & body.keys()
+    assert client.put("/api/config", json=body).status_code == 200
+
+
 # ─── one-time migration of the legacy shared file ───────────────────────────────
 
 

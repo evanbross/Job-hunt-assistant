@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 import backend.tasks as tasks
+import config
 from backend.db import get_connection
 from backend.db.repositories.user_accounts import PostgresUserAccountRepository
 from backend.settings_service import set_setting
@@ -91,9 +92,8 @@ class _RecordingGmail:
         _RecordingGmail.sent.append({"to": to, "subject": subject, "body": body_text})
 
 
-def test_the_task_emails_the_kind_of_target_and_a_link_to_its_settings(
-    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+# ai: claude-opus-5-5 | 2026-11-09
+def _user_with_one_short_posting_target(pg_dsn: str) -> int:
     conn = get_connection(pg_dsn)
     try:
         user_id = PostgresUserAccountRepository(conn).create_pending(
@@ -109,6 +109,13 @@ def test_the_task_emails_the_kind_of_target_and_a_link_to_its_settings(
         set_setting("jd_health_check_notify_email", "me@example.com", user_id, repos)
         set_setting("app_base_url", "https://jobs.example.com", None, repos)  # system-wide
         repos["conn"].commit()
+    return user_id
+
+
+def test_the_task_emails_the_kind_of_target_and_a_link_to_its_settings(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id = _user_with_one_short_posting_target(pg_dsn)
     _RecordingGmail.sent = []
     monkeypatch.setattr(tasks, "CareerSiteScanner", _ShortPostingScanner)
     monkeypatch.setattr(tasks, "GmailClient", _RecordingGmail)
@@ -120,3 +127,33 @@ def test_the_task_emails_the_kind_of_target_and_a_link_to_its_settings(
     assert "not jobs in your queue" in body
     assert "If the posting has closed" in body
     assert "https://jobs.example.com/?settings=jd_health_check" in body
+
+
+# ai: claude-opus-5-5 | 2026-11-09
+def test_hosted_sends_the_failure_email_through_smtp_not_the_users_gmail(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hosted never requests gmail.send (backend/email/gmail_scopes.py), so the
+    notification goes through the app's SMTP relay instead -- and only to the
+    account's own email, never the stored notify address."""
+    user_id = _user_with_one_short_posting_target(pg_dsn)
+    smtp_sent: list[dict[str, str]] = []
+
+    def _record_smtp(*, to: str, subject: str, body_text: str) -> None:
+        smtp_sent.append({"to": to, "subject": subject, "body": body_text})
+
+    def _no_gmail(user_id: int) -> None:
+        raise AssertionError("hosted must not send through the user's Gmail")
+
+    monkeypatch.setattr(config, "APP_MODE", "hosted")
+    monkeypatch.setattr(config, "APP_BASE_URL", "https://jobs.example.com")
+    monkeypatch.setattr(tasks, "CareerSiteScanner", _ShortPostingScanner)
+    monkeypatch.setattr(tasks, "GmailClient", _no_gmail)
+    monkeypatch.setattr(tasks.smtp_sender, "send_email", _record_smtp)
+
+    run_jd_health_check_task.apply(args=(user_id,))
+
+    assert [m["to"] for m in smtp_sent] == ["health@example.com"]
+    assert smtp_sent[0]["subject"] == "JD parser health check: 1 failure(s)"
+    assert "If the posting has closed" in smtp_sent[0]["body"]
+    assert "https://jobs.example.com/?settings=jd_health_check" in smtp_sent[0]["body"]

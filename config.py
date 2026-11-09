@@ -252,20 +252,9 @@ LEGACY_GOOGLE_TOKEN_FILE: Path = CREDENTIALS_DIR / "token.json"
 # While True, OAuth scopes are read-only and all write methods are no-ops.
 READ_ONLY_MODE: bool = False
 
-# ai: claude-sonnet-5 | 2026-08-03
-# gmail.send added for the JD health check's failure-notification email
-# (GmailClient.send_email). Existing users must re-consent via
-# /api/auth/disconnect + /api/auth/google — a stored token issued before this
-# change won't carry the new scope until then (see routes/auth.py's
-# has_send_scope check, which surfaces that state to the Settings UI).
-GMAIL_SCOPES: list[str] = (
-    ["https://www.googleapis.com/auth/gmail.readonly"]
-    if READ_ONLY_MODE
-    else [
-        "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/gmail.send",
-    ]
-)
+# ai: claude-opus-5-5 | 2026-11-09 — the scope list moved to
+# backend/email/gmail_scopes.py's gmail_scopes(): it depends on APP_MODE (hosted
+# drops gmail.send), which is decided in backend/app_mode.py.
 # ai: claude-opus-5-5 | 2026-11-02 — must match server.port in frontend/vite.config.ts
 VITE_DEV_PORT: int = 5174
 

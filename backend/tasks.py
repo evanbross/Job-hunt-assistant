@@ -45,6 +45,7 @@ import json
 import logging
 import pathlib
 import re
+import smtplib
 import socket
 import time
 import urllib.error
@@ -60,7 +61,9 @@ from backend.ai_provider import AIMessage, AIProviderClient
 from backend.app_mode import is_hosted
 from backend.celery_app import celery_app
 from backend.db import DuplicateJobUrlError
+from backend.email import smtp_sender
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
+from backend.email.notification_recipient import notification_recipient
 from backend.public_urls import public_base_url
 from backend.scanning.career_site_scanner import (
     CareerSiteScanner,
@@ -91,7 +94,6 @@ from backend.scoring.jd_enrichment import (
     unenriched_skip_reason,
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
-from backend.settings_service import get_setting
 from backend.user_events import UserEventTopic, get_user_events
 from backend.utils.utils import get_repos, parse_positive_int
 
@@ -951,23 +953,28 @@ def jd_health_check_failure_email_body(
     return "\n".join(lines).rstrip() + "\n"
 
 
-# ai: claude-sonnet-5 | 2026-08-03
+# ai: claude-opus-5-5 | 2026-11-09
 def _send_jd_health_check_failure_email(
     user_id: int, failure_details: list[dict[str, str]]
 ) -> None:
-    """Best-effort failure notification. Never raises -- a send failure (not
-    configured, not authenticated, or a token missing the gmail.send scope)
-    is logged and swallowed; the health check run itself already completed
-    and was recorded regardless. Per COMMON_CODING_STANDARDS.md's OAuth
-    rule, this must never attempt to trigger auth itself from a background
-    task -- only GmailClient's documented NotAuthenticatedError/HttpError
-    are caught, so a missing-scope 403 surfaces as a log line, not a crash.
+    """Best-effort failure notification. Never raises -- a send failure is
+    logged and swallowed; the health check run itself already completed and
+    was recorded regardless.
+
+    Desktop sends from the user's own Gmail (gmail.send) to the configured
+    notify address. Hosted never requests that scope
+    (backend/email/gmail_scopes.py), so it sends through the app's SMTP relay
+    like the career scan digest, to the account's own email. Per COMMON_CODING_STANDARDS.md's
+    OAuth rule, the Gmail path never triggers auth itself from a background
+    task -- only GmailClient's documented NotAuthenticatedError/HttpError are
+    caught, so a missing-scope 403 surfaces as a log line, not a crash.
     """
     with get_repos(user_id) as repos:
-        notify_email = get_setting(
-            "jd_health_check_notify_email", user_id, repos
-        ).strip()
-        app_base_url = public_base_url(repos)  # ai: claude-opus-5-5 | 2026-11-07
+        # Hosted: the account's own email (backend/email/notification_recipient.py).
+        notify_email = notification_recipient(
+            user_id, "jd_health_check_notify_email", repos, fall_back_to_account=False
+        )
+        app_base_url = public_base_url(repos)
     if not notify_email:
         # ai: claude-sonnet-5 | 2026-09-04 — name the failing targets so the
         # log line is useful when no notify email is configured to see the
@@ -981,14 +988,22 @@ def _send_jd_health_check_failure_email(
         )
         return
 
+    subject = f"JD parser health check: {len(failure_details)} failure(s)"
     body_text = jd_health_check_failure_email_body(failure_details, app_base_url)
 
+    if is_hosted():
+        try:
+            smtp_sender.send_email(to=notify_email, subject=subject, body_text=body_text)
+        except (OSError, smtplib.SMTPException, ValueError) as exc:
+            logger.warning(
+                "JD health check: could not send failure-notification email to %s via SMTP: %s",
+                notify_email,
+                exc,
+            )
+        return
+
     try:
-        GmailClient(user_id).send_email(
-            to=notify_email,
-            subject=f"JD parser health check: {len(failure_details)} failure(s)",
-            body_text=body_text,
-        )
+        GmailClient(user_id).send_email(to=notify_email, subject=subject, body_text=body_text)
     except (NotAuthenticatedError, HttpError) as exc:
         logger.warning(
             "JD health check: could not send failure-notification email to %s "

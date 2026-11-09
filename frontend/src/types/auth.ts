@@ -50,7 +50,8 @@ export interface AccountInfo {
 /** GET /api/auth/status response (routes/auth.py's auth_status). */
 export interface AuthStatusResponse {
   authenticated: boolean;
-  has_send_scope?: boolean;
+  /** False when the stored token lacks a scope this deployment requests (backend/email/gmail_scopes.py). */
+  has_required_scopes?: boolean;
 }
 
 /** GET /api/auth/google response (routes/auth.py's auth_google_start). */

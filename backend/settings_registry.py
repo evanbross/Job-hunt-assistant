@@ -65,7 +65,8 @@ class SettingSpec:
     hidden: bool = False
     # ai: claude-opus-5-5 | 2026-11-06 -- only meaningful on the user's own machine
     # (it names a path on this computer, say). Not offered, read or written when the
-    # app is hosted (backend/app_mode.py); see available_system_setting_keys().
+    # app is hosted (backend/app_mode.py); see available_system_setting_keys() and
+    # available_user_setting_keys().
     desktop_only: bool = False
 
 
@@ -268,6 +269,10 @@ SETTINGS: dict[str, SettingSpec] = {
         scope="user", is_secret=False, default="",
         label="Scan Report Email", group="Email", placeholder="you@example.com",
         help_text="Optional. Defaults to the email address on your account.",
+        # ai: claude-opus-5-5 | 2026-11-09 -- hosted, the app's SMTP relay sends this, so
+        # it goes only to the account's own verified address (notification_recipient()):
+        # a free-text address would let any user aim the relay at strangers.
+        desktop_only=True,
     ),
     "candidate_timezone": SettingSpec(
         scope="user", is_secret=False, default=config.DEFAULT_CANDIDATE_TIMEZONE,
@@ -316,6 +321,7 @@ SETTINGS: dict[str, SettingSpec] = {
         scope="user", is_secret=False, default=config.DEFAULT_JD_HEALTH_CHECK_NOTIFY_EMAIL,
         label="Notify Email", group="JD Health Check", placeholder="you@example.com",
         help_text="Sent only when a run has at least one failing target.",
+        desktop_only=True,  # ai: claude-opus-5-5 | 2026-11-09 -- see career_scan_digest_notify_email
     ),
 }
 
@@ -343,6 +349,12 @@ def available_system_setting_keys() -> frozenset[str]:
     desktop-only ones (a path on the server's disk means nothing to anyone, and an
     admin pointing one at a server file could load it into an account's profile)."""
     return frozenset(key for key in SYSTEM_SETTING_KEYS if _offered_here(SETTINGS[key]))
+
+
+# ai: claude-opus-5-5 | 2026-11-09
+def available_user_setting_keys() -> frozenset[str]:
+    """USER_SETTING_KEYS this installation offers: hosted, not the desktop-only ones."""
+    return frozenset(key for key in USER_SETTING_KEYS if _offered_here(SETTINGS[key]))
 
 
 def schema_for_scope(scope: str) -> list[dict[str, object]]:

@@ -14,6 +14,8 @@ from typing import Any
 
 import pytest
 
+import config
+from backend.email import notification_recipient
 from backend.scanning import career_scan_digest
 
 
@@ -86,7 +88,7 @@ def test_digest_uses_account_email_when_no_override(
         return ""
 
     monkeypatch.setattr(career_scan_digest, "get_repos", fake_get_repos)
-    monkeypatch.setattr(career_scan_digest, "get_setting", fake_get_setting)
+    monkeypatch.setattr(notification_recipient, "get_setting", fake_get_setting)
     monkeypatch.setattr(career_scan_digest, "get_setting_bool", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         career_scan_digest,
@@ -106,6 +108,39 @@ def test_digest_uses_account_email_when_no_override(
 
     assert sent["to"] == "owner@example.com"
     assert sent["subject"] == "Job-board scan report — 2026-10-04"
+
+
+# ai: claude-opus-5-5 | 2026-11-09
+@pytest.mark.parametrize(
+    ("app_mode", "expected_to"),
+    [("desktop", "someone-else@example.com"), ("hosted", "owner@example.com")],
+)
+def test_hosted_sends_the_digest_only_to_the_accounts_own_email(
+    monkeypatch: pytest.MonkeyPatch, app_mode: str, expected_to: str
+) -> None:
+    """Hosted, the app's SMTP relay sends the digest, so a stored override address
+    (e.g. one saved on desktop before moving) must not be able to redirect it."""
+    sent: dict[str, str] = {}
+
+    @contextmanager
+    def fake_get_repos(user_id: int):
+        yield {
+            "user_accounts": FakeAccountsRepository(),
+            "career_scan_digest_log": FakeDigestLogRepository(),
+            "conn": FakeConnection(),
+        }
+
+    monkeypatch.setattr(config, "APP_MODE", app_mode)
+    monkeypatch.setattr(career_scan_digest, "get_repos", fake_get_repos)
+    monkeypatch.setattr(career_scan_digest, "get_setting_bool", lambda *a, **k: True)
+    monkeypatch.setattr(notification_recipient, "get_setting", lambda *a, **k: "someone-else@example.com")
+    monkeypatch.setattr(career_scan_digest, "send_email", lambda **kwargs: sent.update(kwargs))
+
+    career_scan_digest.send_career_scan_digest(
+        7, {"last_run_at": "2026-11-09T03:15:00+00:00", "site_reports": []}
+    )
+
+    assert sent["to"] == expected_to
 
 
 # ai: gpt-5 | 2026-10-04
@@ -159,7 +194,7 @@ def test_digest_is_not_sent_twice_for_the_same_report_date(
         }
 
     monkeypatch.setattr(career_scan_digest, "get_repos", fake_get_repos)
-    monkeypatch.setattr(career_scan_digest, "get_setting", lambda *a, **k: "")
+    monkeypatch.setattr(notification_recipient, "get_setting", lambda *a, **k: "")
     monkeypatch.setattr(career_scan_digest, "get_setting_bool", lambda *a, **k: True)
     monkeypatch.setattr(career_scan_digest, "send_email", lambda **kwargs: sent.append(kwargs))
 

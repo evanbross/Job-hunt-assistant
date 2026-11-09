@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from cryptography.fernet import Fernet
@@ -33,6 +34,11 @@ from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
 from backend.db.row_level_security import set_current_user
 from backend.db.schema import _migrate_legacy_google_files
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
+from backend.email.gmail_scopes import (
+    GMAIL_MODIFY_SCOPE,
+    GMAIL_SEND_SCOPE,
+    gmail_scopes,
+)
 from backend.email.google_oauth_pending import MemoryPendingAuthStore, PendingGoogleAuth
 from backend.email.google_token_store import GoogleTokenStore
 from backend.settings_registry import SYSTEM_SETTING_KEYS, schema_for_scope
@@ -44,7 +50,6 @@ from tests.db_roles import runtime_database_url
 
 # ai: claude-sonnet-5 | 2026-09-26
 
-SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 CLIENT_CONFIG = {
     "installed": {
         "client_id": "abc.apps.googleusercontent.com",
@@ -76,7 +81,7 @@ def make_credentials(
         client_id="cid",
         client_secret="csecret",
         token_uri="https://oauth2.googleapis.com/token",
-        scopes=scopes or list(config.GMAIL_SCOPES),
+        scopes=scopes or gmail_scopes(),
         expiry=expiry,
     )
 
@@ -146,10 +151,10 @@ def test_saving_again_replaces_the_token_and_scopes_are_reported(pg_dsn: str) ->
         assert store.granted_scopes(user_id) is None  # ai: claude-opus-5-5 | 2026-10-24
 
         store.save(user_id, make_credentials("old", scopes=["scope-a"]))
-        store.save(user_id, make_credentials("new", scopes=["scope-a", SEND_SCOPE]))
+        store.save(user_id, make_credentials("new", scopes=["scope-a", GMAIL_SEND_SCOPE]))
 
         assert store.load(user_id).refresh_token == "new"
-        assert SEND_SCOPE in store.granted_scopes(user_id)
+        assert GMAIL_SEND_SCOPE in store.granted_scopes(user_id)
     finally:
         conn.close()
 
@@ -302,21 +307,68 @@ def test_status_and_disconnect_only_concern_the_logged_in_user(
     try:
         store = GoogleTokenStore(PostgresGoogleTokenRepository(conn))
         set_current_user(conn.cursor(), ids["a"])
-        store.save(ids["a"], make_credentials("a-refresh", scopes=[SEND_SCOPE]))
+        store.save(ids["a"], make_credentials("a-refresh", scopes=[GMAIL_MODIFY_SCOPE, GMAIL_SEND_SCOPE]))
         set_current_user(conn.cursor(), ids["b"])
         store.save(ids["b"], make_credentials("b-refresh", scopes=["other"]))
         conn.commit()
     finally:
         conn.close()
 
-    assert client.get("/api/auth/status").get_json() == {"authenticated": True, "has_send_scope": True}
+    assert client.get("/api/auth/status").get_json() == {"authenticated": True, "has_required_scopes": True}
     session_user["id"] = ids["b"]
-    assert client.get("/api/auth/status").get_json() == {"authenticated": True, "has_send_scope": False}
+    assert client.get("/api/auth/status").get_json() == {"authenticated": True, "has_required_scopes": False}
 
     assert client.post("/api/auth/disconnect").status_code == 200
     assert client.get("/api/auth/status").get_json()["authenticated"] is False
     session_user["id"] = ids["a"]
     assert client.get("/api/auth/status").get_json()["authenticated"] is True
+
+
+# ai: claude-opus-5-5 | 2026-11-09
+def test_a_modify_only_token_needs_reconnecting_on_desktop_but_not_hosted(
+    pg_dsn: str, auth_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hosted never asks for gmail.send (plan 3.1), so a token without it is complete
+    there; on desktop the same token is missing the health-check email's scope."""
+    client, ids, _session_user = auth_client
+    conn = get_connection(pg_dsn)
+    try:
+        set_current_user(conn.cursor(), ids["a"])
+        GoogleTokenStore(PostgresGoogleTokenRepository(conn)).save(
+            ids["a"], make_credentials("a-refresh", scopes=[GMAIL_MODIFY_SCOPE])
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert client.get("/api/auth/status").get_json()["has_required_scopes"] is False
+    monkeypatch.setattr(config, "APP_MODE", "hosted")
+    assert client.get("/api/auth/status").get_json()["has_required_scopes"] is True
+
+
+# ai: claude-opus-5-5 | 2026-11-09
+@pytest.mark.parametrize(
+    ("app_mode", "expected_scopes"),
+    [("desktop", [GMAIL_MODIFY_SCOPE, GMAIL_SEND_SCOPE]), ("hosted", [GMAIL_MODIFY_SCOPE])],
+)
+def test_the_consent_url_asks_for_this_deployments_gmail_scopes(
+    pg_dsn: str,
+    auth_client: Any,
+    pending_google_auths: MemoryPendingAuthStore,
+    monkeypatch: pytest.MonkeyPatch,
+    app_mode: str,
+    expected_scopes: list[str],
+) -> None:
+    """What Google's consent screen shows is what the verification review sizes (plan 3.1)."""
+    client, _, _ = auth_client
+    _configure_google_client(pg_dsn)
+    monkeypatch.setattr(config, "APP_MODE", app_mode)
+
+    response = client.get("/api/auth/google")
+
+    assert response.status_code == 200
+    query = parse_qs(urlparse(response.get_json()["auth_url"]).query)
+    assert query["scope"][0].split(" ") == expected_scopes
 
 
 def test_starting_auth_without_an_admin_configured_client_is_a_clear_400(auth_client: Any) -> None:
@@ -582,4 +634,4 @@ def test_status_counts_an_undecryptable_token_as_connected(pg_dsn: str, auth_cli
     finally:
         conn.close()
 
-    assert client.get("/api/auth/status").get_json() == {"authenticated": True, "has_send_scope": False}
+    assert client.get("/api/auth/status").get_json() == {"authenticated": True, "has_required_scopes": False}

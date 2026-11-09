@@ -34,7 +34,11 @@ from backend.db.readonly_role import (
     ReadonlyRolePasswordMissingError,
     get_or_create_readonly_password,
 )
-from backend.settings_registry import available_system_setting_keys, schema_for_scope
+from backend.settings_registry import (
+    available_system_setting_keys,
+    available_user_setting_keys,
+    schema_for_scope,
+)
 from routes.settings import settings_bp
 from routes.system import system_bp
 from web.serving import check_startup_secrets
@@ -157,6 +161,32 @@ def test_an_admin_cannot_set_a_server_file_path_when_hosted(hosted: None) -> Non
 
     assert response.status_code == 400
     assert SYNC_PATH_SETTING in response.get_json()["error"]
+
+
+# ai: claude-opus-5-5 | 2026-11-09
+NOTIFY_EMAIL_SETTINGS = {"career_scan_digest_notify_email", "jd_health_check_notify_email"}
+
+
+def test_notify_email_addresses_are_not_offered_when_hosted(hosted: None) -> None:
+    """Hosted, notifications go through the app's SMTP relay to the account's own
+    email (backend/email/notification_recipient.py), so there is no address to pick."""
+    assert not NOTIFY_EMAIL_SETTINGS & {field["key"] for field in schema_for_scope("user")}
+    assert not NOTIFY_EMAIL_SETTINGS & available_user_setting_keys()
+
+
+def test_notify_email_addresses_are_offered_on_the_desktop() -> None:
+    assert NOTIFY_EMAIL_SETTINGS <= available_user_setting_keys()
+
+
+@pytest.mark.parametrize("key", sorted(NOTIFY_EMAIL_SETTINGS))
+def test_a_user_cannot_set_a_notify_address_when_hosted(hosted: None, key: str) -> None:
+    app = Flask(__name__)
+    app.register_blueprint(settings_bp, url_prefix="/api")
+
+    response = app.test_client().put("/api/config", json={key: "stranger@example.com"})
+
+    assert response.status_code == 400
+    assert key in response.get_json()["error"]
 
 
 def test_the_file_sync_never_reads_a_server_file_when_hosted(

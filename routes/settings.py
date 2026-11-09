@@ -73,6 +73,7 @@ from backend.settings_registry import (
     SETTINGS,
     USER_SETTING_KEYS,
     available_system_setting_keys,
+    available_user_setting_keys,
     schema_for_scope,
 )
 from backend.settings_service import (
@@ -131,7 +132,7 @@ def _read_user_settings_into(cfg: dict[str, object], settings: SettingsSnapshot)
     everything else as its live value. The excluded keys are read
     explicitly by _read_runtime_config_user_settings() instead, with
     bool/int coercion."""
-    for key in USER_SETTING_KEYS - _RUNTIME_CONFIG_USER_KEYS:
+    for key in available_user_setting_keys() - _RUNTIME_CONFIG_USER_KEYS:  # ai: claude-opus-5-5 | 2026-11-09
         if SETTINGS[key].is_secret:
             cfg[f"{key}_set"] = settings.is_configured(key)
         else:
@@ -141,8 +142,8 @@ def _read_user_settings_into(cfg: dict[str, object], settings: SettingsSnapshot)
 def _read_runtime_config_user_settings(settings: SettingsSnapshot) -> dict[str, object]:
     """Read every _RUNTIME_CONFIG_USER_KEYS entry with its proper JSON type.
     The single source of truth for that shape, shared by get_config() and
-    update_config()'s response."""
-    return {
+    update_config()'s response. Hosted, desktop-only keys are left out."""
+    values: dict[str, object] = {
         "email_lookback_days": settings.get_int(
             "email_lookback_days", config.DEFAULT_EMAIL_LOOKBACK_DAYS
         ),
@@ -166,6 +167,9 @@ def _read_runtime_config_user_settings(settings: SettingsSnapshot) -> dict[str, 
         ),
         "jd_health_check_notify_email": settings.get("jd_health_check_notify_email"),
     }
+    # ai: claude-opus-5-5 | 2026-11-09
+    offered = available_user_setting_keys()
+    return {key: value for key, value in values.items() if key in offered}
 
 
 # ai: claude-sonnet-5 | 2026-08-26
@@ -310,6 +314,12 @@ def update_config() -> ResponseReturnValue:
     if not raw_data:
         return jsonify({"error": "No data provided"}), 400
 
+    # ai: claude-opus-5-5 | 2026-11-09 -- a desktop-only setting sent to a hosted server
+    # is refused, not quietly stored where nothing reads it.
+    not_offered = (USER_SETTING_KEYS - available_user_setting_keys()) & raw_data.keys()
+    if not_offered:
+        return jsonify({"error": f"Not available on this server: {sorted(not_offered)}"}), 400
+
     try:
         parsed = ConfigUpdate.model_validate(raw_data)
     except ValidationError as exc:
@@ -382,7 +392,7 @@ def update_config() -> ResponseReturnValue:
     # tests/test_ssrf_protection.py, which calls this route directly against a
     # bare Flask app with no session to test URL validation in isolation).
     user_id = current_user_id()
-    generic_keys = USER_SETTING_KEYS - _RUNTIME_CONFIG_USER_KEYS
+    generic_keys = available_user_setting_keys() - _RUNTIME_CONFIG_USER_KEYS  # ai: claude-opus-5-5 | 2026-11-09
 
     with get_repos() as repos:
         for key, value in updates.items():

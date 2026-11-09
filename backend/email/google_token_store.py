@@ -20,9 +20,9 @@ from datetime import UTC, datetime
 
 from google.oauth2.credentials import Credentials
 
-import config
 from backend.crypto import decrypt_secret, encrypt_secret
 from backend.db.interfaces import IGoogleTokenRepository
+from backend.email.gmail_scopes import gmail_scopes
 
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -37,7 +37,7 @@ class GoogleTokenStore:
         info = self._load_info(user_id)
         if info is None:
             return None
-        return Credentials.from_authorized_user_info(info, config.GMAIL_SCOPES)
+        return Credentials.from_authorized_user_info(info, gmail_scopes())  # ai: claude-opus-5-5 | 2026-11-09
 
     # ai: claude-opus-5-5 | 2026-10-24 — None (not []) when there is no token,
     # so a caller learns "connected?" and the scopes from the one read.

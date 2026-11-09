@@ -443,12 +443,26 @@ The app requests `gmail.modify` and `gmail.send` (`config.py:233`). Both are
   `gmail.readonly` (`READ_ONLY_MODE` already exists) plus the extension? `readonly`
   is still restricted, but dropping `send` and `modify` shrinks the assessment.
   Worth deciding before applying.
+- **Decided 2026-11-09: hosted requests `gmail.modify` only.** Mark-as-read and
+  move-to-label stay; `gmail.send` is dropped. `backend/email/gmail_scopes.py`
+  (`gmail_scopes()`) is the one place the list is chosen (desktop keeps
+  `modify` + `send`). Hosted, the JD health check's failure email goes through the
+  app's SMTP relay (3.2) instead of the user's Gmail. `/api/auth/status` now reports
+  `has_required_scopes` (missing any requested scope -> "Reconnect Gmail"), not
+  `has_send_scope`. The verification application lists exactly one scope:
+  `https://www.googleapis.com/auth/gmail.modify`.
 
 ### 3.2 Transactional email
 Registration, password reset and email change all depend on SMTP, which defaults to
 local MailHog. Set up a real provider (Postmark, SES, Resend), a sending subdomain
 with SPF/DKIM/DMARC, and set the SMTP system settings. Without this, nobody can
 finish registering.
+- **Done 2026-11-09: the relay only mails accounts' own addresses.** Hosted, the
+  scan-report digest and the JD health check's failure email go to the account's
+  verified email (`backend/email/notification_recipient.py`); their notify-address
+  settings are `desktop_only`, hidden from the UI and refused by `PUT /api/config`.
+  Otherwise any user could point the relay at strangers and the complaints would
+  land on the sending domain everyone's verification emails depend on.
 
 ### 3.3 Domain, DNS, TLS
 Register the domain; point `APP_DOMAIN`, `listener.`, `listener-ws.` at the VM.

@@ -41,6 +41,7 @@ from google_auth_oauthlib.flow import Flow
 
 import config
 from backend.crypto import SettingsEncryptionKeyMissingError
+from backend.email.gmail_scopes import gmail_scopes, missing_gmail_scopes
 from backend.email.google_oauth_pending import PendingGoogleAuth, get_pending_auths
 from backend.email.google_token_store import GoogleTokenStore
 from backend.security.audit_log import (
@@ -62,8 +63,6 @@ logger = logging.getLogger(__name__)
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 auth_bp = Blueprint("auth", __name__)
-
-_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 
 # ai: claude-opus-5-5 | 2026-11-06
 # A started flow (random state token -> PKCE verifier, the account that started
@@ -113,17 +112,18 @@ def _app_url_on_redirect_host() -> str:
 def _build_flow(client_config_json: str) -> Flow:
     return Flow.from_client_config(
         json.loads(client_config_json),
-        scopes=config.GMAIL_SCOPES,
+        scopes=gmail_scopes(),  # ai: claude-opus-5-5 | 2026-11-09
         redirect_uri=config.GOOGLE_OAUTH_REDIRECT_URI,
     )
 
 
 @auth_bp.route("/auth/status")
 def auth_status() -> ResponseReturnValue:
-    # ai: claude-sonnet-5 | 2026-08-03
-    # has_send_scope lets the Settings UI show "reconnect Gmail" for the JD
-    # health check's failure-notification email (needs gmail.send, added
-    # after gmail.modify was already in use — existing tokens predate it).
+    # ai: claude-opus-5-5 | 2026-11-09
+    # has_required_scopes lets the Settings UI show "reconnect Gmail" when the
+    # stored token lacks a scope this deployment requests (gmail_scopes()) --
+    # e.g. a desktop token from before gmail.send was added. Hosted never asks
+    # for gmail.send, so it is not "missing" there.
     # This only reads the caller's own stored token (no network call, no
     # refresh attempt), so it can't trigger auth itself.
     user_id = current_user_id()
@@ -137,9 +137,9 @@ def auth_status() -> ResponseReturnValue:
             scopes = []
 
     if scopes is None:
-        return jsonify({"authenticated": False, "has_send_scope": False})
+        return jsonify({"authenticated": False, "has_required_scopes": False})
     return jsonify(
-        {"authenticated": True, "has_send_scope": _GMAIL_SEND_SCOPE in scopes}
+        {"authenticated": True, "has_required_scopes": not missing_gmail_scopes(scopes)}
     )
 
 

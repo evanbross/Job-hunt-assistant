@@ -284,7 +284,8 @@ class GmailClient:
     def send_email(self, *, to: str, subject: str, body_text: str) -> str:
         """Send a plain-text email via the Gmail API. Returns the sent message id.
 
-        Requires the gmail.send scope (config.GMAIL_SCOPES). A token issued
+        Requires the gmail.send scope, which only the desktop app requests
+        (backend/email/gmail_scopes.py; hosted sends through SMTP). A token issued
         before that scope was added will fail here with an HttpError (403,
         insufficient permission) until the user re-authenticates via
         /api/auth/google — this method never attempts to fix that itself; per

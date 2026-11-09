@@ -274,7 +274,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }: Setti
         {activeSection === "sources" && <EmailSourcesSection />}
         {activeSection === "email_subject_rules" && <EmailSubjectRulesSection />}
         {activeSection === "career_sites" && <CareerSitesSection />}
-        {activeSection === "jd_health_check" && <JdHealthCheckSection />}
+        {activeSection === "jd_health_check" && <JdHealthCheckSection isHosted={isHosted} />}
         {activeSection === "fetch_queue" && <FetchQueueSection />}
         {activeSection === "browser_extension" && <BrowserExtensionPanel />}
         {activeSection === "penalties" && <PenaltiesSection />}
@@ -1349,7 +1349,9 @@ interface JdTargetForm {
 const EMPTY_JD_TARGET_FORM: JdTargetForm = { platform: "greenhouse", label: "", url: "", enabled: true };
 
 // ai: claude-sonnet-5 | 2026-08-03
-function JdHealthCheckSection() {
+// ai: claude-opus-5-5 | 2026-11-09 -- hosted, the failure email goes to the account's own
+// address (backend/email/notification_recipient.py), so there is no address to edit or send.
+function JdHealthCheckSection({ isHosted }: { isHosted: boolean }) {
   const [cfg, setCfg] = useState<AppConfigResponse | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -1414,7 +1416,7 @@ function JdHealthCheckSection() {
         jd_health_check_enabled: !!cfg?.jd_health_check_enabled,
         jd_health_check_time_utc: cfg?.jd_health_check_time_utc,
         jd_health_check_frequency_days: frequencyDays,
-        jd_health_check_notify_email: cfg?.jd_health_check_notify_email || "",
+        ...(isHosted ? {} : { jd_health_check_notify_email: cfg?.jd_health_check_notify_email || "" }),
       }),
     });
     const data: AppConfigResponse & ApiErrorBody = await res.json();
@@ -1517,7 +1519,7 @@ function JdHealthCheckSection() {
 
   if (!cfg) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
 
-  const needsGmailReconnect = authStatus?.authenticated && !authStatus?.has_send_scope;
+  const needsGmailReconnect = authStatus?.authenticated && !authStatus?.has_required_scopes;
 
   return (
     <div>
@@ -1534,8 +1536,8 @@ function JdHealthCheckSection() {
 
       {needsGmailReconnect && (
         <div style={{ ...configNoticeStyle, background: "rgba(217,164,6,0.1)", border: "1px solid rgba(217,164,6,0.3)", color: "var(--yellow, #d9a406)" }}>
-          Gmail is connected but needs an additional permission to send the failure-notification
-          email.{" "}
+          Gmail is connected but is missing a permission this app now asks for (the desktop app
+          sends the failure-notification email from your Gmail).{" "}
           <button className="btn-secondary" style={{ padding: "2px 8px", fontSize: "11px" }} onClick={reconnectGmail}>
             Reconnect Gmail
           </button>
@@ -1565,15 +1567,22 @@ function JdHealthCheckSection() {
             onChange={(e) => setCfg({ ...cfg, jd_health_check_frequency_days: Number(e.target.value) })}
           />
         </label>
-        <label style={labelStyle}>
-          Notify Email
-          <input
-            value={cfg.jd_health_check_notify_email || ""}
-            onChange={(e) => setCfg({ ...cfg, jd_health_check_notify_email: e.target.value })}
-            placeholder="you@example.com"
-          />
-          <span style={helpTextStyle}>Sent only when a run has at least one failing target.</span>
-        </label>
+        {isHosted ? (
+          <p style={{ ...helpTextStyle, gridColumn: "1 / -1" }}>
+            A failure email goes to your account&apos;s email address, only when a run has at least one
+            failing target.
+          </p>
+        ) : (
+          <label style={labelStyle}>
+            Notify Email
+            <input
+              value={cfg.jd_health_check_notify_email || ""}
+              onChange={(e) => setCfg({ ...cfg, jd_health_check_notify_email: e.target.value })}
+              placeholder="you@example.com"
+            />
+            <span style={helpTextStyle}>Sent only when a run has at least one failing target.</span>
+          </label>
+        )}
       </div>
       <button className="btn-primary" style={{ marginTop: "12px" }} onClick={saveConfig} disabled={saving}>
         {saving ? "Saving…" : "Save"}
