@@ -281,4 +281,7 @@ Neon-backed install currently needs.
       secrets; backend/secret_files.py). R2 bucket `jha-backups` set up 2026-11-07.
       4.3 (2026-11-08) one stdout log format, Sentry-protocol error tracking with PII
       scrubbing (off without SENTRY_DSN), cron monitors on beat tasks, queue-depth alert.
-      Next code work: 4.4 deploy pipeline, 4.5 admin tooling.
+      4.4 (2026-11-08) scripts/release.py: `build` tests + builds a pushed commit in its
+      own worktree and pushes an immutable tag; `deploy` runs deploy/host-deploy.sh over
+      ssh (backup, migrate, up --wait). Registry and server still to choose.
+      Next code work: 4.5 admin tooling.

@@ -90,6 +90,17 @@ COPY --from=frontend /src/frontend/dist frontend/dist
 # Compiled now, since the running container can't write __pycache__.
 RUN python -m compileall -q -j 0 /app
 
+# ai: claude-opus-5-5 | 2026-11-08
+# Which release and commit this is (scripts/release.py build sets both). Last, so a new
+# release only rebuilds this layer. The revision label is how `release.py deploy` finds
+# the commit whose compose file goes with the image, and errors are reported under the
+# release (backend/error_tracking.py), so neither is set by hand.
+ARG APP_RELEASE=""
+ARG APP_REVISION=""
+LABEL org.opencontainers.image.version="${APP_RELEASE}" \
+      org.opencontainers.image.revision="${APP_REVISION}"
+ENV SENTRY_RELEASE="${APP_RELEASE}"
+
 USER 10001:10001
 EXPOSE 5004 8765 8766
 ENTRYPOINT ["/bin/sh", "/app/deploy/docker-entrypoint.sh"]

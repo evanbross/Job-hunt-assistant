@@ -74,6 +74,8 @@ Thumbs.db
 deploy/.env.production
 deploy/.env.migrate
 deploy/.env.backup
+deploy/.env.release*
+deploy/.deploy.lock
 deploy/secrets/
 
 # Local helper script holding a GitLab token -- never commit

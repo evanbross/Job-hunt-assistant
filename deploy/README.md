@@ -35,23 +35,80 @@ outside by construction, not merely firewalled.
 
 ## Setting it up
 
+Once, on the server: a deploy directory (`/opt/jha` unless you choose another) that
+holds the server's own files. Fill them in from the examples here and copy them over
+(they hold secrets: `chmod 600`, owned by the deploy user):
+
 ```bash
-docker build -t registry.example.com/job-hunt-assistant:1.0.0 .   # the repo's Dockerfile; push it
-cp deploy/.env.production.example deploy/.env.production   # fill in every value (JHA_IMAGE = that tag)
+cp deploy/.env.production.example deploy/.env.production   # fill in every value
 cp deploy/.env.migrate.example deploy/.env.migrate         # the schema owner's DB URL
 cp deploy/.env.backup.example deploy/.env.backup           # the backup bucket and age public keys
-python scripts/generate_redis_tls.py                       # once: writes deploy/secrets/redis-tls/
+python scripts/generate_redis_tls.py                       # writes deploy/secrets/redis-tls/
+# copy those three files and secrets/ into the server's deploy directory
+```
 
-# Every deploy, in this order (a backup first, so a bad migration can be undone):
-docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production run --rm maintenance backup run
-docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production run --rm migrate
-docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d
+The server also needs Docker with the compose plugin (v2.17 or later, for `up --wait`),
+an ssh login for the deploy user, and `docker login` to the image registry. The compose
+file, the Caddyfile and `host-deploy.sh` are not copied by hand: every deploy uploads
+them from the image's own commit. `deploy/.env.production`, `deploy/.env.migrate`,
+`deploy/.env.backup`, `deploy/.env.release*` and `deploy/secrets/` are git-ignored.
+
+### Releasing and deploying
+
+CI is off (`.gitlab-ci.yml`), so releases are built locally by `scripts/release.py`, which
+keeps the two promises a deploy pipeline has to: the image is exactly a commit that
+passed the tests, and the database is migrated before new containers start.
+
+```bash
+# 1. Build: test the commit in its own worktree, build the image from that checkout, push it.
+uv run python scripts/release.py build --repository registry.example.com/job-hunt-assistant
+# 2. Deploy the image it printed.
+uv run python scripts/release.py deploy registry.example.com/job-hunt-assistant:20261108-0123456789ab \
+    --host deploy@server.example.com
+```
+
+**`build [REF]`** (default `origin/main`) refuses a commit that isn't on `origin/main`,
+then checks it out into a fresh git worktree, runs every check there
+(`scripts/check.py --all`, after `npm ci`), and builds the image from that same
+checkout. So nothing uncommitted here can reach an image, and the tests ran on exactly
+what was built. The tag is the commit's git tag if it has one, otherwise
+`<commit date>-<short sha>`. A tag already in the registry is refused rather than
+overwritten, so a tag always means the image that was tested. The image carries its
+commit (label `org.opencontainers.image.revision`) and its version, which is also the
+release errors are reported under (`SENTRY_RELEASE`).
+
+**`deploy IMAGE`** reads the image's commit from that label, uploads that commit's
+`docker-compose.prod.yml`, `Caddyfile` and `host-deploy.sh` to the server, and runs
+`host-deploy.sh` there. That script, in order, stopping at the first failure:
+
+1. pulls the image;
+2. backs up the database with it (`backup run`), so a bad migration can be undone;
+3. runs its `migrate` (serving processes refuse a schema their version didn't migrate);
+4. starts the new containers (`up -d --wait`): it waits until every health check passes,
+   and fails the deploy if one doesn't within 5 minutes;
+5. records the image in `.env.release` (`JHA_IMAGE=...`), and the one before it in
+   `.env.release.previous`.
+
+Only one deploy runs at a time (`.deploy.lock`). If a step fails, the script says
+whether anything changed: before the migration nothing has. After it, the old
+containers keep running until they restart, and then refuse the new schema.
+
+**Rolling back** is deploying the previous image (`.env.release.previous` names it) the
+same way. Its `migrate` re-records its own schema version, and migrations only add, so
+the old code runs on the newer schema. If a release's migration removed or renamed
+something the old code reads, restore the backup step 2 took instead ("Backups and
+restore" below).
+
+`--host`, `--repository` and `--dir` can come from `JHA_DEPLOY_HOST`,
+`JHA_IMAGE_REPOSITORY` and `JHA_DEPLOY_DIR`. By hand, on the server, compose finds the
+image in `.env.release`:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production --env-file .env.release up -d
 ```
 
 Compose refuses to start if `APP_DOMAIN`, `ACME_EMAIL`, `REDIS_PASSWORD`,
 `READONLY_DB_PASSWORD` or `JHA_IMAGE` is unset.
-`deploy/.env.production`, `deploy/.env.migrate`, `deploy/.env.backup` and `deploy/secrets/`
-are git-ignored.
 
 ### First login and who can sign up
 
@@ -414,9 +471,9 @@ process queued.
 
 ## What is not included
 
-1. **A registry and CI build.** The `Dockerfile` builds the image (see "The application
-   image" above), but building, scanning and pushing it is manual. A pipeline that does
-   it per tag is a follow-up.
+1. **A registry, image scanning and a CI build.** `scripts/release.py` builds, tests and
+   pushes ("Releasing and deploying" above), but the registry is yours to choose, nothing
+   scans the image for vulnerable packages yet, and it runs on your machine, not CI.
 
    **The server must handle long-lived responses.** Each open tab keeps one
    `/api/events` server-sent-events stream open for as long as the page is open

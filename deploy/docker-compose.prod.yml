@@ -3,13 +3,14 @@
 # the app and workers. See deploy/README.md before using; it lists what this does NOT
 # include.
 #
-#   docker build -t <registry>/job-hunt-assistant:<version> .     # the repo's Dockerfile
-#   cp deploy/.env.production.example deploy/.env.production      # then fill it in (JHA_IMAGE = that tag)
-#   cp deploy/.env.migrate.example deploy/.env.migrate            # the owner's DB URL
-#   python scripts/generate_redis_tls.py                          # once
-#   # every deploy: migrate first, then (re)start the app
-#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production run --rm migrate
-#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d
+#   # ai: claude-opus-5-5 | 2026-11-08
+#   uv run python scripts/release.py build --repository <registry>/job-hunt-assistant
+#   uv run python scripts/release.py deploy <the image it printed> --host <ssh destination>
+#
+# `deploy` runs deploy/host-deploy.sh on the server: back up, migrate, then `up --wait`.
+# The image comes from .env.release (JHA_IMAGE), which each deploy writes, so by hand:
+#   docker compose -f docker-compose.prod.yml --env-file .env.production --env-file .env.release up -d
+# deploy/README.md "Setting it up" lists the files the server's deploy directory holds.
 #
 # Differences from ../infra (the shared DEV stack) on purpose:
 #   * no MailHog, no MinIO, no Caddy admin API ("admin off" in the Caddyfile)
@@ -92,7 +93,7 @@ services:
   # Every service below runs the image built from the repository's Dockerfile; the
   # command names which process (deploy/docker-entrypoint.sh).
   app:
-    image: ${JHA_IMAGE:?set JHA_IMAGE, the tag the Dockerfile was built as}
+    image: ${JHA_IMAGE:?set JHA_IMAGE, which each deploy writes to .env.release (deploy/README.md)}
     restart: unless-stopped
     # wsgi.py refuses to start until `migrate` (below) has run for this image's version.
     # Capacity is GUNICORN_WORKERS x GUNICORN_THREADS connections; see gunicorn.conf.py.

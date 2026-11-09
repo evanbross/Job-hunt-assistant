@@ -527,8 +527,30 @@ Caddy handles certificates. Add CAA records for Let's Encrypt.
   names the two URLs. Still to do by hand: create the error-tracker project, set
   `SENTRY_DSN` and the cron-monitor alert rules, and add the uptime monitors.
 
-### 4.4 Deploy pipeline
-CI is currently disabled for cost and replaced by the local pre-push gate
+### 4.4 Deploy pipeline — done 2026-11-08
+*Built as the local script*, since CI stays off for cost (deploy/README.md "Releasing and
+deploying"):
+- `scripts/release.py build [REF]` refuses a commit that isn't on `origin/main`, checks
+  it out into a fresh worktree, runs `scripts/check.py --all` there, builds the image
+  from that same checkout and pushes it. So tests pass on exactly the commit that's
+  built, and nothing uncommitted can reach an image. Tags are the git tag or
+  `<date>-<short sha>`, and a tag already in the registry is refused, never overwritten.
+  The Dockerfile stamps the commit (`org.opencontainers.image.revision`) and the version,
+  which is also `SENTRY_RELEASE`, so neither is set by hand.
+- `scripts/release.py deploy IMAGE` reads the image's commit from its label, uploads that
+  commit's compose file, Caddyfile and `deploy/host-deploy.sh` over ssh, and runs the
+  script. It pulls, backs up, **migrates before starting** the new containers, waits on
+  their health checks (`up --wait`), and records the image in `.env.release` (`JHA_IMAGE`
+  moved out of `.env.production`). One deploy runs at a time, and a failure says whether
+  the database was already migrated. Rollback = deploy the previous image
+  (`.env.release.previous`).
+- Tested with real git (a throwaway bare origin) and the real `host-deploy.sh` under sh,
+  with a stand-in docker. The registry calls were checked by hand against a local
+  `registry:2`.
+Still to do by hand: choose the registry and the server, then do the server's one-time
+setup (deploy/README.md "Setting it up").
+
+Original item: CI is currently disabled for cost and replaced by the local pre-push gate
 (`scripts/check.py`). For deploys you need *something* that builds the image from a
 known commit: either re-enable a minimal GitLab job that builds and pushes the image
 on tagged releases, or a documented local `build → push → ssh deploy` script. Either
