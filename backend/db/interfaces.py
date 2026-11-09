@@ -321,6 +321,15 @@ class IAuditLogRepository(Protocol):
     def get_recent(self, user_id: int, limit: int = 200) -> list[dict[str, Any]]: ...
 
 
+# ai: claude-opus-5-5 | 2026-11-09
+@runtime_checkable
+class ITaskFailureRepository(Protocol):
+    def insert(
+        self, user_id: int, task_name: str, task_id: str | None, error_type: str, error_message: str
+    ) -> int: ...
+    def get_recent(self, user_id: int, limit: int = 100) -> list[dict[str, Any]]: ...
+
+
 @runtime_checkable
 class IEmailSubjectRuleRepository(Protocol):
     def get_all(self, user_id: int) -> list[dict[str, Any]]: ...

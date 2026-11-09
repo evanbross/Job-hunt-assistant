@@ -90,6 +90,7 @@ from .interfaces import (
     IResumeRepository,
     IScannedEmailRepository,
     ISystemSettingsRepository,
+    ITaskFailureRepository,
     ITitleRuleRepository,
     IUserSettingsRepository,
 )
@@ -143,6 +144,7 @@ from .repositories.relevance_feedback import PostgresRelevanceFeedbackRepository
 from .repositories.resumes import PostgresResumeRepository
 from .repositories.scanned_emails import PostgresScannedEmailRepository
 from .repositories.system_settings import PostgresSystemSettingsRepository
+from .repositories.task_failures import PostgresTaskFailureRepository
 from .repositories.title_rules import PostgresTitleRuleRepository
 from .repositories.user_accounts import PostgresUserAccountRepository
 from .repositories.user_settings import PostgresUserSettingsRepository
@@ -158,6 +160,7 @@ from .schema_version import (
 __all__ = [
     "IApplicationAnswerRepository",
     "IAuditLogRepository",
+    "ITaskFailureRepository",
     "IApplicationProfileRepository",
     "IApplicationStageRepository",
     "IApplicationStageStatusRepository",
@@ -199,6 +202,7 @@ __all__ = [
     "PostgresApplicationAnswerRepository",
     "PostgresApplicationProfileRepository",
     "PostgresAuditLogRepository",
+    "PostgresTaskFailureRepository",
     "PostgresApplicationStageRepository",
     "PostgresApplicationStageStatusRepository",
     "PostgresBrowserCaptureQueueRepository",
@@ -414,6 +418,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "application_profile": PostgresApplicationProfileRepository(conn),
         "application_answers": PostgresApplicationAnswerRepository(conn),
         "audit_log": PostgresAuditLogRepository(conn),
+        "task_failures": PostgresTaskFailureRepository(conn),  # ai: claude-opus-5-5 | 2026-11-09
         "stages": PostgresApplicationStageRepository(conn),
         "settings": PostgresUserSettingsRepository(conn),
         "system_settings": PostgresSystemSettingsRepository(conn),

@@ -284,4 +284,7 @@ Neon-backed install currently needs.
       4.4 (2026-11-08) scripts/release.py: `build` tests + builds a pushed commit in its
       own worktree and pushes an immutable tag; `deploy` runs deploy/host-deploy.sh over
       ssh (backup, migrate, up --wait). Registry and server still to choose.
-      Next code work: 4.5 admin tooling.
+      4.5 (2026-11-09) Settings > System > Accounts: list, disable/enable (sessions end at
+      once, tokens + scheduled work stop), resend registration link, per-account failed
+      tasks (task_failures via the Celery task_failure signal). Phase 4 code is done;
+      what's left is external (Phase 3) and by-hand setup.

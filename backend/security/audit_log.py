@@ -50,6 +50,10 @@ DATA_EXPORTED: Final = "data_exported"
 # ai: claude-opus-5-5 | 2026-11-07 -- recorded on the admin who did it (plan 4.6)
 REGISTRATION_INVITE_CREATED: Final = "registration_invite_created"
 REGISTRATION_INVITE_REVOKED: Final = "registration_invite_revoked"
+# ai: claude-opus-5-5 | 2026-11-09 -- admin account tooling, recorded on the admin (plan 4.5)
+ACCOUNT_DISABLED: Final = "account_disabled"
+ACCOUNT_ENABLED: Final = "account_enabled"
+REGISTRATION_LINK_RESENT: Final = "registration_link_resent"
 
 EVENTS: Final[frozenset[str]] = frozenset(
     {
@@ -70,6 +74,9 @@ EVENTS: Final[frozenset[str]] = frozenset(
         DATA_EXPORTED,
         REGISTRATION_INVITE_CREATED,
         REGISTRATION_INVITE_REVOKED,
+        ACCOUNT_DISABLED,
+        ACCOUNT_ENABLED,
+        REGISTRATION_LINK_RESENT,
     }
 )
 

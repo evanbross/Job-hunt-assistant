@@ -103,9 +103,12 @@ class PostgresUserAccountRepository(_BaseRepo):
     def list_active_user_ids(self) -> list[int]:
         """Ids of every account that finished registration (has a password),
         for background jobs that fan out per tenant. Pending sign-ups are
-        excluded: they have no credentials, settings, or data to act on."""
+        excluded: they have no credentials, settings, or data to act on. So
+        are disabled accounts (plan 4.5): an admin disabled them to stop them."""
+        # ai: claude-opus-5-5 | 2026-11-09 -- disabled accounts excluded
         cur = self._execute(
-            "SELECT id FROM user_accounts WHERE password_hash IS NOT NULL ORDER BY id"
+            "SELECT id FROM user_accounts"
+            " WHERE password_hash IS NOT NULL AND disabled_at IS NULL ORDER BY id"
         )
         return [row["id"] for row in cur.fetchall()]
 
@@ -342,3 +345,55 @@ class PostgresUserAccountRepository(_BaseRepo):
             " WHERE id = %s",
             [user_id],
         )
+
+    # ai: claude-opus-5-5 | 2026-11-09 -- admin account tooling (plan 4.5)
+    def list_for_admin(self) -> list[dict[str, Any]]:
+        """Every account, for the admin's account list: identity and state only, never a
+        password hash or a verification token."""
+        cur = self._execute(
+            """
+            SELECT id, email, name, role, created_at, last_login_at, disabled_at,
+                   deletion_requested_at,
+                   password_hash IS NULL AS registration_pending
+            FROM user_accounts
+            ORDER BY id
+            """
+        )
+        return [_row_to_dict(row) for row in cur.fetchall()]
+
+    def set_disabled(self, user_id: int, disabled: bool) -> dict[str, Any] | None:
+        """Disable (keeping the first time it was disabled) or re-enable an account.
+        None if there is no such account."""
+        cur = self._execute(
+            """
+            UPDATE user_accounts
+            SET disabled_at = CASE WHEN %s THEN COALESCE(disabled_at, NOW()) END,
+                updated_at = NOW()
+            WHERE id = %s
+            RETURNING *
+            """,
+            [disabled, user_id],
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    def record_login(self, user_id: int) -> None:
+        self._execute("UPDATE user_accounts SET last_login_at = NOW() WHERE id = %s", [user_id])
+
+    def renew_registration_token(
+        self, user_id: int, token: str, expires_at: str
+    ) -> dict[str, Any] | None:
+        """Give a registration that hasn't been completed a fresh link (the old one stops
+        working). None unless the account is still waiting to set its first password."""
+        cur = self._execute(
+            """
+            UPDATE user_accounts
+            SET verification_token = %s, verification_purpose = 'registration',
+                verification_expires_at = %s, updated_at = NOW()
+            WHERE id = %s AND password_hash IS NULL
+            RETURNING *
+            """,
+            [token, expires_at, user_id],
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None

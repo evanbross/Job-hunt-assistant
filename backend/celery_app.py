@@ -87,6 +87,9 @@ celery_app = Celery(
         "backend.security.data_lifecycle",
         "backend.db.scheduled_backup",  # ai: claude-opus-5-5 | 2026-11-07
         "backend.queue_depth",  # ai: claude-opus-5-5 | 2026-11-08
+        # ai: claude-opus-5-5 | 2026-11-09 -- no tasks: its task_failure handler records
+        # each per-account task that raises (plan 4.5); imported so every worker has it.
+        "backend.task_failures",
     ],
 )
 

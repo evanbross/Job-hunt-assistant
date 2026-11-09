@@ -124,6 +124,25 @@ under Settings > System > Invites, then tell them to register with that address;
 invite is used up when its account is created. Turn invite-only off in System > General
 to open sign-ups to anyone.
 
+### Managing accounts
+
+Settings > System > Accounts lists every account (status, created, last login) and is
+where an admin deals with one, without SSH or SQL (`routes/admin_accounts.py`):
+
+* **Disable / Enable.** A disabled account can't log in. Its open sessions end on their
+  next request, its browser-extension tokens stop authenticating, and scheduled scans
+  skip it. Nothing is deleted, and enabling it restores all of that. You can't disable
+  your own account.
+* **Resend link**, for an account that started registering but never set a password
+  (the link expired or the email never arrived). The old link stops working.
+* **Failed tasks**: the account's background tasks that stopped with an error
+  (`task_failures`, kept `TASK_FAILURES_RETENTION_DAYS`, 90). Messages are redacted
+  the same way as error-tracker events, since they can quote a job description or an
+  email.
+
+Each action is recorded in the acting admin's audit log. An admin acts on an account,
+never inside it: fixing a user's own data stays with that user.
+
 ### The application image
 
 `APP_MODE: hosted` (set on every application service) is what makes the app behave as

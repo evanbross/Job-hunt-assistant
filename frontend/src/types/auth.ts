@@ -83,3 +83,40 @@ export interface RegistrationInvitesResponse {
   /** The registration_invite_only system setting: false means anyone can register. */
   invite_only: boolean;
 }
+
+// ai: claude-opus-5-5 | 2026-11-09 -- admin account tooling (plan 4.5)
+/** One account as an admin sees it: identity and state, never credentials. */
+export interface AdminAccount {
+  id: number;
+  email: string;
+  name: string | null;
+  role: string;
+  status: "active" | "disabled" | "pending_verification" | "deletion_scheduled";
+  /** Null for accounts that existed before creation times were recorded. */
+  created_at: string | null;
+  last_login_at: string | null;
+  disabled_at: string | null;
+  deletion_requested_at: string | null;
+}
+
+/** GET /api/settings/system/accounts response. */
+export interface AdminAccountsResponse {
+  accounts: AdminAccount[];
+  /** The calling admin's own account id (which can't be disabled). */
+  you: number;
+}
+
+/** One background task that raised; the message is redacted and shortened. */
+export interface TaskFailure {
+  id: number;
+  task_name: string;
+  task_id: string | null;
+  error_type: string;
+  error_message: string;
+  failed_at: string;
+}
+
+/** GET /api/settings/system/accounts/<id>/task-failures response. */
+export interface TaskFailuresResponse {
+  failures: TaskFailure[];
+}

@@ -955,6 +955,16 @@ def migrate_schema(conn: Any) -> None:
         "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS"
         " deletion_requested_at TIMESTAMPTZ"
     )
+    # ai: claude-opus-5-5 | 2026-11-09 -- admin account tooling (plan 4.5).
+    # disabled_at: set by an admin; a disabled account can't log in, its sessions end on
+    # their next request (get_repos), its extension tokens stop working and scheduled work
+    # skips it. NULL = enabled. created_at has no backfill: an account that existed before
+    # this column shows "unknown" rather than the migration's own time. last_login_at is
+    # stamped by a successful login.
+    cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ")
+    cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ")
+    cur.execute("ALTER TABLE user_accounts ALTER COLUMN created_at SET DEFAULT NOW()")
+    cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ")
     conn.commit()
 
     # A completely empty user_accounts is possible here even when other tables
@@ -2430,6 +2440,25 @@ def create_tables(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_audit_log_user_created
             ON audit_log (user_id, created_at DESC)
+        """,
+        # ai: claude-opus-5-5 | 2026-11-09 -- background tasks that raised, per account, for
+        # the admin's account view (backend/task_failures.py, plan 4.5). error_message is
+        # redacted and capped like an error-tracker event: a task's exception can quote a
+        # job description or an email. Pruned by the data lifecycle sweep.
+        """
+        CREATE TABLE IF NOT EXISTS task_failures (
+            id            BIGSERIAL PRIMARY KEY,
+            user_id       INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            task_name     TEXT NOT NULL,
+            task_id       TEXT,
+            error_type    TEXT NOT NULL,
+            error_message TEXT NOT NULL,
+            failed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_task_failures_user_failed
+            ON task_failures (user_id, failed_at DESC)
         """,
     ]:
         cur.execute(stmt)

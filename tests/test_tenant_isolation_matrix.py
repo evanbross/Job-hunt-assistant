@@ -146,6 +146,13 @@ CASES: list[Case] = [
     _c("PUT", "/api/phrase-book/<int:phrase_id>", phrase_id="phrase"),
     _c("DELETE", "/api/sources/<int:source_id>", source_id="source"),
     _c("PUT", "/api/sources/<int:source_id>", {"name": "x"}, source_id="source"),
+    # ai: claude-opus-5-5 | 2026-11-09 -- admin account tooling (plan 4.5): act on another
+    # account by design, so only an admin may; neither tenant is one, so both are refused
+    # (no owner control). The admin side is tested in tests/test_admin_accounts.py.
+    _c_no_control("POST", "/api/settings/system/accounts/<int:account_id>/disable", account_id="account"),
+    _c_no_control("POST", "/api/settings/system/accounts/<int:account_id>/enable", account_id="account"),
+    _c_no_control("POST", "/api/settings/system/accounts/<int:account_id>/resend-verification", account_id="account"),
+    _c_no_control("GET", "/api/settings/system/accounts/<int:account_id>/task-failures", account_id="account"),
 ]
 
 # Routes that answer B with something other than 403/404 and are still safe, with the reason.
@@ -284,6 +291,7 @@ class Tenants:
             ins = self._insert
             contact_id = ins(cur, "contacts", full_name=f"{_MARKER} Person", imported_at=_TS, dedup_key=f"{_MARKER}-c-{next(_SEQUENCE)}")
             self.ids = {
+                "account": self.a_id,  # ai: claude-opus-5-5 | 2026-11-09
                 "job": job_id,
                 "answer": ins(cur, "application_answers", question_text=f"{_MARKER}?", question_normalized=f"{_MARKER.lower()}-{next(_SEQUENCE)}", answer_text=_MARKER),
                 "stage": ins(cur, "application_stages", job_id=job_id, status=stage_status, date="2026-09-26"),

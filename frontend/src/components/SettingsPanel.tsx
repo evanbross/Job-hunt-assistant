@@ -32,6 +32,7 @@ import { apiFetch } from "../utils/apiClient.ts";
 import { collectionModeLabel } from "../utils/careerSiteUtils.ts";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts";
 import { fetchSettingsSchema } from "../utils/settingsSchema.ts";
+import AccountsPanel from "./AccountsPanel.tsx"; // ai: claude-opus-5-5 | 2026-11-09
 import ApplicationProfilePanel from "./ApplicationProfilePanel.tsx";
 import BrowserExtensionPanel from "./BrowserExtensionPanel.tsx";
 import RegistrationInvitesPanel from "./RegistrationInvitesPanel.tsx";
@@ -147,6 +148,7 @@ const SETTINGS_TREE: SettingsTreeNode[] = [
     adminOnly: true,
     children: [
       { id: "system_general", label: "General" },
+      { id: "accounts", label: "Accounts" }, // ai: claude-opus-5-5 | 2026-11-09
       { id: "registration_invites", label: "Invites" }, // ai: claude-opus-5-5 | 2026-11-07
       // Hosted, the deployment fixes the listener's address (the Browser Extension
       // section shows users the URL to enter) and the server rejects these settings.
@@ -281,6 +283,7 @@ export default function SettingsPanel({ initialSection, onSetupComplete }: Setti
         {activeSection === "setup" && <SetupWizardPanel onSetupComplete={onSetupComplete} />}
         {activeSection === "system_general" && isAdmin && <SystemSettingsSection />}
         {activeSection === "import_listener" && isAdmin && !isHosted && <ImportListenerSection />}
+        {activeSection === "accounts" && isAdmin && <AccountsPanel />}
         {activeSection === "registration_invites" && isAdmin && <RegistrationInvitesPanel />}
       </div>
     </div>

@@ -42,7 +42,7 @@ import config
 from backend.ai_provider import AIProviderError
 from backend.db import open_repositories
 from backend.db.job_queue_query import QUEUE_STATUSES, TRIAGE_STATUSES
-from backend.db.row_level_security import set_current_user
+from backend.db.row_level_security import set_current_user, set_current_user_if_active
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,13 @@ class DatabaseUnavailableError(RuntimeError):
     identity."""
 
 
+# ai: claude-opus-5-5 | 2026-11-09
+class AccountUnavailableError(RuntimeError):
+    """The login session names an account that has been disabled by an admin or no
+    longer exists (plan 4.5). Raised by get_repos() for a session-derived identity, so
+    every request that touches data ends that session (web/factory.py's handler)."""
+
+
 @contextmanager
 def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
     """Open a DB connection and yield repos; always closes the connection on exit.
@@ -113,6 +120,13 @@ def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
     different caller still carrying this request's (or an even earlier request's)
     tenant identity -- fail-open, not fail-closed. 2026-10-18 full code review.
 
+    Raises AccountUnavailableError when the identity comes from the Flask session and
+    that account is disabled or gone: checked in the same statement that sets the
+    identity (set_current_user_if_active), so it costs nothing extra per request, and a
+    disabled account's open sessions stop working on their next request, not at expiry.
+    An explicit *user_id* is not checked: a worker finishing a task, or an admin reading
+    a disabled account's task failures, act on the account deliberately.
+
     Also raises DatabaseUnavailableError (instead of a raw psycopg2.pool.PoolError)
     if every pooled connection is checked out past the configured acquisition wait
     (config.DB_POOL_ACQUIRE_TIMEOUT_SECONDS) -- a traffic burst against a healthy
@@ -126,9 +140,18 @@ def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
     effective_user_id = user_id
     if effective_user_id is None and has_request_context():
         effective_user_id = session.get("user_id")
-    try:
+    # ai: claude-opus-5-5 | 2026-11-09 -- a session's account must still be active
+    from_session = user_id is None and effective_user_id is not None
+
+    def establish_identity() -> bool:
         with conn.outside_transaction():  # ai: claude-opus-5-5 | 2026-10-23
+            if from_session:
+                return set_current_user_if_active(conn.cursor(), effective_user_id)
             set_current_user(conn.cursor(), effective_user_id)
+            return True
+
+    try:
+        active = establish_identity()
     except psycopg2.OperationalError:
         # ai: claude-sonnet-5 | 2026-10-13
         # A pooled connection (see backend/db/connection.py) can go stale while
@@ -139,8 +162,7 @@ def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
         # because the connection it happened to check out was stale.
         conn.reconnect()
         try:
-            with conn.outside_transaction():  # ai: claude-opus-5-5 | 2026-10-23
-                set_current_user(conn.cursor(), effective_user_id)
+            active = establish_identity()
         except psycopg2.Error as exc:
             conn.discard()
             raise DatabaseUnavailableError(
@@ -151,6 +173,9 @@ def get_repos(user_id: int | None = None) -> Generator[dict, None, None]:
         raise DatabaseUnavailableError(
             "Could not establish the database session identity"
         ) from exc
+    if not active:
+        conn.close()  # its identity is already cleared, so it is safe to reuse
+        raise AccountUnavailableError(f"account {effective_user_id} is disabled or deleted")
     try:
         yield repos
     finally:

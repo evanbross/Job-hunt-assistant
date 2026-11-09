@@ -29,12 +29,17 @@ import os
 from datetime import timedelta
 
 import flask
-from flask import Flask, jsonify
+from flask import Flask, jsonify, session
 from flask_cors import CORS
 
 import config
 from backend.security.session_cookies import session_cookie_config
-from backend.utils.utils import CandidateProfileMissingError, DatabaseUnavailableError
+from backend.utils.utils import (
+    AccountUnavailableError,
+    CandidateProfileMissingError,
+    DatabaseUnavailableError,
+)
+from routes.admin_accounts import admin_accounts_bp
 from routes.application_profile import application_profile_bp
 from routes.applications import applications_bp
 from routes.auth import auth_bp
@@ -89,6 +94,7 @@ _API_BLUEPRINTS: tuple[flask.Blueprint, ...] = (
     jd_health_check_bp,
     jobs_bp,
     registration_invites_bp,  # ai: claude-opus-5-5 | 2026-11-07
+    admin_accounts_bp,  # ai: claude-opus-5-5 | 2026-11-09
     scan_bp,
     session_auth_bp,
     settings_bp,
@@ -122,6 +128,16 @@ def _database_unavailable(exc: DatabaseUnavailableError) -> tuple[flask.Response
     return jsonify({"error": "Database temporarily unavailable", "code": "database_unavailable"}), 503
 
 
+# ai: claude-opus-5-5 | 2026-11-09
+def _account_unavailable(exc: AccountUnavailableError) -> tuple[flask.Response, int]:
+    """The session's account was disabled by an admin, or deleted (get_repos checks on
+    every request): end the session. 401 like any other lost session, so the page goes
+    back to the login screen, which says why if they try again."""
+    logger.info("Ended a session: %s", exc)
+    session.clear()
+    return jsonify({"error": "This account is not available", "code": "account_unavailable"}), 401
+
+
 # ai: claude-opus-5-5 | 2026-11-05
 def create_app() -> Flask:
     """Build a new, fully routed Flask app with no runtime side effects."""
@@ -153,6 +169,7 @@ def create_app() -> Flask:
 
     app.register_error_handler(CandidateProfileMissingError, _candidate_profile_missing)
     app.register_error_handler(DatabaseUnavailableError, _database_unavailable)
+    app.register_error_handler(AccountUnavailableError, _account_unavailable)
 
     for blueprint in _API_BLUEPRINTS:
         app.register_blueprint(blueprint, url_prefix="/api")

@@ -52,6 +52,7 @@ _RETENTION_TABLES: dict[str, tuple[str, bool, str]] = {
     "import_repair_history": ("run_at", False, "IMPORT_REPAIR_HISTORY_RETENTION_DAYS"),
     "jd_health_check_results": ("run_at", False, "JD_HEALTH_CHECK_RESULTS_RETENTION_DAYS"),
     "career_scan_failures": ("occurred_at", False, "CAREER_SCAN_FAILURES_RETENTION_DAYS"),
+    "task_failures": ("failed_at", True, "TASK_FAILURES_RETENTION_DAYS"),  # ai: claude-opus-5-5 | 2026-11-09
 }
 
 

@@ -49,8 +49,6 @@ from __future__ import annotations
 
 import json
 import logging
-import secrets
-from datetime import UTC, datetime, timedelta
 
 from flask import Blueprint, jsonify, request, session
 from flask.typing import ResponseReturnValue
@@ -64,6 +62,13 @@ from backend.db.repositories.user_accounts import (
 from backend.email.smtp_sender import send_verification_email
 from backend.public_urls import public_base_url
 from backend.security.account_email import is_plausible_email, normalize_email
+from backend.security.account_tokens import (
+    EMAIL_CHANGE_TOKEN_LIFETIME,
+    PASSWORD_RESET_TOKEN_LIFETIME,
+    REGISTRATION_TOKEN_LIFETIME,
+    new_token,
+    registration_link,
+)
 from backend.security.audit_log import (
     ACCOUNT_DELETION_CANCELLED,
     ACCOUNT_DELETION_REQUESTED,
@@ -114,13 +119,13 @@ EMAIL_CHANGE_USER = Policy("email-change-user", 5, _WINDOW_1_HOUR)
 EMAIL_CHANGE_TARGET = Policy("email-change-target", 3, _WINDOW_1_HOUR)
 ACCOUNT_DELETION_USER = Policy("account-deletion-user", 5, _WINDOW_15_MIN)
 
-_REGISTRATION_TOKEN_LIFETIME = timedelta(hours=24)
 # ai: claude-opus-5-5 | 2026-11-07
 _NOT_INVITED_MESSAGE = (
     "Registration is by invitation only. Ask the administrator to invite this email address."
 )
-_EMAIL_CHANGE_TOKEN_LIFETIME = timedelta(hours=1)
-_PASSWORD_RESET_TOKEN_LIFETIME = timedelta(hours=1)
+
+# ai: claude-opus-5-5 | 2026-11-09
+_DISABLED_MESSAGE = "This account has been disabled. Contact the administrator."
 
 Check = tuple[Policy, str]
 
@@ -204,12 +209,6 @@ def _start_session(user_id: int) -> None:
     session.permanent = True
 
 
-def _new_token(lifetime: timedelta) -> tuple[str, str]:
-    token = secrets.token_urlsafe(32)
-    expires_at = (datetime.now(UTC) + lifetime).isoformat()
-    return token, expires_at
-
-
 # ai: claude-sonnet-5 | 2026-08-27
 def _maybe_clear_setup_gate(account: dict, repos: dict) -> None:
     """Clear must_complete_setup once BOTH a real email and a real password
@@ -252,7 +251,7 @@ def create_account() -> ResponseReturnValue:
         return limited
     limiter.record_all([ip_check, email_check])
 
-    token, expires_at = _new_token(_REGISTRATION_TOKEN_LIFETIME)
+    token, expires_at = new_token(REGISTRATION_TOKEN_LIFETIME)
     with get_repos() as repos:
         # ai: claude-opus-5-5 | 2026-11-07 -- after the rate limit, so the invite list
         # can't be probed any faster than registration itself (plan 4.6)
@@ -268,7 +267,7 @@ def create_account() -> ResponseReturnValue:
     if account is None:
         return jsonify({"error": "That email is already registered"}), 409
 
-    link = f"{app_base_url}/verify-account?token={token}"
+    link = registration_link(app_base_url, token)
     try:
         send_verification_email(email, link, "registration")
     except OSError as exc:
@@ -344,7 +343,7 @@ def forgot_password() -> ResponseReturnValue:
         # endpoint to flood one person's inbox.
         return jsonify({"status": "check_email"}), 202
 
-    token, expires_at = _new_token(_PASSWORD_RESET_TOKEN_LIFETIME)
+    token, expires_at = new_token(PASSWORD_RESET_TOKEN_LIFETIME)
     with get_repos() as repos:
         account = repos["user_accounts"].request_password_reset(email, token, expires_at)
         if account is not None:
@@ -451,7 +450,15 @@ def login() -> ResponseReturnValue:
     # Only the pair is cleared. Clearing the address or account counters on success would
     # let an attacker holding one valid login keep resetting the budget for guessing others.
     limiter.reset(*pair_check)
+    # ai: claude-opus-5-5 | 2026-11-09 -- an admin disabled it (plan 4.5). Said only after
+    # the right password, so it tells a stranger nothing about which accounts exist.
+    if account["disabled_at"] is not None:
+        with get_repos(account["id"]) as event_repos:
+            record_event(event_repos, account["id"], LOGIN_FAILURE, {"reason": "account_disabled"})
+            event_repos["conn"].commit()
+        return jsonify({"error": _DISABLED_MESSAGE, "code": "account_disabled"}), 403
     with get_repos(account["id"]) as event_repos:
+        event_repos["user_accounts"].record_login(account["id"])
         record_event(event_repos, account["id"], LOGIN_SUCCESS)
         event_repos["conn"].commit()
     _start_session(account["id"])
@@ -564,7 +571,7 @@ def request_email_change() -> ResponseReturnValue:
         return limited
     get_rate_limiter().record_all(email_change_checks)
 
-    token, expires_at = _new_token(_EMAIL_CHANGE_TOKEN_LIFETIME)
+    token, expires_at = new_token(EMAIL_CHANGE_TOKEN_LIFETIME)
     with get_repos() as repos:
         repos["user_accounts"].request_email_change(user_id, new_email, token, expires_at)
         record_event(repos, user_id, EMAIL_CHANGE_REQUESTED, {"new_email": new_email})

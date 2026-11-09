@@ -138,3 +138,18 @@ def set_current_user(cur: Any, user_id: int | None) -> None:
         "SELECT set_config('app.current_user_id', %s, false)",
         (str(user_id) if user_id is not None else "",),
     )
+
+
+# ai: claude-opus-5-5 | 2026-11-09
+def set_current_user_if_active(cur: Any, user_id: int) -> bool:
+    """set_current_user for an identity taken from a login session: only if that account
+    still exists and isn't disabled (plan 4.5). Otherwise the identity is cleared (no
+    tenant rows) and this returns False. One statement, so checking costs no extra round
+    trip on every request; the same connection-session scope as set_current_user."""
+    cur.execute(
+        "SELECT set_config('app.current_user_id',"
+        " CASE WHEN EXISTS (SELECT 1 FROM user_accounts WHERE id = %s AND disabled_at IS NULL)"
+        " THEN %s ELSE '' END, false) <> '' AS active",
+        (user_id, str(user_id)),
+    )
+    return bool(cur.fetchone()["active"])

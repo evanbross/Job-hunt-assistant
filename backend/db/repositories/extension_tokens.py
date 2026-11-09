@@ -43,13 +43,21 @@ class PostgresExtensionTokenRepository(_BaseRepo):
 
     def get_active_by_hash(self, token_hash: str, now: str) -> dict[str, Any] | None:
         """Auth lookup. Deliberately not user-scoped: the token itself is what
-        determines which user is calling. Revoked and expired tokens never match."""
+        determines which user is calling. Revoked and expired tokens never match,
+        and neither does any token of an account an admin disabled (plan 4.5) --
+        the token rows stay, so re-enabling the account brings them back."""
+        # ai: claude-opus-5-5 | 2026-11-09 -- disabled accounts' tokens excluded
         cur = self._execute(
             f"""
             SELECT {_PUBLIC_COLUMNS} FROM extension_tokens
             WHERE token_hash = %s
               AND revoked_at IS NULL
               AND (expires_at IS NULL OR expires_at > %s)
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_accounts
+                  WHERE user_accounts.id = extension_tokens.user_id
+                    AND user_accounts.disabled_at IS NOT NULL
+              )
             """,
             (token_hash, now),
         )

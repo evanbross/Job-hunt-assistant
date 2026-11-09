@@ -557,8 +557,32 @@ on tagged releases, or a documented local `build → push → ssh deploy` script
 way: tests must pass on the exact commit that's deployed, and a deploy must run the
 `migrate` step before starting new containers.
 
-### 4.5 Admin tooling
-You'll need, minimally: list accounts, disable/lock an account, resend a
+### 4.5 Admin tooling — done 2026-11-09
+Settings > System > Accounts (`routes/admin_accounts.py`, under the admin-gated
+`/api/settings/system/`; deploy/README.md "Managing accounts"):
+- **List accounts:** email, name, role, status (active, disabled, hasn't finished
+  registering, deletion scheduled), created and last login. New columns
+  `user_accounts.created_at` (unknown for older accounts) and `last_login_at`. No
+  password hash or token ever leaves the server.
+- **Disable / enable** (`user_accounts.disabled_at`). Login refuses a disabled account,
+  and only says so after the right password. Open sessions end on their next request:
+  `get_repos` checks the session's account in the same statement that sets the RLS
+  identity, so the check adds no round trip. Its extension tokens stop authenticating,
+  and the scheduled fan-out skips it. An admin can't disable themselves.
+- **Resend verification:** a fresh registration link for an unfinished registration;
+  the old link dies. Token creation moved to `backend/security/account_tokens.py`,
+  shared with registration.
+- **An account's Celery failures:** a `task_failure` signal handler
+  (`backend/task_failures.py`) records each per-account task that raises in
+  `task_failures` (RLS-scoped, message redacted like error-tracker events, pruned after
+  `TASK_FAILURES_RETENTION_DAYS`). The admin reads it as that account, so RLS still
+  bounds the query.
+- Each action is audit-logged on the admin. Tests (`tests/test_admin_accounts.py`) run
+  against the real routes, the runtime role and the real Celery signal. The routes are
+  in the tenant isolation matrix: a non-admin is refused.
+`scripts/reset_login_account.py` stays as the desktop's locked-out recovery.
+
+Original item: You'll need, minimally: list accounts, disable/lock an account, resend a
 verification email, see an account's Celery failures. Today that's ad-hoc scripts
 (`scripts/reset_login_account.py`). An admin role + a small admin page beats SSH-ing
 into production — and per the "no direct DB writes to live data" rule, you shouldn't

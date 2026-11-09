@@ -122,6 +122,8 @@ JD_HEALTH_CHECK_RESULTS_RETENTION_DAYS: int = int(
 CAREER_SCAN_FAILURES_RETENTION_DAYS: int = int(
     os.getenv("CAREER_SCAN_FAILURES_RETENTION_DAYS", "90")
 )
+# ai: claude-opus-5-5 | 2026-11-09 -- background tasks that raised (backend/task_failures.py)
+TASK_FAILURES_RETENTION_DAYS: int = int(os.getenv("TASK_FAILURES_RETENTION_DAYS", "90"))
 # ai: claude-opus-5-5 | 2026-11-08
 # backend/queue_depth.py logs an ERROR (an error-tracker alert) when more tasks than
 # this are waiting in a Celery queue.
