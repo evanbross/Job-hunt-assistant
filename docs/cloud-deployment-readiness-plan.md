@@ -451,6 +451,9 @@ The app requests `gmail.modify` and `gmail.send` (`config.py:233`). Both are
   `has_required_scopes` (missing any requested scope -> "Reconnect Gmail"), not
   `has_send_scope`. The verification application lists exactly one scope:
   `https://www.googleapis.com/auth/gmail.modify`.
+- **Done 2026-11-09: zombietech.biz is verified in Google Search Console** (Domain
+  property, auto-verified through the registrar) with the account that owns the OAuth
+  client's Cloud project. Covers jobhunt.zombietech.biz as an authorized domain.
 
 ### 3.2 Transactional email
 Registration, password reset and email change all depend on SMTP, which defaults to
@@ -463,10 +466,29 @@ finish registering.
   settings are `desktop_only`, hidden from the UI and refused by `PUT /api/config`.
   Otherwise any user could point the relay at strangers and the complaints would
   land on the sending domain everyone's verification emails depend on.
+- **Done 2026-11-09: Forward Email sends as `jobhunt.zombietech.biz`.** Outbound SMTP
+  is set up and approved for the subdomain. Records at Squarespace: MX to
+  mx1/mx2.forwardemail.net, the verification TXT, SPF
+  `v=spf1 include:spf.forwardemail.net -all`, DKIM `fe-bc04548bb0._domainkey.jobhunt`,
+  CNAME `fe-bounces.jobhunt`, and DMARC `p=reject` on `_dmarc.jobhunt`. Autoconfig and
+  autodiscover are skipped, since no mail client uses this domain. The sending alias is
+  `noreply@jobhunt.zombietech.biz` and forwards to the owner. SMTP system settings:
+  `smtp.forwardemail.net`, port 587, TLS on, user and From set to that alias, password
+  from Forward Email's "Generate Password". Enter them in Settings > System > General
+  on each install, since each database is separate.
+- **Still to do:** send a real test email and check SPF, DKIM and DMARC all pass at Gmail.
 
 ### 3.3 Domain, DNS, TLS
 Register the domain; point `APP_DOMAIN`, `listener.`, `listener-ws.` at the VM.
 Caddy handles certificates. Add CAA records for Let's Encrypt.
+- **Decided 2026-11-09: `APP_DOMAIN=jobhunt.zombietech.biz`** (so `listener.jobhunt.` and
+  `listener-ws.jobhunt.` too). DNS for zombietech.biz is at Squarespace (Google Domains
+  nameservers). Existing records to leave alone: apex A (Squarespace site), MX to
+  forwardemail.net plus its verification TXT, and the apex's Forward Email outbound
+  records. The apex SPF also includes `_spf.google.com`, and its DMARC is `p=none`,
+  because the owner's Gmail "Send mail as" sends apex mail through Gmail's servers,
+  which isn't DKIM-aligned. Moving that to send through smtp.forwardemail.net would
+  allow `p=reject` there too. No CAA exists yet: add it with the server's A records.
 
 ### 3.4 Browser extension distribution
 - Publish to the Chrome Web Store (and optionally Edge/Firefox). The manifest's
