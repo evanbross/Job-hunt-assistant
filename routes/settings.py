@@ -123,6 +123,13 @@ _RUNTIME_CONFIG_USER_KEYS: frozenset[str] = frozenset(
 )
 
 
+# ai: claude-opus-5-5 | 2026-11-09
+def _secret_status_key(key: str) -> str:
+    """The read-only flag a GET returns in place of secret *key* ("is it set?").
+    The plaintext never goes to the browser, so this flag is all it gets."""
+    return f"{key}_set"
+
+
 # ai: claude-opus-5-5 | 2026-10-23 — both helpers read from one
 # SettingsSnapshot (one query) instead of a get_setting() query per key;
 # 21 sequential ~31ms round trips were ~700ms of GET /api/config.
@@ -134,7 +141,7 @@ def _read_user_settings_into(cfg: dict[str, object], settings: SettingsSnapshot)
     bool/int coercion."""
     for key in available_user_setting_keys() - _RUNTIME_CONFIG_USER_KEYS:  # ai: claude-opus-5-5 | 2026-11-09
         if SETTINGS[key].is_secret:
-            cfg[f"{key}_set"] = settings.is_configured(key)
+            cfg[_secret_status_key(key)] = settings.is_configured(key)  # ai: claude-opus-5-5 | 2026-11-09
         else:
             cfg[key] = settings.get(key)
 
@@ -493,7 +500,7 @@ def _read_system_settings(repos: dict) -> dict[str, object]:
     result: dict[str, object] = {}
     for key in keys:
         if SETTINGS[key].is_secret:
-            result[f"{key}_set"] = settings.is_configured(key)
+            result[_secret_status_key(key)] = settings.is_configured(key)  # ai: claude-opus-5-5 | 2026-11-09
         else:
             result[key] = settings.get(key)
     return result
@@ -512,7 +519,13 @@ def update_system_settings() -> ResponseReturnValue:
     if not data:
         return jsonify({"error": "No data provided"}), 400
 
-    unknown = set(data.keys()) - available_system_setting_keys()  # ai: claude-opus-5-5 | 2026-11-06
+    # ai: claude-opus-5-5 | 2026-11-09 -- the System page saves by sending back the
+    # whole GET response, which carries a read-only "is it set?" flag per secret. Drop
+    # those flags before the unknown-key check, which rejected every save.
+    keys = available_system_setting_keys()
+    status_flags = {_secret_status_key(key) for key in keys if SETTINGS[key].is_secret}
+    data = {key: value for key, value in data.items() if key not in status_flags}
+    unknown = data.keys() - keys
     if unknown:
         return jsonify({"error": f"Unknown settings: {sorted(unknown)}"}), 400
 

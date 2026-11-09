@@ -50,6 +50,7 @@ import web.request_guards as request_guards
 from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
 )
+from backend.settings_service import get_setting
 from backend.utils.utils import get_repos
 from tests.db_roles import runtime_database_url
 
@@ -171,6 +172,34 @@ def test_gate_allows_updating_smtp_settings(client) -> None:
     _login_default_admin(client)
     resp = client.put("/api/settings/system", json={"smtp_host": "smtp.example.com"})
     assert resp.status_code == 200
+
+
+# ai: claude-opus-5-5 | 2026-11-09
+def test_saving_back_the_whole_system_settings_page_stores_the_smtp_password(client) -> None:
+    """The System page (and this setup page's SMTP form) save by sending back the
+    GET body, which has a read-only smtp_password_set flag. That used to be refused
+    as an unknown setting, so no System save ever worked."""
+    _login_default_admin(client)
+    body = client.get("/api/settings/system").get_json()
+    assert body["smtp_password_set"] is False
+    body.update({"smtp_host": "smtp.example.com", "smtp_password": "relay-secret"})
+
+    resp = client.put("/api/settings/system", json=body)
+
+    assert resp.status_code == 200
+    assert resp.get_json()["smtp_password_set"] is True
+    assert "smtp_password" not in resp.get_json()
+    with get_repos() as repos:
+        assert get_setting("smtp_password", None, repos) == "relay-secret"
+        assert get_setting("smtp_host", None, repos) == "smtp.example.com"
+
+
+# ai: claude-opus-5-5 | 2026-11-09
+def test_a_set_flag_for_a_non_secret_setting_is_still_unknown(client) -> None:
+    _login_default_admin(client)
+    resp = client.put("/api/settings/system", json={"smtp_host_set": True})
+    assert resp.status_code == 400
+    assert "smtp_host_set" in resp.get_json()["error"]
 
 
 def test_gate_allows_logout(client) -> None:
