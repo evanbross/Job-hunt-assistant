@@ -6,6 +6,10 @@
 	# off entirely rather than merely firewalled.
 	admin off
 	email {$ACME_EMAIL}
+	# Empty in production (docker-compose.prod.yml never sets it). The local rehearsal
+	# (deploy/rehearsal/) sets it to "local_certs": certificates from Caddy's own CA,
+	# since Let's Encrypt can't reach a PC.
+	{$CADDY_EXTRA_GLOBAL_OPTIONS}
 }
 
 {$APP_DOMAIN} {

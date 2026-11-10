@@ -77,6 +77,9 @@ deploy/.env.backup
 deploy/.env.release*
 deploy/.deploy.lock
 deploy/secrets/
+# Local production rehearsal's throwaway secrets (deploy/rehearsal/README.md)
+deploy/rehearsal/.env.*
+deploy/rehearsal/secrets/
 
 # Local helper script holding a GitLab token -- never commit
 /cleaner.ps1

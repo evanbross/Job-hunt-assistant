@@ -201,7 +201,16 @@ def test_compose_derives_the_base_url_from_the_domain_caddy_serves() -> None:
     compose = yaml.safe_load(
         (REPO_ROOT / "deploy" / "docker-compose.prod.yml").read_text(encoding="utf-8")
     )
-    for service in ("app", "worker"):
+    # ai: claude-opus-5-5 | 2026-11-09 -- derived from the file, not a hand-kept list:
+    # the web process and every Celery worker check the URL at startup, and a list
+    # naming only app + worker let `maintenance` ship without it (it crash-looped).
+    checked_at_startup = {
+        name
+        for name, svc in compose["services"].items()
+        if svc.get("command") in (["web"], ["worker"], ["maintenance"])
+    }
+    assert checked_at_startup == {"app", "worker", "maintenance"}
+    for service in checked_at_startup:
         assert compose["services"][service]["environment"]["APP_BASE_URL"] == (
             "https://${APP_DOMAIN:?set APP_DOMAIN}"
         ), service

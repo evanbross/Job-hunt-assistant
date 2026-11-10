@@ -1,0 +1,87 @@
+# ai: claude-opus-5-5 | 2026-11-09
+# Local production rehearsal: the real docker-compose.prod.yml, run on this PC with
+# only what a PC can't provide swapped out. Layered on top of the production file,
+# never a copy of it, so the rehearsal exercises exactly what a server would run.
+# Steps and cleanup: deploy/rehearsal/README.md.
+#
+#   docker compose -f deploy/docker-compose.prod.yml -f deploy/rehearsal/docker-compose.rehearsal.yml \
+#     --project-directory deploy/rehearsal --env-file deploy/rehearsal/.env.production \
+#     --env-file deploy/rehearsal/.env.rehearsal --env-file deploy/rehearsal/.env.release up -d --wait
+#
+# --project-directory makes every relative path in BOTH files resolve here, so the
+# production file's .env.production / .env.migrate / .env.backup / secrets/ are this
+# folder's throwaway ones (git-ignored), never deploy/'s real production files.
+#
+# What differs from a server, and why:
+#   * a throwaway Postgres container instead of Neon (no live data touched, no cost)
+#   * Caddy issues certificates from its own CA (local_certs): Let's Encrypt can't reach a PC
+#   * only 443 is published, on loopback: ../infra's dev Caddy already holds 127.0.0.1:80
+#   * APP_DOMAIN is a made-up name the hosts file points at 127.0.0.1, since hosted mode
+#     refuses localhost (backend/public_urls.py)
+
+name: jha-rehearsal
+
+services:
+  caddy:
+    ports: !override
+      - "127.0.0.1:443:443"
+    environment:
+      CADDY_EXTRA_GLOBAL_OPTIONS: local_certs
+    volumes:
+      # Replaces the production file's ./Caddyfile mount (same target): the one real
+      # Caddyfile, one folder up, not a rehearsal copy.
+      - ../Caddyfile:/etc/caddy/Caddyfile:ro
+
+  # Stands in for Neon. jha_owner mirrors Neon's owner role: it owns the database and
+  # can create roles, but is not a superuser, so migrate runs as it would on Neon.
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${REHEARSAL_POSTGRES_PASSWORD:?set it in .env.rehearsal}
+      JHA_OWNER_PASSWORD: ${REHEARSAL_OWNER_PASSWORD:?set it in .env.rehearsal}
+    configs:
+      - source: create_owner
+        target: /docker-entrypoint-initdb.d/10-create-owner.sh
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d jobhunt"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [egress]
+
+  app:
+    depends_on:
+      postgres:
+        condition: service_healthy
+  listener:
+    depends_on:
+      postgres:
+        condition: service_healthy
+  worker:
+    depends_on:
+      postgres:
+        condition: service_healthy
+  maintenance:
+    depends_on:
+      postgres:
+        condition: service_healthy
+  migrate:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+configs:
+  create_owner:
+    content: |
+      #!/bin/sh
+      set -e
+      psql -v ON_ERROR_STOP=1 --username postgres <<SQL
+      CREATE ROLE jha_owner LOGIN CREATEROLE PASSWORD '$${JHA_OWNER_PASSWORD}';
+      CREATE DATABASE jobhunt OWNER jha_owner;
+      SQL
+
+volumes:
+  postgres_data:

@@ -189,6 +189,20 @@ def test_the_production_caddyfile_disables_the_admin_api_and_sets_security_heade
     assert "microphone=(self)" in caddyfile  # the voice assistant needs it
 
 
+# ai: claude-opus-5-5 | 2026-11-09
+def test_production_caddy_gets_real_certificates(prod_compose: dict[str, Any]) -> None:
+    """CADDY_EXTRA_GLOBAL_OPTIONS exists for the local rehearsal (local_certs). Set in
+    production, browsers would get certificates from Caddy's own CA and refuse them."""
+    caddyfile = (DEPLOY / "Caddyfile").read_text(encoding="utf-8")
+    assert "{$CADDY_EXTRA_GLOBAL_OPTIONS}" in caddyfile
+    assert "CADDY_EXTRA_GLOBAL_OPTIONS" not in prod_compose["services"]["caddy"]["environment"]
+    # Text, not yaml.safe_load: the file uses compose's !override tag. A different
+    # project name means the rehearsal can never reuse production's volumes.
+    rehearsal = (DEPLOY / "rehearsal" / "docker-compose.rehearsal.yml").read_text(encoding="utf-8")
+    rehearsal_name = re.search(r"^name: (\S+)$", rehearsal, re.MULTILINE)
+    assert rehearsal_name and rehearsal_name.group(1) != prod_compose["name"]
+
+
 def test_production_secrets_are_git_ignored() -> None:
     ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert "deploy/.env.production" in ignored and "deploy/secrets/" in ignored
@@ -205,6 +219,26 @@ def test_the_app_trusts_forwarding_headers_from_exactly_the_proxy(prod_compose: 
 
     assert ipaddress.ip_address(caddy_address) in subnet
     assert [str(network) for network in trusted] == [f"{caddy_address}/32"]
+
+
+# ai: claude-opus-5-5 | 2026-11-09
+def test_caddys_pinned_address_is_never_handed_to_another_container(prod_compose: dict[str, Any]) -> None:
+    """Caddy starts after app and listener (depends_on healthy). Docker gives them
+    automatic addresses from ip_range, so it must exclude Caddy's, or app takes it,
+    Caddy can't start, and TRUSTED_PROXIES would name the app itself."""
+    edge = prod_compose["networks"]["edge"]["ipam"]["config"][0]
+    subnet = ipaddress.ip_network(edge["subnet"])
+    ip_range = ipaddress.ip_network(edge["ip_range"])
+    caddy_address = ipaddress.ip_address(prod_compose["services"]["caddy"]["networks"]["edge"]["ipv4_address"])
+    others = [
+        name for name, svc in prod_compose["services"].items()
+        if name != "caddy" and "edge" in (svc.get("networks") or [])
+    ]
+
+    assert ip_range.subnet_of(subnet)
+    assert caddy_address not in ip_range
+    usable = [a for a in ip_range if a not in (subnet.network_address, subnet.broadcast_address)]
+    assert len(usable) >= len(others), others
 
 
 # ai: claude-opus-5-5 | 2026-11-06 -- plus the maintenance worker (plan item 1.4).

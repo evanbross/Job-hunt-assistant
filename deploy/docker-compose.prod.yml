@@ -243,6 +243,9 @@ services:
       REDIS_TLS_CA_FILE: /tls/ca.crt
       APP_ENV: production
       APP_MODE: hosted                 # backend/app_mode.py: no writes to the container, downloads not server folders
+      # ai: claude-opus-5-5 | 2026-11-09 -- every Celery worker checks it at startup
+      # (celery_app.py worker_init); without it this service crash-looped.
+      APP_BASE_URL: https://${APP_DOMAIN:?set APP_DOMAIN}
     volumes:
       - ./secrets/redis-tls/ca.crt:/tls/ca.crt:ro
     read_only: true                    # the image writes nothing outside /tmp (Dockerfile)
@@ -295,6 +298,10 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/29
+          # ai: claude-opus-5-5 | 2026-11-09 -- automatic addresses (app, listener) come
+          # from .4-.6 only. Caddy starts last (it waits for them), so without this
+          # Docker gave app 172.28.0.2 and Caddy failed with "Address already in use".
+          ip_range: 172.28.0.4/30
   # app, workers and Redis. `internal: true` means containers here have no route to
   # the outside world, so a compromised Redis cannot call out and nothing outside can
   # reach it. app/worker also join `egress` for their own outbound calls.
