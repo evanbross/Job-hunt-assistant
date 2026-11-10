@@ -476,7 +476,10 @@ finish registering.
   `smtp.forwardemail.net`, port 587, TLS on, user and From set to that alias, password
   from Forward Email's "Generate Password". Enter them in Settings > System > General
   on each install, since each database is separate.
-- **Still to do:** send a real test email and check SPF, DKIM and DMARC all pass at Gmail.
+- **Verified 2026-11-09:** a real registration email reached Gmail in 4 seconds with
+  SPF, DKIM (d=jobhunt.zombietech.biz) and DMARC all PASS. Invite-only registration
+  was on, as it should be hosted, so the test address was invited first. 3.2 is done.
+  The hosted server still needs these SMTP settings entered in its own database.
 
 ### 3.3 Domain, DNS, TLS
 Register the domain; point `APP_DOMAIN`, `listener.`, `listener-ws.` at the VM.
