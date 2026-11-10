@@ -36,8 +36,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import docx
-import fitz
 from flask import Blueprint, jsonify, request, send_file
 from flask.typing import ResponseReturnValue
 from pydantic import (
@@ -53,6 +51,7 @@ from backend.ai_provider import AIMessage, AIProviderClient
 from backend.app_mode import is_hosted
 from backend.cover_letter.cover_letter_generator import CoverLetterGenerator
 from backend.cover_letter.cover_letter_learning import CoverLetterStyleLearner
+from backend.cover_letter.document_render import DOCUMENT_MIMETYPES, render_document
 from backend.cover_letter.phrase_book import format_phrase_book_section
 from backend.cover_letter.resume_tailor import ResumeTailoringGenerator
 from backend.resume.resume_prompt import resume_prompt_text
@@ -209,39 +208,6 @@ class SaveCoverLetterRequest(BaseModel):
         return value or None
 
 
-# ai: claude-opus-5-5 | 2026-11-06
-_DOCUMENT_MIMETYPES = {
-    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "pdf": "application/pdf",
-    "txt": "text/plain; charset=utf-8",
-    "md": "text/markdown; charset=utf-8",
-}
-
-
-# ai: claude-opus-5-5 | 2026-11-06 -- extracted from save_cover_letter, so the same
-# bytes go to a folder (desktop) or the browser (hosted).
-def _render_document(text: str, extension: str) -> bytes:
-    """*text* as a .docx, .pdf, or UTF-8 .txt/.md file's bytes."""
-    if extension == "docx":
-        document = docx.Document()
-        for para in document.paragraphs:
-            p = para._element
-            p.getparent().remove(p)
-        for block in text.split("\n"):
-            document.add_paragraph(block)
-        buffer = io.BytesIO()
-        document.save(buffer)
-        return buffer.getvalue()
-    if extension == "pdf":
-        with fitz.open() as pdf:
-            page = pdf.new_page()
-            margin = 72
-            rect = fitz.Rect(margin, margin, page.rect.width - margin, page.rect.height - margin)
-            page.insert_textbox(rect, text, fontsize=11, fontname="helv", align=0)
-            return pdf.tobytes()
-    return text.encode("utf-8")
-
-
 @cover_letter_bp.route("/cover-letter/save", methods=["POST"])
 def save_cover_letter() -> ResponseReturnValue:
     try:
@@ -271,7 +237,7 @@ def save_cover_letter() -> ResponseReturnValue:
     filename = f"{filename_stem} {safe_label}.{extension}"
 
     try:
-        content = _render_document(body.text, extension)
+        content = render_document(body.text, extension)
     except Exception as exc:
         logger.error("Failed to render %s: %s", extension, exc, exc_info=True)
         return jsonify({"error": "Failed to create the document"}), 500
@@ -283,7 +249,7 @@ def save_cover_letter() -> ResponseReturnValue:
     if is_hosted():
         return send_file(
             io.BytesIO(content),
-            mimetype=_DOCUMENT_MIMETYPES[extension],
+            mimetype=DOCUMENT_MIMETYPES[extension],
             as_attachment=True,
             download_name=filename,
         )

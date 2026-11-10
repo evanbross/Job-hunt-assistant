@@ -676,6 +676,29 @@ DB doesn't seed it, or the first stranger to sign up owns the seed data.
 
 ## Phase 6 — Go-live gate
 
+**Local production rehearsal (`deploy/rehearsal/`)** — first run 2026-11-10. The real
+production compose file, Caddyfile and image, run on the desktop with a throwaway
+Postgres and Caddy's local CA. Passed: migrate as a non-superuser owner, all services
+healthy, TLS and security headers, encrypted backup to MinIO, forced bootstrap-admin
+setup, SMTP through Forward Email, invite-only registration, hosted-only settings,
+document rendering in the container, sessions surviving an app restart. Not yet run:
+the extension against the hosted listener (needs a separate browser profile) and
+Gmail connect. Bugs it found, all fixed with regression tests:
+
+- `maintenance` crash-looped: no `APP_BASE_URL`, which every Celery worker checks
+- Caddy failed on a fresh start: the app took Caddy's pinned address (`ip_range` now
+  keeps it out of automatic assignment)
+- The setup page's SMTP form stayed on "Loading…" after a failed send, so a new
+  install's admin could never configure mail
+- A pasted SMTP host with a leading space was saved as typed; every send then failed as
+  an unknown host with no reason shown. Now every JSON string is trimmed at the request
+  (`web/request_input.py`, passwords exempt), and admins are told why a send failed
+- PDF downloads printed curly apostrophes and dashes as `?` and dropped everything past
+  page one
+
+Rerun it before the first deployment and before any release that changes the image,
+compose file or Caddyfile.
+
 Before inviting anyone:
 
 - [ ] Fresh production DB built by the `migrate` command only (no desktop data, no
