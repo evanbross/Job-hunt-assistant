@@ -167,6 +167,16 @@ def test_the_app_and_workers_connect_to_redis_over_verified_tls(prod_compose: di
         assert environment["APP_ENV"] == "production"
 
 
+# ai: claude-opus-5-5 | 2026-11-10
+def test_every_container_rotates_its_logs(prod_compose: dict[str, Any]) -> None:
+    """Unrotated logs keep IP and email addresses forever and eventually fill the disk."""
+    for name, svc in prod_compose["services"].items():
+        logging = svc.get("logging") or {}
+        assert logging.get("driver") == "json-file", name
+        assert logging.get("options", {}).get("max-size"), name
+        assert logging.get("options", {}).get("max-file"), name
+
+
 def test_containers_run_without_extra_privileges(prod_compose: dict[str, Any]) -> None:
     for name, svc in prod_compose["services"].items():
         assert svc["cap_drop"] == ["ALL"], name
