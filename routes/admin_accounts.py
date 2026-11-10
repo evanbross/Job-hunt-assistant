@@ -140,7 +140,7 @@ def resend_verification(account_id: int) -> ResponseReturnValue:
         send_verification_email(account["email"], registration_link(app_base_url, token), "registration")
     except OSError as exc:
         logger.error("Could not resend the registration link for account %s: %s", account_id, exc)
-        return jsonify({"error": "Could not send the email — check the SMTP settings and try again"}), 502
+        return jsonify({"error": f"Could not send the email — check the SMTP settings. {exc}"}), 502  # ai: claude-opus-5-5 | 2026-11-10
     return jsonify({"status": "sent"})
 
 

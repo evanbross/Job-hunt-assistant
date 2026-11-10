@@ -577,13 +577,20 @@ def request_email_change() -> ResponseReturnValue:
         record_event(repos, user_id, EMAIL_CHANGE_REQUESTED, {"new_email": new_email})
         repos["conn"].commit()
         app_base_url = public_base_url(repos)  # ai: claude-opus-5-5 | 2026-11-07
+        is_admin = (repos["user_accounts"].get(user_id) or {}).get("role") == "admin"  # ai: claude-opus-5-5 | 2026-11-10
 
     link = f"{app_base_url}/confirm-email-change?token={token}"
     try:
         send_verification_email(new_email, link, "email_change")
     except OSError as exc:
         logger.error("Could not send email-change verification to %s: %s", new_email, exc)
-        return jsonify({"error": "Could not send the verification email — try again later"}), 502
+        # ai: claude-opus-5-5 | 2026-11-10 -- an admin can fix the relay, so tell them
+        # why it failed (the forced setup page is where a new install's first send
+        # fails). Other users get the generic message, which reveals nothing about it.
+        message = "Could not send the verification email — try again later"
+        if is_admin:
+            message = f"Could not send the verification email. {exc}"
+        return jsonify({"error": message}), 502
 
     return jsonify({"status": "check_email", "email": new_email})
 

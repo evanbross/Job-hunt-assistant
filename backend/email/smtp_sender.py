@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import socket
 from email.message import EmailMessage
 from typing import TypedDict
 
@@ -48,6 +49,15 @@ from backend.settings_service import get_setting
 from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+class SmtpDeliveryError(OSError):
+    """Sending through the SMTP relay failed. The message names the relay and the
+    reason (e.g. the host name could not be found) but never the password, so an
+    admin can be shown it. An OSError, so existing `except OSError` callers still
+    catch every failure, including a malformed port, which used to escape them
+    as a ValueError."""
 
 
 class _SmtpSettings(TypedDict):
@@ -137,6 +147,9 @@ def send_email(*, to: str, subject: str, body_text: str) -> None:
     message["To"] = to
     message.set_content(body_text)
 
+    # ai: claude-opus-5-5 | 2026-11-10 -- the relay is quoted with repr() so stray
+    # whitespace in a saved host shows up in the error instead of hiding in it.
+    relay = f"{smtp_settings['host']!r} port {smtp_settings['port']!r}"
     try:
         with smtplib.SMTP(
             smtp_settings["host"], int(smtp_settings["port"]), timeout=10
@@ -146,6 +159,24 @@ def send_email(*, to: str, subject: str, body_text: str) -> None:
             if smtp_settings["user"]:
                 smtp.login(smtp_settings["user"], smtp_settings["password"])
             smtp.send_message(message)
-    except (OSError, smtplib.SMTPException, ValueError):
-        logger.exception("SMTP delivery failed for %s", to)
-        raise
+    except (OSError, smtplib.SMTPException, ValueError) as exc:
+        logger.exception("SMTP delivery to %s through %s failed", to, relay)
+        raise SmtpDeliveryError(
+            f"Could not send through the SMTP relay {relay}: {_describe_failure(exc)}"
+        ) from exc
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+def _describe_failure(exc: BaseException) -> str:
+    """A short reason an admin can act on, for the common failures."""
+    if isinstance(exc, socket.gaierror):
+        return f"the host name could not be found ({exc})"
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "the relay rejected the SMTP user name or password"
+    if isinstance(exc, ConnectionRefusedError):
+        return "nothing is accepting connections at that host and port"
+    if isinstance(exc, TimeoutError):
+        return "the connection timed out"
+    if isinstance(exc, ValueError):
+        return "the port is not a number"
+    return f"{type(exc).__name__}: {exc}"

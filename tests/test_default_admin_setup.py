@@ -39,6 +39,7 @@ duplicating them -- see that file for the general app-login-gate coverage."""
 from __future__ import annotations
 
 import os
+import socket
 from urllib.parse import parse_qs, urlparse
 
 import psycopg2
@@ -50,6 +51,7 @@ import web.request_guards as request_guards
 from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
 )
+from backend.email import smtp_sender
 from backend.settings_service import get_setting
 from backend.utils.utils import get_repos
 from tests.db_roles import runtime_database_url
@@ -200,6 +202,44 @@ def test_a_set_flag_for_a_non_secret_setting_is_still_unknown(client) -> None:
     resp = client.put("/api/settings/system", json={"smtp_host_set": True})
     assert resp.status_code == 400
     assert "smtp_host_set" in resp.get_json()["error"]
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+def test_a_pasted_smtp_host_is_saved_without_surrounding_spaces(client) -> None:
+    """Found in the hosted rehearsal: a host pasted as " smtp.forwardemail.net" was
+    stored as typed and every send failed as an unknown host. The password is a
+    secret and is kept exactly as given."""
+    _login_default_admin(client)
+    resp = client.put(
+        "/api/settings/system",
+        json={"smtp_host": " smtp.example.com ", "smtp_port": "587 ", "smtp_password": " spaced secret "},
+    )
+    assert resp.status_code == 200
+    with get_repos() as repos:
+        assert get_setting("smtp_host", None, repos) == "smtp.example.com"
+        assert get_setting("smtp_port", None, repos) == "587"
+        assert get_setting("smtp_password", None, repos) == " spaced secret "
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+def test_a_failed_verification_send_tells_the_admin_why(client, monkeypatch) -> None:
+    """The forced setup page is where a new install's first email fails. The admin
+    needs the reason to fix the relay; it used to get only "try again later"."""
+    monkeypatch.setattr(session_auth_module, "send_verification_email", smtp_sender.send_verification_email)
+
+    def _unknown_host(host: str, port: int, timeout: float) -> None:
+        raise socket.gaierror(-2, "Name or service not known")
+
+    monkeypatch.setattr(smtp_sender.smtplib, "SMTP", _unknown_host)
+    _login_default_admin(client)
+    client.put("/api/settings/system", json={"smtp_host": "smtp.example.invalid", "smtp_port": "587"})
+
+    resp = client.post("/api/account/request-email-change", json={"new_email": _NEW_EMAIL})
+
+    assert resp.status_code == 502
+    error = resp.get_json()["error"]
+    assert "'smtp.example.invalid' port '587'" in error
+    assert "host name could not be found" in error
 
 
 def test_gate_allows_logout(client) -> None:

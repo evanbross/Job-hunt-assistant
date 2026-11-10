@@ -60,6 +60,7 @@ from werkzeug.security import generate_password_hash
 
 import config
 import routes.session_auth as session_auth_module
+from backend.email.smtp_sender import SmtpDeliveryError
 from backend.security.client_ip import TrustedProxyMiddleware, parse_trusted_proxies
 from backend.utils.utils import get_repos
 from tests.db_roles import runtime_database_url
@@ -438,6 +439,24 @@ def test_update_account_name(client) -> None:
 def test_request_email_change_requires_authentication(client, sent_emails) -> None:
     resp = client.post("/api/account/request-email-change", json={"new_email": "new@example.com"})
     assert resp.status_code == 401
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+def test_a_failed_email_change_send_gives_a_regular_user_no_relay_details(client, monkeypatch) -> None:
+    """Admins are told why a send failed (tests/test_default_admin_setup.py); a regular
+    user gets the generic message, which says nothing about the SMTP relay."""
+
+    def _failing_send(to: str, link: str, purpose: str) -> None:
+        raise SmtpDeliveryError("Could not send through the SMTP relay 'smtp.internal' port '25': refused")
+
+    monkeypatch.setattr(session_auth_module, "send_verification_email", _failing_send)
+    _seed_active_account()
+    _login(client)
+
+    resp = client.post("/api/account/request-email-change", json={"new_email": "new@example.com"})
+
+    assert resp.status_code == 502
+    assert resp.get_json()["error"] == "Could not send the verification email — try again later"
 
 
 def test_request_email_change_sends_to_new_address_old_email_still_works(client, sent_emails) -> None:

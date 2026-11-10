@@ -64,6 +64,7 @@ from routes.system import system_bp
 from routes.toptal import toptal_bp
 from routes.voice import voice_bp
 from web.request_guards import register_request_guards
+from web.request_input import TrimmedInputRequest
 from web.swagger_docs import install_swagger
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,7 @@ def _account_unavailable(exc: AccountUnavailableError) -> tuple[flask.Response, 
 def create_app() -> Flask:
     """Build a new, fully routed Flask app with no runtime side effects."""
     app = Flask(__name__)
+    app.request_class = TrimmedInputRequest  # ai: claude-opus-5-5 | 2026-11-10 -- see web/request_input.py
 
     # The real signing key is validated and installed by web.serving's
     # install_startup_secrets() before serving; this value only keeps tests and
