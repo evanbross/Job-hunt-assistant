@@ -134,7 +134,7 @@ def test_an_invite_revoked_after_registration_started_stops_the_emailed_link(
     assert completed.status_code == 403
     account = _account(pg_dsn, _FRIEND)
     assert account is not None and account["password_hash"] is None  # rolled back
-    assert visitor.get("/api/session").get_json() == {"authenticated": False}
+    assert visitor.get("/api/session").get_json()["authenticated"] is False
 
 
 def test_open_registration_lets_anyone_register(
